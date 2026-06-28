@@ -3,6 +3,26 @@
 All notable changes to Tess OS are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-06-29
+
+### Added
+- **`conductor/release-process.md`** — new core file documenting the signed-release
+  channel: trust model (isolated GNUPGHOME, exact fingerprint pinning), maintainer
+  release steps (git tag -s → gh release create), and adopter upgrade flow.
+  Automatically adopted into `conductor/release-process.md` when existing installs
+  run `tess update --ref v0.1.1`.
+- **Conductor README framework-maintenance section** — links `release-process.md`
+  into the conductor file index.
+
+### Changed
+- `tess.lock`: `framework.version` → `0.1.1`; `upstream_ref` → `v0.1.1`.
+
+### Security
+- Trust root established in v0.1.0 remains unchanged. The signing key fingerprint
+  `EBEABC618C11B6A7340A7D1601DD637667B8CC89` is valid for this release.
+
+---
+
 ## [0.1.0] — 2026-06-28
 
 Initial public foundation.
