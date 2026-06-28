@@ -200,18 +200,30 @@ This is an early public foundation. What is real and committed today:
   detection, and atomic staging swap.
 - The **vault** as described above — encrypted-at-rest store, `vault://` refs, JIT
   `exec`, and the pre-commit/pre-push backstop (a risk reducer, not a guarantee).
+- The **signed upgrade channel**: the FETCH, signature-verify, merge, version bump,
+  and `tess self-update` paths are fully exercised and verified live over the wire —
+  see below.
 
-What is **in progress** and should not be assumed working:
+**Over-the-wire upgrade: VERIFIED** (v0.1.0 → v0.1.1, exercised 2026-06-29):
 
-- The network **FETCH** that pulls a new framework version over the wire, and
-  `tessctl self-update`.
-- A real **two-tag upgrade has not yet been exercised end-to-end** on a live
-  update. Treat the upgrade engine as architecturally complete but unproven on a
-  real over-the-wire update until that path is exercised.
+A fresh clone was checked out at v0.1.0. Running `tess update --ref v0.1.1`
+performed the full upgrade chain:
+1. **FETCH** — cloned v0.1.1 from `https://github.com/twiss-io/tess-os.git` over HTTPS
+2. **Signature verification** — `git verify-tag --raw` in an isolated GNUPGHOME seeded
+   only with the pinned key; output: `signature OK (isolated keyring) — fingerprint
+   matches pinned key`
+3. **Merge** — conductor/README.md fast-forwarded; conductor/release-process.md adopted
+   via A2 (new-file adoption)
+4. **Version bump** — `framework.version` → `0.1.1`, `upstream_ref` → `v0.1.1` (Step 8)
+5. **`tess self-update --ref v0.1.1`** — verified signature, parse-checked new engine,
+   backed up previous engine, installed, ran doctor: all clean
+
+Post-upgrade `tess doctor` and `tess verify` both returned `OK`. The fingerprint pin
+(`EBEABC618C11B6A7340A7D1601DD637667B8CC89`) is set in `tess.lock` and is enforced on
+every future update; unsigned or wrong-key tags are rejected before any extraction.
 
 The test suite is portable and green (Python: engine, vault, render, merge, hook
-coexistence; Node: the wizard). It does not yet stand in for a verified live
-upgrade.
+coexistence; Node: the wizard).
 
 ---
 
