@@ -1,0 +1,36 @@
+{
+  "name": "tess-os",
+  "version": "0.1.0",
+  "description": "An orchestration-first agent operating system for Claude Code — a governed organization of specialist agents with an in-place framework upgrade engine.",
+  "license": "Apache-2.0",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/twiss-io/tess-os.git"
+  },
+  "homepage": "https://github.com/twiss-io/tess-os#readme",
+  "bugs": {
+    "url": "https://github.com/twiss-io/tess-os/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "agents",
+    "agent-orchestration",
+    "ai",
+    "multi-agent",
+    "tess",
+    "tess-os"
+  ],
+  "//": "This npm package is intentionally LIGHT — metadata/docs only. The Tess OS runtime (doctrine, agents, commands, hooks, the tessctl engine, and the client template) is NOT shipped through npm; it is delivered via the git template repo and the `npm create tess` wizard (the create-tess package), which scaffolds an instance from a git clone. Do not re-add the runtime tree to `files`.",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md",
+    "TRADEMARK.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "CLA.md"
+  ]
+}

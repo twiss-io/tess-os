@@ -1,0 +1,1 @@
+# vault scaffold — blob and identity are gitignored; this file and vault.registry.json are the only committable vault paths

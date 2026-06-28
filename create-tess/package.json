@@ -1,0 +1,44 @@
+{
+  "name": "create-tess",
+  "version": "0.1.0",
+  "description": "Gamified first-run wizard for Tess OS — npm create tess. Name yourself, choose a world, pick a starter squad of real agents, name your conductor, and land inside a working agent OS.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "create-tess": "bin/create-tess.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/create-tess.mjs",
+    "smoke": "node bin/create-tess.mjs",
+    "test": "node --test"
+  },
+  "keywords": [
+    "tess",
+    "tess-os",
+    "create-tess",
+    "claude-code",
+    "agents",
+    "agent-orchestration",
+    "scaffold",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/twiss-io/tess-os.git",
+    "directory": "create-tess"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "picocolors": "^1.0.0"
+  }
+}

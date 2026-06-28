@@ -1,0 +1,65 @@
+{
+  "name": "claude-code-mastery-starter-kit",
+  "version": "1.0.0",
+  "description": "Production-ready project starter kit based on Claude Code Mastery Guides V1-V5",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:website": "PORT=3000 tsx watch src/index.ts",
+    "dev:api": "PORT=3001 tsx watch src/index.ts",
+    "dev:dashboard": "PORT=3002 tsx watch src/index.ts",
+    "dev:test:website": "PORT=4000 tsx watch src/index.ts",
+    "dev:test:api": "PORT=4010 tsx watch src/index.ts",
+    "dev:test:dashboard": "PORT=4020 tsx watch src/index.ts",
+    "build": "tsc --noEmit && tsc",
+    "postbuild": "pnpm build:optimize",
+    "build:optimize": "classpresso optimize",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm test:unit && pnpm test:e2e",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "pnpm test:kill-ports && playwright test",
+    "test:e2e:ui": "pnpm test:kill-ports && playwright test --ui",
+    "test:e2e:headed": "pnpm test:kill-ports && playwright test --headed",
+    "test:e2e:report": "playwright show-report",
+    "test:e2e:chromium": "pnpm test:kill-ports && playwright test --project=chromium",
+    "test:kill-ports": "lsof -ti:4000,4010,4020 | xargs kill -9 2>/dev/null || true",
+    "lint": "tsc --noEmit",
+    "db:query": "tsx scripts/db-query.ts",
+    "db:query:list": "tsx scripts/db-query.ts --list",
+    "content:build": "tsx scripts/build-content.ts",
+    "content:build:id": "tsx scripts/build-content.ts --id",
+    "content:list": "tsx scripts/build-content.ts --list",
+    "content:dry-run": "tsx scripts/build-content.ts --dry-run",
+    "ai:monitor": "npx @rulecatch/ai-pooler monitor --no-api-key",
+    "docker:optimize": "echo 'Run /optimize-docker in Claude Code to audit your Dockerfile'",
+    "clean": "rm -rf dist coverage test-results playwright-report",
+    "precommit": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.42.0",
+    "@types/node": "^25.2.3",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "classpresso": "^1.7.2",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "strictdb": "^0.1.0",
+    "zod": "^3.23.0"
+  },
+  "peerDependencies": {
+    "mongodb": "^6.5.0"
+  },
+  "peerDependenciesMeta": {
+    "mongodb": {
+      "optional": true
+    }
+  }
+}

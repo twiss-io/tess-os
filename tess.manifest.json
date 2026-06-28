@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "_doc": "Tess OS Keystone manifest — hand-authored per spec kb/wiki/synthesis/2026-06-27-keystone-architecture.md §2.4. THIS IS THE UPDATER'S WRITE-SCOPE GUARD. Do NOT auto-glob: this repo mixes framework content with clients/, kb/, example-project/, .venv/ and stray root files. tessctl may write ONLY to paths matching owned_globs (refined per-file by tess.lock status). Everything else is unreachable. never_touch is an explicit belt-and-suspenders denylist for user data, secrets, and known-stray junk; precedence: owned_globs WINS over never_touch (so clients/_template/** stays framework-owned even though clients/*/** is denied).",
+  "precedence": "owned_globs > never_touch",
+
+  "owned_globs": [
+    "CLAUDE.md",
+    "conductor/**",
+    "agents/**",
+    ".claude/agents/**",
+    ".claude/commands/**",
+    ".claude/hooks/**",
+    ".claude/skills/**",
+    ".claude/settings.json",
+    "clients/_template/**"
+  ],
+
+  "_owned_notes": {
+    "CLAUDE.md": "entry-point doctrine; rendered from CLAUDE.md.tpl + operator/ stubs on update (status core-managed, tier security for its rule blocks).",
+    "conductor/**": "the doctrine files; guardrails.md / verification-routing.md / channel-guardrails.md / dispatch-brief.md carry tier:security in tess.lock.",
+    "agents/**": "165 persona prose specs (the agents/ subtree). Framework-owned per spec §2.1 CORE territory and the §2.4 manifest example. NOTE: this was NOT in the caller's parenthetical owned list; added because these are core content, not user data — omitting them would orphan every persona spec from updates. User-authored agents live at .claude/agents/<custom>.md and are protected per-file via tess.lock status:user-created, NOT by excluding this glob.",
+    ".claude/agents/**": "the 42 compiled dispatch definitions. Per-file status in tess.lock governs actual write behavior: core-managed agents merge; status:user-created agents are never read, never touched.",
+    ".claude/commands/**": "26 slash-command definitions (defect #9): core source at .tess/core/commands/**; live at .claude/commands/**. Workflows decision: .claude/workflows/ (3 files — daily-error-report.js, mission-execution.js, clienta-incident.js) are instance-specific operator automation, NOT framework content — they remain user-space and are excluded from core/owned_globs.",
+    ".claude/hooks/**": "the 6 guard hooks; {{TESS_ROOT}} token substituted on render. LF-enforced (CRLF breaks the shebang).",
+    ".claude/skills/**": "framework-provided skills.",
+    ".claude/settings.json": "rendered every update from settings-core.json with {{TESS_ROOT}} substituted (spec Decision 8). Customize via `tessctl publish --tag settings`.",
+    "clients/_template/**": "client-folder scaffold — framework-owned (spec §2.4). Distinct from real clients under clients/*/** which are never_touch."
+  },
+
+  "never_touch": [
+    "kb/**",
+    "clients/*/**",
+    "operator/**",
+    ".env",
+    ".env.*",
+    ".claude/settings.local.json",
+    "*.local.md",
+    "**/*.local.md",
+    "UPGRADE-NOTES.md",
+    ".tess/snapshots/**",
+    ".tess/staging/**",
+    ".tess/modified.json",
+    ".tess/update.lock",
+    "main.py",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+    ".venv/**",
+    "example-project/**",
+    "starter/**",
+    "docs/**",
+    "infrastructure/**",
+    ".agents/**",
+    "skills-lock.json",
+    ".mcp.json",
+    "README.md"
+  ],
+
+  "_never_touch_notes": {
+    "kb/**": "internal + client knowledge base (raw/wiki/lint); Tess-maintained user space.",
+    "clients/*/**": "real client operating systems — data, secrets, repos. clients/_template/** is the sole exception (owned_globs wins).",
+    "operator/**": "user-authored identity & context, injected at CLAUDE.md render time.",
+    ".env / .env.* / .claude/settings.local.json": "secrets and local allowlists; Claude Code merges settings.local.json natively.",
+    "*.local.md / **/*.local.md": "append-first shadow files — the 80% customization path (spec §5 Layer 2); appended after core on resolve, never overwritten.",
+    ".tess/*": "tessctl's own transactional state (snapshots, staging, provenance log, lock). NOTE: .tess/core/** is the pristine merge-base source — read by tessctl, never a live-tree write target, so it is intentionally absent from BOTH lists.",
+    "python/data layer": "main.py, pyproject.toml, uv.lock, .python-version, .venv/** — the repo's Python/uv tooling, not framework doctrine.",
+    "example-project/ , starter/ , docs/ , infrastructure/ , .agents/": "non-framework subtrees present in this messy repo; explicitly fenced off."
+  }
+}

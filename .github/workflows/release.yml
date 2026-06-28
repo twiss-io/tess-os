@@ -1,0 +1,159 @@
+name: Release
+
+# Fires only on version tags (e.g. v1.0.0, v0.2.1-rc1).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Releases are serialized; never cancel an in-flight release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Gated release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # required to publish the GitHub Release
+      pull-requests: write  # gitleaks-action summary
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # ----------------------------------------------------------------------
+      # Gate 1 — the tag MUST be a signed, annotated tag verified by the
+      # provisioned signer public key.  TESS_SIGNING_PUBKEY is MANDATORY:
+      # the job fails immediately if it is not set so that git verify-tag
+      # always runs.  The grep-only 'signature block present' fallback has
+      # been removed — cryptographic verification is the only gate (D4).
+      # ----------------------------------------------------------------------
+      - name: Gate 1 — verify the tag is signed
+        env:
+          TAG: ${{ github.ref_name }}
+          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
+        run: |
+          set -euo pipefail
+          echo "Inspecting tag: $TAG"
+
+          obj_type="$(git cat-file -t "$TAG" 2>/dev/null || echo missing)"
+          if [ "$obj_type" != "tag" ]; then
+            echo "::error::'$TAG' is a '${obj_type}', not an annotated tag." \
+                 "A signed annotated tag is required (git tag -s $TAG)."
+            exit 1
+          fi
+
+          if [ -z "${TESS_SIGNING_PUBKEY:-}" ]; then
+            echo "::error::TESS_SIGNING_PUBKEY secret is not set. Full cryptographic"
+            echo "         verification is mandatory — add the signer's public key as"
+            echo "         the TESS_SIGNING_PUBKEY repository secret and retry."
+            exit 1
+          fi
+
+          echo "Signer public key provisioned — running full cryptographic verification."
+          printf '%s\n' "$TESS_SIGNING_PUBKEY" | gpg --import
+          git verify-tag "$TAG"
+          echo "OK: '$TAG' signature cryptographically verified against the provisioned key."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Gate 2 — the full test suite must pass.
+      - name: Gate 2 — full test suite (pytest)
+        run: python -m pytest
+
+      # Gate 3 — no secret content anywhere in the history.
+      - name: Gate 3 — secret scan (gitleaks, full history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE only needed for GitHub organization accounts.
+
+      # ----------------------------------------------------------------------
+      # Gate 4 — secret-scrub assertion: no vault/secret PATHS may be tracked.
+      # Complements gitleaks (which scans content) by forbidding the path
+      # shapes that hold credentials per .gitignore. Allows .env.example and
+      # the two safe vault scaffold files (.gitkeep + vault.registry.json).
+      #
+      # Re-anchored from cmd_publish (local, no remote push) to release CI —
+      # Cyra finding (a), HIGH: the REAL public-release scrub gate must be here.
+      # cmd_publish (tessctl) does NOT run a secondary scan — this is the
+      # sole path-scrub gate. (Design: conductor/vault.md; §6 Layer 5.)
+      # ----------------------------------------------------------------------
+      - name: Gate 4 — secret-scrub assertion (no vault/secret paths)
+        run: |
+          set -euo pipefail
+          echo "Scanning tracked files for forbidden vault/secret paths..."
+          hits="$(
+            git ls-files \
+              | grep -E '(^|/)(vault|tess-secrets|secrets)/|(^|/)\.env($|\.)|\.(key|pem|age|env\.json)$' \
+              | grep -vE '(^|/)\.env\.example$' \
+              | grep -vE '(^|/)vault\.registry\.json$' \
+              | grep -vE '(^|/)\.gitkeep$' \
+              || true
+          )"
+          if [ -n "$hits" ]; then
+            echo "::error::secret-scrub FAILED — forbidden vault/secret paths are tracked:"
+            printf '%s\n' "$hits"
+            exit 1
+          fi
+          echo "OK: no vault/secret paths are tracked."
+
+      # ----------------------------------------------------------------------
+      # Gate 5 — vault registry integrity: vault.registry.json must be valid
+      # JSON and must NOT contain actual secret values (--strict schema check).
+      # This is the M5 scrub gate anchored to the real public-release path.
+      # Cyra finding (a), §6 Layer 5: doctor --strict as release CI assertion.
+      # ----------------------------------------------------------------------
+      - name: Gate 5 — vault registry integrity (doctor --strict)
+        run: |
+          set -euo pipefail
+          echo "Checking vault.registry.json for value-shaped fields..."
+          REGISTRY=".claude/vault/vault.registry.json"
+          if [ ! -f "$REGISTRY" ]; then
+            echo "::warning::vault.registry.json not found — skipping registry check."
+            exit 0
+          fi
+          python3 -c "
+          import json, re, sys
+
+          with open('$REGISTRY') as f:
+              data = json.load(f)
+
+          # Reject any field named 'value', 'secret', 'password', 'api_key', 'token'
+          # with a non-empty string value of >= 8 chars (actual credential shape)
+          registry_str = json.dumps(data)
+          suspicious = re.findall(
+              r'\"(?:value|secret|password|api_key|token)\"\s*:\s*\"([^\"]{8,})\"',
+              registry_str
+          )
+          if suspicious:
+              print(f'FAIL: vault.registry.json contains {len(suspicious)} value-shaped field(s).')
+              print('The registry MUST be a catalog only — no actual secret values.')
+              sys.exit(1)
+          print(f'OK: vault.registry.json passes --strict schema check.')
+          "
+
+      # All gates passed — publish the release. This step only runs because
+      # every preceding gate succeeded (steps fail fast), so the release is gated.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: false

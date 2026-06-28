@@ -1,0 +1,100 @@
+# ─────────────────────────────────────────────────────────────
+# Environment / secrets
+# ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.env.json
+*.key
+*.pem
+secrets/
+tess-secrets/
+.claude/tess-secrets/
+
+# Encrypted identity / vault material (never publish)
+# The vault DIRECTORY is intentionally NOT fully ignored — .gitkeep and vault.registry.json
+# must be committable (public scaffold). Only the actual secret material is ignored:
+.claude/vault/vault.age
+.claude/vault/vault.recipients
+.claude/vault/identity.age
+clients/*/.vault/
+# Catch any stray age blobs or identity files anywhere in the tree
+**/vault.age
+**/identity.age
+
+# operator/ stubs contain injected identity — a pasted secret there could be committed
+# Block the dir itself but keep the template (never_touch in manifest already covers it)
+# Note: the framework ships operator/ stubs blank; real content is user-space only
+operator/secrets
+operator/*.secret
+
+# ─────────────────────────────────────────────────────────────
+# Dependencies / build artifacts
+# ─────────────────────────────────────────────────────────────
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+
+# ─────────────────────────────────────────────────────────────
+# OS / editor cruft
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────
+# Claude Code local overrides
+# ─────────────────────────────────────────────────────────────
+.claude/settings.local.json
+channels/
+.claude/channels/
+.remember/
+
+# ─────────────────────────────────────────────────────────────
+# iCloud / no-sync directories
+# ─────────────────────────────────────────────────────────────
+*.nosync/
+
+# ─────────────────────────────────────────────────────────────
+# tessctl engine runtime state (committed: .tess/core, .tess/bin, tess.lock)
+# ─────────────────────────────────────────────────────────────
+.tess/snapshots/*
+!.tess/snapshots/.gitkeep
+.tess/staging/*
+!.tess/staging/.gitkeep
+.tess/conflicts/
+.tess/modified.json
+.tess/update.lock
+
+# ─────────────────────────────────────────────────────────────
+# Knowledge base content is operator/client data — keep structure, ignore content
+# ─────────────────────────────────────────────────────────────
+kb/raw/*
+!kb/raw/.gitkeep
+kb/lint/*
+!kb/lint/.gitkeep
+# wiki: ignore content but keep the maintained index/log and the section-dir placeholders
+kb/wiki/*
+!kb/wiki/index.md
+!kb/wiki/log.md
+!kb/wiki/concepts/
+!kb/wiki/missions/
+!kb/wiki/people/
+!kb/wiki/synthesis/
+kb/wiki/concepts/*
+!kb/wiki/concepts/.gitkeep
+kb/wiki/missions/*
+!kb/wiki/missions/.gitkeep
+kb/wiki/people/*
+!kb/wiki/people/.gitkeep
+kb/wiki/synthesis/*
+!kb/wiki/synthesis/.gitkeep
+
+# ─────────────────────────────────────────────────────────────
+# Real client folders are operator data — only the template is shipped
+# ─────────────────────────────────────────────────────────────
+clients/*
+!clients/_template/

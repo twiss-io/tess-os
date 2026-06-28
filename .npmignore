@@ -1,0 +1,51 @@
+# Secrets and encrypted identity material — never publish to a package registry
+.env
+.env.*
+!.env.example
+*.env.json
+*.key
+*.pem
+secrets/
+tess-secrets/
+.claude/tess-secrets/
+.claude/vault/vault.age
+.claude/vault/vault.recipients
+.claude/vault/identity.age
+clients/*/.vault/
+**/vault.age
+**/identity.age
+operator/secrets
+operator/*.secret
+
+# Local overrides and runtime state
+.claude/settings.local.json
+.claude/channels/
+channels/
+.remember/
+.tess/snapshots/
+.tess/snapshots/**
+.tess/staging/
+.tess/staging/**
+.tess/conflicts/
+.tess/modified.json
+.tess/update.lock
+
+# Operator / client data
+kb/raw/
+kb/lint/
+kb/wiki/concepts/
+kb/wiki/missions/
+kb/wiki/people/
+kb/wiki/synthesis/
+clients/*
+!clients/_template/
+
+# Build / OS cruft
+node_modules/
+.venv/
+__pycache__/
+**/__pycache__/
+**/__pycache__/**
+*.pyc
+**/*.pyc
+.DS_Store

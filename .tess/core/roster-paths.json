@@ -1,0 +1,21 @@
+{
+  "_doc": "Tess OS curated-squad config. Maps STARTER_PATH to install sets. Universal base is always installed on every path. Agents operate on the dispatchable layer (.claude/agents/*.md).",
+  "universal_base": ["leah", "eva"],
+  "paths": {
+    "founders": {
+      "_description": "For founders, solo operators, CEOs, strategists — bottleneck is judgment and direction.",
+      "squad": ["athena", "apolline", "zelie"],
+      "orchestrators": ["founders-office-orchestrator", "revenue-orchestrator"]
+    },
+    "builders": {
+      "_description": "For developers, indie hackers, technical founders, product teams — need is shipping software.",
+      "squad": ["elena", "ada", "iris", "quinn", "reid"],
+      "orchestrators": ["product-delivery-orchestrator"]
+    },
+    "operators": {
+      "_description": "For agency owners, service-business operators, COOs, client-delivery leads — job is running something reliably.",
+      "squad": ["adrienne", "evangeline", "clio"],
+      "orchestrators": ["operational-reliability-orchestrator", "client-experience-orchestrator"]
+    }
+  }
+}

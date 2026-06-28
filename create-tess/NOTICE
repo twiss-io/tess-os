@@ -1,0 +1,20 @@
+create-tess (the Tess OS first-run wizard)
+Copyright 2026 Twiss
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+SPDX-License-Identifier: Apache-2.0
+
+This NOTICE file is informational only and does not modify the License.
+
+This package ships no vendored third-party code. It depends, at install time, on:
+
+  @clack/prompts  — interactive prompts.  License: MIT.
+                    https://github.com/bombshell-dev/clack
+  picocolors      — terminal colors.      License: ISC.
+                    https://github.com/alexeyraspopov/picocolors
+
+Trademarks: "Tess", "Twiss", "Tess OS", and "Twiss Vault" are trademarks of
+Twiss — not licensed by Apache-2.0. See TRADEMARK.md in the Tess OS distribution.
+
+create-tess scaffolds Tess OS, whose full third-party attribution notices are in
+the root NOTICE file of the Tess OS distribution.
