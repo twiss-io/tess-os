@@ -9,14 +9,14 @@
 schema: 1
 framework:
   track: v2
-  version: 2.0.0
+  version: 0.1.0
   channel: stable
   upstream: https://github.com/twiss-io/tess-os.git
-  upstream_ref: v2.0.0
+  upstream_ref: v0.1.0
   upstream_commit: null
   upstream_digest: null
-  trusted_key_fingerprint: null
-  last_updated: '2026-06-28T03:16:31.082913Z'
+  trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
+  last_updated: '2026-06-28T18:23:03.047775Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
