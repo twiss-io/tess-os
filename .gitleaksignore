@@ -1,0 +1,11 @@
+# .gitleaksignore — gitleaks finding fingerprints intentionally allowlisted.
+# Format: one fingerprint per line (<file>:<rule-id>:<line>). Comments start with '#'.
+#
+# conductor/vault.md teaches the ref-only vault doctrine. Inside its
+# "# INCORRECT — never do this" anti-pattern block it shows what a leaked
+# credential would look like. That example is a FAKE placeholder, never a real
+# token. It has been reworded to break the ghp_[A-Za-z0-9]{36} GitHub-PAT shape
+# and is tagged `# gitleaks:allow` inline (the primary, line-agnostic guard).
+# This fingerprint is belt-and-suspenders so the CI gitleaks gate stays clean
+# even if a future edit reintroduces a secret-shaped pattern on that doctrine line.
+conductor/vault.md:generic-api-key:47

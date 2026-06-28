@@ -44,7 +44,7 @@ the ref, not the value:
 CREDENTIAL: vault://github/token  (resolve via: tessctl vault exec --ref github/token -- <cmd>)
 
 # INCORRECT — never do this
-CREDENTIAL: ghp_ABCdef123...
+CREDENTIAL: ghp_EXAMPLE-do-not-commit-a-real-token   # gitleaks:allow (placeholder — never a real token)
 ```
 
 If a raw value appears in a dispatch prompt, the `vault-dispatch-scan.py`
