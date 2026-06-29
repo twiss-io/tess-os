@@ -4851,15 +4851,26 @@ def _vault_store_identity_keychain(private_key_str: str) -> bool:
     Returns True on success, False if keychain unavailable.
     """
     if sys.platform == "darwin":
+        # Feed the key on STDIN, never on argv: an argv password is visible via
+        # `ps` to any local user and would leak the vault master key. With no
+        # inline value, `security ... -w` reads the password from stdin, where it
+        # prompts twice (enter + retype), so the key is sent twice. `security`
+        # can still exit 0 while storing a mismatched value if that prompt
+        # protocol ever changes, so the store is read back and verified; a
+        # mismatch returns False and lets the caller fall back to the 0600
+        # identity file rather than persisting an unusable key.
         r = subprocess.run(
             ["security", "add-generic-password",
              "-U",                      # update if exists
              "-s", _KEYCHAIN_SERVICE,
              "-a", _KEYCHAIN_ACCOUNT,
-             "-w", private_key_str],
+             "-w"],                     # value read from stdin, NOT argv
+            input=(private_key_str + "\n" + private_key_str + "\n").encode(),
             capture_output=True
         )
-        return r.returncode == 0
+        if r.returncode != 0:
+            return False
+        return _vault_load_identity_keychain() == private_key_str
     # Linux: try secret-tool
     if shutil.which("secret-tool"):
         r = subprocess.run(
@@ -5080,8 +5091,15 @@ def _vault_write_blob(root: Path, data: dict) -> None:
 
 
 def _vault_mask_value(value: str, ref: str) -> str:
-    """Return a masked display string. Shows prefix + dots + suffix."""
-    if len(value) <= 6:
+    """Return a masked display string. Shows prefix + dots + suffix.
+
+    Only a 4-char prefix and a 4-char suffix are ever revealed, so any value of
+    12 chars or fewer would have its prefix and suffix overlap or adjoin and
+    expose the WHOLE secret (e.g. an 8-char value -> first4 + last4 covers all of
+    it). Below the 12-char floor the value is therefore fully redacted; above it
+    at least 5 genuinely hidden chars always remain between the shown ends.
+    """
+    if len(value) <= 12:
         return "•" * len(value)
     prefix = value[:4]
     suffix = value[-4:]
@@ -5300,32 +5318,38 @@ while IFS= read -r file; do
   esac
 done <<< "$STAGED"
 
-# Content scan for secret patterns
-while IFS= read -r file; do
-  [ -z "$file" ] && continue
-  [ -f "$file" ] || continue
-  if grep -qE 'AGE-SECRET-KEY-[A-Z0-9]{50,}' "$file" 2>/dev/null; then
+# Content scan for secret patterns — read the VERSIONED blob via `git show`,
+# never the working tree. A secret that is staged-then-scrubbed (pre-commit) or
+# present in a pushed commit but altered/removed locally (pre-push) is invisible
+# to a working-tree grep; scanning the committed/pushed content closes that
+# bypass. BLOBS holds `<rev>:<path>` specs (empty rev = the staged index).
+while IFS= read -r blob; do
+  [ -z "$blob" ] && continue
+  file="${blob#*:}"
+  content="$(git show "$blob" 2>/dev/null)" || continue
+  [ -z "$content" ] && continue
+  if printf '%s' "$content" | grep -qE -e 'AGE-SECRET-KEY-[A-Z0-9]{50,}'; then
     VIOLATIONS="${VIOLATIONS}\n  AGE PRIVATE KEY in $file"
   fi
-  if grep -qE '-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qE -e '-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'; then
     VIOLATIONS="${VIOLATIONS}\n  PEM PRIVATE KEY in $file"
   fi
-  if grep -qE '(ghp_|gho_|ghs_|ghr_)[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qE -e '(ghp_|gho_|ghs_|ghr_)[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}'; then
     VIOLATIONS="${VIOLATIONS}\n  GITHUB TOKEN in $file"
   fi
-  if grep -qE 'AKIA[0-9A-Z]{16}' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qE -e 'AKIA[0-9A-Z]{16}'; then
     VIOLATIONS="${VIOLATIONS}\n  AWS KEY in $file"
   fi
-  if grep -qE '(sk_live_|pk_live_)[A-Za-z0-9]{20,}' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qE -e '(sk_live_|pk_live_)[A-Za-z0-9]{20,}'; then
     VIOLATIONS="${VIOLATIONS}\n  STRIPE KEY in $file"
   fi
-  if grep -qE '(xoxb-|xoxp-|xoxo-|xoxa-)[0-9A-Za-z-]{20,}' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qE -e '(xoxb-|xoxp-|xoxo-|xoxa-)[0-9A-Za-z-]{20,}'; then
     VIOLATIONS="${VIOLATIONS}\n  SLACK TOKEN in $file"
   fi
-  if grep -qEi '(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*["\x27][A-Za-z0-9+/=_-]{20,}' "$file" 2>/dev/null; then
+  if printf '%s' "$content" | grep -qEi -e '(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*["\x27][A-Za-z0-9+/=_-]{20,}'; then
     VIOLATIONS="${VIOLATIONS}\n  POSSIBLE SECRET in $file"
   fi
-done <<< "$STAGED"
+done <<< "$BLOBS"
 
 if [ -n "$VIOLATIONS" ]; then
   printf 'TESS VAULT GUARD — BLOCKED:\n%b\n\nReview files. Use vault:// refs, not raw values.\n' "$VIOLATIONS" >&2
@@ -5345,6 +5369,14 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
 fi
 
 STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
+# Blob specs for the content scan: the STAGED INDEX copy of each file
+# (`git show ":path"`), so a secret staged then scrubbed in the working tree is
+# still caught.
+BLOBS=""
+while IFS= read -r _f; do
+  [ -z "$_f" ] && continue
+  BLOBS="${BLOBS}:${_f}"$'\n'
+done <<< "$STAGED"
 """ + _SCAN_BODY + "exit 0\n"
 
     # Pre-push hook: reads stdin per git protocol.
@@ -5366,6 +5398,7 @@ fi
 # Read ref lines from stdin: <localref> <localsha> <remoteref> <remotesha>
 # Accumulate unique changed file names across all pushed ranges.
 STAGED=""
+BLOBS=""
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "$local_sha" ] && continue
   # All-zeros remote sha means the ref is new (no prior remote commits).
@@ -5380,11 +5413,18 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   fi
   if [ -n "$files" ]; then
     STAGED="${STAGED}${files}"$'\n'
+    # Pair each file with the PUSHED local sha so the content scan reads the
+    # pushed blob (`git show "<sha>:path"`), not the working tree.
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      BLOBS="${BLOBS}${local_sha}:${_f}"$'\n'
+    done <<< "$files"
   fi
 done
 
 # Deduplicate
 STAGED="$(printf '%s' "$STAGED" | sort -u)"
+BLOBS="$(printf '%s' "$BLOBS" | sort -u)"
 """ + _SCAN_BODY + "exit 0\n"
 
     import re as _re
