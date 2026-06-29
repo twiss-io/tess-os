@@ -55,16 +55,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITLEAKS_LICENSE is only required for GitHub *organization* accounts.
-          # Public repos on personal accounts (this one) run gitleaks for free.
+      # Run the gitleaks CLI directly. The gitleaks-action@v2 wrapper now requires
+      # a paid GITLEAKS_LICENSE secret for GitHub *organization*-owned repos (this
+      # repo is org-owned), so the wrapper is not used. The CLI is free and applies
+      # the committed .gitleaks.toml allowlist to the full git history.
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: gitleaks (full history)
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1
