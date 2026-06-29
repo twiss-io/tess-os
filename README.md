@@ -1,5 +1,12 @@
 # Tess OS
 
+[![License: Apache-2.0](https://img.shields.io/github/license/twiss-io/tess-os)](LICENSE)
+[![create-tess on npm](https://img.shields.io/npm/v/create-tess?label=create-tess)](https://www.npmjs.com/package/create-tess)
+[![Latest release](https://img.shields.io/github/v/release/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/twiss-io/tess-os/ci.yml?label=CI)](https://github.com/twiss-io/tess-os/actions/workflows/ci.yml)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub Discussions](https://img.shields.io/github/discussions/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/discussions)
+
 **Not an agent. A chief of staff with a staff.**
 
 Tess OS is an orchestration-first **agent operating system** for Claude Code. Not
@@ -19,6 +26,21 @@ editing live, instead of being clobbered by a re-scaffold.
 The framing: **Tess OS is the council *and* your trusted assistant** — the
 conductor you talk to, backed by a staff you can grow. The wizard, the roster, the
 upgrade engine, and the vault are the first pieces of that suite.
+
+**Try it in one command** (full walkthrough in [Quickstart](#quickstart--npm-create-tess) below):
+
+```bash
+npm create tess@latest
+```
+
+⭐ **If Tess OS is useful to you, consider [starring the repo](https://github.com/twiss-io/tess-os)** — it helps other people find it.
+
+<!--
+  DEMO PLACEHOLDER — add a screenshot or GIF of the `npm create tess` first-run
+  wizard here (the 5-axis gamified onboarding and the conductor's first greeting).
+  Suggested asset path: docs/assets/wizard-demo.gif
+  Do not commit a fake/placeholder image — wire in the real recording when ready.
+-->
 
 > **Official repository.** `github.com/twiss-io/tess-os` is the canonical,
 > official home of Tess OS. Forks are welcome under Apache-2.0 — but a fork is
