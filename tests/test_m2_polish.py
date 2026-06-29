@@ -456,8 +456,9 @@ class TestStagedMissingWarn:
     def test_missing_core_of_non_staged_not_treated_as_staged_warn(self, project, capsys):
         """
         Regression guard: a core-managed entry with a missing core file must show
-        ISSUE (not STAGED-WARN). staged_warn treatment must never leak to non-staged
-        entries.
+        ISSUE (not STAGED-WARN) AND FAIL doctor (exit 1) in BOTH human and --json
+        modes. A missing managed file is a blocking integrity failure, never a silent
+        'OK' (previously human-mode doctor printed an ISSUE then exited 0 — fail-open).
         """
         p = _build_squad_project(project)
         p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
@@ -467,7 +468,10 @@ class TestStagedMissingWarn:
         (p.root / _core_key("athena")).unlink()
         capsys.readouterr()
 
-        p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        # Human mode: must FAIL (exit 1), not print 'OK'.
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        assert exc.value.code == 1, "doctor must FAIL (exit 1) on a missing managed core file"
         out = capsys.readouterr().out
 
         # Must show ISSUE (standard path), not the staged-specific STAGED-WARN
@@ -476,4 +480,79 @@ class TestStagedMissingWarn:
         )
         assert "core file missing" in out.lower() or "ISSUE" in out, (
             "Expected 'ISSUE' or 'core file missing' in doctor output for core-managed + missing core"
+        )
+
+        # --json mode must ALSO fail (exit 1) on the same state (machine-readable gate).
+        with pytest.raises(SystemExit) as exc_json:
+            p.mod.cmd_doctor(ns(json_out=True, fix=False, path=None), p.root)
+        assert exc_json.value.code == 1, (
+            "doctor --json must also FAIL (exit 1) on a missing managed core file"
+        )
+
+
+class TestIntegrityGateFailOpen:
+    """
+    Regression guards for the integrity-gate fail-opens hardened in this pass:
+      T1  doctor --json exit code must fail on CORE TAMPER (previously the substring
+          heuristic missed it, so --json exited 0 on a tampered core)
+      T3  verify must FAIL on a deleted managed core file (previously every check was
+          guarded by core_path.exists(), so it fell through to 'OK')
+      T4  a .local.md shadow must never be folded into a security-tier doctrine file
+    (T2 — human-mode doctor failing on a missing file — is covered above.)
+    """
+
+    def test_doctor_json_exits_nonzero_on_core_tamper(self, project, capsys):
+        # T1: tamper the pinned core bytes so core_sha != base_sha → CORE TAMPER.
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("athena")]["status"] == "core-managed"
+        (p.root / _core_key("athena")).write_text("TAMPERED BYTES\n", encoding="utf-8")
+        capsys.readouterr()
+
+        # Previously `doctor --json` exited 0 on a tampered core (fail-open).
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_doctor(ns(json_out=True, fix=False, path=None), p.root)
+        assert exc.value.code == 1, "doctor --json must FAIL (exit 1) on a tampered core"
+
+    def test_verify_fails_on_missing_managed_core(self, project, capsys):
+        # T3: a deleted managed core file must be reported as CORE TAMPER, not 'OK'.
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("athena")]["status"] == "core-managed"
+        (p.root / _core_key("athena")).unlink()
+        capsys.readouterr()
+
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_verify(ns(), p.root)
+        assert exc.value.code == 1, "verify must FAIL (exit 1) on a deleted managed core file"
+        out = capsys.readouterr().out
+        assert "CORE TAMPER" in out, "verify must report CORE TAMPER for a missing managed core"
+
+    def test_security_tier_local_md_shadow_not_folded(self, tmp_path):
+        # T4: render must NOT fold an unverified .local.md shadow into a security-tier
+        # file, but MUST still fold it for an ordinary markdown file (unchanged there).
+        mod = _load_engine()
+        root = tmp_path
+
+        core_sec = root / ".tess" / "core" / "conductor" / "guardrails.md"
+        core_sec.parent.mkdir(parents=True, exist_ok=True)
+        core_sec.write_text("CANONICAL GUARDRAIL\n", encoding="utf-8")
+        live_sec = root / "conductor" / "guardrails.md"
+        live_sec.parent.mkdir(parents=True, exist_ok=True)
+        (root / "conductor" / "guardrails.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+        rendered_sec = mod.render_core_to_live(core_sec, live_sec, root).decode("utf-8")
+        assert "INJECTED OVERRIDE" not in rendered_sec, (
+            "a .local.md shadow must NOT be folded into a security-tier doctrine file"
+        )
+
+        # Control: a non-security markdown file still folds its shadow (unchanged).
+        core_norm = root / ".tess" / "core" / "conductor" / "notes.md"
+        core_norm.write_text("NOTES\n", encoding="utf-8")
+        live_norm = root / "conductor" / "notes.md"
+        (root / "conductor" / "notes.local.md").write_text("EXTRA NOTE\n", encoding="utf-8")
+        rendered_norm = mod.render_core_to_live(core_norm, live_norm, root).decode("utf-8")
+        assert "EXTRA NOTE" in rendered_norm, (
+            "non-security .local.md shadows must still be folded (behavior unchanged)"
         )

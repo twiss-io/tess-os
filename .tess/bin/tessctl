@@ -685,13 +685,25 @@ def render_core_to_live(core_path: Path, live_path: Path, root: Path) -> bytes:
     # Apply {{TESS_ROOT}} substitution
     text = apply_token_sub(text, root)
 
-    # Append .local.md shadow if it exists (markdown files only)
+    # Append .local.md shadow if it exists (markdown files only).
+    # SECURITY: never fold an unverified .local.md shadow into a security-tier
+    # doctrine file. .local.md files carry no base_sha and are not tracked in
+    # tess.lock, so appending one to e.g. conductor/guardrails.md would let an
+    # adversary weaken a guardrail via guardrails.local.md without tripping
+    # doctor/verify (the shadow is hashed into 'expected', masking the change).
+    # Skipping the append for security-tier paths makes such a shadow surface as
+    # detectable drift instead of silently altering doctrine.
     if live_path.suffix in (".md", ".markdown"):
-        local = root / local_md_path(live_path)
-        if local.exists():
-            local_content = local.read_text(encoding="utf-8").rstrip()
-            if local_content:
-                text = text.rstrip() + "\n\n" + local_content + "\n"
+        try:
+            live_rel_str = str(live_path.relative_to(root))
+        except ValueError:
+            live_rel_str = ""
+        if live_rel_str not in SECURITY_TIER_PATHS:
+            local = root / local_md_path(live_path)
+            if local.exists():
+                local_content = local.read_text(encoding="utf-8").rstrip()
+                if local_content:
+                    text = text.rstrip() + "\n\n" + local_content + "\n"
 
     return text.encode("utf-8")
 
@@ -1518,10 +1530,22 @@ def cmd_doctor(args, root: Path) -> None:
         r = doctor_check_file(core_key, attrs, root)
         results.append(r)
 
-        is_error = False
-        for issue in r["issues"]:
-            if "UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue or "missing" in issue.lower():
-                is_error = True
+        # The machine-readable (--json) exit code must fail on exactly the same
+        # blocking conditions as the human-readable summary below. The previous
+        # substring heuristic missed CORE TAMPER and QUARANTINED (whose issue
+        # strings contain none of the matched substrings), so `doctor --json`
+        # exited 0 on a tampered or quarantined core — a fail-open integrity gate.
+        is_error = bool(
+            r.get("core_tamper")
+            or r.get("lock_status") == "quarantined"
+            or (r.get("drift") and r.get("lock_status") == "core-managed")
+        )
+        if not is_error:
+            for issue in r["issues"]:
+                if ("UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue
+                        or "missing" in issue.lower()):
+                    is_error = True
+                    break
 
         if is_error:
             errors += 1
@@ -1650,7 +1674,19 @@ def cmd_doctor(args, root: Path) -> None:
             _do_render(root, verbose=True)
         print(f"doctor --fix: {fixed_count} file(s) captured; render-generated files re-rendered. Re-run `tessctl doctor` to verify.")
 
-    blocking = drift_count > 0 or quarantined_count > 0 or core_tamper_count > 0
+    # A managed core/live file that is MISSING is an integrity FAILURE, not OK.
+    # doctor_check_file records it only as an issue (never drift/tamper/quarantine),
+    # so it must be counted explicitly — otherwise human-mode doctor printed an
+    # ISSUE line and then exited 0 'OK' (a fail-open; --json already failed on it).
+    # staged entries record a missing core as staged_warn (non-failing), so they
+    # are correctly excluded here.
+    missing_count = sum(
+        1 for r in results
+        if any("missing" in issue.lower() for issue in r["issues"])
+    )
+
+    blocking = (drift_count > 0 or quarantined_count > 0
+                or core_tamper_count > 0 or missing_count > 0)
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
@@ -1673,8 +1709,11 @@ def cmd_doctor(args, root: Path) -> None:
               "`tessctl capture <path>` (for hand-edited files, quarantines security-tier), "
               "or `tessctl doctor --fix` (auto-resolves both, excludes security-tier).")
         sys.exit(1)
-    else:
-        print("\ndoctor: OK")
+    if missing_count > 0:
+        print(f"\ndoctor: FAIL — {missing_count} missing core/live file(s). "
+              f"Restore from git or re-run `tessctl render`.")
+        sys.exit(1)
+    print("\ndoctor: OK")
 
 
 # ---------------------------------------------------------------------------
@@ -3281,6 +3320,17 @@ def cmd_verify(args, root: Path) -> None:
             staged_warns.append(msg)
             print(f"  STAGED-WARN  {live_rel}  — {msg}")
             ok_count += 1
+            continue
+
+        # A managed core file that is MISSING (deleted) — not benched/staged — is a
+        # tamper, mirroring doctor and the core-internal branch above. Without this,
+        # every check below is guarded by core_path.exists() and silently skipped,
+        # so the entry fell through to ok_count and verify reported "core integrity
+        # confirmed" for a deleted (security-tier) baseline — a fail-open.
+        if base_sha and not core_path.exists():
+            badge = "[SECURITY]" if sec else ""
+            core_tampers.append((live_rel, badge, base_sha, "sha256:MISSING"))
+            print(f"  CORE TAMPER {badge}  {live_rel}  — managed core file missing")
             continue
 
         # Check A: core file bytes vs base_sha (path-independent hash of raw bytes)
