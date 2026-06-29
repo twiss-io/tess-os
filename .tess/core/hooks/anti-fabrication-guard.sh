@@ -24,8 +24,12 @@ text="$(printf '%s' "$input" | jq -r '.tool_input.text // ""' 2>/dev/null)" || t
 [ -n "$text" ] || exit 0
 
 # Only relevant while a dispatch is in flight; otherwise results have had a
-# chance to be read before composing the message.
-if ! { [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -1440 2>/dev/null | grep -q .; }; then
+# chance to be read before composing the message. The freshness window MUST
+# match STALE_MIN=240 in task-lock-set.sh / task-lock-clear.sh — those reapers
+# prune locks >4h old and the doctrine states such stale locks are IGNORED by
+# both guards. A wider 24h window would keep treating a leaked lock from a
+# crashed session as in-flight for up to a day.
+if ! { [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -240 2>/dev/null | grep -q .; }; then
   exit 0
 fi
 
