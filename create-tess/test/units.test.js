@@ -152,6 +152,47 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
   }
 });
 
+// Quinn MEDIUM (drift) — the EXCLUDE_* set had drifted from the secret block of
+// the repo .gitignore / .npmignore. These patterns are present in BOTH ignore
+// files but were NOT being excluded, so a local-source scaffold copied real
+// secrets into the produced instance. Each must now classify as excluded, while
+// ordinary kept files (README, normal source) stay NON-excluded.
+test('Quinn-MED: drifted secret patterns are now excluded (lockstep with .gitignore/.npmignore)', () => {
+  // Newly-covered secret/runtime material — must DROP.
+  for (const p of [
+    // `.claude/settings.local.json` local override
+    '.claude/settings.local.json',
+    // bare secret/runtime dirs at any depth (not only `.claude/`-anchored)
+    'secrets/api-key.txt',
+    'tess-secrets/token.json',
+    'channels/telegram.json',
+    'nested/dir/secrets/leaked.txt',
+    // `*.env.json` files (only `.env` / `.env.*` were handled before)
+    'prod.env.json',
+    'config/staging.env.json',
+    // operator/ secret material
+    'operator/secrets',
+    'operator/db.secret',
+    // any file under a `clients/*/.vault/` subtree (not just the 3 basenames)
+    'clients/Acme/.vault/vault.age',
+    'clients/Acme/.vault/notes.txt',
+    'clients/Acme/.vault/sub/blob.bin',
+  ]) {
+    assert.equal(isExcludedRel(p), true, `${p} must be excluded`);
+  }
+  // Ordinary kept files (incl. operator/ + clients/ template structure) — must KEEP.
+  for (const p of [
+    'README.md',
+    'src/index.js',
+    'operator/README.md',
+    'clients/_template/CLAUDE.md',
+    'config/settings.json',
+    'package.json',
+  ]) {
+    assert.equal(isExcludedRel(p), false, `${p} must be kept`);
+  }
+});
+
 // Quinn MEDIUM (end-to-end) — a produced instance from a LOCAL --template-source
 // must NOT contain the author's vault.age / vault.recipients / snapshots / .env /
 // keys, while the legit template files survive.
