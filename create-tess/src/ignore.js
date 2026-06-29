@@ -16,7 +16,11 @@
 // MIRROR the secret/runtime block of the repo .gitignore / .npmignore (the
 // content-structure ignores like kb/raw/* or clients/* are deliberately NOT here:
 // the scaffolder ships the template structure, it only strips secrets + runtime
-// state). Keep this in lockstep with that block when it changes.
+// state). The mirrored secret block also covers: bare `secrets/` /
+// `tess-secrets/` / `channels/` dirs (not only `.claude/`-anchored), the
+// `.claude/settings.local.json` local override, `*.env.json` files (e.g.
+// prod.env.json), `operator/secrets` + `operator/*.secret`, and any file under a
+// `clients/*/.vault/` subtree. Keep this in lockstep with that block when it changes.
 import { sep, relative, resolve } from 'node:path';
 
 // Basenames that are ALWAYS kept even when a broader pattern would drop them.
@@ -38,6 +42,18 @@ export const EXCLUDE_NAMES = new Set([
   'vault.age',
   'identity.age',
   'vault.recipients',
+  // bare secret / runtime dirs that .gitignore matches at ANY depth
+  // (`secrets/`, `tess-secrets/`, `channels/`) — not only the `.claude/`-anchored
+  // ones already covered by EXCLUDE_DIR_PREFIXES. Also `operator/secrets`.
+  'secrets',
+  'tess-secrets',
+  'channels',
+  // any `clients/*/.vault/` subtree — the dir itself + everything under it
+  // (the basenames vault.age/identity.age/vault.recipients only caught those
+  // three files; arbitrary blobs under a `.vault/` were leaking).
+  '.vault',
+  // Claude Code local override (`.claude/settings.local.json`)
+  'settings.local.json',
 ]);
 
 // Excluded as a WHOLE subtree (the dir itself and everything under it).
@@ -54,8 +70,11 @@ export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/staging',
 ];
 
-// Basename suffix globs (only the `*.<ext>` shape is used here).
-export const EXCLUDE_BASENAME_GLOBS = ['*.pem', '*.key', '*.pyc'];
+// Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).
+// `*.env.json` mirrors the .gitignore `*.env.json` (e.g. prod.env.json); the
+// plain `.env` / `.env.*` handling below does NOT catch a `foo.env.json` name.
+// `*.secret` mirrors `operator/*.secret`.
+export const EXCLUDE_BASENAME_GLOBS = ['*.pem', '*.key', '*.pyc', '*.env.json', '*.secret'];
 
 function basenameMatchesGlob(base, glob) {
   return glob.startsWith('*') ? base.endsWith(glob.slice(1)) : base === glob;

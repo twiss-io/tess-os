@@ -1167,8 +1167,10 @@ git -C "$PROJECT_PATH" init -q
 git -C "$PROJECT_PATH" add -A
 git -C "$PROJECT_PATH" commit -q -m "Initial project scaffold (default profile)"
 
-# Install dependencies
-cd "$PROJECT_PATH" && pnpm install --silent 2>/dev/null || true
+# Install dependencies (in a subshell so the script's CWD is preserved — a later
+# os.path.realpath("$PROJECT_PATH") and find "$PROJECT_PATH" must still resolve a
+# RELATIVE project path against the original CWD, not the project dir).
+( cd "$PROJECT_PATH" && pnpm install --silent 2>/dev/null ) || true
 
 # Register in project registry
 python3 << PYEOF
