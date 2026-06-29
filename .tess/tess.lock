@@ -5607,13 +5607,13 @@ files:
   .tess/core/hooks/anti-fabrication-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:780d8e238b84f6b226babed2f1cf8926401e85f1b4e41bc6c865e444b1455b67
+    base_sha: sha256:a1eb9bd3983bd7b1b6f82255232bf69ddc75ea573fce8c7b33b0263308fab9a0
     live_path: .claude/hooks/anti-fabrication-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:454ecd3c12d71cebbd80b642baa61bdc6362ad89c2f89919d37bda9d4491fc81
+    base_sha: sha256:3c42684360d620902262e4a89fa149ea956affc06771cb646b6a1ba0b63ca5ef
     live_path: .claude/hooks/dispatch-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/task-lock-clear.sh:

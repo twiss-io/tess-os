@@ -21,8 +21,12 @@ TESS_ROOT="$CLAUDE_PROJECT_DIR"
 
 input="$(cat)"
 
-# Dispatch in flight (any lock fresher than 24h) -> assume subagent context, stay silent.
-if [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -1440 2>/dev/null | grep -q .; then
+# Dispatch in flight (any lock fresher than the 4h stale threshold) -> assume
+# subagent context, stay silent. The window MUST match STALE_MIN=240 in
+# task-lock-set.sh / task-lock-clear.sh, which prune and ignore locks >4h old;
+# a wider 24h window would keep suppressing the warning for up to a day on a
+# leaked lock from a crashed session.
+if [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -240 2>/dev/null | grep -q .; then
   exit 0
 fi
 

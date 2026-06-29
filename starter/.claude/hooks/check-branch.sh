@@ -19,8 +19,12 @@ if [ -z "$COMMAND" ]; then
     exit 0
 fi
 
-# Only check git commit commands
-if ! echo "$COMMAND" | grep -qE 'git\s+commit'; then
+# Only check git commit commands. Detect the `commit` subcommand even when
+# global options precede it — e.g. `git -c user.email=x commit`,
+# `git --no-pager commit`, or `git -C <path> commit`. Each leading global
+# option is `-flag` optionally followed by its own argument; matching
+# `git\s+commit` alone let all of those forms bypass the branch gate.
+if ! echo "$COMMAND" | grep -qE 'git( +-[^ ]+( +[^ ]+)?)* +commit'; then
     exit 0
 fi
 
