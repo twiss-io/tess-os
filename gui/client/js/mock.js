@@ -139,11 +139,16 @@ class MockEventSource extends EventTarget {
   static OPEN = 1;
   static CLOSED = 2;
 
+  // Real browsers default to ~3s between reconnect attempts; shortened here
+  // so tests exercising the reconnect-replay path don't block on real time.
+  static RECONNECT_DELAY_MS = 30;
+
   constructor(url) {
     super();
     this.url = url;
     this.readyState = 0;
     this._timers = [];
+    this._reconnectTimer = null;
     this._startedAt = Date.now();
     const match = /\/api\/missions\/([^/]+)\/events/.exec(new URL(url, window.location.origin).pathname);
     this._missionId = match ? decodeURIComponent(match[1]) : null;
@@ -156,8 +161,15 @@ class MockEventSource extends EventTarget {
     this.dispatchEvent(new Event('open'));
     const mission = missions.find((m) => m.id === this._missionId);
     if (!mission || mission.status !== 'running') {
-      // Reconnecting to an already-finished mission — real server replays
-      // status + done immediately and closes.
+      // Reconnecting to an already-finished mission — the real server
+      // replays status+done immediately then ends the response (see
+      // handleMissionEvents). A real EventSource does NOT self-close on
+      // that: it auto-reconnects after the retry delay and gets the exact
+      // same replay again, forever, until the client calls .close(). That
+      // full loop is simulated below (_endStream) rather than closing here,
+      // so non-idempotent 'done' handlers get caught by tests instead of
+      // hidden by the mock — this is exactly the gap that hid the
+      // reconnect double-count bug last time.
       this._emit({ event: 'status', data: { status: mission ? mission.status : 'error' } });
       this._emit({ event: 'done', data: { status: mission ? mission.status : 'error', costUSD: mission?.costUSD ?? null, durationMs: null } });
       return;
@@ -179,8 +191,24 @@ class MockEventSource extends EventTarget {
         mission.endedAt = new Date().toISOString();
         mission.costUSD = step.data.costUSD;
       }
-      this.close();
+      this._endStream();
     }
+  }
+
+  // Mirrors the server ending the HTTP response right after 'done': a real
+  // EventSource fires 'error', drops to CONNECTING, and retries later —
+  // it does not transition to CLOSED on its own. If the consumer already
+  // called close() synchronously from within its 'done' handler (readyState
+  // is CLOSED by the time we get here), this is correctly a no-op.
+  _endStream() {
+    if (this.readyState === 2) return;
+    this._timers.forEach(clearTimeout);
+    this._timers = [];
+    this.readyState = 0;
+    this.dispatchEvent(new Event('error'));
+    this._reconnectTimer = setTimeout(() => {
+      if (this.readyState !== 2) this._start();
+    }, MockEventSource.RECONNECT_DELAY_MS);
   }
 
   forceStop() {
@@ -194,6 +222,8 @@ class MockEventSource extends EventTarget {
   close() {
     this._timers.forEach(clearTimeout);
     this._timers = [];
+    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
     this.readyState = 2;
     if (this._missionId && activeSources.get(this._missionId) === this) activeSources.delete(this._missionId);
   }
@@ -204,4 +234,9 @@ export function installMock() {
   globalThis.EventSource = MockEventSource;
 }
 
-export const __test__ = { MockEventSource, missions: () => missions, savedMissions: () => savedMissions };
+export const __test__ = {
+  MockEventSource,
+  missions: () => missions,
+  savedMissions: () => savedMissions,
+  activeSources: () => activeSources,
+};

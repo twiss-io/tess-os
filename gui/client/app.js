@@ -16,13 +16,14 @@ import { startHealthPolling } from './js/health.js';
 import { openPrompt } from './js/modal.js';
 import { renderCommandGroups, renderSavedMissions } from './js/launcher.js';
 import { startLiveMission } from './js/live-mission.js';
-import { renderMetricsBand, renderMetricsDetail } from './js/metrics.js';
+import { renderMetricsBand, renderMetricsDetail, makeCaveatIcon } from './js/metrics.js';
 import { renderRosterGuilds, setupRosterDrawer } from './js/roster.js';
 import { renderTimeline } from './js/timeline.js';
 
 const refs = {
   banners: document.getElementById('app-banners'),
   cliStatusDot: document.getElementById('cli-status-dot'),
+  headerCostGroup: document.getElementById('header-cost-group'),
   headerCost: document.getElementById('header-session-cost'),
   headerActive: document.getElementById('header-active-missions'),
   metricsBand: document.getElementById('metrics-band'),
@@ -268,6 +269,15 @@ async function boot() {
   state.summary = summary;
   state.metricsCommands = metricsCommands.commands || [];
   state.savedMissions = savedMissions.missions || [];
+
+  // Built once here (not on every refreshMetrics() re-render, unlike the
+  // metrics-band cells) since the header cost figure is a one-off element
+  // that lives for the whole page lifetime.
+  const headerCaveat = makeCaveatIcon(state.summary.costNote, {
+    ariaLabel: 'About this cost figure',
+    tooltipId: 'cost-caveat-tooltip-header',
+  });
+  refs.headerCostGroup.appendChild(headerCaveat.element);
 
   renderCommandGroups(refs.commandGroups, refs.commandsSkippedBadge, commands, commandHandlers);
   renderSavedMissions(refs.savedSection, refs.savedGrid, state.savedMissions, savedHandlers);

@@ -86,7 +86,19 @@ export function startLiveMission(refs, mission, { onDone, onBack }) {
     if (data?.status) setState(data.status);
   });
 
+  // The server always ends the HTTP response right after writing 'done'
+  // (see server/routes/missions.js's res.end() in finishMission) — a real
+  // browser EventSource does NOT close itself on that, it treats it as a
+  // dropped connection and auto-reconnects a few seconds later, at which
+  // point the server replays 'status'+'done' for the (now non-running)
+  // mission. Without closing here and guarding against re-entry, onDone
+  // fires again on every reconnect, forever, double-counting cost/duration.
+  let doneHandled = false;
   source.addEventListener('done', (event) => {
+    if (doneHandled) return;
+    doneHandled = true;
+    source.close();
+
     const data = parseEventData(event) || {};
     const status = data.status || 'done';
     setState(status);

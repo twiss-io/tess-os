@@ -55,7 +55,7 @@ test('boot: all 26 mock commands render, grouped, with the skipped-files badge v
   assert.equal(tiles.length, 26);
   const badge = document.getElementById('commands-skipped-badge');
   assert.equal(badge.hidden, false);
-  assert.equal(badge.textContent, '2 files skipped (malformed)');
+  assert.equal(badge.textContent, '2 files had unreadable descriptions');
 });
 
 test('boot: seeded saved-mission tiles render in "Your Missions"', () => {
@@ -83,6 +83,14 @@ test('boot: 7-day detail panel — byModel fix holds end-to-end (no [object Obje
   assert.ok(text.includes(mockModule.MOCK_COST_NOTE));
 
   toggle.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); // leave it collapsed for later tests
+});
+
+test('boot: a cost caveat icon sits next to the header session-cost figure, not just buried in the detail panel', () => {
+  const group = document.getElementById('header-cost-group');
+  const icon = group.querySelector('.caveat__icon');
+  assert.ok(icon, 'a caveat icon must be rendered next to the header session-cost figure');
+  const tooltip = document.getElementById('cost-caveat-tooltip-header');
+  assert.equal(tooltip.textContent, mockModule.MOCK_COST_NOTE, 'header caveat must render the server-provided costNote verbatim');
 });
 
 test('mission launch + live log streaming: real SSE events render every msg kind with no [object Object]/NaN', async () => {
@@ -138,6 +146,56 @@ test('concurrency cap: a 4th mission attempt while 3 are already running shows a
   const banner = document.querySelector('[data-banner-id="mission-limit"]');
   assert.match(banner.textContent, /mission limit reached/i);
   assert.ok(banner.querySelector('.banner__dismiss'), 'concurrency-cap banner must be dismissable (unlike the persistent CLI/connection banners)');
+});
+
+test('SSE reconnect-replay: a completed mission closes its EventSource and does not double-count cost on the reconnect the mock now simulates', async () => {
+  const mock = await import(path.join(clientDir, 'js/mock.js'));
+  mock.resetMockState(); // clear the previous test's seeded fake-running missions
+
+  const tiles = Array.from(document.querySelectorAll('#command-groups .tile'));
+  const wakeTile = tiles.find((t) => t.querySelector('.tile__command')?.textContent === '/wake');
+  wakeTile.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+
+  await waitFor(() => document.getElementById('live-view').hidden === false);
+
+  const runningMissions = mock.__test__.missions().filter((m) => m.status === 'running');
+  assert.equal(runningMissions.length, 1, 'exactly one mission must be running after launch');
+  const source = mock.__test__.activeSources().get(runningMissions[0].id);
+  assert.ok(source, 'a MockEventSource must be tracked for the running mission');
+
+  const costBefore = document.getElementById('header-session-cost').textContent;
+
+  // Force-stop for a fast, deterministic completion (mock.js's forceStop
+  // reports a fixed costUSD: 0.02) instead of waiting out the ~9s natural
+  // script.
+  document.getElementById('live-view-stop').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await waitFor(() => document.getElementById('live-view').dataset.state === 'stopped');
+
+  const costAfterDone = document.getElementById('header-session-cost').textContent;
+  assert.notEqual(costAfterDone, costBefore, 'the header cost figure must update once the mission completes');
+  assert.equal(source.readyState, 2, "the 'done' handler must close the EventSource (readyState CLOSED) instead of leaving it open to auto-reconnect");
+
+  // A real EventSource does NOT self-close when the server ends the HTTP
+  // response right after 'done' (see server/routes/missions.js's res.end())
+  // — it treats that as a dropped connection and auto-reconnects, at which
+  // point the server replays the exact same status+done for the
+  // now-finished mission. MockEventSource._endStream simulates that full
+  // loop now (this is the regression coverage: before the fix, this replay
+  // re-fired onDone and re-accumulated cost/duration on every reconnect).
+  // Waiting comfortably past the (shortened, test-only) retry delay proves
+  // no reconnect ever gets scheduled, because close() already ran
+  // synchronously inside the 'done' handler.
+  await new Promise((resolve) => setTimeout(resolve, mock.__test__.MockEventSource.RECONNECT_DELAY_MS * 5));
+
+  assert.equal(
+    document.getElementById('header-session-cost').textContent,
+    costAfterDone,
+    'cost must not accumulate again from a simulated reconnect replay',
+  );
+  assert.equal(source.readyState, 2, 'the source must remain closed, not have auto-reconnected');
+
+  document.getElementById('live-view-back').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await waitFor(() => document.getElementById('launcher-view').hidden === false);
 });
 
 // app.js's boot() intentionally starts a health-poll interval that runs

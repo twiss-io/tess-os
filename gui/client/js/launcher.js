@@ -71,7 +71,11 @@ export function renderCommandGroups(container, badgeEl, { commands, skippedCount
   clear(container);
 
   if (skippedCount > 0) {
-    badgeEl.textContent = `${skippedCount} file${skippedCount === 1 ? '' : 's'} skipped (malformed)`;
+    // These files still render as tiles (see server/routes/commands.js
+    // handleCommands) — the frontmatter parse just failed, so the tile's
+    // description ends up empty. "skipped" would wrongly imply exclusion.
+    badgeEl.textContent =
+      skippedCount === 1 ? '1 file had an unreadable description' : `${skippedCount} files had unreadable descriptions`;
     badgeEl.hidden = false;
   } else {
     badgeEl.hidden = true;
@@ -95,50 +99,41 @@ export function renderCommandGroups(container, badgeEl, { commands, skippedCount
 function makeSavedTile(mission, { onLaunch, onRemove }) {
   const preview = mission.prompt.length > 90 ? `${mission.prompt.slice(0, 90)}…` : mission.prompt;
 
-  function remove(event) {
-    event.stopPropagation();
+  function remove() {
     onRemove(mission.id);
   }
   function removeKeydown(event) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      remove(event);
+      remove();
     }
   }
 
-  function launch() {
-    onLaunch(mission);
-  }
-  function launchKeydown(event) {
-    // Native buttons get Enter/Space activation for free; this wrapper is a
-    // div (not a button) because it contains the nested remove button, so
-    // keyboard activation has to be wired explicitly.
-    if (event.target !== event.currentTarget) return; // let the remove button handle its own keys
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      launch();
-    }
-  }
-
-  return el(
-    'div',
-    { className: 'tile tile--saved', role: 'button', tabindex: '0', onClick: launch, onKeydown: launchKeydown },
-    [
-      el('span', { className: 'tile__label' }, [mission.label]),
-      el('span', { className: 'tile__desc' }, [preview]),
-      el(
-        'button',
-        {
-          type: 'button',
-          className: 'tile__remove',
-          'aria-label': `Remove "${mission.label}" from saved missions`,
-          onClick: remove,
-          onKeydown: removeKeydown,
-        },
-        ['×'],
-      ),
-    ],
-  );
+  // The wrapper is a plain, non-interactive container (no role/tabindex) —
+  // the launch tile and the remove control are both real <button>s as
+  // siblings inside it, not one button-role element wrapping another real
+  // button (invalid nested interactive controls). Native buttons get
+  // Enter/Space activation for free, so neither needs a custom keydown
+  // handler for its own activation; the remove button keeps one only to
+  // stop its keyboard activation from also reaching the launch button.
+  return el('div', { className: 'tile-wrapper' }, [
+    el(
+      'button',
+      { type: 'button', className: 'tile tile--saved', onClick: () => onLaunch(mission) },
+      [el('span', { className: 'tile__label' }, [mission.label]), el('span', { className: 'tile__desc' }, [preview])],
+    ),
+    el(
+      'button',
+      {
+        type: 'button',
+        className: 'tile__remove',
+        'aria-label': `Remove "${mission.label}" from saved missions`,
+        onClick: remove,
+        onKeydown: removeKeydown,
+      },
+      ['×'],
+    ),
+  ]);
 }
 
 export function renderSavedMissions(sectionEl, gridEl, savedMissions, handlers) {

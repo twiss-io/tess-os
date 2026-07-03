@@ -52,7 +52,7 @@ test('renderMetricsDetail: byModel fix — real model rows render, no [object Ob
   assert.ok(text.includes(SERVER_SHAPED_SUMMARY.costNote), 'costNote must be visible');
 });
 
-test('renderMetricsBand: tokens caveat icon is present next to the headline number, not buried', () => {
+test('renderMetricsBand: caveat icons sit next to both the cost and tokens headline numbers, not buried', () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const detailEl = document.createElement('div');
@@ -62,10 +62,44 @@ test('renderMetricsBand: tokens caveat icon is present next to the headline numb
 
   renderMetricsBand(container, SERVER_SHAPED_SUMMARY, { sessionCostUSD: 4.62, activeMissions: 1, avgDurationMs: 9100 });
 
-  const caveatIcon = container.querySelector('.caveat__icon');
-  assert.ok(caveatIcon, 'caveat icon must be rendered inside the tokens metric cell');
-  const tooltip = container.querySelector('.caveat__tooltip');
-  assert.equal(tooltip.textContent, SERVER_SHAPED_SUMMARY.tokensCaveat);
+  const caveatIcons = container.querySelectorAll('.caveat__icon');
+  assert.equal(caveatIcons.length, 2, 'both the session-cost and tokens metric cells must carry a caveat icon');
+
+  const tokensTooltip = container.querySelector('#tokens-caveat-tooltip');
+  assert.equal(tokensTooltip.textContent, SERVER_SHAPED_SUMMARY.tokensCaveat);
+
+  const costTooltip = container.querySelector('#cost-caveat-tooltip-band');
+  assert.equal(costTooltip.textContent, SERVER_SHAPED_SUMMARY.costNote, 'cost caveat must render the server-provided costNote verbatim');
+});
+
+test('renderMetricsBand: re-rendering disposes the previous caveat icons\' outside-click listeners (no leak)', () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const detailEl = document.createElement('div');
+  detailEl.id = 'metrics-detail';
+  detailEl.hidden = true;
+  document.body.appendChild(detailEl);
+
+  const liveState = { sessionCostUSD: 4.62, activeMissions: 1, avgDurationMs: 9100 };
+
+  // Prime once, unobserved, so any caveat icons left pending by earlier
+  // tests in this file (renderMetricsBand's disposal tracking is
+  // module-scoped, not reset between tests) are flushed before the spy
+  // starts counting — otherwise this assertion would be order-dependent.
+  renderMetricsBand(container, SERVER_SHAPED_SUMMARY, liveState);
+
+  const removeSpy = [];
+  const originalRemove = document.removeEventListener.bind(document);
+  document.removeEventListener = (...args) => {
+    if (args[0] === 'click') removeSpy.push(args);
+    return originalRemove(...args);
+  };
+  try {
+    renderMetricsBand(container, SERVER_SHAPED_SUMMARY, liveState);
+  } finally {
+    document.removeEventListener = originalRemove;
+  }
+  assert.equal(removeSpy.length, 2, 'the priming render\'s two caveat icons (cost + tokens) must have their document click listeners removed before this render');
 });
 
 test('renderCommandGroups: shows the skipped-files badge only when skippedCount > 0', () => {
@@ -76,7 +110,7 @@ test('renderCommandGroups: shows the skipped-files badge only when skippedCount 
     onLaunchWithArg: () => {},
   });
   assert.equal(badge.hidden, false);
-  assert.equal(badge.textContent, '2 files skipped (malformed)');
+  assert.equal(badge.textContent, '2 files had unreadable descriptions');
 
   renderCommandGroups(container, badge, { commands: [{ name: 'wake', description: '' }], skippedCount: 0 }, {
     onLaunchImmediate: () => {},
@@ -126,6 +160,34 @@ test('renderSavedMissions: remove control is keyboard-operable (Enter and Space)
 
   removeBtn.dispatchEvent(new window.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
   assert.deepEqual(removed, ['a', 'a']);
+});
+
+test('renderSavedMissions: the saved tile has no interactive control nested inside another (valid ARIA), and clicking launches', () => {
+  const sectionEl = document.createElement('div');
+  const gridEl = document.createElement('div');
+  const launched = [];
+  const missions = [{ id: 'a', label: 'Weekly ops check', prompt: '/ops-mode review fleet uptime' }];
+
+  renderSavedMissions(sectionEl, gridEl, missions, {
+    onLaunch: (m) => launched.push(m.id),
+    onRemove: () => {},
+  });
+
+  const wrapper = gridEl.querySelector('.tile-wrapper');
+  assert.ok(wrapper, 'saved tile must have a non-interactive wrapper');
+  assert.equal(wrapper.getAttribute('role'), null, 'the wrapper must not carry role="button" — the launch tile is a real button now');
+  assert.equal(wrapper.getAttribute('tabindex'), null, 'the wrapper must not be independently focusable');
+
+  const launchBtn = wrapper.querySelector('button.tile--saved');
+  assert.ok(launchBtn, 'the launch surface must be a real <button>');
+  assert.equal(launchBtn.tagName, 'BUTTON');
+
+  const removeBtn = wrapper.querySelector('.tile__remove');
+  assert.ok(removeBtn, 'remove control must exist');
+  assert.ok(!launchBtn.contains(removeBtn), 'the remove button must be a sibling of the launch button, not nested inside it');
+
+  launchBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert.deepEqual(launched, ['a']);
 });
 
 test('renderSavedMissions: hides the section entirely when there are no saved missions', () => {

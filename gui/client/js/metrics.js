@@ -13,18 +13,25 @@ function makeCell(label, valueNode, { mono = false, live = false } = {}) {
   ]);
 }
 
-// Module-scope so a rebuild can tear down the previous tooltip's
-// document-level outside-click listener before attaching a new one —
-// otherwise every re-render would leak one more listener forever.
-let teardownOutsideClick = () => {};
+let caveatIdCounter = 0;
 
-function makeTokensCell(totalTokens, caveatText) {
-  const tooltip = el('div', { className: 'caveat__tooltip', role: 'tooltip', id: 'tokens-caveat-tooltip', hidden: true }, [caveatText]);
-  const icon = el(
-    'button',
-    { type: 'button', className: 'caveat__icon', 'aria-label': 'About this token count', 'aria-describedby': 'tokens-caveat-tooltip' },
-    ['i'],
-  );
+// Caveat icons rebuilt on every renderMetricsBand() call (tokens + cost
+// cells) need their document-level outside-click listeners torn down before
+// the next rebuild, or every re-render leaks one more listener forever.
+// Collected here and flushed at the top of renderMetricsBand(). A caveat
+// icon built once outside that render cycle (e.g. app.js's header instance)
+// is fine to leave undisposed — it's only ever constructed once per boot.
+let pendingCaveatTeardowns = [];
+
+function disposeRenderedCaveatIcons() {
+  for (const dispose of pendingCaveatTeardowns) dispose();
+  pendingCaveatTeardowns = [];
+}
+
+export function makeCaveatIcon(text, { ariaLabel = 'More information', tooltipId } = {}) {
+  const id = tooltipId || `caveat-tooltip-${++caveatIdCounter}`;
+  const tooltip = el('div', { className: 'caveat__tooltip', role: 'tooltip', id, hidden: true }, [text]);
+  const icon = el('button', { type: 'button', className: 'caveat__icon', 'aria-label': ariaLabel, 'aria-describedby': id }, ['i']);
   const wrap = el('span', { className: 'caveat' }, [icon, tooltip]);
 
   icon.addEventListener('click', (event) => {
@@ -35,14 +42,24 @@ function makeTokensCell(totalTokens, caveatText) {
     if (event.key === 'Escape') tooltip.hidden = true;
   });
 
-  teardownOutsideClick();
   const onOutsideClick = (event) => {
     if (!wrap.contains(event.target)) tooltip.hidden = true;
   };
   document.addEventListener('click', onOutsideClick);
-  teardownOutsideClick = () => document.removeEventListener('click', onOutsideClick);
 
-  return makeCell('Tokens (7d)', el('span', {}, [formatTokenCount(totalTokens), wrap]));
+  return { element: wrap, dispose: () => document.removeEventListener('click', onOutsideClick) };
+}
+
+function makeTokensCell(totalTokens, caveatText) {
+  const caveat = makeCaveatIcon(caveatText, { ariaLabel: 'About this token count', tooltipId: 'tokens-caveat-tooltip' });
+  pendingCaveatTeardowns.push(caveat.dispose);
+  return makeCell('Tokens (7d)', el('span', {}, [formatTokenCount(totalTokens), caveat.element]));
+}
+
+function makeCostCell(sessionCostUSD, costNote, { mono = false, live = false } = {}) {
+  const caveat = makeCaveatIcon(costNote, { ariaLabel: 'About this cost figure', tooltipId: 'cost-caveat-tooltip-band' });
+  pendingCaveatTeardowns.push(caveat.dispose);
+  return makeCell('Session cost', el('span', {}, [formatCurrency(sessionCostUSD), caveat.element]), { mono, live });
 }
 
 function flash(cellEl) {
@@ -53,11 +70,12 @@ function flash(cellEl) {
 }
 
 export function renderMetricsBand(container, summary, liveState) {
+  disposeRenderedCaveatIcons();
   clear(container);
   const t = summary.totals?.tokens || {};
   const totalTokens = (t.input || 0) + (t.output || 0) + (t.cacheRead || 0) + (t.cacheCreation || 0);
 
-  const costCell = makeCell('Session cost', formatCurrency(liveState.sessionCostUSD), { mono: true, live: true });
+  const costCell = makeCostCell(liveState.sessionCostUSD, summary.costNote, { mono: true, live: true });
   const activeCell = makeCell('Active missions', String(liveState.activeMissions), { mono: true, live: true });
   const sessionsCell = makeCell('Sessions (7d)', String(summary.totals?.sessions ?? 0));
   const durationCell = makeCell(
