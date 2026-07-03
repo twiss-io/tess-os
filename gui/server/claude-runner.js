@@ -47,7 +47,10 @@ export function runMission({ dir, prompt, claudeBin = 'claude', onEvent, onExit 
   // partial-message events would just require filtering them back out
   // downstream for no benefit to the current client.
   const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
-  const child = spawn(claudeBin, args, { cwd: dir, shell: false });
+  // stdin is explicitly ignored (not left as an unwritten-to pipe): the CLI
+  // waits up to 3s for stdin data before proceeding, and every mission here
+  // is prompt-driven via argv, never stdin.
+  const child = spawn(claudeBin, args, { cwd: dir, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let exited = false;
   const emit = (event) => {

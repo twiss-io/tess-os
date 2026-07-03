@@ -128,6 +128,33 @@ test('runMission: an unparseable stdout line is relayed as a raw event, not drop
   }
 });
 
+test('runMission: child stdin is ignored, not left open as an unwritten-to pipe (regression for 3s stdin-wait stall)', async () => {
+  const dir = tmpDir();
+  const bin = writeFakeBin(
+    dir,
+    'claude',
+    `let ended = false;
+     process.stdin.on('end', () => { ended = true; });
+     process.stdin.resume();
+     setTimeout(() => {
+       process.stdout.write(JSON.stringify({type:'stdin-ended', value: ended}) + '\\n');
+     }, 200);`,
+  );
+  try {
+    const { events, done } = collectRun(bin);
+    await done;
+    const event = events.find((e) => e.type === 'stdin-ended');
+    assert.ok(event, 'expected the fake binary to report its stdin state');
+    assert.equal(
+      event.value,
+      true,
+      'child stdin must reach EOF immediately (ignored), not sit open waiting for data the parent never sends',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runMission: stderr output is relayed as a stderr event', async () => {
   const dir = tmpDir();
   const bin = writeFakeBin(dir, 'claude', `process.stderr.write('warning: something\\n');`);
