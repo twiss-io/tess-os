@@ -10,6 +10,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { start } from '../server/index.js';
+import * as healthRoute from '../server/routes/health.js';
+import { isCompatible } from '../server/claude-runner.js';
 
 async function makeInstanceDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'tess-gui-routes-'));
@@ -73,6 +75,19 @@ test('GET /api/health reports compatible/incompatible correctly against MIN_CLI_
   const resBad = await fetch(apiUrl(incompatible.port, incompatible.token, '/api/health'));
   const bodyBad = await resBad.json();
   assert.equal(bodyBad.claude.compatible, false);
+});
+
+test('GET /api/health compat check is single-sourced from claude-runner.isCompatible, not a local re-implementation', async () => {
+  // health.js must not define its own compat-check export any more — there
+  // must be exactly one implementation (claude-runner.js's isCompatible),
+  // not two that could silently disagree.
+  assert.equal(healthRoute.versionGte, undefined);
+
+  const { port, token } = await startServer({ deps: { getClaudeVersion: async () => '2.3.1 (Claude Code)' } });
+  const res = await fetch(apiUrl(port, token, '/api/health'));
+  const body = await res.json();
+  assert.equal(body.claude.compatible, isCompatible('2.3.1 (Claude Code)'));
+  assert.equal(body.claude.compatible, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -171,6 +186,45 @@ test('GET /api/roster groups by nearest table heading and falls back name/role s
 
   // The "Tier | Count" table must never be treated as a roster table.
   assert.ok(!body.guilds.some((g) => g.agents.some((a) => a.name === 'Core')));
+});
+
+test('GET /api/roster: a malicious link target in README.md cannot escape the agents/ directory', async () => {
+  const { port, token, dir } = await startServer();
+  const agentsDir = path.join(dir, 'agents');
+  await fs.mkdir(agentsDir, { recursive: true });
+
+  // A file outside agents/ that a traversal would read if containment were missing.
+  await fs.mkdir(path.join(dir, 'secret-outside-agents'), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, 'secret-outside-agents', 'README.md'),
+    '---\nname: PWNED\nrole: PWNED\n---\n',
+  );
+
+  await fs.writeFile(
+    path.join(agentsDir, 'README.md'),
+    [
+      '### 1. Coding Guild (1 agent)',
+      '',
+      '| Agent | Role |',
+      '|---|---|',
+      '| [Evil](../secret-outside-agents) | ignored |',
+    ].join('\n'),
+  );
+
+  const res = await fetch(apiUrl(port, token, '/api/roster'));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  const codingGuild = body.guilds.find((g) => g.name === 'Coding Guild');
+  assert.ok(codingGuild, 'Coding Guild group should exist');
+  // Containment must reject the traversal and degrade to the raw slug, exactly
+  // like an agent with no README.md, never reading the file outside agents/.
+  const evil = codingGuild.agents.find((a) => a.name === '../secret-outside-agents');
+  assert.ok(evil, 'out-of-bounds slug should degrade to itself, not crash');
+  assert.ok(
+    !body.guilds.some((g) => g.agents.some((a) => a.name === 'PWNED')),
+    'must never read a README.md outside agents/',
+  );
 });
 
 test('GET /api/roster degrades to empty guilds when agents/README.md is absent', async () => {

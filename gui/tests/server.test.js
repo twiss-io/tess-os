@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 import { start, resolveStaticPath, staticMimeType } from '../server/index.js';
 
@@ -184,6 +185,41 @@ test('resolveStaticPath rejects traversal and sibling-directory bypasses', () =>
   assert.equal(resolveStaticPath(clientDir, 'index.html'), path.join(clientDir, 'index.html'));
   assert.equal(resolveStaticPath(clientDir, '../../etc/passwd'), null);
   assert.equal(resolveStaticPath(clientDir, '../clientEVIL/secret.txt'), null);
+});
+
+test('resolveStaticPath rejects control characters (e.g. a decoded null byte)', () => {
+  const clientDir = path.join('/instance', 'gui', 'client');
+
+  assert.equal(resolveStaticPath(clientDir, 'index.html\u0000.js'), null);
+  assert.equal(resolveStaticPath(clientDir, 'app.js'), path.join(clientDir, 'app.js'));
+});
+
+test('a request containing a null byte 404s instead of crashing into a 500', async () => {
+  const { port } = await startServer();
+  const res = await fetch(`http://127.0.0.1:${port}/index.html%00.js`);
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.error, 'not found');
+});
+
+test('a symlink under gui/client/ pointing outside it is rejected (realpath containment)', async () => {
+  const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'client');
+  const outsideDir = await makeInstanceDir();
+  const secretPath = path.join(outsideDir, 'secret.js');
+  await fs.writeFile(secretPath, 'SECRET_OUTSIDE_CLIENT_DIR');
+
+  const symlinkPath = path.join(clientDir, 'tmp-symlink-escape-test.js');
+  await fs.symlink(secretPath, symlinkPath);
+
+  try {
+    const { port } = await startServer();
+    const res = await fetch(`http://127.0.0.1:${port}/tmp-symlink-escape-test.js`);
+    assert.equal(res.status, 404);
+    const text = await res.text();
+    assert.ok(!text.includes('SECRET_OUTSIDE_CLIENT_DIR'));
+  } finally {
+    await fs.rm(symlinkPath, { force: true });
+  }
 });
 
 test('a live traversal request over HTTP is rejected end-to-end, not just at the unit level', async () => {

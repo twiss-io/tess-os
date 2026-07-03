@@ -92,6 +92,13 @@ function isAuthorized(req, parsedUrl, token) {
 // and "sibling directory" bypasses (e.g. a naive prefix check would let
 // `gui/clientEVIL` pass a `startsWith('gui/client')` test).
 export function resolveStaticPath(clientDir, relativePath) {
+  // Control characters (e.g. a decoded %00) pass both the containment check
+  // below and the extension gate, then make fs.readFile throw synchronously
+  // (ERR_INVALID_ARG_VALUE) instead of erroring through its callback — reject
+  // them here so that surfaces as an ordinary 404, not a 500.
+  if (/[\x00-\x1f]/.test(relativePath)) {
+    return null;
+  }
   const resolved = path.resolve(clientDir, relativePath);
   const base = clientDir.endsWith(path.sep) ? clientDir : clientDir + path.sep;
   if (resolved !== clientDir && !resolved.startsWith(base)) {
@@ -106,10 +113,9 @@ export function staticMimeType(resolvedPath) {
   return STATIC_MIME_BY_EXT[path.extname(resolvedPath).toLowerCase()] ?? null;
 }
 
-function serveStatic(ctx, pathname, res) {
-  const clientDir = path.join(ctx.packageRoot, 'client');
+async function serveStatic(ctx, pathname, res) {
   const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const resolved = resolveStaticPath(clientDir, relativePath);
+  const resolved = resolveStaticPath(ctx.clientDir, relativePath);
   if (!resolved) {
     sendJson(res, 404, { error: 'not found' });
     return;
@@ -117,6 +123,25 @@ function serveStatic(ctx, pathname, res) {
 
   const mimeType = staticMimeType(resolved);
   if (!mimeType) {
+    sendJson(res, 404, { error: 'not found' });
+    return;
+  }
+
+  // resolveStaticPath only validates the requested path string; it doesn't
+  // account for symlinks. A symlink placed under gui/client/ pointing
+  // outside it would still pass that check and be followed by fs.readFile,
+  // so re-verify containment against the real (symlink-resolved) path too.
+  // ctx.realClientDir is resolved once at startup, so this adds only one
+  // extra realpath syscall per static request, not two.
+  let realResolved;
+  try {
+    realResolved = await fs.promises.realpath(resolved);
+  } catch {
+    sendJson(res, 404, { error: 'not found' });
+    return;
+  }
+  const realBase = ctx.realClientDir.endsWith(path.sep) ? ctx.realClientDir : ctx.realClientDir + path.sep;
+  if (realResolved !== ctx.realClientDir && !realResolved.startsWith(realBase)) {
     sendJson(res, 404, { error: 'not found' });
     return;
   }
@@ -199,7 +224,7 @@ function createRequestHandler(ctx, router) {
         sendJson(res, 404, { error: 'not found' });
         return;
       }
-      serveStatic(ctx, pathname, res);
+      await serveStatic(ctx, pathname, res);
     } catch (err) {
       console.error('tess-gui: request error:', err);
       if (!res.headersSent) {
@@ -232,9 +257,16 @@ export async function start({ port = 0, dir = process.cwd(), openBrowser, deps: 
   };
   const dataDir = paths.dataDir;
 
+  const clientDir = path.join(packageRoot, 'client');
+  // Resolved once at startup (not per-request) since it can't change during
+  // the process lifetime — see the realpath containment check in serveStatic.
+  const realClientDir = await fs.promises.realpath(clientDir);
+
   const ctx = {
     dir: path.resolve(dir),
     packageRoot,
+    clientDir,
+    realClientDir,
     port: 0,
     token: crypto.randomBytes(32).toString('hex'),
     deps,

@@ -95,10 +95,24 @@ function parseAgentFrontmatter(content) {
   return fields;
 }
 
+// The slug comes from a markdown link target in agents/README.md, an
+// in-repo file — but a crafted `[x](../../etc/foo)` link would otherwise let
+// it escape agentsDir via path.join, so verify containment the same way
+// resolveStaticPath does for client static files.
+function resolveAgentReadmePath(agentsDir, slug) {
+  const resolved = path.resolve(agentsDir, slug, 'README.md');
+  const base = agentsDir.endsWith(path.sep) ? agentsDir : agentsDir + path.sep;
+  if (!resolved.startsWith(base)) return null;
+  return resolved;
+}
+
 export async function resolveAgentIdentity(agentsDir, slug) {
+  const readmePath = resolveAgentReadmePath(agentsDir, slug);
+  if (!readmePath) return { name: slug, role: slug };
+
   let content;
   try {
-    content = await fs.readFile(path.join(agentsDir, slug, 'README.md'), 'utf8');
+    content = await fs.readFile(readmePath, 'utf8');
   } catch {
     return { name: slug, role: slug };
   }
