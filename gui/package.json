@@ -21,7 +21,7 @@
   },
   "scripts": {
     "start": "node bin/tess-gui.mjs",
-    "test": "node --test tests/"
+    "test": "node --test"
   },
   "keywords": [
     "tess",
