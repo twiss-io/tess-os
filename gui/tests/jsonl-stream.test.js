@@ -1,3 +1,8 @@
+// tess-gui tests — jsonl-stream.js: streaming JSONL parsing and
+// session/token aggregation.
+//
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Twiss
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, openSync, writeSync, closeSync } from 'node:fs';

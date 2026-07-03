@@ -1,3 +1,8 @@
+// tess-gui tests — claude-runner.js: spawning the logged-in `claude` CLI
+// per mission.
+//
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Twiss
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from 'node:fs';
