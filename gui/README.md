@@ -37,6 +37,21 @@ Other flags: `--port <n>` (default: auto-assigned free port), `--dir <path>`
 (project root to operate on; default: current directory), `--no-open` (skip
 the automatic browser launch).
 
+`--dir` defaults to the current working directory, so run the command from
+your Tess OS instance root (where `.claude/commands/` and `agents/` live) —
+not from inside the `gui/` folder itself. Running it from `gui/` will show an
+empty command list and roster, since it'll look for `.claude/commands/` and
+`agents/` inside `gui/` instead of the real instance root. If you're not in
+the instance root, pass `--dir` explicitly instead:
+
+```bash
+# from the instance root
+node gui/bin/tess-gui.mjs
+
+# from elsewhere
+node /path/to/instance/gui/bin/tess-gui.mjs --dir /path/to/instance
+```
+
 ## Requirements
 
 - Node.js >= 18
@@ -45,6 +60,18 @@ the automatic browser launch).
 - Minimum supported CLI version: **2.0.0**. `tess-gui` runs a startup
   preflight check and will fail loudly with an upgrade message rather than
   surface a raw CLI error mid-mission if your version is older.
+
+## Known first-run behavior
+
+On a freshly cloned or not-yet-trusted workspace, the spawned `claude` CLI
+may print a one-time warning in the live mission log, such as:
+
+```
+Ignoring N permissions.allow entries... this workspace has not been trusted
+```
+
+This is expected Claude Code behavior for new workspaces, not a `tess-gui`
+bug — the mission still completes normally.
 
 ## Security model
 
