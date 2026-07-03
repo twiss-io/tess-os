@@ -12,9 +12,10 @@ export const TOKENS_CAVEAT =
   '(anthropics/claude-code#28197) — treat as directional only, not exact.';
 
 export const COST_NOTE =
-  'missionCostUSD reflects exact costs reported by the Claude Code CLI for missions launched from this ' +
-  'dashboard only; cost is not tracked for missions run outside tess-gui and is not available in historical ' +
-  'session logs.';
+  'missionCostUSD is a local estimate, not billing data — the Claude Code CLI computes it from a bundled ' +
+  'price table, so it can drift from your actual Anthropic bill. It reflects costs reported for missions ' +
+  'launched from this dashboard only; cost is not tracked for missions run outside tess-gui and is not ' +
+  'available in historical session logs.';
 
 export function parseDays(searchParams) {
   const raw = Number(searchParams.get('days'));
