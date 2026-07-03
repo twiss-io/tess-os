@@ -1,0 +1,168 @@
+/*
+  Tess OS Mission Control — zone 4: metrics band + 7-day detail panel.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.metrics-band {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+  align-items: center;
+  min-height: var(--metrics-band-height);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-base);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.metric-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  transform: translateY(16px);
+  animation: tile-enter 260ms var(--ease-deck) forwards;
+}
+
+.metric-cell__label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.metric-cell__value {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.metric-cell__value--mono {
+  font-family: var(--font-mono);
+  font-size: 20px;
+}
+
+.metric-cell--live .metric-cell__value {
+  transition: color 140ms linear;
+}
+
+.metric-cell--live.metric-cell--flash .metric-cell__value {
+  animation: stat-flash 600ms var(--ease-deck);
+}
+
+.metrics-band__toggle {
+  grid-column: -1;
+  justify-self: end;
+  background: transparent;
+  border: 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+}
+
+.metrics-band__toggle:hover {
+  color: var(--color-accent);
+}
+
+.metrics-band__toggle:active {
+  color: var(--color-text-primary);
+}
+
+.metrics-detail {
+  padding: var(--space-5);
+  background: var(--color-base);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.metrics-detail[hidden] {
+  display: none;
+}
+
+.metrics-detail__notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.metrics-table th {
+  text-align: left;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.metrics-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  vertical-align: top;
+}
+
+.metrics-table__date {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.model-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.metrics-commands {
+  margin-top: var(--space-5);
+}
+
+.metrics-commands__title {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-2);
+}
+
+.metrics-commands__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.metrics-commands__list li {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}

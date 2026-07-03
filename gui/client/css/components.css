@@ -1,0 +1,260 @@
+/*
+  Tess OS Mission Control — shared atoms: banners, badges, buttons, chips, modal.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+
+/* Banners */
+.app-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.banner {
+  padding: var(--space-2) var(--space-5);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.banner--warning {
+  background: rgba(255, 184, 77, 0.1);
+  color: var(--color-warning);
+  border-bottom: 1px solid rgba(255, 184, 77, 0.25);
+}
+
+.banner--error {
+  background: rgba(255, 77, 106, 0.1);
+  color: var(--color-error);
+  border-bottom: 1px solid rgba(255, 77, 106, 0.25);
+}
+
+.banner__dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: var(--space-1);
+}
+
+.banner__dismiss:hover {
+  opacity: 0.75;
+}
+
+.banner__dismiss:active {
+  opacity: 0.5;
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-warning);
+  background: rgba(255, 184, 77, 0.12);
+  border: 1px solid rgba(255, 184, 77, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+}
+
+/* Buttons */
+.btn {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  transition: border-color 140ms linear, color 140ms linear, background-color 140ms linear;
+}
+
+.btn:hover {
+  border-color: var(--color-accent);
+}
+
+.btn:active {
+  background: var(--color-overlay);
+}
+
+.btn--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+.btn--primary:hover {
+  box-shadow: var(--shadow-focus-glow);
+}
+
+.btn--primary:active {
+  background: #2fb9dd;
+}
+
+.btn--primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn--danger {
+  color: var(--color-error);
+  border-color: rgba(255, 77, 106, 0.4);
+}
+
+.btn--danger:hover {
+  border-color: var(--color-error);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn--ghost:hover {
+  color: var(--color-text-primary);
+}
+
+.btn--ghost:active {
+  color: var(--color-accent);
+}
+
+/* Command / mono chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.chip--tool {
+  gap: var(--space-1);
+  color: var(--color-text-secondary);
+  background: var(--color-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+}
+
+/* Native <dialog> modal for one-field prompts */
+.modal-dialog {
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-floating);
+  width: min(420px, calc(100vw - var(--space-6)));
+}
+
+.modal-dialog::backdrop {
+  background: rgba(4, 6, 9, 0.6);
+}
+
+.modal-dialog__body {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.modal-dialog__title {
+  font-size: 16px;
+}
+
+.modal-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.modal-dialog__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.modal-dialog__input {
+  background: var(--color-base);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.modal-dialog__input:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.modal-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* Tooltip (accessible, click-toggled + hover) for caveat icons */
+.caveat {
+  position: relative;
+  display: inline-flex;
+}
+
+.caveat__icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--color-text-muted);
+  color: var(--color-text-muted);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.caveat__icon:hover,
+.caveat__icon:focus-visible {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.caveat__icon:active {
+  color: var(--color-text-inverse);
+  background: var(--color-accent);
+}
+
+.caveat__tooltip {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 50%;
+  transform: translateX(-50%);
+  width: 240px;
+  padding: var(--space-3);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  background: var(--color-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  z-index: var(--z-overlay);
+}
+
+.caveat__tooltip[hidden] {
+  display: none;
+}

@@ -23,6 +23,9 @@
     "start": "node bin/tess-gui.mjs",
     "test": "node --test"
   },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  },
   "keywords": [
     "tess",
     "tess-os",

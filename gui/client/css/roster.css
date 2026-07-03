@@ -1,0 +1,124 @@
+/*
+  Tess OS Mission Control — zone 5: Roster drawer (Overlay tier).
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.roster-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 9, 0.55);
+  z-index: var(--z-overlay);
+  opacity: 0;
+  animation: fade-in 180ms var(--ease-deck) forwards;
+}
+
+.roster-backdrop[hidden] {
+  display: none;
+}
+
+.roster-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 90vw;
+  background: var(--color-overlay);
+  border-left: 1px solid var(--color-border);
+  box-shadow: var(--shadow-floating);
+  z-index: calc(var(--z-overlay) + 1);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(16px);
+  opacity: 0;
+  animation: fade-in 220ms var(--ease-deck) forwards;
+}
+
+.roster-drawer[hidden] {
+  display: none;
+}
+
+.roster-drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.roster-drawer__close {
+  background: transparent;
+  border: 0;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: var(--space-1);
+}
+
+.roster-drawer__close:hover {
+  color: var(--color-text-primary);
+}
+
+.roster-drawer__close:active {
+  color: var(--color-accent);
+}
+
+.roster-drawer__search-wrap {
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.roster-drawer__search {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-base);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.roster-drawer__search:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.roster-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+}
+
+.roster-guild {
+  margin-bottom: var(--space-5);
+}
+
+.roster-guild__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.roster-agent {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.roster-agent__name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.roster-agent__role {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-align: right;
+}

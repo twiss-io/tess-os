@@ -1,0 +1,105 @@
+/*
+  Tess OS Mission Control — reset, atmosphere, base typography.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  background:
+    radial-gradient(ellipse 65% 45% at 20% 10%, rgba(61, 220, 255, 0.09), transparent 65%),
+    radial-gradient(ellipse 55% 60% at 85% 90%, rgba(61, 220, 255, 0.05), transparent 60%),
+    var(--color-ground);
+  -webkit-font-smoothing: antialiased;
+}
+
+img,
+video {
+  height: auto;
+  max-width: 100%;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.045;
+  filter: url(#grain);
+  z-index: var(--z-grain);
+}
+
+.vignette-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.4) 100%);
+  z-index: var(--z-grain);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+::selection {
+  background: var(--color-accent-glow-strong);
+}
+
+/* Focus-visible baseline — every interactive element gets this treatment. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+#app {
+  position: relative;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}

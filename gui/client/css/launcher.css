@@ -1,0 +1,182 @@
+/*
+  Tess OS Mission Control — zone 2: mission tile grid (at-rest dominant view).
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.main-view {
+  flex: 1 1 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.launcher__freeform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 720px;
+  margin: 0 auto var(--space-7);
+  opacity: 0;
+  transform: translateY(16px);
+  animation: tile-enter 260ms var(--ease-deck) forwards;
+}
+
+.launcher__freeform textarea {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  color: var(--color-text-primary);
+  resize: vertical;
+  min-height: 88px;
+  transition: border-color 140ms linear;
+}
+
+.launcher__freeform textarea:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.launcher__freeform-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.launcher__save-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.launcher__save-label-input {
+  background: var(--color-base);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font-size: 12px;
+}
+
+.page-title {
+  font-size: 20px;
+  margin-bottom: var(--space-2);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.tile-section {
+  max-width: 1200px;
+  margin: 0 auto var(--space-7);
+}
+
+.tile-subsection {
+  margin-bottom: var(--space-5);
+}
+
+.tile-subsection__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-3);
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  text-align: left;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  cursor: pointer;
+  box-shadow: var(--shadow-surface);
+  opacity: 0;
+  transform: translateY(16px);
+  animation: tile-enter 260ms var(--ease-deck) forwards;
+  transition: border-color 140ms linear, box-shadow 140ms linear;
+}
+
+.tile:hover {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-elevated);
+}
+
+.tile:active {
+  background: var(--color-overlay);
+}
+
+.tile__command {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.tile__label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.tile__desc {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.tile--saved {
+  padding-right: var(--space-7);
+}
+
+.tile__remove {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-base);
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 140ms linear, border-color 140ms linear;
+}
+
+.tile__remove:hover,
+.tile__remove:focus-visible {
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.tile__remove:active {
+  color: var(--color-text-inverse);
+  background: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.empty-state {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  padding: var(--space-4) 0;
+}
