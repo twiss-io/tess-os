@@ -32,7 +32,7 @@
   flex-direction: column;
   transform: translateX(16px);
   opacity: 0;
-  animation: fade-in 220ms var(--ease-deck) forwards;
+  animation: drawer-slide-in 220ms var(--ease-deck) forwards;
 }
 
 .roster-drawer[hidden] {

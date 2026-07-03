@@ -102,6 +102,34 @@ test('renderMetricsBand: re-rendering disposes the previous caveat icons\' outsi
   assert.equal(removeSpy.length, 2, 'the priming render\'s two caveat icons (cost + tokens) must have their document click listeners removed before this render');
 });
 
+test('renderMetricsBand: metric cells get an incrementing animation-delay on first render; re-rendering the same container does not restagger', () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const detailEl = document.createElement('div');
+  detailEl.id = 'metrics-detail';
+  detailEl.hidden = true;
+  document.body.appendChild(detailEl);
+
+  const liveState = { sessionCostUSD: 4.62, activeMissions: 1, avgDurationMs: 9100 };
+  renderMetricsBand(container, SERVER_SHAPED_SUMMARY, liveState);
+
+  const cells = Array.from(container.querySelectorAll('.metric-cell'));
+  assert.equal(cells.length, 5, 'cost, tokens, active missions, sessions, avg duration');
+  assert.deepEqual(
+    cells.map((c) => c.style.animationDelay),
+    ['0ms', '90ms', '180ms', '270ms', '360ms'],
+    'cells must stagger in the order they are appended (cost, tokens, active, sessions, duration)',
+  );
+
+  renderMetricsBand(container, SERVER_SHAPED_SUMMARY, liveState);
+  const rerendered = Array.from(container.querySelectorAll('.metric-cell'));
+  assert.deepEqual(
+    rerendered.map((c) => c.style.animationDelay),
+    ['', '', '', '', ''],
+    'a metrics-band rebuild (mission launch/finish) must not replay the staggered cascade',
+  );
+});
+
 test('renderCommandGroups: shows the skipped-files badge only when skippedCount > 0', () => {
   const container = document.createElement('div');
   const badge = document.createElement('span');
@@ -136,6 +164,56 @@ test('renderCommandGroups: arg-requiring commands route through onLaunchWithArg,
   assert.deepEqual(calls.immediate, ['wake']);
   assert.deepEqual(calls.withArg, ['add-mission']);
   assert.ok(ARG_COMMANDS.has('add-mission'));
+});
+
+test('renderCommandGroups: tiles get an incrementing animation-delay in reading order on first render; re-rendering the same container does not restagger', () => {
+  const container = document.createElement('div');
+  const badge = document.createElement('span');
+  const handlers = { onLaunchImmediate: () => {}, onLaunchWithArg: () => {} };
+  // All three sit in the "Mission Lifecycle" group; passed out of order to
+  // confirm tile order follows the group's declared reading order, not
+  // input order — wake, close, summary in that sequence.
+  const commands = [
+    { name: 'summary', description: '' },
+    { name: 'wake', description: '' },
+    { name: 'close', description: '' },
+  ];
+
+  renderCommandGroups(container, badge, { commands, skippedCount: 0 }, handlers);
+  const tiles = Array.from(container.querySelectorAll('.tile'));
+  assert.deepEqual(
+    tiles.map((t) => t.querySelector('.tile__command').textContent),
+    ['/wake', '/close', '/summary'],
+  );
+  assert.deepEqual(
+    tiles.map((t) => t.style.animationDelay),
+    ['0ms', '90ms', '180ms'],
+  );
+
+  renderCommandGroups(container, badge, { commands, skippedCount: 0 }, handlers);
+  const rerendered = Array.from(container.querySelectorAll('.tile'));
+  assert.deepEqual(
+    rerendered.map((t) => t.style.animationDelay),
+    ['', '', ''],
+    'a rebuild of the same container must not replay the staggered cascade',
+  );
+});
+
+test('renderSavedMissions: saved tiles get an incrementing animation-delay on the inner .tile button on first render', () => {
+  const sectionEl = document.createElement('div');
+  const gridEl = document.createElement('div');
+  const missions = [
+    { id: 'a', label: 'First', prompt: '/wake' },
+    { id: 'b', label: 'Second', prompt: '/close' },
+  ];
+
+  renderSavedMissions(sectionEl, gridEl, missions, { onLaunch: () => {}, onRemove: () => {} });
+
+  const tiles = Array.from(gridEl.querySelectorAll('.tile'));
+  assert.deepEqual(
+    tiles.map((t) => t.style.animationDelay),
+    ['0ms', '90ms'],
+  );
 });
 
 test('renderSavedMissions: remove control is keyboard-operable (Enter and Space), and does not also trigger launch', () => {

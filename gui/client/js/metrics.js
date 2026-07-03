@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Twiss
-import { el, clear } from './dom.js';
+import { el, clear, staggerEntrance } from './dom.js';
 import { formatCurrency, formatTokenCount, formatDuration, formatShortDate, formatModelLine, realModelEntries } from './format.js';
 
 function makeCell(label, valueNode, { mono = false, live = false } = {}) {
@@ -101,7 +101,12 @@ export function renderMetricsBand(container, summary, liveState) {
     [detailEl.hidden ? '7-day detail ▾' : '7-day detail ▴'],
   );
 
-  container.append(costCell, makeTokensCell(totalTokens, summary.tokensCaveat), activeCell, sessionsCell, durationCell, toggleBtn);
+  const tokensCell = makeTokensCell(totalTokens, summary.tokensCaveat);
+  const cells = [costCell, tokensCell, activeCell, sessionsCell, durationCell];
+  container.append(...cells, toggleBtn);
+  // Keyed by `container`, so mission launch/finish events re-rendering this
+  // band don't replay the cascade — only the first paint staggers.
+  staggerEntrance(container, cells);
   if (liveState.flashCost) flash(costCell);
   if (liveState.flashActive) flash(activeCell);
 }

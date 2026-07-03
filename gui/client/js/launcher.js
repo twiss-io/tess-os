@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Twiss
-import { el, clear } from './dom.js';
+import { el, clear, staggerEntrance } from './dom.js';
 
 const GROUPS = [
   {
@@ -81,12 +81,11 @@ export function renderCommandGroups(container, badgeEl, { commands, skippedCount
     badgeEl.hidden = true;
   }
 
+  const allTiles = [];
   for (const { title, items } of groupCommands(commands)) {
-    const grid = el(
-      'div',
-      { className: 'tile-grid' },
-      items.map((cmd) => makeTile(cmd, handlers)),
-    );
+    const tiles = items.map((cmd) => makeTile(cmd, handlers));
+    allTiles.push(...tiles);
+    const grid = el('div', { className: 'tile-grid' }, tiles);
     container.appendChild(
       el('div', { className: 'tile-subsection' }, [
         el('h3', { className: 'tile-subsection__title' }, [title]),
@@ -94,6 +93,9 @@ export function renderCommandGroups(container, badgeEl, { commands, skippedCount
       ]),
     );
   }
+  // Staggered across the full reading order (all groups), not per-group —
+  // otherwise every group would restart its cascade from 0ms.
+  staggerEntrance(container, allTiles);
 }
 
 function makeSavedTile(mission, { onLaunch, onRemove }) {
@@ -139,7 +141,12 @@ function makeSavedTile(mission, { onLaunch, onRemove }) {
 export function renderSavedMissions(sectionEl, gridEl, savedMissions, handlers) {
   sectionEl.hidden = savedMissions.length === 0;
   clear(gridEl);
-  for (const mission of savedMissions) {
-    gridEl.appendChild(makeSavedTile(mission, handlers));
-  }
+  const wrappers = savedMissions.map((mission) => makeSavedTile(mission, handlers));
+  gridEl.append(...wrappers);
+  // The animation lives on the inner .tile button, not the non-interactive
+  // wrapper div — animation-delay must be set on the element that carries it.
+  staggerEntrance(
+    gridEl,
+    wrappers.map((wrapper) => wrapper.querySelector('.tile')),
+  );
 }

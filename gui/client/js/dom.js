@@ -32,3 +32,20 @@ export function el(tag, props = {}, children = []) {
 export function clear(node) {
   node.replaceChildren();
 }
+
+// Assigns an incrementing animation-delay across `elements` (in reading
+// order) so a first paint reads as a staggered cascade instead of every
+// element firing at once. Keyed by `container` (a WeakSet, not a shared
+// counter) so a container that rebuilds its children on every update — the
+// metrics band re-renders on every mission launch/finish — replays its
+// entrance once, not on every rebuild. Delay is capped at `max` steps so a
+// long list settles together rather than trailing into a multi-second reveal.
+const staggeredContainers = new WeakSet();
+
+export function staggerEntrance(container, elements, { step = 90, max = 12 } = {}) {
+  if (staggeredContainers.has(container)) return;
+  staggeredContainers.add(container);
+  elements.forEach((element, index) => {
+    element.style.animationDelay = `${Math.min(index, max) * step}ms`;
+  });
+}
