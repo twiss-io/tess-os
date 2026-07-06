@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/verdict.schema.json",
+  "title": "Verifier Verdict Contract",
+  "description": "Machine-checkable form of a mandatory verifier's output. Severity grammar, the mandatory closing verdict, and the summary line are grounded verbatim in conductor/review-output-standards.md ('Severity-Tiered Output Format', 'Mandatory Closing Verdict', 'Review Summary Line'). The primary-artifacts-only requirement and the six named verifiers are grounded in conductor/verification-routing.md ('Routing Table', 'Verifier Brief Standard'). review-output-standards.md defines THREE distinct per-role closing-verdict vocabularies (Quinn/Reid: BLOCK | APPROVE WITH SUGGESTIONS | APPROVE; Cyra: BLOCK | CONDITIONAL PASS | CLEAR; Leah: HIGH | MEDIUM | LOW confidence, no disposition at all). This schema normalizes all three onto one canonical `disposition` axis (BLOCK | APPROVE_WITH_SUGGESTIONS | APPROVE) so a single ship-gate check works across every verifier, and preserves the agent's literal wording in `role_verdict_raw` for traceability. Mapping: CLEAR -> APPROVE, CONDITIONAL PASS -> APPROVE_WITH_SUGGESTIONS, BLOCK -> BLOCK; Leah's confidence tiers are a separate, non-disposition axis carried in `confidence`. Phase 0 / Design Decision #3.",
+  "type": "object",
+  "properties": {
+    "verifier": {
+      "type": "string",
+      "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"],
+      "description": "verification-routing.md Routing Table — the six named mandatory verifiers."
+    },
+    "output_domain": {
+      "type": "string",
+      "minLength": 1,
+      "description": "verification-routing.md Routing Table column 1, e.g. 'Code diff / PR', 'Security', 'Research / intelligence claims'."
+    },
+    "primary_artifacts_read": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "verification-routing.md: 'the diff, the logs, the URLs, the file paths — never Tess's summary of those artifacts. A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.' Required non-empty so a verdict cannot exist without at least one primary artifact the verifier claims to have read itself."
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" },
+      "description": "review-output-standards.md 'Severity-Tiered Output Format': every finding is [SEVERITY] area/file:line — finding — risk — fix/action."
+    },
+    "severity_counts": {
+      "type": "object",
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["critical", "high", "medium", "low"],
+      "additionalProperties": false,
+      "description": "Must match the actual tally of findings[] by severity — checked as a lint rule by tessctl validate (review-output-standards.md 'Review Summary Line': 'Found [N] CRITICAL, [N] HIGH, [N] MEDIUM, [N] LOW')."
+    },
+    "summary_line": {
+      "type": "string",
+      "minLength": 1,
+      "description": "review-output-standards.md 'Review Summary Line', e.g. 'Reviewed [scope]. Found [N] CRITICAL, [N] HIGH, [N] MEDIUM, [N] LOW. Top priority: [description].'"
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["BLOCK", "APPROVE_WITH_SUGGESTIONS", "APPROVE"],
+      "description": "Canonical closing verdict, normalized from review-output-standards.md's per-role grammar (see top-level description)."
+    },
+    "role_verdict_raw": {
+      "type": "string",
+      "description": "The verifier's literal per-role wording, e.g. 'CLEAR', 'CONDITIONAL PASS', 'Confidence: HIGH' — preserved for traceability back to review-output-standards.md's exact vocabulary."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"],
+      "description": "Leah's confidence axis (research/intelligence verdicts) — a separate axis from disposition, not a substitute for it. review-output-standards.md 'Leah (Research & Intelligence)' section."
+    }
+  },
+  "required": [
+    "verifier",
+    "output_domain",
+    "primary_artifacts_read",
+    "findings",
+    "severity_counts",
+    "summary_line",
+    "disposition"
+  ],
+  "additionalProperties": false,
+  "if": {
+    "required": ["findings"],
+    "properties": {
+      "findings": { "contains": { "properties": { "severity": { "const": "CRITICAL" } } } }
+    }
+  },
+  "then": {
+    "properties": { "disposition": { "const": "BLOCK" } },
+    "$comment": "review-output-standards.md severity table: CRITICAL 'Must be fixed before merge/deploy. Blocks approval.' A verdict cannot declare a CRITICAL finding and a non-BLOCK disposition — this is the schema check that makes 'tests pass, ship it' impossible to cash when a CRITICAL finding is present."
+  },
+  "$defs": {
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "description": "'area/file:line' per the grammar."
+        },
+        "finding": { "type": "string", "minLength": 1 },
+        "risk": { "type": "string", "minLength": 1 },
+        "fix": { "type": "string", "minLength": 1 }
+      },
+      "required": ["severity", "location", "finding", "risk", "fix"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

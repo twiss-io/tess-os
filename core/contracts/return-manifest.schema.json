@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/return-manifest.schema.json",
+  "title": "Return Manifest Contract",
+  "description": "Machine-checkable shape for what a dispatched subagent returns to the conductor. Unlike brief/crew-plan/verdict, this contract has no single pre-existing doctrine .md file of its own — it is a NEW contract that ULTIMATE_FRAMEWORK_PLAN.md introduces at §A.2/§C1/§D3 ('return-manifest.schema.json (artifact paths + claims-with-evidence + status)'), operationalizing principles already stated across three doctrine files: conductor/orchestra-model.md §4c ('the conductor reads the returned PRIMARY artifact, never trusts the summary'); conductor/dispatch-brief.md field 3's evidence requirement ('every factual claim... must be grounded in a primary artifact... inference must be labeled as inference'); and conductor/subagent-failure-protocol.md's five failure states (empty/partial/degraded/timeout/error). Phase 0 / Design Decision #3: 'A schema-miss is auto-classified as degraded output -> enters the retry loop with a changed brief. The weak agent's most dangerous move (sounding finished) becomes mechanically impossible to cash.'",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Matches the crew-plan task id this return answers."
+    },
+    "mission_id": {
+      "type": "string",
+      "description": "Ties to the mission-states.md FSM record."
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Which dispatchable agent produced this return."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["complete", "partial", "degraded", "error", "empty", "timeout"],
+      "description": "subagent-failure-protocol.md's five failure states (partial, degraded, error, empty, timeout) plus 'complete' as the success complement not itself named in the failure table."
+    },
+    "self_reported_complete": {
+      "type": "boolean",
+      "description": "The agent's own completion claim, captured SEPARATELY from the mechanically-derived `status` field. ULTIMATE_FRAMEWORK_PLAN.md §A.2: 'a weak model's I've completed the analysis costs nothing to say' — keeping the two fields distinct lets a gate flag the case where self_reported_complete:true but status is not 'complete'."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "description": "Contracted-path artifacts the conductor reads itself. 'Existence and shape are model-independent checks' (ULTIMATE_FRAMEWORK_PLAN.md §A.2)."
+    },
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Claim" },
+      "description": "Every factual claim the return makes, each carrying an evidence pointer or an explicit inferred:true label (dispatch-brief.md field 3's evidence requirement, applied to the return side of the contract)."
+    },
+    "flags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Escalation triggers hit, NOT-responsible-for boundary items skipped, blockers encountered."
+    }
+  },
+  "required": ["task_id", "agent", "status", "self_reported_complete", "artifacts", "claims"],
+  "additionalProperties": false,
+  "if": {
+    "required": ["status"],
+    "properties": { "status": { "enum": ["complete", "partial", "degraded"] } }
+  },
+  "then": {
+    "properties": { "artifacts": { "minItems": 1 } },
+    "$comment": "A return claiming any real output (complete/partial/degraded) must point at least one artifact the conductor can read itself. An empty artifacts[] on a non-empty/non-error status is itself a schema-miss — 'a file that must exist at a contracted path either exists or doesn't' (ULTIMATE_FRAMEWORK_PLAN.md §A.2)."
+  },
+  "$defs": {
+    "Claim": {
+      "type": "object",
+      "properties": {
+        "claim": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "string",
+          "description": "The primary artifact (file path, URL, log endpoint, or quoted tool output) the claim traces to."
+        },
+        "inferred": {
+          "type": "boolean",
+          "description": "dispatch-brief.md field 3: 'inference must be labeled as inference.'"
+        }
+      },
+      "required": ["claim", "inferred"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["inferred"],
+        "properties": { "inferred": { "const": false } }
+      },
+      "then": {
+        "required": ["evidence"],
+        "properties": { "evidence": { "minLength": 1 } },
+        "$comment": "A claim not labeled as inference must carry a non-empty evidence pointer — dispatch-brief.md: 'a claim with no artifact pointer is rejected on sight' (ULTIMATE_FRAMEWORK_PLAN.md §A.1)."
+      }
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

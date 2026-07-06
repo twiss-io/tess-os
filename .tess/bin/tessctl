@@ -20,6 +20,9 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   verify      core-integrity audit: .tess/core bytes vs base_sha + security-tier tampering check
   approve     accept a quarantined security-tier edit (the operator gate, rationale hard-required)
   resolve     resolve a conflict file: --ours / --theirs / --edit (open $EDITOR)
+  validate    Phase 0 contracts-as-code: check a brief/crew-plan/verdict/return-manifest
+              instance against core/contracts/*.schema.json; schema-miss classifies
+              degraded_output per subagent-failure-protocol.md (see core/contracts/README.md)
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -74,6 +77,19 @@ MAX_SNAPSHOTS = 5
 MAX_PRE_SNAPSHOTS = 20   # N2: independent cap for single-file -pre snapshots
 QUARANTINE_DIR = ".tess/quarantine"
 ROSTER_PATHS_FILE = ".tess/core/roster-paths.json"
+
+# Phase 0 (contracts-as-code): core/contracts/*.schema.json is NOT yet part of
+# .tess/core (the keystone merge-base mirror) or tess.lock — see
+# core/contracts/README.md "Not yet wired into keystone tracking". Extending
+# owned_globs/tess.lock to core/** is a Phase 1 task
+# (ULTIMATE_FRAMEWORK_PLAN.md E.2).
+CONTRACTS_DIR = "core/contracts"
+CONTRACT_SCHEMAS = {
+    "brief": "brief.schema.json",
+    "crew-plan": "crew-plan.schema.json",
+    "verdict": "verdict.schema.json",
+    "return-manifest": "return-manifest.schema.json",
+}
 
 LOCK_HEADER = """\
 # tess.lock — Tess OS framework merge base of record.
@@ -6104,6 +6120,420 @@ def cmd_vault(args, root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: validate — Phase 0 (contracts-as-code)
+# Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md Phase 0, Design Decision #3
+#       ("Contracts become schemas"); core/contracts/README.md.
+#
+# A minimal, dependency-free JSON Schema (draft-07 subset) validator + a
+# `tessctl validate <contract-type> <file>` command. No `jsonschema` pip
+# dependency is added — this file's own header states the runtime is
+# "Python 3 (stdlib + pyyaml). No Node. Self-contained single file."; adding
+# an extra pip dependency for four schemas would break that contract for no
+# real gain.
+#
+# Supported keywords: type, enum, const, properties, required,
+# additionalProperties, items, minItems, maxItems, minLength, maxLength,
+# pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else,
+# oneOf, anyOf, allOf, contains, $ref (local "#/$defs/..." and cross-file
+# "other.schema.json#/$defs/...", resolved relative to core/contracts/).
+# This subset is exactly what the four Phase 0 schemas use — it is not a
+# general-purpose JSON Schema implementation.
+# ---------------------------------------------------------------------------
+
+
+class ContractError(Exception):
+    """Raised for anything that stops validate before schema checking can run:
+    unknown contract type, missing schema/instance file, unparsable instance."""
+
+
+_SCHEMA_FILE_CACHE: dict = {}
+
+
+def _load_schema_file(path: Path) -> dict:
+    key = str(path.resolve())
+    if key not in _SCHEMA_FILE_CACHE:
+        if not path.exists():
+            raise ContractError(f"schema not found: {path}")
+        with path.open("r", encoding="utf-8") as f:
+            _SCHEMA_FILE_CACHE[key] = json.load(f)
+    return _SCHEMA_FILE_CACHE[key]
+
+
+def load_contract_schema(root: Path, contract_type: str) -> dict:
+    """Load core/contracts/<contract_type>.schema.json."""
+    if contract_type not in CONTRACT_SCHEMAS:
+        raise ContractError(
+            f"unknown contract type '{contract_type}'. Valid: {', '.join(sorted(CONTRACT_SCHEMAS))}"
+        )
+    return _load_schema_file(root / CONTRACTS_DIR / CONTRACT_SCHEMAS[contract_type])
+
+
+def _split_frontmatter(text: str):
+    """Extract a leading '---' YAML front-matter block. Returns (dict, body)
+    or (None, text) if no front-matter block is present. Mirrors the
+    frontmatter convention already used by parse_operator_stub() above."""
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return None, text
+    rest = stripped[3:]
+    end = rest.find("\n---")
+    if end == -1:
+        return None, text
+    fm_text = rest[:end]
+    body = rest[end + 4:]
+    try:
+        fm = yaml.safe_load(fm_text)
+    except yaml.YAMLError as e:
+        raise ContractError(f"invalid YAML front-matter: {e}")
+    if not isinstance(fm, dict):
+        return None, text
+    return fm, body.lstrip("\n")
+
+
+def load_contract_instance(path: Path):
+    """Load a contract instance from .json, .yaml/.yml, or .md (front-matter).
+    Matches core/contracts/README.md's documented instance-file formats."""
+    if not path.exists():
+        raise ContractError(f"file not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ContractError(f"invalid JSON: {e}")
+    if suffix in (".yaml", ".yml"):
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ContractError(f"invalid YAML: {e}")
+    if suffix == ".md":
+        fm, _body = _split_frontmatter(text)
+        if fm is None:
+            raise ContractError(f"{path.name}: no YAML front-matter block found ('---' ... '---')")
+        return fm
+    raise ContractError(f"{path.name}: unsupported extension '{suffix}' (expected .json, .yaml, .yml, or .md)")
+
+
+def _resolve_ref(ref: str, base_dir: Path, root_schema: dict) -> dict:
+    """Resolve '$ref'. 'file.schema.json#' -> whole external document.
+    'file.schema.json#/$defs/Name' -> a pointer within it. '#/$defs/Name'
+    (no file part) -> a pointer within root_schema (the document currently
+    being validated)."""
+    file_part, _, pointer = ref.partition("#")
+    schema = _load_schema_file(base_dir / file_part) if file_part else root_schema
+    if not pointer or pointer == "/":
+        return schema
+    node = schema
+    for part in pointer.strip("/").split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        node = node[part]
+    return node
+
+
+_JSON_TYPE_MAP = {"string": str, "boolean": bool, "array": list, "object": dict, "null": type(None)}
+
+
+def _matches_type(instance, type_name: str) -> bool:
+    if type_name == "number":
+        return isinstance(instance, (int, float)) and not isinstance(instance, bool)
+    if type_name == "integer":
+        return isinstance(instance, int) and not isinstance(instance, bool)
+    py_type = _JSON_TYPE_MAP.get(type_name)
+    if py_type is None:
+        return False
+    if type_name == "boolean":
+        return isinstance(instance, bool)
+    # str/list/dict: exclude bool from matching "object"/"array"/"string" —
+    # bool is not a subclass of any of these in Python, so no special-case
+    # needed beyond boolean itself (handled above).
+    return isinstance(instance, py_type)
+
+
+def schema_validate(instance, schema: dict, root_schema: dict, base_dir: Path, path: str = "$") -> list:
+    """Minimal JSON Schema (draft-07 subset) validator — see the module-level
+    comment above for the supported keyword list. Returns a list of
+    human-readable violation strings; [] means the instance is valid."""
+    if "$ref" in schema:
+        resolved = _resolve_ref(schema["$ref"], base_dir, root_schema)
+        return schema_validate(instance, resolved, root_schema, base_dir, path)
+
+    errors: list = []
+
+    if "type" in schema:
+        types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        if not any(_matches_type(instance, t) for t in types):
+            errors.append(f"{path}: expected type {schema['type']}, got {type(instance).__name__}")
+            return errors  # further checks would be misleading on a type mismatch
+
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append(f"{path}: {instance!r} is not one of {schema['enum']}")
+
+    if "const" in schema and instance != schema["const"]:
+        errors.append(f"{path}: expected constant {schema['const']!r}, got {instance!r}")
+
+    errors += _schema_validate_scalar(instance, schema, path)
+    errors += _schema_validate_object(instance, schema, root_schema, base_dir, path)
+    errors += _schema_validate_array(instance, schema, root_schema, base_dir, path)
+    errors += _schema_validate_combinators(instance, schema, root_schema, base_dir, path)
+
+    if "if" in schema:
+        cond_errors = schema_validate(instance, schema["if"], root_schema, base_dir, path)
+        branch = schema.get("then") if not cond_errors else schema.get("else")
+        if branch is not None:
+            errors += schema_validate(instance, branch, root_schema, base_dir, path)
+
+    return errors
+
+
+def _schema_validate_scalar(instance, schema: dict, path: str) -> list:
+    errors = []
+    if isinstance(instance, str):
+        if "minLength" in schema and len(instance) < schema["minLength"]:
+            errors.append(f"{path}: string length {len(instance)} < minLength {schema['minLength']}")
+        if "maxLength" in schema and len(instance) > schema["maxLength"]:
+            errors.append(f"{path}: string length {len(instance)} > maxLength {schema['maxLength']}")
+        if "pattern" in schema and not re.search(schema["pattern"], instance):
+            errors.append(f"{path}: {instance!r} does not match pattern {schema['pattern']!r}")
+    if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        if "minimum" in schema and instance < schema["minimum"]:
+            errors.append(f"{path}: {instance} < minimum {schema['minimum']}")
+        if "maximum" in schema and instance > schema["maximum"]:
+            errors.append(f"{path}: {instance} > maximum {schema['maximum']}")
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            errors.append(f"{path}: {instance} <= exclusiveMinimum {schema['exclusiveMinimum']}")
+        if "exclusiveMaximum" in schema and instance >= schema["exclusiveMaximum"]:
+            errors.append(f"{path}: {instance} >= exclusiveMaximum {schema['exclusiveMaximum']}")
+    return errors
+
+
+def _schema_validate_object(instance, schema: dict, root_schema: dict, base_dir: Path, path: str) -> list:
+    if not isinstance(instance, dict):
+        return []
+    errors = []
+    for req in schema.get("required", []):
+        if req not in instance:
+            errors.append(f"{path}: missing required property '{req}'")
+    props = schema.get("properties", {})
+    additional = schema.get("additionalProperties", True)
+    for key, val in instance.items():
+        if key in props:
+            errors += schema_validate(val, props[key], root_schema, base_dir, f"{path}.{key}")
+        elif additional is False:
+            errors.append(f"{path}: additional property '{key}' not allowed")
+        elif isinstance(additional, dict):
+            errors += schema_validate(val, additional, root_schema, base_dir, f"{path}.{key}")
+    return errors
+
+
+def _schema_validate_array(instance, schema: dict, root_schema: dict, base_dir: Path, path: str) -> list:
+    if not isinstance(instance, list):
+        return []
+    errors = []
+    if "minItems" in schema and len(instance) < schema["minItems"]:
+        errors.append(f"{path}: array length {len(instance)} < minItems {schema['minItems']}")
+    if "maxItems" in schema and len(instance) > schema["maxItems"]:
+        errors.append(f"{path}: array length {len(instance)} > maxItems {schema['maxItems']}")
+    item_schema = schema.get("items")
+    if item_schema is not None:
+        for i, item in enumerate(instance):
+            errors += schema_validate(item, item_schema, root_schema, base_dir, f"{path}[{i}]")
+    contains_schema = schema.get("contains")
+    if contains_schema is not None:
+        if not any(not schema_validate(item, contains_schema, root_schema, base_dir, f"{path}[?]") for item in instance):
+            errors.append(f"{path}: no array item matches the required 'contains' schema")
+    return errors
+
+
+def _schema_validate_combinators(instance, schema: dict, root_schema: dict, base_dir: Path, path: str) -> list:
+    errors = []
+    for combiner, min_pass, max_pass in (("oneOf", 1, 1), ("anyOf", 1, None)):
+        if combiner not in schema:
+            continue
+        passing = sum(
+            1 for sub in schema[combiner]
+            if not schema_validate(instance, sub, root_schema, base_dir, path)
+        )
+        if passing < min_pass or (max_pass is not None and passing > max_pass):
+            errors.append(f"{path}: must match {combiner} constraint ({passing} of {len(schema[combiner])} matched)")
+    if "allOf" in schema:
+        for sub in schema["allOf"]:
+            errors += schema_validate(instance, sub, root_schema, base_dir, path)
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Schema-miss -> degraded_output classification
+# Spec: conductor/subagent-failure-protocol.md ("Failure States", "Cause
+# Classification") + ULTIMATE_FRAMEWORK_PLAN.md §A.2 / Design Decision #3.
+# ---------------------------------------------------------------------------
+
+# The doctrine's own rationale for why context-gap is the right default:
+# dispatch-brief.md's evidence requirement exists because under-specified
+# input is a weak model's dominant failure mode, and subagent-failure-
+# protocol.md notes context-gap is retried by injecting the missing
+# information/format requirement into the brief — exactly the fix for a
+# schema-miss. A human/conductor may reclassify to wrong-approach or
+# wrong-task on inspection; this default is a starting classification, not
+# a final one.
+DEFAULT_SCHEMA_MISS_CAUSE_CLASS = "context-gap"
+
+
+def classify_schema_miss(contract_type: str, violations: list) -> dict:
+    """Build the schema-miss -> degraded_output classification signal.
+    Full retry orchestration (writing to a mission record, dispatching the
+    changed-brief retry) is Phase 1; this is the classification + signal
+    only, per the Phase 0 brief."""
+    return {
+        "signal": "schema_miss_degraded_output",
+        "failure_state": "degraded",  # subagent-failure-protocol.md failure-state table
+        "cause_class": DEFAULT_SCHEMA_MISS_CAUSE_CLASS,
+        "retry_rule": "changed_brief_required",
+        "same_brief_retry_forbidden": True,  # "Same-brief retries are forbidden for every non-transient cause."
+        "attempt_cap": 3,
+        "contract_type": contract_type,
+        "violation_count": len(violations),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Business-rule ("lint") checks — relational constraints doctrine mandates
+# that plain JSON Schema cannot express as sibling/cross-array-item rules.
+# Kept separate from schema_validate() per the plan's own C1 module spec
+# ("schema + lint"). Each check cites its doctrine source inline.
+# ---------------------------------------------------------------------------
+
+def _lint_contract(contract_type: str, instance) -> list:
+    if contract_type == "crew-plan":
+        return _lint_crew_plan(instance)
+    if contract_type == "verdict":
+        return _lint_verdict(instance)
+    return []
+
+
+def _lint_crew_plan(instance) -> list:
+    errors = []
+    plan = instance.get("crew_plan") if isinstance(instance, dict) else None
+    if not isinstance(plan, dict):
+        return errors  # schema_validate already reports the missing/malformed 'crew_plan' key
+    all_task_ids = set()
+    for stage in plan.get("stages", []) or []:
+        if not isinstance(stage, dict):
+            continue
+        tasks = stage.get("tasks", []) or []
+        for task in tasks:
+            if isinstance(task, dict) and isinstance(task.get("id"), str):
+                all_task_ids.add(task["id"])
+        if stage.get("parallel") is True:
+            for task in tasks:
+                if isinstance(task, dict) and task.get("depends_on"):
+                    errors.append(
+                        f"$.crew_plan.stages[stage={stage.get('stage')}]: task '{task.get('id')}' has "
+                        f"depends_on={task.get('depends_on')!r} but the stage is parallel:true "
+                        f"(orchestra-model.md §3.2 rule 7: parallel asserts no intra-stage depends_on edges)"
+                    )
+    synthesis = plan.get("synthesis")
+    if isinstance(synthesis, dict):
+        for inp in synthesis.get("inputs", []) or []:
+            if inp not in all_task_ids:
+                errors.append(
+                    f"$.crew_plan.synthesis.inputs: '{inp}' does not match any task id in stages[] "
+                    f"(orchestra-model.md §3.1: synthesis.inputs must reference real task ids)"
+                )
+    return errors
+
+
+def _lint_verdict(instance) -> list:
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+    counts = instance.get("severity_counts")
+    findings = instance.get("findings")
+    if isinstance(counts, dict) and isinstance(findings, list):
+        tally = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        for f in findings:
+            if isinstance(f, dict):
+                sev = str(f.get("severity", "")).lower()
+                if sev in tally:
+                    tally[sev] += 1
+        for key in tally:
+            declared = counts.get(key)
+            if isinstance(declared, int) and declared != tally[key]:
+                errors.append(
+                    f"$.severity_counts.{key}: declared {declared} but findings[] contains {tally[key]} "
+                    f"{key.upper()} entries (review-output-standards.md 'Review Summary Line' count must match findings)"
+                )
+    return errors
+
+
+def _print_validate_result(result: dict, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return
+    status = "PASS" if result["valid"] else "FAIL"
+    print(f"tessctl validate — {result['contract_type']} — {result['file']}")
+    print(f"  {status}")
+    for v in result["violations"]:
+        print(f"    - {v}")
+    if not result["valid"]:
+        c = result["classification"]
+        print(
+            f"  classification: {c['signal']} "
+            f"(failure_state={c['failure_state']}, cause_class={c['cause_class']}, "
+            f"retry_rule={c['retry_rule']}, same_brief_retry_forbidden={c['same_brief_retry_forbidden']})"
+        )
+
+
+def cmd_validate(args, root: Path) -> None:
+    """
+    tessctl validate <contract-type> <file> [--json]
+
+    Deterministically validates a contract instance (brief | crew-plan |
+    verdict | return-manifest) against its JSON Schema in core/contracts/.
+    A schema-miss is classified degraded_output per
+    subagent-failure-protocol.md and the command exits non-zero, so a git
+    hook / CI action can gate on it mechanically. Spec:
+    docs/ULTIMATE_FRAMEWORK_PLAN.md Phase 0, Design Decision #3.
+    """
+    contract_type = args.contract_type
+    as_json = getattr(args, "json_out", False)
+    file_path = Path(args.file)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+
+    try:
+        schema = load_contract_schema(root, contract_type)
+        instance = load_contract_instance(file_path)
+    except ContractError as e:
+        violations = [str(e)]
+        result = {
+            "valid": False,
+            "contract_type": contract_type,
+            "file": str(file_path),
+            "violations": violations,
+            "classification": classify_schema_miss(contract_type, violations),
+        }
+        _print_validate_result(result, as_json)
+        sys.exit(1)
+
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract(contract_type, instance)
+
+    result = {
+        "valid": not violations,
+        "contract_type": contract_type,
+        "file": str(file_path),
+        "violations": violations,
+    }
+    if violations:
+        result["classification"] = classify_schema_miss(contract_type, violations)
+
+    _print_validate_result(result, as_json)
+    sys.exit(0 if not violations else 1)
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -6383,6 +6813,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_vscan = vault_sub.add_parser("scan", help="dry-run secret-pattern scan over working tree")
     p_vscan.add_argument("--staged", action="store_true", help="scan staged files only (pre-commit check)")
 
+    # validate — Phase 0 contracts-as-code
+    p_validate = sub.add_parser(
+        "validate",
+        help="validate a contract instance against core/contracts/*.schema.json (Phase 0 contracts-as-code)",
+    )
+    p_validate.add_argument(
+        "contract_type", metavar="CONTRACT-TYPE", choices=sorted(CONTRACT_SCHEMAS),
+        help="brief | crew-plan | verdict | return-manifest",
+    )
+    p_validate.add_argument(
+        "file", help="path to the contract instance (.json, .yaml/.yml, or .md with YAML front-matter)",
+    )
+    p_validate.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
     return parser
 
 
@@ -6443,6 +6887,8 @@ def main() -> None:
         "pathway":      cmd_pathway,
         # M5: vault — age-encrypted secret store
         "vault":        cmd_vault,
+        # Phase 0: contracts-as-code validator
+        "validate":     cmd_validate,
     }
 
     fn = dispatch.get(args.command)
