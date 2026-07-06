@@ -56,9 +56,13 @@ roster/guild membership data this validator does not yet load.
 A contract instance that fails validation — structural or lint — is classified
 `degraded_output` (`subagent-failure-protocol.md`'s failure-state table: "Agent
 returns output but quality is below threshold... wrong format"), defaulted to
-cause class `context-gap` (the doctrine's own text: "The retry protocol's
-context-gap class exists precisely because this is the most common cause"),
-and flagged `same_brief_retry_forbidden: true` per the protocol's rule that
+cause class `context-gap` (L4 citation fix, Fable adversarial review: this
+specific line — "The retry protocol's context-gap class exists precisely
+because this is the most common cause" — is `docs/ULTIMATE_FRAMEWORK_PLAN.md`
+§A.1's commentary on the doctrine, not `subagent-failure-protocol.md` itself;
+that file states the cause-classification table and the "changed brief
+required" retry rule but does not itself argue context-gap is the most common
+cause), and flagged `same_brief_retry_forbidden: true` per the protocol's rule that
 non-transient causes require a changed brief. `tessctl validate` exits non-zero
 on any violation so a git hook / CI action can gate on it deterministically.
 Full retry orchestration (writing the retry to a mission record, dispatching

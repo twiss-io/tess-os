@@ -77,7 +77,7 @@
             "review-before-synthesis",
             "verification-before-externally-visible"
           ],
-          "description": "§3.2 rule 3 — 'gate_in references a real gate from doctrine.md.' These five are the canonical dependency-gate names per doctrine.md's own CHANGELOG and orchestra-model.md §3.2 rule 3. NOTE: the §3.3 worked example uses the shorthand literal 'intake-complete' for this same gate rather than the canonical 'intake-before-anything' — flagged for doctrine-text reconciliation in the Phase 0 PR; this schema enforces the canonical five-name list."
+          "description": "§3.2 rule 3 — 'gate_in references a real gate from doctrine.md.' These five are the canonical dependency-gate names per doctrine.md's own CHANGELOG and orchestra-model.md §3.2 rule 3. M5 (Fable adversarial review): the §3.3 worked example previously used the shorthand literal 'intake-complete' for this same gate instead of the canonical 'intake-before-anything' and a prose `milestones` string instead of the schema's array-of-{deliverable,acceptance_evidence,owner} shape; both were reconciled directly in orchestra-model.md §3.3 in this Phase 0 PR so the doctrine text now matches what this schema actually enforces."
         },
         "parallel": {
           "type": "boolean",
@@ -138,11 +138,17 @@
       "then": {
         "properties": {
           "verifier": {
-            "required": ["required"],
-            "properties": { "required": { "const": true } }
+            "required": ["required", "agent", "primary_artifacts"],
+            "properties": {
+              "required": { "const": true },
+              "agent": {
+                "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"]
+              },
+              "primary_artifacts": { "minItems": 1 }
+            }
           }
         },
-        "$comment": "§3.2 rule 4: 'verifier.required: true for any task that is prod-touching, client-facing, externally-visible, or informs an irreversible decision.' prod_touching/client_facing/externally_visible/irreversible_decision are Phase-0 machine-checkable proxies for those prose criteria, mirroring brief.schema.json's prod_touching/estimated_minutes proxies."
+        "$comment": "§3.2 rule 4: 'verifier.required: true for any task that is prod-touching, client-facing, externally-visible, or informs an irreversible decision.' prod_touching/client_facing/externally_visible/irreversible_decision are Phase-0 machine-checkable proxies for those prose criteria, mirroring brief.schema.json's prod_touching/estimated_minutes proxies. H1 FIX (Fable adversarial review, BLOCK finding): the original version of this branch only forced `verifier.required: true`, which the base `Verifier` $defs (necessarily, for the legitimate null-verifier case) allows to coexist with `agent: null` and `primary_artifacts: []` — so a task marked prod_touching/client_facing/externally_visible/irreversible_decision could carry `verifier: {agent: null, required: true, primary_artifacts: []}` and PASS: a null-verifier bypass on exactly the class of task verification-routing.md says must never skip mandatory review. This branch now ALSO re-pins `agent` to one of the six named mandatory verifiers (the `enum` excludes `null`, which the base Verifier schema permits only for the true internal-only/not-irreversible case) and requires `primary_artifacts` to carry at least one real artifact — closing the bypass without changing the shape for legitimately-internal, non-triggering tasks (where this `then` branch never fires)."
       }
     },
     "Verifier": {

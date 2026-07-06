@@ -6255,8 +6255,27 @@ def schema_validate(instance, schema: dict, root_schema: dict, base_dir: Path, p
     comment above for the supported keyword list. Returns a list of
     human-readable violation strings; [] means the instance is valid."""
     if "$ref" in schema:
-        resolved = _resolve_ref(schema["$ref"], base_dir, root_schema)
-        return schema_validate(instance, resolved, root_schema, base_dir, path)
+        ref = schema["$ref"]
+        file_part, _, _pointer = ref.partition("#")
+        resolved = _resolve_ref(ref, base_dir, root_schema)
+        # H3 FIX (Fable adversarial review, BLOCK finding — cross-file $ref
+        # root_schema bug): when the $ref crosses into an EXTERNAL document
+        # (file_part non-empty, e.g. crew-plan.schema.json's Task.brief ->
+        # "brief.schema.json#"), the schema we just loaded (`resolved`, or
+        # any node inside it) may itself contain internal pointers like
+        # "#/$defs/Something". Those must resolve against THAT external
+        # document's own $defs, not the referrer's. Previously this call
+        # kept passing the ORIGINAL root_schema (the referrer) through the
+        # recursion, so a same-named $defs entry in the referrer would
+        # silently mask the external document's real $defs entry — a latent
+        # false-ACCEPT once any contract grows internal $defs (currently
+        # none of the four do, so the bug has never fired live; the
+        # regression test in tests/test_contracts_validate.py constructs the
+        # collision directly). Rebind root_schema to the freshly loaded
+        # external document whenever file_part is non-empty; keep the
+        # existing root_schema for a same-document ("#/...") ref.
+        ref_root = _load_schema_file(base_dir / file_part) if file_part else root_schema
+        return schema_validate(instance, resolved, ref_root, base_dir, path)
 
     errors: list = []
 
@@ -6396,6 +6415,39 @@ def classify_schema_miss(contract_type: str, violations: list) -> dict:
     }
 
 
+def classify_validation_infra_error(reason: str) -> dict:
+    """M3 FIX (Fable adversarial review): classification for failures that
+    stop `tessctl validate` BEFORE schema-checking ever runs (missing
+    instance file, missing schema file, unparsable instance content) —
+    distinct from classify_schema_miss(), which is only for an instance
+    that WAS checked and found non-conforming.
+
+    A MISSING instance file means the agent returned nothing at all —
+    subagent-failure-protocol.md's 'Empty return' failure state ('Agent
+    returns no substantive output'), not 'Degraded output' ('Agent returns
+    output but quality is below threshold'). Its default cause class is
+    Transient ('infrastructure hiccup') per the same protocol — e.g. the
+    conductor checked before the write flushed, or a path the conductor
+    itself templated wrong — so, unlike a schema-miss, a SAME-BRIEF retry
+    is permitted here, not forbidden.
+
+    Every other pre-schema failure (unparsable JSON/YAML, no front-matter
+    block, missing schema file on disk) means something IS present but is
+    structurally broken rather than merely absent; classified 'error' /
+    'wrong-approach' with same-brief retry forbidden, same as a schema-miss.
+    """
+    is_missing_instance = reason.startswith("file not found:")
+    return {
+        "signal": "validation_infra_error",
+        "failure_state": "empty" if is_missing_instance else "error",
+        "cause_class": "transient" if is_missing_instance else "wrong-approach",
+        "retry_rule": "same_brief_retry_permitted" if is_missing_instance else "changed_brief_required",
+        "same_brief_retry_forbidden": not is_missing_instance,
+        "attempt_cap": 3,
+        "reason": reason,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Business-rule ("lint") checks — relational constraints doctrine mandates
 # that plain JSON Schema cannot express as sibling/cross-array-item rules.
@@ -6408,6 +6460,8 @@ def _lint_contract(contract_type: str, instance) -> list:
         return _lint_crew_plan(instance)
     if contract_type == "verdict":
         return _lint_verdict(instance)
+    if contract_type == "return-manifest":
+        return _lint_return_manifest(instance)
     return []
 
 
@@ -6416,14 +6470,49 @@ def _lint_crew_plan(instance) -> list:
     plan = instance.get("crew_plan") if isinstance(instance, dict) else None
     if not isinstance(plan, dict):
         return errors  # schema_validate already reports the missing/malformed 'crew_plan' key
+    stages = plan.get("stages", []) or []
+
+    # M2 pass 1: collect every task id (flagging duplicates as we go) and
+    # every stage number, before checking anything relational against them.
     all_task_ids = set()
-    for stage in plan.get("stages", []) or []:
+    seen_task_ids = set()
+    stage_numbers = []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        stage_numbers.append(stage.get("stage"))
+        for task in stage.get("tasks", []) or []:
+            if isinstance(task, dict) and isinstance(task.get("id"), str):
+                tid = task["id"]
+                if tid in seen_task_ids:
+                    errors.append(
+                        f"$.crew_plan.stages: duplicate task id '{tid}' — task ids must be "
+                        f"unique across the whole plan (orchestra-model.md §3.1: 'id: <slug> — "
+                        f"unique within the plan')"
+                    )
+                seen_task_ids.add(tid)
+                all_task_ids.add(tid)
+
+    # M2: stage numbers must be strictly increasing — no duplicates, no
+    # out-of-order sequencing (§3.1: "ordered; stage N+1 starts only when
+    # stage N's gate clears" presumes a well-ordered, gap-free-of-repeats
+    # numbering the conductor loop can trust).
+    prev_stage_num = None
+    for num in stage_numbers:
+        if isinstance(num, int):
+            if prev_stage_num is not None and num <= prev_stage_num:
+                errors.append(
+                    f"$.crew_plan.stages: stage number {num} is not strictly greater than the "
+                    f"preceding stage {prev_stage_num} — duplicate or out-of-order stage sequence "
+                    f"in {stage_numbers} (§3.1: stages are 'ordered')"
+                )
+            else:
+                prev_stage_num = num
+
+    for stage in stages:
         if not isinstance(stage, dict):
             continue
         tasks = stage.get("tasks", []) or []
-        for task in tasks:
-            if isinstance(task, dict) and isinstance(task.get("id"), str):
-                all_task_ids.add(task["id"])
         if stage.get("parallel") is True:
             for task in tasks:
                 if isinstance(task, dict) and task.get("depends_on"):
@@ -6432,6 +6521,20 @@ def _lint_crew_plan(instance) -> list:
                         f"depends_on={task.get('depends_on')!r} but the stage is parallel:true "
                         f"(orchestra-model.md §3.2 rule 7: parallel asserts no intra-stage depends_on edges)"
                     )
+        # M2: depends_on must reference a real task id somewhere in the plan
+        # — a dangling edge is a plan the conductor loop can never clear
+        # (it will wait forever on a task that doesn't exist).
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            for dep in task.get("depends_on", []) or []:
+                if dep not in all_task_ids:
+                    errors.append(
+                        f"$.crew_plan.stages[stage={stage.get('stage')}]: task "
+                        f"'{task.get('id')}' has depends_on referencing unknown task id "
+                        f"'{dep}' (no task with that id exists anywhere in stages[])"
+                    )
+
     synthesis = plan.get("synthesis")
     if isinstance(synthesis, dict):
         for inp in synthesis.get("inputs", []) or []:
@@ -6463,6 +6566,56 @@ def _lint_verdict(instance) -> list:
                     f"$.severity_counts.{key}: declared {declared} but findings[] contains {tally[key]} "
                     f"{key.upper()} entries (review-output-standards.md 'Review Summary Line' count must match findings)"
                 )
+    # H2: the schema-level accepted_high_findings[] escape (see
+    # verdict.schema.json) only checks minItems >= 1 — it cannot express
+    # "every HIGH finding individually acknowledged" as a single schema
+    # node. A single blanket entry must not be able to wave through N HIGH
+    # findings it never named. Only relevant when the disposition escape is
+    # actually being used (APPROVE / APPROVE_WITH_SUGGESTIONS).
+    if isinstance(findings, list) and instance.get("disposition") in ("APPROVE", "APPROVE_WITH_SUGGESTIONS"):
+        high_locations = {
+            f.get("location") for f in findings
+            if isinstance(f, dict) and f.get("severity") == "HIGH"
+        }
+        if high_locations:
+            accepted_locations = {
+                a.get("location") for a in (instance.get("accepted_high_findings") or [])
+                if isinstance(a, dict)
+            }
+            unacknowledged = sorted(loc for loc in (high_locations - accepted_locations) if loc)
+            if unacknowledged:
+                errors.append(
+                    f"$.accepted_high_findings: HIGH finding(s) at {unacknowledged} are not "
+                    f"individually acknowledged — every HIGH finding needs its own "
+                    f"accepted_high_findings entry (matched by location), not one blanket "
+                    f"acceptance covering all of them (review-output-standards.md HIGH severity row)"
+                )
+    return errors
+
+
+def _lint_return_manifest(instance) -> list:
+    """H4 FIX (Fable adversarial review, BLOCK finding — 'fabricated
+    artifacts / shape-only guarantee'): plain JSON Schema can only check
+    that `artifacts[].path` is a non-empty string — it has no notion of the
+    filesystem. This is the model-independent check ULTIMATE_FRAMEWORK_
+    PLAN.md §A.2/D3 calls the plan's flagship mechanism: 'a file that must
+    exist at a contracted path either exists or doesn't.' Every declared
+    artifact path is checked against the real filesystem; a path that does
+    not exist fails the return outright, regardless of what the agent
+    claims about it."""
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+    for i, artifact in enumerate(instance.get("artifacts", []) or []):
+        if not isinstance(artifact, dict):
+            continue
+        path = artifact.get("path")
+        if isinstance(path, str) and path and not Path(path).exists():
+            errors.append(
+                f"$.artifacts[{i}].path: '{path}' does not exist on disk — a fabricated or "
+                f"stale artifact path is a schema-miss, not a valid return "
+                f"(ULTIMATE_FRAMEWORK_PLAN.md §A.2: 'existence and shape are model-independent checks')"
+            )
     return errors
 
 
@@ -6491,9 +6644,19 @@ def cmd_validate(args, root: Path) -> None:
     Deterministically validates a contract instance (brief | crew-plan |
     verdict | return-manifest) against its JSON Schema in core/contracts/.
     A schema-miss is classified degraded_output per
-    subagent-failure-protocol.md and the command exits non-zero, so a git
-    hook / CI action can gate on it mechanically. Spec:
+    subagent-failure-protocol.md and the command exits 1, so a git hook /
+    CI action can gate on it mechanically. Spec:
     docs/ULTIMATE_FRAMEWORK_PLAN.md Phase 0, Design Decision #3.
+
+    M3 FIX (Fable adversarial review, cheap MEDIUM): a failure that stops
+    validation before schema-checking can even run (missing instance file,
+    missing schema file, unparsable instance) is an infra error, not a
+    schema-miss — it exits 2, a distinct code from the schema-miss exit 1,
+    and is classified via classify_validation_infra_error() rather than
+    classify_schema_miss() (a missing instance file is 'Empty return' /
+    Transient — same-brief retry PERMITTED — never 'degraded' / 'context-
+    gap', which wrongly implied the agent had produced non-conforming
+    output when in fact nothing was there to check at all).
     """
     contract_type = args.contract_type
     as_json = getattr(args, "json_out", False)
@@ -6505,16 +6668,16 @@ def cmd_validate(args, root: Path) -> None:
         schema = load_contract_schema(root, contract_type)
         instance = load_contract_instance(file_path)
     except ContractError as e:
-        violations = [str(e)]
+        reason = str(e)
         result = {
             "valid": False,
             "contract_type": contract_type,
             "file": str(file_path),
-            "violations": violations,
-            "classification": classify_schema_miss(contract_type, violations),
+            "violations": [reason],
+            "classification": classify_validation_infra_error(reason),
         }
         _print_validate_result(result, as_json)
-        sys.exit(1)
+        sys.exit(2)
 
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")

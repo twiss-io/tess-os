@@ -101,5 +101,17 @@
     },
     "$comment": "Operationalizes the Decomposition Rule: 'Any task estimated at more than 15 minutes or touching production is decomposed into milestones before dispatch.' A weak agent cannot satisfy the schema by declaring prod_touching:true or estimated_minutes>15 while leaving milestones empty."
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["destructive"],
+        "properties": { "destructive": { "const": true } }
+      },
+      "then": {
+        "required": ["step"]
+      },
+      "$comment": "M1 (Fable adversarial review, cheap MEDIUM): dispatch-brief.md's 'Destructive Operations — Mandatory 3-Step Dispatch' (verify/snapshot -> report + go/no-go -> execute) depends on each destructive brief declaring which leg it is. Without this, a `destructive: true` brief with no `step` is indistinguishable from a one-shot destructive dispatch — exactly what the mandatory 3-step pattern exists to forbid. Forces `step` (verify|go-no-go|execute) to be present whenever `destructive: true`."
+    }
+  ],
   "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
 }

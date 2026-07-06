@@ -54,14 +54,28 @@
   },
   "required": ["task_id", "agent", "status", "self_reported_complete", "artifacts", "claims"],
   "additionalProperties": false,
-  "if": {
-    "required": ["status"],
-    "properties": { "status": { "enum": ["complete", "partial", "degraded"] } }
-  },
-  "then": {
-    "properties": { "artifacts": { "minItems": 1 } },
-    "$comment": "A return claiming any real output (complete/partial/degraded) must point at least one artifact the conductor can read itself. An empty artifacts[] on a non-empty/non-error status is itself a schema-miss — 'a file that must exist at a contracted path either exists or doesn't' (ULTIMATE_FRAMEWORK_PLAN.md §A.2)."
-  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "enum": ["complete", "partial", "degraded"] } }
+      },
+      "then": {
+        "properties": { "artifacts": { "minItems": 1 } }
+      },
+      "$comment": "A return claiming any real output (complete/partial/degraded) must point at least one artifact the conductor can read itself. An empty artifacts[] on a non-empty/non-error status is itself a schema-miss — 'a file that must exist at a contracted path either exists or doesn't' (ULTIMATE_FRAMEWORK_PLAN.md §A.2)."
+    },
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "complete" } }
+      },
+      "then": {
+        "properties": { "claims": { "minItems": 1 } }
+      },
+      "$comment": "H4 FIX (Fable adversarial review, BLOCK finding — 'fabricated artifacts / shape-only guarantee'): a return could previously declare status: complete with a real, existing artifact and still ship claims: [] — an artifact exists but nothing about it is actually asserted or evidenced, which is the same 'sounds done, proves nothing' failure §A.2/D3 exists to kill. A complete return must make at least one evidence-carrying claim. `tessctl validate`'s artifact-existence lint check (see `_lint_return_manifest`) is the companion fix: it walks every `artifacts[].path` and fails the return if the path does not actually exist on disk — the schema alone can only check shape, never disk state, which is why this is a lint check, not a schema node."
+    }
+  ],
   "$defs": {
     "Claim": {
       "type": "object",

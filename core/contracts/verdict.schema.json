@@ -56,6 +56,11 @@
       "type": "string",
       "enum": ["HIGH", "MEDIUM", "LOW"],
       "description": "Leah's confidence axis (research/intelligence verdicts) — a separate axis from disposition, not a substitute for it. review-output-standards.md 'Leah (Research & Intelligence)' section."
+    },
+    "accepted_high_findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AcceptedHighFinding" },
+      "description": "H2 FIX (Fable adversarial review, BLOCK finding): the explicit-acceptance escape hatch review-output-standards.md's severity table implies for HIGH ('blocks approval' — unlike CRITICAL's unconditional block, HIGH is a strong default, not an absolute) but Phase 0 had no mechanical field for. A HIGH-containing verdict may only carry a non-BLOCK disposition if this array names, by `location`, every HIGH finding being knowingly shipped and WHY. It is never a blanket flag — see the per-finding `allOf` rule below, which requires every HIGH finding's location to have its own entry. Not available at all for Cyra (security) verdicts: see the no-escape `allOf` rule."
     }
   },
   "required": [
@@ -78,6 +83,36 @@
     "properties": { "disposition": { "const": "BLOCK" } },
     "$comment": "review-output-standards.md severity table: CRITICAL 'Must be fixed before merge/deploy. Blocks approval.' A verdict cannot declare a CRITICAL finding and a non-BLOCK disposition — this is the schema check that makes 'tests pass, ship it' impossible to cash when a CRITICAL finding is present."
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verifier", "findings"],
+        "properties": {
+          "verifier": { "const": "Cyra" },
+          "findings": { "contains": { "properties": { "severity": { "const": "HIGH" } } } }
+        }
+      },
+      "then": {
+        "properties": { "disposition": { "const": "BLOCK" } }
+      },
+      "$comment": "H2 FIX, security no-escape rule: review-output-standards.md's Cyra (security) section treats a HIGH-severity security finding with the same must-block weight review-output-standards.md gives CRITICAL elsewhere — security holes do not get an 'accepted risk' shortcut through this contract. A Cyra verdict with ANY HIGH finding must disposition BLOCK, full stop; `accepted_high_findings` cannot move a Cyra verdict off BLOCK (contrast the next rule, which is the only place the acceptance field has teeth)."
+    },
+    {
+      "if": {
+        "required": ["verifier", "findings", "disposition"],
+        "properties": {
+          "verifier": { "enum": ["Reid", "Quinn", "Verity", "Maialen", "Lysandra"] },
+          "findings": { "contains": { "properties": { "severity": { "const": "HIGH" } } } },
+          "disposition": { "enum": ["APPROVE_WITH_SUGGESTIONS", "APPROVE"] }
+        }
+      },
+      "then": {
+        "required": ["accepted_high_findings"],
+        "properties": { "accepted_high_findings": { "minItems": 1 } }
+      },
+      "$comment": "H2 FIX (closes the BLOCK finding): 'a verdict with a HIGH finding + disposition: APPROVE currently passes' — before this rule there was no gate at all on that combination. review-output-standards.md's severity table gives HIGH 'blocks approval' as the default; this rule makes that default mechanical for every non-security verifier: a HIGH finding forces BLOCK unless `accepted_high_findings` carries at least one explicit, rationale-bearing acceptance. (Cyra is excluded here because the rule above already forces Cyra to BLOCK unconditionally — the two rules are mutually exclusive by `verifier` enum.) `_lint_verdict` in tessctl additionally checks every HIGH finding's `location` has its own acceptance entry, not just one entry covering all of them."
+    }
+  ],
   "$defs": {
     "Finding": {
       "type": "object",
@@ -96,6 +131,23 @@
         "fix": { "type": "string", "minLength": 1 }
       },
       "required": ["severity", "location", "finding", "risk", "fix"],
+      "additionalProperties": false
+    },
+    "AcceptedHighFinding": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `location` of the specific findings[] entry (severity HIGH) being explicitly accepted."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why shipping with this specific HIGH finding open is a deliberate, reasoned call — not a default."
+        }
+      },
+      "required": ["location", "rationale"],
       "additionalProperties": false
     }
   },
