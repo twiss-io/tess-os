@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/policy.schema.json",
+  "title": "Ship-Gate Policy Contract",
+  "description": "Machine-checkable form of the routing/classification decisions `conductor/verification-routing.md` and `conductor/guardrails.md` Rule 18 already make in prose. This is the fifth contract named but deferred in ULTIMATE_FRAMEWORK_PLAN.md §B.2's `core/contracts/` tree ('policy.schema.json (hard floors, whitelists, gate map)') and built in Phase 2 (Design Decision #2: 'a deterministic gate spine at git/CI level' needs policy AS DATA, not hardcoded, so `tessctl gate` can read it mechanically) alongside Design Decision #6 ('verification produces a gateable artifact... the ship-gate refuses pushes on prod/client-flagged paths without a covering APPROVE verdict'). An INSTANCE of this schema is the actual policy a project ships at `core/policy/policy.yaml` — the schema below is the shape that instance must satisfy; it does not itself declare any project's real path rules (see `core/policy/policy.yaml`'s own header for why the shipped defaults are deliberately narrow/placeholder, mirroring `tess.manifest.json`'s own 'hand-authored per spec, do NOT auto-glob' stance).",
+  "type": "object",
+  "properties": {
+    "policy": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Policy schema revision the instance targets."
+        },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PathRule" },
+          "description": "verification-routing.md 'The Rule': path-glob classification into prod-touching / client-facing / externally-visible / irreversible-decision-informing. A changed path matching any rule with `require_verdict: true` needs a covering APPROVE verdict before `tessctl gate pre-push`/`ci` will allow the push (see verdict.schema.json's `covers_paths`)."
+        },
+        "hard_floor_rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/HardFloorRule" },
+          "description": "guardrails.md Rule 18 hard floor: 'ALWAYS gate on the operator's explicit go-ahead, regardless of any autonomous-mode... authorization.' These four categories (credentials, money movement, destructive production data operations, client-external factual claims) are DELIBERATELY EXCLUDED from `rules[]`/`require_verdict` — a verifier's APPROVE verdict can never clear a hard-floor match (see `tessctl gate`'s hard-floor check, which looks for a human sign-off artifact instead, never a verdict)."
+        }
+      },
+      "required": ["version", "rules", "hard_floor_rules"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["policy"],
+  "additionalProperties": false,
+  "$defs": {
+    "PathRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique rule id — surfaced in `tessctl gate` block messages so an operator knows exactly which policy line fired."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why this path shape is prod-touching/client-facing/externally-visible/irreversible-decision-informing for THIS project."
+        },
+        "globs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "description": "Path globs (matched via the same `path_matches_globs()` `**`-aware matcher `tess.manifest.json`'s own `owned_globs` uses) — repo-relative, POSIX-style."
+        },
+        "classification": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["prod_touching", "client_facing", "externally_visible", "irreversible_decision"]
+          },
+          "minItems": 1,
+          "description": "verification-routing.md 'The Rule' — the four mandatory-verification triggers, verbatim as an enum. Purely informational/diagnostic on the rule (surfaced in gate block messages); `require_verdict` is what the gate actually acts on."
+        },
+        "require_verdict": {
+          "type": "boolean",
+          "description": "When true, any changed path matching `globs` needs a schema-valid, disposition:APPROVE verdict whose `covers_paths` matches it, or `tessctl gate pre-push`/`ci` refuses the push (Decision #6)."
+        },
+        "allowed_verifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"]
+          },
+          "description": "Which of verification-routing.md's six named verifiers may cover this rule. Advisory in Phase 2 (the gate does not yet reject a covering verdict for being the 'wrong' verifier — see core/policy/policy.yaml's header) but required non-empty whenever `require_verdict: true` so the policy at least DECLARES who is supposed to be signing off."
+        }
+      },
+      "required": ["id", "description", "globs", "classification", "require_verdict"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["require_verdict"],
+        "properties": { "require_verdict": { "const": true } }
+      },
+      "then": {
+        "required": ["allowed_verifiers"],
+        "properties": { "allowed_verifiers": { "minItems": 1 } }
+      },
+      "$comment": "A rule cannot demand a covering verdict while leaving 'who may cover it' undeclared — mirrors brief.schema.json's milestones-required-when-prod_touching conditional."
+    },
+    "HardFloorRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "enum": ["credentials", "money_movement", "destructive_prod_data", "client_external_claims"],
+          "description": "guardrails.md Rule 18's four hard-floor classes, verbatim: 'Credentials... Money movement... Destructive production data operations... Client-external communications containing new factual claims.'"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "globs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Path globs that heuristically indicate this hard-floor category for THIS project. May be an EMPTY array for a category that is not path-detectable at all (e.g. 'client_external_claims' is a communication-content class, not a file-path class) — an explicit, documented non-coverage rather than a silent omission. See core/policy/policy.yaml."
+        }
+      },
+      "required": ["id", "category", "description", "globs"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

@@ -181,16 +181,57 @@ and vault material before anything leaves your machine.
 ./tessctl validate return-manifest return.json
 ```
 
-The four core contracts — `brief`, `crew-plan`, `verdict`, `return-manifest` —
-are JSON Schemas at `core/contracts/*.schema.json`, each grounded in the exact
-doctrine text it encodes (see `core/contracts/README.md`). A contract instance
-that fails validation is a **schema-miss**: `tessctl validate` classifies it
-`degraded_output` (per `conductor/subagent-failure-protocol.md`'s failure-state
-table) and exits non-zero, so a git hook or CI action can gate on it
-deterministically — the point is that a weak agent's output either matches the
-contracted shape or it doesn't; existence and shape are model-independent
+The five core contracts — `brief`, `crew-plan`, `verdict`, `return-manifest`,
+`policy` — are JSON Schemas at `core/contracts/*.schema.json`, each grounded in
+the exact doctrine text it encodes (see `core/contracts/README.md`). A contract
+instance that fails validation is a **schema-miss**: `tessctl validate`
+classifies it `degraded_output` (per `conductor/subagent-failure-protocol.md`'s
+failure-state table) and exits non-zero, so a git hook or CI action can gate on
+it deterministically — the point is that a weak agent's output either matches
+the contracted shape or it doesn't; existence and shape are model-independent
 checks. Instances can be `.json`, `.yaml`/`.yml`, or `.md` with a YAML
 front-matter block.
+
+### `tessctl gate` — the enforcement spine
+
+```bash
+./tessctl gate install-hooks           # install/upgrade the pre-commit + pre-push git hooks
+                                        # (idempotent; splices above any pre-existing hook —
+                                        #  same coexistence pattern as `tessctl vault init`)
+./tessctl gate pre-commit               # contract validation on STAGED files (fast, local)
+./tessctl gate pre-push                 # THE SHIP-GATE — reads the git pre-push stdin protocol
+./tessctl gate ci --base <ref> --head <ref>   # same ship-gate logic, explicit refs (CI entrypoint)
+```
+
+Phase 2 of `docs/ULTIMATE_FRAMEWORK_PLAN.md`, Design Decisions #2 ("enforcement
+moves from model-compliance to deterministic code — a `tessctl gate` spine at
+git pre-commit/pre-push + CI; git is the only runtime every assistant shares")
+and #6 ("verification produces a gateable artifact — signed verdict files; the
+ship-gate refuses pushes on prod/client-flagged paths without a covering
+APPROVE verdict"). Three mounting points, one deterministic logic:
+
+- **`pre-commit`** — validates any staged brief/crew-plan/verdict/
+  return-manifest/policy file against its schema + lint (reuses
+  `tessctl validate`'s engine directly). Fast, local, catches malformed
+  contracts before they're even committed.
+- **`pre-push` (the ship-gate)** — for every path changed in what's being
+  pushed, classifies it against `core/policy/policy.yaml`. Any path matching a
+  `require_verdict: true` rule is BLOCKED unless a schema-valid verdict exists
+  somewhere in the tree with `disposition: APPROVE` and a `covers_paths` glob
+  matching that path (a HIGH finding still forces `BLOCK` unless explicitly
+  accepted — the Phase 0 verdict schema rule applies unchanged). Any path
+  matching a hard-floor rule (credentials / money movement / destructive prod
+  data / client-external claims — `guardrails.md` Rule 18) is BLOCKED
+  regardless of any verdict, unless an explicit human sign-off artifact exists
+  at `.tess/gate/signoffs/<rule-id>.signoff.json` — a verifier's APPROVE can
+  never clear a hard floor.
+- **`ci`** — identical ship-gate logic over an explicit `--base`/`--head` ref
+  range, the harness-independent backstop that still catches a push made with
+  `git push --no-verify` (local hooks are advisory; CI is not).
+
+**Fail-closed by design:** a missing/invalid policy file, a git command that
+fails, or an unreadable verdict all count as a block, never a silent allow —
+ambiguity resolves to refuse, not permit.
 
 ---
 
@@ -240,12 +281,25 @@ This is an early public foundation. What is real and committed today:
 - The **governed organization**: the full doctrine, the roster, the six
   orchestrators, the gates, the dispatch-brief contract, the verification routing,
   and the retry protocol.
-- **Contracts-as-code (Phase 0)**: the four core contracts (`brief`, `crew-plan`,
-  `verdict`, `return-manifest`) as JSON Schemas under `core/contracts/`, a
-  dependency-free validator (`tessctl validate`), and the schema-miss →
-  `degraded_output` classification wired to the retry protocol's signal.
-  Full retry orchestration (dispatching the changed-brief retry itself) is
-  Phase 1 — this phase ships the deterministic check and the classification.
+- **Contracts-as-code (Phase 0, extended Phase 2)**: five core contracts
+  (`brief`, `crew-plan`, `verdict`, `return-manifest`, `policy`) as JSON
+  Schemas under `core/contracts/`, a dependency-free validator (`tessctl
+  validate`), and the schema-miss → `degraded_output` classification wired to
+  the retry protocol's signal. Full retry orchestration (dispatching the
+  changed-brief retry itself) remains out of scope — this ships the
+  deterministic check and the classification.
+- **The gate spine (Phase 2)**: `tessctl gate` — deterministic pre-commit
+  (staged contract validation), pre-push (the ship-gate: blocks
+  prod/client/external changes without a covering `disposition: APPROVE`
+  verdict), and CI (`gate ci`) entrypoints, plus `tessctl gate install-hooks`
+  to install/upgrade the git hooks and a `workflow_dispatch`-triggered CI
+  workflow template. `core/policy/policy.yaml` is the policy-as-data instance
+  the gate reads; hard-floor categories (credentials/money/destructive-prod-
+  data/client-external-claims) require an explicit human sign-off artifact and
+  are never satisfiable by a verdict alone. Scope note: this phase does NOT
+  include a Codex adapter, `.gemini`/generic render targets, or `tessctl run`
+  (the mechanical conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s
+  Phase 2 honest re-scope note.
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.

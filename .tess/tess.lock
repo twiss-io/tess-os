@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-06T22:17:11.493275Z'
+  last_updated: '2026-07-06T22:58:19.544458Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5944,7 +5944,7 @@ files:
   .tess/core/contracts/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:66feb76d124720ae4bd20f7ceaf030fe66e7f424d2e2766fb0fa1987cad0d414
+    base_sha: sha256:2ce8ec8ab42ed54870c17c84720d3b06e68cef38d7bd3efb8f8b3826430db0b1
     live_path: core/contracts/README.md
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/brief.schema.json:
@@ -5962,7 +5962,7 @@ files:
   .tess/core/contracts/verdict.schema.json:
     status: core-managed
     tier: security
-    base_sha: sha256:859efd30a13b62d21c1f13ca25b453a8f6f4b1b83aa23358f0db7a36eb14c9f9
+    base_sha: sha256:bdf07c2730b1d3ea2048ed2a01d799877b98eaa2b5b81480223491469b82f55d
     live_path: core/contracts/verdict.schema.json
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/return-manifest.schema.json:
@@ -5971,3 +5971,15 @@ files:
     base_sha: sha256:edcbe5e87906baf6e454aa50fa0500325139d974846c8187122c1b631ca5995a
     live_path: core/contracts/return-manifest.schema.json
     last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/contracts/policy.schema.json:
+    status: core-managed
+    tier: security
+    base_sha: sha256:229cf79ed0626cb7c16b1178cb35b8a073eba754999243101e81e3e472a5ce48
+    live_path: core/contracts/policy.schema.json
+    last_updated: '2026-07-06T22:50:20.142367Z'
+  .tess/core/policy/policy.yaml:
+    status: core-managed
+    tier: security
+    base_sha: sha256:8268c3cb3a0b9635cab19a6db252ee27c2c97737fd1ea5c61d6ac95dc80ba5ac
+    live_path: core/policy/policy.yaml
+    last_updated: '2026-07-06T22:50:20.142367Z'

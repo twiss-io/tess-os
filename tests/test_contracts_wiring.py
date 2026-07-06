@@ -9,14 +9,16 @@ are now a genuine part of the rendered/tracked framework, not orphaned.
 
 Coverage:
   * "core/contracts/**" is in the REAL tess.manifest.json owned_globs.
-  * The REAL .tess/tess.lock has a core-managed entry for each of the 5
-    contract files, with the correct live_path, and base_sha that matches
-    both the committed .tess/core/contracts/<f> bytes AND the live
-    core/contracts/<f> bytes (round-trip — proves the mirror and the live
-    tree are byte-identical, i.e. genuinely wired, not just declared).
-  * brief.schema.json + verdict.schema.json carry tier: security (the
-    documented Phase 1 choice — they encode conductor/dispatch-brief.md and
-    conductor/verification-routing.md, both already tier: security).
+  * The REAL .tess/tess.lock has a core-managed entry for each of the 6
+    contract files (Phase 0/1's original 5 + Phase 2's policy.schema.json),
+    with the correct live_path, and base_sha that matches both the committed
+    .tess/core/contracts/<f> bytes AND the live core/contracts/<f> bytes
+    (round-trip — proves the mirror and the live tree are byte-identical,
+    i.e. genuinely wired, not just declared).
+  * brief.schema.json + verdict.schema.json + policy.schema.json carry
+    tier: security (the documented Phase 1/2 choice — they encode
+    conductor/dispatch-brief.md, conductor/verification-routing.md, and
+    conductor/guardrails.md Rule 18, all already tier: security).
   * End-to-end against a full copy of the shipped repo tree: `tessctl
     doctor`, `tessctl verify`, and `tessctl lock --check` all exit 0.
   * `tessctl lock --regen --yes` against the shipped tree is a no-op for the
@@ -48,6 +50,7 @@ _CONTRACT_FILES = {
     "crew-plan.schema.json": "normal",
     "verdict.schema.json": "security",
     "return-manifest.schema.json": "normal",
+    "policy.schema.json": "security",  # Phase 2 — encodes verification-routing.md + guardrails.md Rule 18
 }
 
 _COPY_IGNORE = shutil.ignore_patterns(
@@ -118,9 +121,11 @@ def test_security_tier_matches_doctrine_precedent(engine):
     files = lock["files"]
     assert files[".tess/core/contracts/brief.schema.json"]["tier"] == "security"
     assert files[".tess/core/contracts/verdict.schema.json"]["tier"] == "security"
+    assert files[".tess/core/contracts/policy.schema.json"]["tier"] == "security"
     # Sanity: the doctrine files this mirrors are themselves security-tier.
     assert files[".tess/core/conductor/dispatch-brief.md"]["tier"] == "security"
     assert files[".tess/core/conductor/verification-routing.md"]["tier"] == "security"
+    assert files[".tess/core/conductor/guardrails.md"]["tier"] == "security"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +137,8 @@ def test_doctor_verify_lock_check_clean_on_real_tree(real_root, run_cli):
     assert d.returncode == 0, f"doctor not clean:\n{d.stdout}\n{d.stderr}"
     assert "core/contracts/brief.schema.json" in d.stdout
     assert "core/contracts/verdict.schema.json" in d.stdout
+    assert "core/contracts/policy.schema.json" in d.stdout
+    assert "core/policy/policy.yaml" in d.stdout
 
     v = run_cli(real_root, "verify")
     assert v.returncode == 0, f"verify not clean:\n{v.stdout}\n{v.stderr}"
@@ -195,6 +202,67 @@ def test_live_drift_on_normal_tier_contract_schema_is_caught(real_root, run_cli)
     assert v.returncode == 1
     assert "LIVE DRIFT" in v.stdout
     assert "core/contracts/crew-plan.schema.json" in v.stdout
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — core/policy/** wiring (the policy INSTANCE, sibling to the
+# core/contracts/policy.schema.json tested above). Same pristine-mirror
+# pattern, tier: security (it is "the machine-readable half of guardrails" —
+# ULTIMATE_FRAMEWORK_PLAN.md §C5 — same weight as the doctrine prose it
+# encodes).
+# ---------------------------------------------------------------------------
+
+def test_manifest_owns_policy_glob():
+    manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
+    assert "core/policy/**" in manifest["owned_globs"]
+
+
+def test_lock_has_entry_for_policy_yaml(engine):
+    lock = engine.load_lock(REPO_ROOT)
+    files = lock["files"]
+    core_key = ".tess/core/policy/policy.yaml"
+    assert core_key in files, f"{core_key} missing from tess.lock"
+    attrs = files[core_key]
+    assert attrs["status"] == "core-managed"
+    assert attrs["live_path"] == "core/policy/policy.yaml"
+    assert attrs["tier"] == "security"
+
+
+def test_policy_yaml_base_sha_matches_committed_core_and_live_bytes(engine):
+    lock = engine.load_lock(REPO_ROOT)
+    attrs = lock["files"][".tess/core/policy/policy.yaml"]
+    core_path = REPO_ROOT / ".tess/core/policy/policy.yaml"
+    live_path = REPO_ROOT / attrs["live_path"]
+    assert core_path.exists() and live_path.exists()
+    assert engine.sha256_file(core_path) == attrs["base_sha"]
+    assert core_path.read_bytes() == live_path.read_bytes()
+
+
+def test_policy_yaml_is_valid_against_its_own_schema(engine):
+    """core/policy/policy.yaml (the shipped default instance) must itself
+    validate against core/contracts/policy.schema.json + its lint checks —
+    the framework does not ship a policy file that would fail its own gate."""
+    schema = engine.load_contract_schema(REPO_ROOT, "policy")
+    instance = engine.load_contract_instance(REPO_ROOT / "core" / "policy" / "policy.yaml")
+    base_dir = REPO_ROOT / "core" / "contracts"
+    violations = engine.schema_validate(instance, schema, schema, base_dir)
+    violations += engine._lint_contract("policy", instance)
+    assert violations == [], violations
+
+
+def test_tamper_on_policy_yaml_is_caught(real_root, run_cli):
+    core_file = real_root / ".tess" / "core" / "policy" / "policy.yaml"
+    core_file.write_text(core_file.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+
+    d = run_cli(real_root, "doctor")
+    assert d.returncode == 1
+    assert "CORE-TAMPER" in d.stdout
+    assert "core/policy/policy.yaml" in d.stdout
+    assert "[SECURITY]" in d.stdout
+
+    v = run_cli(real_root, "verify")
+    assert v.returncode == 1
+    assert "CORE TAMPER" in v.stdout
 
 
 # ---------------------------------------------------------------------------

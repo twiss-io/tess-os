@@ -6,6 +6,79 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 2 of the Ultimate Framework Plan — the gate spine
+  (Design Decision #2 "deterministic gate spine at git/CI" + Design
+  Decision #6 "verification produces a gateable artifact"):**
+  - **`tessctl gate`** — a new top-level subcommand family:
+    `pre-commit` (schema+lint validates any staged brief/crew-plan/verdict/
+    return-manifest/policy file — reuses `tessctl validate`'s engine
+    directly), `pre-push` (**the ship-gate**: classifies every changed path
+    against `core/policy/policy.yaml` and refuses the push if a
+    `prod_touching`/`client_facing`/`externally_visible` path lacks a
+    schema-valid, `disposition: APPROVE` verdict whose `covers_paths` glob
+    matches it — reads git's own pre-push stdin protocol, or explicit
+    `--base`/`--head`), and `ci` (identical ship-check over an explicit ref
+    range — the harness-independent backstop that still catches
+    `git push --no-verify`).
+  - **`core/contracts/policy.schema.json`** — the plan's own deferred fifth
+    contract (§B.2), built now alongside its only consumer. Path-glob rules
+    with a `classification` enum (verbatim from `verification-routing.md`'s
+    four mandatory-verification triggers) and `require_verdict`; a separate
+    `hard_floor_rules[]` for `guardrails.md` Rule 18's four categories
+    (credentials, money movement, destructive production data, client-
+    external claims) — **never satisfiable by a verifier's verdict alone**.
+    `core/policy/policy.yaml` is the shipped instance (deliberately narrow —
+    one genuinely-live rule protecting this repo's own tier:security
+    doctrine/schema/policy files, one worked placeholder example, matching
+    `tess.manifest.json`'s own "hand-authored per spec, not auto-globbed"
+    posture). Both wired into the managed set (`tess.manifest.json`
+    `owned_globs`, `.tess/core` mirrors, `.tess/tess.lock` entries, tier:
+    security) exactly like the original four Phase 0 contracts.
+  - **`verdict.schema.json` gains `covers_paths`** (optional, additive — a
+    verifier's declared scope as path globs) so a diff-driven gate can match
+    a verdict against changed paths. A verdict with no `covers_paths` covers
+    nothing (fail-closed by omission, not fail-open) — pre-Phase-2 verdicts
+    stay schema-valid but never silently satisfy the ship-gate.
+  - **Hard-floor sign-off artifacts** (`.tess/gate/signoffs/<rule-id>.signoff.json`)
+    — the mechanical form of guardrails.md Rule 18's "ALWAYS gate on the
+    operator's explicit go-ahead": a distinct, small, ad hoc-validated JSON
+    shape (`rule_id`, `category`, `authorized_by`, `rationale`,
+    `authorized_at`), deliberately NOT a sixth `tessctl validate` contract
+    type — never substitutable by a verifier's verdict.
+  - **`tessctl gate install-hooks`** — installs/upgrades the pre-commit +
+    pre-push git hooks (a second, independently-implemented instance of the
+    coexistence pattern `_vault_install_git_hooks` proved: splices ABOVE any
+    pre-existing hook — including the vault guard itself — inside a
+    containment subshell that BLOCKS on a gate violation and FALLS THROUGH
+    on a clean result) and a `workflow_dispatch`-only `.github/workflows/tess-gate.yml`
+    CI workflow template (manual-trigger-only by design — see the file's own
+    header for why auto-triggering it against a repo's own history before
+    that repo has real policy rules + real verdicts would self-gate it on a
+    policy nobody has satisfied yet).
+  - **Fail-closed throughout**: a failing git command, a missing/invalid
+    policy file, or an unreadable verdict all resolve to `blocked: true` —
+    ambiguity refuses, it never silently allows.
+  - **52 new tests** — `tests/test_policy_contract.py` (14: schema/lint
+    coverage for the fifth contract, mirroring `test_contracts_validate.py`'s
+    style), `tests/test_gate_spine.py` (21: the ship-check decision engine —
+    blocks-with-no-verdict, allows-with-covering-APPROVE, blocks-on-BLOCK/
+    HIGH-unaccepted, blocks-on-schema-invalid-contract, policy path
+    classification, hard-floor sign-off, fail-closed-on-error, the pre-commit/
+    pre-push/ci CLI surfaces), `tests/test_gate_hooks.py` (12: hook install/
+    splice/idempotency/coexistence-with-vault, the CI workflow template, and
+    real end-to-end `git commit`/`git push` firing against a real bare
+    remote — including the documented `--no-verify` bypass + CI-still-blocks
+    case), plus 5 new tests extending `tests/test_contracts_wiring.py` for
+    `core/policy/**`'s wiring. Full suite: **416 passed** (364 existing +
+    52 new), zero regressions. `tessctl doctor` / `verify` / `lock --check`
+    all clean against the live working tree.
+  - **Scope note (honest re-scope, mirroring the Phase 1 precedent below):**
+    this is the enforcement-spine SLICE of Phase 2 only. The Codex adapter
+    (`tessctl dispatch --driver codex`) and `tessctl run <plan>` (the
+    mechanical conductor loop) remain unbuilt — see
+    `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest re-scope note. The
+    gate spine does not depend on either; it operates on git diffs and
+    on-disk contract instances regardless of what produced them.
 - **Phase 1 of the Ultimate Framework Plan ("Portable core + render targets",
   Design Decision #1 — "doctrine compiles, never copied"):**
   - **`core/contracts/**` wired into the managed set** — the deferred
