@@ -116,6 +116,81 @@ def test_claude_code_live_globs_are_subset_of_real_manifest_owned_globs(engine):
 
 
 # ---------------------------------------------------------------------------
+# HIGH-1 (Fable Phase-1 review): the two new interface methods
+# ---------------------------------------------------------------------------
+
+def test_render_target_base_class_new_methods_default_to_nothing(engine, project):
+    """Base RenderTarget's expected_live_bytes/render_generated_paths do NOT
+    raise NotImplementedError (unlike live_globs/render) — a target with no
+    bespoke-compiled artifacts need not override them."""
+    project.write()
+    base = engine.RenderTarget()
+    assert base.expected_live_bytes(project.root, "CLAUDE.md") is None
+    assert base.render_generated_paths(project.root) == set()
+
+
+def test_claude_code_expected_live_bytes_matches_bespoke_compile_functions(engine, project):
+    """expected_live_bytes() for the two templated artifacts must equal
+    calling render_claude_md()/render_settings_json() directly — proving
+    render_core_to_live() (which calls expected_live_bytes()) will compute
+    the SAME bytes doctor/verify compare against, not a naive core-byte
+    copy."""
+    _seed(project)
+    project.write()
+    target = engine.RENDER_TARGETS["claude-code"]
+
+    claude_expected = target.expected_live_bytes(project.root, "CLAUDE.md")
+    assert claude_expected == engine.render_claude_md(project.root).encode("utf-8")
+
+    settings_expected = target.expected_live_bytes(project.root, ".claude/settings.json")
+    assert settings_expected == engine.render_settings_json(project.root).encode("utf-8")
+
+
+def test_claude_code_expected_live_bytes_none_for_paths_it_does_not_compile(engine, project):
+    """A path outside this target's two bespoke-compiled artifacts (e.g. the
+    copy-only surface, or simply an unrelated path) returns None — the
+    generic render_core_to_live() fallback handles it, unchanged."""
+    project.write()
+    target = engine.RENDER_TARGETS["claude-code"]
+    assert target.expected_live_bytes(project.root, ".claude/agents/athena.md") is None
+    assert target.expected_live_bytes(project.root, "conductor/identity.md") is None
+    assert target.expected_live_bytes(project.root, "nonexistent/path.md") is None
+
+
+def test_claude_code_render_generated_paths_matches_live_globs(engine, project):
+    """This target has no copy-only path within its own scope (see the class
+    docstring) — render_generated_paths() is exactly live_globs() as a set,
+    so doctor/verify route drift on all 5 to `tessctl render`, not
+    `tessctl capture`."""
+    project.write()
+    target = engine.RENDER_TARGETS["claude-code"]
+    assert target.render_generated_paths(project.root) == set(target.live_globs())
+
+
+def test_render_return_contract_is_pinned(engine, project):
+    """LOW-3: render() returns {"target": name, "status": "rendered"} —
+    pinned so a Phase 2+ target's return value is inspectable in a
+    consistent shape across every target."""
+    _seed(project)
+    project.write()
+    target = engine.RENDER_TARGETS["claude-code"]
+    result = target.render(project.root, verbose=False)
+    assert result == {"target": "claude-code", "status": "rendered"}
+
+
+def test_render_generated_live_paths_derives_from_enabled_targets(engine, project):
+    """render_generated_live_paths(root) (HIGH-1) must equal the real
+    manifest's default-enabled claude-code target's render_generated_paths —
+    proving it's genuinely derived from the registry + enablement, not a
+    resurrected copy of the old frozenset constant."""
+    project.write()
+    target = engine.RENDER_TARGETS["claude-code"]
+    assert engine.render_generated_live_paths(project.root) == frozenset(
+        target.render_generated_paths(project.root)
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI surface
 # ---------------------------------------------------------------------------
 

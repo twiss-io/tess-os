@@ -13,10 +13,20 @@ plain copies:
 | Live path | Compiled from |
 |---|---|
 | `CLAUDE.md` | `.tess/core/templates/CLAUDE.md.tpl` + the 5 `claude-md/*.md` fragments + `operator/*` stubs (`inject:`-gated) + `CLAUDE.md.local.md` shadow |
-| `.claude/settings.json` | `.tess/core/settings-core.json` with `{{TESS_ROOT}}` substituted |
+| `.claude/settings.json` | `.tess/core/settings-core.json`, passed through the render pipeline's `{{TOKEN}}` substitution (LOW-2: the shipped `settings-core.json` uses `$CLAUDE_PROJECT_DIR`, resolved by Claude Code at runtime, not `{{TESS_ROOT}}` — no core file ships that token today; see `adapters/README.md`'s note on why output is byte-identical across machines) |
 | `conductor/identity.md` | `.tess/core/conductor/identity.md` with name tokens resolved |
 | `conductor/personality.md` | `.tess/core/conductor/personality.md` + the active persona fragment (`.tess/core/personas/<pathway>.md`) |
 | `clients/_template/CLAUDE.md` | `.tess/core/templates/client/_template/CLAUDE.md` with `{{ASSISTANT_NAME}}` resolved |
+
+`ClaudeCodeRenderTarget.expected_live_bytes()` implements the interface's
+drift-checking hook (HIGH-1) for the two entries above that need a bespoke
+compile function (`render_claude_md()` / `render_settings_json()`) rather
+than generic token substitution — the exact two special cases
+`render_core_to_live()` used to hardcode inline before this fix.
+`render_generated_paths()` returns all 5 rows in this table (this target has
+no copy-only path of its own — see the scope-boundary note below), so
+doctor/verify correctly route drift on any of them to `tessctl render`, not
+`tessctl capture`.
 
 ## What it does NOT render (by documented, deliberate scope)
 

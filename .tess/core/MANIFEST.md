@@ -15,7 +15,7 @@
 | `.tess/core/conductor/**` | `conductor/**` |
 | `.tess/core/agents/**` | `agents/**` |
 | `.tess/core/agents-dispatch/*.md` | `.claude/agents/*.md` |
-| `.tess/core/hooks/*` | `.claude/hooks/*` ({{TESS_ROOT}} substituted) |
+| `.tess/core/hooks/*` | `.claude/hooks/*` (copied; the shipped hooks resolve their project root at runtime via `$CLAUDE_PROJECT_DIR`, not a render-time `{{TESS_ROOT}}` token — LOW-2, Fable review) |
 | `.tess/core/skills/**` | `.claude/skills/**` |
 | `.tess/core/settings-core.json` | `.claude/settings.json` (rendered) |
 | `.tess/core/templates/CLAUDE.md.tpl` | `CLAUDE.md` (rendered + operator/ stubs) |
@@ -228,7 +228,7 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 | `agents-dispatch/zinnia.md` | `.claude/agents/zinnia.md` | normal |
 | `agents-dispatch/zorine.md` | `.claude/agents/zorine.md` | normal |
 
-## hooks/ — guard hooks ({{TESS_ROOT}}-tokenised)
+## hooks/ — guard hooks (project root resolved at runtime via $CLAUDE_PROJECT_DIR)
 
 | Core file | Live path | Tier |
 |---|---|---|

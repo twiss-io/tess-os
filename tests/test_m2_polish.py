@@ -556,3 +556,94 @@ class TestIntegrityGateFailOpen:
         assert "EXTRA NOTE" in rendered_norm, (
             "non-security .local.md shadows must still be folded (behavior unchanged)"
         )
+
+    def test_lock_only_security_tier_md_shadow_not_folded_when_attrs_supplied(self, tmp_path):
+        """MED-1 (Fable Phase-1 review): a file marked `tier: security` in the
+        lock, but NOT in the hardcoded SECURITY_TIER_PATHS set, must ALSO be
+        protected from a `.local.md` shadow-append when render_core_to_live()
+        is called with the real lock attrs — closing the latent gap before a
+        future security-tier .md file exists. Without attrs (the pre-fix
+        call shape), the SAME path is NOT protected — proving the fix is the
+        attrs-aware routing through is_security_tier(), not a change to
+        SECURITY_TIER_PATHS itself."""
+        mod = _load_engine()
+        root = tmp_path
+
+        live_rel = "conductor/new-doctrine.md"
+        assert live_rel not in mod.SECURITY_TIER_PATHS, (
+            "test fixture must use a path NOT hardcoded into SECURITY_TIER_PATHS "
+            "to prove the lock-tier route, not the hardcoded-set route"
+        )
+
+        core_path = root / ".tess" / "core" / "conductor" / "new-doctrine.md"
+        core_path.parent.mkdir(parents=True, exist_ok=True)
+        core_path.write_text("CANONICAL NEW DOCTRINE\n", encoding="utf-8")
+        live_path = root / "conductor" / "new-doctrine.md"
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        (root / "conductor" / "new-doctrine.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+
+        # Lock-declared tier: security (as brief.schema.json / verdict.schema.json
+        # carry in the real tess.lock — not (yet) also in SECURITY_TIER_PATHS).
+        lock_attrs = {"tier": "security", "live_path": live_rel}
+
+        rendered_with_attrs = mod.render_core_to_live(
+            core_path, live_path, root, attrs=lock_attrs
+        ).decode("utf-8")
+        assert "INJECTED OVERRIDE" not in rendered_with_attrs, (
+            "a lock-declared tier:security file must not fold a .local.md shadow "
+            "even when it is absent from the hardcoded SECURITY_TIER_PATHS set"
+        )
+
+        # Without attrs (pre-fix call shape / a caller that doesn't have the lock
+        # entry handy): behavior is unchanged — SECURITY_TIER_PATHS-only check,
+        # and this path isn't in it, so the shadow DOES fold. This proves the
+        # fix is additive (attrs-aware), not a change to the fallback behavior.
+        rendered_without_attrs = mod.render_core_to_live(
+            core_path, live_path, root
+        ).decode("utf-8")
+        assert "INJECTED OVERRIDE" in rendered_without_attrs, (
+            "without attrs, the pre-existing SECURITY_TIER_PATHS-only fallback "
+            "must be unchanged (this path is not hardcoded into that set)"
+        )
+
+    def test_doctor_check_file_flags_lock_only_security_tier_drift(self, tmp_path):
+        """MED-1 end-to-end via doctor_check_file (the real Check B call site,
+        which now passes attrs through): a core-managed file with tier:security
+        in its lock entry, whose live copy silently gained a .local.md shadow
+        NOT reflected in the tracked live bytes, must be flagged as a security
+        drift alert — not silently treated as ordinary drift."""
+        mod = _load_engine()
+        root = tmp_path
+
+        core_key = ".tess/core/conductor/new-doctrine.md"
+        core_path = root / core_key
+        core_path.parent.mkdir(parents=True, exist_ok=True)
+        core_path.write_text("CANONICAL NEW DOCTRINE\n", encoding="utf-8")
+
+        live_rel = "conductor/new-doctrine.md"
+        live_path = root / live_rel
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        # Live file was hand-edited to append the (unverified) .local.md content
+        # directly — simulating what an adversary gains if the shadow silently
+        # folds into 'expected' for a lock-only security-tier file.
+        live_path.write_text("CANONICAL NEW DOCTRINE\n\nINJECTED OVERRIDE\n", encoding="utf-8")
+        (root / "conductor" / "new-doctrine.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+
+        attrs = {
+            "status": "core-managed",
+            "tier": "security",
+            "base_sha": mod.sha256_file(core_path),
+            "live_path": live_rel,
+        }
+        result = mod.doctor_check_file(core_key, attrs, root)
+        assert result["is_security"] is True
+        assert result["drift"] is True, (
+            "doctor_check_file must flag drift: with attrs correctly routed, "
+            "'expected' bytes exclude the .local.md shadow, so the hand-edited "
+            "live file (which includes it) differs from 'expected'"
+        )
+        assert any("UNCAPTURED DRIFT" in issue for issue in result["issues"])

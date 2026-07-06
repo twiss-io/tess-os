@@ -51,14 +51,56 @@ class RenderTarget:
         guarded_write (directly or through a helper that itself calls
         guarded_write), so the manifest write gate is never bypassed."""
         raise NotImplementedError
+
+    def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
+        """The bytes this target expects at `live_rel` given the CURRENT
+        core + operator state, or None if `live_rel` isn't one of this
+        target's bespoke-COMPILED artifacts (a plain copy-only path returns
+        None). render_core_to_live() — the function doctor/verify Check B,
+        `diff`, `restore`, etc. all call to decide "what SHOULD be here" —
+        consults every ENABLED target's expected_live_bytes() before falling
+        back to a generic byte-copy + {{TOKEN}} substitution. This is what
+        makes the seam LOAD-BEARING (Fable Phase-1 review, HIGH-1): before
+        this method existed, only `cmd_render` consulted the registry, so a
+        Phase-2+ target's compiled artifacts would be drift-checked against
+        a naive copy of their core source — a correctly rendered file would
+        be reported as drifted. Base implementation returns None (no
+        bespoke-compiled artifacts)."""
+        return None
+
+    def render_generated_paths(self, root: Path) -> set[str]:
+        """This target's compiled/generated live paths. Doctor/verify union
+        this (across ENABLED targets) into the "run `tessctl render`, not
+        `tessctl capture`" remedy-routing set. Base implementation returns
+        an empty set."""
+        return set()
 ```
+
+**A note on "byte-identical, any machine" (LOW-2):** this holds today
+because none of the artifacts any shipped target renders bake an absolute,
+per-machine path into their output at render time — where a live file needs
+its project root at runtime (e.g. the guard hooks, `.claude/settings.json`),
+it resolves that via the `$CLAUDE_PROJECT_DIR` environment variable Claude
+Code itself injects, not via a template token substituted by `tessctl`. The
+engine's `{{TESS_ROOT}}` substitution mechanism is real, tested
+(`tests/test_render.py`), and available to any target's compiled content —
+it just isn't exercised by any file currently shipped. Don't read
+"byte-identical across machines" as "the root gets substituted in and that's
+still somehow deterministic" — no root-specific bytes are embedded at all,
+which is the stronger and simpler property.
 
 Registration is a one-line addition to the `RENDER_TARGETS` dict in
 `.tess/bin/tessctl` — nothing else in the engine needs to know a new target
-exists. `tessctl render` (no flags) renders every registered target;
-`tessctl render --target <name>` (repeatable) scopes to named targets;
-`tessctl render --list-targets` prints the registry and each target's
-`live_globs()` without rendering.
+exists. `tessctl render` (no flags) renders every target ENABLED for this
+install (per-install enablement, MED-3 — `tess.manifest.json`'s
+`render_targets.enabled`; default `["claude-code"]`) — a registered-but-
+disabled target is never rendered by default, so adding a Phase 2+ target to
+the registry does not make every existing Claude-only install start emitting
+its artifacts. `tessctl render --target <name>` (repeatable) explicitly
+scopes to named targets, bypassing this install's enablement list (an
+explicit ask is not the silent-default case MED-3 guards against).
+`tessctl render --list-targets` prints the registry — flagging which targets
+are enabled for this install — without rendering.
 
 ## The one shipped target: Claude Code (Tier A reference)
 
@@ -74,7 +116,11 @@ A new target (e.g. `codex`, rendering `AGENTS.md` + `~/.codex/prompts/*.md` +
 a `config.toml` fragment, per `docs/ULTIMATE_FRAMEWORK_PLAN.md` §B.2) needs:
 
 1. A `RenderTarget` subclass in `.tess/bin/tessctl` implementing `live_globs()`
-   and `render()`.
+   and `render()`, plus `expected_live_bytes()` for any path it compiles with
+   more than generic `{{TOKEN}}` substitution, and `render_generated_paths()`
+   for every path `render()` writes (both default to "nothing" on the base
+   class, but a target that skips them gets no drift-checking or `doctor
+   --fix`/`tessctl render` remedy-routing on its own outputs).
 2. Its live-tree glob patterns added to `tess.manifest.json`'s `owned_globs`
    (the write gate is an allowlist — a target's writes are refused until its
    paths are declared owned).
@@ -84,14 +130,26 @@ a `config.toml` fragment, per `docs/ULTIMATE_FRAMEWORK_PLAN.md` §B.2) needs:
    `core/contracts/**` (see `core/contracts/README.md` "Wired into keystone
    tracking").
 4. A one-line registration in `RENDER_TARGETS`.
-5. Its own copy-phase, if it needs one — a target is not required to (and, per
+5. A one-line addition to `tess.manifest.json`'s `render_targets.enabled` list
+   when the target is ready to render by default for new installs (MED-3) —
+   registering it in `RENDER_TARGETS` alone does NOT enable it; that split is
+   deliberate (lets a target ship registered-but-off while it's being proven
+   out, and lets the wizard's future harness-select axis — axis 6, still
+   Phase 2 scope — write this list per-install instead of the engine
+   hardcoding one global default).
+6. Its own copy-phase, if it needs one — a target is not required to (and, per
    the documented scope note in `ClaudeCodeRenderTarget`, does not have to)
    reuse `_do_restore`, which is Claude-Code-shaped.
 
 No step touches `core/doctrine/` content, the lock file *schema*, or the
 manifest write-gate *logic* — only its allowlist data. That is the seam
 working as designed: the core doesn't know or care how many targets render
-it.
+it. And because doctor/verify/update now consult the registry (not two
+Claude-shaped special cases), a new target that implements the full
+interface gets correct drift-checking, atomic re-render on `tessctl update`,
+and per-install enablement for free — see
+`tests/test_render_target_seam_is_load_bearing.py`, which proves this with a
+second, non-Claude mock target.
 
 ## Capability tiers (for context; not enforced by this seam)
 
