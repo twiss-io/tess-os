@@ -1,0 +1,155 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/verdict.schema.json",
+  "title": "Verifier Verdict Contract",
+  "description": "Machine-checkable form of a mandatory verifier's output. Severity grammar, the mandatory closing verdict, and the summary line are grounded verbatim in conductor/review-output-standards.md ('Severity-Tiered Output Format', 'Mandatory Closing Verdict', 'Review Summary Line'). The primary-artifacts-only requirement and the six named verifiers are grounded in conductor/verification-routing.md ('Routing Table', 'Verifier Brief Standard'). review-output-standards.md defines THREE distinct per-role closing-verdict vocabularies (Quinn/Reid: BLOCK | APPROVE WITH SUGGESTIONS | APPROVE; Cyra: BLOCK | CONDITIONAL PASS | CLEAR; Leah: HIGH | MEDIUM | LOW confidence, no disposition at all). This schema normalizes all three onto one canonical `disposition` axis (BLOCK | APPROVE_WITH_SUGGESTIONS | APPROVE) so a single ship-gate check works across every verifier, and preserves the agent's literal wording in `role_verdict_raw` for traceability. Mapping: CLEAR -> APPROVE, CONDITIONAL PASS -> APPROVE_WITH_SUGGESTIONS, BLOCK -> BLOCK; Leah's confidence tiers are a separate, non-disposition axis carried in `confidence`. Phase 0 / Design Decision #3.",
+  "type": "object",
+  "properties": {
+    "verifier": {
+      "type": "string",
+      "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"],
+      "description": "verification-routing.md Routing Table — the six named mandatory verifiers."
+    },
+    "output_domain": {
+      "type": "string",
+      "minLength": 1,
+      "description": "verification-routing.md Routing Table column 1, e.g. 'Code diff / PR', 'Security', 'Research / intelligence claims'."
+    },
+    "primary_artifacts_read": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "verification-routing.md: 'the diff, the logs, the URLs, the file paths — never Tess's summary of those artifacts. A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.' Required non-empty so a verdict cannot exist without at least one primary artifact the verifier claims to have read itself."
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" },
+      "description": "review-output-standards.md 'Severity-Tiered Output Format': every finding is [SEVERITY] area/file:line — finding — risk — fix/action."
+    },
+    "severity_counts": {
+      "type": "object",
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["critical", "high", "medium", "low"],
+      "additionalProperties": false,
+      "description": "Must match the actual tally of findings[] by severity — checked as a lint rule by tessctl validate (review-output-standards.md 'Review Summary Line': 'Found [N] CRITICAL, [N] HIGH, [N] MEDIUM, [N] LOW')."
+    },
+    "summary_line": {
+      "type": "string",
+      "minLength": 1,
+      "description": "review-output-standards.md 'Review Summary Line', e.g. 'Reviewed [scope]. Found [N] CRITICAL, [N] HIGH, [N] MEDIUM, [N] LOW. Top priority: [description].'"
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["BLOCK", "APPROVE_WITH_SUGGESTIONS", "APPROVE"],
+      "description": "Canonical closing verdict, normalized from review-output-standards.md's per-role grammar (see top-level description)."
+    },
+    "role_verdict_raw": {
+      "type": "string",
+      "description": "The verifier's literal per-role wording, e.g. 'CLEAR', 'CONDITIONAL PASS', 'Confidence: HIGH' — preserved for traceability back to review-output-standards.md's exact vocabulary."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"],
+      "description": "Leah's confidence axis (research/intelligence verdicts) — a separate axis from disposition, not a substitute for it. review-output-standards.md 'Leah (Research & Intelligence)' section."
+    },
+    "accepted_high_findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AcceptedHighFinding" },
+      "description": "H2 FIX (Fable adversarial review, BLOCK finding): the explicit-acceptance escape hatch review-output-standards.md's severity table implies for HIGH ('blocks approval' — unlike CRITICAL's unconditional block, HIGH is a strong default, not an absolute) but Phase 0 had no mechanical field for. A HIGH-containing verdict may only carry a non-BLOCK disposition if this array names, by `location`, every HIGH finding being knowingly shipped and WHY. It is never a blanket flag — see the per-finding `allOf` rule below, which requires every HIGH finding's location to have its own entry. Not available at all for Cyra (security) verdicts: see the no-escape `allOf` rule."
+    }
+  },
+  "required": [
+    "verifier",
+    "output_domain",
+    "primary_artifacts_read",
+    "findings",
+    "severity_counts",
+    "summary_line",
+    "disposition"
+  ],
+  "additionalProperties": false,
+  "if": {
+    "required": ["findings"],
+    "properties": {
+      "findings": { "contains": { "properties": { "severity": { "const": "CRITICAL" } } } }
+    }
+  },
+  "then": {
+    "properties": { "disposition": { "const": "BLOCK" } },
+    "$comment": "review-output-standards.md severity table: CRITICAL 'Must be fixed before merge/deploy. Blocks approval.' A verdict cannot declare a CRITICAL finding and a non-BLOCK disposition — this is the schema check that makes 'tests pass, ship it' impossible to cash when a CRITICAL finding is present."
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verifier", "findings"],
+        "properties": {
+          "verifier": { "const": "Cyra" },
+          "findings": { "contains": { "properties": { "severity": { "const": "HIGH" } } } }
+        }
+      },
+      "then": {
+        "properties": { "disposition": { "const": "BLOCK" } }
+      },
+      "$comment": "H2 FIX, security no-escape rule: review-output-standards.md's Cyra (security) section treats a HIGH-severity security finding with the same must-block weight review-output-standards.md gives CRITICAL elsewhere — security holes do not get an 'accepted risk' shortcut through this contract. A Cyra verdict with ANY HIGH finding must disposition BLOCK, full stop; `accepted_high_findings` cannot move a Cyra verdict off BLOCK (contrast the next rule, which is the only place the acceptance field has teeth)."
+    },
+    {
+      "if": {
+        "required": ["verifier", "findings", "disposition"],
+        "properties": {
+          "verifier": { "enum": ["Reid", "Quinn", "Verity", "Maialen", "Lysandra"] },
+          "findings": { "contains": { "properties": { "severity": { "const": "HIGH" } } } },
+          "disposition": { "enum": ["APPROVE_WITH_SUGGESTIONS", "APPROVE"] }
+        }
+      },
+      "then": {
+        "required": ["accepted_high_findings"],
+        "properties": { "accepted_high_findings": { "minItems": 1 } }
+      },
+      "$comment": "H2 FIX (closes the BLOCK finding): 'a verdict with a HIGH finding + disposition: APPROVE currently passes' — before this rule there was no gate at all on that combination. review-output-standards.md's severity table gives HIGH 'blocks approval' as the default; this rule makes that default mechanical for every non-security verifier: a HIGH finding forces BLOCK unless `accepted_high_findings` carries at least one explicit, rationale-bearing acceptance. (Cyra is excluded here because the rule above already forces Cyra to BLOCK unconditionally — the two rules are mutually exclusive by `verifier` enum.) `_lint_verdict` in tessctl additionally checks every HIGH finding's `location` has its own acceptance entry, not just one entry covering all of them."
+    }
+  ],
+  "$defs": {
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "description": "'area/file:line' per the grammar."
+        },
+        "finding": { "type": "string", "minLength": 1 },
+        "risk": { "type": "string", "minLength": 1 },
+        "fix": { "type": "string", "minLength": 1 }
+      },
+      "required": ["severity", "location", "finding", "risk", "fix"],
+      "additionalProperties": false
+    },
+    "AcceptedHighFinding": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `location` of the specific findings[] entry (severity HIGH) being explicitly accepted."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why shipping with this specific HIGH finding open is a deliberate, reasoned call — not a default."
+        }
+      },
+      "required": ["location", "rationale"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

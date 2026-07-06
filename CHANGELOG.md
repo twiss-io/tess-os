@@ -6,6 +6,36 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 1 of the Ultimate Framework Plan ("Portable core + render targets",
+  Design Decision #1 — "doctrine compiles, never copied"):**
+  - **`core/contracts/**` wired into the managed set** — the deferred
+    Phase 0 item. `tess.manifest.json`'s `owned_globs` now includes
+    `"core/contracts/**"`; a `.tess/core/contracts/**` pristine mirror was
+    added with a `tess.lock` entry per file (`status: core-managed`).
+    `brief.schema.json` and `verdict.schema.json` carry `tier: security`
+    (they are the machine-checkable form of `conductor/dispatch-brief.md`
+    and `conductor/verification-routing.md`, both already `tier: security`).
+    `tessctl doctor` / `verify` / `lock --check` now cover all five contract
+    files; `tessctl validate` is unaffected (still reads the live
+    `core/contracts/` path).
+  - **The render-target abstraction** (`RenderTarget` / `RENDER_TARGETS` in
+    `.tess/bin/tessctl`) — the adapter seam Phase 2 (Codex) and Phase 3
+    (Gemini, generic) plug into without touching core loading, the lock
+    schema, or the manifest write gate. `ClaudeCodeRenderTarget` (`name =
+    "claude-code"`) is the Tier A reference implementation, formalizing the
+    engine's existing CLAUDE.md / `.claude/settings.json` / name-bearing
+    conductor-file compile step. `tessctl render --target <name>`
+    (repeatable) and `tessctl render --list-targets` are new; `tessctl
+    render` with no flags is behavior-unchanged (renders every registered
+    target — today, just `claude-code`).
+  - **`adapters/README.md` + `adapters/claude-code/README.md`** — the
+    documented `RenderTarget` interface contract and the Claude Code
+    target's artifact map + documented render/restore scope boundary.
+  - **`tests/test_render_targets.py`** (10 tests) + **`tests/test_contracts_wiring.py`**
+    (9 tests) — determinism (same core → same output, independent of
+    process/root), idempotency (repeat render produces identical bytes, no
+    drift), manifest write-gate enforcement, and end-to-end doctor/verify/
+    lock --check coverage against the real, shipped tree.
 - **`core/contracts/`** — Phase 0 of the Ultimate Framework Plan
   ("Contracts-as-code", Design Decision #3): four JSON Schemas
   (`brief.schema.json`, `crew-plan.schema.json`, `verdict.schema.json`,

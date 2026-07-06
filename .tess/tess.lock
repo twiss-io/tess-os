@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-06T21:01:46.537620Z'
+  last_updated: '2026-07-06T21:24:35.538498Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:4847aad22d18785b878232e58c79bc6c8ce2ef80dbf0857fcea1e4498ce25bd9
+    base_sha: sha256:d6f5530bb2db299ff4fd10ec292f3e30dc84a036b14b69212e95b688063d818b
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5941,3 +5941,33 @@ files:
     base_sha: sha256:f21afca3599ebbc011425f6db8fcd91539a2977bee39f23f9c53f5ddab46cc46
     live_path: .claude/commands/wake.md
     last_updated: 2026-06-27 10:00:00+00:00
+  .tess/core/contracts/README.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:66feb76d124720ae4bd20f7ceaf030fe66e7f424d2e2766fb0fa1987cad0d414
+    live_path: core/contracts/README.md
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/contracts/brief.schema.json:
+    status: core-managed
+    tier: security
+    base_sha: sha256:c6b95bad07ed6644c93d1e78cc0717584191b280177c2bbf782016a28c068b03
+    live_path: core/contracts/brief.schema.json
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/contracts/crew-plan.schema.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:a8cb60f29cbfc3630096582acc9ea634ce69763457a01224588621c8913d6a36
+    live_path: core/contracts/crew-plan.schema.json
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/contracts/verdict.schema.json:
+    status: core-managed
+    tier: security
+    base_sha: sha256:859efd30a13b62d21c1f13ca25b453a8f6f4b1b83aa23358f0db7a36eb14c9f9
+    live_path: core/contracts/verdict.schema.json
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/contracts/return-manifest.schema.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:edcbe5e87906baf6e454aa50fa0500325139d974846c8187122c1b631ca5995a
+    live_path: core/contracts/return-manifest.schema.json
+    last_updated: 2026-07-07 00:00:00+00:00

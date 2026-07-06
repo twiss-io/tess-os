@@ -12,7 +12,8 @@
     ".claude/hooks/**",
     ".claude/skills/**",
     ".claude/settings.json",
-    "clients/_template/**"
+    "clients/_template/**",
+    "core/contracts/**"
   ],
 
   "_owned_notes": {
@@ -24,7 +25,8 @@
     ".claude/hooks/**": "the 6 guard hooks; {{TESS_ROOT}} token substituted on render. LF-enforced (CRLF breaks the shebang).",
     ".claude/skills/**": "framework-provided skills.",
     ".claude/settings.json": "rendered every update from settings-core.json with {{TESS_ROOT}} substituted (spec Decision 8). Customize via `tessctl publish --tag settings`.",
-    "clients/_template/**": "client-folder scaffold — framework-owned (spec §2.4). Distinct from real clients under clients/*/** which are never_touch."
+    "clients/_template/**": "client-folder scaffold — framework-owned (spec §2.4). Distinct from real clients under clients/*/** which are never_touch.",
+    "core/contracts/**": "Phase 0/1 contracts-as-code: brief/crew-plan/verdict/return-manifest JSON schemas + README, the machine-checkable half of the doctrine (spec: docs/ULTIMATE_FRAMEWORK_PLAN.md Phase 0 Decision #3 + Phase 1 item 1, 'wire the deferred Phase-0 contracts into the managed set'). Core source at .tess/core/contracts/**; live at core/contracts/** — same pristine-mirror pattern as conductor/**. brief.schema.json + verdict.schema.json carry tier:security in tess.lock (they encode conductor/dispatch-brief.md and conductor/verification-routing.md, both already tier:security)."
   },
 
   "never_touch": [
@@ -53,7 +55,8 @@
     ".agents/**",
     "skills-lock.json",
     ".mcp.json",
-    "README.md"
+    "README.md",
+    "adapters/**"
   ],
 
   "_never_touch_notes": {
@@ -64,6 +67,7 @@
     "*.local.md / **/*.local.md": "append-first shadow files — the 80% customization path (spec §5 Layer 2); appended after core on resolve, never overwritten.",
     ".tess/*": "tessctl's own transactional state (snapshots, staging, provenance log, lock). NOTE: .tess/core/** is the pristine merge-base source — read by tessctl, never a live-tree write target, so it is intentionally absent from BOTH lists.",
     "python/data layer": "main.py, pyproject.toml, uv.lock, .python-version, .venv/** — the repo's Python/uv tooling, not framework doctrine.",
-    "example-project/ , starter/ , docs/ , infrastructure/ , .agents/": "non-framework subtrees present in this messy repo; explicitly fenced off."
+    "example-project/ , starter/ , docs/ , infrastructure/ , .agents/": "non-framework subtrees present in this messy repo; explicitly fenced off.",
+    "adapters/**": "Phase 1 render-target-adapter documentation seam (docs/ULTIMATE_FRAMEWORK_PLAN.md Part B architecture; item 3 of the Phase 1 brief). Pure prose describing the RenderTarget interface implemented in .tess/bin/tessctl (RENDER_TARGETS registry) — same fenced-off treatment as docs/**, since there is no core->live split to track here (no .tess/core/adapters/** mirror exists; nothing to render). Revisit if/when Phase 2+ targets ship adapter-specific config fragments that DO need core-tracking."
   }
 }
