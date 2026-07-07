@@ -29,11 +29,33 @@ hand-copied. What was missing structurally (not behaviorally) was a
 be added that isn't "edit the Claude-Code-shaped function until it also
 happens to emit `AGENTS.md`." `RenderTarget` is that boundary.
 
+## Doctrine profile (G3, 2026-07-08)
+
+Every target also declares `doctrine_profile` — `"orchestrator"` or
+`"worker"` (see `DOCTRINE_PROFILES` in `.tess/bin/tessctl`). This answers one
+question: does the harness this target renders for genuinely hold a
+dispatchable crew (the Agent/Task tool, a roster to hand work to)?
+`claude-code` is `"orchestrator"` — the one case where "always dispatch" is
+true. `codex` and `generic` are `"worker"` — no in-session subagent tool, so
+the full CLAUDE.md payload (Rule Zero, the six outcome orchestrators, the
+mission-ceremony command table) does not describe their reality and is
+exactly the payload a 2026-07-07 proving-ground benchmark measured as
+harmful when mounted into a single-agent harness (a weak model attempted a
+nested subagent spawn on a bare `python3 --version` task). `AGENTS.md`'s own
+payload was re-scoped to a lean worker digest as a direct result (see
+`adapters/codex/README.md` "Doctrine profile"); a cheap denylist drift check
+(`_check_worker_profile_denylist()`, wired into `doctor`/`verify`/`lock
+--check`) fails loud if an orchestration-doctrine phrase ever leaks back into
+a worker-profile render. A new target's `doctrine_profile` is not optional —
+`tests/test_render_target_doctrine_profile.py` sweeps the registry and fails
+if any registered target skips declaring it.
+
 ## The interface
 
 ```python
 class RenderTarget:
     name: str = ""                                   # stable id, used by --target
+    doctrine_profile: str = ""                        # "orchestrator" | "worker" — see above
 
     def live_globs(self) -> list[str]:
         """Live-tree glob patterns this target owns. MUST be a subset of
@@ -134,7 +156,13 @@ this call per-install). Preview either with `tessctl render --target codex`
    more than generic `{{TOKEN}}` substitution, and `render_generated_paths()`
    for every path `render()` writes (both default to "nothing" on the base
    class, but a target that skips them gets no drift-checking or `doctor
-   --fix`/`tessctl render` remedy-routing on its own outputs).
+   --fix`/`tessctl render` remedy-routing on its own outputs). ALSO declare
+   `doctrine_profile` (`"orchestrator"` only if the harness genuinely holds a
+   dispatchable crew — see "Doctrine profile" above; `"worker"` otherwise,
+   which is the default assumption for a new target) and, if the target
+   renders its own standalone doctrine-digest file, `doctrine_digest_paths()`
+   — `tests/test_render_target_doctrine_profile.py` sweeps the registry and
+   fails on a target that skips declaring a valid profile.
 2. Its live-tree glob patterns added to `tess.manifest.json`'s `owned_globs`
    (the write gate is an allowlist — a target's writes are refused until its
    paths are declared owned).

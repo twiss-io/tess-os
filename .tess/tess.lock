@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-07T10:04:36.346259Z'
+  last_updated: '2026-07-07T17:10:42.989416Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5765,17 +5765,31 @@ files:
   .tess/core/templates/agents-md/AGENTS.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:a9534cb14714ac7bbd38b2a37cf12c28c2785c8c92acd45231024c974bce0fe4
+    base_sha: sha256:9d68432c79c4ad3d7cc587dc66ad18183644a831ba791b28dcdd1b16ccc081c9
     live_path: null
     render: template
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f142f408e76d92dcdba24b3467c11ace472d8cee186f7b97e54065f864ec4c8c
+    base_sha: sha256:caf7e2b85edd140a03c3a6b8aea28f774123505ab01f759d359225201b45d952
     live_path: null
     render: fragment
-    last_updated: 2026-07-07 00:00:00+00:00
+    last_updated: 2026-07-08 00:00:00+00:00
+  .tess/core/templates/agents-md/worker-hard-floor.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:0ee3cf25880df60191a1fcf822ad2e09ecaa45266257c1160f761ec0d3d003ff
+    live_path: null
+    render: fragment
+    last_updated: 2026-07-08 00:00:00+00:00
+  .tess/core/templates/agents-md/gate-compliance.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:4fc8410a862f72de6bd736c17fee60416bd1badc35658ff9e408c16452c5318d
+    live_path: null
+    render: fragment
+    last_updated: 2026-07-08 00:00:00+00:00
   .tess/core/templates/agents-md/codex-config.toml.tpl:
     status: core-managed
     tier: normal

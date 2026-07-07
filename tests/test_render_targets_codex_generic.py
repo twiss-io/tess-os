@@ -44,27 +44,26 @@ from conftest import MANIFEST_SRC, make_upstream, ns
 # test_render_targets.py / test_tracked_render_e2e.py already use).
 # ---------------------------------------------------------------------------
 
+# G3 (2026-07-08, the 2026-07-07 honest reckoning): AGENTS.md is now the
+# WORKER doctrine profile — see AGENTS_TOKEN_MAP's own header in
+# .tess/bin/tessctl. The fixture template below mirrors the REAL template's
+# post-G3 token set (WORKER_HARD_FLOOR / WORKER_GATE_COMPLIANCE / HARNESS_NOTE
+# — no CORE_RULE_ZERO, CORE_SYSTEM_LAWS, CORE_DIRECTORY, or COMMAND_TABLE;
+# see tests/test_worker_profile_denylist.py for the drift-check coverage of
+# that fact).
 _AGENTS_TPL = (
     "# AGENTS.md Fixture\n"
     "\n"
-    "{{CORE_RULE_ZERO}}\n"
+    "{{WORKER_HARD_FLOOR}}\n"
     "\n"
-    "{{CORE_HARD_FLOOR}}\n"
-    "\n"
-    "{{CORE_SYSTEM_LAWS}}\n"
-    "\n"
-    "{{CORE_DIRECTORY}}\n"
+    "{{WORKER_GATE_COMPLIANCE}}\n"
     "\n"
     "{{HARNESS_NOTE}}\n"
-    "\n"
-    "{{COMMAND_TABLE}}\n"
 )
 
 _AGENTS_FRAGMENTS = {
-    ".tess/core/templates/claude-md/rule-zero.md": "RULE ZERO FIXTURE\n",
-    ".tess/core/templates/claude-md/hard-floor.md": "HARD FLOOR FIXTURE\n",
-    ".tess/core/templates/claude-md/system-laws.md": "SYSTEM LAWS FIXTURE\n",
-    ".tess/core/templates/claude-md/directory.md": "DIRECTORY FIXTURE\n",
+    ".tess/core/templates/agents-md/worker-hard-floor.md": "HARD FLOOR FIXTURE\n",
+    ".tess/core/templates/agents-md/gate-compliance.md": "GATE COMPLIANCE FIXTURE\n",
     ".tess/core/templates/agents-md/harness-note.md": "HARNESS NOTE FIXTURE\n",
 }
 _AGENTS_TPL_KEY = ".tess/core/templates/agents-md/AGENTS.md.tpl"
@@ -164,24 +163,31 @@ def test_agents_md_is_byte_identical_between_codex_and_generic(engine, project):
 
 
 def test_render_agents_md_reuses_shared_fragments_verbatim(engine, project):
-    """The claude-md/ fragments the fixture seeds (RULE ZERO FIXTURE, HARD
-    FLOOR FIXTURE, SYSTEM LAWS FIXTURE, DIRECTORY FIXTURE) must appear
+    """The agents-md/ WORKER-profile fragments the fixture seeds (HARD FLOOR
+    FIXTURE, GATE COMPLIANCE FIXTURE, HARNESS NOTE FIXTURE) must appear
     verbatim in the rendered AGENTS.md — proving real reuse, not a
     re-authored copy."""
     _seed_agents(project)
     project.write()
     rendered = engine.render_agents_md(project.root)
-    for marker in ("RULE ZERO FIXTURE", "HARD FLOOR FIXTURE", "SYSTEM LAWS FIXTURE",
-                   "DIRECTORY FIXTURE", "HARNESS NOTE FIXTURE"):
+    for marker in ("HARD FLOOR FIXTURE", "GATE COMPLIANCE FIXTURE", "HARNESS NOTE FIXTURE"):
         assert marker in rendered, f"{marker!r} missing from rendered AGENTS.md — fragment not reused"
 
 
-def test_render_agents_md_command_table_is_generated_from_command_frontmatter(engine, project):
+def test_render_agents_md_has_no_command_table(engine, project):
+    """G3: the 26-row command table is DELIBERATELY DROPPED from AGENTS.md's
+    own digest (Fable's 2026-07-07 reckoning §2.3 — "the 26-command table"
+    is explicitly on the drop list). The underlying command bodies still get
+    mirrored verbatim into `.codex/prompts/*.md` / `prompts/*.md` (see
+    test_codex_expected_live_bytes_matches_render_functions /
+    test_generic_expected_live_bytes_matches_render_functions below) — only
+    AGENTS.md's own always-mounted digest no longer reproduces them."""
     _seed_agents(project)
     project.write()
     rendered = engine.render_agents_md(project.root)
-    assert "`/wake`" in rendered and "Session start checklist V1" in rendered
-    assert "`/close`" in rendered and "Session end checklist V1" in rendered
+    assert "`/wake`" not in rendered
+    assert "Session start checklist V1" not in rendered
+    assert "| Command | Description |" not in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +271,8 @@ def test_cli_render_target_codex_emits_agents_prompts_and_config(project, run_cl
     assert r.returncode == 0, r.stderr
 
     agents_md = project.read_live("AGENTS.md")
-    assert "RULE ZERO FIXTURE" in agents_md
     assert "HARD FLOOR FIXTURE" in agents_md
+    assert "GATE COMPLIANCE FIXTURE" in agents_md
 
     config_toml = project.read_live(".codex/config.toml")
     assert 'approval_policy = "on-request"' in config_toml
@@ -284,7 +290,7 @@ def test_cli_render_target_generic_emits_agents_and_plain_prompts(project, run_c
     assert r.returncode == 0, r.stderr
 
     agents_md = project.read_live("AGENTS.md")
-    assert "RULE ZERO FIXTURE" in agents_md
+    assert "HARD FLOOR FIXTURE" in agents_md
 
     assert not (project.root / ".codex").exists(), "generic must never write .codex/**"
     wake_prompt = project.read_live("prompts/wake.md")
@@ -458,12 +464,12 @@ def test_doctrine_edit_repropagates_into_agents_md_via_update(project, gpg_key, 
     project.write()
     _set_enabled(project, ["codex"])
     project.mod.RENDER_TARGETS["codex"].render(project.root, verbose=False)
-    assert "RULE ZERO FIXTURE" in project.read_live("AGENTS.md")
+    assert "HARD FLOOR FIXTURE" in project.read_live("AGENTS.md")
 
-    # Signed upstream v2.1.0 CHANGES the rule-zero fragment (a doctrine edit).
+    # Signed upstream v2.1.0 CHANGES the worker-hard-floor fragment (a doctrine edit).
     up_core = {_AGENTS_TPL_KEY: _AGENTS_TPL}
     up_core.update(_AGENTS_FRAGMENTS)
-    up_core[".tess/core/templates/claude-md/rule-zero.md"] = "RULE ZERO V2 — TRACKED VIA AGENTS.MD\n"
+    up_core[".tess/core/templates/agents-md/worker-hard-floor.md"] = "HARD FLOOR V2 — TRACKED VIA AGENTS.MD\n"
     up_core[_CODEX_CONFIG_KEY] = _CODEX_CONFIG_TOML
     for name, body in _COMMANDS_V1.items():
         up_core[f".tess/core/commands/{name}.md"] = body
@@ -484,11 +490,11 @@ def test_doctrine_edit_repropagates_into_agents_md_via_update(project, gpg_key, 
     assert r.returncode == 0, f"update failed:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
 
     live_agents = project.read_live("AGENTS.md")
-    assert "RULE ZERO V2 — TRACKED VIA AGENTS.MD" in live_agents, (
+    assert "HARD FLOOR V2 — TRACKED VIA AGENTS.MD" in live_agents, (
         "AGENTS.md was NOT re-rendered from the new core fragment after `tessctl update` — "
         "the doctrine edit did not propagate"
     )
-    assert "RULE ZERO FIXTURE" not in live_agents, "stale v1 fragment still present in live AGENTS.md"
+    assert "HARD FLOOR FIXTURE" not in live_agents, "stale v1 fragment still present in live AGENTS.md"
 
     d = run_cli(project.root, "doctor")
     assert d.returncode == 0, f"doctor not clean after upgrade:\n{d.stdout}\n{d.stderr}"

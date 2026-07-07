@@ -81,3 +81,14 @@ subagent tool the way Claude Code / Gemini do — process fan-out via
 `codex exec` conducts a crew instead of native sub-agent dispatch. This
 target only renders doctrine + prompt artifacts; it does not (and cannot)
 change how Codex itself composes a crew from an orchestrator's plan.
+
+## Doctrine profile (G3, 2026-07-08)
+
+`CodexRenderTarget.doctrine_profile == "worker"` (see `adapters/README.md`
+"Doctrine profile"). `AGENTS.md`'s payload is deliberately lean (~40-60
+rendered lines): environment/gate facts + the ~5-line hard floor, zero
+orchestration doctrine (no Rule Zero, no outcome-orchestrator routing, no
+26-row command table) — a 2026-07-07 proving-ground benchmark measured that
+exact payload as harmful when mounted into a single-agent harness like
+Codex. `_check_worker_profile_denylist()` (wired into `doctor`/`verify`/
+`lock --check`) fails loud if orchestration doctrine ever leaks back in.

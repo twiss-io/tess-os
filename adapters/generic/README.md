@@ -54,3 +54,12 @@ Tier C (adapters/README.md "Capability tiers"): rules-file-only assistants
 orchestration/dispatch mechanics assumed. This is the floor every harness
 gets for free — `codex`/`claude-code` layer harness-specific mechanics
 (native prompts, subagent dispatch) on top of the same doctrine.
+
+## Doctrine profile (G3, 2026-07-08)
+
+`GenericRenderTarget.doctrine_profile == "worker"` — same lean AGENTS.md
+payload `codex` renders (byte-identical, see "AGENTS.md ownership" above),
+for exactly the same reason: no orchestration doctrine reaches a harness
+with no dispatchable crew. See `adapters/README.md` "Doctrine profile" and
+`adapters/codex/README.md`'s own note for the full rationale and the
+benchmark finding behind it.
