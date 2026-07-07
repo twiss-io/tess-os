@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-06-28T18:28:14.327845Z'
+  last_updated: '2026-07-06T21:01:46.537620Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5469,7 +5469,7 @@ files:
   .tess/core/conductor/orchestra-model.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a20f0e4522a897357ebe10c62abbdaec63b252b733dcbb550ecc632dbc775701
+    base_sha: sha256:8b776110b3af34fd1f400462a0bac2b4aff46a3ec733928fecce9600e7b7b198
     live_path: conductor/orchestra-model.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/README.md:

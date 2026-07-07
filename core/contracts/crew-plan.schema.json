@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/crew-plan.schema.json",
+  "title": "Crew-Plan Contract",
+  "description": "Machine-checkable form of an outcome orchestrator's PLAN-pass return value. Grounded verbatim in conductor/orchestra-model.md §3.1 ('Required shape') and §3.2 ('Rules the plan must satisfy — the conductor rejects a plan that violates these'). `tasks[].brief` $refs brief.schema.json directly: §3.2 rule 1 states the crew-plan 'is a carrier of dispatch briefs, not a replacement for them' — every task brief is the VERBATIM six-field contract, not a paraphrase. Phase 0 / Design Decision #3.",
+  "type": "object",
+  "properties": {
+    "crew_plan": {
+      "type": "object",
+      "properties": {
+        "mission_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ties to the mission-states.md FSM record."
+        },
+        "outcome_owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "§3.2 rule 6 — 'One outcome owner. Exactly one outcome_owner; no co-owners.' Modeled as a single string, not an array, so co-ownership is structurally impossible rather than merely discouraged."
+        },
+        "outcome_type": {
+          "type": "string",
+          "enum": ["decide", "design", "build", "convert", "recover", "govern", "review", "communicate", "scale"],
+          "description": "§3.1 required-shape enum, verbatim."
+        },
+        "notes": {
+          "type": "string",
+          "description": "§3.1 — framing the conductor needs before dispatch."
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Stage" },
+          "description": "§3.1 — ordered; stage N+1 starts only when stage N's gate clears (enforced by the conductor loop §4a, not by this schema)."
+        },
+        "synthesis": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string",
+              "minLength": 1,
+              "description": "§3.1 — orchestrator name, or 'tess' for lighter missions."
+            },
+            "format": { "type": "string", "minLength": 1 },
+            "inputs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Task ids whose artifacts feed synthesis. tessctl validate additionally lints that every entry matches a real task id in stages[] (business rule beyond plain JSON Schema)."
+            }
+          },
+          "required": ["owner", "format", "inputs"],
+          "additionalProperties": false
+        },
+        "escalations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "§3.1 — conditions that bounce the whole mission back to Tess/the operator."
+        }
+      },
+      "required": ["mission_id", "outcome_owner", "outcome_type", "stages", "synthesis", "escalations"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["crew_plan"],
+  "additionalProperties": false,
+  "$defs": {
+    "Stage": {
+      "type": "object",
+      "properties": {
+        "stage": { "type": "integer", "minimum": 1 },
+        "gate_in": {
+          "type": "string",
+          "enum": [
+            "intake-before-anything",
+            "research-before-build",
+            "crew-before-deploy",
+            "review-before-synthesis",
+            "verification-before-externally-visible"
+          ],
+          "description": "§3.2 rule 3 — 'gate_in references a real gate from doctrine.md.' These five are the canonical dependency-gate names per doctrine.md's own CHANGELOG and orchestra-model.md §3.2 rule 3. M5 (Fable adversarial review): the §3.3 worked example previously used the shorthand literal 'intake-complete' for this same gate instead of the canonical 'intake-before-anything' and a prose `milestones` string instead of the schema's array-of-{deliverable,acceptance_evidence,owner} shape; both were reconciled directly in orchestra-model.md §3.3 in this Phase 0 PR so the doctrine text now matches what this schema actually enforces."
+        },
+        "parallel": {
+          "type": "boolean",
+          "description": "§3.1/§3.2 rule 7 — 'Parallelism is explicit. parallel:true asserts the tasks share no state and have no intra-stage depends_on edges.' The no-intra-stage-edges half of this rule is enforced as a lint check by tessctl validate (a relational, cross-array-item constraint plain JSON Schema cannot express), not by this schema block alone."
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Task" }
+        }
+      },
+      "required": ["stage", "gate_in", "parallel", "tasks"],
+      "additionalProperties": false
+    },
+    "Task": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "§3.2 rule 2 — must be a real, dispatchable agent definition, or 'general-purpose' paired with flag_for_tess. Cross-checking against the installed roster (.claude/agents/*) is left to a Phase 1 lint extension — this schema checks shape, not roster membership."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["Owner", "Core Contributor", "Reviewer", "Control", "Standby"],
+          "description": "§6 — every task carries a role so two players never collide on the same responsibility."
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Intra-mission edges; [] if none."
+        },
+        "brief": {
+          "$ref": "brief.schema.json#",
+          "description": "§3.2 rule 1 — the full six-field Dispatch Brief Contract, VERBATIM REQUIRED."
+        },
+        "verifier": { "$ref": "#/$defs/Verifier" },
+        "prod_touching": { "type": "boolean" },
+        "client_facing": { "type": "boolean" },
+        "externally_visible": { "type": "boolean" },
+        "irreversible_decision": { "type": "boolean" },
+        "flag_for_tess": {
+          "type": "string",
+          "description": "§3.2 rule 2 — set when 'agent' is 'general-purpose' because the needed specialist does not yet exist; names the capability gap so it is logged, never silently skipped."
+        }
+      },
+      "required": ["id", "agent", "role", "depends_on", "brief", "verifier"],
+      "additionalProperties": false,
+      "if": {
+        "anyOf": [
+          { "required": ["prod_touching"], "properties": { "prod_touching": { "const": true } } },
+          { "required": ["client_facing"], "properties": { "client_facing": { "const": true } } },
+          { "required": ["externally_visible"], "properties": { "externally_visible": { "const": true } } },
+          { "required": ["irreversible_decision"], "properties": { "irreversible_decision": { "const": true } } }
+        ]
+      },
+      "then": {
+        "properties": {
+          "verifier": {
+            "required": ["required", "agent", "primary_artifacts"],
+            "properties": {
+              "required": { "const": true },
+              "agent": {
+                "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"]
+              },
+              "primary_artifacts": { "minItems": 1 }
+            }
+          }
+        },
+        "$comment": "§3.2 rule 4: 'verifier.required: true for any task that is prod-touching, client-facing, externally-visible, or informs an irreversible decision.' prod_touching/client_facing/externally_visible/irreversible_decision are Phase-0 machine-checkable proxies for those prose criteria, mirroring brief.schema.json's prod_touching/estimated_minutes proxies. H1 FIX (Fable adversarial review, BLOCK finding): the original version of this branch only forced `verifier.required: true`, which the base `Verifier` $defs (necessarily, for the legitimate null-verifier case) allows to coexist with `agent: null` and `primary_artifacts: []` — so a task marked prod_touching/client_facing/externally_visible/irreversible_decision could carry `verifier: {agent: null, required: true, primary_artifacts: []}` and PASS: a null-verifier bypass on exactly the class of task verification-routing.md says must never skip mandatory review. This branch now ALSO re-pins `agent` to one of the six named mandatory verifiers (the `enum` excludes `null`, which the base Verifier schema permits only for the true internal-only/not-irreversible case) and requires `primary_artifacts` to carry at least one real artifact — closing the bypass without changing the shape for legitimately-internal, non-triggering tasks (where this `then` branch never fires)."
+      }
+    },
+    "Verifier": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": ["string", "null"],
+          "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra", null],
+          "description": "verification-routing.md's six named mandatory verifiers. §3.1: 'null only if internal-only AND not irreversible.'"
+        },
+        "required": { "type": "boolean" },
+        "primary_artifacts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The real outputs the verifier must read itself — never a summary (verification-routing.md 'Verifier Brief Standard')."
+        }
+      },
+      "required": ["agent", "required", "primary_artifacts"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

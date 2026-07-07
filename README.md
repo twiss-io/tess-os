@@ -172,6 +172,26 @@ and vault material before anything leaves your machine.
 > defense-in-depth: rotate real credentials, review what you commit, and don't
 > grant production access you wouldn't grant a new hire.
 
+### `tessctl validate` — contracts-as-code
+
+```bash
+./tessctl validate brief my-brief.md              # dispatch-brief.md's six fields
+./tessctl validate crew-plan plan.yaml             # orchestra-model.md §3.1/§3.2
+./tessctl validate verdict verdict.json --json     # review-output-standards.md
+./tessctl validate return-manifest return.json
+```
+
+The four core contracts — `brief`, `crew-plan`, `verdict`, `return-manifest` —
+are JSON Schemas at `core/contracts/*.schema.json`, each grounded in the exact
+doctrine text it encodes (see `core/contracts/README.md`). A contract instance
+that fails validation is a **schema-miss**: `tessctl validate` classifies it
+`degraded_output` (per `conductor/subagent-failure-protocol.md`'s failure-state
+table) and exits non-zero, so a git hook or CI action can gate on it
+deterministically — the point is that a weak agent's output either matches the
+contracted shape or it doesn't; existence and shape are model-independent
+checks. Instances can be `.json`, `.yaml`/`.yml`, or `.md` with a YAML
+front-matter block.
+
 ---
 
 ## How a mission runs
@@ -195,6 +215,9 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`conductor/`** — the doctrine layer: identity, guardrails, the dispatch-brief
   contract, verification routing, the failure/retry protocol, and the command
   system (wired `.claude/commands/`).
+- **`core/contracts/`** — the four doctrine contracts (dispatch-brief, crew-plan,
+  verdict, return-manifest) as JSON Schemas, checked via `tessctl validate`. The
+  first piece of the portable `core/` the framework is growing into.
 - **`agents/`** — the roster of specialist persona specs across guilds. The
   compiled, managed dispatch definitions live in `.claude/agents/`.
 - **`.tess/`** — the upgrade engine: `bin/tessctl`, the pristine merge-base
@@ -217,6 +240,12 @@ This is an early public foundation. What is real and committed today:
 - The **governed organization**: the full doctrine, the roster, the six
   orchestrators, the gates, the dispatch-brief contract, the verification routing,
   and the retry protocol.
+- **Contracts-as-code (Phase 0)**: the four core contracts (`brief`, `crew-plan`,
+  `verdict`, `return-manifest`) as JSON Schemas under `core/contracts/`, a
+  dependency-free validator (`tessctl validate`), and the schema-miss →
+  `degraded_output` classification wired to the retry protocol's signal.
+  Full retry orchestration (dispatching the changed-brief retry itself) is
+  Phase 1 — this phase ships the deterministic check and the classification.
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.

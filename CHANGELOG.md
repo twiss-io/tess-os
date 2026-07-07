@@ -3,6 +3,35 @@
 All notable changes to Tess OS are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`core/contracts/`** — Phase 0 of the Ultimate Framework Plan
+  ("Contracts-as-code", Design Decision #3): four JSON Schemas
+  (`brief.schema.json`, `crew-plan.schema.json`, `verdict.schema.json`,
+  `return-manifest.schema.json`), each grounded field-by-field in
+  `conductor/dispatch-brief.md`, `conductor/orchestra-model.md` §3.1–§3.2,
+  and `conductor/review-output-standards.md` + `conductor/verification-routing.md`
+  respectively; `return-manifest` is a new contract this phase introduces
+  (no prior doctrine file of its own).
+- **`tessctl validate <contract-type> <file>`** — a dependency-free JSON Schema
+  (draft-07 subset) validator built into `.tess/bin/tessctl` (no new pip
+  dependency). Accepts `.json`, `.yaml`/`.yml`, or `.md` with YAML
+  front-matter. Supports `if`/`then`/`else`, `contains`, and cross-file `$ref`
+  (used to carry the six-field brief contract verbatim inside a crew-plan
+  task, per orchestra-model.md §3.2 rule 1).
+- **Schema-miss → `degraded_output` classification** — a contract instance
+  that fails validation is classified per `conductor/subagent-failure-protocol.md`
+  (`failure_state: degraded`, `cause_class: context-gap`,
+  `same_brief_retry_forbidden: true`) and `tessctl validate` exits non-zero,
+  so a git hook or CI action can gate on it. Full retry orchestration is
+  deferred to Phase 1.
+- **`tests/test_contracts_validate.py`** — 36 tests: schema load/valid-instance
+  coverage for all four contracts, targeted invalid-instance rejections
+  (missing brief field, wrong verdict enum, etc.), the four doctrine-mandated
+  conditional rules, the crew-plan/verdict lint checks, cross-file `$ref`
+  resolution, the classification shape, instance-file loading, and the CLI.
+
 ## [0.1.1] — 2026-06-29
 
 ### Added

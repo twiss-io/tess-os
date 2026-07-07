@@ -97,7 +97,7 @@ crew_plan:
   notes: Diagnose the conversion drop before any intervention; analytics gap → general-purpose agent, flag to source.
   stages:
     - stage: 1
-      gate_in: intake-complete
+      gate_in: intake-before-anything
       parallel: true
       tasks:
         - id: pipeline-data
@@ -109,7 +109,10 @@ crew_plan:
             output_contract: /tmp/.../conv-analysis.md — sections [Funnel table, Drop-off stage, Evidence]
             tools_sources_constraints: Read the CRM export at <path>; every number traces to a quoted row; inference labelled.
             not_responsible_for: Recommending fixes (that is stage 2).
-            milestones: Funnel table with per-stage conversion + the source rows quoted.
+            milestones:
+              - deliverable: Funnel table with per-stage conversion
+                acceptance_evidence: source rows quoted from the CRM export
+                owner: pipeline-data
             escalation_trigger: Export missing or stages unmappable → stop, surface to conductor.
           verifier: { agent: Verity, required: true, primary_artifacts: [<crm export path>] }
           flag_for_tess: source a dedicated Analytics specialist
