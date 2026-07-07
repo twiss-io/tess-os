@@ -5,8 +5,8 @@
 > `.tess/core/` is the PRISTINE source; the live tree is the resolved output.
 > Authoritative classification lives in `.tess/tess.lock` (per-file `status`/`tier`/`base_sha`).
 
-- Total core files: **954**
-- Security-tier files: **3** (`conductor/guardrails.md`, `conductor/verification-routing.md`, `conductor/channel-guardrails.md`)
+- Total core files: **959** (+5 Phase 1 — `contracts/` wired into the managed set)
+- Security-tier files: **6** (`conductor/guardrails.md`, `conductor/verification-routing.md`, `conductor/channel-guardrails.md`, `conductor/dispatch-brief.md`, `contracts/brief.schema.json`, `contracts/verdict.schema.json`) — the last two are new in Phase 1: the machine-checkable form of `dispatch-brief.md` and `verification-routing.md` respectively, promoted to the same tier so weakening the schema is treated as seriously as editing the prose doctrine.
 
 ## Live-path mapping (by core subtree)
 
@@ -15,12 +15,13 @@
 | `.tess/core/conductor/**` | `conductor/**` |
 | `.tess/core/agents/**` | `agents/**` |
 | `.tess/core/agents-dispatch/*.md` | `.claude/agents/*.md` |
-| `.tess/core/hooks/*` | `.claude/hooks/*` ({{TESS_ROOT}} substituted) |
+| `.tess/core/hooks/*` | `.claude/hooks/*` (copied; the shipped hooks resolve their project root at runtime via `$CLAUDE_PROJECT_DIR`, not a render-time `{{TESS_ROOT}}` token — LOW-2, Fable review) |
 | `.tess/core/skills/**` | `.claude/skills/**` |
 | `.tess/core/settings-core.json` | `.claude/settings.json` (rendered) |
 | `.tess/core/templates/CLAUDE.md.tpl` | `CLAUDE.md` (rendered + operator/ stubs) |
 | `.tess/core/templates/claude-md/*.md` | `CLAUDE.md` (composed fragments) |
 | `.tess/core/templates/client/_template/**` | `clients/_template/**` |
+| `.tess/core/contracts/**` | `core/contracts/**` (Phase 1) |
 | `.tess/core/MANIFEST.md` | — (core index, not a live doctrine path) |
 
 ## conductor/ — doctrine
@@ -227,7 +228,7 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 | `agents-dispatch/zinnia.md` | `.claude/agents/zinnia.md` | normal |
 | `agents-dispatch/zorine.md` | `.claude/agents/zorine.md` | normal |
 
-## hooks/ — guard hooks ({{TESS_ROOT}}-tokenised)
+## hooks/ — guard hooks (project root resolved at runtime via $CLAUDE_PROJECT_DIR)
 
 | Core file | Live path | Tier |
 |---|---|---|
@@ -269,6 +270,21 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 | `templates/client/_template/kb/research/.gitkeep` | `clients/_template/kb/research/.gitkeep` | normal |
 | `templates/client/_template/kb/wiki/index.md` | `clients/_template/kb/wiki/index.md` | normal |
 | `templates/client/_template/kb/wiki/log.md` | `clients/_template/kb/wiki/log.md` | normal |
+
+## contracts/ — Phase 0/1 contracts-as-code (brief/crew-plan/verdict/return-manifest schemas)
+
+Wired into the managed set in Phase 1 (closes the deferred Phase 0 item —
+see `core/contracts/README.md` "Wired into keystone tracking"). Same
+pristine-mirror pattern as `conductor/**`: `.tess/core/contracts/**` is the
+source, `core/contracts/**` is the resolved live output.
+
+| Core file | Live path | Tier |
+|---|---|---|
+| `contracts/README.md` | `core/contracts/README.md` | normal |
+| `contracts/brief.schema.json` | `core/contracts/brief.schema.json` | security |
+| `contracts/crew-plan.schema.json` | `core/contracts/crew-plan.schema.json` | normal |
+| `contracts/verdict.schema.json` | `core/contracts/verdict.schema.json` | security |
+| `contracts/return-manifest.schema.json` | `core/contracts/return-manifest.schema.json` | normal |
 
 ## (root) — settings + index
 

@@ -6,6 +6,153 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 1 of the Ultimate Framework Plan ("Portable core + render targets",
+  Design Decision #1 — "doctrine compiles, never copied"):**
+  - **`core/contracts/**` wired into the managed set** — the deferred
+    Phase 0 item. `tess.manifest.json`'s `owned_globs` now includes
+    `"core/contracts/**"`; a `.tess/core/contracts/**` pristine mirror was
+    added with a `tess.lock` entry per file (`status: core-managed`).
+    `brief.schema.json` and `verdict.schema.json` carry `tier: security`
+    (they are the machine-checkable form of `conductor/dispatch-brief.md`
+    and `conductor/verification-routing.md`, both already `tier: security`).
+    `tessctl doctor` / `verify` / `lock --check` now cover all five contract
+    files; `tessctl validate` is unaffected (still reads the live
+    `core/contracts/` path).
+  - **The render-target abstraction** (`RenderTarget` / `RENDER_TARGETS` in
+    `.tess/bin/tessctl`) — the adapter seam Phase 2 (Codex) and Phase 3
+    (Gemini, generic) plug into without touching core loading, the lock
+    schema, or the manifest write gate. `ClaudeCodeRenderTarget` (`name =
+    "claude-code"`) is the Tier A reference implementation, formalizing the
+    engine's existing CLAUDE.md / `.claude/settings.json` / name-bearing
+    conductor-file compile step. `tessctl render --target <name>`
+    (repeatable) and `tessctl render --list-targets` are new; `tessctl
+    render` with no flags renders every render target ENABLED for this
+    install (today: `claude-code`, the only registered target — see MED-3
+    below for per-install enablement).
+  - **`adapters/README.md` + `adapters/claude-code/README.md`** — the
+    documented `RenderTarget` interface contract and the Claude Code
+    target's artifact map + documented render/restore scope boundary.
+  - **`tests/test_render_targets.py`** (16 tests — 10 original + 6 added by
+    the HIGH-1/LOW-3 fixes below) + **`tests/test_contracts_wiring.py`**
+    (9 tests) — determinism (same core → same output, independent of
+    process/root), idempotency (repeat render produces identical bytes, no
+    drift), manifest write-gate enforcement, and end-to-end doctor/verify/
+    lock --check coverage against the real, shipped tree.
+
+### Fixed
+
+- **HIGH-1 (Fable Phase-1 review, PR #36) — the render-target seam is now
+  genuinely load-bearing, not "register-and-done".** Fable's adversarial
+  review passed the Phase 1 crux (determinism + contracts wiring + tamper
+  detection + security-tier all verified) but BLOCKed on this: only
+  `cmd_render` consulted the `RENDER_TARGETS` registry — the three
+  subsystems that make Decision #1's integrity promise real were Claude-
+  hardcoded and bypassed it, so a Phase 2+ target would render on demand but
+  silently go STALE on `tessctl update` and be invisible to / false-flagged
+  by drift detection. Fixed by extending the `RenderTarget` interface with
+  two methods (`expected_live_bytes()`, `render_generated_paths()`) and
+  wiring all three subsystems to consult the registry through them:
+  - **`render_core_to_live()`** (the function doctor/verify Check B, `diff`,
+    `restore`, `capture`, `rollback`, etc. all call to compute "what SHOULD
+    be at this live path") now tries every ENABLED target's
+    `expected_live_bytes()` before falling back to the generic byte-copy +
+    `{{TOKEN}}` substitution path — instead of two special-cased branches
+    hardcoded for `CLAUDE.md` / `.claude/settings.json`. Those two special
+    cases moved into `ClaudeCodeRenderTarget.expected_live_bytes()`, so this
+    is a behavior-preserving refactor for Claude Code and a genuine fix for
+    any future target.
+  - **`RENDER_GENERATED_LIVE_PATHS`** (the "run `tessctl render`, not
+    `tessctl capture`" remedy-routing set doctor/verify/`doctor --fix`
+    consult) is no longer a Claude-only frozenset — `render_generated_live_paths(root)`
+    now derives it as the union of every ENABLED target's
+    `render_generated_paths()`.
+  - **`cmd_update`'s Step 7** (and `doctor --fix`'s re-render remedy) now
+    call a shared `_render_enabled_targets()` helper that renders every
+    ENABLED target, instead of calling the Claude-only `_do_render()`
+    directly — so a framework upgrade atomically re-renders every enabled
+    harness's artifacts, the actual Decision #1 promise.
+  - Proven by a second, non-Claude **mock render target**
+    (`tests/test_render_target_seam_is_load_bearing.py`, 9 new tests) whose
+    compiled artifact is (a) correctly drift-checked by doctor/verify via
+    `expected_live_bytes()` — a naive byte-copy comparison would false-flag
+    it as drifted immediately after a correct render, (b) re-rendered by
+    `cmd_update`'s Step 7 (exercised through a real signed-fetch update
+    cycle, not a stand-in for it), and (c) gated by per-install enablement —
+    absent from `render_targets.enabled`, `tessctl render` and `cmd_update`'s
+    Step 7 never emit/invoke it, proving a Claude-only install won't
+    silently start emitting a future target's artifacts. 6 new tests in
+    `tests/test_render_targets.py` cover `ClaudeCodeRenderTarget`'s own
+    `expected_live_bytes()` / `render_generated_paths()` implementations and
+    the `render()` return-contract (LOW-3, below).
+- **MED-3 — per-install render-target enablement.** New
+  `tess.manifest.json` key `render_targets.enabled` (default
+  `["claude-code"]`); `tessctl render` with no flags and `cmd_update`'s
+  Step 7 render only ENABLED targets. `tessctl render --target <name>`
+  explicitly bypasses enablement (an operator naming a target by hand is an
+  explicit ask, not the silent-default case this guards against).
+  `tessctl render --list-targets` now flags which registered targets are
+  enabled for this install. This is the mechanism that keeps a Claude-only
+  install from emitting e.g. `codex`/`AGENTS.md` the moment a Phase 2+
+  target is added to the registry — a target must be both registered AND
+  enabled to render by default (also backs the plan's future wizard
+  harness-select axis 6, still Phase 2 scope).
+- **MED-1 — the `.local.md` shadow-append skip now routes through the
+  canonical `is_security_tier()` predicate** instead of a second, independent
+  `in SECURITY_TIER_PATHS` membership check inside `render_core_to_live()`.
+  `doctor_check_file()` and `cmd_verify`'s per-file loop now pass the real
+  `tess.lock` entry attrs through, so a file marked `tier: security` in the
+  lock is protected from a `.local.md` shadow-append even if it is not (yet)
+  also hardcoded into `SECURITY_TIER_PATHS` — closing a latent doctrine-
+  weakening gap before a future security-tier `.md` file is added and
+  someone forgets to update both places. Callers without the lock attrs
+  handy keep the pre-existing (unchanged) behavior. 2 new tests in
+  `tests/test_m2_polish.py` cover the lock-only-tier case (attrs supplied vs.
+  not) and the end-to-end `doctor_check_file()` drift-flagging path.
+- **LOW-2 — stale `{{TESS_ROOT}}` documentation corrected**
+  (`tess.manifest.json`, `adapters/README.md`, `adapters/claude-code/README.md`,
+  `.tess/core/MANIFEST.md`). Zero core files ship the literal `{{TESS_ROOT}}`
+  template token today — the guard hooks and `settings-core.json` resolve
+  their project root at runtime via `$CLAUDE_PROJECT_DIR` (a Claude Code
+  env var), not via `tessctl`'s render-time token substitution. The docs
+  previously implied the token was in active use for these files. Reworded
+  to state accurately why rendered output is byte-identical across
+  machines/roots: no absolute path is ever baked in at render time, not "the
+  substitution happens to be consistent." The substitution mechanism itself
+  is real and tested (`tests/test_render.py`) — it's simply unused by any
+  file currently shipped.
+- **LOW-3 — the `render()` return contract is now documented**: every
+  `RenderTarget.render()` call returns `{"target": <name>, "status":
+  "rendered"}` (see `ClaudeCodeRenderTarget.render()`); pinned in the
+  `RenderTarget` interface doc block and `adapters/README.md`.
+- **MED-2 + LOW-1 — honest re-scope note.** `docs/ULTIMATE_FRAMEWORK_PLAN.md`
+  §E.2's Phase 1 roadmap line now carries an explicit delivered-vs-deferred
+  callout: this phase shipped the render-target seam + the `claude-code`
+  target + the `core/contracts/**` wiring — NOT the `codex`/`gemini`/`generic`
+  targets, the `core/doctrine/` extraction, wizard axis 6, or
+  `core/contracts/policy.schema.json` (never built; `CONTRACT_SCHEMAS` in
+  `.tess/bin/tessctl` only covers brief/crew-plan/verdict/return-manifest).
+  Those remain explicit Phase 2+ scope.
+- **Acknowledged scope boundary (not fixed this pass):** `cmd_init`,
+  `cmd_restore`, `cmd_identity`, `cmd_rename`, `cmd_set_operator`, and
+  `cmd_pathway` still call the Claude-only `_do_render()` directly after
+  scaffolding/identity changes, rather than the registry-driven
+  `_render_enabled_targets()`. These are operator-initiated identity
+  mutations (today inherently Claude-Code-shaped — "the conductor's name in
+  CLAUDE.md"), not part of the three subsystems Fable's review named
+  (doctor/verify Check B, the render-generated classification, `cmd_update`'s
+  Step 7) — the "silently stale on `tessctl update`" risk HIGH-1 is about
+  doesn't apply to a command the operator is explicitly running right now.
+  Left out of this pass deliberately rather than silently: a Phase 2+ target
+  with its own name-bearing artifacts will need an equivalent identity-
+  re-render step, and these six call sites are exactly where to wire it once
+  that target's own token/identity model exists to design against.
+- Full suite: **364 passed** (347 existing + 17 new: 6 in
+  `tests/test_render_targets.py`, 2 in `tests/test_m2_polish.py`, 9 in the
+  new `tests/test_render_target_seam_is_load_bearing.py`), zero regressions.
+  `tessctl doctor` / `tessctl verify` / `tessctl lock --check` all clean
+  against the live working tree (`.tess/core/MANIFEST.md`'s `base_sha` was
+  re-pinned via `tessctl lock --regen --yes` after the LOW-2 doc fix there —
+  the one deliberate, reviewed core-content change this pass made).
 - **`core/contracts/`** — Phase 0 of the Ultimate Framework Plan
   ("Contracts-as-code", Design Decision #3): four JSON Schemas
   (`brief.schema.json`, `crew-plan.schema.json`, `verdict.schema.json`,

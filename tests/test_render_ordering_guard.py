@@ -37,10 +37,17 @@ from test_tracked_render_e2e import (
 # ---------------------------------------------------------------------------
 
 # The fixed engine renders here (post-A1/A2):
+# HIGH-1 (Fable Phase-1 review): Step 7 now calls _render_enabled_targets()
+# (renders every ENABLED render target, MED-3) instead of the Claude-only
+# _do_render() directly. For the default shipped manifest (claude-code the
+# only enabled target) this is behavior-identical — _render_enabled_targets
+# still ends up calling ClaudeCodeRenderTarget.render(), which itself calls
+# _do_render() — so this guard's semantics (premature vs. correctly-ordered
+# render) are unchanged.
 _FIXED_RENDER_BLOCK = (
     '        if not dry_run:\n'
     '            print("\\nStep 7: render (from new core, post-A1/A2) …")\n'
-    '            _do_render(root, verbose=True)\n'
+    '            _render_enabled_targets(root, verbose=True)\n'
 )
 # Neutered: disable the post-advance render entirely.
 _DISABLED_RENDER_BLOCK = (
@@ -58,7 +65,7 @@ _APPLY_LINE_PLUS_PREMATURE = (
     _APPLY_LINE
     + '        if not dry_run:\n'
     + '            # NEUTER: premature render (pre-A1) — reproduces the ordering bug\n'
-    + '            _do_render(root, verbose=True)\n'
+    + '            _render_enabled_targets(root, verbose=True)\n'
 )
 
 
