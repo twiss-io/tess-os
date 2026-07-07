@@ -45,7 +45,11 @@ missions/<id>/
 │                       command that mutates the record (`gate clear`)
 └── retries/
     ├── .gitkeep
-    └── <task>.attempt-<N>.md   # one file per logged retry attempt
+    └── <task-slug>.attempt-<N>.md   # one file per logged retry attempt;
+                                       # <task-slug> is the NORMALIZED task
+                                       # (lowercase, kebab-cased) — see
+                                       # "The typed-retry ledger's two
+                                       # rules" below
 ```
 
 `mission.md` and `mission.json` are **two serializations of the same
@@ -110,8 +114,10 @@ Every mission record is seeded with all five, `cleared: false`, at
 ./tessctl gate-status <id>                                      # read-only report
 ./tessctl gate clear research-before-build --mission <id> --evidence path/to/leah-brief.md
                                                                   # REFUSES: missing --evidence,
-                                                                  #          or --evidence path
-                                                                  #          that does not exist
+                                                                  #          or --evidence that is
+                                                                  #          missing, empty, a
+                                                                  #          directory, or outside
+                                                                  #          the repo
 
 # Typed retry
 ./tessctl retry log <task> --mission <id> --cause context-gap \
@@ -143,23 +149,48 @@ region — never from the model's own say-so:
 
 1. **The 3-attempt cap** (`subagent-failure-protocol.md` "Attempt Cap —
    3"). `retry check`/`retry log` count the attempt files already on disk
-   for a task; a would-be 4th is blocked outright.
+   for a task; a would-be 4th is blocked outright. The cap is keyed on a
+   **normalized task slug** (`_retry_task_slug` — lowercase, whitespace/
+   punctuation collapsed to `-`), not the caller's literal spelling, so a
+   cosmetic rename (`deploy` vs `deploy ` vs `Deploy`) cannot reset the
+   budget — the on-disk filename and the scan both use the same slug (a
+   human-readable task label is still preserved in the attempt record's
+   own `task` field/body).
 2. **Same-brief retries are forbidden for every non-transient cause**
    (`subagent-failure-protocol.md`, cause-classification table). Each
    attempt file stores the VERBATIM `brief_text` used for that attempt (not
    just a path, since the live brief a path points at can change between
    attempts). A proposed attempt whose `--brief` file's content is a
-   **literal** match (whitespace-trimmed) of the immediately preceding
-   attempt's stored `brief_text` is blocked — UNLESS `--cause transient`
-   (an infrastructure hiccup is explicitly allowed a same-brief retry with
-   backoff).
+   **literal** match — after collapsing all whitespace runs, not just
+   trimming the ends — of **any prior attempt's** stored `brief_text` (not
+   only the immediately preceding one, so an A -> B -> A ping-pong is
+   still caught) is blocked — UNLESS `--cause transient` (an infrastructure
+   hiccup is explicitly allowed a same-brief retry with backoff). This is a
+   trivial-evasion guard, not a semantic diff — a genuine paraphrase of an
+   old brief is not detected.
+
+**`task` and `--mission <id>` are both constrained to safe values.** `task`
+is normalized through the same kebab-slug alphabet (`[a-z0-9-]`) used for
+mission ids, so it can never reach the filesystem as anything but a single
+path component. `--mission <id>` is validated as exactly one path
+component with no `..` before it is ever joined onto `root/missions/`, and
+the resolved result is asserted to still be under `missions/` — belt and
+suspenders against both a crafted `../`-bearing id and an absolute id
+(`Path.__truediv__` silently discards everything to its left when joined
+with an absolute right-hand side).
 
 ## Evidence discipline
 
 `tessctl gate clear` mirrors `return-manifest.schema.json`'s own
 artifact-existence discipline ("a file that must exist at a contracted
-path either exists or doesn't"): `--evidence <path>` must point at a REAL,
-existing file. Missing the flag is an argparse usage error; the flag
-present but pointing at nothing is refused explicitly, with the same
-message either way — a gate cannot be talked into "cleared" by an agent
-that simply asserts it.
+path either exists or doesn't"), tightened to: `--evidence <path>` must
+point at a REAL, REGULAR, NON-EMPTY file, resolved relative to the Tess
+root (not this process's CWD) and inside the repo. An empty file,
+`/dev/null`, a bare directory, or a path outside the repo is refused with
+the same explicit message discipline as a missing path — a gate cannot be
+talked into "cleared" by an agent that simply asserts it, or by pointing
+`--evidence` at something that technically "exists" but backs no real
+claim. `tessctl validate mission <file>` (via `_lint_mission`) re-checks
+the SAME rule against any mission record on disk, including one a human or
+agent hand-edited outside the CLI — a `cleared: true` claim whose evidence
+fails this check is schema/lint-invalid either way.

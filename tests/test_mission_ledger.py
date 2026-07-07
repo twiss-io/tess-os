@@ -300,7 +300,10 @@ def test_retry_log_writes_valid_attempt_file(mroot):
               "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief)
     assert r.returncode == 0, r.stdout + r.stderr
 
-    attempt = mroot / "missions" / mission_id / "retries" / "taskX.attempt-1.md"
+    # MEDIUM-1 (Fable integrity review): the ledger key is the NORMALIZED
+    # task slug ("taskx", not "taskX") — see test_retry_ledger_key_is_
+    # normalized_task_slug below for the dedicated proof of this.
+    attempt = mroot / "missions" / mission_id / "retries" / "taskx.attempt-1.md"
     assert attempt.exists()
     v = _run(mroot, "validate", "retry", str(attempt))
     assert v.returncode == 0, v.stdout + v.stderr
@@ -333,8 +336,9 @@ def test_retry_blocks_identical_brief_for_context_gap_but_allows_changed_brief(m
                      "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_a)
     assert log_same.returncode != 0
     assert "REFUSED" in (log_same.stdout + log_same.stderr)
-    # No attempt-2 file was written by the refused call.
-    assert not (mroot / "missions" / mission_id / "retries" / "taskY.attempt-2.md").exists()
+    # No attempt-2 file was written by the refused call. (Ledger key is the
+    # normalized task slug — "tasky", not "taskY" — MEDIUM-1.)
+    assert not (mroot / "missions" / mission_id / "retries" / "tasky.attempt-2.md").exists()
 
     # changed brief, same non-transient cause -> ALLOWED
     check_changed = _run(mroot, "retry", "check", "taskY", "--mission", mission_id,
@@ -345,7 +349,7 @@ def test_retry_blocks_identical_brief_for_context_gap_but_allows_changed_brief(m
     log_changed = _run(mroot, "retry", "log", "taskY", "--mission", mission_id,
                         "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_b)
     assert log_changed.returncode == 0, log_changed.stdout + log_changed.stderr
-    assert (mroot / "missions" / mission_id / "retries" / "taskY.attempt-2.md").exists()
+    assert (mroot / "missions" / mission_id / "retries" / "tasky.attempt-2.md").exists()
 
 
 def test_retry_allows_identical_brief_for_transient_cause(mroot):
@@ -385,9 +389,10 @@ def test_retry_blocks_a_4th_attempt(mroot):
                 "--cause", "wrong-approach", "--failure-state", "error", "--brief", briefs[3])
     assert log4.returncode != 0
     assert "REFUSED" in (log4.stdout + log4.stderr)
-    assert not (mroot / "missions" / mission_id / "retries" / "taskCap.attempt-4.md").exists()
+    # Ledger key is the normalized task slug — "taskcap", not "taskCap" (MEDIUM-1).
+    assert not (mroot / "missions" / mission_id / "retries" / "taskcap.attempt-4.md").exists()
 
-    remaining = sorted((mroot / "missions" / mission_id / "retries").glob("taskCap.attempt-*.md"))
+    remaining = sorted((mroot / "missions" / mission_id / "retries").glob("taskcap.attempt-*.md"))
     assert len(remaining) == 3
 
 
@@ -540,3 +545,389 @@ def test_missions_dir_invisible_to_doctor_verify_lock_check(real_root):
     # Manifest actually declares it never_touch (static wiring check).
     manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
     assert "missions/**" in manifest["never_touch"]
+
+
+# =============================================================================
+# Fable integrity review (PR #44 follow-up) — MEDIUM-1, MEDIUM-2, LOW-1, LOW-2.
+# Each block below reproduces the exact evasion Fable found, proves it is now
+# blocked, and (for the write-side findings) proves nothing escaped onto disk.
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-1 — the retry cap is keyed on a NORMALIZED task slug, not the
+# literal caller-supplied string. Before the fix, `deploy` hitting the
+# 3-attempt cap did not stop `deploy ` (trailing space) or `Deploy`
+# (capitalized) from each opening a fresh, unused attempt-1.
+# ---------------------------------------------------------------------------
+
+def test_retry_ledger_key_is_normalized_task_slug(mroot):
+    mission_id = _new_mission(mroot)
+    brief = _brief(mroot, "brief.md", "Some brief text.")
+    r = _run(mroot, "retry", "log", "Deploy Now", "--mission", mission_id,
+             "--cause", "transient", "--failure-state", "error", "--brief", brief)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (mroot / "missions" / mission_id / "retries" / "deploy-now.attempt-1.md").exists()
+
+
+def test_retry_cap_evasion_via_cosmetic_rename_is_blocked(mroot):
+    """Fable's exact repro: 'deploy' hits the 3-attempt cap, then 'deploy '
+    (trailing space) and 'Deploy' (capitalized) are each attempted.
+    BEFORE the fix, each cosmetic variant scanned an EMPTY directory
+    listing under its own literal spelling and opened a fresh attempt-1 —
+    the cap tracked the caller's exact spelling, not the task. AFTER the
+    fix, both variants share the SAME cap budget as 'deploy' and are
+    blocked as a 4th attempt, with no new attempt file written for either."""
+    mission_id = _new_mission(mroot)
+    briefs = [_brief(mroot, f"deploy-brief-{i}.md", f"Deploy attempt {i}.") for i in range(1, 4)]
+
+    for i in range(3):
+        r = _run(mroot, "retry", "log", "deploy", "--mission", mission_id,
+                  "--cause", "transient", "--failure-state", "error", "--brief", briefs[i])
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    # Cap reached on the canonical spelling.
+    check_canonical = _run(mroot, "retry", "check", "deploy", "--mission", mission_id)
+    assert check_canonical.returncode == 1
+    assert "attempt 4" in check_canonical.stdout and "BLOCKED" in check_canonical.stdout
+
+    # Trailing-space cosmetic variant: must be BLOCKED as attempt 4, not
+    # allowed through as a fresh attempt 1.
+    check_space = _run(mroot, "retry", "check", "deploy ", "--mission", mission_id)
+    assert check_space.returncode == 1, check_space.stdout
+    assert "attempt 4" in check_space.stdout
+    assert "BLOCKED" in check_space.stdout
+
+    log_space = _run(mroot, "retry", "log", "deploy ", "--mission", mission_id,
+                      "--cause", "transient", "--failure-state", "error", "--brief", briefs[0])
+    assert log_space.returncode != 0
+    assert "REFUSED" in (log_space.stdout + log_space.stderr)
+
+    # Capitalized cosmetic variant: same story.
+    check_cap = _run(mroot, "retry", "check", "Deploy", "--mission", mission_id)
+    assert check_cap.returncode == 1, check_cap.stdout
+    assert "attempt 4" in check_cap.stdout
+    assert "BLOCKED" in check_cap.stdout
+
+    log_cap = _run(mroot, "retry", "log", "Deploy", "--mission", mission_id,
+                    "--cause", "transient", "--failure-state", "error", "--brief", briefs[0])
+    assert log_cap.returncode != 0
+    assert "REFUSED" in (log_cap.stdout + log_cap.stderr)
+
+    # Exactly 3 attempt files exist total, ALL sharing the one normalized
+    # slug — no fresh attempt-1 was ever created for a cosmetic variant.
+    retries_dir = mroot / "missions" / mission_id / "retries"
+    all_files = sorted(p.name for p in retries_dir.iterdir() if p.name != ".gitkeep")
+    assert all_files == ["deploy.attempt-1.md", "deploy.attempt-2.md", "deploy.attempt-3.md"]
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-2 — `gate clear --evidence` (and `_lint_mission`'s re-check, run by
+# `tessctl validate mission`) requires a REAL, REGULAR, NON-EMPTY file
+# INSIDE the repo. Existence alone (the original check) was satisfied by an
+# empty file, /dev/null, or a bare directory — Fable's exact repro: each of
+# these "cleared" the gate.
+# ---------------------------------------------------------------------------
+
+@pytestmark_gate
+def test_gate_clear_refuses_empty_evidence_file(mroot):
+    mission_id = _new_mission(mroot, "Empty Evidence Mission")
+    empty = mroot / "empty-evidence.md"
+    empty.write_text("", encoding="utf-8")
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", mission_id, "--evidence", str(empty))
+    assert r.returncode != 0
+    assert "REFUSED" in (r.stdout + r.stderr)
+    assert "empty" in (r.stdout + r.stderr).lower()
+
+    status = json.loads(_run(mroot, "mission", "status", mission_id, "--json").stdout)
+    assert all(g["cleared"] is False for g in status["gates"])
+
+
+@pytestmark_gate
+def test_gate_clear_refuses_directory_evidence(mroot):
+    mission_id = _new_mission(mroot, "Directory Evidence Mission")
+    a_dir = mroot / "a-directory"
+    a_dir.mkdir()
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", mission_id, "--evidence", str(a_dir))
+    assert r.returncode != 0
+    assert "REFUSED" in (r.stdout + r.stderr)
+    assert "not a regular file" in (r.stdout + r.stderr)
+
+    status = json.loads(_run(mroot, "mission", "status", mission_id, "--json").stdout)
+    assert all(g["cleared"] is False for g in status["gates"])
+
+
+@pytestmark_gate
+@pytest.mark.skipif(not Path("/dev/null").exists(), reason="/dev/null not present on this platform")
+def test_gate_clear_refuses_dev_null_evidence(mroot):
+    mission_id = _new_mission(mroot, "Dev Null Evidence Mission")
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", mission_id, "--evidence", "/dev/null")
+    assert r.returncode != 0
+    assert "REFUSED" in (r.stdout + r.stderr)
+
+    status = json.loads(_run(mroot, "mission", "status", mission_id, "--json").stdout)
+    assert all(g["cleared"] is False for g in status["gates"])
+
+
+@pytestmark_gate
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo not available on this platform")
+def test_gate_clear_refuses_fifo_evidence(mroot):
+    """A non-regular file INSIDE the repo (so containment alone would have
+    let it through) — proves the is_file() check specifically, distinct
+    from the outside-root containment check."""
+    mission_id = _new_mission(mroot, "FIFO Evidence Mission")
+    fifo = mroot / "a-fifo"
+    os.mkfifo(fifo)
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", mission_id, "--evidence", str(fifo))
+    assert r.returncode != 0
+    assert "REFUSED" in (r.stdout + r.stderr)
+    assert "not a regular file" in (r.stdout + r.stderr)
+
+
+@pytestmark_gate
+def test_gate_clear_refuses_evidence_outside_root(mroot, tmp_path_factory):
+    mission_id = _new_mission(mroot, "Outside Root Evidence Mission")
+    outside = tmp_path_factory.mktemp("outside-repo") / "evidence.md"
+    outside.write_text("real content, but in the wrong tree", encoding="utf-8")
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", mission_id, "--evidence", str(outside))
+    assert r.returncode != 0
+    assert "REFUSED" in (r.stdout + r.stderr)
+    assert "outside the Tess root" in (r.stdout + r.stderr)
+
+    status = json.loads(_run(mroot, "mission", "status", mission_id, "--json").stdout)
+    assert all(g["cleared"] is False for g in status["gates"])
+
+
+# MEDIUM-2, continued — the SAME check via `tessctl validate mission`, on a
+# HAND-CRAFTED record `gate clear` never wrote. This is the second half of
+# Fable's finding: "`_lint_mission`'s re-check has the same weak check ->
+# `tessctl validate` doesn't catch it either."
+
+def _hand_crafted_cleared_mission(mroot, evidence_value):
+    inst = _valid_mission_instance()
+    inst["gates"][0]["cleared"] = True
+    inst["gates"][0]["cleared_by"] = "attacker"
+    inst["gates"][0]["cleared_at"] = "2026-07-07T00:00:00Z"
+    inst["gates"][0]["evidence"] = evidence_value
+    path = mroot / "hand-crafted-mission.json"
+    path.write_text(json.dumps(inst), encoding="utf-8")
+    return path
+
+
+def test_validate_mission_rejects_empty_file_evidence(mroot):
+    empty = mroot / "empty.md"
+    empty.write_text("", encoding="utf-8")
+    path = _hand_crafted_cleared_mission(mroot, "empty.md")
+
+    r = _run(mroot, "validate", "mission", str(path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "empty" in r.stdout.lower()
+
+
+def test_validate_mission_rejects_directory_evidence(mroot):
+    a_dir = mroot / "a-directory"
+    a_dir.mkdir()
+    path = _hand_crafted_cleared_mission(mroot, "a-directory")
+
+    r = _run(mroot, "validate", "mission", str(path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "not a regular file" in r.stdout
+
+
+def test_validate_mission_rejects_dev_null_evidence(mroot):
+    path = _hand_crafted_cleared_mission(mroot, "/dev/null")
+
+    r = _run(mroot, "validate", "mission", str(path))
+    assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_validate_mission_rejects_outside_root_evidence(mroot, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside-repo") / "evidence.md"
+    outside.write_text("real content, wrong tree", encoding="utf-8")
+    path = _hand_crafted_cleared_mission(mroot, str(outside))
+
+    r = _run(mroot, "validate", "mission", str(path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "outside the Tess root" in r.stdout
+
+
+def test_validate_mission_accepts_real_evidence(mroot):
+    """Non-vacuous control: the SAME hand-crafted-record path, with a real,
+    regular, non-empty, in-repo evidence file, still validates clean."""
+    real = mroot / "real-evidence.md"
+    real.write_text("genuine evidence content", encoding="utf-8")
+    path = _hand_crafted_cleared_mission(mroot, "real-evidence.md")
+
+    r = _run(mroot, "validate", "mission", str(path))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# LOW-1 — the same-brief check compares a proposed brief against EVERY
+# prior attempt for the task (not just the immediately preceding one), and
+# normalizes internal whitespace before comparing.
+# ---------------------------------------------------------------------------
+
+def test_retry_blocks_ping_pong_back_to_first_brief(mroot):
+    """A -> B -> A: attempt 3 proposes the SAME brief as attempt 1, even
+    though it differs from attempt 2 (the immediately preceding one).
+    BEFORE the fix, the check only compared against the LAST attempt, so
+    this ping-pong was allowed through on attempt 3; AFTER the fix it is
+    blocked, because attempt 1 is still a literal match."""
+    mission_id = _new_mission(mroot)
+    brief_a = _brief(mroot, "ping-pong-a.md", "Investigate the queue backlog.")
+    brief_b = _brief(mroot, "ping-pong-b.md", "Check the worker pool size instead.")
+
+    r1 = _run(mroot, "retry", "log", "pingpong", "--mission", mission_id,
+              "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_a)
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    r2 = _run(mroot, "retry", "log", "pingpong", "--mission", mission_id,
+              "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_b)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    # Attempt 3 proposes brief_a again — a literal match of attempt 1, NOT
+    # of the immediately preceding attempt 2.
+    check3 = _run(mroot, "retry", "check", "pingpong", "--mission", mission_id,
+                   "--cause", "context-gap", "--brief", brief_a)
+    assert check3.returncode == 1, check3.stdout
+    assert "BLOCKED" in check3.stdout
+    assert "same-brief retry forbidden" in check3.stdout
+
+    log3 = _run(mroot, "retry", "log", "pingpong", "--mission", mission_id,
+                "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_a)
+    assert log3.returncode != 0
+    assert "REFUSED" in (log3.stdout + log3.stderr)
+    assert not (mroot / "missions" / mission_id / "retries" / "pingpong.attempt-3.md").exists()
+
+
+def test_retry_blocks_whitespace_only_reformatted_brief(mroot):
+    """A brief that is byte-different from the prior one ONLY by
+    whitespace reformatting (extra spaces, re-wrapped lines, doubled blank
+    lines) must still read as the SAME brief — the original check trimmed
+    only leading/trailing whitespace, so internal reformatting evaded the
+    same-brief-forbidden rule."""
+    mission_id = _new_mission(mroot)
+    brief_a_path = mroot / "reformat-a.md"
+    brief_a_path.write_text(
+        "Investigate the failing test.\n\nCheck the config file.\n", encoding="utf-8",
+    )
+    brief_b_path = mroot / "reformat-b.md"
+    brief_b_path.write_text(
+        "Investigate   the failing test.\nCheck the config file.\n\n\n", encoding="utf-8",
+    )
+
+    r1 = _run(mroot, "retry", "log", "reformat-task", "--mission", mission_id,
+              "--cause", "context-gap", "--failure-state", "degraded", "--brief", str(brief_a_path))
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    check2 = _run(mroot, "retry", "check", "reformat-task", "--mission", mission_id,
+                   "--cause", "context-gap", "--brief", str(brief_b_path))
+    assert check2.returncode == 1, check2.stdout
+    assert "BLOCKED" in check2.stdout
+    assert "whitespace normalization" in check2.stdout
+
+    log2 = _run(mroot, "retry", "log", "reformat-task", "--mission", mission_id,
+                "--cause", "context-gap", "--failure-state", "degraded", "--brief", str(brief_b_path))
+    assert log2.returncode != 0
+    assert "REFUSED" in (log2.stdout + log2.stderr)
+
+
+def test_retry_allows_genuinely_different_third_brief_after_ping_pong(mroot):
+    """Non-vacuous control: a THIRD attempt with genuinely new content
+    (not matching EITHER prior attempt) is still allowed."""
+    mission_id = _new_mission(mroot)
+    brief_a = _brief(mroot, "control-a.md", "Investigate the queue backlog.")
+    brief_b = _brief(mroot, "control-b.md", "Check the worker pool size instead.")
+    brief_c = _brief(mroot, "control-c.md", "Actually re-read the upstream API docs.")
+
+    _run(mroot, "retry", "log", "control-task", "--mission", mission_id,
+         "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_a)
+    _run(mroot, "retry", "log", "control-task", "--mission", mission_id,
+         "--cause", "context-gap", "--failure-state", "degraded", "--brief", brief_b)
+
+    check3 = _run(mroot, "retry", "check", "control-task", "--mission", mission_id,
+                   "--cause", "context-gap", "--brief", brief_c)
+    assert check3.returncode == 0, check3.stdout
+    assert "ALLOWED" in check3.stdout
+
+
+# ---------------------------------------------------------------------------
+# LOW-2 — an unvalidated task/--mission argument must never let a write
+# land outside missions/<id>/.
+# ---------------------------------------------------------------------------
+
+def test_retry_log_task_traversal_stays_inside_retries_dir(mroot):
+    """`task` reaches the ledger key ONLY via `_retry_task_slug` — the slug
+    alphabet is [a-z0-9-], so '../' components in a caller-supplied task
+    string can never reach the filesystem as anything but a literal
+    (harmless) hyphen run."""
+    mission_id = _new_mission(mroot)
+    brief = _brief(mroot, "traversal-brief.md", "Traversal-safety check.")
+
+    r = _run(mroot, "retry", "log", "../../evil-task", "--mission", mission_id,
+              "--cause", "transient", "--failure-state", "error", "--brief", brief)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    retries_dir = mroot / "missions" / mission_id / "retries"
+    written = [p for p in retries_dir.iterdir() if p.name != ".gitkeep"]
+    assert len(written) == 1
+    assert "/" not in written[0].name and ".." not in written[0].name
+    assert written[0].name == "evil-task.attempt-1.md"
+
+    # Nothing was written anywhere outside mroot.
+    assert not (mroot.parent / "evil-task.attempt-1.md").exists()
+    assert not (mroot.parent.parent / "evil-task.attempt-1.md").exists()
+
+
+def test_retry_log_mission_id_traversal_cannot_escape_missions_dir(mroot, tmp_path):
+    """`--mission '../../../escaped-mission'` computed against
+    root/missions/<id> climbs three levels above `mroot` (missions -> os ->
+    tmp_path -> tmp_path's parent) before the fix's mission-id validation
+    ever runs — this asserts BOTH the refusal and that nothing was ever
+    created at the precise location the traversal targeted."""
+    brief = _brief(mroot, "b.md", "text")
+    escape_target = tmp_path.parent / "escaped-mission"
+
+    r = _run(mroot, "retry", "log", "task", "--mission", "../../../escaped-mission",
+              "--cause", "transient", "--failure-state", "error", "--brief", brief)
+    assert r.returncode != 0
+    assert "invalid mission id" in (r.stdout + r.stderr)
+    assert not escape_target.exists()
+
+
+def test_gate_clear_absolute_mission_id_rejected(mroot):
+    """The Path.__truediv__ footgun: an ABSOLUTE mission id joined with
+    `root / MISSIONS_DIR / mission_id` silently discards root + MISSIONS_DIR
+    entirely (the SAME footgun the verdict-signing `public_key_file`
+    containment check elsewhere in this file already guards against)."""
+    evidence = mroot / "e.md"
+    evidence.write_text("x", encoding="utf-8")
+
+    r = _run(mroot, "gate", "clear", "intake-before-anything",
+              "--mission", "/tmp/absolute-mission-id-should-be-rejected",
+              "--evidence", str(evidence))
+    assert r.returncode != 0
+    assert "invalid mission id" in (r.stdout + r.stderr)
+
+
+def test_gate_status_dotdot_mission_id_rejected(mroot):
+    r = _run(mroot, "gate-status", "..")
+    assert r.returncode != 0
+    assert "invalid mission id" in (r.stdout + r.stderr)
+
+
+def test_mission_status_slash_mission_id_rejected(mroot):
+    r = _run(mroot, "mission", "status", "some/../../thing")
+    assert r.returncode != 0
+    assert "invalid mission id" in (r.stdout + r.stderr)
