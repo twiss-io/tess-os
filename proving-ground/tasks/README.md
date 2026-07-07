@@ -85,7 +85,23 @@ that resolves to a path inside `fixture_dir` fails validation outright.
 4. **Independent grader-held reference implementations** (task 10) —
    grading isn't limited to the disclosed examples, so hardcoding them
    cannot pass.
+5. **Pytest-hijack rejection** (01, 02, 03, 04, 09 — every pytest-graded
+   task) — `pg_lib.grading.run_pytest_in_workdir` scans the produced
+   workdir for a `conftest.py` / `pytest.ini` / `tox.ini` /
+   `sitecustomize.py` / `setup.cfg` / `pyproject.toml` before ever
+   invoking pytest, and grades FAIL as a cheat-attempt if it finds one —
+   none of these ship in any task's `fixture/`, so their presence is
+   itself the signal. This closes an agent planting a
+   `pytest_runtest_makereport` hook that flips every failed test to
+   passed, which would otherwise force a green grade on an unfixed bug
+   without editing the protected test file at all (protected-path
+   checking alone never catches this — the cheat lives in a *new* file,
+   not a modified one). The invocation itself is additionally hardened
+   with `python -I -m pytest --noconftest -p no:cacheprovider` and a
+   stripped `PYTHONPATH`/`PYTHONSTARTUP` subprocess env, as
+   defense-in-depth. See `tests/test_grading_pytest_hijack.py`.
 
 Every one of these is exercised by a crafted "known good" / "known bad"
-fixture in `tests/test_graders_*.py` — see the top-level
-`proving-ground/README.md` for how to run them.
+fixture in `tests/test_graders_*.py` (plus `tests/test_grading_pytest_hijack.py`
+for #5) — see the top-level `proving-ground/README.md` for how to run
+them.

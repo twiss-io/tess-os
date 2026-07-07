@@ -178,12 +178,15 @@ unverified stat goes into the README") applied to this specific harness.
 - `run.py --dry-run` — validates all 10 manifests, every grader imports
   and exposes its entrypoint, the matrix wiring is sound. $0, no
   subprocess.
-- The full `pytest proving-ground/tests/` suite (63 tests) — every
+- The full `pytest proving-ground/tests/` suite (76 tests) — every
   grader unit-tested against a hand-crafted correct fix/implementation
   (must PASS) and at least one plausible wrong or naive/vulnerable
   version (must FAIL), plus the anti-cheat paths (protected-path
-  tampering, contract-file tampering) and the matrix/report aggregation
-  logic. $0, no subprocess.
+  tampering, contract-file tampering, and the pytest-hijack cheat — an
+  agent-planted `conftest.py`/`pytest.ini`/etc. that forces a false green
+  without fixing anything, see `pg_lib.grading.detect_pytest_hijack_files`
+  and `tests/test_grading_pytest_hijack.py`) and the matrix/report
+  aggregation logic. $0, no subprocess.
 - One real, cheap end-to-end cell (see Quickstart step 3) — proves
   `claude -p` invocation, JSON parsing, grading, and cost capture all
   wire together correctly on a live model call.

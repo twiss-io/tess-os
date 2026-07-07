@@ -5,37 +5,71 @@ function (the name is configurable via manifest `grader_entrypoint`, default
 `grade`). This module is what actually calls it, plus the shared,
 reusable grading primitives every per-task grader is built from:
 
-- `check_protected_paths`   — generic anti-cheat: fixture files an agent must
-                               not edit (e.g. the failing test it's meant to
-                               make pass) stayed byte-identical.
-- `import_module_from_path` — load a specific .py file under a unique module
-                               name, bypassing `sys.modules` caching so
-                               grading ten different tasks' same-named
-                               fixture files (or the same task graded twice
-                               across two different workdirs) never imports
-                               a stale cached copy.
-- `run_pytest_in_workdir`   — copy hidden test file(s) into a produced
-                               workdir and run them there with pytest.
-- `compare_answer_json`     — data-driven comparison for research-style
-                               tasks: the agent's `answer.json` vs. a
-                               task's `answer_key.json`, with float
-                               tolerance and case/whitespace-insensitive
-                               string comparison.
+- `check_protected_paths`      — generic anti-cheat: fixture files an agent
+                                  must not edit (e.g. the failing test it's
+                                  meant to make pass) stayed byte-identical.
+- `import_module_from_path`    — load a specific .py file under a unique
+                                  module name, bypassing `sys.modules`
+                                  caching so grading ten different tasks'
+                                  same-named fixture files (or the same task
+                                  graded twice across two different
+                                  workdirs) never imports a stale cached
+                                  copy.
+- `run_pytest_in_workdir`      — copy hidden test file(s) into a produced
+                                  workdir and run them there with pytest,
+                                  hardened against agent-planted pytest
+                                  config/plugin files (see
+                                  `detect_pytest_hijack_files` below).
+- `detect_pytest_hijack_files` — generic anti-cheat: reject any
+                                  `conftest.py` / `pytest.ini` / `tox.ini` /
+                                  `sitecustomize.py` / `setup.cfg` /
+                                  `pyproject.toml` an agent planted in its
+                                  workdir. None of these ship in any task's
+                                  fixture, so their mere presence is itself
+                                  the signal — see the module docstring on
+                                  `run_pytest_in_workdir` for the exact
+                                  attack this closes.
+- `compare_answer_json`        — data-driven comparison for research-style
+                                  tasks: the agent's `answer.json` vs. a
+                                  task's `answer_key.json`, with float
+                                  tolerance and case/whitespace-insensitive
+                                  string comparison.
 """
 from __future__ import annotations
 
 import filecmp
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from pg_lib.types import GradeResult, Manifest
 
 _MODULE_COUNTER = 0
+
+# Pytest (and the interpreter's own `site` machinery) auto-loads every one
+# of these on discovery, with zero opt-in required from whoever invokes
+# `pytest -m ...` — that's the entire point of the attack this closes.
+# None of the ten tasks' `fixture/` directories ship any of these
+# filenames (verified: only source + test files live there), so finding
+# one in a produced workdir is unambiguous evidence of an agent-planted
+# grading bypass, never a false positive from a legitimate fixture or the
+# `tess-os` scaffold (`CLAUDE.md` / `conductor/` / `agents/` / `.claude/` /
+# `core/` — none of those trees contain any of these filenames either).
+PYTEST_HIJACK_FILENAMES = frozenset(
+    {
+        "conftest.py",
+        "pytest.ini",
+        "tox.ini",
+        "sitecustomize.py",
+        "setup.cfg",
+        "pyproject.toml",
+    }
+)
 
 
 def check_protected_paths(manifest: Manifest, workdir: Path) -> Optional[GradeResult]:
@@ -114,6 +148,49 @@ def grade_task(manifest: Manifest, workdir: Path) -> GradeResult:
     return result
 
 
+def detect_pytest_hijack_files(workdir: Path) -> List[str]:
+    """Recursively scan `workdir` for pytest-auto-loaded config/plugin files
+    that never ship in any task's `fixture/` (see `PYTEST_HIJACK_FILENAMES`).
+
+    Returns a sorted list of paths (relative to `workdir`) that matched —
+    empty means clean. Recursive (not just the workdir root) as
+    defense-in-depth even though the current single-directory task
+    fixtures only make the top level reachable by pytest's own auto-load
+    walk: it costs nothing (workdirs are small, copied fixtures) and
+    verified false-positive-free against every task fixture and the
+    `tess-os` scaffold tree.
+    """
+    return sorted(
+        str(path.relative_to(workdir))
+        for path in workdir.rglob("*")
+        if path.is_file() and path.name in PYTEST_HIJACK_FILENAMES
+    )
+
+
+def _hardened_pytest_env() -> Dict[str, str]:
+    """A copy of the current environment with every var that could smuggle
+    code into the graded pytest subprocess stripped, on top of `-I`
+    (isolated mode) on the invocation itself:
+
+    - `PYTHONPATH`    — would let an inherited/misconfigured entry put the
+                        workdir (or anything else) on `sys.path` ahead of
+                        the interpreter's own resolution.
+    - `PYTHONSTARTUP` — interactive-only in real terms, but there's no
+                        reason to let it survive into a subprocess that
+                        grades untrusted code.
+    - `PYTHONNOUSERSITE=1` — belt-and-suspenders alongside `-I`'s implied
+                        `-s`: never process a user-site `sitecustomize.py`
+                        / `usercustomize.py` for this subprocess, so this
+                        guarantee doesn't silently depend on `-I` staying
+                        on the command line forever.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONSTARTUP", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
 def run_pytest_in_workdir(
     workdir: Path,
     test_files: Iterable[str],
@@ -128,7 +205,42 @@ def run_pytest_in_workdir(
     (never shipped in `fixture/`) — they're copied into the workdir first,
     under their own basename, so they can import the agent's implementation
     module by relative import exactly like a real hidden test suite would.
+
+    Hardened against the pytest-hijack cheat (an agent-planted
+    `conftest.py` with a `pytest_runtest_makereport` hook that flips
+    failed -> passed, forcing every collected test green without fixing
+    anything — reproduced and closed here, see
+    `tests/test_grading_pytest_hijack.py`):
+
+    1. BEFORE running anything, `detect_pytest_hijack_files` scans the
+       workdir (which at this point holds only fixture contents + whatever
+       the agent produced — hidden test sources are copied in *after* this
+       check, and are never named one of the hijack filenames). Any hit
+       is graded FAIL immediately, flagged as a cheat-attempt, and pytest
+       is never invoked.
+    2. The invocation itself runs `python -I -m pytest -q --noconftest
+       -p no:cacheprovider ...`: `--noconftest` refuses to collect ANY
+       conftest.py (defense-in-depth under step 1); `-I` (isolated mode)
+       ignores `PYTHONPATH`/`PYTHONSTARTUP` and never adds the workdir to
+       `sys.path` via the interpreter's own site machinery, closing the
+       sitecustomize/usercustomize env-injection vector; `-p
+       no:cacheprovider` drops the one built-in plugin that writes state
+       into the graded directory. None of this weakens grading a
+       legitimate fix: pytest resolves the fixture's own module imports
+       via its own rootdir insertion, not via `-I`/site path tricks, so
+       `import calc` / `from ratelimiter import TokenBucket` etc. keep
+       working exactly as before (verified across all five pytest-graded
+       tasks: 01, 02, 03, 04, 09).
     """
+    hijacked = detect_pytest_hijack_files(workdir)
+    if hijacked:
+        return GradeResult(
+            False,
+            f"cheat-attempt detected: pytest-hijack file(s) planted in workdir "
+            f"(none ship in any task fixture): {hijacked}",
+            {"hijack_files": hijacked},
+        )
+
     copied: List[Path] = []
     for src in hidden_test_sources:
         dest = workdir / src.name
@@ -138,11 +250,22 @@ def run_pytest_in_workdir(
 
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", *all_names],
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "pytest",
+                "-q",
+                "--noconftest",
+                "-p",
+                "no:cacheprovider",
+                *all_names,
+            ],
             cwd=str(workdir),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            env=_hardened_pytest_env(),
         )
     except subprocess.TimeoutExpired:
         return GradeResult(False, f"pytest timed out after {timeout_seconds}s", {"test_files": all_names})
