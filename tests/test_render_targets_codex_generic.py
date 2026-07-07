@@ -31,6 +31,7 @@ claude-code coverage) for the two new targets:
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 
@@ -493,3 +494,128 @@ def test_doctrine_edit_repropagates_into_agents_md_via_update(project, gpg_key, 
     assert d.returncode == 0, f"doctor not clean after upgrade:\n{d.stdout}\n{d.stderr}"
     v = run_cli(project.root, "verify")
     assert v.returncode == 0, f"verify not clean after upgrade:\n{v.stdout}\n{v.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Deletion of a render-generated artifact (Fable MEDIUM finding) —
+# _check_untracked_render_generated pre-fix treated ANY missing artifact as
+# "not yet rendered — not a failure," unconditionally, so deleting an
+# ALREADY-rendered AGENTS.md / .codex/prompts/*.md went completely
+# undetected by doctor, verify, AND `lock --check`. These tests pin the
+# fix's core distinction: an ENABLED target that HAS been rendered before
+# (proven by at least one of its own artifacts still being live), whose
+# expected artifact is missing while its render source is still present,
+# is DRIFT — not the benign "never rendered yet" state.
+# ---------------------------------------------------------------------------
+
+def test_check_untracked_flags_deleted_prompt_as_drift(project, engine):
+    """Unit-level: deleting one already-rendered `.codex/prompts/*.md`
+    mirror must be reported as drift by _check_untracked_render_generated
+    itself, with every other (still-present) artifact of the same target
+    unaffected."""
+    _seed_agents(project)
+    project.write()
+    _set_enabled(project, ["codex"])
+    engine.RENDER_TARGETS["codex"].render(project.root, verbose=False)
+
+    (project.root / ".codex" / "prompts" / "close.md").unlink()
+
+    results = engine._check_untracked_render_generated(project.root, covered=set())
+    by_path = {r["live_path"]: r for r in results}
+
+    assert ".codex/prompts/close.md" in by_path, (
+        "the deleted artifact was not even reported — pre-fix code silently "
+        "`continue`s on any missing render-generated path"
+    )
+    deleted = by_path[".codex/prompts/close.md"]
+    assert deleted["drift"] is True and deleted["pristine"] is False, deleted
+
+    # Untouched siblings of the SAME target must remain pristine, not
+    # collaterally flagged.
+    assert by_path["AGENTS.md"]["pristine"] is True
+    assert by_path[".codex/config.toml"]["pristine"] is True
+    assert by_path[".codex/prompts/wake.md"]["pristine"] is True
+
+
+def test_doctor_flags_deleted_codex_prompt(project, run_cli):
+    _seed_agents(project)
+    project.write()
+    _set_enabled(project, ["codex"])
+    r0 = run_cli(project.root, "render", "--target", "codex")
+    assert r0.returncode == 0, r0.stderr
+
+    (project.root / ".codex" / "prompts" / "close.md").unlink()
+
+    r = run_cli(project.root, "doctor")
+    assert r.returncode == 1, (
+        "doctor exited 0 after a rendered artifact was DELETED — the "
+        f"doctrine-bearing file can vanish undetected (Fable MEDIUM):\n{r.stdout}\n{r.stderr}"
+    )
+    assert ".codex/prompts/close.md" in r.stdout
+
+
+def test_doctor_verify_lock_check_flag_deleted_agents_md_and_prompts_dir(project, run_cli):
+    """Reproduces the finding's second scenario verbatim: AGENTS.md itself,
+    plus the entire .codex/prompts/ directory, deleted after a real render.
+    All three surfaces the finding named (doctor, verify, lock --check) must
+    now catch it instead of exiting 0."""
+    _seed_agents(project)
+    project.write()
+    _set_enabled(project, ["codex"])
+    r0 = run_cli(project.root, "render", "--target", "codex")
+    assert r0.returncode == 0, r0.stderr
+
+    (project.root / "AGENTS.md").unlink()
+    shutil.rmtree(project.root / ".codex" / "prompts")
+
+    d = run_cli(project.root, "doctor")
+    assert d.returncode == 1, f"doctor should FAIL when AGENTS.md is deleted:\n{d.stdout}\n{d.stderr}"
+    assert "AGENTS.md" in d.stdout
+
+    v = run_cli(project.root, "verify")
+    assert v.returncode == 1, f"verify should FAIL when AGENTS.md is deleted:\n{v.stdout}\n{v.stderr}"
+    assert "AGENTS.md" in v.stdout
+
+    lk = run_cli(project.root, "lock", "--check")
+    assert lk.returncode == 1, f"lock --check should FAIL when AGENTS.md is deleted:\n{lk.stdout}\n{lk.stderr}"
+    assert "AGENTS.md" in lk.stdout
+
+
+def test_doctor_clean_when_codex_enabled_but_still_never_rendered_matches_pre_fix_case(project, run_cli):
+    """Non-regression: the pre-existing benign case
+    (test_doctor_clean_when_codex_enabled_but_not_yet_rendered) must still
+    hold after the fix — a target that has NEVER produced any artifact for
+    this install is not "deletion," it's the documented startup state."""
+    _seed_agents(project)
+    project.write()
+    _set_enabled(project, ["codex"])
+    r = run_cli(project.root, "doctor")
+    assert r.returncode == 0, (
+        f"doctor should still tolerate an enabled-but-never-rendered target:\n{r.stdout}\n{r.stderr}"
+    )
+    v = run_cli(project.root, "verify")
+    assert v.returncode == 0, f"verify should still tolerate it too:\n{v.stdout}\n{v.stderr}"
+    lk = run_cli(project.root, "lock", "--check")
+    assert lk.returncode == 0, f"lock --check should still tolerate it too:\n{lk.stdout}\n{lk.stderr}"
+
+
+def test_never_rendered_target_not_falsely_flagged_via_shared_agents_md(project, run_cli):
+    """Regression guard for the fix's own mechanism: AGENTS.md is rendered
+    byte-identically by BOTH `codex` and `generic` (see CodexRenderTarget /
+    GenericRenderTarget docstrings). With both enabled but only `generic`
+    actually rendered, codex's OWN never-rendered artifacts
+    (.codex/config.toml, .codex/prompts/*.md) must NOT be flagged as
+    "deleted" merely because the SHARED AGENTS.md already exists on disk —
+    that would be a false positive the fix must not introduce."""
+    _seed_agents(project)
+    project.write()
+    _set_enabled(project, ["codex", "generic"])
+    r0 = run_cli(project.root, "render", "--target", "generic")
+    assert r0.returncode == 0, r0.stderr
+    assert not (project.root / ".codex").exists(), "codex-specific artifacts must not exist yet"
+
+    r = run_cli(project.root, "doctor")
+    assert r.returncode == 0, (
+        "doctor should tolerate codex's own artifacts never having been "
+        f"rendered, even though the SHARED AGENTS.md already exists:\n{r.stdout}\n{r.stderr}"
+    )

@@ -2291,23 +2291,78 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     staged_warn, drift, core_tamper) so callers can fold these results
     directly into their existing per-file result list / counters with no
     special-casing.
+
+    MEDIUM fix (Fable finding): a path that does not exist is EITHER —
+
+      (a) genuinely never rendered for THIS target (a target just enabled,
+          or a test fixture that only seeds a subset of a target's
+          artifacts) — benign, skipped, exactly as before; or
+      (b) drift — the artifact SHOULD exist (its target is enabled and its
+          own render source is still present) but has been deleted after a
+          real render, or a new source appeared and the target hasn't been
+          re-rendered since. Flagged the same way a hand-edited EXISTING
+          artifact already was.
+
+    The pre-fix code could not tell these apart — it treated "missing" as
+    uniformly (a), so `rm .codex/prompts/close.md` or even `rm AGENTS.md`
+    on an already-rendered install went undetected by doctor, verify, AND
+    `lock --check` (the doctrine-bearing AGENTS.md could vanish with no
+    signal at all). The fix: a target counts as "has been rendered at
+    least once for this install" iff at least one of its OWN artifacts is
+    either already live on disk or covered by its own lock entry — a
+    target with zero such evidence has never run, so its declared paths
+    simply not existing yet is the documented startup state, not a
+    failure. A target WITH that evidence that is nonetheless missing one
+    of its OTHER declared paths has lost an artifact that should be
+    there — that is now reported exactly like any other drift.
+
+    "Its OWN artifacts" deliberately EXCLUDES any path also declared by
+    another currently-ENABLED target (today: AGENTS.md, rendered
+    byte-identically by both `codex` and `generic` — see those classes'
+    docstrings). Without this exclusion, enabling both targets but only
+    ever running `render --target generic` would make AGENTS.md's mere
+    presence "prove" codex has rendered too, false-flagging codex's own,
+    never-yet-rendered `.codex/config.toml` / `.codex/prompts/*.md` as
+    "deleted."
+
+    LOW (noted, not fixed here): a DISABLED target's artifacts are excluded
+    entirely (enabled_render_targets() above) even when they happen to
+    exist on disk — e.g. this very repo ships a committed AGENTS.md /
+    .codex/** while render_targets.enabled defaults to ["claude-code"]
+    only, and neither is drift-checked today. Deliberately NOT widened to
+    scan disabled targets' paths whenever present: `.codex/config.toml`
+    and `AGENTS.md` are paths OTHER tools legitimately own independently of
+    Tess (the Codex CLI itself; any AGENTS.md-reading assistant) — an
+    install that has never enabled the codex/generic target could have its
+    own unrelated file at that exact path, and flagging that as
+    "UNCAPTURED DRIFT" would be a new false positive this fix must not
+    introduce. Covering disabled-but-shipped artifacts needs its own
+    opt-in signal (e.g. "this repo's committed AGENTS.md was itself
+    produced by `tessctl render`, not hand-authored elsewhere"), not a
+    blanket disabled-target scan — left for a follow-up.
     """
     results = []
-    for target in enabled_render_targets(root).values():
-        for live_rel in sorted(target.render_generated_paths(root)):
+    enabled = enabled_render_targets(root)
+    for name, target in enabled.items():
+        target_rels = sorted(target.render_generated_paths(root))
+
+        # Paths also owned by another currently-enabled target (AGENTS.md
+        # today) prove nothing about whether THIS target specifically has
+        # ever rendered — exclude them from the "has this target run
+        # before" evidence set.
+        other_targets_paths: set = set()
+        for other_name, other_target in enabled.items():
+            if other_name != name:
+                other_targets_paths |= other_target.render_generated_paths(root)
+        evidence_rels = [r for r in target_rels if r not in other_targets_paths]
+        rendered_before = any(
+            (root / r).exists() or r in covered for r in evidence_rels
+        )
+
+        for live_rel in target_rels:
             if live_rel in covered:
                 continue
             live_path = root / live_rel
-            if not live_path.exists():
-                continue  # not yet rendered — not a failure, see docstring
-            expected = target.expected_live_bytes(root, live_rel)
-            if expected is None:
-                # Declared as generated but this target has no bespoke
-                # compile for this specific path (shouldn't happen for a
-                # well-formed target — render_generated_paths() and
-                # expected_live_bytes() are meant to agree) — skip rather
-                # than false-flag; nothing authoritative to compare against.
-                continue
             r = {
                 "core_key": None,
                 "live_path": live_rel,
@@ -2320,6 +2375,29 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
                 "drift": False,
                 "core_tamper": False,
             }
+            if not live_path.exists():
+                if not rendered_before:
+                    continue  # genuinely never rendered yet — not a failure
+                expected = target.expected_live_bytes(root, live_rel)
+                if expected is None:
+                    continue  # source itself is gone too — nothing to flag against
+                r["pristine"] = False
+                r["drift"] = True
+                r["issues"].append(
+                    "UNCAPTURED DRIFT — render-generated file is missing "
+                    "(deleted after render, or its source changed and the "
+                    "target was never re-rendered)"
+                )
+                results.append(r)
+                continue
+            expected = target.expected_live_bytes(root, live_rel)
+            if expected is None:
+                # Declared as generated but this target has no bespoke
+                # compile for this specific path (shouldn't happen for a
+                # well-formed target — render_generated_paths() and
+                # expected_live_bytes() are meant to agree) — skip rather
+                # than false-flag; nothing authoritative to compare against.
+                continue
             if sha256_bytes(expected) == sha256_file(live_path):
                 r["pristine"] = True
             else:
