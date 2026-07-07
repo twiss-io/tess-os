@@ -21,7 +21,7 @@ files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:02ff257bcc8a1a8ea6b0783eca8e0378c7f6540205ef08d9db3fc857e391f568
+    base_sha: sha256:0f522f4fac38294c2aa02ff33ec001ddba769ff5b4367944e1abe3d7eb85592a
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5716,10 +5716,10 @@ files:
   .tess/core/templates/CLAUDE.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:37204ef5ca876233b301f6b6c10542545b06a765bececcdd21a99dd1de94bf29
+    base_sha: sha256:7e6435c61387e71c1c88875ee7e570a4008b78f03c7a3c971617a9fa09d7c1d7
     live_path: CLAUDE.md
     render: template
-    last_updated: 2026-06-28 00:00:00+00:00
+    last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/templates/claude-md/commands.md:
     status: core-managed
     tier: normal
@@ -5734,6 +5734,13 @@ files:
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
+  .tess/core/templates/claude-md/hard-floor.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:e82fe9c01cbcf8a6294df422fa56969e6d5c564fb8a035fa36efd11e17c74b55
+    live_path: CLAUDE.md
+    render: fragment
+    last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/templates/claude-md/orchestrators.md:
     status: core-managed
     tier: normal
@@ -5755,6 +5762,27 @@ files:
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-27 10:00:00+00:00
+  .tess/core/templates/agents-md/AGENTS.md.tpl:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:a9534cb14714ac7bbd38b2a37cf12c28c2785c8c92acd45231024c974bce0fe4
+    live_path: null
+    render: template
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/templates/agents-md/harness-note.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:f142f408e76d92dcdba24b3467c11ace472d8cee186f7b97e54065f864ec4c8c
+    live_path: null
+    render: fragment
+    last_updated: 2026-07-07 00:00:00+00:00
+  .tess/core/templates/agents-md/codex-config.toml.tpl:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:dd9d53ffd6b2e3ff275414a01ed989b2b09e5fb45852f26d37909d0d107ee439
+    live_path: null
+    render: template
+    last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/templates/client/_template/CLAUDE.md:
     status: core-managed
     tier: normal

@@ -6,6 +6,63 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`codex` + `generic` render targets — AGENTS.md emission (Goal #4:
+  "plug-and-play for Codex and frontier models"), proving the Phase 1
+  RenderTarget seam is genuinely load-bearing for a second and third real
+  target, not just a mock.** Tess OS's render-target layer had exactly one
+  target (`claude-code`); AGENTS.md is the Linux-Foundation-stewarded
+  standard read natively by Codex, Cursor, Copilot, Gemini CLI, Zed, and
+  Devin (60,000+ repos) — GitHub Spec Kit supports 30+ agents, Tess OS
+  supported one.
+  - `CodexRenderTarget` (Tier B) and `GenericRenderTarget` (Tier C) in
+    `.tess/bin/tessctl`, registered in `RENDER_TARGETS` alongside
+    `claude-code`. `tessctl render --target codex` emits `AGENTS.md`
+    (≤2,000 words, doctrine-linked, Rule Zero + the Doctrine
+    Gates/Verification/Retries/Hard-Floor sections reused VERBATIM from the
+    same core fragments CLAUDE.md composes — zero duplicated doctrine text),
+    `.codex/prompts/*.md` (mirroring the 26 command bodies into Codex's
+    native custom-prompt convention), and a `.codex/config.toml` fragment
+    (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`,
+    verified against Codex's real config precedence/trust model).
+    `tessctl render --target generic` emits the SAME `AGENTS.md` (see
+    `render_agents_md()`'s docstring — harness-neutral by design, no
+    ordering hazard if both targets are ever enabled at once) plus a plain
+    `prompts/*.md` mirror.
+  - New shared core fragment `.tess/core/templates/claude-md/hard-floor.md`,
+    extracted from CLAUDE.md.tpl's previously-inline "Doctrine Gates" /
+    "Verification, Retries, and the Hard Floor" sections (byte-identical
+    CLAUDE.md output verified before/after) — now genuinely reused by BOTH
+    CLAUDE.md and AGENTS.md via a new `{{CORE_HARD_FLOOR}}` token.
+  - `tess.manifest.json`'s `owned_globs` extended with `AGENTS.md`,
+    `.codex/prompts/**`, `.codex/config.toml`, `prompts/**`. Neither target
+    is in `render_targets.enabled` by default (registered-but-off — the
+    future harness-select wizard axis, not a hardcoded global default, is
+    meant to make this call per-install; adopt today via
+    `tessctl render --target codex` / `--target generic`, or add the name
+    yourself).
+  - New `_check_untracked_render_generated()` doctor/verify/`lock --check`
+    pass: `.codex/prompts/*.md` / `prompts/*.md` mirror `.tess/core/commands/*.md`
+    bodies that are ALREADY tess.lock-tracked under a different live_path
+    (`.claude/commands/*.md`) — the lock schema has no way to give a second
+    live destination to an already-tracked core_key, so this new pass
+    drift-checks those paths independently (a not-yet-rendered path is
+    tolerated, not flagged; an existing-but-hand-edited path IS flagged,
+    remedy `tessctl render`). Verified NOT to regress `claude-code`'s own
+    (fully lock-tracked) artifacts.
+  - `adapters/codex/README.md`, `adapters/generic/README.md` — full artifact
+    maps, matching `adapters/claude-code/README.md`'s existing format;
+    `adapters/README.md` updated (shipped-targets list, added step 7 to
+    "Adding a target", fixed a stale `~/.codex/prompts` reference).
+  - Tests: `tests/test_render_targets_codex_generic.py` (25 new tests —
+    registry/interface shape, AGENTS.md shared-bytes proof, expected_live_bytes
+    parity, CLI render for both targets, determinism, idempotency, write-gate
+    enforcement, the untracked-render-generated pass in all three call sites,
+    and a real signed-fetch `tessctl update` cycle proving a doctrine edit
+    re-propagates into AGENTS.md). `tests/test_render_targets.py` updated for
+    the 3-target registry (was asserting exactly one target; `"codex"` is no
+    longer a valid "unknown target" fixture). Full suite: 479 → 504, all
+    green.
+
 - **`tessctl verdict keygen` — turnkey verifier onboarding, closing the
   "cannot turn the gate on without manual GPG surgery" adoption gap.**
   `core/policy/policy.yaml` ships `verifier_keys: {}` deliberately empty —
