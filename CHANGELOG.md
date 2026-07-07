@@ -6,6 +6,59 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`tessctl mission` + the typed-retry ledger — mission records as code
+  (Goal #5).** Converts two pieces of doctrine PROSE (`conductor/
+  doctrine.md`'s five gates, `conductor/subagent-failure-protocol.md`'s
+  typed retry protocol) into DETERMINISTIC CHECKS: a weak conductor can no
+  longer skip a gate or loop a failed retry, because the tool itself
+  refuses to let it.
+  - `tessctl mission new <name>` scaffolds a mission record
+    (`missions/<id>/mission.md` + `mission.json` — two serializations of
+    the same fields, id derived as `<YYYY-MM-DD>-<slug>` with collision
+    suffixing) and dogfood-validates what it writes before returning.
+    `tessctl mission status <id>` reads it back (human or `--json`),
+    including a retry-ledger summary.
+  - `tessctl gate-status <id>` — read-only report of which of the five
+    canonical gates (the SAME `gate_in` strings `crew-plan.schema.json`
+    already defines) are cleared. `tessctl gate clear <gate> --mission <id>
+    --evidence <path>` — the write side, added to the existing `gate`
+    subcommand group — REFUSES without `--evidence` (argparse-level) and
+    REFUSES when the evidence path does not exist on disk; records
+    who/when/evidence in the mission record on success.
+  - `tessctl retry log <task> --mission <id> --cause <type> --failure-state
+    <state> --brief <path>` writes `missions/<id>/retries/<task>.attempt-
+    N.md`, refusing (writing nothing) past the 3-attempt cap or for a
+    same-brief retry on a non-transient cause (a literal, whitespace-
+    trimmed string comparison against the immediately preceding attempt's
+    stored brief text — transient causes are explicitly exempted, matching
+    subagent-failure-protocol.md). `tessctl retry check` dry-runs the exact
+    same decision without writing anything, and without `--cause`/`--brief`
+    reports a cap-only check.
+  - Two new contracts, `core/contracts/mission.schema.json` and
+    `retry.schema.json` (`tier: normal`, matching `crew-plan.schema.json`'s
+    precedent), wired into `tessctl validate`/`doctor`/`verify`/
+    `lock --check` exactly like the original five. A mission-record lint
+    (`_lint_mission`) closes the same class of gap `return-manifest.schema.
+    json`'s artifact-existence check already closes: a gate claiming
+    `cleared: true` with an `evidence` path that does not exist on disk is
+    schema/lint-invalid.
+  - `missions/<id>/` is per-project mission DATA, not framework doctrine —
+    added to `tess.manifest.json`'s `never_touch` (same fenced-off
+    treatment `kb/**`/`clients/*/**` already get), invisible to `tessctl
+    restore`/`render`/`update`. `missions/README.md` documents the
+    convention.
+  - All new command logic is isolated in one contiguous "MISSION LEDGER"
+    region of `.tess/bin/tessctl` (directly below `cmd_gate()`), separate
+    from the file's existing render-target and verdict-signing regions, to
+    keep future rebases across in-flight goals low-conflict.
+  - 28 new tests (`tests/test_mission_ledger.py`); full suite green (532
+    total, was 504).
+  - Scope note: this build does NOT wire `missions/<id>/briefs/`/`verdicts/`
+    scaffolding — `core/contracts/brief.schema.json`/`verdict.schema.json`
+    already exist and `tessctl validate brief|verdict <file>` already works
+    against a file at any path; adding a command that scaffolds those files
+    under `missions/<id>/` automatically remains a follow-on (C1/C2's CLI
+    wiring, per `docs/ULTIMATE_FRAMEWORK_PLAN.md`).
 - **`codex` + `generic` render targets — AGENTS.md emission (Goal #4:
   "plug-and-play for Codex and frontier models"), proving the Phase 1
   RenderTarget seam is genuinely load-bearing for a second and third real

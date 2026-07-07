@@ -5978,7 +5978,7 @@ files:
   .tess/core/contracts/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d2d8a47374b1e607531ff47ea6649764e291bf1d2be486941c2e7154585f3ac1
+    base_sha: sha256:6636df95cd62a61141a76f294983bdce5608eb9357b2431683c92e785b7662c8
     live_path: core/contracts/README.md
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/brief.schema.json:
@@ -6011,6 +6011,18 @@ files:
     base_sha: sha256:a884b48c1973a2a22cb6b0a9dd077369c8d233a22f11a595aed7d3bb3375bc43
     live_path: core/contracts/policy.schema.json
     last_updated: '2026-07-06T22:50:20.142367Z'
+  .tess/core/contracts/mission.schema.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:5dfeb1468df9e8a7a2946e4590a5a07ea236a149bfb8ffe155b16cb61a679867
+    live_path: core/contracts/mission.schema.json
+    last_updated: '2026-07-07T00:00:00.000000Z'
+  .tess/core/contracts/retry.schema.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:67611343324d08b0f3fb9bf148d175f33c029198783077084c10c66a6f1a7a6e
+    live_path: core/contracts/retry.schema.json
+    last_updated: '2026-07-07T00:00:00.000000Z'
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security

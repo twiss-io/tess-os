@@ -30,7 +30,16 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   gate        Phase 2 (+2b): deterministic enforcement spine — pre-commit/pre-push/ci
               contract + covering-verdict + signature checks; install-hooks scaffolds the
               git hooks and the CI workflow (now push/pull_request-triggered, not just
-              workflow_dispatch)
+              workflow_dispatch); `clear` (Goal #5) clears a mission gate — refuses
+              without a real, on-disk --evidence artifact
+  mission     Goal #5: `new` scaffolds a mission record (mission.md + mission.json)
+              under missions/<id>/; `status` reads it back (gate + retry summary)
+  gate-status Goal #5: read-only report of which of the five canonical mission
+              gates (doctrine.md "The Gates") are cleared for a mission
+  retry       Goal #5: the typed-retry ledger — `log` writes
+              missions/<id>/retries/<task>.attempt-N.md (REFUSES past the 3-attempt
+              cap, or a same-brief retry for a non-transient cause); `check` dry-runs
+              the same decision without writing anything
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -100,6 +109,13 @@ CONTRACT_SCHEMAS = {
     # the ship-gate's policy-as-data schema. See core/contracts/policy.schema.json
     # + core/policy/policy.yaml (the actual policy instance) + `tessctl gate`.
     "policy": "policy.schema.json",
+    # Goal #5 (ULTIMATE_FRAMEWORK_PLAN.md §C3/§C4 — mission records as code):
+    # the sixth and seventh contracts. Full command implementations live in
+    # the MISSION LEDGER region of this file (see the banner below
+    # cmd_gate()); this dict entry is the one shared touch point `tessctl
+    # validate` needs to dogfood-check whatever that region writes.
+    "mission": "mission.schema.json",
+    "retry": "retry.schema.json",
 }
 
 # Phase 2 — where the ship-gate's policy INSTANCE (not the schema) lives.
@@ -7738,6 +7754,8 @@ def _lint_contract(contract_type: str, instance) -> list:
         return _lint_return_manifest(instance)
     if contract_type == "policy":
         return _lint_policy(instance)
+    if contract_type == "mission":
+        return _lint_mission(instance)  # defined in the MISSION LEDGER region below
     return []
 
 
@@ -9541,10 +9559,15 @@ def _cmd_gate_install_hooks(args, root: Path) -> None:
 
 def cmd_gate(args, root: Path) -> None:
     """
-    tessctl gate <pre-commit|pre-push|ci|install-hooks>
+    tessctl gate <pre-commit|pre-push|ci|install-hooks|clear>
 
     Phase 2 deterministic enforcement spine. See docs/ULTIMATE_FRAMEWORK_PLAN.md
     Phase 2, Design Decisions #2 and #6, and README.md "tessctl gate".
+
+    `clear` is a Goal #5 addition — mission-scoped, not push/CI-scoped like
+    its four siblings above. Its implementation (`_cmd_gate_clear`) lives in
+    the MISSION LEDGER region below, alongside `tessctl mission`/`retry`/
+    `gate-status` — this handlers dict is the one shared touch point.
     """
     sub = getattr(args, "gate_sub", None)
     handlers = {
@@ -9552,11 +9575,617 @@ def cmd_gate(args, root: Path) -> None:
         "pre-push": _cmd_gate_pre_push,
         "ci": _cmd_gate_ci,
         "install-hooks": _cmd_gate_install_hooks,
+        "clear": _cmd_gate_clear,
     }
     fn = handlers.get(sub)
     if fn is None:
-        sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks")
+        sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks | clear")
     fn(args, root)
+
+
+# ===========================================================================
+# MISSION LEDGER — Goal #5: `tessctl mission` + `gate-status` + the
+# typed-retry ledger (mission records as code)
+#
+# Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md §C3 (Gate system module) + §C4
+# (Typed Retry module); conductor/doctrine.md "The Gates" table (the five
+# canonical dependency gates); conductor/mission-states.md (the mission
+# FSM); conductor/subagent-failure-protocol.md (failure states, cause
+# classes, the 3-attempt cap, the same-brief-forbidden-for-non-transient
+# rule). Contracts: core/contracts/mission.schema.json,
+# core/contracts/retry.schema.json (registered in CONTRACT_SCHEMAS above).
+#
+# This region converts two pieces of doctrine PROSE into DETERMINISTIC
+# CHECKS a weak conductor (or a weak agent it dispatches) cannot talk its
+# way around:
+#   - a gate is "cleared" only when a real, on-disk evidence artifact backs
+#     the claim (`gate clear` refuses without one, and refuses a claim
+#     pointing at a path that does not exist);
+#   - a retry is only ever dispatchable when the 3-attempt cap and the
+#     changed-brief-for-non-transient-causes rule both allow it (`retry
+#     check`/`retry log` compute this mechanically from the ledger already
+#     on disk — never from the model's own say-so).
+#
+# Deliberately isolated in this one contiguous block, self-contained apart
+# from three small, additive touch points elsewhere in this file:
+#   1. CONTRACT_SCHEMAS (top of file) — registers "mission"/"retry".
+#   2. cmd_gate()'s handlers dict (just above) — routes "clear" here.
+#   3. build_parser() / the `dispatch` table / main()'s exception handling
+#      (below) — new sub.add_parser calls and dispatch entries, appended at
+#      the end of their respective blocks, plus MissionError added
+#      alongside GateError in main()'s catch.
+# No other region of this file is touched. This keeps the diff localized
+# and keeps a future rebase across the other in-flight stacked goals (the
+# KEYGEN verdict-signing region and the RENDER render-target registry,
+# both earlier in this file; TRACE/OTel mission logging, a sibling goal not
+# yet merged into this branch's lineage) touching this file at as few
+# points as a single shared Python module's own nature allows.
+# ===========================================================================
+
+
+class MissionError(Exception):
+    """Raised for any MISSION LEDGER refusal or read failure — mission not
+    found, invalid gate name, missing/nonexistent evidence, retry cap
+    reached, same-brief non-transient retry, or an internal write that
+    fails its own dogfood validate check. Every cmd_* entrypoint in this
+    region catches this at the top level and converts it to
+    sys.exit(str(e)) (also caught centrally in main(), mirroring the
+    existing GateError pattern used by the rest of this file)."""
+
+
+# doctrine.md "The Gates" table — the SAME five canonical strings
+# crew-plan.schema.json's own `Stage.gate_in` enum already defines
+# (orchestra-model.md §3.2 rule 3). Reused verbatim rather than inventing a
+# second vocabulary for the same five gates.
+MISSION_GATES = (
+    "intake-before-anything",
+    "research-before-build",
+    "crew-before-deploy",
+    "review-before-synthesis",
+    "verification-before-externally-visible",
+)
+
+# mission-states.md's eleven FSM states, kebab-cased for a machine-checkable
+# enum. "intake" is the state every freshly scaffolded mission record
+# starts in (mission-states.md: "every mission starts here").
+MISSION_STATES = (
+    "intake", "framing", "routed", "active", "under-review",
+    "awaiting-decision", "execution-planning", "closed", "archived",
+    "paused", "code-red",
+)
+
+# subagent-failure-protocol.md's five failure states + four cause classes,
+# and the 3-attempt cap ("Attempt Cap — 3": "Maximum 3 total attempts on
+# the same task").
+RETRY_FAILURE_STATES = ("empty", "partial", "degraded", "timeout", "error")
+RETRY_CAUSE_CLASSES = ("transient", "context-gap", "wrong-approach", "wrong-task")
+RETRY_ATTEMPT_CAP = 3
+
+MISSIONS_DIR = "missions"
+
+
+# ---------------------------------------------------------------------------
+# Path + id helpers
+# ---------------------------------------------------------------------------
+
+def _mission_dir(root: Path, mission_id: str) -> Path:
+    return root / MISSIONS_DIR / mission_id
+
+
+def _mission_record_paths(root: Path, mission_id: str):
+    d = _mission_dir(root, mission_id)
+    return d / "mission.md", d / "mission.json"
+
+
+def _retry_dir(root: Path, mission_id: str) -> Path:
+    return _mission_dir(root, mission_id) / "retries"
+
+
+def _retry_attempt_path(root: Path, mission_id: str, task: str, attempt: int) -> Path:
+    return _retry_dir(root, mission_id) / f"{task}.attempt-{attempt}.md"
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, non-alnum runs -> a single hyphen, strip leading/trailing
+    hyphens — the same kebab-slug convention ~/.claude/rules/research.md
+    already mandates for filenames (`YYYY-MM-DD-<kebab-slug>.md`), reused
+    here for mission ids."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+    return re.sub(r"-{2,}", "-", slug)
+
+
+def _new_mission_id(root: Path, name: str) -> str:
+    slug = _slugify(name)
+    if not slug:
+        raise MissionError(f"tessctl mission new: {name!r} has no usable characters for an id slug")
+    date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    candidate = f"{date}-{slug}"
+    n = 1
+    while _mission_dir(root, candidate).exists():
+        n += 1
+        candidate = f"{date}-{slug}-{n}"
+    return candidate
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Mission record read/write — mission.md (front-matter + human body) and
+# mission.json (pure JSON) are TWO SERIALIZATIONS OF THE SAME RECORD, both
+# instances of core/contracts/mission.schema.json.
+# ---------------------------------------------------------------------------
+
+def _self_validate_or_raise(root: Path, contract_type: str, path: Path) -> None:
+    """Dogfood check: whatever this region just wrote to `path` must itself
+    pass `tessctl validate <contract_type> <path>`. A failure here is an
+    internal bug in this region, not a degraded_output to hand back to a
+    caller — raised as MissionError so every call site fails loud rather
+    than silently leaving an invalid record on disk."""
+    try:
+        schema = load_contract_schema(root, contract_type)
+        instance = load_contract_instance(path)
+    except ContractError as e:
+        raise MissionError(f"internal error: {path} failed to load for its own dogfood check — {e}")
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract(contract_type, instance)
+    if violations:
+        raise MissionError(
+            f"internal error: {path} does not pass its own schema ({contract_type}) — "
+            + "; ".join(violations)
+        )
+
+
+def _write_mission_record(root: Path, mission_id: str, record: dict) -> None:
+    md_path, json_path = _mission_record_paths(root, mission_id)
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    if not md_path.exists():
+        # First write: hand-roll a short, human-readable body. Subsequent
+        # updates (e.g. `gate clear`) go through write_contract_instance_
+        # preserving_format(), which PRESERVES whatever body already exists
+        # (including any notes a human appended) and only refreshes the
+        # front-matter — the same behavior every other .md contract
+        # instance in this system already gets from that shared helper.
+        body = (
+            f"# Mission: {record['name']}\n\n"
+            f"Created {record['created_at']}"
+            + (f" by {record['created_by']}" if record.get("created_by") else "")
+            + ". See `missions/README.md` for the mission-record convention.\n"
+        )
+        fm_text = yaml.safe_dump(record, sort_keys=False)
+        md_path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+    else:
+        write_contract_instance_preserving_format(md_path, record)
+    write_contract_instance_preserving_format(json_path, record)
+    _self_validate_or_raise(root, "mission", md_path)
+    _self_validate_or_raise(root, "mission", json_path)
+
+
+def _read_mission_record(root: Path, mission_id: str) -> dict:
+    md_path, json_path = _mission_record_paths(root, mission_id)
+    if md_path.exists():
+        try:
+            return load_contract_instance(md_path)
+        except ContractError as e:
+            raise MissionError(f"tessctl: could not read {md_path}: {e}")
+    if json_path.exists():
+        try:
+            return load_contract_instance(json_path)
+        except ContractError as e:
+            raise MissionError(f"tessctl: could not read {json_path}: {e}")
+    raise MissionError(
+        f"tessctl: no mission record found for id {mission_id!r} under {MISSIONS_DIR}/ "
+        f"(expected {md_path} or {json_path})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lint — relational mission-record checks plain JSON Schema can't express
+# (same "schema + lint" split core/contracts/README.md documents for the
+# other five contracts). Wired into `_lint_contract` above.
+# ---------------------------------------------------------------------------
+
+def _lint_mission(instance) -> list:
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+    gates = instance.get("gates")
+    if not isinstance(gates, list):
+        return errors  # schema_validate already reports the missing/malformed 'gates' key
+
+    names = [g.get("name") for g in gates if isinstance(g, dict)]
+    seen: set = set()
+    for n in names:
+        if n in seen:
+            errors.append(
+                f"$.gates: duplicate gate name {n!r} — each of the five canonical gates "
+                f"(doctrine.md 'The Gates') must appear exactly once"
+            )
+        seen.add(n)
+    missing = [g for g in MISSION_GATES if g not in seen]
+    if missing:
+        errors.append(
+            f"$.gates: missing canonical gate(s) {missing} — every mission record must carry "
+            f"all five gates from doctrine.md's 'The Gates' table"
+        )
+    extra = sorted(n for n in seen if n not in MISSION_GATES)
+    if extra:
+        errors.append(
+            f"$.gates: unrecognized gate name(s) {extra} — not one of the five canonical gates "
+            f"{list(MISSION_GATES)}"
+        )
+
+    for i, g in enumerate(gates):
+        if not isinstance(g, dict) or g.get("cleared") is not True:
+            continue
+        evidence = g.get("evidence")
+        if isinstance(evidence, str) and evidence and not Path(evidence).exists():
+            errors.append(
+                f"$.gates[{i}] (name={g.get('name')!r}): evidence path {evidence!r} does not "
+                f"exist on disk — a cleared gate's evidence must be a real artifact, not a "
+                f"fabricated pointer (same discipline return-manifest.schema.json's "
+                f"artifact-existence lint already applies to returned artifacts)"
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# `tessctl mission new|status`
+# ---------------------------------------------------------------------------
+
+def cmd_mission(args, root: Path) -> None:
+    sub = getattr(args, "mission_sub", None)
+    try:
+        if sub == "new":
+            _cmd_mission_new(args, root)
+        elif sub == "status":
+            _cmd_mission_status(args, root)
+        else:
+            sys.exit("tessctl mission: choose a subcommand — new | status")
+    except MissionError as e:
+        sys.exit(str(e))
+
+
+def _cmd_mission_new(args, root: Path) -> None:
+    name = args.name
+    mission_id = _new_mission_id(root, name)
+    record = {
+        "id": mission_id,
+        "name": name,
+        "created_at": _utc_now_iso(),
+        "created_by": getattr(args, "by", None) or getpass.getuser(),
+        "state": "intake",
+        "gates": [
+            {"name": g, "cleared": False, "cleared_by": None, "cleared_at": None, "evidence": None}
+            for g in MISSION_GATES
+        ],
+    }
+    if getattr(args, "outcome_type", None):
+        record["outcome_type"] = args.outcome_type
+
+    _write_mission_record(root, mission_id, record)
+
+    retries_dir = _retry_dir(root, mission_id)
+    retries_dir.mkdir(parents=True, exist_ok=True)
+    (retries_dir / ".gitkeep").touch()
+
+    md_path, json_path = _mission_record_paths(root, mission_id)
+    print(f"tessctl mission new: created mission {mission_id!r}")
+    print(f"  -> {md_path}")
+    print(f"  -> {json_path}")
+    print(f"  gates (all pending): {', '.join(MISSION_GATES)}")
+
+
+def _cmd_mission_status(args, root: Path) -> None:
+    mission_id = args.mission_id
+    record = _read_mission_record(root, mission_id)
+    as_json = getattr(args, "json_out", False)
+    if as_json:
+        print(json.dumps(record, indent=2))
+        return
+
+    gates = record.get("gates", []) or []
+    cleared = sum(1 for g in gates if isinstance(g, dict) and g.get("cleared"))
+    print(f"tessctl mission status — {record.get('id')}")
+    print(f"  name:    {record.get('name')}")
+    print(f"  state:   {record.get('state')}")
+    print(f"  created: {record.get('created_at')} by {record.get('created_by')}")
+    if record.get("outcome_type"):
+        print(f"  outcome: {record.get('outcome_type')}")
+    print(f"  gates:   {cleared}/{len(gates)} cleared")
+    for g in gates:
+        if not isinstance(g, dict):
+            continue
+        mark = "x" if g.get("cleared") else " "
+        print(f"    [{mark}] {g.get('name')}")
+
+    retries_dir = _retry_dir(root, mission_id)
+    if retries_dir.exists():
+        pattern = re.compile(r"^(.*)\.attempt-(\d+)\.md$")
+        tasks: dict = {}
+        for p in sorted(retries_dir.iterdir()):
+            m = pattern.match(p.name)
+            if m:
+                tasks.setdefault(m.group(1), []).append(int(m.group(2)))
+        if tasks:
+            print("  retries:")
+            for t, attempts in sorted(tasks.items()):
+                print(f"    {t}: {len(attempts)} attempt(s) logged (latest: {max(attempts)})")
+
+
+# ---------------------------------------------------------------------------
+# `tessctl gate-status <id>` — read-only per-mission gate report. Distinct
+# top-level command from `tessctl gate` (the pre-commit/pre-push/ci/
+# install-hooks/clear enforcement-spine group above) since this reports on
+# MISSION state, not a git diff.
+# ---------------------------------------------------------------------------
+
+def cmd_gate_status(args, root: Path) -> None:
+    try:
+        record = _read_mission_record(root, args.mission_id)
+    except MissionError as e:
+        sys.exit(str(e))
+
+    gates = record.get("gates", []) or []
+    as_json = getattr(args, "json_out", False)
+    if as_json:
+        print(json.dumps({"mission_id": args.mission_id, "gates": gates}, indent=2))
+        return
+
+    print(f"tessctl gate-status — mission {args.mission_id!r} ({record.get('name', '')})")
+    for g in gates:
+        if not isinstance(g, dict):
+            continue
+        status = "CLEARED" if g.get("cleared") else "pending"
+        line = f"  [{status:7}] {g.get('name')}"
+        if g.get("cleared"):
+            line += f"  by {g.get('cleared_by')} at {g.get('cleared_at')}  evidence={g.get('evidence')}"
+        print(line)
+    cleared = sum(1 for g in gates if isinstance(g, dict) and g.get("cleared"))
+    print(f"\n{cleared}/{len(gates)} gates cleared.")
+
+
+# ---------------------------------------------------------------------------
+# `tessctl gate clear <gate> --mission <id> --evidence <path>` — the write
+# side. Dispatched from cmd_gate()'s handlers dict above.
+# ---------------------------------------------------------------------------
+
+def _cmd_gate_clear(args, root: Path) -> None:
+    gate_name = args.gate
+    mission_id = args.mission
+
+    if gate_name not in MISSION_GATES:
+        sys.exit(
+            f"tessctl gate clear: unknown gate {gate_name!r} — must be one of the five "
+            f"canonical gates: {', '.join(MISSION_GATES)}"
+        )
+
+    # REFUSE without a real, existing evidence artifact. --evidence is also
+    # argparse `required=True` (missing the flag entirely is an argparse
+    # usage error, exit 2, before this function is ever called) — this is
+    # the second, load-bearing half: a flag that is merely PRESENT but
+    # points at nothing must not be enough to clear a gate (the same
+    # 'existence and shape are model-independent checks' discipline
+    # return-manifest.schema.json's artifact lint already applies).
+    evidence_path = Path(args.evidence)
+    if not evidence_path.is_absolute():
+        evidence_path = Path.cwd() / evidence_path
+    if not evidence_path.exists():
+        sys.exit(
+            f"tessctl gate clear: REFUSED — evidence path {args.evidence!r} does not exist. "
+            f"Clearing a gate requires a real artifact backing the claim "
+            f"(docs/ULTIMATE_FRAMEWORK_PLAN.md §C3: 'tessctl gate clear <gate> --evidence "
+            f"<path> (refuses without evidence)')."
+        )
+
+    try:
+        record = _read_mission_record(root, mission_id)
+    except MissionError as e:
+        sys.exit(str(e))
+
+    target_gate = None
+    for g in record.get("gates", []) or []:
+        if isinstance(g, dict) and g.get("name") == gate_name:
+            target_gate = g
+            break
+    if target_gate is None:
+        sys.exit(
+            f"tessctl gate clear: internal error — gate {gate_name!r} missing from mission "
+            f"{mission_id!r}'s record (expected all five canonical gates to be present)"
+        )
+
+    try:
+        evidence_str = str(evidence_path.relative_to(root))
+    except ValueError:
+        evidence_str = str(evidence_path)  # outside root — store the absolute path rather than fail
+
+    target_gate["cleared"] = True
+    target_gate["cleared_by"] = getattr(args, "by", None) or getpass.getuser()
+    target_gate["cleared_at"] = _utc_now_iso()
+    target_gate["evidence"] = evidence_str
+
+    try:
+        _write_mission_record(root, mission_id, record)
+    except MissionError as e:
+        sys.exit(f"tessctl gate clear: refused — {e}")
+
+    print(f"tessctl gate clear: {gate_name!r} cleared for mission {mission_id!r}")
+    print(f"  by:       {target_gate['cleared_by']}")
+    print(f"  at:       {target_gate['cleared_at']}")
+    print(f"  evidence: {evidence_str}")
+
+
+# ---------------------------------------------------------------------------
+# `tessctl retry log|check` — the typed-retry ledger.
+# ---------------------------------------------------------------------------
+
+def _existing_retry_attempts(root: Path, mission_id: str, task: str) -> list:
+    """Sorted list of attempt numbers already logged for `task`, by
+    scanning missions/<id>/retries/ for `<task>.attempt-<N>.md` — the
+    ledger's own directory listing IS the count, no separate counter file
+    to drift out of sync with it."""
+    d = _retry_dir(root, mission_id)
+    if not d.exists():
+        return []
+    pattern = re.compile(re.escape(task) + r"\.attempt-(\d+)\.md$")
+    nums = []
+    for p in d.iterdir():
+        m = pattern.match(p.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return sorted(nums)
+
+
+def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_text):
+    """Returns (allowed: bool, next_attempt: int, reason: str). Pure/
+    read-only — shared by BOTH `retry check` (report-only) and `retry log`
+    (as the write-refusal gate, called BEFORE anything is written).
+
+    Enforces subagent-failure-protocol.md's two mechanical rules:
+      1. the 3-attempt cap ("Maximum 3 total attempts on the same task").
+      2. same-brief retries are forbidden for every cause EXCEPT transient
+         ("Same-brief retries are forbidden for every non-transient
+         cause"), checked as a LITERAL string comparison (stripped of
+         surrounding whitespace) against the immediately preceding logged
+         attempt's stored `brief_text` — "attempt N+1's brief must differ
+         from attempt N's" (ULTIMATE_FRAMEWORK_PLAN.md §C4), not against
+         every prior attempt.
+
+    `brief_text=None` skips rule 2 entirely (a cap-only check — used by
+    `retry check` when the caller has not yet drafted a cause/brief and
+    just wants to know how much headroom remains).
+    """
+    attempts = _existing_retry_attempts(root, mission_id, task)
+    last_n = attempts[-1] if attempts else 0
+    next_attempt = last_n + 1
+
+    if next_attempt > RETRY_ATTEMPT_CAP:
+        return False, next_attempt, (
+            f"attempt cap ({RETRY_ATTEMPT_CAP}) reached for task {task!r} in mission "
+            f"{mission_id!r} — {last_n} attempt(s) already logged. STOP; escalate to the "
+            f"operator with the full per-attempt analysis "
+            f"(subagent-failure-protocol.md 'Attempt Cap — 3')."
+        )
+
+    if brief_text is not None and cause != "transient" and last_n >= 1:
+        last_path = _retry_attempt_path(root, mission_id, task, last_n)
+        try:
+            last_record = load_contract_instance(last_path)
+        except ContractError as e:
+            return False, next_attempt, f"could not read prior attempt {last_path}: {e}"
+        prior_brief = str(last_record.get("brief_text", "")).strip()
+        if prior_brief == brief_text.strip():
+            return False, next_attempt, (
+                f"same-brief retry forbidden for cause {cause!r} — attempt {next_attempt}'s "
+                f"brief is a literal match of attempt {last_n}'s. "
+                f"subagent-failure-protocol.md: 'Same-brief retries are forbidden for every "
+                f"non-transient cause.' Change the brief to address the classified cause, or "
+                f"reclassify as transient if this genuinely is an infrastructure hiccup."
+            )
+
+    return True, next_attempt, "allowed"
+
+
+def _read_brief_text(path_str: str) -> str:
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if not p.exists():
+        raise MissionError(f"tessctl retry: --brief file not found: {path_str}")
+    return p.read_text(encoding="utf-8")
+
+
+def cmd_retry(args, root: Path) -> None:
+    sub = getattr(args, "retry_sub", None)
+    try:
+        if sub == "log":
+            _cmd_retry_log(args, root)
+        elif sub == "check":
+            _cmd_retry_check(args, root)
+        else:
+            sys.exit("tessctl retry: choose a subcommand — log | check")
+    except MissionError as e:
+        sys.exit(str(e))
+
+
+def _cmd_retry_check(args, root: Path) -> None:
+    if bool(args.cause) != bool(args.brief):
+        sys.exit(
+            "tessctl retry check: --cause and --brief must be given together (both, for a full "
+            "cap + same-brief check) or neither (a cap-only check)."
+        )
+    brief_text = _read_brief_text(args.brief) if args.brief else None
+    allowed, next_attempt, reason = _retry_precheck(
+        root, args.mission, args.task, args.cause or "", brief_text
+    )
+
+    as_json = getattr(args, "json_out", False)
+    if as_json:
+        print(json.dumps({
+            "mission_id": args.mission, "task": args.task,
+            "next_attempt": next_attempt, "allowed": allowed, "reason": reason,
+        }, indent=2))
+    else:
+        verdict = "ALLOWED" if allowed else "BLOCKED"
+        print(
+            f"tessctl retry check — mission {args.mission!r} task {args.task!r}: "
+            f"attempt {next_attempt} {verdict} — {reason}"
+        )
+    sys.exit(0 if allowed else 1)
+
+
+def _cmd_retry_log(args, root: Path) -> None:
+    mission_id = args.mission
+    task = args.task
+    cause = args.cause
+
+    _read_mission_record(root, mission_id)  # confirms the mission exists; raises MissionError otherwise
+    brief_text = _read_brief_text(args.brief)
+
+    allowed, next_attempt, reason = _retry_precheck(root, mission_id, task, cause, brief_text)
+    if not allowed:
+        sys.exit(f"tessctl retry log: REFUSED (nothing written) — {reason}")
+
+    attempt_record = {
+        "mission_id": mission_id,
+        "task": task,
+        "attempt": next_attempt,
+        "failure_state": args.failure_state,
+        "cause_class": cause,
+        "brief_text": brief_text,
+        "logged_at": _utc_now_iso(),
+        "logged_by": getattr(args, "by", None) or getpass.getuser(),
+    }
+    if getattr(args, "note", None):
+        attempt_record["brief_change_note"] = args.note
+
+    path = _retry_attempt_path(root, mission_id, task, next_attempt)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm_text = yaml.safe_dump(attempt_record, sort_keys=False)
+    body = (
+        f"# Retry attempt {next_attempt} — task `{task}` — mission `{mission_id}`\n\n"
+        f"failure_state: {args.failure_state}  ·  cause_class: {cause}\n"
+    )
+    path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+
+    try:
+        _self_validate_or_raise(root, "retry", path)
+    except MissionError:
+        path.unlink(missing_ok=True)
+        raise
+
+    print(
+        f"tessctl retry log: attempt {next_attempt} logged for task {task!r} "
+        f"(mission {mission_id!r}, cause={cause!r}, failure_state={args.failure_state!r})"
+    )
+    print(f"  -> {path}")
+    if next_attempt == RETRY_ATTEMPT_CAP:
+        print(
+            f"  ** this was the final permitted attempt ({RETRY_ATTEMPT_CAP}) — a 4th will be "
+            f"BLOCKED. If it fails again, escalate to the operator with the full per-attempt log."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -9970,6 +10599,100 @@ def build_parser() -> argparse.ArgumentParser:
         help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
     )
 
+    # gate clear — Goal #5 addition to the EXISTING `gate` subcommand group
+    # (pre-commit/pre-push/ci/install-hooks are the Phase 2 enforcement-spine
+    # verbs defined above; `clear` is mission-scoped, not push/CI-scoped).
+    p_gate_clear = gate_sub.add_parser(
+        "clear",
+        help="clear a mission gate — REFUSES without --evidence, or if --evidence does not exist on disk",
+    )
+    p_gate_clear.add_argument("gate", choices=list(MISSION_GATES), help="one of the five canonical gates")
+    p_gate_clear.add_argument("--mission", required=True, metavar="ID", help="mission id (missions/<id>/)")
+    p_gate_clear.add_argument(
+        "--evidence", required=True, metavar="PATH",
+        help="path to the artifact evidencing this gate's clearance (must exist on disk)",
+    )
+    p_gate_clear.add_argument("--by", help="override the recorded clearer (default: current OS user)")
+
+    # mission — Goal #5: mission records as code (mission.md + mission.json)
+    p_mission = sub.add_parser(
+        "mission",
+        help="mission record lifecycle: scaffold (new) or read (status) a mission under missions/<id>/",
+    )
+    mission_sub = p_mission.add_subparsers(dest="mission_sub", metavar="SUBCOMMAND")
+
+    p_mission_new = mission_sub.add_parser(
+        "new", help="scaffold a new mission record (mission.md + mission.json) under missions/<id>/",
+    )
+    p_mission_new.add_argument("name", help="human-readable mission name (an id is derived: <YYYY-MM-DD>-<slug>)")
+    p_mission_new.add_argument(
+        "--outcome-type", dest="outcome_type",
+        choices=["decide", "design", "build", "convert", "recover", "govern", "review", "communicate", "scale"],
+        help="orchestra-model.md §3.1 outcome_type enum (optional)",
+    )
+    p_mission_new.add_argument("--by", help="override the recorded creator (default: current OS user)")
+
+    p_mission_status = mission_sub.add_parser(
+        "status", help="read a mission record's current state + gate/retry summary",
+    )
+    p_mission_status.add_argument("mission_id", metavar="ID", help="mission id (the missions/<id> directory name)")
+    p_mission_status.add_argument("--json", action="store_true", dest="json_out")
+
+    # gate-status — Goal #5: read-only per-mission gate report (distinct
+    # top-level command from `tessctl gate` above, which is the git-diff-
+    # scoped enforcement spine).
+    p_gate_status = sub.add_parser(
+        "gate-status",
+        help="report which of the five canonical mission gates are cleared for a mission (read-only)",
+    )
+    p_gate_status.add_argument("mission_id", metavar="ID", help="mission id")
+    p_gate_status.add_argument("--json", action="store_true", dest="json_out")
+
+    # retry — Goal #5: the typed-retry ledger
+    p_retry = sub.add_parser(
+        "retry",
+        help="typed-retry ledger: log a retry attempt, or check whether one would be allowed",
+    )
+    retry_sub = p_retry.add_subparsers(dest="retry_sub", metavar="SUBCOMMAND")
+
+    p_retry_log = retry_sub.add_parser(
+        "log",
+        help="write missions/<id>/retries/<task>.attempt-N.md — REFUSES (writes nothing) if blocked",
+    )
+    p_retry_log.add_argument("task", help="task id this retry attempt belongs to")
+    p_retry_log.add_argument("--mission", required=True, metavar="ID", help="mission id")
+    p_retry_log.add_argument(
+        "--cause", required=True, choices=list(RETRY_CAUSE_CLASSES),
+        help="subagent-failure-protocol.md cause classification",
+    )
+    p_retry_log.add_argument(
+        "--failure-state", required=True, dest="failure_state", choices=list(RETRY_FAILURE_STATES),
+        help="subagent-failure-protocol.md failure state",
+    )
+    p_retry_log.add_argument(
+        "--brief", required=True, metavar="PATH",
+        help="path to a text file holding this attempt's dispatch-brief content "
+             "(compared LITERALLY against the prior attempt's brief)",
+    )
+    p_retry_log.add_argument("--note", help="free-text note on what the brief changed (optional)")
+    p_retry_log.add_argument("--by", help="override the recorded logger (default: current OS user)")
+
+    p_retry_check = retry_sub.add_parser(
+        "check",
+        help="dry-run the same cap + same-brief check `retry log` performs, without writing anything",
+    )
+    p_retry_check.add_argument("task", help="task id")
+    p_retry_check.add_argument("--mission", required=True, metavar="ID", help="mission id")
+    p_retry_check.add_argument(
+        "--cause", choices=list(RETRY_CAUSE_CLASSES),
+        help="proposed cause class for the next attempt (omit together with --brief for a cap-only check)",
+    )
+    p_retry_check.add_argument(
+        "--brief", metavar="PATH",
+        help="proposed brief file for the next attempt (required together with --cause)",
+    )
+    p_retry_check.add_argument("--json", action="store_true", dest="json_out")
+
     return parser
 
 
@@ -10038,6 +10761,12 @@ def main() -> None:
         "verdict":      cmd_verdict,
         # Phase 2: deterministic gate spine (Decisions #2/#6)
         "gate":         cmd_gate,
+        # Goal #5: mission ledger — mission records as code (MISSION LEDGER
+        # region, above cmd_gate()). "gate clear" itself dispatches through
+        # "gate" -> cmd_gate() -> its own handlers dict, not a top-level key here.
+        "mission":      cmd_mission,
+        "gate-status":  cmd_gate_status,
+        "retry":        cmd_retry,
     }
 
     fn = dispatch.get(args.command)
@@ -10052,9 +10781,12 @@ def main() -> None:
     # Bulk callers (_do_restore, _apply_per_file_resolution, cmd_publish --tag,
     # cmd_capture scan/--all) catch GateError per-iteration before it reaches
     # here, so this handler only fires for genuinely single-target violations.
+    # MissionError (Goal #5, MISSION LEDGER region) is caught the same way —
+    # every cmd_mission/cmd_gate_status/cmd_retry/_cmd_gate_clear entrypoint
+    # already catches it locally too; this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except GateError as e:
+    except (GateError, MissionError) as e:
         sys.exit(str(e))
 
 
