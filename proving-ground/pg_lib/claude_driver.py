@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pg_lib.scaffolds import BARE
+from pg_lib.scaffolds import BARE, TESS_OS
 
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
@@ -72,8 +72,11 @@ def run_claude(
     way must be marked `impure_bare` in the report — see `run.py`.
     """
     command = _build_command(prompt, model, scaffold, max_budget_usd, permission_mode, strict_bare)
+    env = _build_env(scaffold)
     try:
-        proc = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds)
+        proc = subprocess.run(
+            command, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_seconds, env=env,
+        )
     except subprocess.TimeoutExpired as exc:
         return ClaudeRunResult(
             ok=False, is_error=True, result_text="", cost_usd=0.0, num_turns=0,
@@ -81,6 +84,31 @@ def run_claude(
             stderr=f"timed out after {timeout_seconds}s: {exc}", timed_out=True,
         )
     return _parse_output(proc.stdout, proc.stderr, proc.returncode)
+
+
+def _build_env(scaffold: str) -> Dict[str, str]:
+    """The subprocess env for one `claude -p` cell invocation.
+
+    `tess-os` cells mount `.claude/hooks/dispatch-guard.sh` (see
+    `pg_lib/scaffolds.py`), which fires a "RULE ZERO — stop and dispatch"
+    warning on every non-safe-listed Bash/Edit/Write call. That warning
+    presupposes a caller holding the Agent/Task tool; a headless `claude -p`
+    trial in this harness structurally has nothing to dispatch to, so the
+    warning was pure friction (see `proving-ground/reports/2026-07-07.md`,
+    and the hook fix in `.claude/hooks/dispatch-guard.sh` /
+    `.tess/core/hooks/dispatch-guard.sh`). Setting `TESS_HEADLESS=1` makes
+    the hook a silent no-op for that cell.
+
+    `bare` cells never mount `.claude/` at all (`scaffold_source_paths`
+    returns `[]` for `bare`), so the variable would be inert there anyway —
+    but it is deliberately withheld from `bare`'s env regardless, so `bare`
+    stays a clean, unmodified-environment baseline and this fix cannot be
+    read as touching both arms of the comparison.
+    """
+    env = dict(os.environ)
+    if scaffold == TESS_OS:
+        env["TESS_HEADLESS"] = "1"
+    return env
 
 
 def _build_command(
@@ -93,6 +121,23 @@ def _build_command(
         "--permission-mode", permission_mode,
         "--max-budget-usd", str(max_budget_usd),
         "--no-session-persistence",
+        # Safety/methodology fix found while verifying the fair re-run
+        # (2026-07-07): this operator's environment has REAL Agent/Task-tool
+        # dispatch infrastructure wired up (unlike the assumption baked into
+        # this harness's own docs/README, "this headless single-shot claude
+        # -p harness has no subagent to dispatch to"). A direct probe with
+        # the tess-os scaffold mounted showed the model actually invoking the
+        # Agent tool and a genuine nested agent spawning, running, and
+        # completing in the background — outside this trial's cost/timeout
+        # accounting and with access to whatever MCP servers/credentials the
+        # child session resolves. Disallowed for BOTH scaffolds (not just
+        # tess-os) so the safety net is symmetric and neither arm of the
+        # comparison gets an advantage from it — bare tasks never need to
+        # dispatch either. Verified: with this flag set, the tool call is
+        # rejected ("No such tool available: Agent... not enabled in this
+        # context") and the model falls back to executing directly, which is
+        # the behavior the harness's cost/pass-rate model already assumes.
+        "--disallowedTools", "Agent,Task",
     ]
     if scaffold == BARE and strict_bare:
         command.append("--bare")
