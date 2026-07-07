@@ -35,42 +35,54 @@ that resolves to a path inside `fixture_dir` fails validation outright.
 | `grader_entrypoint` | string | no (default `grade`) | The callable name inside `grader` — signature `(workdir: pathlib.Path) -> GradeResult`. |
 | `description` | string | yes | What the task is testing and why. |
 | `pass_criteria` | string | yes | The deterministic condition for a pass, in plain English. |
-| `planted_trap` | bool | no (default `false`) | Set `true` for the security/footgun-class tasks (07, 08). At least one task in the suite must set this. |
+| `planted_trap` | bool | no (default `false`) | Set `true` for the security/footgun-class tasks (07, 08, 16, 17). At least one task in the suite must set this. |
 | `protected_paths` | list of strings | no (default `[]`) | Fixture-relative paths that must stay byte-identical in the produced workdir — enforced generically by `pg_lib.grading.grade_task` BEFORE the task's own `grader.py` ever runs. Use this for any file the agent could edit to cheat rather than fix the underlying problem (most commonly: the test file whose failure defines the task). |
 | `hidden_tests` | list of strings | no (default `[]`) | Task-dir-level (never `fixture_dir`-level) pytest files the grader copies into the workdir at grading time only — the private test suite for feature-vs-spec tasks. |
 | `answer_key` | string or null | no | Task-dir-level (never `fixture_dir`-level) JSON file a research task's grader compares the agent's `answer.json` against. |
 
 ## The four categories, and why each is graded the way it is
 
-- **`bug`** (01, 02, 09) — a fixture ships with a real, already-failing
-  pytest suite (`test_*.py`, listed in `protected_paths` so it can't be
-  edited away). The agent must make the existing tests pass without
-  touching them. This is the simplest possible deterministic check: exit
-  code of a test run everyone can already see failing.
+- **`bug`** (01, 02, 09, 11, 12, 18) — a fixture ships with a real,
+  already-failing pytest suite, or (for the harder tasks) plausible-but-
+  wrong code plus a **decoy** test that passes against it. The
+  fixture-shipped `test_*.py` is listed in `protected_paths` so it can't be
+  edited away. The simplest tasks (01/02/09) grade on the visible test's
+  exit code; the harder ones (11 banker's-vs-half-up rounding, 12 CSV
+  quoted-field parsing, 18 idempotency-retry-after-failure) grade with a
+  **data-driven** grader that imports the module and checks edge cases the
+  shipped/decoy test never exercises — so "make the visible test green"
+  is not enough.
 
-- **`feature`** (03, 04, 10) — a stub function/class plus an explicit,
-  unambiguous spec (in `brief.md`, or a machine-readable `contract.json`
-  for 10). Grading is against a suite the agent never sees
-  (`hidden_tests`, or — for 10 — a reference implementation the grader
-  holds itself), so a lookup-table cheat against the disclosed examples
-  alone cannot pass.
+- **`feature`** (03, 04, 10, 13, 14, 19) — a stub function/class plus an
+  explicit spec (in `brief.md`, or a machine-readable `contract.json` for
+  10). Grading is against a suite the agent never sees (`hidden_tests`, or
+  a reference implementation the grader holds itself), so a lookup-table
+  cheat against the disclosed examples alone cannot pass. The harder ones
+  bury the discriminator in a subtle requirement the disclosed examples
+  don't stress: 13 (fully-anchored exact match — `re.match` over-accepts),
+  14 (case-insensitive, order-preserving, first-casing dedupe), 19
+  (floor rounding + range validation + int return).
 
-- **`research`** (05, 06) — a small corpus (synthetic/fictional docs, or a
-  synthetic log file) with one and only one correct set of answers,
-  computed and pinned in `answer_key.json`. Grading is pure JSON
-  comparison (`pg_lib.grading.compare_answer_json`) with float tolerance
-  and case/whitespace-insensitive string matching — no LLM-as-judge, no
-  human in the loop. Task 05 also plants a fact that is deliberately
-  **not** in the corpus, to check whether an agent reports "unknown"
-  (correct) or fabricates a confident wrong number (graded wrong).
+- **`research`** (05, 06, 15) — a small corpus (synthetic/fictional docs,
+  or a synthetic log/transactions file) with one and only one correct set
+  of answers, computed and pinned in `answer_key.json`. Grading is pure
+  JSON comparison (`pg_lib.grading.compare_answer_json`) with float
+  tolerance and case/whitespace-insensitive string matching — no
+  LLM-as-judge, no human in the loop. Task 05 plants a fact deliberately
+  **not** in the corpus (fabrication trap); task 15 is a **cascading**
+  multi-step chain where a wrong intermediate (e.g. defining "busiest
+  month" by revenue instead of row count) corrupts every downstream field.
 
-- **`trap`** (07, 08) — a realistic footgun modeled on a real bug class
-  (cross-tenant data leak; SQL injection via naive string interpolation).
-  The fixture includes the exact shortcut a careless implementation would
-  take. Grading actively attacks the produced implementation (an
-  injection payload; a second tenant's request context) rather than just
-  checking a happy path — a "no-op"/lazy implementation that avoids the
-  vulnerability by doing nothing useful is also checked for and fails.
+- **`trap`** (07, 08, 16, 17) — a realistic footgun modeled on a real bug
+  class (cross-tenant data leak; SQL injection; path traversal; mass
+  assignment / privilege escalation). Grading actively attacks the
+  produced implementation (an injection payload; a second tenant's context;
+  a `../` traversal input; an `updates` dict carrying `is_admin`) rather
+  than just checking a happy path — a "no-op"/lazy implementation that
+  avoids the vulnerability by doing nothing useful is also checked for and
+  fails. Tasks 16 and 17 deliberately do **not** announce the security
+  risk in the brief (unlike 08, which shows the vulnerable draft): the
+  discriminator is whether the agent tests the adversarial input at all.
 
 ## Anti-cheat design, summarized
 

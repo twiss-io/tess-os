@@ -35,7 +35,7 @@ proving-ground/
 ├── pg_lib/                  the harness's internals (manifest loading, grading engine,
 │                            scaffold mounting, the claude -p subprocess driver, report
 │                            aggregation/rendering) — see docstrings in each module
-├── tasks/                   10 seeded tasks — see tasks/README.md for the manifest contract
+├── tasks/                   19 seeded tasks — see tasks/README.md for the manifest contract
 ├── tests/                   pytest suite: unit-tests every grader + the dry-run + the CLI
 └── results/                 generated run output (gitignored — see .gitignore)
 ```
@@ -84,10 +84,15 @@ attempts (default 3, matching the framework's own retry-protocol cap),
 stopping at first pass. The report's three headline numbers per cell:
 **verified pass rate**, **total cost (USD)**, **mean attempts-to-pass**.
 
-## The 10 tasks
+## The task suite (19 tasks)
 
 See `tasks/README.md` for the full manifest contract and anti-cheat
-design. Summary:
+design. Tasks 01–10 are the original suite; 11–19 are the **harder,
+discriminating** tasks (added 2026-07-07) built specifically so a *bare*
+model — especially the weak tier — produces confident-but-wrong output
+that fails a deterministic grader, where a verify-first / check-the-edge /
+adversarial-test approach would pass. See "Why the harder tasks
+discriminate" below.
 
 | # | id | category | what it tests |
 |---|---|---|---|
@@ -101,9 +106,52 @@ design. Summary:
 | 08 | `08-trap-sql-injection` | **trap** | implement a search function without SQL injection (the vulnerable pattern is shown as a "teammate's draft" in the brief) |
 | 09 | `09-bug-duplicate-charge-idempotency` | bug | fix a payment processor that double-charges on retry |
 | 10 | `10-feature-pagination-contract` | feature | implement to a machine-readable contract; graded against the grader's own independent reference implementation, not just the disclosed examples |
+| 11 | `11-bug-rounding-half-up` | bug | currency rounding: `round()` uses banker's rounding and fails on ties; a decoy test (no ties) passes against it |
+| 12 | `12-bug-csv-quoted-fields` | bug | parse a CSV line: `line.split(",")` passes the quote-free decoy test but mangles quoted fields containing commas |
+| 13 | `13-feature-code-exact-match` | feature | validate an exact 4-digit code: `re.match` over-accepts `"12345"`, and `re.match(...$)` accepts a trailing newline |
+| 14 | `14-feature-dedupe-case-insensitive` | feature | dedupe emails case-insensitively, order-preserving, keep first casing — three clauses a one-liner breaks |
+| 15 | `15-research-cascading-billing` | research | **cascading** multi-step compute; "busiest month" is by row count, not revenue — a wrong intermediate corrupts every field |
+| 16 | `16-trap-path-traversal` | **trap** | read a note by name from a flat dir; the obvious `os.path.join`+`open` leaks `../secret.txt` (risk not announced) |
+| 17 | `17-trap-mass-assignment` | **trap** | apply a profile update to editable fields only; `user.update(updates)` lets `is_admin` through (risk not announced) |
+| 18 | `18-bug-idempotency-retry-after-failure` | bug | idempotent charge that records the key *before* the charge succeeds, so a failed attempt is never retried |
+| 19 | `19-feature-discount-spec` | feature | discount with three buried constraints: floor (not round), reject out-of-range percent, return an int |
 
 Every category the mission requires is covered (bug, feature, research,
-trap), with two planted traps rather than the minimum one.
+trap), with four planted traps (07, 08, 16, 17) rather than the minimum
+one.
+
+### Why the harder tasks discriminate (bare fails, verification catches)
+
+The original 10 tasks *announce their own traps* — the brief names the
+exact edge case, or a failing test spells out the requirement — so a
+capable model, even the weak one, just does what it's told (the
+2026-07-07 run scored both bare cells at 100%). The 11–19 tasks are
+designed so the **plausible first thing a bare model writes is wrong**,
+and the visible signal (disclosed examples, or a shipped decoy test that
+passes against the naive code) points the wrong way:
+
+- **Subtle bug / confident-wrong** (11, 12, 13, 18): the obvious
+  implementation (`round()`, `line.split(",")`, `re.match`, record-before-
+  charge) passes the decoy/disclosed cases and fails a held-out edge the
+  grader checks. A verify-first agent that tests the boundary (a tie, a
+  quoted comma, `"12345"`, a failing `charge_fn`) catches it.
+- **Cascading** (15): a wrong step-1 intermediate corrupts every
+  downstream number; verifying each intermediate before combining catches
+  it, a one-shot doesn't.
+- **Security/correctness traps** (16, 17): the brief does not mention
+  "security"; the happy path works; only an adversarial input (`../`
+  traversal, an `is_admin` in the update) reveals the hole.
+- **Spec-adherence** (13, 14, 19): the discriminating requirement is a
+  clause the disclosed examples don't exercise (full anchoring, case-
+  insensitive+first-casing, floor+range-validation+int) — a careful,
+  checked reading honors it; a skim misses it.
+
+All 11–19 graders are **data-driven** (import the module, compare against a
+reference the grader holds, run adversarial inputs) or pinned-`answer_key`
+JSON — there is no test file in the workdir to hijack, and every grader is
+unit-tested with a correct impl (must PASS), the naive/plausible-wrong impl
+(must FAIL), and a no-op/hardcode cheat (must FAIL). See
+`tests/test_graders_new_*.py`.
 
 ## Verified against a real `claude -p` invocation
 
@@ -175,10 +223,10 @@ unverified stat goes into the README") applied to this specific harness.
 ## What's runnable now vs. what a full run would cost
 
 **Runnable now, and exercised while building this:**
-- `run.py --dry-run` — validates all 10 manifests, every grader imports
+- `run.py --dry-run` — validates all 19 manifests, every grader imports
   and exposes its entrypoint, the matrix wiring is sound. $0, no
   subprocess.
-- The full `pytest proving-ground/tests/` suite (76 tests) — every
+- The full `pytest proving-ground/tests/` suite (105 tests) — every
   grader unit-tested against a hand-crafted correct fix/implementation
   (must PASS) and at least one plausible wrong or naive/vulnerable
   version (must FAIL), plus the anti-cheat paths (protected-path
@@ -192,7 +240,7 @@ unverified stat goes into the README") applied to this specific harness.
   wire together correctly on a live model call.
 
 **What a full matrix run would cost (estimate, not measured):** 4 cells x
-10 tasks x up to 3 attempts = up to 120 `claude -p` invocations. The
+19 tasks x up to 3 attempts = up to 228 `claude -p` invocations. The
 `tess-os` scaffold mounts the full doctrine (`CLAUDE.md` + `conductor/` +
 `agents/` + `.claude/` + `core/`) — real prompt weight, plus the doctrine
 itself may cause the model to dispatch a subagent via the Task tool

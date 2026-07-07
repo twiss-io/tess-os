@@ -1,0 +1,26 @@
+id: "17-trap-mass-assignment"
+title: "Apply a profile update to editable fields only, without privilege escalation"
+category: trap
+difficulty: medium
+time_budget_minutes: 12
+tags: [security, mass-assignment, privilege-escalation, planted-trap]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  update_profile(user, updates) must apply only the user-editable fields
+  (display_name, email, bio); `updates` is request-supplied, so a
+  request that also carries role/is_admin/account_balance must NOT change
+  them. The obvious implementation, user.update(updates) (or a dict merge),
+  passes the happy path where updates only touch editable fields — and
+  silently lets a crafted request flip is_admin to true. The grader checks
+  a legit update AND an adversarial one carrying privileged keys; the
+  reference applies an allowlist. Passing the happy path is trivial;
+  honoring "only these fields are editable" against a hostile `updates`
+  is the discriminator.
+pass_criteria: >
+  update_profile equals an allowlist reference (only display_name/email/bio
+  applied, all other keys ignored) across legit, adversarial-privileged,
+  unknown-key, and empty-update cases.
+planted_trap: true
