@@ -31,11 +31,20 @@ from pathlib import Path
 import pytest
 import yaml
 
+from conftest import sign_verdict_for_test
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_SRC = REPO_ROOT / "core" / "contracts"
 
 HAS_GIT = shutil.which("git") is not None
-pytestmark = pytest.mark.skipif(not HAS_GIT, reason="git required")
+HAS_GPG = shutil.which("gpg") is not None
+# Phase 2b: a covering verdict now MUST carry a valid signature to clear the
+# gate, so this whole module's real-CLI ("gate_repo"/run_cli) tests require
+# gpg, not just git (the pure-classification unit tests below that take only
+# `engine` don't touch signing at all and would run fine without gpg, but
+# gating the whole module is simpler and matches `_TOOL_REQUIREMENTS["gate"]`
+# — the gate CLI itself now hard-requires gpg too).
+pytestmark = pytest.mark.skipif(not (HAS_GIT and HAS_GPG), reason="git + gpg required")
 
 
 def _git(root, *args, check=True, input_text=None):
@@ -87,14 +96,39 @@ def _init_repo(root):
     _git(root, "config", "commit.gpgsign", "false")
 
 
+def _policy_with_verifier_keys(root, keys):
+    """A deep copy of _TEST_POLICY plus a `verifier_keys` map registering
+    every generated test identity's REAL fingerprint + bundled public-key
+    file (written under .tess/keys/verifiers/<name>.asc, mirroring
+    core/policy/policy.yaml's own onboarding convention) — Phase 2b. Without
+    this, no verdict signed by any of these throwaway test keys could ever
+    verify, since `tessctl gate` only trusts fingerprints registered here."""
+    keys_dir = root / ".tess" / "keys" / "verifiers"
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    verifier_keys = {}
+    for name, key in keys.items():
+        asc_path = keys_dir / f"{name.lower()}.asc"
+        asc_path.write_text(key.pubkey_armored, encoding="utf-8")
+        verifier_keys[name] = {
+            "fingerprint": key.fpr,
+            "public_key_file": f".tess/keys/verifiers/{name.lower()}.asc",
+        }
+    policy = json.loads(json.dumps(_TEST_POLICY))  # cheap deep copy
+    policy["policy"]["verifier_keys"] = verifier_keys
+    return policy
+
+
 @pytest.fixture
-def gate_repo(project):
+def gate_repo(project, verifier_gpg_keys):
     """A real git repo with the real core/contracts/*.schema.json + a
-    test-scoped core/policy/policy.yaml, one initial commit."""
+    test-scoped core/policy/policy.yaml (Phase 2b: registering every
+    generated test verifier identity's key, so signed test verdicts can
+    actually verify), one initial commit."""
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
-    (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(_TEST_POLICY), encoding="utf-8")
+    policy = _policy_with_verifier_keys(root, verifier_gpg_keys)
+    (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
 
     _init_repo(root)
     _git(root, "add", "-A")
@@ -121,7 +155,17 @@ def _blob_sha(root, rel_path):
     return _git(root, "hash-object", rel_path).stdout.strip()
 
 
-def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", findings=None, artifact_hashes=None):
+def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", findings=None, artifact_hashes=None,
+                    engine=None, keys=None):
+    """Builds a schema-valid verdict dict. Phase 2b: when `engine` (the
+    loaded tessctl module) and `keys` (a verifier_gpg_keys dict) are BOTH
+    given, the verdict is also cryptographically SIGNED as `verifier` — a
+    real, working signature any test wanting the gate to actually COVER a
+    path must provide (an unsigned verdict, however otherwise valid, can
+    never cover anything post-Phase-2b). Tests that only need a verdict to
+    exist/be schema-checked (or that expect it to be rejected for an
+    unrelated reason regardless of signing) can omit engine/keys and get
+    the pre-Phase-2b unsigned shape."""
     verdict = {
         "verifier": verifier,
         "output_domain": "Code diff / PR",
@@ -134,6 +178,8 @@ def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", finding
     }
     if artifact_hashes is not None:
         verdict["artifact_hashes"] = dict(artifact_hashes)
+    if engine is not None and keys is not None and verifier in keys:
+        verdict["signature"] = sign_verdict_for_test(engine, verdict, keys[verifier])
     return verdict
 
 
@@ -168,14 +214,17 @@ def test_ci_blocks_prod_touching_change_with_no_verdict(gate_repo, run_cli):
 # 2) ALLOWS with a valid covering APPROVE verdict
 # ---------------------------------------------------------------------------
 
-def test_ci_allows_prod_touching_change_with_covering_approve_verdict(gate_repo, run_cli):
+def test_ci_allows_prod_touching_change_with_covering_approve_verdict(gate_repo, run_cli, engine, verifier_gpg_keys):
     base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
     blob = _blob_sha(gate_repo, "src/prod/app.py")
     _write_verdict(
         gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
     )
     head = _commit_all(gate_repo, "add prod change + covering verdict")
 
@@ -226,7 +275,7 @@ def test_ci_blocks_when_only_covering_verdict_is_disposition_block(gate_repo, ru
     assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
 
 
-def test_ci_blocks_when_covering_verdict_has_unaccepted_high_finding(gate_repo, run_cli):
+def test_ci_blocks_when_covering_verdict_has_unaccepted_high_finding(gate_repo, run_cli, engine, verifier_gpg_keys):
     """A verdict claiming APPROVE with a HIGH finding and no
     accepted_high_findings is itself schema-INVALID (Phase 0's own H2 rule) —
     it can never count as a covering verdict, so the ship-gate still blocks."""
@@ -268,6 +317,10 @@ def test_ci_blocks_when_covering_verdict_has_unaccepted_high_finding(gate_repo, 
     ok_verdict["accepted_high_findings"] = [
         {"location": "src/prod/app.py:1", "rationale": "Tracked as a fast-follow; feature-flagged off."}
     ]
+    # Sign AFTER every field is final — a signature covers the verdict's
+    # FULL canonical content, so mutating severity_counts/accepted_high_findings
+    # post-construction (as above) would otherwise sign stale content.
+    ok_verdict["signature"] = sign_verdict_for_test(engine, ok_verdict, verifier_gpg_keys["Reid"])
     _write_verdict(gate_repo, "missions/m1/verdicts/prod-src.verdict.md", ok_verdict)
     head2 = _commit_all(gate_repo, "accept the HIGH finding")
     r2 = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head2, "--json")
@@ -505,7 +558,7 @@ def test_pre_push_stdin_protocol_blocks(gate_repo, run_cli):
     assert any("src/prod/app.py" in reason for reason in payload["reasons"])
 
 
-def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli):
+def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli, engine, verifier_gpg_keys):
     """The stdin-protocol path threads `head_shas` through to the covering-
     verdict check exactly like explicit --base/--head does — proven
     independently since _gate_changed_paths_from_stdin's return shape
@@ -515,7 +568,10 @@ def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli
     blob = _blob_sha(gate_repo, "src/prod/app.py")
     _write_verdict(
         gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
     )
     head = _commit_all(gate_repo, "prod change + covering verdict")
 
@@ -548,7 +604,7 @@ def test_pre_push_requires_both_base_and_head_or_neither(gate_repo, run_cli):
 
 # (i) per-change verification -------------------------------------------------
 
-def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate_repo, run_cli):
+def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate_repo, run_cli, engine, verifier_gpg_keys):
     """HIGH-1(a): a covering verdict binds to the CONTENT it reviewed (via
     artifact_hashes), not just the path glob. Re-editing the SAME path after
     the verdict was written must re-trigger the ship-gate — verification is
@@ -559,7 +615,10 @@ def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate
     blob_v1 = _blob_sha(gate_repo, "src/prod/app.py")
     _write_verdict(
         gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob_v1}),
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob_v1},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
     )
     head1 = _commit_all(gate_repo, "v1 + covering verdict")
 
@@ -580,7 +639,7 @@ def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate
     )
 
 
-def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(gate_repo, run_cli):
+def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(gate_repo, run_cli, engine, verifier_gpg_keys):
     """HIGH-1(a), companion case: artifact_hashes only vouches for the files
     it actually names. A brand-new file added later under the SAME
     covers_paths glob — one the verdict never reviewed — is not covered
@@ -591,7 +650,10 @@ def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(ga
     blob = _blob_sha(gate_repo, "src/prod/app.py")
     _write_verdict(
         gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
     )
     head1 = _commit_all(gate_repo, "app.py + covering verdict")
     r1 = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head1, "--json")
@@ -645,11 +707,15 @@ def test_validate_rejects_blanket_covers_paths_glob(engine):
 
 # (iii) allowed_verifiers enforced ---------------------------------------------
 
-def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate_repo, run_cli):
+def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate_repo, run_cli, engine, verifier_gpg_keys):
     """M1 fix: allowed_verifiers is no longer advisory. The test policy's
     'prod-src' rule only allows Reid — a schema-valid, covers_paths-matching,
-    content-bound APPROVE from a DIFFERENT verifier (Lysandra — a creative-
-    taste reviewer with no standing on a prod-src rule) must not clear it."""
+    content-bound, VALIDLY-SIGNED APPROVE from a DIFFERENT verifier
+    (Lysandra — a creative-taste reviewer with no standing on a prod-src
+    rule, signed with Lysandra's OWN real key so the failure below is
+    genuinely 'wrong verifier', not merely 'unsigned') must not clear it —
+    Phase 2b: signing ties allowed_verifiers to the cryptographic signer
+    identity, not just an unauthenticated string field."""
     base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
@@ -659,6 +725,7 @@ def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate
         _valid_verdict(
             covers_paths=["src/prod/**"], verifier="Lysandra",
             artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
         ),
     )
     head = _commit_all(gate_repo, "prod change + wrong-verifier APPROVE")
@@ -673,12 +740,13 @@ def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate
     )
 
     # Sanity: the identical change, reviewed by the rule's ACTUAL allowed
-    # verifier (Reid), clears it.
+    # verifier (Reid), signed with Reid's own key, clears it.
     _write_verdict(
         gate_repo, "missions/m1/verdicts/wrong-verifier.verdict.md",
         _valid_verdict(
             covers_paths=["src/prod/**"], verifier="Reid",
             artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
         ),
     )
     head2 = _commit_all(gate_repo, "swap to the rule's allowed verifier")

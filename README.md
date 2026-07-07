@@ -196,11 +196,15 @@ front-matter block.
 
 ```bash
 ./tessctl gate install-hooks           # install/upgrade the pre-commit + pre-push git hooks
+                                        # + the CI workflow (now push/pull_request-triggered)
                                         # (idempotent; splices above any pre-existing hook —
                                         #  same coexistence pattern as `tessctl vault init`)
 ./tessctl gate pre-commit               # contract validation on STAGED files (fast, local)
 ./tessctl gate pre-push                 # THE SHIP-GATE — reads the git pre-push stdin protocol
 ./tessctl gate ci --base <ref> --head <ref>   # same ship-gate logic, explicit refs (CI entrypoint)
+
+./tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>   # sign a verdict (Phase 2b)
+./tessctl verdict verify <file>                                    # check a verdict's signature
 ```
 
 Phase 2 of `docs/ULTIMATE_FRAMEWORK_PLAN.md`, Design Decisions #2 ("enforcement
@@ -219,7 +223,9 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
   `require_verdict: true` rule is BLOCKED unless a COMMITTED verdict — part of
   the actual pushed ref(s), never an uncommitted working-tree file — is
   schema-valid, carries `disposition: APPROVE`, has a `covers_paths` glob
-  matching that path, names a `verifier` the matched rule's
+  matching that path, carries a valid cryptographic `signature` that verifies
+  against `policy.verifier_keys[verifier]`'s registered key (Phase 2b — see
+  `conductor/verdict-signing.md`), names a `verifier` the matched rule's
   `allowed_verifiers` actually permits, and records THIS path's current git
   blob SHA in `artifact_hashes` (a HIGH finding still forces `BLOCK` unless
   explicitly accepted — the Phase 0 verdict schema rule applies unchanged).
@@ -228,11 +234,14 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
   new file under the same `covers_paths` glob, requires its own covering
   verdict. `covers_paths` can never be a blanket 'master key' glob (`**`, bare
   `*`, `**/*`, `**/**`) — a verdict carrying one is schema/lint-invalid and
-  covers nothing. Any path matching a hard-floor rule (credentials / money
-  movement / destructive prod data / client-external claims — `guardrails.md`
-  Rule 18) is BLOCKED regardless of any verdict, unless an explicit human
-  sign-off artifact exists at `.tess/gate/signoffs/<rule-id>.signoff.json` — a
-  verifier's APPROVE can never clear a hard floor.
+  covers nothing. An unsigned verdict, a signature from an unregistered or
+  mismatched key, or a verdict edited after signing (tamper) is treated
+  identically to "no covering verdict at all" — fail-closed. Any path
+  matching a hard-floor rule (credentials / money movement / destructive prod
+  data / client-external claims — `guardrails.md` Rule 18) is BLOCKED
+  regardless of any verdict, unless an explicit human sign-off artifact
+  exists at `.tess/gate/signoffs/<rule-id>.signoff.json` — a verifier's
+  APPROVE (signed or not) can never clear a hard floor.
 - **`ci`** — identical ship-gate logic over an explicit `--base`/`--head` ref
   range, the harness-independent backstop that still catches a push made with
   `git push --no-verify` (local hooks are advisory; CI is not).
@@ -241,19 +250,39 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
 fails, or an unreadable verdict all count as a block, never a silent allow —
 ambiguity resolves to refuse, not permit.
 
-**Trust boundary (honest disclosure, same posture `allowed_verifiers` was
-always documented with):** the gate raises the floor against an honest,
-rule-following review flow — it is not an unbypassable wall against a
-dishonest one. Git hooks are local and bypassable (`git push --no-verify`;
-`ci` is the harness-independent backstop for exactly that reason). Verdicts
-and sign-off artifacts are committer-authored, plain files with no
-cryptographic signature — a committer who controls their own branch can
-hand-author any verdict content, including a false `verifier` name or a
-fabricated `artifact_hashes` entry, the same way they could always fabricate
-a `disposition: APPROVE`. Binding coverage to a git blob SHA (HIGH-1) stops a
-verdict from silently re-covering content it never reviewed; it does not,
-and cannot, prove a specific human or agent actually read that content —
-that remains a process-integrity property, not a forgery-resistance one.
+**Trust boundary (honest disclosure, updated for Phase 2b — verdict
+signing):** a covering verdict must now carry a cryptographic `signature`
+(GPG detached signature over the verdict's canonical content) that verifies
+against the registered public key for its claimed `verifier` in
+`core/policy/policy.yaml`'s `policy.verifier_keys` — an unsigned, hand-faked,
+wrong-key, or tampered-after-signing verdict is rejected, fail-closed, and
+can never cover a path. Signing ties to `allowed_verifiers`: a genuine
+signature from a real, registered verifier who simply isn't permitted for
+the matched rule still does not clear it. Together with HIGH-1's diff-binding
+(`artifact_hashes`), a covering verdict now means: **the right verifier,
+cryptographically authenticated, signed off on the exact content being
+shipped** — hand-authoring a fake `disposition: APPROVE` no longer works.
+
+The remaining boundary is **key custody, not the mechanism**: whoever holds
+a verifier's private key can sign as them (the same boundary every signature
+scheme has, including this repo's own release-tag signing — see
+`release-process.md`). `tessctl` never generates or stores a verifier's
+private key. Git hooks remain local and bypassable (`git push --no-verify`;
+`ci` is the harness-independent backstop for exactly that reason, and now
+triggers automatically on `push`/`pull_request` — see "CI auto-enforce"
+below). Full trust model, key onboarding, and the disclosed/deferred piece
+(this repo's own Reid/Cyra keys are not yet generated — `verifier_keys`
+ships empty on purpose): `conductor/verdict-signing.md`.
+
+**CI auto-enforce:** `.github/workflows/tess-gate.yml` now triggers on
+`push` (protected branches) and `pull_request`, in addition to
+`workflow_dispatch` — the ship-gate runs automatically rather than requiring
+someone to remember to invoke it. A CI check alone is only advisory until
+configured as a **required status check** in branch protection (required
+check name: the job name `tessctl gate ci`) — see
+`conductor/verdict-signing.md`'s "CI auto-enforce" section for the exact
+setup steps (a repo-admin action, not automated by this change) and the
+fresh-adopter bootstrap warning.
 
 ---
 
@@ -310,31 +339,41 @@ This is an early public foundation. What is real and committed today:
   the retry protocol's signal. Full retry orchestration (dispatching the
   changed-brief retry itself) remains out of scope — this ships the
   deterministic check and the classification.
-- **The gate spine (Phase 2, hardened post-adversarial-review)**: `tessctl
-  gate` — deterministic pre-commit (staged contract validation), pre-push
-  (the ship-gate: blocks prod/client/external changes without a covering,
-  COMMITTED, content-bound `disposition: APPROVE` verdict from an allowed
-  verifier), and CI (`gate ci`) entrypoints, plus `tessctl gate install-hooks`
-  to install/upgrade the git hooks and a `workflow_dispatch`-triggered CI
-  workflow template. `core/policy/policy.yaml` is the policy-as-data instance
-  the gate reads; hard-floor categories (credentials/money/destructive-prod-
+- **The gate spine (Phase 2, hardened post-adversarial-review; Phase 2b —
+  verdict signing + CI auto-enforce)**: `tessctl gate` — deterministic
+  pre-commit (staged contract validation), pre-push (the ship-gate: blocks
+  prod/client/external changes without a covering, COMMITTED, content-bound,
+  **cryptographically SIGNED** `disposition: APPROVE` verdict from an
+  allowed verifier), and CI (`gate ci`) entrypoints, plus
+  `tessctl gate install-hooks` to install/upgrade the git hooks and a CI
+  workflow template that now triggers on `push`/`pull_request` (in addition
+  to `workflow_dispatch`). `tessctl verdict sign`/`verdict verify` manage
+  the signing key lifecycle. `core/policy/policy.yaml` is the policy-as-data
+  instance the gate reads (now including `verifier_keys`, the allowed-key
+  set); hard-floor categories (credentials/money/destructive-prod-
   data/client-external-claims) require an explicit human sign-off artifact and
-  are never satisfiable by a verdict alone. Fable's adversarial review of this
-  phase found one BLOCK (HIGH-1 — coverage was diff-unbound: any schema-valid
-  APPROVE verdict anywhere in the working tree permanently cleared its
-  `covers_paths` glob for every future push, `**` acted as a master key, and
-  an uncommitted pre-push verdict counted) plus two MEDIUMs (`allowed_verifiers`
-  was advisory only; `**`/`*` glob semantics missed root-level files and let a
-  single `*` span directories). All closed: coverage is now bound to the
-  reviewed git blob SHA per path (`artifact_hashes`), master-key globs are
-  schema/lint-rejected, only committed verdicts on the pushed ref(s) count,
-  `allowed_verifiers` is enforced, and the glob matcher is fixed — see this
-  README's `tessctl gate` section and CHANGELOG.md for the full disclosure,
-  including the residual trust-boundary note (verdicts are process-value
-  artifacts, not cryptographically signed). Scope note: this phase does NOT
-  include a Codex adapter, `.gemini`/generic render targets, or `tessctl run`
-  (the mechanical conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s
-  Phase 2 honest re-scope note.
+  are never satisfiable by a verdict alone. Fable's adversarial review of the
+  original Phase 2 found one BLOCK (HIGH-1 — coverage was diff-unbound: any
+  schema-valid APPROVE verdict anywhere in the working tree permanently
+  cleared its `covers_paths` glob for every future push, `**` acted as a
+  master key, and an uncommitted pre-push verdict counted) plus two MEDIUMs
+  (`allowed_verifiers` was advisory only; `**`/`*` glob semantics missed
+  root-level files and let a single `*` span directories); that review also
+  flagged the residual now closed by Phase 2b — verdicts were committer-
+  authored plain files with no cryptographic signature. All closed: coverage
+  is bound to the reviewed git blob SHA per path (`artifact_hashes`),
+  master-key globs are schema/lint-rejected, only committed verdicts on the
+  pushed ref(s) count, `allowed_verifiers` is enforced, the glob matcher is
+  fixed, AND a covering verdict must now carry a valid signature tied to its
+  claimed verifier's registered key — see this README's `tessctl gate`
+  section, `conductor/verdict-signing.md`, and CHANGELOG.md for the full
+  disclosure, including the residual trust boundary that remains (key
+  custody, not the mechanism — see `conductor/verdict-signing.md`) and the
+  disclosed, deferred piece (this repo's own Reid/Cyra signing keys are not
+  yet generated/registered). Scope note: this phase does NOT include a Codex
+  adapter, `.gemini`/generic render targets, or `tessctl run` (the mechanical
+  conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest
+  re-scope note.
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.

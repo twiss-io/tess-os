@@ -18,9 +18,9 @@ built in Phase 2 alongside the `tessctl gate` spine that is its only consumer.
 |---|---|---|
 | `brief.schema.json` | `conductor/dispatch-brief.md` | The six required fields, the Decomposition Rule, the mandatory 3-step destructive-ops pattern |
 | `crew-plan.schema.json` | `conductor/orchestra-model.md` §3.1–§3.2 | The crew-plan required shape and the seven plan-validation rules the conductor rejects a plan for violating |
-| `verdict.schema.json` | `conductor/review-output-standards.md` + `conductor/verification-routing.md` | The severity grammar, the mandatory closing verdict (normalized across Quinn/Reid/Cyra/Leah's differing per-role vocabularies), the six named verifiers, primary-artifacts-only. Phase 2 adds an optional `covers_paths` field (path globs the verdict's review actually scoped to) so `tessctl gate` can match a verdict against a diff. Fable-review fix adds an optional `artifact_hashes` field (repo-relative path → the reviewed git blob SHA) so `tessctl gate` binds that coverage to the exact CONTENT reviewed, not just the path shape — a verdict clears the exact change it reviewed, not every future edit under the same glob. |
+| `verdict.schema.json` | `conductor/review-output-standards.md` + `conductor/verification-routing.md` | The severity grammar, the mandatory closing verdict (normalized across Quinn/Reid/Cyra/Leah's differing per-role vocabularies), the six named verifiers, primary-artifacts-only. Phase 2 adds an optional `covers_paths` field (path globs the verdict's review actually scoped to) so `tessctl gate` can match a verdict against a diff. Fable-review fix adds an optional `artifact_hashes` field (repo-relative path → the reviewed git blob SHA) so `tessctl gate` binds that coverage to the exact CONTENT reviewed, not just the path shape — a verdict clears the exact change it reviewed, not every future edit under the same glob. **Phase 2b adds an optional `signature` field** (`$defs.VerdictSignature` — a GPG detached signature over the verdict's canonical content) — optional at the schema level, but functionally required for a verdict to cover anything: see `conductor/verdict-signing.md`. |
 | `return-manifest.schema.json` | **New in Phase 0** — no single pre-existing doctrine file | Operationalizes `orchestra-model.md` §4c ("read the primary artifact, never the summary"), `dispatch-brief.md`'s evidence requirement, and `subagent-failure-protocol.md`'s five failure states |
-| `policy.schema.json` | **New in Phase 2** — `conductor/verification-routing.md` + `conductor/guardrails.md` Rule 18 | The path→classification map (prod-touching/client-facing/externally-visible/irreversible-decision) that requires a covering verdict, plus the four Rule-18 hard-floor categories (credentials, money movement, destructive prod data, client-external claims) that are never verdict-satisfiable. The actual policy DATA a project ships lives at `core/policy/policy.yaml`, not in this schema. |
+| `policy.schema.json` | **New in Phase 2, extended Phase 2b** — `conductor/verification-routing.md` + `conductor/guardrails.md` Rule 18 | The path→classification map (prod-touching/client-facing/externally-visible/irreversible-decision) that requires a covering verdict, plus the four Rule-18 hard-floor categories (credentials, money movement, destructive prod data, client-external claims) that are never verdict-satisfiable. **Phase 2b adds `policy.verifier_keys`** — the allowed-key set a verdict's `signature` is checked against (verifier name → fingerprint + bundled public-key file path). The actual policy DATA a project ships lives at `core/policy/policy.yaml`, not in this schema. |
 
 Every field in every schema carries a `description` (or `$comment`) citing the
 exact doctrine line it encodes. Where a schema field has **no** direct doctrine
@@ -122,3 +122,16 @@ update/integrity machinery; they are part of the rendered/tracked framework.
 `policy.schema.json` + `core/policy/policy.yaml` are new in Phase 2, wired in
 from the moment they were introduced (never had an "unwired" period the way
 Phase 0's four original contracts briefly did).
+
+**Phase 2b note:** verdict signing (`verdict.schema.json`'s new `signature`
+field, `policy.schema.json`'s new `verifier_keys` field) extends these SAME
+already-wired files rather than adding new ones to this list.
+`.tess/keys/verifiers/<name>.asc` (each verifier's bundled PUBLIC key) is
+deliberately NOT core-managed/keystone-tracked, the same posture
+`.tess/keys/twiss-release-key.asc` already has — it's a plain committed
+repo asset, not part of the `.tess/core` mirror system. It IS, however,
+covered by `core/policy/policy.yaml`'s own `tess-os-security-tier-doctrine`
+rule (`.tess/keys/verifiers/**` was added to that rule's `globs` in Phase
+2b) — so editing the key registry still requires a covering, signed
+Reid/Cyra verdict, even though the key files themselves aren't
+keystone-tracked. See `conductor/verdict-signing.md` for the full picture.

@@ -19,6 +19,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+
+from conftest import sign_verdict_for_test
 
 HAS_GIT = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not HAS_GIT, reason="git required")
@@ -134,11 +137,20 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v1" in text
+    assert "# tess-gate-ci v2" in text
     assert "workflow_dispatch" in text
     assert "tessctl gate ci" in text
     import yaml
     parsed = yaml.safe_load(text)
+    # Phase 2b (CI auto-enforce): push + pull_request triggers now ship
+    # alongside workflow_dispatch. PyYAML's default (1.1) resolver reads the
+    # bare `on:` key as boolean True, not the string 'on' — a well-known
+    # YAML/GitHub-Actions quirk (GitHub's own parser treats `on` specially);
+    # this is how every GH Actions workflow round-trips through PyYAML.
+    triggers = parsed[True]
+    assert set(triggers) == {"workflow_dispatch", "push", "pull_request"}
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["pull_request"]["branches"] == ["main"]
     assert parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
 
 
@@ -148,6 +160,35 @@ def test_install_ci_workflow_idempotent(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
     second = (tmp_path / ".github" / "workflows" / "tess-gate.yml").read_text()
     assert first == second
+
+
+def test_install_ci_workflow_upgrades_v1_to_v2(engine, tmp_path):
+    """Phase 2b: an operator who already installed the v1 (workflow_dispatch-
+    only) template gets actively UPGRADED to v2 (push/pull_request added) on
+    the next `install-hooks` run — not silently skipped forever, and not
+    mistaken for an unrelated operator-authored workflow."""
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    v1_text = (
+        "# tess-gate-ci v1\n"
+        "name: Tess OS ship-gate\n"
+        "on:\n"
+        "  workflow_dispatch: {}\n"
+        "jobs:\n"
+        "  ship-gate:\n"
+        "    name: tessctl gate ci\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n"
+    )
+    (wf_dir / "tess-gate.yml").write_text(v1_text, encoding="utf-8")
+
+    engine._gate_install_ci_workflow(tmp_path)
+
+    upgraded = (wf_dir / "tess-gate.yml").read_text()
+    assert "# tess-gate-ci v2" in upgraded
+    assert "# tess-gate-ci v1" not in upgraded
+    assert "push:" in upgraded
+    assert "pull_request:" in upgraded
 
 
 def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine, tmp_path):
@@ -165,26 +206,46 @@ def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine,
 # remote), via `tessctl gate install-hooks` invoked as the real CLI command.
 # ---------------------------------------------------------------------------
 
-_TEST_POLICY_YAML = """\
-policy:
-  version: 1
-  rules:
-    - id: prod-src
-      description: test-only prod rule
-      globs: ["src/prod/**"]
-      classification: [prod_touching]
-      require_verdict: true
-      allowed_verifiers: [Reid]
-  hard_floor_rules: []
-"""
+def _test_policy_dict(verifier_keys=None):
+    return {
+        "policy": {
+            "version": 1,
+            "rules": [{
+                "id": "prod-src",
+                "description": "test-only prod rule",
+                "globs": ["src/prod/**"],
+                "classification": ["prod_touching"],
+                "require_verdict": True,
+                "allowed_verifiers": ["Reid"],
+            }],
+            "hard_floor_rules": [],
+            "verifier_keys": verifier_keys or {},
+        }
+    }
 
 
 @pytest.fixture
-def e2e_repo(project, run_cli):
+def e2e_repo(project, run_cli, verifier_gpg_keys):
+    """Phase 2b: also bundles + registers every generated test verifier
+    identity's public key (same convention as test_gate_spine.py's
+    `_policy_with_verifier_keys`), so a properly-signed e2e verdict can
+    actually clear the ship-gate."""
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
-    (root / "core" / "policy" / "policy.yaml").write_text(_TEST_POLICY_YAML, encoding="utf-8")
+
+    keys_dir = root / ".tess" / "keys" / "verifiers"
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    verifier_keys = {}
+    for name, key in verifier_gpg_keys.items():
+        (keys_dir / f"{name.lower()}.asc").write_text(key.pubkey_armored, encoding="utf-8")
+        verifier_keys[name] = {
+            "fingerprint": key.fpr,
+            "public_key_file": f".tess/keys/verifiers/{name.lower()}.asc",
+        }
+    (root / "core" / "policy" / "policy.yaml").write_text(
+        yaml.safe_dump(_test_policy_dict(verifier_keys)), encoding="utf-8",
+    )
     _init_repo(root)
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "initial")
@@ -241,9 +302,7 @@ def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_
     assert "no covering APPROVE verdict" in (push1.stdout + push1.stderr) or "BLOCKED" in (push1.stdout + push1.stderr)
 
 
-def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_path):
-    import yaml
-
+def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_path, engine, verifier_gpg_keys):
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
@@ -265,6 +324,8 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
         "covers_paths": ["src/prod/**"],
         "artifact_hashes": {"src/prod/app.py": blob},
     }
+    # Phase 2b: a covering verdict must be signed to clear the ship-gate.
+    verdict["signature"] = sign_verdict_for_test(engine, verdict, verifier_gpg_keys["Reid"])
     verdict_path.write_text("---\n" + yaml.safe_dump(verdict) + "---\n\nBody.\n", encoding="utf-8")
     _git(e2e_repo, "add", "-A")
     _git(e2e_repo, "commit", "-q", "-m", "covered prod change")

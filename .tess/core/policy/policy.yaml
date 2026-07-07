@@ -34,6 +34,17 @@
 # `.env` (previously it required at least one directory component — see
 # path_matches_globs's own header comment in .tess/bin/tessctl for the bug and
 # fix); `*` inside any other segment never spans `/`.
+#
+# Phase 2b (verdict signing — closes the Fable Phase-2 residual: verdicts were
+# committer-authored plain files with no cryptographic signature). A covering
+# verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
+# that verifies against the SAME-named entry in `verifier_keys` below — see
+# conductor/verdict-signing.md for the full trust model and onboarding steps.
+# `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
+# added to tess-os-security-tier-doctrine's globs below: tampering with the key
+# registry is exactly as consequential as tampering with policy.yaml itself,
+# and requires its own covering Reid/Cyra verdict — closing the "who guards the
+# key registry" loop.
 policy:
   version: 1
 
@@ -46,9 +57,10 @@ policy:
         conductor/dispatch-brief.md) plus the schemas that make dispatch-brief
         and verification-routing machine-checkable (core/contracts/brief.schema.json,
         core/contracts/verdict.schema.json), and the gate's own policy surface
-        (core/contracts/policy.schema.json, core/policy/**). Silently weakening
-        any of these is exactly as consequential as an unreviewed production
-        change — treat edits here as prod_touching.
+        (core/contracts/policy.schema.json, core/policy/**, and — Phase 2b —
+        the verifier public-key registry at .tess/keys/verifiers/**). Silently
+        weakening any of these is exactly as consequential as an unreviewed
+        production change — treat edits here as prod_touching.
       globs:
         - conductor/guardrails.md
         - conductor/verification-routing.md
@@ -58,6 +70,7 @@ policy:
         - core/contracts/verdict.schema.json
         - core/contracts/policy.schema.json
         - core/policy/**
+        - .tess/keys/verifiers/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
@@ -76,6 +89,47 @@ policy:
       classification: [prod_touching, client_facing]
       require_verdict: true
       allowed_verifiers: [Reid, Quinn]
+
+  # verifier_keys — Phase 2b's ALLOWED-KEY SET (core/contracts/policy.schema.json
+  # $defs.VerifierKeyEntry). DELIBERATELY EMPTY in this shipped default, same
+  # "hand-authored per project, do NOT fabricate" posture as every other
+  # placeholder in this file — honest disclosure, not an oversight:
+  #
+  #   Until a real entry exists here for a given verifier name, NO signature
+  #   can ever verify for that verifier (there is no key to check it against),
+  #   so NONE of that verifier's verdicts can ever cover a path — fail-closed,
+  #   not fail-open. Concretely: `tess-os-security-tier-doctrine` above already
+  #   names Reid + Cyra as its allowed_verifiers; until this project's real
+  #   maintainers generate and register Reid's and Cyra's actual signing keys
+  #   below, that rule is UNSATISFIABLE by any verdict — every future change to
+  #   conductor/guardrails.md, core/policy/**, etc. requires the hard-floor-
+  #   style manual escalation this file's own header already documents for an
+  #   unmet rule, not a silent bypass. This is a deliberate, disclosed
+  #   consequence of shipping verdict signing without also fabricating a
+  #   throwaway "Reid" identity that could be mistaken for a real trust anchor.
+  #
+  # To onboard a real verifier (see conductor/verdict-signing.md for the full
+  # walkthrough):
+  #   1. The verifier generates their own GPG keypair (private key stays in
+  #      THEIR custody only — never committed, never shared — same posture
+  #      release-process.md already documents for the release signing key).
+  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
+  #      .tess/keys/verifiers/<name-lowercase>.asc` and commit that file.
+  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
+  #      .tess/keys/verifiers/<name-lowercase>.asc}.
+  #   4. The verifier signs their own verdicts going forward with
+  #      `tessctl verdict sign <file> --verifier <Name> --key-id <fingerprint>`.
+  #
+  # Example shape (commented out — replace with a REAL registered key, never
+  # ship a placeholder fingerprint that would silently "verify" nothing):
+  #   verifier_keys:
+  #     Reid:
+  #       fingerprint: "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000"
+  #       public_key_file: .tess/keys/verifiers/reid.asc
+  #     Cyra:
+  #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
+  #       public_key_file: .tess/keys/verifiers/cyra.asc
+  verifier_keys: {}
 
   hard_floor_rules:
     - id: credentials

@@ -22,6 +22,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/HardFloorRule" },
           "description": "guardrails.md Rule 18 hard floor: 'ALWAYS gate on the operator's explicit go-ahead, regardless of any autonomous-mode... authorization.' These four categories (credentials, money movement, destructive production data operations, client-external factual claims) are DELIBERATELY EXCLUDED from `rules[]`/`require_verdict` — a verifier's APPROVE verdict can never clear a hard-floor match (see `tessctl gate`'s hard-floor check, which looks for a human sign-off artifact instead, never a verdict)."
+        },
+        "verifier_keys": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
+          "description": "Phase 2b (verdict signing) — the ALLOWED-KEY SET: a registered map of verifier-identity -> public key the gate trusts to verify a `verdict.signature`. Keys of this object MUST be one of verification-routing.md's six named verifiers (Reid, Quinn, Cyra, Verity, Maialen, Lysandra) — a plain JSON Schema object node cannot itself enumerate its own property NAMES against a fixed list, so `tessctl gate`'s policy lint (`_lint_policy`) enforces that relational rule the same way it already enforces rule-id uniqueness. Tied to `allowed_verifiers`: a covering verdict must be signed by the key registered here under the SAME name as its `verifier` field, AND that name must appear in the matched rule's `allowed_verifiers` — together this means 'a real, authorized verifier of the right domain cryptographically signed off on this exact reviewed change', not just 'a file claims a name that happens to be on both lists.' OPTIONAL at the schema level (a policy with no `verifier_keys` remains schema-valid) but, like `covers_paths`/`artifact_hashes` before it, functionally decisive: with no entry for a given verifier, NO signature can ever verify for that verifier's verdicts, so none of their verdicts can ever cover a path — fail-closed by omission, not fail-open."
         }
       },
       "required": ["version", "rules", "hard_floor_rules"],
@@ -31,6 +36,23 @@
   "required": ["policy"],
   "additionalProperties": false,
   "$defs": {
+    "VerifierKeyEntry": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{40}$",
+          "description": "The verifier's full 40-hex-char GPG key fingerprint (uppercase, no spaces) — the SAME 'C3 exact equality, no short-ID matching' discipline `framework.trusted_key_fingerprint` already applies to release-key pinning (`.tess/bin/tessctl`'s `_FULL_FP_RE`). A signature made by any OTHER key — including a same-named but different key, or a key whose armored export was swapped in `public_key_file` without updating this fingerprint — is rejected, not silently accepted by proximity."
+        },
+        "public_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). `tessctl gate` imports this file into an ISOLATED, throwaway GNUPGHOME for every verification — never the ambient/system keyring — so CI needs no manual `gpg --import` bootstrap step the way release-tag verification does (a verdict-signature verification, unlike a fresh clone's very first trust decision, already trusts the checked-out tree enough to read this file: `core/policy/**` and `.tess/keys/verifiers/**` are themselves `prod_touching` under this repo's own `tess-os-security-tier-doctrine` rule, so tampering with the key registry requires its own covering Reid/Cyra verdict)."
+        }
+      },
+      "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
     "PathRule": {
       "type": "object",
       "properties": {

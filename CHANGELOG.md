@@ -5,6 +5,84 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
+  (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
+  Phase 2 adversarial review — "verdict + sign-off files are committer-
+  authored with NO signing" and "the CI workflow is `workflow_dispatch`-only
+  — advisory, not auto-enforcing"):
+  - **Verdict signing** — a covering verdict must now carry a `signature`
+    (`verdict.schema.json`'s new, optional `$defs.VerdictSignature`: a GPG
+    detached signature over the verdict's canonical content —
+    `verdict_canonical_bytes()`, compact key-sorted JSON minus the
+    `signature` key itself) that verifies against the registered public key
+    for its claimed `verifier` in `policy.schema.json`'s new
+    `policy.verifier_keys` map (the allowed-key set). Reuses the repo's
+    existing keystone signed-update primitives (`_parse_gpg_fingerprint`,
+    the isolated-GNUPGHOME-per-check pattern, exact 40-hex fingerprint
+    equality) rather than inventing a new scheme — see
+    `conductor/verdict-signing.md` for the full trust model. Fail-closed,
+    same "optional at schema, functionally required to cover anything"
+    posture already established for `covers_paths`/`artifact_hashes`: an
+    unsigned verdict, a malformed signature block, a signature from an
+    unregistered verifier, a signature made by the wrong key, or a verdict
+    edited after signing (tamper — caught via `signed_content_sha256`
+    mismatch) all resolve to "does not cover this path," never a silent
+    pass. Signing ties to `allowed_verifiers`: a genuinely valid signature
+    from a real, registered verifier who is simply not permitted for the
+    matched rule still does not clear it.
+  - **`tessctl verdict sign`/`verdict verify`** — new subcommands. `sign`
+    produces the `signature` block for a verdict file (preserving its
+    `.json`/`.yaml`/`.md`-front-matter format) using a local GPG identity
+    (`--key-id`); `verify` independently checks a verdict's signature
+    against the registered `verifier_keys` without running the full gate.
+  - **`.tess/keys/verifiers/<name>.asc`** — bundled public-key convention
+    per verifier, mirroring `.tess/keys/twiss-release-key.asc`. NOT
+    keystone-tracked (same posture as the release key), but covered by
+    `core/policy/policy.yaml`'s `tess-os-security-tier-doctrine` rule
+    (`.tess/keys/verifiers/**` added to its globs) — editing the key
+    registry requires its own covering, signed Reid/Cyra verdict.
+  - **Disclosed, deferred piece:** `core/policy/policy.yaml` ships
+    `verifier_keys: {}` — deliberately empty, not an oversight. This repo's
+    own `tess-os-security-tier-doctrine` rule (`allowed_verifiers: [Reid,
+    Cyra]`) is therefore unsatisfiable by any verdict until real Reid/Cyra
+    signing keys are generated and registered — a disclosed, fail-closed
+    consequence (a maintainer private-key-custody decision), not a
+    fabricated throwaway identity standing in for a real trust anchor.
+  - **CI auto-enforce** — `.github/workflows/tess-gate.yml` (template
+    marker bumped `v1` → `v2`) now triggers on `push` (protected branches)
+    and `pull_request`, in addition to `workflow_dispatch` (kept for ad hoc
+    ref-range checks). `tessctl gate install-hooks` actively UPGRADES an
+    existing v1 (workflow_dispatch-only) installation to v2 rather than
+    silently skipping it forever. A new "Resolve base/head for this
+    trigger" workflow step computes the correct `--base`/`--head` for each
+    of the three trigger types (`workflow_dispatch` inputs;
+    `pull_request`'s `base.sha`/`head.sha`; `push`'s `before`/`after`, with
+    an empty-tree fallback for a brand-new ref). Materialized into this
+    repo's own `.github/workflows/tess-gate.yml` (previously undeployed —
+    the mechanism existed in the install-hooks template but had never
+    actually been installed here). Branch-protection required-status-check
+    setup (the job name `tessctl gate ci`) is documented
+    (`conductor/verdict-signing.md`) but is a repo-admin action, not
+    automated by this change.
+  - **71 new tests** — `tests/test_verdict_signing.py` (19: valid-signature-
+    clears, unsigned/hand-faked/wrong-key/tampered-all-blocked, signing-
+    ties-to-allowed_verifiers, unit coverage of
+    `_gate_verify_verdict_signature`'s every failure branch, `_lint_policy`'s
+    `verifier_keys` name check, `tessctl verdict sign`/`verify` CLI round-
+    trips), plus updates across `tests/test_gate_spine.py` and
+    `tests/test_gate_hooks.py` (existing covering-verdict tests now sign
+    their verdicts with real, per-verifier throwaway GPG keys —
+    `verifier_gpg_keys`/`sign_verdict_for_test` in `conftest.py`) and a new
+    `test_install_ci_workflow_upgrades_v1_to_v2`. Full suite: **447 passed**
+    (427 existing + 20 new test functions, net of the CI-workflow-template
+    assertion updates), zero regressions. `tessctl doctor` / `verify` /
+    `lock --check` all clean against the live working tree (the three
+    tier:security core files this touches — `verdict.schema.json`,
+    `policy.schema.json`, `core/policy/policy.yaml` — plus the new
+    `conductor/verdict-signing.md` doc, were re-baselined via
+    `tessctl lock --regen` per that command's documented maintainer flow).
+
 ### Fixed
 - **Fable's adversarial review of Phase 2 (the gate spine) — one BLOCK, two
   MEDIUMs, one LOW, all closed:**

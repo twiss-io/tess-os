@@ -74,7 +74,11 @@
     },
     "verifier_signoff_note": {
       "type": "string",
-      "description": "LOW-2 (Fable Phase-2 adversarial review): documents, in the verdict itself if the author chooses to note it, that `verifier`/`covers_paths`/`artifact_hashes` are PROCESS-VALUE fields — a deliberate, rule-following artifact the verifier chose to author correctly — NOT a forgery-resistance mechanism. Nothing in this schema cryptographically signs the verdict or proves a specific human/agent wrote it; a committer who controls their own branch can hand-author any verdict content, including a false `verifier` name or fabricated `artifact_hashes`. The gate raises the floor against an honest, rule-following review flow; it is not an unbypassable wall against a dishonest one (see README.md's gate section and CHANGELOG.md for the same disclosure applied project-wide). OPTIONAL — purely documentary."
+      "description": "LOW-2 (Fable Phase-2 adversarial review): documents, in the verdict itself if the author chooses to note it, that `verifier`/`covers_paths`/`artifact_hashes` are PROCESS-VALUE fields — a deliberate, rule-following artifact the verifier chose to author correctly. Phase 2b (verdict signing) closes the forgery gap this note originally disclosed for a SIGNED verdict (see `signature` below) — an unsigned verdict, or one whose `signature` does not verify against the claimed `verifier`'s registered key in `policy.verifier_keys`, can never cover any path (`tessctl gate`'s covering-verdict check, fail-closed). This field remains OPTIONAL and purely documentary."
+    },
+    "signature": {
+      "$ref": "#/$defs/VerdictSignature",
+      "description": "Phase 2b FIX (closes the Fable Phase-2 residual: 'verdict + sign-off files are committer-authored with NO signing... a weak/malicious agent could hand-write a fake disposition: APPROVE verdict to clear its own gate'). A detached cryptographic signature over this verdict's CANONICAL content (the instance minus this `signature` key itself, serialized as compact key-sorted JSON — see `tessctl`'s `verdict_canonical_bytes()`), produced by the claimed `verifier`'s private key. OPTIONAL at the schema level (mirrors `covers_paths`/`artifact_hashes`'s own additive introduction — an older, unsigned verdict instance remains schema-valid) but FUNCTIONALLY REQUIRED for a verdict to cover anything: `tessctl gate`'s covering-verdict check treats a verdict with no `signature`, a malformed one, one whose `signed_content_sha256` no longer matches the verdict's current content (tamper detection), or one that fails GPG verification against `policy.verifier_keys[verifier]`'s registered fingerprint, as covering NOTHING — fail-closed by omission, the exact same posture already established for `covers_paths`/`artifact_hashes`. Produced by `tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>`; reuses the repo's existing keystone signed-update primitives (isolated GNUPGHOME, exact 40-hex fingerprint pinning — see `conductor/verdict-signing.md` and `release-process.md`'s trust model) rather than inventing a new signing scheme."
     }
   },
   "required": [
@@ -162,6 +166,33 @@
         }
       },
       "required": ["location", "rationale"],
+      "additionalProperties": false
+    },
+    "VerdictSignature": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["gpg-detached-armor"],
+          "description": "Signing scheme. Only one supported today: an ASCII-armored GPG detached signature over `verdict_canonical_bytes()` — the same isolated-GNUPGHOME, exact-fingerprint-match primitives `_verify_tag_secure` already uses for signed-release-tag verification, reused rather than a new scheme (see `conductor/verdict-signing.md`)."
+        },
+        "signed_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 hex digest of the canonical (signature-key-excluded, compact key-sorted JSON) bytes at signing time. `tessctl gate` recomputes this from the verdict's CURRENT content and rejects the signature outright on any mismatch — this is the tamper-evidence check that runs BEFORE the (more expensive) GPG verification, so an edited-after-signing verdict is caught deterministically, not just by luck of a broken signature."
+        },
+        "signature_armored": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The ASCII-armored GPG detached signature block (`-----BEGIN PGP SIGNATURE-----` ... `-----END PGP SIGNATURE-----`) over the canonical bytes, produced by `tessctl verdict sign`."
+        },
+        "signed_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL, purely documentary UTC timestamp (ISO-8601) of when `tessctl verdict sign` produced this signature. Not consulted by verification — signatures do not expire in this scheme (see `conductor/verdict-signing.md`'s trust-model disclosure)."
+        }
+      },
+      "required": ["algorithm", "signed_content_sha256", "signature_armored"],
       "additionalProperties": false
     }
   },
