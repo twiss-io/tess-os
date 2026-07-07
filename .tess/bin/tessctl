@@ -8843,13 +8843,19 @@ def _trace_infer_mission_id(paths) -> str | None:
 
 def _trace_rel_or_str(root: Path, path: Path) -> str:
     """Best-effort root-relative posix path string for a `subject.file`
-    field / mission-id inference — falls back to the raw string form for a
-    path outside `root` (e.g. `tessctl validate` invoked against an
-    out-of-tree file) rather than raising."""
+    field / mission-id inference. A path outside `root` (e.g. `tessctl
+    validate` invoked against an out-of-tree file) is deliberately NOT
+    emitted as its raw absolute string: this value flows straight into the
+    OTLP export's `tess.validate.file` attribute (`_trace_event_to_otlp_span`),
+    which may leave this machine entirely (an APM backend, a shared
+    dashboard) — a raw absolute path there leaks local directory structure
+    (home dir, username, client/project names) that has nothing to do with
+    the validation outcome being reported. Falls back to just the
+    filename, clearly tagged as out-of-tree, rather than raising."""
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except (ValueError, OSError):
-        return str(path)
+        return f"<out-of-tree>/{path.name}"
 
 
 def _trace_capped_reasons(reasons) -> list:
@@ -8913,7 +8919,22 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
     (conductor/verification-routing.md), not this side-channel. Per the
     project's error-handling standard ("never swallow errors silently"),
     a failure here is still surfaced — as a one-line stderr WARNING — it is
-    just never fatal to the caller."""
+    just never fatal to the caller.
+
+    Guard-defeat hardening (closes a MEDIUM finding): the `except Exception`
+    below is scoped to `Exception` ON PURPOSE — never widen it to
+    `except BaseException` or stack a second broad handler beneath it. A
+    live network attempt anywhere in this function's call graph (today only
+    ever exercised via the `no_network` socket-guard fixture in
+    test_trace_otel.py — the engine itself has zero real networking code)
+    must fail loudly, never degrade to the same WARNING a genuine local
+    write failure gets. That guarantee holds by construction: the guard's
+    signal exception is rooted in `BaseException`, not `Exception`, so this
+    handler structurally cannot catch it, however deep in the try below the
+    call that trips it ends up — including future code added AFTER the
+    local `_trace_append_event` call succeeds (e.g. a hypothetical "also
+    mirror this event to a remote collector" step), which is exactly the
+    call-graph shape a purely-Exception-rooted guard signal used to miss."""
     try:
         mission_paths = list(changed_paths) if changed_paths is not None else ([file_path] if file_path else [])
         mission_id = _trace_infer_mission_id(mission_paths)
@@ -8935,7 +8956,10 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
             subject=subject, counts=counts, reasons=reasons,
         )
         _trace_append_event(root, event)
-    except Exception as e:  # best-effort observability — see docstring above
+    except Exception as e:  # best-effort observability, scoped to Exception —
+                             # NOT BaseException — on purpose; see the
+                             # "Guard-defeat hardening" note in this
+                             # function's docstring before touching this line.
         print(f"tessctl trace: WARNING — could not record trace event ({e}); continuing (non-fatal)", file=sys.stderr)
 
 
@@ -9081,6 +9105,14 @@ def _trace_event_to_otlp_span(event: dict) -> dict:
     if reasons:
         attributes.append(_otlp_attr("tess.reasons", "; ".join(reasons)))
 
+    # OTLP convention: `status.message` describes the error — it belongs on
+    # error spans only. An OK span carries no message (the outcome is
+    # already fully expressed by `status.code`; duplicating it as a message
+    # on every passing span isn't what the field is for).
+    status = {"code": _OTLP_STATUS_ERROR if is_error else _OTLP_STATUS_OK}
+    if is_error:
+        status["message"] = outcome
+
     return {
         "traceId": trace_id,
         "spanId": span_id,
@@ -9089,10 +9121,7 @@ def _trace_event_to_otlp_span(event: dict) -> dict:
         "startTimeUnixNano": str(start_nanos),
         "endTimeUnixNano": str(end_nanos),
         "attributes": attributes,
-        "status": {
-            "code": _OTLP_STATUS_ERROR if is_error else _OTLP_STATUS_OK,
-            "message": outcome,
-        },
+        "status": status,
     }
 
 

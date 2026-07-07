@@ -9,7 +9,10 @@ Coverage (per the dispatch brief's acceptance list):
   * `trace export --format otlp-json` produces OTLP-JSON that validates
     against the GenAI semconv agent-span attribute set
   * NO network call anywhere in the trace/export path (socket-guard tests +
-    a static import-scan of the engine source)
+    a static+dynamic import-scan of the engine source) — including the
+    append path INSIDE `_trace_record` itself, not just its outer callers
+    (2026-07 MEDIUM-finding fix: the guard's own signal exception used to
+    be swallowed by `_trace_record`'s best-effort `except Exception`)
   * the existing suite stays green (this file only ADDS coverage)
 
 Hooks/CI firing is out of scope here (already owned by test_gate_hooks.py);
@@ -283,6 +286,9 @@ def test_otlp_span_has_required_gen_ai_attributes_on_a_pass_event(engine):
     assert attrs["gen_ai.conversation.id"] == {"stringValue": "m1"}
     assert "error.type" not in attrs
     assert span["status"]["code"] == engine._OTLP_STATUS_OK
+    # status.message is an OTLP error-description field — an OK span carries
+    # none (closes a LOW finding: it used to duplicate `outcome` here too).
+    assert "message" not in span["status"]
 
 
 @pytest.mark.parametrize("outcome", ["block", "error"])
@@ -624,25 +630,87 @@ def test_trace_export_no_events_produces_empty_but_valid_document(trace_repo, ru
 # ===========================================================================
 
 
-def test_engine_source_never_imports_networking_libraries():
-    """Static guarantee, independent of any monkeypatching: the whole engine
-    (not just the trace region) never imports a networking library. Guards
-    against a FUTURE regression anywhere in the file, not just today's diff."""
-    src = ENGINE_SRC.read_text(encoding="utf-8")
-    forbidden = ("socket", "http.client", "urllib.request", "urllib3", "requests", "httpx", "aiohttp")
-    import_re = re.compile(r"^\s*(?:import|from)\s+([\w\.]+)", re.MULTILINE)
-    imported_modules = {m.group(1) for m in import_re.finditer(src)}
-    hits = [
+_FORBIDDEN_NETWORK_MODULES = ("socket", "http.client", "urllib.request", "urllib3", "requests", "httpx", "aiohttp")
+
+# Static `import X` / `from X import Y` — the literal, most common form.
+_STATIC_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([\w\.]+)", re.MULTILINE)
+
+# Dynamic imports evade the static scan above entirely — `__import__("socket")`
+# needs no `import`/`from` keyword at all, and `importlib.import_module(...)`
+# (or `import_module(...)` after `from importlib import import_module`) is
+# the standard-library-blessed way to do the same thing. Both take the
+# target module name as a plain string literal, which is what this matches.
+_DYNAMIC_IMPORT_RE = re.compile(r"(?:__import__|import_module)\s*\(\s*['\"]([\w\.]+)['\"]")
+
+
+def _forbidden_networking_imports(src: str, forbidden=_FORBIDDEN_NETWORK_MODULES) -> list:
+    """Every forbidden networking module name referenced by ANY import
+    form (static or dynamic) found in `src`. Shared by the real engine-source
+    scan below and its own non-vacuousness proof, so the two can never
+    silently drift apart."""
+    imported_modules = {m.group(1) for m in _STATIC_IMPORT_RE.finditer(src)}
+    imported_modules |= {m.group(1) for m in _DYNAMIC_IMPORT_RE.finditer(src)}
+    return [
         name for name in forbidden
         if any(mod == name or mod.startswith(name + ".") for mod in imported_modules)
     ]
+
+
+def test_engine_source_never_imports_networking_libraries():
+    """Static guarantee, independent of any monkeypatching: the whole engine
+    (not just the trace region) never imports a networking library — by a
+    literal `import`/`from` line OR a dynamic `__import__(...)` /
+    `importlib.import_module(...)` call. Guards against a FUTURE regression
+    anywhere in the file, not just today's diff."""
+    src = ENGINE_SRC.read_text(encoding="utf-8")
+    hits = _forbidden_networking_imports(src)
     assert hits == [], f"tessctl imports networking module(s) it should never need: {hits}"
 
 
-class _SocketOpenedError(AssertionError):
-    """Raised by the test's socket patches — distinct type so a genuine,
-    unrelated AssertionError elsewhere in the call graph is never confused
-    with 'a network call was attempted'."""
+@pytest.mark.parametrize(
+    "snippet, expected_hit",
+    [
+        ('__import__("socket")', "socket"),
+        ("__import__('urllib.request')", "urllib.request"),
+        ("importlib.import_module('socket')", "socket"),
+        ('from importlib import import_module\nimport_module("socket")', "socket"),
+    ],
+)
+def test_import_scan_is_non_vacuous_for_dynamic_imports(snippet, expected_hit):
+    """Proves `_forbidden_networking_imports` (and therefore the real scan
+    above) actually catches the dynamic-import forms a literal
+    `import`/`from` regex alone would miss — without this, the scan's
+    'guards against a FUTURE regression' claim would be untested."""
+    assert _forbidden_networking_imports(snippet) == [expected_hit]
+
+
+def test_import_scan_static_form_still_works_alongside_dynamic():
+    """Sanity check that broadening the scan for dynamic imports didn't
+    regress the original literal `import`/`from` detection it's layered on
+    top of."""
+    assert _forbidden_networking_imports("import socket\n") == ["socket"]
+    assert _forbidden_networking_imports("from urllib import request\n") == []  # not a forbidden name itself
+    assert _forbidden_networking_imports("import requests\n") == ["requests"]
+    assert _forbidden_networking_imports("import json\nimport re\n") == []
+
+
+class _SocketOpenedError(BaseException):
+    """Raised by the test's socket patches. Rooted in `BaseException`, NOT
+    `Exception` (closes a MEDIUM finding, 2026-07): `_trace_record`'s
+    best-effort recorder in `.tess/bin/tessctl` deliberately catches only
+    `Exception` — a genuine local trace-write failure (disk full,
+    permissions, a tracer bug) must degrade to a stderr WARNING, but a live
+    network attempt anywhere in that function's call graph must never be
+    mistaken for one of those and swallowed the same way. Rooting this
+    signal in `BaseException` makes that structural, not a matter of
+    `_trace_record` correctly guessing which exceptions are "safe" to
+    swallow — the type system enforces it regardless of how deep in the
+    call graph the guard fires. See `test_trace_record_never_swallows_a_
+    socket_open_on_the_append_path` below for the non-vacuous proof, and
+    `_trace_record`'s docstring in `.tess/bin/tessctl` for the production
+    side of this contract. Distinct from an ordinary `AssertionError`
+    elsewhere in the call graph so the two are never confused with each
+    other either."""
 
 
 @pytest.fixture
@@ -712,3 +780,104 @@ def test_no_network_in_gate_pre_commit_call_graph(trace_repo, engine, no_network
         engine._cmd_gate_pre_commit(ns(json_out=True), trace_repo)
 
     assert (trace_repo / "missions" / "m6" / "trace.jsonl").exists()
+
+
+def test_trace_record_never_swallows_a_socket_open_on_the_append_path(engine, tmp_path, monkeypatch, no_network):
+    """Non-vacuous proof closing the MEDIUM finding: `_trace_record`'s
+    best-effort `except Exception` must never swallow a live network
+    attempt made ANYWHERE inside its own try — including a hypothetical
+    future step bolted on right after the local JSONL write succeeds (e.g.
+    "also mirror this event to a remote collector"). That call-graph shape
+    is exactly what the four `test_no_network_in_*_call_graph` tests above
+    cannot see: they only assert on the OUTER command's `SystemExit` and on
+    the trace file's existence, both of which would still hold even if a
+    socket call buried inside `_trace_record` got silently caught and
+    downgraded to a stderr WARNING.
+
+    Simulates that future regression by wrapping the real
+    `_trace_append_event` so it performs the genuine local write and THEN
+    opens a socket — under `no_network` this raises `_SocketOpenedError`.
+
+    Verified non-vacuous by hand against the pre-fix code: with the old
+    `_SocketOpenedError(AssertionError)` hierarchy, `_trace_record`'s
+    `except Exception` catches it, prints the WARNING, and returns
+    normally — `pytest.raises` below finds nothing to catch and this test
+    FAILS ("DID NOT RAISE"). With the fix
+    (`_SocketOpenedError(BaseException)`, matching `_trace_record`'s
+    "Guard-defeat hardening" docstring contract in `.tess/bin/tessctl`),
+    the exception is structurally uncatchable by `except Exception` and
+    propagates — this test PASSES.
+    """
+    real_append = engine._trace_append_event
+    write_happened = []
+
+    def _append_then_phone_home(root, event):
+        written = real_append(root, event)  # the genuine local write still succeeds
+        write_happened.append(written)
+        socket.create_connection(("example.invalid", 80))  # simulated future regression
+        return written
+
+    monkeypatch.setattr(engine, "_trace_append_event", _append_then_phone_home)
+
+    with pytest.raises(_SocketOpenedError):
+        engine._trace_record(
+            tmp_path, phase="gate", action="gate.ci", outcome="pass", exit_code=0,
+            duration_s=0.001, changed_paths=["x"],
+        )
+
+    # The local write really did happen before the simulated regression
+    # fired — this test is about the swallowed EXCEPTION, not a write
+    # failure, and must not be satisfied by a write that never ran.
+    assert write_happened, "expected the real local append to run before the simulated socket call"
+
+
+def test_trace_record_still_swallows_a_genuine_tracer_bug(engine, tmp_path, monkeypatch, capsys):
+    """Companion to the test above, proving the hardening didn't overcorrect:
+    an ordinary internal tracer bug (any plain `Exception`, unrelated to the
+    network guard) must still degrade to a stderr WARNING exactly as
+    `test_trace_record_is_best_effort_and_never_raises` already covers —
+    restated here, right next to the socket-guard proof, so the two
+    contracts ("swallow genuine bugs" vs "never swallow a network attempt")
+    are visibly tested side by side."""
+    def _boom(*a, **kw):
+        raise RuntimeError("synthetic tracer bug, not a network attempt")
+
+    monkeypatch.setattr(engine, "_trace_build_event", _boom)
+    engine._trace_record(  # must not raise
+        tmp_path, phase="gate", action="gate.ci", outcome="pass", exit_code=0,
+        duration_s=0.001, changed_paths=["x"],
+    )
+    assert "WARNING" in capsys.readouterr().err
+
+
+# ===========================================================================
+# 6) `_trace_rel_or_str` — out-of-tree path redaction
+# ===========================================================================
+
+
+def test_trace_rel_or_str_redacts_out_of_tree_absolute_paths(engine, tmp_path):
+    """Closes the LOW finding alongside the MEDIUM: a `tessctl validate`
+    call against a file outside `root` must not leak the file's raw
+    absolute path (home dir, username, client/project names, ...) into the
+    OTLP export's `tess.validate.file` attribute — only the filename,
+    clearly tagged as out-of-tree."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "elsewhere" / "secret-client-name" / "loose.brief.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x", encoding="utf-8")
+
+    result = engine._trace_rel_or_str(root, outside)
+
+    assert result == "<out-of-tree>/loose.brief.md"
+    assert "secret-client-name" not in result
+    assert str(tmp_path) not in result
+
+
+def test_trace_rel_or_str_returns_root_relative_path_when_in_tree(engine, tmp_path):
+    root = tmp_path / "repo"
+    inner = root / "missions" / "m1" / "briefs" / "task.brief.md"
+    inner.parent.mkdir(parents=True)
+    inner.write_text("x", encoding="utf-8")
+
+    assert engine._trace_rel_or_str(root, inner) == "missions/m1/briefs/task.brief.md"
