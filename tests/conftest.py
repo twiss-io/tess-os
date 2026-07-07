@@ -16,6 +16,7 @@ Two project-construction strategies:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -245,6 +246,101 @@ def gpg_key():
     else:
         os.environ["GNUPGHOME"] = prev
     shutil.rmtree(home, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-verifier GPG identities (Phase 2b — verdict signing tests)
+#
+# Deliberately INDEPENDENT of `gpg_key` above (no shared refactor of that
+# already-shipped, tier-tested fixture — same "don't touch a proven subsystem
+# for an unrelated feature" discipline `_gate_install_git_hooks`'s own module
+# comment already documents for the hook-splice code). Each verifier gets its
+# OWN isolated GNUPGHOME + real keypair, so a test can prove "verifier X's
+# signature does not clear a rule scoped to verifier Y" with two genuinely
+# distinct keys, not just two different `verifier:` string values signed by
+# the same key.
+# ---------------------------------------------------------------------------
+
+def _gen_verifier_gpg_identity(name: str):
+    """Generate one throwaway ed25519 GPG keypair for verifier `name`, in its
+    own isolated GNUPGHOME. Returns a SimpleNamespace(home, fpr,
+    pubkey_armored, email) or raises pytest.skip if gpg is unavailable/fails
+    (mirrors `gpg_key`'s own skip behavior)."""
+    import tempfile
+
+    home = Path(tempfile.mkdtemp(prefix=f"tessgpgv{name.lower()[:4]}", dir="/tmp"))
+    os.chmod(home, 0o700)
+    email = f"{name.lower()}@tess.test"
+    params = home / "keyparams"
+    params.write_text(
+        "%no-protection\n"
+        "Key-Type: eddsa\n"
+        "Key-Curve: ed25519\n"
+        "Key-Usage: sign\n"
+        f"Name-Real: Tess Test Verifier {name}\n"
+        f"Name-Email: {email}\n"
+        "Expire-Date: 0\n"
+        "%commit\n"
+    )
+    env = {**os.environ, "GNUPGHOME": str(home)}
+    r = subprocess.run(["gpg", "--batch", "--gen-key", str(params)],
+                       capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        shutil.rmtree(home, ignore_errors=True)
+        pytest.skip(f"gpg key generation failed for verifier {name}: {r.stderr}")
+    lk = subprocess.run(["gpg", "--list-keys", "--with-colons", email],
+                        capture_output=True, text=True, env=env)
+    fpr = ""
+    for line in lk.stdout.splitlines():
+        if line.startswith("fpr:"):
+            fpr = line.split(":")[9]
+            break
+    if not fpr:
+        shutil.rmtree(home, ignore_errors=True)
+        pytest.skip(f"could not extract GPG fingerprint for verifier {name}")
+    exp = subprocess.run(["gpg", "--homedir", str(home), "--export", "--armor", fpr],
+                         capture_output=True, text=True, env=env)
+    return types.SimpleNamespace(home=home, fpr=fpr, pubkey_armored=exp.stdout, email=email)
+
+
+_VERIFIER_NAMES_FOR_TESTS = ("Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra")
+
+
+@pytest.fixture(scope="session")
+def verifier_gpg_keys():
+    """{verifier-name: SimpleNamespace(home, fpr, pubkey_armored, email)} for
+    all six named verifiers, each a REAL, independent GPG keypair in its own
+    isolated GNUPGHOME. Session-scoped (keygen is slow) — skips the whole
+    session if gpg is unavailable."""
+    if not (HAS_GPG and HAS_GIT):
+        pytest.skip("gpg + git required for verdict-signature tests")
+    keys = {name: _gen_verifier_gpg_identity(name) for name in _VERIFIER_NAMES_FOR_TESTS}
+    yield keys
+    for key in keys.values():
+        subprocess.run(["gpgconf", "--homedir", str(key.home), "--kill", "gpg-agent"],
+                       capture_output=True, env={**os.environ, "GNUPGHOME": str(key.home)})
+        shutil.rmtree(str(key.home), ignore_errors=True)
+
+
+def sign_verdict_for_test(engine, verdict: dict, key) -> dict:
+    """Produce a `signature` block for `verdict`, signed by GPG identity
+    `key` (a SimpleNamespace from `verifier_gpg_keys` / `gpg_key`) — using
+    the ENGINE's own `verdict_canonical_bytes()` so the test signs exactly
+    the same canonical form `tessctl gate` will recompute at verify time."""
+    canonical = engine.verdict_canonical_bytes(verdict)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    env = {**os.environ, "GNUPGHOME": str(key.home)}
+    r = subprocess.run(
+        ["gpg", "--homedir", str(key.home), "--batch", "--yes",
+         "--local-user", key.fpr, "--detach-sign", "--armor", "--output", "-"],
+        input=canonical, capture_output=True, env=env,
+    )
+    assert r.returncode == 0, r.stderr.decode("utf-8", errors="replace")
+    return {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": r.stdout.decode("utf-8"),
+    }
 
 
 def make_upstream(path: Path, gpg, tag, *, sign="signed",

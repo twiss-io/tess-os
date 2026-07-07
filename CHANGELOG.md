@@ -6,6 +6,311 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
+  (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
+  Phase 2 adversarial review — "verdict + sign-off files are committer-
+  authored with NO signing" and "the CI workflow is `workflow_dispatch`-only
+  — advisory, not auto-enforcing"):
+  - **Verdict signing** — a covering verdict must now carry a `signature`
+    (`verdict.schema.json`'s new, optional `$defs.VerdictSignature`: a GPG
+    detached signature over the verdict's canonical content —
+    `verdict_canonical_bytes()`, compact key-sorted JSON minus the
+    `signature` key itself) that verifies against the registered public key
+    for its claimed `verifier` in `policy.schema.json`'s new
+    `policy.verifier_keys` map (the allowed-key set). Reuses the repo's
+    existing keystone signed-update primitives (`_parse_gpg_fingerprint`,
+    the isolated-GNUPGHOME-per-check pattern, exact 40-hex fingerprint
+    equality) rather than inventing a new scheme — see
+    `conductor/verdict-signing.md` for the full trust model. Fail-closed,
+    same "optional at schema, functionally required to cover anything"
+    posture already established for `covers_paths`/`artifact_hashes`: an
+    unsigned verdict, a malformed signature block, a signature from an
+    unregistered verifier, a signature made by the wrong key, or a verdict
+    edited after signing (tamper — caught via `signed_content_sha256`
+    mismatch) all resolve to "does not cover this path," never a silent
+    pass. Signing ties to `allowed_verifiers`: a genuinely valid signature
+    from a real, registered verifier who is simply not permitted for the
+    matched rule still does not clear it.
+  - **`tessctl verdict sign`/`verdict verify`** — new subcommands. `sign`
+    produces the `signature` block for a verdict file (preserving its
+    `.json`/`.yaml`/`.md`-front-matter format) using a local GPG identity
+    (`--key-id`); `verify` independently checks a verdict's signature
+    against the registered `verifier_keys` without running the full gate.
+  - **`.tess/keys/verifiers/<name>.asc`** — bundled public-key convention
+    per verifier, mirroring `.tess/keys/twiss-release-key.asc`. NOT
+    keystone-tracked (same posture as the release key), but covered by
+    `core/policy/policy.yaml`'s `tess-os-security-tier-doctrine` rule
+    (`.tess/keys/verifiers/**` added to its globs) — editing the key
+    registry requires its own covering, signed Reid/Cyra verdict.
+  - **Disclosed, deferred piece:** `core/policy/policy.yaml` ships
+    `verifier_keys: {}` — deliberately empty, not an oversight. This repo's
+    own `tess-os-security-tier-doctrine` rule (`allowed_verifiers: [Reid,
+    Cyra]`) is therefore unsatisfiable by any verdict until real Reid/Cyra
+    signing keys are generated and registered — a disclosed, fail-closed
+    consequence (a maintainer private-key-custody decision), not a
+    fabricated throwaway identity standing in for a real trust anchor.
+  - **CI auto-enforce** — `.github/workflows/tess-gate.yml` (template
+    marker bumped `v1` → `v2`) now triggers on `push` (protected branches)
+    and `pull_request`, in addition to `workflow_dispatch` (kept for ad hoc
+    ref-range checks). `tessctl gate install-hooks` actively UPGRADES an
+    existing v1 (workflow_dispatch-only) installation to v2 rather than
+    silently skipping it forever. A new "Resolve base/head for this
+    trigger" workflow step computes the correct `--base`/`--head` for each
+    of the three trigger types (`workflow_dispatch` inputs;
+    `pull_request`'s `base.sha`/`head.sha`; `push`'s `before`/`after`, with
+    an empty-tree fallback for a brand-new ref). Materialized into this
+    repo's own `.github/workflows/tess-gate.yml` (previously undeployed —
+    the mechanism existed in the install-hooks template but had never
+    actually been installed here). Branch-protection required-status-check
+    setup (the job name `tessctl gate ci`) is documented
+    (`conductor/verdict-signing.md`) but is a repo-admin action, not
+    automated by this change.
+  - **71 new tests** — `tests/test_verdict_signing.py` (19: valid-signature-
+    clears, unsigned/hand-faked/wrong-key/tampered-all-blocked, signing-
+    ties-to-allowed_verifiers, unit coverage of
+    `_gate_verify_verdict_signature`'s every failure branch, `_lint_policy`'s
+    `verifier_keys` name check, `tessctl verdict sign`/`verify` CLI round-
+    trips), plus updates across `tests/test_gate_spine.py` and
+    `tests/test_gate_hooks.py` (existing covering-verdict tests now sign
+    their verdicts with real, per-verifier throwaway GPG keys —
+    `verifier_gpg_keys`/`sign_verdict_for_test` in `conftest.py`) and a new
+    `test_install_ci_workflow_upgrades_v1_to_v2`. Full suite: **447 passed**
+    (427 existing + 20 new test functions, net of the CI-workflow-template
+    assertion updates), zero regressions. `tessctl doctor` / `verify` /
+    `lock --check` all clean against the live working tree (the three
+    tier:security core files this touches — `verdict.schema.json`,
+    `policy.schema.json`, `core/policy/policy.yaml` — plus the new
+    `conductor/verdict-signing.md` doc, were re-baselined via
+    `tessctl lock --regen` per that command's documented maintainer flow).
+
+### Fixed
+- **Fable's Phase 2b follow-up review — one MEDIUM, one LOW, both closed:**
+  - **MEDIUM-1 — the gate's own CI workflow was not covered by
+    `require_verdict`:** `.github/workflows/tess-gate.yml` (the required
+    check's own definition) was not matched by any glob in
+    `core/policy/policy.yaml`'s `tess-os-security-tier-doctrine` rule —
+    once branch protection names "tessctl gate ci" as a required check, a
+    PR could keep that exact check name while neutering its step (e.g.
+    swap the real run for `exit 0`) IN THE SAME PR, and the required-
+    check-by-name mechanism alone could not catch it (the universal
+    GitHub self-gating trap: a required check can never fully protect its
+    own definition through the required-check mechanism alone). Fixed by
+    adding `.github/workflows/**` to `tess-os-security-tier-doctrine`'s
+    globs (mirrored in `.tess/core/policy/policy.yaml`, re-pinned via
+    `tessctl lock --regen`): any change to a workflow file is now
+    `prod_touching` and needs its own covering, signed Reid/Cyra verdict,
+    same as `conductor/guardrails.md` or `.tess/keys/verifiers/**`.
+    `conductor/verdict-signing.md` gains a new "Defense-in-depth — gating
+    the gate's own workflow file" section documenting the recommended
+    CODEOWNERS entry + branch-protection "Require review from Code
+    Owners" (and, optionally, a path-scoped ruleset) as an independent,
+    GitHub-native belt-and-suspenders control over the same paths — a
+    repo-admin action, not automated by this change.
+  - **LOW-1 — `public_key_file` had no containment check:** in
+    `_gate_verify_verdict_signature`, `key_path = root / key_file` alone
+    let an ABSOLUTE `public_key_file` (`Path.__truediv__` silently
+    discards `root` for an absolute right-hand side) or a `../`-bearing
+    relative one resolve OUTSIDE `root`. Not exploitable today — the
+    registry lives in `core/policy/policy.yaml`, itself gated by
+    `tess-os-security-tier-doctrine`, and an escaped key still has to
+    produce a signature whose fingerprint matches the REGISTERED one —
+    but fixed fail-closed anyway, same C1-containment discipline
+    `check_manifest_write_gate`/`cmd_rollback` already apply elsewhere:
+    reject any `public_key_file` that is absolute or contains a literal
+    `..` component, then resolve the remaining candidate and reject it too
+    if it still falls outside `root` (catches a symlink-based escape with
+    no literal `..` in the string).
+  - **13 new tests** (`tests/test_gate_own_workflow_coverage.py`, 8: the
+    real shipped policy now globs `.github/workflows/**` and stays
+    schema-valid + byte-identical across its core/live mirror; the OLD
+    glob list provably did NOT match the workflow path while the NEW one
+    does; end-to-end against a full copy of the real shipped tree —
+    including `.github/`, unlike the existing `real_root` fixture —
+    proves editing `tess-gate.yml` with no verdict is blocked on the real,
+    unmodified policy (whose `verifier_keys` still ships empty) while an
+    unrelated docs change is unaffected; a synthetic policy scoped to the
+    same glob proves the rule is satisfiable, not a permanent block, once
+    a valid covering signed verdict exists. `tests/test_verdict_signing.py`,
+    5: absolute and `../`-traversal `public_key_file` values are rejected
+    even when the escaped path is a real, existing file — both as pure
+    unit checks on `_gate_verify_verdict_signature` and end-to-end through
+    `tessctl gate ci` with an otherwise honestly, validly-signed verdict;
+    a symlink-based escape with no literal `..` is caught by the same
+    resolve-then-contain check; a normal in-tree path is not falsely
+    rejected.) Full suite: **460 passed** (447 existing + 13 new), zero
+    regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+    against the live working tree (`core/policy/policy.yaml`
+    [`tier: security`] and `conductor/verdict-signing.md`
+    [`tier: normal`] — the two core-managed files this round touches —
+    were re-baselined via `tessctl lock --regen` after the deliberate,
+    reviewed edit).
+
+### Fixed
+- **Fable's adversarial review of Phase 2 (the gate spine) — one BLOCK, two
+  MEDIUMs, one LOW, all closed:**
+  - **HIGH-1 (BLOCK) — coverage was diff-unbound, not per-change:**
+    `_gate_find_covering_approved_verdicts` walked the ENTIRE working tree
+    (`rglob`) for any schema-valid `disposition: APPROVE` verdict whose
+    `covers_paths` glob matched a changed path — it answered "does a
+    covering verdict exist ANYWHERE," not "was THIS change reviewed."
+    Consequences: a single verdict permanently cleared its glob for every
+    future push (re-editing a covered file, or adding a brand-new file
+    under the same glob, was silently waved through); `covers_paths: ["**"]`
+    was a master key; and for `pre-push`, the covering verdict did not even
+    need to be committed. Fixed on three fronts:
+    - **(a) Coverage bound to the reviewed content** — `verdict.schema.json`
+      gains `artifact_hashes` (optional, additive — mirrors `covers_paths`'s
+      own introduction), mapping a repo-relative path to the exact git blob
+      SHA-1 the verifier reviewed. This is the content-hash loop-closer
+      `docs/ULTIMATE_FRAMEWORK_PLAN.md` §C2 named but deferred ("the
+      `artifacts_read` field with content hashes makes 'the verifier
+      actually read the primary artifact' itself checkable"). The gate now
+      requires the recorded hash to equal the path's CURRENT blob SHA at the
+      pushed head — a verdict for an OLD version of a file, or a path never
+      named in `artifact_hashes` at all, does not clear it. Verification is
+      genuinely per-change.
+    - **(b) Over-broad `covers_paths` rejected** — `_lint_verdict` refuses
+      `**`, bare `*`, `**/*`, and `**/**` as `covers_paths` entries (via new
+      `is_overbroad_glob`); a verdict carrying one is schema/lint-invalid as
+      a whole and can never satisfy the ship-gate for any path, never mind
+      "every" path.
+    - **(c) Committed verdicts only, resolved against the pushed ref(s)** —
+      covering-verdict discovery moved from `root.rglob("*")` over the
+      on-disk working tree to `git ls-tree -r` over the actual pushed head
+      sha(s) (new `_gate_git_ls_tree` / `_gate_git_tree_index` / rewritten
+      `_gate_iter_verdict_files` / `_gate_find_covering_approved_verdicts`,
+      reading blob content via `git cat-file`, not the filesystem). An
+      uncommitted (even `git add`-staged) verdict, or one committed only on
+      a different branch, can no longer clear the ship-gate. This also
+      closes **LOW-1** (symlink-following): `git ls-tree` reports a symlink
+      as its own non-blob mode, and `_gate_git_ls_tree` excludes it outright
+      — the gate never resolves a symlink to decide coverage.
+  - **M1 — `allowed_verifiers` is now enforced, not advisory:** the covering
+    verdict's `verifier` field (already required by Phase 0's schema) must
+    be in the matched policy rule's `allowed_verifiers`; a wrong-domain
+    APPROVE (Fable's example: Lysandra, a creative-taste reviewer, clearing
+    a `prod-api` rule requiring `[Reid, Quinn]`) no longer clears the gate.
+    `policy.schema.json`'s own field description and `core/policy/policy.yaml`'s
+    header — which previously documented this as a "deliberately deferred
+    Phase 2+ tightening" — are updated to match.
+  - **M2 — glob-matcher semantics fixed:** `path_matches_globs`'s previous
+    implementation (`fnmatch.translate` + a NUL-placeholder trick for `**`)
+    had two bugs, both with visible pre-existing workarounds elsewhere in
+    the file (the vault guard's separate `_age_by_extension` check and
+    `_VAULT_SENSITIVE_GLOBS_NORMALIZED` list existed specifically because
+    `**/*.age` "misses" root-level files). Replaced with a hand-rolled
+    per-segment translator (`_glob_segment_regex` / `_glob_to_regex`):
+    (1) `**` now matches zero-or-more whole path segments in ANY position
+    (leading/middle/trailing), so `**/*.env` now ALSO gates a root-level
+    `.env` (previously it required at least one directory component — this
+    directly fixes `core/policy/policy.yaml`'s own credentials hard-floor
+    glob, no glob-string changes needed); (2) a bare `*`/`?` inside any
+    other segment is now `/`-excluded, so `src/*` covers direct children of
+    `src/` only and no longer behaves identically to `src/**`.
+  - **LOW-2 — documented, not just fixed:** a new optional
+    `verifier_signoff_note` field on the verdict schema, plus explicit
+    README.md/CHANGELOG.md disclosure, states plainly that `verifier` /
+    `covers_paths` / `artifact_hashes` are PROCESS-VALUE fields (a
+    deliberate, rule-following artifact) — not a forgery-resistance
+    mechanism. Nothing here cryptographically signs a verdict or proves a
+    specific human/agent authored it; a committer controlling their own
+    branch can still hand-author any verdict content. The gate raises the
+    floor against an honest, rule-following review flow; it is not an
+    unbypassable wall against a dishonest one — the same disclosure posture
+    `allowed_verifiers` always carried, now applied project-wide.
+  - **11 new tests** proving: a verdict clears only the exact reviewed
+    content and a subsequent edit re-blocks (per-change verification); a
+    brand-new file under an already-covered glob is not silently covered; a
+    `**`/blanket `covers_paths` is rejected at both the CLI and the lint
+    level; `allowed_verifiers` is enforced (wrong-domain APPROVE doesn't
+    clear, the same shape from the allowed verifier does); the two glob
+    fixes (root `.env` gated end-to-end through the real hard-floor glob
+    shape; `src/*` doesn't span into `src/prod/deep/`); an uncommitted
+    (even staged) pre-push verdict doesn't clear; a verdict committed only
+    on a different branch doesn't clear; and the stdin pre-push protocol
+    path (not just explicit `--base`/`--head`) correctly threads the pushed
+    head sha(s) through to the covering-verdict check. Full suite:
+    **427 passed** (416 existing + 11 new), zero regressions. `tessctl
+    doctor` / `verify` / `lock --check` all clean against the live working
+    tree (the three tier:security core files this fix touches —
+    `verdict.schema.json`, `policy.schema.json`, `core/policy/policy.yaml`
+    — were re-baselined via `tessctl lock --regen` after the deliberate,
+    reviewed edit, per that command's own documented maintainer flow).
+
+### Added
+- **Phase 2 of the Ultimate Framework Plan — the gate spine
+  (Design Decision #2 "deterministic gate spine at git/CI" + Design
+  Decision #6 "verification produces a gateable artifact"):**
+  - **`tessctl gate`** — a new top-level subcommand family:
+    `pre-commit` (schema+lint validates any staged brief/crew-plan/verdict/
+    return-manifest/policy file — reuses `tessctl validate`'s engine
+    directly), `pre-push` (**the ship-gate**: classifies every changed path
+    against `core/policy/policy.yaml` and refuses the push if a
+    `prod_touching`/`client_facing`/`externally_visible` path lacks a
+    schema-valid, `disposition: APPROVE` verdict whose `covers_paths` glob
+    matches it — reads git's own pre-push stdin protocol, or explicit
+    `--base`/`--head`), and `ci` (identical ship-check over an explicit ref
+    range — the harness-independent backstop that still catches
+    `git push --no-verify`).
+  - **`core/contracts/policy.schema.json`** — the plan's own deferred fifth
+    contract (§B.2), built now alongside its only consumer. Path-glob rules
+    with a `classification` enum (verbatim from `verification-routing.md`'s
+    four mandatory-verification triggers) and `require_verdict`; a separate
+    `hard_floor_rules[]` for `guardrails.md` Rule 18's four categories
+    (credentials, money movement, destructive production data, client-
+    external claims) — **never satisfiable by a verifier's verdict alone**.
+    `core/policy/policy.yaml` is the shipped instance (deliberately narrow —
+    one genuinely-live rule protecting this repo's own tier:security
+    doctrine/schema/policy files, one worked placeholder example, matching
+    `tess.manifest.json`'s own "hand-authored per spec, not auto-globbed"
+    posture). Both wired into the managed set (`tess.manifest.json`
+    `owned_globs`, `.tess/core` mirrors, `.tess/tess.lock` entries, tier:
+    security) exactly like the original four Phase 0 contracts.
+  - **`verdict.schema.json` gains `covers_paths`** (optional, additive — a
+    verifier's declared scope as path globs) so a diff-driven gate can match
+    a verdict against changed paths. A verdict with no `covers_paths` covers
+    nothing (fail-closed by omission, not fail-open) — pre-Phase-2 verdicts
+    stay schema-valid but never silently satisfy the ship-gate.
+  - **Hard-floor sign-off artifacts** (`.tess/gate/signoffs/<rule-id>.signoff.json`)
+    — the mechanical form of guardrails.md Rule 18's "ALWAYS gate on the
+    operator's explicit go-ahead": a distinct, small, ad hoc-validated JSON
+    shape (`rule_id`, `category`, `authorized_by`, `rationale`,
+    `authorized_at`), deliberately NOT a sixth `tessctl validate` contract
+    type — never substitutable by a verifier's verdict.
+  - **`tessctl gate install-hooks`** — installs/upgrades the pre-commit +
+    pre-push git hooks (a second, independently-implemented instance of the
+    coexistence pattern `_vault_install_git_hooks` proved: splices ABOVE any
+    pre-existing hook — including the vault guard itself — inside a
+    containment subshell that BLOCKS on a gate violation and FALLS THROUGH
+    on a clean result) and a `workflow_dispatch`-only `.github/workflows/tess-gate.yml`
+    CI workflow template (manual-trigger-only by design — see the file's own
+    header for why auto-triggering it against a repo's own history before
+    that repo has real policy rules + real verdicts would self-gate it on a
+    policy nobody has satisfied yet).
+  - **Fail-closed throughout**: a failing git command, a missing/invalid
+    policy file, or an unreadable verdict all resolve to `blocked: true` —
+    ambiguity refuses, it never silently allows.
+  - **52 new tests** — `tests/test_policy_contract.py` (14: schema/lint
+    coverage for the fifth contract, mirroring `test_contracts_validate.py`'s
+    style), `tests/test_gate_spine.py` (21: the ship-check decision engine —
+    blocks-with-no-verdict, allows-with-covering-APPROVE, blocks-on-BLOCK/
+    HIGH-unaccepted, blocks-on-schema-invalid-contract, policy path
+    classification, hard-floor sign-off, fail-closed-on-error, the pre-commit/
+    pre-push/ci CLI surfaces), `tests/test_gate_hooks.py` (12: hook install/
+    splice/idempotency/coexistence-with-vault, the CI workflow template, and
+    real end-to-end `git commit`/`git push` firing against a real bare
+    remote — including the documented `--no-verify` bypass + CI-still-blocks
+    case), plus 5 new tests extending `tests/test_contracts_wiring.py` for
+    `core/policy/**`'s wiring. Full suite: **416 passed** (364 existing +
+    52 new), zero regressions. `tessctl doctor` / `verify` / `lock --check`
+    all clean against the live working tree.
+  - **Scope note (honest re-scope, mirroring the Phase 1 precedent below):**
+    this is the enforcement-spine SLICE of Phase 2 only. The Codex adapter
+    (`tessctl dispatch --driver codex`) and `tessctl run <plan>` (the
+    mechanical conductor loop) remain unbuilt — see
+    `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest re-scope note. The
+    gate spine does not depend on either; it operates on git diffs and
+    on-disk contract instances regardless of what produced them.
 - **Phase 1 of the Ultimate Framework Plan ("Portable core + render targets",
   Design Decision #1 — "doctrine compiles, never copied"):**
   - **`core/contracts/**` wired into the managed set** — the deferred

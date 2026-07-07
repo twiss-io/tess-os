@@ -23,6 +23,12 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   validate    Phase 0 contracts-as-code: check a brief/crew-plan/verdict/return-manifest
               instance against core/contracts/*.schema.json; schema-miss classifies
               degraded_output per subagent-failure-protocol.md (see core/contracts/README.md)
+  verdict     Phase 2b: `sign` a verdict's canonical content with a verifier's GPG key,
+              or `verify` a signed verdict against core/policy/policy.yaml's verifier_keys
+  gate        Phase 2 (+2b): deterministic enforcement spine — pre-commit/pre-push/ci
+              contract + covering-verdict + signature checks; install-hooks scaffolds the
+              git hooks and the CI workflow (now push/pull_request-triggered, not just
+              workflow_dispatch)
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -31,7 +37,6 @@ from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.
 
 import argparse
 import datetime
-import fnmatch
 import getpass
 import glob
 import hashlib
@@ -89,7 +94,30 @@ CONTRACT_SCHEMAS = {
     "crew-plan": "crew-plan.schema.json",
     "verdict": "verdict.schema.json",
     "return-manifest": "return-manifest.schema.json",
+    # Phase 2 (ULTIMATE_FRAMEWORK_PLAN.md §B.2's deferred fifth contract):
+    # the ship-gate's policy-as-data schema. See core/contracts/policy.schema.json
+    # + core/policy/policy.yaml (the actual policy instance) + `tessctl gate`.
+    "policy": "policy.schema.json",
 }
+
+# Phase 2 — where the ship-gate's policy INSTANCE (not the schema) lives.
+# Distinct from CONTRACTS_DIR (which holds the schema, policy.schema.json).
+POLICY_DIR = "core/policy"
+POLICY_INSTANCE_CANDIDATES = ("policy.yaml", "policy.yml", "policy.json")
+
+# Phase 2 — where a human operator's explicit hard-floor sign-off artifacts
+# live (guardrails.md Rule 18: credentials/money/destructive-prod-data/
+# client-external-claims are NEVER satisfiable by a verifier's verdict alone).
+GATE_SIGNOFF_DIR = ".tess/gate/signoffs"
+
+# verification-routing.md's six named mandatory verifiers — verbatim as the
+# `verdict.verifier` / `policy.rules[].allowed_verifiers` schema enum. Phase
+# 2b's `policy.verifier_keys` map is keyed by these SAME names, but a plain
+# JSON Schema object node cannot itself restrict its own property NAMES to a
+# fixed enum (only VALUES) — so `_lint_policy` enforces this relationally,
+# the same "schema can't express it, lint does" pattern already used for
+# rule-id uniqueness.
+VERIFIER_NAMES = ("Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra")
 
 LOCK_HEADER = """\
 # tess.lock — Tess OS framework merge base of record.
@@ -871,20 +899,132 @@ def render_settings_json(root: Path) -> str:
 
 # ---------------------------------------------------------------------------
 # Manifest glob matching
+#
+# M2 FIX (Fable Phase-2 adversarial review): the previous implementation
+# built its regex via `fnmatch.translate(pattern.replace("**", "\x00"))`
+# then string-replaced the NUL placeholder back to ".*". Two bugs fell out
+# of that trick, both load-bearing enough to have visible workarounds
+# elsewhere in this file (see the vault guard's `_age_by_extension` /
+# `_VAULT_SENSITIVE_GLOBS_NORMALIZED` comment above, which explicitly notes
+# "'**/*.age' misses" root-level files):
+#   1. "**/x" required an ACTUAL '/' to be present in the candidate path (the
+#      literal '/' in the pattern after the NUL was never optional), so it
+#      never matched a root-level "x" — e.g. a credentials rule glob of
+#      "**/*.env" never gated a top-level ".env" file at all.
+#   2. `fnmatch.translate` maps a bare '*' straight to ".*" with NO
+#      slash-awareness, so a plain '*' behaved EXACTLY like '**' — "src/*"
+#      already matched "src/a/b/deep.py", not just direct children of src/.
+# Fixed below with a small hand-rolled per-segment translator: '*'/'?' never
+# cross '/' (character-class-excluded, not just "not intentionally special"),
+# and '**' — wherever it appears (leading, middle, or trailing) — matches
+# zero or more WHOLE path segments, so a leading/middle '**' also covers the
+# zero-directory case.
 # ---------------------------------------------------------------------------
 
+def _glob_segment_regex(seg: str) -> str:
+    """Regex fragment for ONE path segment (never contains '/' — the caller
+    always splits a pattern on '/' before calling this). '*' -> '[^/]*' and
+    '?' -> '[^/]' (M2: wildcards inside a single segment must never match a
+    path separator); '[seq]'/'[!seq]' character classes are passed through
+    fnmatch-style; every other character is a regex-escaped literal."""
+    out = []
+    i, n = 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and seg[j] == "!":
+                j += 1
+            if j < n and seg[j] == "]":
+                j += 1
+            while j < n and seg[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(re.escape("["))  # unterminated '[' — treat as a literal
+                i += 1
+            else:
+                inner = seg[i + 1:j]
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                out.append("[" + inner + "]")
+                i = j + 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+_GLOB_REGEX_CACHE: dict = {}
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Translate one repo-relative glob into a fully-anchored regex string.
+    '**' matches zero or more whole path segments in ANY position (leading,
+    middle, or trailing) — so '**/x' matches root-level 'x' AND 'a/x' AND
+    'a/b/x'; 'a/**/b' matches 'a/b' AND 'a/x/b' AND 'a/x/y/b'; 'a/**' matches
+    anything under 'a/' (unchanged, pre-existing behavior). A bare '*'/'?'
+    inside any other segment never crosses '/' (see _glob_segment_regex)."""
+    if pattern in _GLOB_REGEX_CACHE:
+        return _GLOB_REGEX_CACHE[pattern]
+    normalized = pattern.replace(os.sep, "/")
+    segs = normalized.split("/")
+    n = len(segs)
+    out = []
+    need_sep = False
+    idx = 0
+    while idx < n:
+        seg = segs[idx]
+        if seg == "**":
+            j = idx
+            while j < n and segs[j] == "**":
+                j += 1
+            is_trailing = j == n
+            if is_trailing:
+                out.append("/.*" if need_sep else ".*")
+            else:
+                if need_sep:
+                    out.append("/")
+                out.append("(?:.*/)?")
+            need_sep = False
+            idx = j
+            continue
+        if need_sep:
+            out.append("/")
+        out.append(_glob_segment_regex(seg))
+        need_sep = True
+        idx += 1
+    regex = "(?s:" + "".join(out) + ")\\Z"
+    _GLOB_REGEX_CACHE[pattern] = regex
+    return regex
+
+
+_OVERBROAD_GLOB_SHAPES = {"**", "*", "**/*", "**/**", ""}
+
+
+def is_overbroad_glob(pattern: str) -> bool:
+    """True if `pattern` is a blanket 'master key' glob shape — one that
+    would match literally every path (or, for a bare '*', every root-level
+    path) in the repo regardless of what was actually reviewed. Used by
+    `_lint_verdict` (Fable Phase-2 review HIGH-1(b)) to refuse a verdict's
+    `covers_paths` from ever claiming '**'-shaped blanket coverage; a
+    verifier's review is always scoped to specific paths, never 'everything'
+    in one glob. Normalizes surrounding slashes so '/**/' and '**' are
+    treated identically."""
+    normalized = pattern.strip().strip("/")
+    return normalized in _OVERBROAD_GLOB_SHAPES
+
+
 def path_matches_globs(rel_path: str, globs: list) -> bool:
-    """True if rel_path matches any glob in the list (fnmatch-based)."""
+    """True if rel_path matches any glob in the list."""
     p = rel_path.replace(os.sep, "/")
     for pattern in globs:
-        pattern = pattern.replace(os.sep, "/")
-        # Support ** as a recursive match
-        pat_re = fnmatch.translate(pattern.replace("**", "\x00"))
-        pat_re = pat_re.replace("\\x00", ".*")
-        if re.match(pat_re, p):
-            return True
-        # Simple fnmatch fallback for non-** patterns
-        if fnmatch.fnmatch(p, pattern):
+        if re.match(_glob_to_regex(pattern), p):
             return True
     return False
 
@@ -2469,6 +2609,192 @@ def _verify_tag_secure(
 
         print(f"  signature OK (TOFU) — key pinned for future verification")
         return signing_fp, True
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — detached-signature verification (verdict signing)
+#
+# Deliberately a DIFFERENT trust bootstrap than _verify_tag_secure above: tag
+# verification pins ONE key and requires the operator export it from their
+# AMBIENT system keyring (`gpg --import key.asc` first) — a genuine
+# bootstrapping requirement, since a fresh clone must not yet trust anything
+# in the repo it just cloned. Verdict-signature verification instead imports
+# the registered verifier's PUBLIC key straight from the repo's own
+# `.tess/keys/verifiers/<name>.asc` file into a fresh, ISOLATED, throwaway
+# GNUPGHOME per check — no ambient keyring dependency, so CI needs no manual
+# import step. This is safe specifically because, by the time a verdict is
+# being checked, the gate already trusts the checked-out tree enough to read
+# core/policy/policy.yaml — and `.tess/keys/verifiers/**` is itself gated as
+# prod_touching under this repo's own tess-os-security-tier-doctrine rule, so
+# tampering with the key registry requires its own covering Reid/Cyra
+# verdict. Same "C3 — exact fingerprint equality, no short-ID matching"
+# discipline as _verify_tag_secure throughout.
+# ---------------------------------------------------------------------------
+
+def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Path) -> tuple[bool, str]:
+    """Verify `sig_armored` (an ASCII-armored detached signature) against
+    `payload` bytes using gpg homed at `homedir` — an ISOLATED GNUPGHOME the
+    caller has already seeded with exactly the key(s) it wants to trust for
+    this check. Returns (verified_ok, signing_fingerprint); the fingerprint
+    is '' when verification failed or no VALIDSIG line could be parsed from
+    gpg's output (reuses `_parse_gpg_fingerprint`, the same parser
+    `_verify_tag_secure` uses for `git verify-tag --raw`)."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="tessctl_verdict_verify_", dir=str(homedir)))
+    try:
+        payload_path = tmp_dir / "payload.bin"
+        payload_path.write_bytes(payload)
+        sig_path = tmp_dir / "sig.asc"
+        sig_path.write_text(sig_armored, encoding="utf-8")
+        env = {**os.environ, "GNUPGHOME": str(homedir)}
+        vr = subprocess.run(
+            ["gpg", "--homedir", str(homedir), "--status-fd", "1",
+             "--verify", str(sig_path), str(payload_path)],
+            capture_output=True, env=env,
+        )
+        raw = (
+            vr.stdout.decode("utf-8", errors="replace")
+            + vr.stderr.decode("utf-8", errors="replace")
+        )
+        fp = _parse_gpg_fingerprint(raw)
+        return (vr.returncode == 0 and bool(fp)), fp
+    finally:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
+
+def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: dict) -> tuple[bool, str | None]:
+    """The single source of truth for 'is this verdict's signature valid AND
+    tied to an allowed verifier's registered key'. Returns (True, None) when
+    the signature verifies; otherwise (False, <human-readable reason>) — the
+    reason is surfaced verbatim in `tessctl gate`'s block report and in
+    `tessctl verdict verify`'s output. Every failure branch is fail-closed:
+    an unsigned verdict, a malformed signature block, a stale
+    signed_content_sha256 (tamper detection — checked BEFORE the more
+    expensive gpg subprocess call), an unregistered verifier, a malformed
+    registered fingerprint, a `public_key_file` that is absolute or escapes
+    `root` via '..' traversal (LOW-1, C1 containment), a missing public-key
+    file, a failed gpg verification, or a signature made by a DIFFERENT key
+    than the one registered for this verifier (C3 exact match) all return
+    False. Pure
+    with respect to `instance` and `policy_instance` — does not consult
+    `covers_paths`/`artifact_hashes`/`allowed_verifiers`-per-rule at all;
+    those remain the gate's own separate, per-(path, rule) checks."""
+    verifier = instance.get("verifier")
+    sig = instance.get("signature")
+    if not isinstance(sig, dict):
+        return False, (
+            "no signature block present on this verdict — an unsigned verdict can "
+            "never cover any path (Phase 2b, fail-closed)"
+        )
+
+    algorithm = sig.get("algorithm")
+    if algorithm != VERDICT_SIGNATURE_ALGORITHM:
+        return False, f"signature.algorithm {algorithm!r} is not supported (expected {VERDICT_SIGNATURE_ALGORITHM!r})"
+
+    sig_armored = sig.get("signature_armored")
+    if not isinstance(sig_armored, str) or not sig_armored.strip():
+        return False, "signature.signature_armored is missing or empty"
+
+    declared_hash = sig.get("signed_content_sha256")
+    if not isinstance(declared_hash, str) or not re.match(r"^[0-9a-f]{64}$", declared_hash):
+        return False, "signature.signed_content_sha256 is missing or not a 64-hex-char sha256"
+
+    canonical = verdict_canonical_bytes(instance)
+    actual_hash = hashlib.sha256(canonical).hexdigest()
+    if declared_hash != actual_hash:
+        return False, (
+            "signature.signed_content_sha256 does not match this verdict's CURRENT "
+            "canonical content — the verdict was edited/tampered with after signing "
+            "(fail-closed)"
+        )
+
+    verifier_keys = ((policy_instance.get("policy") or {}).get("verifier_keys") or {})
+    key_entry = verifier_keys.get(verifier) if isinstance(verifier_keys, dict) else None
+    if not isinstance(key_entry, dict):
+        return False, (
+            f"no registered public key for verifier {verifier!r} in policy.verifier_keys "
+            f"(fail-closed — an unregistered verifier's signature can never verify)"
+        )
+
+    fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
+    if not _FULL_FP_RE.match(fingerprint):
+        return False, (
+            f"policy.verifier_keys[{verifier!r}].fingerprint is not a valid 40-hex-char "
+            f"fingerprint"
+        )
+
+    key_file = key_entry.get("public_key_file")
+    if not isinstance(key_file, str) or not key_file:
+        return False, f"policy.verifier_keys[{verifier!r}].public_key_file is not set"
+
+    # LOW-1 (Fable Phase-2b follow-up, defense-in-depth): containment check.
+    # `key_path = root / key_file` alone lets an ABSOLUTE `public_key_file`
+    # (Path.__truediv__ treats an absolute right-hand side as a full override,
+    # silently discarding `root`) or a `../`-bearing relative one resolve
+    # OUTSIDE `root` — e.g. reading an attacker-planted key from anywhere on
+    # disk. Not exploitable TODAY: `core/policy/policy.yaml` is itself gated
+    # by this repo's own tess-os-security-tier-doctrine rule (any edit needs
+    # its own covering Reid/Cyra verdict), and even an escaped key still has
+    # to produce a signature whose fingerprint matches the REGISTERED one —
+    # but reject it fail-closed anyway, same C1-containment discipline
+    # check_manifest_write_gate / cmd_rollback already apply to every other
+    # filesystem path this tool touches.
+    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
+        return False, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is an "
+            f"absolute path or contains '..' traversal components — rejected "
+            f"(C1 containment, fail-closed)"
+        )
+    root_resolved = root.resolve()
+    key_path = (root / key_file).resolve()
+    try:
+        key_path.relative_to(root_resolved)
+    except ValueError:
+        return False, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} resolves "
+            f"outside the Tess root — rejected (C1 containment, fail-closed)"
+        )
+    if not key_path.exists():
+        return False, (
+            f"registered public key file {key_file!r} for verifier {verifier!r} not found on disk"
+        )
+
+    isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_verdict_gpg_"))
+    try:
+        try:
+            isolated_gpg.chmod(0o700)
+        except OSError:
+            pass
+        import_r = subprocess.run(
+            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
+            capture_output=True,
+        )
+        if import_r.returncode != 0:
+            return False, (
+                f"could not import registered public key {key_file!r} for verifier "
+                f"{verifier!r}: {import_r.stderr.decode('utf-8', errors='replace').strip()}"
+            )
+        # Ultimate trust so --verify never emits a "not certified" complication —
+        # same defensive posture _verify_tag_secure already applies.
+        subprocess.run(
+            ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
+            input=f"{fingerprint}:6:\n".encode(), capture_output=True,
+        )
+        verified, signing_fp = _gpg_verify_detached_signature(canonical, sig_armored, isolated_gpg)
+    finally:
+        shutil.rmtree(str(isolated_gpg), ignore_errors=True)
+
+    if not verified:
+        return False, (
+            f"gpg signature verification failed for verifier {verifier!r} "
+            f"(bad signature, or the signature does not match this content)"
+        )
+    if signing_fp.upper() != fingerprint:
+        return False, (
+            f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
+            f"the registered fingerprint {fingerprint} for verifier {verifier!r} — wrong "
+            f"key, fail-closed (C3 exact match, no short-ID/proximity matching)"
+        )
+    return True, None
 
 
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
@@ -6543,13 +6869,16 @@ def _split_frontmatter(text: str):
     return fm, body.lstrip("\n")
 
 
-def load_contract_instance(path: Path):
-    """Load a contract instance from .json, .yaml/.yml, or .md (front-matter).
-    Matches core/contracts/README.md's documented instance-file formats."""
-    if not path.exists():
-        raise ContractError(f"file not found: {path}")
-    text = path.read_text(encoding="utf-8")
-    suffix = path.suffix.lower()
+def _parse_contract_instance_text(text: str, suffix: str, label: str):
+    """Parse contract-instance TEXT already in hand (.json / .yaml / .yml /
+    .md front-matter) — the format-detection half of load_contract_instance,
+    split out so callers that already have the bytes from somewhere OTHER
+    than the working-tree filesystem (e.g. a git blob read via `git
+    cat-file`, HIGH-1(c)'s committed-verdicts-only fix) can reuse the exact
+    same parsing/error behavior without writing a temp file first. `label`
+    is used only in error messages (normally a filename or repo-relative
+    path)."""
+    suffix = suffix.lower()
     if suffix == ".json":
         try:
             return json.loads(text)
@@ -6563,9 +6892,78 @@ def load_contract_instance(path: Path):
     if suffix == ".md":
         fm, _body = _split_frontmatter(text)
         if fm is None:
-            raise ContractError(f"{path.name}: no YAML front-matter block found ('---' ... '---')")
+            raise ContractError(f"{label}: no YAML front-matter block found ('---' ... '---')")
         return fm
-    raise ContractError(f"{path.name}: unsupported extension '{suffix}' (expected .json, .yaml, .yml, or .md)")
+    raise ContractError(f"{label}: unsupported extension '{suffix}' (expected .json, .yaml, .yml, or .md)")
+
+
+def load_contract_instance(path: Path):
+    """Load a contract instance from .json, .yaml/.yml, or .md (front-matter).
+    Matches core/contracts/README.md's documented instance-file formats."""
+    if not path.exists():
+        raise ContractError(f"file not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    return _parse_contract_instance_text(text, path.suffix, path.name)
+
+
+def write_contract_instance_preserving_format(path: Path, instance: dict) -> None:
+    """Write a (possibly modified) contract instance back to `path`,
+    preserving its on-disk FORMAT (.json / .yaml / .yml / .md front-matter) —
+    the mirror-image operation to load_contract_instance(). Used by
+    `tessctl verdict sign` to add/replace the `signature` block in place
+    without changing whether a verdict is authored as JSON, YAML, or
+    markdown-with-front-matter. For `.md`, the existing body (the text AFTER
+    the closing '---') is preserved byte-for-byte; only the front-matter
+    block is replaced. Callers are expected to have already successfully
+    loaded `path` via load_contract_instance (so, for `.md`, front-matter was
+    already proven parseable) — a `.md` target with no parseable existing
+    front-matter (e.g. a brand-new `--output` path) gets an empty body rather
+    than raising, since sign still needs to be able to WRITE a fresh file."""
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        path.write_text(json.dumps(instance, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return
+    if suffix in (".yaml", ".yml"):
+        path.write_text(yaml.safe_dump(instance, sort_keys=True), encoding="utf-8")
+        return
+    if suffix == ".md":
+        existing_text = path.read_text(encoding="utf-8") if path.exists() else ""
+        fm, body = _split_frontmatter(existing_text) if existing_text else (None, "")
+        if fm is None:
+            body = ""
+        fm_text = yaml.safe_dump(instance, sort_keys=True)
+        path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+        return
+    raise ContractError(f"{path}: unsupported extension '{suffix}' (expected .json, .yaml, .yml, or .md)")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — verdict signing: canonicalization
+#
+# Reuses the repo's existing keystone signed-update primitives (isolated
+# GNUPGHOME, exact 40-hex fingerprint pinning — see _verify_tag_secure /
+# _parse_gpg_fingerprint above) rather than inventing a new signing scheme.
+# Full trust model: conductor/verdict-signing.md.
+# ---------------------------------------------------------------------------
+
+VERDICT_SIGNATURE_ALGORITHM = "gpg-detached-armor"
+
+
+def verdict_canonical_bytes(instance: dict) -> bytes:
+    """Canonical byte representation of a verdict instance for signing AND
+    verification: the full instance dict MINUS the `signature` key itself (a
+    verdict cannot sign over its own signature), serialized as COMPACT,
+    key-sorted JSON. Same sort_keys=True canonicalization the vault subsystem
+    already applies to its own encrypted payloads (`_vault_...` blob-write
+    call sites' `json.dumps(..., sort_keys=True)`), used here with compact
+    (no-indent, fixed-separator) formatting so the canonical form is a PURE
+    FUNCTION OF THE DATA — independent of whether the verdict is hand-
+    authored as JSON, YAML, or markdown front-matter, and independent of
+    incidental whitespace/key-order differences between them. A verdict
+    signed while authored as YAML verifies identically if later re-saved as
+    JSON with the same field values, and vice versa."""
+    payload = {k: v for k, v in instance.items() if k != "signature"}
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _resolve_ref(ref: str, base_dir: Path, root_schema: dict) -> dict:
@@ -6815,6 +7213,8 @@ def _lint_contract(contract_type: str, instance) -> list:
         return _lint_verdict(instance)
     if contract_type == "return-manifest":
         return _lint_return_manifest(instance)
+    if contract_type == "policy":
+        return _lint_policy(instance)
     return []
 
 
@@ -6943,6 +7343,25 @@ def _lint_verdict(instance) -> list:
                     f"accepted_high_findings entry (matched by location), not one blanket "
                     f"acceptance covering all of them (review-output-standards.md HIGH severity row)"
                 )
+    # HIGH-1(b) FIX (Fable Phase-2 adversarial review): a verdict may never
+    # declare a blanket 'master key' glob in covers_paths — '**', bare '*',
+    # '**/*', '**/**', or an empty string all match every (or, for a bare
+    # '*', every root-level) path in the repo regardless of what this
+    # specific review actually looked at. A verdict carrying one of these is
+    # schema/lint-INVALID as a whole (same all-or-nothing posture as every
+    # other lint failure here) — it can never satisfy the ship-gate for
+    # ANY path, not just the over-broad one, forcing the verifier to scope
+    # covers_paths to what was genuinely reviewed.
+    covers_paths = instance.get("covers_paths")
+    if isinstance(covers_paths, list):
+        overbroad = sorted({g for g in covers_paths if isinstance(g, str) and is_overbroad_glob(g)})
+        if overbroad:
+            errors.append(
+                f"$.covers_paths: {overbroad!r} act(s) as a blanket 'master key' glob that would "
+                f"match every path in the repo (or every root-level path, for a bare '*') "
+                f"regardless of what this verdict actually reviewed — a verdict must scope "
+                f"covers_paths to the specific paths it reviewed, never a blanket glob"
+            )
     return errors
 
 
@@ -6969,6 +7388,78 @@ def _lint_return_manifest(instance) -> list:
                 f"stale artifact path is a schema-miss, not a valid return "
                 f"(ULTIMATE_FRAMEWORK_PLAN.md §A.2: 'existence and shape are model-independent checks')"
             )
+    return errors
+
+
+def _lint_policy(instance) -> list:
+    """Phase 2 (`policy.schema.json`) relational checks plain JSON Schema can't
+    express as a single node:
+      - rule/hard-floor-rule `id`s must be unique across BOTH lists (the gate
+        and its signoff-artifact lookup index by id; a collision would let one
+        rule's sign-off silently satisfy a different rule).
+      - a `require_verdict: true` rule's `globs` must not be empty (schema
+        already enforces minItems: 1 there, but an empty-after-whitespace
+        string entry would still pass a bare minLength check on some other
+        field — this is the plan's own "don't let a rule look like it gates
+        something when it structurally can't" discipline, mirrored from the
+        return-manifest artifact-existence check).
+      - Phase 2b: every `verifier_keys` key must be one of the six named
+        verifiers (`VERIFIER_NAMES`) — a plain object-with-additionalProperties
+        schema node can restrict property VALUES but not property NAMES, so
+        this is checked relationally here, same pattern as rule-id uniqueness
+        above. A typo'd or made-up verifier name in `verifier_keys` would
+        otherwise silently register a key nothing ever looks up (`verifier`
+        fields are schema-constrained to the same six names, so a key under
+        any other name can never match a real verdict)."""
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+    policy = instance.get("policy")
+    if not isinstance(policy, dict):
+        return errors  # schema_validate already reports the missing/malformed 'policy' key
+
+    seen_ids = set()
+
+    def _check_ids(items, list_name):
+        for i, item in enumerate(items or []):
+            if not isinstance(item, dict):
+                continue
+            rid = item.get("id")
+            if not isinstance(rid, str) or not rid:
+                continue
+            if rid in seen_ids:
+                errors.append(
+                    f"$.policy.{list_name}[{i}]: duplicate rule id '{rid}' — rule ids must be "
+                    f"unique across rules[] AND hard_floor_rules[] (tessctl gate indexes "
+                    f"sign-off artifacts by id; a collision would let one rule's sign-off "
+                    f"silently satisfy a different rule)"
+                )
+            seen_ids.add(rid)
+
+    _check_ids(policy.get("rules"), "rules")
+    _check_ids(policy.get("hard_floor_rules"), "hard_floor_rules")
+
+    for i, rule in enumerate(policy.get("rules") or []):
+        if not isinstance(rule, dict):
+            continue
+        globs = rule.get("globs") or []
+        if rule.get("require_verdict") and not any(isinstance(g, str) and g.strip() for g in globs):
+            errors.append(
+                f"$.policy.rules[{i}] (id={rule.get('id')!r}): require_verdict: true but "
+                f"globs contains no non-blank pattern — this rule can never match a real "
+                f"changed path, so it can never actually gate anything"
+            )
+
+    verifier_keys = policy.get("verifier_keys")
+    if isinstance(verifier_keys, dict):
+        for name in verifier_keys:
+            if name not in VERIFIER_NAMES:
+                errors.append(
+                    f"$.policy.verifier_keys: {name!r} is not one of the six named verifiers "
+                    f"{list(VERIFIER_NAMES)} — a key registered under an unrecognized name can "
+                    f"never match any real verdict's `verifier` field (schema-constrained to the "
+                    f"same six names)"
+                )
     return errors
 
 
@@ -7047,6 +7538,1137 @@ def cmd_validate(args, root: Path) -> None:
 
     _print_validate_result(result, as_json)
     sys.exit(0 if not violations else 1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — `tessctl verdict sign|verify`: verdict signing key management.
+# Closes the Fable Phase-2 residual ("verdict + sign-off files are
+# committer-authored with NO signing"). Reuses the repo's existing keystone
+# signed-update primitives (isolated GNUPGHOME, exact 40-hex fingerprint
+# pinning) rather than inventing a new signing scheme. Full trust model:
+# conductor/verdict-signing.md.
+# ---------------------------------------------------------------------------
+
+def _verdict_sign_load_file(file_arg: str) -> Path:
+    file_path = Path(file_arg)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+    return file_path
+
+
+def _cmd_verdict_sign(args, root: Path) -> None:
+    """
+    tessctl verdict sign <file> --key-id <KEYID> [--verifier <Name>]
+                          [--gnupg-home <PATH>] [--output <PATH>]
+
+    Produces a `signature` block (core/contracts/verdict.schema.json
+    `$defs.VerdictSignature`) over the verdict's CANONICAL content and
+    writes it back into the file (or to --output, if given), preserving
+    the original .json/.yaml/.md-front-matter format.
+
+    --key-id identifies the LOCAL gpg identity to sign with (fingerprint,
+    key id, or email — passed straight to `gpg --local-user`); the private
+    key must already be in the ambient gpg keyring (or the one at
+    --gnupg-home). tessctl never generates or stores a verifier's private
+    key — that stays in the verifier's own custody, exactly like the
+    release-signing key (see release-process.md's trust model).
+
+    --verifier, if given, must match the verdict's own `verifier` field
+    (mismatch is a hard error, not a warning): a Reid-keyed signer should
+    not be able to casually sign a verdict claiming to be a DIFFERENT
+    verifier. The real enforcement is at VERIFY time (the signing key's
+    fingerprint must match the CLAIMED verifier's registered key in
+    policy.verifier_keys) — this is a fail-fast sanity check for the
+    signer, not the security boundary itself.
+    """
+    file_path = _verdict_sign_load_file(args.file)
+    try:
+        instance = load_contract_instance(file_path)
+    except ContractError as e:
+        sys.exit(f"tessctl verdict sign: {e}")
+    if not isinstance(instance, dict):
+        sys.exit(f"tessctl verdict sign: {file_path} does not contain a JSON/YAML object")
+
+    claimed_verifier = instance.get("verifier")
+    verifier = args.verifier or claimed_verifier
+    if not isinstance(verifier, str) or not verifier:
+        sys.exit(
+            "tessctl verdict sign: no `verifier` in the file and no --verifier given — "
+            "cannot sign a verdict without knowing which verifier it claims to be."
+        )
+    if claimed_verifier and args.verifier and args.verifier != claimed_verifier:
+        sys.exit(
+            f"tessctl verdict sign: --verifier {args.verifier!r} does not match this "
+            f"file's own `verifier: {claimed_verifier!r}` — refusing to sign a mismatch "
+            f"(fix the file's `verifier` field, or pass the matching --verifier)."
+        )
+    if verifier not in VERIFIER_NAMES:
+        sys.exit(
+            f"tessctl verdict sign: {verifier!r} is not one of the six named verifiers "
+            f"{list(VERIFIER_NAMES)}."
+        )
+
+    canonical = verdict_canonical_bytes(instance)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+
+    gpg_cmd = ["gpg"]
+    env = dict(os.environ)
+    if getattr(args, "gnupg_home", None):
+        gpg_cmd += ["--homedir", args.gnupg_home]
+        env["GNUPGHOME"] = args.gnupg_home
+    gpg_cmd += [
+        "--batch", "--yes", "--local-user", args.key_id,
+        "--detach-sign", "--armor", "--output", "-",
+    ]
+    sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    if sign_r.returncode != 0:
+        sys.exit(
+            f"tessctl verdict sign: gpg signing failed for --key-id {args.key_id!r}:\n"
+            f"  {sign_r.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    signature_armored = sign_r.stdout.decode("utf-8")
+
+    # Report the ACTUAL signing key's full fingerprint, so the operator can
+    # cross-check/register it in core/policy/policy.yaml's verifier_keys —
+    # never trust args.key_id's own spelling (could be a short id/email/uid).
+    fp_cmd = ["gpg"]
+    if getattr(args, "gnupg_home", None):
+        fp_cmd += ["--homedir", args.gnupg_home]
+    fp_cmd += ["--list-secret-keys", "--with-colons", args.key_id]
+    fp_r = subprocess.run(fp_cmd, capture_output=True, env=env)
+    signing_fingerprint = ""
+    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("fpr:"):
+            signing_fingerprint = line.split(":")[9]
+            break
+
+    instance["signature"] = {
+        "algorithm": VERDICT_SIGNATURE_ALGORITHM,
+        "signed_content_sha256": content_hash,
+        "signature_armored": signature_armored,
+        "signed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+    output_path = Path(args.output) if getattr(args, "output", None) else file_path
+    write_contract_instance_preserving_format(output_path, instance)
+
+    print(f"tessctl verdict sign: signed {output_path} as verifier {verifier!r}")
+    print(f"  signed_content_sha256: {content_hash}")
+    if signing_fingerprint:
+        print(f"  signing key fingerprint: {signing_fingerprint}")
+        print(
+            f"  Ensure core/policy/policy.yaml's policy.verifier_keys.{verifier} registers "
+            f"EXACTLY this fingerprint, or the gate will reject this signature at verify time."
+        )
+    else:
+        print(
+            "  WARNING: could not determine the signing key's full fingerprint from gpg — "
+            "verify it independently with `gpg --fingerprint <key-id>` before relying on this signature."
+        )
+
+
+def _cmd_verdict_verify(args, root: Path) -> None:
+    """
+    tessctl verdict verify <file> [--json]
+
+    Standalone check: does this verdict's `signature` verify against the
+    registered public key for its claimed `verifier` in
+    core/policy/policy.yaml's `verifier_keys`? Uses the EXACT same
+    `_gate_verify_verdict_signature` helper `tessctl gate`'s covering-verdict
+    check calls — this command exists so a verifier (or anyone) can check a
+    signature in isolation, without running the full ship-gate.
+    """
+    as_json = getattr(args, "json_out", False)
+    file_path = _verdict_sign_load_file(args.file)
+    try:
+        instance = load_contract_instance(file_path)
+    except ContractError as e:
+        result = {"valid": False, "file": str(file_path), "reason": str(e)}
+        _print_verdict_verify_result(result, as_json)
+        sys.exit(2)
+
+    policy_instance, policy_errors = _gate_load_policy(root)
+    if policy_errors:
+        result = {
+            "valid": False, "file": str(file_path),
+            "reason": f"cannot load policy (fail-closed): {'; '.join(policy_errors)}",
+        }
+        _print_verdict_verify_result(result, as_json)
+        sys.exit(1)
+
+    ok, reason = _gate_verify_verdict_signature(root, policy_instance, instance)
+    result = {"valid": ok, "file": str(file_path), "reason": reason}
+    _print_verdict_verify_result(result, as_json)
+    sys.exit(0 if ok else 1)
+
+
+def _print_verdict_verify_result(result: dict, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return
+    status = "VALID" if result["valid"] else "INVALID"
+    print(f"tessctl verdict verify — {result['file']} — {status}")
+    if result.get("reason"):
+        print(f"  {result['reason']}")
+
+
+def cmd_verdict(args, root: Path) -> None:
+    """tessctl verdict <sign|verify> — Phase 2b verdict-signing key management."""
+    sub = getattr(args, "verdict_sub", None)
+    handlers = {"sign": _cmd_verdict_sign, "verify": _cmd_verdict_verify}
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl verdict: choose a subcommand — sign | verify")
+    fn(args, root)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — `tessctl gate`: the deterministic enforcement spine.
+# Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md Phase 2, Design Decision #2
+# ("Enforcement moves from model-compliance to deterministic code... a
+# `tessctl gate` spine at git pre-commit/pre-push + CI; git is the only
+# runtime every assistant shares") and Design Decision #6 ("Verification is
+# the moat, so verification produces an artifact... the ship-gate refuses
+# pushes on prod/client-flagged paths without a covering APPROVE verdict").
+#
+# Three mounting points, ONE shared decision engine (§C8 of the plan):
+#   1. git pre-commit — contract validation on STAGED files only (fast/local).
+#   2. git pre-push   — THE SHIP-GATE: full ship-check over what's being
+#      pushed (reads the git pre-push stdin protocol, or --base/--head).
+#   3. CI entrypoint  — identical ship-check over an explicit --base/--head
+#      ref range; the harness-independent backstop for `git push --no-verify`.
+#
+# SAFETY: every helper below is written to FAIL CLOSED. A git command that
+# errors, a policy file that's missing/invalid, or a verdict file that can't
+# be read all resolve to "block", never "silently allow" — see
+# GateSpineError and the fail-closed branches in _gate_load_policy /
+# _gate_changed_paths_staged / _gate_diff_paths / _gate_changed_paths_from_stdin.
+# ---------------------------------------------------------------------------
+
+
+class GateSpineError(Exception):
+    """Raised by a `tessctl gate` helper for a fail-closed condition — git
+    itself failed, the policy file is missing/invalid, or changed paths
+    could not be determined. Distinct from GateError (the manifest write
+    gate's exception) — this is a different subsystem with its own exit-code
+    discipline, kept separate deliberately rather than reusing GateError's
+    main()-level catch (which always maps to a bare sys.exit(str) — this
+    module wants the same fail-closed OUTCOME but its own printed report
+    shape, so it is caught locally in each cmd_gate_* entrypoint instead)."""
+
+
+EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+# Directory names skipped entirely when the gate walks the working tree
+# looking for verdict-shaped files to check for ship-gate coverage — these
+# are engine-internal / dependency / VCS directories, never mission content.
+_GATE_SKIP_DIR_NAMES = {".git", ".tess", "node_modules", ".venv", "__pycache__", ".pytest_cache"}
+
+# Contract-type inference by path convention. Checked in order; the first
+# match wins. Mirrors the two documented conventions in core/contracts/
+# README.md ("Format an instance file can take"): an explicit
+# `<name>.<type>.<ext>` suffix, or a conventional directory
+# (missions/<id>/{briefs,verdicts,returns}/). `path_matches_globs()` (the
+# same `**`-aware matcher tess.manifest.json's own owned_globs uses) does the
+# actual matching, so behavior here is consistent with the rest of the engine.
+GATE_CONTRACT_PATH_PATTERNS = {
+    "brief": ["*.brief.md", "*.brief.yaml", "*.brief.yml", "*.brief.json", "**/briefs/**"],
+    "crew-plan": [
+        "*.crew-plan.yaml", "*.crew-plan.yml", "*.crew-plan.json",
+        "**/plan.yaml", "**/plan.yml", "**/plan.json",
+    ],
+    "verdict": ["*.verdict.md", "*.verdict.yaml", "*.verdict.yml", "*.verdict.json", "**/verdicts/**"],
+    "return-manifest": [
+        "*.return-manifest.yaml", "*.return-manifest.yml", "*.return-manifest.json",
+        "**/returns/**",
+    ],
+    "policy": ["core/policy/policy.yaml", "core/policy/policy.yml", "core/policy/policy.json"],
+}
+
+
+def _gate_infer_contract_type(rel_path: str) -> str | None:
+    """Which CONTRACT_SCHEMAS key (if any) a changed path is, by convention.
+    None means: not a recognized contract-instance path — the gate's contract
+    check silently skips it (this is not a general-purpose schema validator
+    for arbitrary project files, only for the five named contract types)."""
+    for contract_type, patterns in GATE_CONTRACT_PATH_PATTERNS.items():
+        if path_matches_globs(rel_path, patterns):
+            return contract_type
+    return None
+
+
+def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: str) -> list:
+    """Schema + lint check a single on-disk contract instance. Returns a list
+    of violation strings (empty = valid). A file that can't even be loaded
+    (unparsable YAML/JSON, missing front-matter, unknown extension) is
+    reported as ONE violation string — fail-closed: an unreadable file that
+    LOOKS like a contract is never silently skipped."""
+    abs_path = root / rel_path
+    if not abs_path.exists():
+        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+    try:
+        schema = load_contract_schema(root, contract_type)
+        instance = load_contract_instance(abs_path)
+    except ContractError as e:
+        return [f"{rel_path}: {e}"]
+    base_dir = root / CONTRACTS_DIR
+    errors = schema_validate(instance, schema, schema, base_dir)
+    errors += _lint_contract(contract_type, instance)
+    return [f"{rel_path} {e}" for e in errors]
+
+
+def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
+    """tessctl gate's contract-enforcement pass (point 3 of the Phase 2
+    brief): every brief/crew-plan/verdict/return-manifest/policy file in the
+    changed set is validated against its schema + lint. Returns the combined
+    violation list across all recognized contract files; [] means every
+    recognized contract file in `rel_paths` is schema-valid (or there were
+    none to check)."""
+    violations = []
+    for rel_path in rel_paths:
+        contract_type = _gate_infer_contract_type(rel_path)
+        if contract_type is None:
+            continue
+        violations += [
+            f"[{contract_type}] {v}"
+            for v in _gate_validate_one_contract_file(root, rel_path, contract_type)
+        ]
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Changed-path discovery — three modes (staged / explicit ref range / git's
+# own pre-push stdin protocol). Every git subprocess failure raises
+# GateSpineError (fail-closed) rather than returning an empty/partial result
+# that could be silently mistaken for "nothing changed."
+# ---------------------------------------------------------------------------
+
+def _gate_run_git(root: Path, *args: str) -> str:
+    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise GateSpineError(
+            f"tessctl gate: `git {' '.join(args)}` failed ({r.stderr.strip() or 'no stderr'}) "
+            f"— fail-closed, refusing"
+        )
+    return r.stdout
+
+
+def _gate_changed_paths_staged(root: Path) -> list:
+    """Pre-commit mode: files staged for the next commit."""
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _gate_diff_paths(root: Path, base: str, head: str) -> list:
+    """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
+    when given --base/--head, and internally for the stdin protocol)."""
+    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _gate_changed_paths_from_stdin(root: Path):
+    """git's pre-push protocol: stdin carries one line per updated ref —
+    `<local-ref> <local-sha> <remote-ref> <remote-sha>`. Accumulates the
+    union of changed files across every pushed ref. A brand-new ref (all-zero
+    remote sha) is diffed against git's empty-tree object so its very first
+    commit's files are included, not silently skipped.
+
+    Returns (changed_paths, head_shas) — `head_shas` is every pushed
+    `local_sha` (the actual commits being pushed), used by HIGH-1(c)'s
+    committed-verdicts-only fix to resolve covering-verdict discovery and
+    current-content lookups against exactly what's being pushed, never the
+    on-disk working tree (which may hold uncommitted or even untracked
+    verdict-shaped files that were never part of this push at all)."""
+    lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
+    if not lines:
+        return [], []  # nothing being pushed (e.g. a ref deletion) — nothing to gate
+    changed = set()
+    head_shas = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        _local_ref, local_sha, _remote_ref, remote_sha = parts
+        if not local_sha or set(local_sha) == {"0"}:
+            continue  # deleting the ref — nothing pushed
+        base = EMPTY_TREE_SHA if set(remote_sha) == {"0"} else remote_sha
+        changed.update(_gate_diff_paths(root, base, local_sha))
+        head_shas.append(local_sha)
+    return sorted(changed), head_shas
+
+
+# ---------------------------------------------------------------------------
+# Policy load + path classification
+# ---------------------------------------------------------------------------
+
+def _gate_find_policy_instance_path(root: Path):
+    policy_dir = root / POLICY_DIR
+    for name in POLICY_INSTANCE_CANDIDATES:
+        p = policy_dir / name
+        if p.exists():
+            return p
+    return None
+
+
+def _gate_load_policy(root: Path):
+    """Load + validate core/policy/policy.{yaml,yml,json} against
+    core/contracts/policy.schema.json. Returns (instance, []) on success, or
+    (None, [reason, ...]) — the None return is the fail-closed signal: the
+    caller must treat an unloadable/invalid policy as a block, never as
+    'nothing to check.'"""
+    policy_path = _gate_find_policy_instance_path(root)
+    if policy_path is None:
+        return None, [
+            f"no policy instance found at {POLICY_DIR}/policy.{{yaml,yml,json}} — "
+            f"fail-closed: the gate cannot classify changed paths without a policy"
+        ]
+    try:
+        schema = load_contract_schema(root, "policy")
+        instance = load_contract_instance(policy_path)
+    except ContractError as e:
+        return None, [f"{policy_path.relative_to(root)}: {e}"]
+    base_dir = root / CONTRACTS_DIR
+    errors = schema_validate(instance, schema, schema, base_dir)
+    errors += _lint_contract("policy", instance)
+    if errors:
+        return None, [f"{policy_path.relative_to(root)} fails schema/lint: {e}" for e in errors]
+    return instance, []
+
+
+def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
+    """Match every changed path against policy's rules[] and
+    hard_floor_rules[]. Returns (path_rule_matches, hard_floor_matches):
+    both are {rel_path: [rule_dict, ...]} — a path may match more than one
+    rule, and a path may appear in BOTH dicts (a hard-floor match does not
+    exempt a path from also needing a covering verdict for a separate,
+    ordinary classification rule it also matches — layered, not either/or)."""
+    policy = policy_instance.get("policy", {})
+    rules = policy.get("rules") or []
+    hard_floor_rules = policy.get("hard_floor_rules") or []
+
+    path_rule_matches: dict = {}
+    hard_floor_matches: dict = {}
+    for rel_path in changed_rel_paths:
+        for rule in rules:
+            if rule.get("require_verdict") and path_matches_globs(rel_path, rule.get("globs") or []):
+                path_rule_matches.setdefault(rel_path, []).append(rule)
+        for hf_rule in hard_floor_rules:
+            globs = hf_rule.get("globs") or []
+            if globs and path_matches_globs(rel_path, globs):
+                hard_floor_matches.setdefault(rel_path, []).append(hf_rule)
+    return path_rule_matches, hard_floor_matches
+
+
+# ---------------------------------------------------------------------------
+# Covering-verdict discovery (Design Decision #6)
+#
+# HIGH-1 FIX (Fable Phase-2 adversarial review, BLOCK finding — full text:
+# "verification is a one-time toll, not bound to the diff"). The previous
+# implementation (`_gate_iter_verdict_files` doing `root.rglob("*")`) had
+# three compounding holes:
+#   (c) it walked the ON-DISK WORKING TREE, not the pushed commit(s) — an
+#       uncommitted (or even untracked) verdict-shaped file sitting in the
+#       tree at pre-push time could satisfy the ship-gate despite never
+#       having been part of any commit, let alone this push.
+#   (a) a verdict's `covers_paths` glob match alone was treated as
+#       sufficient "coverage" FOREVER — a verdict reviewing `x.py`'s CURRENT
+#       content kept "covering" every future edit to `x.py` and every
+#       brand-new file later added under the same glob, because nothing
+#       bound the verdict to the CONTENT it actually reviewed.
+#   (M1) `allowed_verifiers` was declared in policy but never checked — any
+#       schema-valid APPROVE verdict cleared a rule regardless of who wrote
+#       it (policy.yaml's own "Advisory note" said as much).
+#
+# Fixed together below: covering-verdict discovery now walks the git TREE at
+# the actual pushed ref(s) (via `git ls-tree`, never the working tree —
+# closes (c) and, as a side effect, LOW-1's symlink-following concern, since
+# `git ls-tree` reports a symlink as its own non-blob-followed mode and
+# `_gate_git_ls_tree` excludes those entries outright), and the covering
+# check itself now requires BOTH the matched rule's `allowed_verifiers` (M1)
+# AND a `verdict.artifact_hashes` entry whose recorded git blob SHA equals
+# the path's CURRENT blob SHA at the pushed head (a) — so verification is
+# genuinely per-change, not a permanent toll paid once per glob.
+# ---------------------------------------------------------------------------
+
+def _gate_git_ls_tree(root: Path, ref: str) -> dict:
+    """rel_path -> git blob SHA-1 for every tracked, non-symlink blob at
+    `ref` (via `git ls-tree -r --full-tree`). Symlink entries (git mode
+    120000) are EXCLUDED on purpose (LOW-1): the gate must never resolve a
+    symlink to decide ship-gate coverage — a symlink's name says nothing
+    reliable about what content it actually points at. Fail-closed like
+    every other git call in this module: `_gate_run_git` raises
+    GateSpineError on any non-zero exit (the caller has typically already
+    proven `ref` resolvable via `_gate_diff_paths`, so a failure here means
+    something changed underneath the run — refuse rather than silently
+    return an empty/partial index)."""
+    out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", ref)
+    result: dict = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        meta, _, rel = line.partition("\t")
+        if not rel:
+            continue
+        parts = meta.split()
+        if len(parts) < 3:
+            continue
+        mode, obj_type, blob_sha = parts[0], parts[1], parts[2]
+        if obj_type != "blob" or mode == "120000":
+            continue
+        result[rel] = blob_sha
+    return result
+
+
+def _gate_git_cat_file(root: Path, blob_sha: str) -> str | None:
+    """Blob content by SHA, decoded as text. Returns None (does NOT raise)
+    on failure — a single unreadable/undecodable blob must not abort the
+    whole covering-verdict scan; callers treat None exactly like
+    load_contract_instance's ContractError (skip this one candidate — it
+    simply can't satisfy the ship-gate, the same fail-closed OUTCOME as any
+    other unreadable verdict, just without killing every other check)."""
+    r = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "blob", blob_sha],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _gate_git_tree_index(root: Path, head_shas: list) -> dict:
+    """rel_path -> {blob_sha, ...} across every ref in `head_shas`. This is
+    the single source of truth both for (1) which verdict-shaped paths are
+    actually COMMITTED and reachable from what's being pushed (HIGH-1(c)),
+    and (2) each changed path's CURRENT content identity (HIGH-1(a)). A
+    multi-ref push (git's pre-push stdin protocol can update more than one
+    ref per invocation) accumulates the UNION across refs — the same
+    fidelity `_gate_changed_paths_from_stdin` already uses for changed
+    paths, kept consistent here rather than tracking per-ref provenance."""
+    index: dict = {}
+    for sha in head_shas:
+        for rel, blob in _gate_git_ls_tree(root, sha).items():
+            index.setdefault(rel, set()).add(blob)
+    return index
+
+
+def _gate_iter_verdict_files(tree_index: dict, search_dirs: list = None):
+    """Every COMMITTED path (from `tree_index` — built from the actual
+    pushed head ref(s), never an `rglob` over the on-disk working tree)
+    whose path matches the 'verdict' contract-path convention and isn't
+    inside a skipped directory. HIGH-1(c): an uncommitted, untracked, or
+    ref-mismatched verdict-shaped file can never appear in `tree_index`, so
+    it can never satisfy the ship-gate."""
+    for rel in sorted(tree_index):
+        parts = rel.split("/")
+        if any(part in _GATE_SKIP_DIR_NAMES for part in parts):
+            continue
+        if search_dirs and not any(
+            rel == d.strip("/") or rel.startswith(d.rstrip("/") + "/") for d in search_dirs
+        ):
+            continue
+        if _gate_infer_contract_type(rel) == "verdict":
+            yield rel
+
+
+def _gate_find_covering_approved_verdicts(root: Path, tree_index: dict, search_dirs: list = None) -> list:
+    """Every COMMITTED verdict in scope that is schema+lint VALID and
+    carries `disposition: APPROVE`. Returns [(rel_path, instance), ...]. A
+    verdict that is schema-invalid (including one carrying an over-broad
+    `covers_paths` master-key glob — HIGH-1(b), rejected by `_lint_verdict`),
+    or BLOCK/APPROVE_WITH_SUGGESTIONS, never appears here — it structurally
+    cannot satisfy the ship-gate (Phase 0's own HIGH-unaccepted-forces-BLOCK
+    rule already makes an invalid HIGH+APPROVE combination fail
+    schema_validate, so it is excluded here for free, not by a second
+    bespoke check)."""
+    schema = load_contract_schema(root, "verdict")
+    base_dir = root / CONTRACTS_DIR
+    approved = []
+    for rel in _gate_iter_verdict_files(tree_index, search_dirs):
+        text = None
+        for blob_sha in tree_index[rel]:
+            text = _gate_git_cat_file(root, blob_sha)
+            if text is not None:
+                break
+        if text is None:
+            continue
+        try:
+            instance = _parse_contract_instance_text(text, Path(rel).suffix, rel)
+        except ContractError:
+            continue
+        errors = schema_validate(instance, schema, schema, base_dir)
+        errors += _lint_contract("verdict", instance)
+        if errors:
+            continue
+        if instance.get("disposition") == "APPROVE":
+            approved.append((rel, instance))
+    return approved
+
+
+def _gate_path_covering_status(
+    rel_path: str, rules: list, approved_verdicts: list, current_shas: set,
+    root: Path, policy_instance: dict, sig_cache: dict,
+):
+    """Whether `rel_path` (which matched `rules`) is covered by at least one
+    approved verdict, and — when it is NOT — which stage of the check it
+    failed at, for a precise block message. FOUR conditions, ALL required
+    (HIGH-1 + M1 + Phase 2b combined):
+      1. the verdict's `covers_paths` glob matches `rel_path` (unchanged from
+         Phase 2, now glob-semantics-fixed — M2 — and master-key-free —
+         HIGH-1(b), enforced at schema/lint time before a verdict ever
+         reaches this function).
+      2. Phase 2b: the verdict carries a cryptographic `signature` that
+         VERIFIES against the registered public key for its claimed
+         `verifier` in `policy.verifier_keys` (`_gate_verify_verdict_signature`
+         — checked here, right after the glob match and BEFORE the
+         allowed_verifiers check below, because until the signature is
+         proven valid the `verifier` field itself is just an unauthenticated
+         claim; allowed_verifiers only means something once the identity
+         making it is cryptographically backed). Memoized per verdict path
+         in `sig_cache` — this is a property of the VERDICT, not of which
+         changed path is being checked, so it is computed once regardless of
+         how many paths a single verdict's `covers_paths` glob matches.
+      3. the verdict's `verifier` is in AT LEAST ONE of the matched rules'
+         `allowed_verifiers` (M1 — previously unchecked).
+      4. the verdict's `artifact_hashes` records THIS path's CURRENT blob
+         SHA (HIGH-1(a) — binds coverage to the reviewed content, not just
+         the path shape; `current_shas` is the set of blob SHAs `rel_path`
+         actually has at the pushed head).
+    Returns (covered: bool, reason: str | None) — reason is one of
+    "no-glob-match", "unsigned", "wrong-verifier", "stale-content", set only
+    on the strongest failure reached across all candidate verdicts (a later,
+    weaker failure for one verdict does not downgrade an earlier, stronger
+    pass reached by a different verdict — but since `covered=True` short-
+    circuits, `reason` is only ever read when covered is False)."""
+    reason = "no-glob-match"
+    for verdict_rel, instance in approved_verdicts:
+        if not path_matches_globs(rel_path, instance.get("covers_paths") or []):
+            continue
+        if reason == "no-glob-match":
+            reason = "unsigned"
+        if verdict_rel not in sig_cache:
+            sig_cache[verdict_rel] = _gate_verify_verdict_signature(root, policy_instance, instance)
+        sig_ok, _sig_reason = sig_cache[verdict_rel]
+        if not sig_ok:
+            continue
+        if reason == "unsigned":
+            reason = "wrong-verifier"
+        verifier = instance.get("verifier")
+        if not any(verifier in (rule.get("allowed_verifiers") or []) for rule in rules):
+            continue
+        if reason == "wrong-verifier":
+            reason = "stale-content"
+        reviewed_sha = (instance.get("artifact_hashes") or {}).get(rel_path)
+        if reviewed_sha is not None and reviewed_sha in current_shas:
+            return True, None
+    return False, reason
+
+
+def _gate_covering_gap_report(
+    path_rule_matches: dict, approved_verdicts: list, tree_index: dict,
+    root: Path, policy_instance: dict,
+) -> list:
+    reasons = []
+    sig_cache: dict = {}
+    for rel_path in sorted(path_rule_matches):
+        rules = path_rule_matches[rel_path]
+        current_shas = tree_index.get(rel_path) or set()
+        covered, why = _gate_path_covering_status(
+            rel_path, rules, approved_verdicts, current_shas, root, policy_instance, sig_cache,
+        )
+        if covered:
+            continue
+        rule_ids = ", ".join(sorted({r.get("id", "?") for r in rules}))
+        classes = sorted({c for r in rules for c in (r.get("classification") or [])})
+        allowed = sorted({v for r in rules for v in (r.get("allowed_verifiers") or [])})
+        if why == "unsigned":
+            # Surface the SPECIFIC signature-verification failure for the
+            # verdict(s) that at least glob-matched, rather than a generic
+            # message — pick the first candidate's reason for concreteness.
+            sig_reasons = sorted({
+                sig_cache[verdict_rel][1]
+                for verdict_rel, instance in approved_verdicts
+                if path_matches_globs(rel_path, instance.get("covers_paths") or [])
+                and verdict_rel in sig_cache and not sig_cache[verdict_rel][0]
+            })
+            detail = "; ".join(sig_reasons) or "no valid signature"
+            reasons.append(
+                f"{rel_path}: a covering APPROVE verdict exists for this path, but its "
+                f"signature does not verify ({detail}) — Phase 2b fix: an unsigned, "
+                f"hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            )
+        elif why == "wrong-verifier":
+            reasons.append(
+                f"{rel_path}: a covering, VALIDLY-SIGNED APPROVE verdict exists for this path, "
+                f"but none was authored by an allowed verifier (policy rule(s) {rule_ids} "
+                f"require verifier in {allowed}) — M1 fix: allowed_verifiers is enforced, not "
+                f"advisory, and Phase 2b ties it to the cryptographic signer identity"
+            )
+        elif why == "stale-content":
+            reasons.append(
+                f"{rel_path}: a covering, validly-signed APPROVE verdict from an allowed "
+                f"verifier exists, but its artifact_hashes does not record THIS path's CURRENT "
+                f"content (current blob(s): {sorted(current_shas) or ['unknown']}) — HIGH-1 "
+                f"fix: verification is per-change; an old, stale, or missing content hash does "
+                f"not clear a new or re-edited version of this file, or a brand-new file under "
+                f"the same covers_paths glob"
+            )
+        else:
+            reasons.append(
+                f"{rel_path}: no covering APPROVE verdict found (policy rule(s): {rule_ids}; "
+                f"classification: {', '.join(classes) or 'unclassified'}) — Decision #6: the "
+                f"ship-gate refuses without a schema-valid, COMMITTED verdict carrying "
+                f"disposition: APPROVE and a covers_paths entry matching this path"
+            )
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# Hard-floor sign-off (guardrails.md Rule 18) — NEVER satisfiable by a
+# verifier's verdict alone; requires a distinct human sign-off artifact.
+# ---------------------------------------------------------------------------
+
+def _gate_validate_signoff(path: Path, rule_id: str):
+    """Returns (True, 'ok') if `path` is a well-formed sign-off artifact for
+    `rule_id`; otherwise (False, reason). Deliberately NOT a `tessctl
+    validate` contract type (see policy.schema.json's top-level
+    description) — this is a small, fixed, ad hoc shape, not a fifth thing
+    the roster dispatches or the render pipeline touches."""
+    if not path.exists():
+        return False, (
+            f"no human sign-off artifact at {path} — guardrails.md Rule 18 hard-floor "
+            f"categories are never satisfiable by a verifier's verdict alone; requires an "
+            f"explicit operator sign-off artifact (see README.md 'tessctl gate')"
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}"
+    if not isinstance(data, dict):
+        return False, f"sign-off artifact at {path} is not a JSON object"
+    required = ("rule_id", "category", "authorized_by", "rationale", "authorized_at")
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        return False, f"sign-off artifact at {path} missing required field(s): {missing}"
+    if data.get("rule_id") != rule_id:
+        return False, (
+            f"sign-off artifact at {path} rule_id {data.get('rule_id')!r} does not match "
+            f"rule '{rule_id}'"
+        )
+    return True, "ok"
+
+
+def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict) -> list:
+    reasons = []
+    rule_by_id = {}
+    for rules in hard_floor_matches.values():
+        for rule in rules:
+            rule_by_id[rule.get("id")] = rule
+    signoffs_dir = root / GATE_SIGNOFF_DIR
+    for rule_id in sorted(rule_by_id):
+        rule = rule_by_id[rule_id]
+        signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
+        ok, reason = _gate_validate_signoff(signoff_path, rule_id)
+        if not ok:
+            reasons.append(f"HARD FLOOR [{rule.get('category')}] rule '{rule_id}': {reason}")
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# The shared ship-check — used identically by `gate pre-push` and `gate ci`.
+# ---------------------------------------------------------------------------
+
+def _gate_run_ship_check(root: Path, changed_paths: list, verdict_dirs: list = None, head_shas: list = None) -> dict:
+    if not changed_paths:
+        return {"blocked": False, "reasons": [], "changed_paths": []}
+
+    reasons = [f"[contract] {v}" for v in _gate_validate_contracts(root, changed_paths)]
+
+    policy_instance, policy_errors = _gate_load_policy(root)
+    if policy_errors:
+        reasons += [f"[policy] {e}" for e in policy_errors]
+        # Fail-closed: an untrusted policy means we cannot safely know what
+        # is ungated, so refuse outright rather than silently allow.
+        return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+
+    path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
+
+    if hard_floor_matches:
+        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches)
+
+    if path_rule_matches:
+        # HIGH-1(c): covering-verdict discovery + current-content lookups
+        # are resolved against the COMMITTED tree at the actual pushed
+        # ref(s) — never an rglob over the on-disk working tree.
+        try:
+            tree_index = _gate_git_tree_index(root, head_shas or [])
+        except GateSpineError as e:
+            reasons.append(f"[gate] {e}")
+            return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+        approved = _gate_find_covering_approved_verdicts(root, tree_index, verdict_dirs)
+        reasons += _gate_covering_gap_report(path_rule_matches, approved, tree_index, root, policy_instance)
+
+    return {"blocked": bool(reasons), "reasons": reasons, "changed_paths": changed_paths}
+
+
+def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"phase": phase, **result}, indent=2))
+        return
+    status = "BLOCKED" if result["blocked"] else "PASS"
+    print(f"tessctl gate {phase} — {status}")
+    print(f"  changed paths: {len(result['changed_paths'])}")
+    for reason in result["reasons"]:
+        print(f"    - {reason}")
+    if result["blocked"]:
+        print(
+            "  refusing (fail-closed) — see README.md 'tessctl gate', "
+            "conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Subcommand entrypoints
+# ---------------------------------------------------------------------------
+
+def _cmd_gate_pre_commit(args, root: Path) -> None:
+    as_json = getattr(args, "json_out", False)
+    try:
+        changed = _gate_changed_paths_staged(root)
+    except GateSpineError as e:
+        _gate_print_result("pre-commit", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        sys.exit(1)
+
+    violations = _gate_validate_contracts(root, changed)
+    result = {"blocked": bool(violations), "reasons": [f"[contract] {v}" for v in violations], "changed_paths": changed}
+    _gate_print_result("pre-commit", result, as_json)
+    sys.exit(1 if result["blocked"] else 0)
+
+
+def _cmd_gate_pre_push(args, root: Path) -> None:
+    as_json = getattr(args, "json_out", False)
+    base = getattr(args, "base", None)
+    head = getattr(args, "head", None)
+    verdict_dirs = getattr(args, "verdict_dirs", None)
+
+    try:
+        if base or head:
+            if not (base and head):
+                raise GateSpineError("tessctl gate pre-push: --base and --head must both be given, or neither (stdin protocol mode)")
+            changed = _gate_diff_paths(root, base, head)
+            head_shas = [head]
+        else:
+            changed, head_shas = _gate_changed_paths_from_stdin(root)
+    except GateSpineError as e:
+        _gate_print_result("pre-push", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        sys.exit(1)
+
+    result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas)
+    _gate_print_result("pre-push", result, as_json)
+    sys.exit(1 if result["blocked"] else 0)
+
+
+def _cmd_gate_ci(args, root: Path) -> None:
+    as_json = getattr(args, "json_out", False)
+    verdict_dirs = getattr(args, "verdict_dirs", None)
+    try:
+        changed = _gate_diff_paths(root, args.base, args.head)
+    except GateSpineError as e:
+        _gate_print_result("ci", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        sys.exit(1)
+
+    result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head])
+    _gate_print_result("ci", result, as_json)
+    sys.exit(1 if result["blocked"] else 0)
+
+
+# ---------------------------------------------------------------------------
+# `tessctl gate install-hooks` — git pre-commit/pre-push + a CI workflow
+# template. Deliberately a SEPARATE splice implementation from
+# `_vault_install_git_hooks` (not a shared refactor of that already-shipped,
+# tier-security-tested subsystem) — same proven architecture (marker-based
+# idempotency; splice ABOVE any pre-existing hook inside a containment
+# subshell that BLOCKS on violation and FALLS THROUGH on a clean result, so a
+# pre-existing hook — including the vault guard itself — still runs), kept
+# independent to avoid regression risk to vault's tested splice code.
+# ---------------------------------------------------------------------------
+
+_GATE_HOOK_MARKER_V1 = "# tess-gate-guard v1"
+_GATE_HOOK_END_SENTINEL = "# tess-gate-guard end"
+
+_GATE_HOOK_BODY_TEMPLATE = r"""set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TESSCTL="$ROOT/.tess/bin/tessctl"
+if [ ! -f "$TESSCTL" ]; then
+  echo "tess-gate-guard: $TESSCTL not found — fail-closed, refusing (framework engine missing or moved)." >&2
+  exit 1
+fi
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "tess-gate-guard: no python3/python on PATH — fail-closed, refusing." >&2
+  exit 1
+fi
+TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" gate {subcommand}
+"""
+
+
+def _gate_hook_scripts() -> dict:
+    pre_commit = (
+        "#!/usr/bin/env bash\n"
+        f"{_GATE_HOOK_MARKER_V1}\n"
+        "# Pre-commit hook: validate staged contract files (Phase 2 gate spine).\n"
+        "# Installed by `tessctl gate install-hooks`.\n"
+        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand="pre-commit")
+    )
+    pre_push = (
+        "#!/usr/bin/env bash\n"
+        f"{_GATE_HOOK_MARKER_V1}\n"
+        "# Pre-push hook: THE SHIP-GATE (Phase 2 gate spine, Design Decision #6).\n"
+        "# Installed by `tessctl gate install-hooks`. Git feeds ref ranges on stdin;\n"
+        "# `tessctl gate pre-push` reads them directly (stdin is inherited as-is).\n"
+        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand="pre-push")
+    )
+    return {"pre-commit": pre_commit, "pre-push": pre_push}
+
+
+def _gate_splice_above_existing(hook_script: str, existing: str, feeds_stdin: bool) -> str:
+    """Build the full hook file content when a DIFFERENT (non-gate) hook is
+    already present at `hook_name`: the gate guard runs first inside a
+    containment subshell (blocks on non-zero, falls through on zero), then
+    the pre-existing content runs unmodified below the end sentinel.
+
+    feeds_stdin=True (pre-push): git delivers ref ranges on stdin, and the
+    guard's own stdin-read (inside `tessctl gate pre-push`) would otherwise
+    starve a coexisting hook below it of the same bytes. Captured once,
+    byte-exact, and re-fed to both the guard and the pre-existing hook —
+    the same technique `_vault_install_git_hooks` uses for its pre-push
+    splice, applied independently here (see module comment above)."""
+    lines = hook_script.splitlines(keepends=True)
+    # Drop shebang + the two leading comment lines this module always emits,
+    # leaving just the body (starts at "set -euo pipefail").
+    body_lines = [ln for ln in lines[1:] if not ln.startswith("#")]
+    inner = "".join(body_lines).rstrip("\n")
+
+    header = (
+        f"{_GATE_HOOK_MARKER_V1}\n"
+        "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
+        "# Runs first inside a containment subshell: BLOCKS on a gate violation,\n"
+        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+    )
+    if feeds_stdin:
+        guard_block = (
+            header
+            + "GATE_STDIN=\"$(cat; printf x)\"; GATE_STDIN=\"${GATE_STDIN%x}\"\n"
+            + "if printf '%s' \"$GATE_STDIN\" | (\n"
+            + f"{inner}\n"
+            + "); then :; else\n"
+            + "  exit $?\n"
+            + "fi\n"
+            + f"{_GATE_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
+        )
+    else:
+        guard_block = (
+            header
+            + "if (\n"
+            + f"{inner}\n"
+            + "); then :; else\n"
+            + "  exit $?\n"
+            + "fi\n"
+            + f"{_GATE_HOOK_END_SENTINEL} — pre-existing hook follows\n"
+        )
+
+    existing_lines = existing.splitlines(keepends=True)
+    if existing_lines and existing_lines[0].startswith("#!"):
+        shebang = existing_lines[0]
+        rest = "".join(existing_lines[1:])
+    else:
+        shebang = "#!/usr/bin/env bash\n"
+        rest = existing
+
+    if feeds_stdin and rest.strip():
+        rest = "printf '%s' \"$GATE_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
+
+    return shebang + guard_block + "\n" + rest
+
+
+def _gate_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = root / ".git" / "hooks"
+    if not git_hooks_dir.exists():
+        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return
+
+    for hook_name, hook_script in _gate_hook_scripts().items():
+        hook_path = git_hooks_dir / hook_name
+        if hook_path.exists():
+            existing = hook_path.read_text(encoding="utf-8", errors="replace")
+            if _GATE_HOOK_MARKER_V1 in existing:
+                print(f"  git hook {hook_name}: tess-gate-guard already v1 (skipped)")
+                continue
+            updated = _gate_splice_above_existing(
+                hook_script, existing, feeds_stdin=(hook_name == "pre-push")
+            )
+            print(
+                f"  NOTICE: pre-existing {hook_name} hook detected — the gate guard was "
+                f"spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
+            )
+            hook_path.write_text(updated, encoding="utf-8")
+        else:
+            hook_path.write_text(hook_script, encoding="utf-8")
+        os.chmod(str(hook_path), 0o755)
+        print(f"  installed git {hook_name} hook at {hook_path}")
+
+
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v2"
+
+# Prior template version(s) this installer recognizes as "a tess-gate-ci file,
+# just outdated" — an install-hooks run UPGRADES these in place (overwrites
+# with the current template) rather than either silently skipping them
+# forever or treating them as some unrelated operator-authored workflow.
+_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2")
+
+_GATE_CI_WORKFLOW = f"""\
+{_GATE_CI_WORKFLOW_MARKER}
+# Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
+# gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
+# harness-independent backstop that still catches `git push --no-verify`.
+#
+# Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
+# workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
+# triggers automatically on `push` to protected branches and on
+# `pull_request`, IN ADDITION TO `workflow_dispatch` (kept for ad hoc/manual
+# re-checks of an arbitrary ref range). This makes the ship-gate BLOCK a
+# failing PR/merge automatically rather than requiring someone to remember
+# to run it. A CI check alone is only ADVISORY until it is also configured
+# as a required status check in branch protection — see
+# conductor/verdict-signing.md and README.md's `tessctl gate` section for
+# the exact branch-protection setup this needs to actually PREVENT a merge
+# (required check name: the job name below, "tessctl gate ci").
+#
+# BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
+# policy.yaml rules already have real (non-placeholder) globs but no
+# covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
+# match, your FIRST push/PR touching those paths WILL be blocked — this is
+# the gate working as designed (fail-closed), not a bug. If you need a
+# grace period while you write your project's initial covering verdicts,
+# temporarily remove the `push`/`pull_request` triggers below (leave
+# `workflow_dispatch`) and re-add them once you have at least one real,
+# signed covering verdict per rule.
+name: Tess OS ship-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base ref to diff from"
+        required: true
+        default: "origin/main"
+      head:
+        description: "Head ref to diff to"
+        required: true
+        default: "HEAD"
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  ship-gate:
+    name: tessctl gate ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Resolve base/head for this trigger
+        id: refs
+        run: |
+          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          if [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
+            BASE="${{{{ inputs.base }}}}"
+            HEAD="${{{{ inputs.head }}}}"
+          elif [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
+            BASE="${{{{ github.event.pull_request.base.sha }}}}"
+            HEAD="${{{{ github.event.pull_request.head.sha }}}}"
+          else
+            BASE="${{{{ github.event.before }}}}"
+            HEAD="${{{{ github.event.after }}}}"
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$EMPTY_TREE"
+            fi
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: tessctl gate ci
+        env:
+          TESS_ROOT: ${{{{ github.workspace }}}}
+        run: |
+          python3 .tess/bin/tessctl gate ci \\
+            --base "${{{{ steps.refs.outputs.base }}}}" \\
+            --head "${{{{ steps.refs.outputs.head }}}}"
+"""
+
+
+def _gate_install_ci_workflow(root: Path) -> None:
+    workflow_path = root / ".github" / "workflows" / "tess-gate.yml"
+    if workflow_path.exists():
+        existing = workflow_path.read_text(encoding="utf-8", errors="replace")
+        if _GATE_CI_WORKFLOW_MARKER in existing:
+            print(f"  CI workflow {workflow_path}: tess-gate-ci already current (skipped)")
+            return
+        if any(marker in existing for marker in _GATE_CI_WORKFLOW_KNOWN_MARKERS):
+            print(
+                f"  UPGRADING tess-gate-ci workflow at {workflow_path} to the current template "
+                f"(adds push/pull_request auto-trigger alongside workflow_dispatch — Phase 2b)."
+            )
+            workflow_path.write_text(_GATE_CI_WORKFLOW, encoding="utf-8")
+            return
+        print(
+            f"  NOTICE: {workflow_path} already exists and is NOT a tess-gate-ci file — "
+            f"leaving it untouched (not overwriting an operator-authored workflow)."
+        )
+        return
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text(_GATE_CI_WORKFLOW, encoding="utf-8")
+    print(f"  installed CI workflow at {workflow_path} (workflow_dispatch + push + pull_request)")
+
+
+def _cmd_gate_install_hooks(args, root: Path) -> None:
+    print("tessctl gate install-hooks:")
+    _gate_install_git_hooks(root)
+    _gate_install_ci_workflow(root)
+
+
+def cmd_gate(args, root: Path) -> None:
+    """
+    tessctl gate <pre-commit|pre-push|ci|install-hooks>
+
+    Phase 2 deterministic enforcement spine. See docs/ULTIMATE_FRAMEWORK_PLAN.md
+    Phase 2, Design Decisions #2 and #6, and README.md "tessctl gate".
+    """
+    sub = getattr(args, "gate_sub", None)
+    handlers = {
+        "pre-commit": _cmd_gate_pre_commit,
+        "pre-push": _cmd_gate_pre_push,
+        "ci": _cmd_gate_ci,
+        "install-hooks": _cmd_gate_install_hooks,
+    }
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks")
+    fn(args, root)
 
 
 # ---------------------------------------------------------------------------
@@ -7357,6 +8979,82 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_validate.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
 
+    # verdict — Phase 2b verdict-signing key management
+    p_verdict = sub.add_parser(
+        "verdict",
+        help="verdict signing key management: sign a verdict, or verify a signed verdict (Phase 2b)",
+    )
+    verdict_sub = p_verdict.add_subparsers(dest="verdict_sub", metavar="SUBCOMMAND")
+
+    p_verdict_sign = verdict_sub.add_parser(
+        "sign", help="sign a verdict's canonical content with a verifier's GPG key",
+    )
+    p_verdict_sign.add_argument("file", help="path to the verdict instance (.json, .yaml/.yml, or .md front-matter)")
+    p_verdict_sign.add_argument(
+        "--key-id", required=True, metavar="KEYID",
+        help="local gpg identity to sign with (fingerprint, key id, or email — passed to `gpg --local-user`)",
+    )
+    p_verdict_sign.add_argument(
+        "--verifier", metavar="NAME",
+        help="the verifier this signature claims to be (must match the file's own `verifier` field, if set)",
+    )
+    p_verdict_sign.add_argument(
+        "--gnupg-home", metavar="PATH",
+        help="use this GNUPGHOME instead of the ambient/default gpg keyring (mainly for testing)",
+    )
+    p_verdict_sign.add_argument(
+        "--output", metavar="PATH",
+        help="write the signed instance here instead of overwriting the input file",
+    )
+
+    p_verdict_verify = verdict_sub.add_parser(
+        "verify", help="verify a verdict's signature against core/policy/policy.yaml's verifier_keys",
+    )
+    p_verdict_verify.add_argument("file", help="path to the verdict instance to verify")
+    p_verdict_verify.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
+    # gate — Phase 2 deterministic enforcement spine
+    p_gate = sub.add_parser(
+        "gate",
+        help="deterministic gate spine: contract validation + ship-gate (Phase 2, Decisions #2/#6)",
+    )
+    gate_sub = p_gate.add_subparsers(dest="gate_sub", metavar="SUBCOMMAND")
+
+    p_gate_precommit = gate_sub.add_parser(
+        "pre-commit",
+        help="validate staged brief/crew-plan/verdict/return-manifest/policy files (git pre-commit hook body)",
+    )
+    p_gate_precommit.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
+    p_gate_prepush = gate_sub.add_parser(
+        "pre-push",
+        help="THE SHIP-GATE: block prod/client/external changes without a covering APPROVE verdict (git pre-push hook body)",
+    )
+    p_gate_prepush.add_argument("--base", metavar="REF", help="explicit base ref (default: read git's pre-push stdin protocol)")
+    p_gate_prepush.add_argument("--head", metavar="REF", help="explicit head ref (must be given together with --base)")
+    p_gate_prepush.add_argument(
+        "--verdict-dir", action="append", dest="verdict_dirs", metavar="DIR",
+        help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",
+    )
+    p_gate_prepush.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
+    p_gate_ci = gate_sub.add_parser(
+        "ci",
+        help="CI entrypoint — identical ship-gate logic over an explicit ref range",
+    )
+    p_gate_ci.add_argument("--base", metavar="REF", required=True, help="base ref to diff from")
+    p_gate_ci.add_argument("--head", metavar="REF", required=True, help="head ref to diff to")
+    p_gate_ci.add_argument(
+        "--verdict-dir", action="append", dest="verdict_dirs", metavar="DIR",
+        help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",
+    )
+    p_gate_ci.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
+    gate_sub.add_parser(
+        "install-hooks",
+        help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
+    )
+
     return parser
 
 
@@ -7384,6 +9082,8 @@ def main() -> None:
         "approve":     ["diff"],           # diff -u for event log
         "publish":     ["git"],            # git diff --no-index (--force mode)
         "resolve":     [],                 # --ours/--theirs: no subprocess; --edit: $EDITOR
+        "gate":        ["git", "gpg"],     # changed-path discovery (git) + covering-verdict signature verify (isolated GNUPGHOME, gpg)
+        "verdict":     ["gpg"],            # sign (detach-sign) / verify (isolated GNUPGHOME)
     }
     tools_needed = _TOOL_REQUIREMENTS.get(args.command, [])
     if tools_needed:
@@ -7419,6 +9119,10 @@ def main() -> None:
         "vault":        cmd_vault,
         # Phase 0: contracts-as-code validator
         "validate":     cmd_validate,
+        # Phase 2b: verdict signing key management
+        "verdict":      cmd_verdict,
+        # Phase 2: deterministic gate spine (Decisions #2/#6)
+        "gate":         cmd_gate,
     }
 
     fn = dispatch.get(args.command)

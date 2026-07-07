@@ -61,6 +61,24 @@
       "type": "array",
       "items": { "$ref": "#/$defs/AcceptedHighFinding" },
       "description": "H2 FIX (Fable adversarial review, BLOCK finding): the explicit-acceptance escape hatch review-output-standards.md's severity table implies for HIGH ('blocks approval' — unlike CRITICAL's unconditional block, HIGH is a strong default, not an absolute) but Phase 0 had no mechanical field for. A HIGH-containing verdict may only carry a non-BLOCK disposition if this array names, by `location`, every HIGH finding being knowingly shipped and WHY. It is never a blanket flag — see the per-finding `allOf` rule below, which requires every HIGH finding's location to have its own entry. Not available at all for Cyra (security) verdicts: see the no-escape `allOf` rule."
+    },
+    "covers_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Phase 2 addition (ULTIMATE_FRAMEWORK_PLAN.md Design Decision #6 — 'the ship-gate refuses pushes... without a covering APPROVE verdict'). Repo-relative path globs (`**`-aware, same matcher as `tess.manifest.json`'s `owned_globs` / `core/policy/policy.yaml`'s rule globs) this verdict's review actually covered — i.e. `primary_artifacts_read` scoped to what a ship-gate can match against a diff. OPTIONAL and purely additive: existing verdict instances written before Phase 2 remain schema-valid without it. `tessctl gate`'s covering-verdict check treats a verdict with no `covers_paths` (or an empty array) as covering NOTHING — fail-closed by omission, not fail-open — so a pre-Phase-2 verdict never silently 'covers' a path its author never scoped it to. HIGH-1 FIX (Fable Phase-2 adversarial review): a glob match alone is no longer sufficient for `tessctl gate` to treat a path as covered — see `artifact_hashes` below, which binds coverage to the CONTENT this verdict actually reviewed, not just the path shape. A `covers_paths` entry may never be a blanket 'master key' glob ('**', bare '*', '**/*', '**/**') — `tessctl validate`'s verdict lint rejects the whole verdict if one appears (see `_lint_verdict`'s `is_overbroad_glob` check)."
+    },
+    "artifact_hashes": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+      "description": "HIGH-1 FIX (Fable Phase-2 adversarial review, BLOCK finding — 'verification is a one-time toll, not bound to the diff'): implements the content-hash loop-closer ULTIMATE_FRAMEWORK_PLAN.md §C2 already named but deferred ('the artifacts_read field with content hashes makes \"the verifier actually read the primary artifact\" itself checkable'). Maps a repo-relative path this verdict reviewed to the exact git blob SHA-1 (40 lowercase hex chars — `git hash-object <path>` before commit, or `git rev-parse <ref>:<path>` / `git ls-tree <ref> -- <path>` after) of the content the verifier actually read. `tessctl gate`'s covering-verdict check requires an entry here for every path it uses this verdict to cover, and the recorded hash must equal that path's CURRENT blob SHA at the pushed head — a verdict written against an OLDER version of a file, or a path never listed here at all (e.g. a brand-new file added later under the same `covers_paths` glob), does not clear a change to it: verification becomes PER-CHANGE, not a permanent toll paid once per glob. OPTIONAL at the schema level (a verdict without it remains schema-valid, mirroring `covers_paths`'s own additive introduction) but functionally required for a verdict to cover anything: a path with no entry, or a non-matching hash, is treated as NOT covered — fail-closed by omission, the same posture `covers_paths` itself already documents."
+    },
+    "verifier_signoff_note": {
+      "type": "string",
+      "description": "LOW-2 (Fable Phase-2 adversarial review): documents, in the verdict itself if the author chooses to note it, that `verifier`/`covers_paths`/`artifact_hashes` are PROCESS-VALUE fields — a deliberate, rule-following artifact the verifier chose to author correctly. Phase 2b (verdict signing) closes the forgery gap this note originally disclosed for a SIGNED verdict (see `signature` below) — an unsigned verdict, or one whose `signature` does not verify against the claimed `verifier`'s registered key in `policy.verifier_keys`, can never cover any path (`tessctl gate`'s covering-verdict check, fail-closed). This field remains OPTIONAL and purely documentary."
+    },
+    "signature": {
+      "$ref": "#/$defs/VerdictSignature",
+      "description": "Phase 2b FIX (closes the Fable Phase-2 residual: 'verdict + sign-off files are committer-authored with NO signing... a weak/malicious agent could hand-write a fake disposition: APPROVE verdict to clear its own gate'). A detached cryptographic signature over this verdict's CANONICAL content (the instance minus this `signature` key itself, serialized as compact key-sorted JSON — see `tessctl`'s `verdict_canonical_bytes()`), produced by the claimed `verifier`'s private key. OPTIONAL at the schema level (mirrors `covers_paths`/`artifact_hashes`'s own additive introduction — an older, unsigned verdict instance remains schema-valid) but FUNCTIONALLY REQUIRED for a verdict to cover anything: `tessctl gate`'s covering-verdict check treats a verdict with no `signature`, a malformed one, one whose `signed_content_sha256` no longer matches the verdict's current content (tamper detection), or one that fails GPG verification against `policy.verifier_keys[verifier]`'s registered fingerprint, as covering NOTHING — fail-closed by omission, the exact same posture already established for `covers_paths`/`artifact_hashes`. Produced by `tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>`; reuses the repo's existing keystone signed-update primitives (isolated GNUPGHOME, exact 40-hex fingerprint pinning — see `conductor/verdict-signing.md` and `release-process.md`'s trust model) rather than inventing a new signing scheme."
     }
   },
   "required": [
@@ -148,6 +166,33 @@
         }
       },
       "required": ["location", "rationale"],
+      "additionalProperties": false
+    },
+    "VerdictSignature": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["gpg-detached-armor"],
+          "description": "Signing scheme. Only one supported today: an ASCII-armored GPG detached signature over `verdict_canonical_bytes()` — the same isolated-GNUPGHOME, exact-fingerprint-match primitives `_verify_tag_secure` already uses for signed-release-tag verification, reused rather than a new scheme (see `conductor/verdict-signing.md`)."
+        },
+        "signed_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 hex digest of the canonical (signature-key-excluded, compact key-sorted JSON) bytes at signing time. `tessctl gate` recomputes this from the verdict's CURRENT content and rejects the signature outright on any mismatch — this is the tamper-evidence check that runs BEFORE the (more expensive) GPG verification, so an edited-after-signing verdict is caught deterministically, not just by luck of a broken signature."
+        },
+        "signature_armored": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The ASCII-armored GPG detached signature block (`-----BEGIN PGP SIGNATURE-----` ... `-----END PGP SIGNATURE-----`) over the canonical bytes, produced by `tessctl verdict sign`."
+        },
+        "signed_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL, purely documentary UTC timestamp (ISO-8601) of when `tessctl verdict sign` produced this signature. Not consulted by verification — signatures do not expire in this scheme (see `conductor/verdict-signing.md`'s trust-model disclosure)."
+        }
+      },
+      "required": ["algorithm", "signed_content_sha256", "signature_armored"],
       "additionalProperties": false
     }
   },

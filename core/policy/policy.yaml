@@ -1,0 +1,206 @@
+# core/policy/policy.yaml — Ship-Gate Policy (Phase 2 of docs/ULTIMATE_FRAMEWORK_PLAN.md,
+# Design Decision #2 "deterministic gate spine" + Design Decision #6 "verification
+# produces a gateable artifact"). Validated against core/contracts/policy.schema.json
+# by `tessctl gate` before it is trusted for anything (a policy file that fails its
+# own schema is a fail-closed condition — see `tessctl gate`'s policy-load step).
+#
+# THIS FILE IS HAND-AUTHORED PER PROJECT, same posture as tess.manifest.json's own
+# header ("hand-authored per spec... do NOT auto-glob"). The framework cannot guess
+# which paths in YOUR repo are production code, client deliverables, or externally
+# visible — that is a fact about your project, not the framework's. The shipped
+# defaults below are DELIBERATELY NARROW:
+#   - `tess-os-security-tier-doctrine` is the one rule that is genuinely live and
+#     meaningful in THIS repo (twiss-io/tess-os) today — it protects the exact
+#     files this repo's own tess.lock already tags tier:security, so silently
+#     weakening the machine-checkable half of the doctrine is treated with the
+#     same weight as editing the doctrine prose itself.
+#   - `example-prod-service-placeholder` is a worked EXAMPLE with a glob no real
+#     tree will ever match (`__REPLACE_ME__/...`) — present so `tessctl doctor`/
+#     a fresh install shows the shape of a real rule, not so it silently gates
+#     anything. Replace it with your project's actual prod/client-facing paths
+#     on adoption; do not leave it as a false sense of coverage.
+#
+# M1 FIX (Fable Phase-2 adversarial review — was: "Advisory note... tessctl gate
+# does not yet REJECT a covering verdict for naming a verifier outside that
+# list"): `allowed_verifiers` is now ENFORCED. A covering verdict must (a)
+# schema+lint validate, (b) carry disposition:APPROVE, (c) have a covers_paths
+# glob matching the changed path, (d) name a `verifier` in the matched rule's
+# allowed_verifiers, AND (e) record this path's CURRENT content in
+# artifact_hashes (core/contracts/verdict.schema.json) — missing any of these
+# means the verdict no longer counts as covering, and `tessctl gate` reports
+# which condition failed.
+#
+# Glob semantics note (M2 fix): `**/*.env` below now ALSO matches a root-level
+# `.env` (previously it required at least one directory component — see
+# path_matches_globs's own header comment in .tess/bin/tessctl for the bug and
+# fix); `*` inside any other segment never spans `/`.
+#
+# Phase 2b (verdict signing — closes the Fable Phase-2 residual: verdicts were
+# committer-authored plain files with no cryptographic signature). A covering
+# verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
+# that verifies against the SAME-named entry in `verifier_keys` below — see
+# conductor/verdict-signing.md for the full trust model and onboarding steps.
+# `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
+# added to tess-os-security-tier-doctrine's globs below: tampering with the key
+# registry is exactly as consequential as tampering with policy.yaml itself,
+# and requires its own covering Reid/Cyra verdict — closing the "who guards the
+# key registry" loop.
+#
+# MEDIUM-1 FIX (Fable Phase-2b follow-up review — the universal GitHub
+# self-gating trap): `.github/workflows/**` is now ALSO in
+# tess-os-security-tier-doctrine's globs. Before this fix, `.github/workflows/
+# tess-gate.yml` (the gate's own CI entrypoint) was NOT covered by any
+# `require_verdict` rule — once branch protection names "tessctl gate ci" as
+# a required check, a malicious PR could keep that exact check name while
+# neutering its step (e.g. replace the `tessctl gate ci` run with `exit 0`)
+# IN THE SAME PR, and the required-check-by-name mechanism would still show
+# green. Gating the workflow directory itself means any such edit is now
+# `prod_touching` and needs its own covering, signed Reid/Cyra verdict —
+# closing the "who guards the gate's own trigger" loop the same way
+# `.tess/keys/verifiers/**` already closed "who guards the key registry."
+# See conductor/verdict-signing.md's "Defense-in-depth" section for the
+# complementary, repo-admin-side CODEOWNERS/ruleset recommendation this does
+# NOT replace (a signed verdict is a content control; CODEOWNERS/rulesets are
+# an independent, GitHub-native review-gate control over the same paths).
+policy:
+  version: 1
+
+  rules:
+    - id: tess-os-security-tier-doctrine
+      description: >-
+        The doctrine + contract-schema files this framework already treats as
+        tier:security in .tess/tess.lock (conductor/guardrails.md,
+        conductor/verification-routing.md, conductor/channel-guardrails.md,
+        conductor/dispatch-brief.md) plus the schemas that make dispatch-brief
+        and verification-routing machine-checkable (core/contracts/brief.schema.json,
+        core/contracts/verdict.schema.json), and the gate's own policy surface
+        (core/contracts/policy.schema.json, core/policy/**, the verifier
+        public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
+        gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
+        self-gating trap where a PR could keep the required check name while
+        neutering its step). Silently weakening any of these is exactly as
+        consequential as an unreviewed production change — treat edits here
+        as prod_touching.
+      globs:
+        - conductor/guardrails.md
+        - conductor/verification-routing.md
+        - conductor/channel-guardrails.md
+        - conductor/dispatch-brief.md
+        - core/contracts/brief.schema.json
+        - core/contracts/verdict.schema.json
+        - core/contracts/policy.schema.json
+        - core/policy/**
+        - .tess/keys/verifiers/**
+        - .github/workflows/**
+      classification: [prod_touching]
+      require_verdict: true
+      allowed_verifiers: [Reid, Cyra]
+
+    - id: example-prod-service-placeholder
+      description: >-
+        EXAMPLE / PLACEHOLDER — replace with globs matching this project's
+        real production service code and client-facing surfaces once adopted
+        into an actual product repo (e.g. "src/api/**", "infra/prod/**",
+        "app/services/payment/**"). Ships pointed at a glob no real tree will
+        ever match, so a fresh install does not silently gate on a rule
+        nobody actually wrote — mirrors tess.manifest.json's own
+        "hand-authored per spec, not auto-globbed" stance.
+      globs:
+        - "__REPLACE_ME__/prod/**"
+      classification: [prod_touching, client_facing]
+      require_verdict: true
+      allowed_verifiers: [Reid, Quinn]
+
+  # verifier_keys — Phase 2b's ALLOWED-KEY SET (core/contracts/policy.schema.json
+  # $defs.VerifierKeyEntry). DELIBERATELY EMPTY in this shipped default, same
+  # "hand-authored per project, do NOT fabricate" posture as every other
+  # placeholder in this file — honest disclosure, not an oversight:
+  #
+  #   Until a real entry exists here for a given verifier name, NO signature
+  #   can ever verify for that verifier (there is no key to check it against),
+  #   so NONE of that verifier's verdicts can ever cover a path — fail-closed,
+  #   not fail-open. Concretely: `tess-os-security-tier-doctrine` above already
+  #   names Reid + Cyra as its allowed_verifiers; until this project's real
+  #   maintainers generate and register Reid's and Cyra's actual signing keys
+  #   below, that rule is UNSATISFIABLE by any verdict — every future change to
+  #   conductor/guardrails.md, core/policy/**, etc. requires the hard-floor-
+  #   style manual escalation this file's own header already documents for an
+  #   unmet rule, not a silent bypass. This is a deliberate, disclosed
+  #   consequence of shipping verdict signing without also fabricating a
+  #   throwaway "Reid" identity that could be mistaken for a real trust anchor.
+  #
+  # To onboard a real verifier (see conductor/verdict-signing.md for the full
+  # walkthrough):
+  #   1. The verifier generates their own GPG keypair (private key stays in
+  #      THEIR custody only — never committed, never shared — same posture
+  #      release-process.md already documents for the release signing key).
+  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
+  #      .tess/keys/verifiers/<name-lowercase>.asc` and commit that file.
+  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
+  #      .tess/keys/verifiers/<name-lowercase>.asc}.
+  #   4. The verifier signs their own verdicts going forward with
+  #      `tessctl verdict sign <file> --verifier <Name> --key-id <fingerprint>`.
+  #
+  # Example shape (commented out — replace with a REAL registered key, never
+  # ship a placeholder fingerprint that would silently "verify" nothing):
+  #   verifier_keys:
+  #     Reid:
+  #       fingerprint: "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000"
+  #       public_key_file: .tess/keys/verifiers/reid.asc
+  #     Cyra:
+  #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
+  #       public_key_file: .tess/keys/verifiers/cyra.asc
+  verifier_keys: {}
+
+  hard_floor_rules:
+    - id: credentials
+      category: credentials
+      description: >-
+        guardrails.md Rule 18 hard floor #1 — "Credentials — use beyond
+        existing scope, change, or rotation." Not reliably path-detectable in
+        general; illustrative globs only. Extend with this project's real
+        secret/config surfaces on adoption. Per Rule 18 and
+        ULTIMATE_FRAMEWORK_PLAN.md's gate-spine spec, a match here is NEVER
+        satisfiable by a verifier's verdict alone — `tessctl gate` requires an
+        explicit human sign-off artifact at
+        .tess/gate/signoffs/<id>.signoff.json regardless of any verdict.
+      globs:
+        - "**/*.env"
+        - "**/*.env.*"
+        - "**/vault.age"
+        - "**/*identity.age"
+        - "**/secrets/**"
+
+    - id: money-movement
+      category: money_movement
+      description: >-
+        guardrails.md Rule 18 hard floor #2 — "Money movement — refunds,
+        voids, transfers, any payment operation." PLACEHOLDER globs — name
+        this project's real payment/billing code paths on adoption.
+      globs:
+        - "__REPLACE_ME__/payments/**"
+
+    - id: destructive-prod-data
+      category: destructive_prod_data
+      description: >-
+        guardrails.md Rule 18 hard floor #3 — "Destructive production data
+        operations — deletes, truncates, irreversible migrations."
+        PLACEHOLDER globs — name this project's real migration/ops-script
+        paths on adoption.
+      globs:
+        - "__REPLACE_ME__/migrations/**destructive**"
+
+    - id: client-external-claims
+      category: client_external_claims
+      description: >-
+        guardrails.md Rule 18 hard floor #4 — "Client-external communications
+        containing new factual claims." NOT path-detectable at all — this is
+        a communication-CONTENT class, not a file-path class. Ships with an
+        empty globs list ON PURPOSE: `tessctl gate` mechanically catches the
+        other three hard-floor categories when their globs match a changed
+        path, but this one remains a pure human-process control the gate
+        cannot see into from a git diff. Stated here explicitly rather than
+        silently omitted (the same "explicit non-coverage over silent gap"
+        discipline core/contracts/README.md already applies to Phase 0's
+        deferred roster/guild-membership checks).
+      globs: []
