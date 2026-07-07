@@ -40,6 +40,12 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               missions/<id>/retries/<task>.attempt-N.md (REFUSES past the 3-attempt
               cap, or a same-brief retry for a non-transient cause); `check` dry-runs
               the same decision without writing anything
+  run         Goal #6: the mechanical CONDUCTOR LOOP — loads + validates a crew-plan,
+              then executes its stages end-to-end against a DispatchDriver (claude |
+              codex | fake): gate check, dispatch, read the returned artifact back,
+              mandatory verification, typed retry on failure (max 3, changed brief),
+              and a hard halt + escalation record on retry-cap exhaustion or a
+              verifier BLOCK
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -59,6 +65,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:
@@ -10188,6 +10195,1118 @@ def _cmd_retry_log(args, root: Path) -> None:
         )
 
 
+# ===========================================================================
+# RUN — Goal #6: `tessctl run <crew-plan>` — the mechanical CONDUCTOR LOOP
+#
+# Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md's Phase-2 target line ("tessctl run
+# <plan> — the workflow conductor: a runner that executes the conductor loop
+# §4 mechanically (gate check -> dispatch batch via the adapter's driver ->
+# collect returns -> verify -> typed retry -> synthesis pass). On Tier A it
+# can drive `claude -p`; on Tier B it drives `codex exec`/`gemini -p`.");
+# conductor/orchestra-model.md §4 ("The Conductor Loop"); conductor/
+# subagent-failure-protocol.md (failure states, cause classes, the 3-attempt
+# cap, changed-brief requirement, escalation). Contracts consumed (all
+# already registered in CONTRACT_SCHEMAS, none added by this region):
+# crew-plan, brief (nested inside crew-plan tasks), return-manifest, verdict,
+# mission, retry.
+#
+# THE STRUCTURAL BET this region cashes: today the conductor loop (gate
+# check -> dispatch -> read the artifact back -> verify -> typed retry ->
+# halt/escalate) is doctrine a strong Claude Code session enforces through
+# discipline. This region makes it DETERMINISTIC CODE — a gate cannot be
+# "decided around" at 3am, a schema-miss cannot be waved through as "good
+# enough", and a verifier's BLOCK cannot be quietly stepped past — regardless
+# of which CLI (or how strong a model) is doing the dispatching.
+#
+# v1 SCOPE (deliberate, documented reductions — see individual docstrings):
+#   - Stages execute SEQUENTIALLY end-to-end; `parallel: true` is honored as
+#     "these tasks have no intra-stage depends_on edge" (already enforced by
+#     `_lint_crew_plan`) but v1 does not fan them out as concurrent OS
+#     processes — it dispatches them one at a time, in dependency order.
+#     Real concurrency is a documented follow-up; it changes nothing about
+#     correctness, only wall-clock time.
+#   - A verifier's `disposition: BLOCK` is treated as an immediate, hard
+#     HALT (escalate now) — never auto-retried. A schema-INVALID verdict
+#     (the verifier's OWN dispatch came back malformed) is a schema-miss and
+#     DOES enter the typed-retry loop like any other task, exactly as
+#     doctrine already requires for "verifier rejection" in the general
+#     case; a syntactically well-formed BLOCK is a considered judgment call,
+#     not a schema-miss, and auto-retrying past it would defeat the point of
+#     mandatory verification.
+#   - `tessctl run` requires the crew-plan's `mission_id` to already exist as
+#     a mission record (`tessctl mission new` first) — it does not scaffold
+#     one itself, keeping this region's one job (execute a plan) separate
+#     from Goal #5's (mission lifecycle).
+#   - SYNTHESIS (orchestra-model.md §4 step 5) is out of v1 scope: `run`
+#     executes EXECUTE STAGES (step 4) only, halting cleanly with every
+#     stage's verified artifact on disk for a human/Tess/a future `run
+#     --synthesize` to consume. This mirrors the plan document's own Phase
+#     line, which scopes `tessctl run` to the conductor loop, not synthesis.
+#
+# Touch points elsewhere in this file (kept to the same three additive
+# categories the MISSION LEDGER region above documents for itself):
+#   1. CONTRACT_SCHEMAS — untouched. No new contract type; `run` validates
+#      crew-plan/return-manifest/verdict instances against the schemas that
+#      already exist, and mission/retry writes go through the MISSION
+#      LEDGER region's own existing, unmodified helpers.
+#   2. cmd_gate()'s handlers dict — untouched; `run` is not gate-nested.
+#   3. build_parser() / the `dispatch` table / main()'s exception handling
+#      (below) — one new `sub.add_parser("run", ...)` block, one new
+#      dispatch-table entry, and `RunError` added alongside
+#      `GateError`/`MissionError` in main()'s catch tuple.
+# No other region of this file is touched — this is the ONLY new region in
+# this PR, inserted directly below the MISSION LEDGER region. This branch's
+# two other merged regions — KEYGEN verdict-signing, RENDER render-targets —
+# are earlier in the file and are not read, called into with side effects,
+# or edited by anything below. TRACE/OTel mission logging is a SIBLING goal
+# not yet merged into this branch's lineage (see the MISSION LEDGER region's
+# own banner above, which notes the same) — nothing in this region assumes
+# it exists.
+# ===========================================================================
+
+
+class RunError(Exception):
+    """Raised for any `tessctl run` refusal that stops the WHOLE run before
+    (or outside of) the per-task typed-retry loop: an invalid crew-plan, a
+    missing mission record, an unknown --driver, a circular depends_on
+    graph. Distinct from a per-task failure (schema-miss, driver error),
+    which is handled INSIDE the run as a classified, retryable — or
+    escalated-and-halted — event, never as a raised exception. Caught by
+    `cmd_run` and, as a defense-in-depth backstop, by main() alongside
+    GateError/MissionError."""
+
+
+# ---------------------------------------------------------------------------
+# Path conventions — where a dispatched task's contracted artifact lands.
+# ---------------------------------------------------------------------------
+
+RUN_RETURNS_DIRNAME = "returns"
+
+
+def _run_artifact_path(mission_id: str, task_id: str, contract_type: str) -> str:
+    """Repo-relative path a task's (or a verifier dispatch's) contracted
+    artifact MUST be written to: missions/<mission_id>/returns/<task_id>.
+    return.json (contract_type='return-manifest') or .verdict.json
+    (contract_type='verdict'). A fixed, conductor-owned convention — not
+    left to the free-text `brief.output_contract` field to specify — so
+    `tessctl run` can deterministically go read it back itself afterward
+    (orchestra-model.md §4c: 'the conductor reads the returned PRIMARY
+    artifact, never trusts the summary'). `missions/**` is already in
+    tess.manifest.json's never_touch (Goal #5), so this new subdirectory
+    needs no manifest change and stays invisible to doctor/verify/lock
+    --check exactly like retries/ already does."""
+    ext = "return.json" if contract_type == "return-manifest" else "verdict.json"
+    return f"{MISSIONS_DIR}/{mission_id}/{RUN_RETURNS_DIRNAME}/{task_id}.{ext}"
+
+
+def _run_escalation_dir(root: Path, mission_id: str) -> Path:
+    return _mission_dir(root, mission_id) / "escalations"
+
+
+# ---------------------------------------------------------------------------
+# DispatchDriver — the seam. `tessctl run` never talks to a CLI directly;
+# every dispatch (worker task AND mandatory verifier) goes through one of
+# these. Three implementations below: ClaudeCliDriver (Tier A), CodexExecDriver
+# (Tier B), FakeDriver (deterministic, tests/dry-runs).
+# ---------------------------------------------------------------------------
+
+class DispatchDriver:
+    """Abstract base for a `tessctl run` dispatch driver.
+
+    `dispatch(brief, output_schema=None) -> dict` executes ONE dispatch (a
+    worker task's brief, or a synthesized verifier brief) and returns a RAW
+    STRUCTURED RESULT describing what the underlying process did — NEVER
+    the task's own return-manifest/verdict artifact. `tessctl run` reads
+    THAT off disk itself, from the contracted path (`_run_artifact_path`),
+    exactly per orchestra-model.md §4c ("never trust the summary"): `ok:
+    True` here means only "the process completed without crashing or timing
+    out," not "the task succeeded" — task/verifier success is entirely
+    determined by whatever this driver's dispatched process left on disk.
+
+    `brief` is NOT the bare six-field brief.schema.json shape — it is that
+    shape (verbatim from the crew-plan, or synthesized fresh for a verifier
+    dispatch) PLUS a small, clearly-namespaced set of conductor-computed
+    operational keys every driver may rely on (added by `_run_augment_
+    brief`, never present in a crew-plan file on disk):
+      _mission_id, _task_id, _contract_type ('return-manifest' | 'verdict'),
+      _return_manifest_path (repo-relative — where the dispatched process
+      MUST write its artifact), _root (this project's absolute root, as a
+      str).
+
+    Required return shape (every driver must return exactly these keys):
+      ok            bool  — process completed, no crash/timeout/non-zero-exit-
+                            with-no-result. Says nothing about task quality.
+      timed_out     bool
+      exit_code     int | None
+      final_text    str   — best-effort diagnostic text (final message /
+                            last event) for logs/trace — NEVER validated,
+                            NEVER treated as the artifact of record.
+      cost_usd      float | None
+      duration_s    float
+      error         str | None — populated when ok is False.
+      events        list  — raw parsed events/lines, for trace/debug only.
+    """
+
+    name: str = ""
+
+    def dispatch(self, brief: dict, output_schema: dict | None = None) -> dict:
+        raise NotImplementedError("DispatchDriver subclasses must implement dispatch()")
+
+
+def _run_parse_stream_json_lines(text: str) -> list:
+    """Parse a `--output-format stream-json` / `--experimental-json` stdout
+    blob: one JSON object per line. Unparsable lines are skipped rather than
+    raising — a partial/truncated stream (e.g. a killed process) should
+    still yield whatever complete events preceded the cutoff."""
+    events = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -> str:
+    """Renders an augmented brief dict into one plain-text prompt for a
+    CLI-driven dispatch. Both ClaudeCliDriver and CodexExecDriver use this —
+    Codex ALSO gets `output_schema` natively via `--output-schema`; this
+    text restatement is belt-and-suspenders for it and the ONLY enforcement
+    mechanism for a CLI (Claude) with no native structured-output flag."""
+    lines = [
+        f"# Dispatch brief — task {brief.get('_task_id', '')!r} "
+        f"(mission {brief.get('_mission_id', '')!r})",
+        "",
+        f"## Objective\n{brief.get('objective', '')}",
+        "",
+        f"## Output contract\n{brief.get('output_contract', '')}",
+        "",
+        f"## Tools / sources / constraints\n{brief.get('tools_sources_constraints', '')}",
+        "",
+        f"## Not responsible for\n{brief.get('not_responsible_for', '')}",
+    ]
+    milestones = brief.get("milestones") or []
+    if milestones:
+        lines.append("")
+        lines.append("## Milestones")
+        for m in milestones:
+            if isinstance(m, dict):
+                lines.append(
+                    f"- {m.get('deliverable', '')} "
+                    f"(acceptance: {m.get('acceptance_evidence', '')}, owner: {m.get('owner', '')})"
+                )
+    lines.append("")
+    lines.append(f"## Escalation trigger\n{brief.get('escalation_trigger', '')}")
+    lines.append("")
+    lines.append(
+        "## MANDATORY: write your return manifest here\n"
+        f"You MUST write a JSON file at the EXACT repo-relative path "
+        f"`{brief.get('_return_manifest_path', '')}` before finishing, conforming to the contract "
+        f"type `{brief.get('_contract_type', '')}` (schema below, if provided). Do not report "
+        f"done without writing this file at this exact path — the conductor reads this file "
+        f"itself from disk and never trusts your summary."
+    )
+    if output_schema is not None:
+        lines.append("")
+        lines.append("## JSON Schema your written file must satisfy")
+        lines.append("```json")
+        lines.append(json.dumps(output_schema, indent=2))
+        lines.append("```")
+    return "\n".join(lines)
+
+
+#: Default least-privilege tool allowlist for a `claude -p` dispatch — a
+#: dispatched worker needs SOME tools to do real work (read sources, write
+#: its return-manifest, run a check), but a headless `-p` invocation has no
+#: TTY to answer a permission prompt: an unapproved tool call is silently
+#: DENIED, not queued (LIVE-VERIFIED in this build: an early smoke run with
+#: no `--allowed-tools` produced three consecutive 'empty return' failures —
+#: the dispatched session never got to write its return-manifest at all,
+#: because the Write call itself was denied with no prompt surfaced). This
+#: is deliberately NOT `--dangerously-skip-permissions` (Anthropic's own
+#: `claude --help`: "Recommended only for sandboxes with no internet
+#: access") — an explicit, visible allowlist covering ordinary brief work
+#: instead of a blanket bypass. Override via `ClaudeCliDriver(...,
+#: allowed_tools=[...])` for a tighter or looser scope.
+CLAUDE_CLI_DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+
+
+class ClaudeCliDriver(DispatchDriver):
+    """Tier A dispatch driver — `claude -p --output-format stream-json`.
+    Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md's CLI capability table ("claude -p,
+    --output-format stream-json"). Parses the stream-json event lines to the
+    final `{"type": "result", ...}` event for diagnostics (cost, exit
+    subtype); the dispatched agent is instructed, via the prompt, to write
+    its own return-manifest/verdict to the contracted path — this driver
+    never fabricates or reads that artifact itself."""
+
+    name = "claude"
+
+    def __init__(self, *, cwd: Path, binary: str = "claude", timeout_s: float = 600.0,
+                 extra_args: list | None = None, allowed_tools: list | None = None):
+        self.cwd = Path(cwd)
+        self.binary = binary
+        self.timeout_s = timeout_s
+        self.extra_args = list(extra_args or [])
+        self.allowed_tools = (
+            list(CLAUDE_CLI_DEFAULT_ALLOWED_TOOLS) if allowed_tools is None else list(allowed_tools)
+        )
+
+    def dispatch(self, brief: dict, output_schema: dict | None = None) -> dict:
+        if shutil.which(self.binary) is None:
+            return {
+                "ok": False, "timed_out": False, "exit_code": None, "final_text": "",
+                "cost_usd": None, "duration_s": 0.0,
+                "error": f"'{self.binary}' not found on PATH", "events": [],
+            }
+
+        prompt = _run_build_dispatch_prompt(brief, output_schema)
+        cmd = [self.binary, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+        if self.allowed_tools:
+            cmd += ["--allowed-tools", " ".join(self.allowed_tools)]
+        cmd += self.extra_args
+        t0 = time.perf_counter()
+        try:
+            proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
+                                   timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
+                "cost_usd": None, "duration_s": time.perf_counter() - t0,
+                "error": f"'{self.binary} -p' timed out after {self.timeout_s}s", "events": [],
+            }
+        duration = time.perf_counter() - t0
+
+        events = _run_parse_stream_json_lines(proc.stdout)
+        result_event = next(
+            (e for e in reversed(events) if isinstance(e, dict) and e.get("type") == "result"), None
+        )
+
+        if result_event is None:
+            return {
+                "ok": False, "timed_out": False, "exit_code": proc.returncode,
+                "final_text": proc.stdout[-4000:], "cost_usd": None, "duration_s": duration,
+                "error": (
+                    f"'{self.binary} -p' exited {proc.returncode} with no 'result' event in its "
+                    f"stream-json output; stderr: {proc.stderr[-2000:]}"
+                ),
+                "events": events,
+            }
+
+        is_error = bool(result_event.get("is_error"))
+        ok = (proc.returncode == 0) and not is_error
+        return {
+            "ok": ok, "timed_out": False, "exit_code": proc.returncode,
+            "final_text": result_event.get("result", ""),
+            "cost_usd": result_event.get("total_cost_usd"),
+            "duration_s": duration,
+            "error": None if ok else (
+                f"'{self.binary} -p' returned subtype={result_event.get('subtype')!r} "
+                f"is_error={is_error}"
+            ),
+            "events": events,
+        }
+
+
+class CodexExecDriver(DispatchDriver):
+    """Tier B dispatch driver — `codex exec --experimental-json --output-schema
+    <file>`. Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md's CLI capability table
+    ("codex exec --experimental-json (non-interactive, JSON event stream;
+    verified)" + "codex exec accepts an output-schema file (outputSchemaFile
+    in the exec SDK; verified)").
+
+    NOT LIVE-TESTED in this build — the `codex` binary is not installed in
+    this build environment. Implemented strictly against the flags this
+    repo's own doctrine already documents as verified (see the plan
+    document's capability table); `dispatch()` fails loud with a clear
+    message if `codex` is absent, exactly like ClaudeCliDriver does for
+    `claude`. FakeDriver's tests are what actually exercise `tessctl run`'s
+    logic end-to-end in this PR; a live codex smoke run is a documented
+    follow-up once the binary is available in a build/CI environment."""
+
+    name = "codex"
+
+    def __init__(self, *, cwd: Path, binary: str = "codex", timeout_s: float = 600.0,
+                 extra_args: list | None = None):
+        self.cwd = Path(cwd)
+        self.binary = binary
+        self.timeout_s = timeout_s
+        self.extra_args = list(extra_args or [])
+
+    def dispatch(self, brief: dict, output_schema: dict | None = None) -> dict:
+        if shutil.which(self.binary) is None:
+            return {
+                "ok": False, "timed_out": False, "exit_code": None, "final_text": "",
+                "cost_usd": None, "duration_s": 0.0,
+                "error": f"'{self.binary}' not found on PATH", "events": [],
+            }
+
+        prompt = _run_build_dispatch_prompt(brief, output_schema)
+        cmd = [self.binary, "exec", "--experimental-json"]
+        schema_file = None
+        if output_schema is not None:
+            fd, schema_file = tempfile.mkstemp(suffix=".schema.json", prefix="tessctl-run-")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(output_schema, f)
+            cmd += ["--output-schema", schema_file]
+        cmd += self.extra_args + [prompt]
+
+        t0 = time.perf_counter()
+        try:
+            try:
+                proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
+                                       timeout=self.timeout_s)
+            except subprocess.TimeoutExpired:
+                return {
+                    "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
+                    "cost_usd": None, "duration_s": time.perf_counter() - t0,
+                    "error": f"'{self.binary} exec' timed out after {self.timeout_s}s", "events": [],
+                }
+        finally:
+            if schema_file:
+                try:
+                    os.unlink(schema_file)
+                except OSError:
+                    pass
+        duration = time.perf_counter() - t0
+
+        events = _run_parse_stream_json_lines(proc.stdout)
+        # codex exec's JSON event stream shape is documented at the flag
+        # level only (no live sample captured in this build env) —
+        # conservatively treat a clean process exit as success and surface
+        # the last event (or raw stdout tail) as diagnostic `final_text`,
+        # mirroring ClaudeCliDriver's own fallback for a stream with no
+        # recognizable terminal event. Adjust this parsing, not the calling
+        # contract, once a real codex event sample is available.
+        last_event = events[-1] if events else None
+        ok = proc.returncode == 0
+        return {
+            "ok": ok, "timed_out": False, "exit_code": proc.returncode,
+            "final_text": json.dumps(last_event) if last_event is not None else proc.stdout[-4000:],
+            "cost_usd": None, "duration_s": duration,
+            "error": None if ok else f"'{self.binary} exec' exited {proc.returncode}: {proc.stderr[-2000:]}",
+            "events": events,
+        }
+
+
+class FakeDriver(DispatchDriver):
+    """Deterministic, no-real-CLI driver — the core test-coverage vehicle
+    for this region. Scripted per augmented-brief `_task_id` (a worker
+    task's id and its verifier dispatch's `<task_id>.verify` id are
+    independent script keys, since they are dispatched separately).
+
+    `script`: {task_id: {"mode": ..., **extra}}. Any task_id not present
+    uses `default_mode`. Modes:
+      "good"           — writes a schema-valid, ACCEPTED artifact
+                         (return-manifest: status complete, 1 claim, 1
+                         artifact; verdict: disposition APPROVE).
+      "schema-missing" — writes a PRESENT but schema-INVALID artifact
+                         (missing required fields) — exercises the
+                         degraded_output / context-gap retry path.
+      "missing-file"   — writes NOTHING — exercises the empty/transient
+                         infra-error path (classify_validation_infra_error).
+      "blocking"       — (verdict artifacts only) a schema-VALID verdict
+                         with disposition BLOCK (and a genuine CRITICAL
+                         finding, so the verdict schema's own BLOCK-requires-
+                         CRITICAL-or-vice-versa rule holds) — exercises the
+                         hard-halt path with a REAL, well-formed BLOCK, not
+                         a schema-miss masquerading as one.
+      "error"          — driver-level failure (ok: False), nothing written —
+                         exercises the driver-failure classification path.
+    A `spec["instance"]` override always wins over the mode's default body
+    (for tests that need to control exact content).
+
+    Every call is recorded in `self.calls` (list of {"task_id", "mode",
+    "contract_type"}), in dispatch order, for test assertions — including
+    proving a 4th attempt (or a downstream stage) was never dispatched.
+    """
+
+    name = "fake"
+
+    def __init__(self, script: dict | None = None, default_mode: str = "good"):
+        self.script = script or {}
+        self.default_mode = default_mode
+        self.calls: list = []
+
+    def dispatch(self, brief: dict, output_schema: dict | None = None) -> dict:
+        task_id = brief.get("_task_id", "")
+        contract_type = brief.get("_contract_type")
+        spec = self.script.get(task_id) or {"mode": self.default_mode}
+        mode = spec.get("mode", self.default_mode)
+        self.calls.append({"task_id": task_id, "mode": mode, "contract_type": contract_type})
+
+        if mode == "error":
+            return {
+                "ok": False, "timed_out": False, "exit_code": 1, "final_text": "",
+                "cost_usd": 0.0, "duration_s": 0.0,
+                "error": spec.get("error", "FakeDriver: scripted error"), "events": [],
+            }
+
+        if mode == "missing-file":
+            return {
+                "ok": True, "timed_out": False, "exit_code": 0,
+                "final_text": "(FakeDriver scripted: wrote nothing)",
+                "cost_usd": 0.0, "duration_s": 0.01, "error": None, "events": [],
+            }
+
+        root = Path(brief["_root"])
+        return_path_rel = brief["_return_manifest_path"]
+        return_path = root / return_path_rel
+        return_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if mode == "schema-missing":
+            instance = spec.get("instance") or (
+                {"task_id": task_id, "status": "degraded"}
+                if contract_type == "return-manifest"
+                else {"verifier": "Reid", "disposition": "APPROVE"}
+            )
+        elif mode == "blocking":
+            instance = spec.get("instance") or self._default_blocking_verdict(return_path_rel)
+        elif mode == "good":
+            instance = spec.get("instance") or (
+                self._default_good_return(brief, return_path_rel)
+                if contract_type == "return-manifest"
+                else self._default_good_verdict(return_path_rel)
+            )
+        else:
+            raise ValueError(f"FakeDriver: unknown scripted mode {mode!r}")
+
+        return_path.write_text(json.dumps(instance, indent=2), encoding="utf-8")
+        return {
+            "ok": True, "timed_out": False, "exit_code": 0,
+            "final_text": f"(FakeDriver scripted mode={mode!r})",
+            "cost_usd": 0.0, "duration_s": 0.01, "error": None, "events": [],
+        }
+
+    @staticmethod
+    def _default_good_return(brief: dict, return_path_rel: str) -> dict:
+        return {
+            "task_id": brief.get("_task_id"), "mission_id": brief.get("_mission_id"),
+            "agent": "fake-agent", "status": "complete", "self_reported_complete": True,
+            # Self-referencing artifact: fine for a synthetic FakeDriver return
+            # (the file exists once written, before the caller validates it) —
+            # a REAL dispatched agent should reference its own genuine output
+            # files, not its own return manifest.
+            "artifacts": [{"path": return_path_rel, "description": "FakeDriver return manifest"}],
+            "claims": [{"claim": "FakeDriver scripted success", "inferred": False,
+                        "evidence": return_path_rel}],
+            "flags": [],
+        }
+
+    @staticmethod
+    def _default_good_verdict(return_path_rel: str) -> dict:
+        return {
+            "verifier": "Reid", "output_domain": "FakeDriver scripted review",
+            "primary_artifacts_read": [return_path_rel],
+            "findings": [], "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "summary_line": "Reviewed the scripted artifact. Found 0 CRITICAL, 0 HIGH, 0 MEDIUM, 0 LOW.",
+            "disposition": "APPROVE",
+        }
+
+    @staticmethod
+    def _default_blocking_verdict(return_path_rel: str) -> dict:
+        return {
+            "verifier": "Reid", "output_domain": "FakeDriver scripted review",
+            "primary_artifacts_read": [return_path_rel],
+            "findings": [{
+                "severity": "CRITICAL", "location": "fake:1", "finding": "Scripted BLOCK finding",
+                "risk": "Test-scripted risk", "fix": "n/a — scripted for test coverage",
+            }],
+            "severity_counts": {"critical": 1, "high": 0, "medium": 0, "low": 0},
+            "summary_line": (
+                "Reviewed the scripted artifact. Found 1 CRITICAL, 0 HIGH, 0 MEDIUM, 0 LOW. "
+                "Top priority: scripted block."
+            ),
+            "disposition": "BLOCK",
+        }
+
+
+RUN_DRIVERS = {"claude": ClaudeCliDriver, "codex": CodexExecDriver, "fake": FakeDriver}
+
+
+# ---------------------------------------------------------------------------
+# Crew-plan loading + intra-stage ordering
+# ---------------------------------------------------------------------------
+
+def _run_load_and_validate_crew_plan(root: Path, path) -> dict:
+    """Load + schema/lint-validate a crew-plan instance, returning the
+    UNWRAPPED `crew_plan` object (§3.1's top-level shape wraps everything
+    one level under a `crew_plan` key). Raises RunError on ANY violation —
+    `tessctl run` never executes a single stage of a plan that fails its
+    own contract."""
+    file_path = Path(path)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+    try:
+        schema = load_contract_schema(root, "crew-plan")
+        instance = load_contract_instance(file_path)
+    except ContractError as e:
+        raise RunError(f"tessctl run: could not load crew-plan {str(path)!r}: {e}")
+
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract("crew-plan", instance)
+    if violations:
+        raise RunError(
+            f"tessctl run: crew-plan {str(path)!r} failed validation "
+            f"({len(violations)} violation(s)):\n  " + "\n  ".join(violations)
+        )
+    return instance["crew_plan"]
+
+
+def _run_topo_order(tasks: list) -> list:
+    """Order ONE stage's tasks by intra-stage `depends_on` edges
+    (orchestra-model.md §4 step 4b: "sequential tasks dispatched in
+    dependency order"). v1 dispatches every stage SEQUENTIALLY regardless of
+    `parallel: true` (see the region banner) — this function only guarantees
+    a task never runs before another task in the SAME stage it depends on.
+    Cross-stage dependencies need no handling here: the stage loop itself
+    already guarantees stage N+1 never starts before stage N fully
+    completes."""
+    by_id = {t["id"]: t for t in tasks if isinstance(t, dict) and "id" in t}
+    ordered: list = []
+    seen: set = set()
+
+    def visit(t, chain):
+        tid = t["id"]
+        if tid in seen:
+            return
+        if tid in chain:
+            raise RunError(
+                f"tessctl run: circular depends_on among this stage's tasks: "
+                f"{' -> '.join(chain + [tid])}"
+            )
+        for dep in t.get("depends_on", []) or []:
+            if dep in by_id:  # a cross-stage dependency is not this function's concern
+                visit(by_id[dep], chain + [tid])
+        seen.add(tid)
+        ordered.append(t)
+
+    for t in tasks:
+        if isinstance(t, dict) and "id" in t:
+            visit(t, [])
+    return ordered
+
+
+def _run_augment_brief(brief: dict, *, root: Path, mission_id: str, task_id: str,
+                        contract_type: str, return_path_rel: str) -> dict:
+    """Returns a NEW dict: `brief` (untouched, verbatim) plus this region's
+    own conductor-computed operational keys (see DispatchDriver's own
+    docstring for the full list). Never mutates the input."""
+    augmented = dict(brief)
+    augmented["_mission_id"] = mission_id
+    augmented["_task_id"] = task_id
+    augmented["_contract_type"] = contract_type
+    augmented["_return_manifest_path"] = return_path_rel
+    augmented["_root"] = str(root)
+    return augmented
+
+
+def _run_build_verifier_brief(task_id: str, verifier_agent, primary_artifacts: list) -> dict:
+    """Synthesizes a six-field dispatch brief for a mandatory verifier
+    dispatch (orchestra-model.md §4 step 4d). A crew-plan Task's `verifier`
+    block (agent/required/primary_artifacts) is a ROUTING declaration, not
+    itself a full brief — only a worker task's own `brief` field is — so the
+    conductor builds one here, the same way Tess would when dispatching a
+    verifier by hand per verification-routing.md's "Verifier Brief
+    Standard"."""
+    artifacts_line = ", ".join(primary_artifacts) if primary_artifacts else "(none listed on the crew-plan task)"
+    return {
+        "objective": (
+            f"Review task {task_id!r}'s primary artifacts and render a verdict per "
+            f"conductor/review-output-standards.md and conductor/verification-routing.md."
+        ),
+        "output_contract": (
+            "Write a JSON file at the EXACT repo-relative path given below, conforming to "
+            "core/contracts/verdict.schema.json (verifier, output_domain, primary_artifacts_read, "
+            "findings, severity_counts, summary_line, disposition)."
+        ),
+        "tools_sources_constraints": (
+            f"Primary artifacts to read YOURSELF (never a summary): {artifacts_line}. "
+            f"verification-routing.md: 'the diff, the logs, the URLs, the file paths — never "
+            f"Tess's summary of those artifacts.'"
+        ),
+        "not_responsible_for": "Do not modify the artifacts under review; do not re-do the underlying task.",
+        "milestones": [],
+        "escalation_trigger": "If a listed primary artifact cannot be found or read, stop and report — do not guess.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Artifact validation — reuses cmd_validate's own machinery verbatim
+# (load_contract_schema / load_contract_instance / schema_validate /
+# _lint_contract / classify_schema_miss / classify_validation_infra_error),
+# so `tessctl validate <contract-type> <path>` and `tessctl run`'s own
+# in-process check can never quietly disagree about whether an artifact is
+# valid.
+# ---------------------------------------------------------------------------
+
+def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_result: dict):
+    """Returns (ok, violations, failure_state, cause_class, instance).
+    `failure_state`/`cause_class` are None when ok is True. On failure,
+    reuses the EXACT SAME classification helpers `cmd_validate` uses:
+    classify_validation_infra_error() for a driver-level failure or a
+    missing/unparsable artifact file (Empty/Transient — same-brief retry
+    permitted), classify_schema_miss() for a present-but-non-conforming
+    artifact (Degraded/context-gap by default — changed brief required)."""
+    if not raw_result.get("ok"):
+        failure_state = "timeout" if raw_result.get("timed_out") else "error"
+        reason = raw_result.get("error") or f"{contract_type} dispatch driver reported failure"
+        return False, [reason], failure_state, "transient", None
+
+    path = root / path_rel
+    if not path.exists():
+        classification = classify_validation_infra_error(f"file not found: {path}")
+        return (
+            False, [f"expected {contract_type} artifact not found at {path_rel}"],
+            classification["failure_state"], classification["cause_class"], None,
+        )
+
+    try:
+        instance = load_contract_instance(path)
+    except ContractError as e:
+        classification = classify_validation_infra_error(str(e))
+        return False, [str(e)], classification["failure_state"], classification["cause_class"], None
+
+    schema = load_contract_schema(root, contract_type)
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract(contract_type, instance)
+    if violations:
+        classification = classify_schema_miss(contract_type, violations)
+        return False, violations, classification["failure_state"], classification["cause_class"], instance
+
+    return True, [], None, None, instance
+
+
+def _run_apply_changed_brief(brief: dict, violations: list, cause_class: str, attempt_no: int) -> dict:
+    """Produces a brief that DIFFERS from `brief` — subagent-failure-
+    protocol.md: 'the retry brief MUST change in a way that specifically
+    addresses the classified cause.' `tessctl run` addresses this
+    mechanically by appending the classified cause plus the exact schema/
+    lint violations the prior attempt's artifact failed on into
+    `tools_sources_constraints` (dispatch-brief.md field 3 — 'tools/
+    primary-artifact pointers/constraints' — the constraints half is
+    precisely where 'what must be different this time' belongs). Never
+    mutates the input dict; the returned dict is guaranteed to differ from
+    every prior brief for this task (the attempt number and violation text
+    are both embedded), which is what lets the SAME automated loop keep
+    passing `_retry_precheck`'s literal same-brief check attempt over
+    attempt."""
+    new_brief = dict(brief)
+    note = (
+        f"\n\n[tessctl run — retry {attempt_no}, cause={cause_class}] The previous attempt's "
+        f"return was rejected for: {'; '.join(violations[:5]) if violations else 'unspecified reason'}. "
+        f"Address these specifically before returning."
+    )
+    new_brief["tools_sources_constraints"] = str(brief.get("tools_sources_constraints", "")) + note
+    return new_brief
+
+
+def _run_attempt_summaries(root: Path, mission_id: str, task_id: str) -> list:
+    """Reads back every logged retry attempt for `task_id`, for the full
+    per-attempt analysis subagent-failure-protocol.md's Attempt Cap section
+    requires in an escalation ('every attempt, its failure state, its cause
+    class, what each brief changed')."""
+    d = _retry_dir(root, mission_id)
+    if not d.exists():
+        return []
+    pattern = re.compile(re.escape(task_id) + r"\.attempt-(\d+)\.md$")
+    out = []
+    for p in sorted(d.iterdir()):
+        if not pattern.match(p.name):
+            continue
+        try:
+            rec = load_contract_instance(p)
+        except ContractError:
+            continue
+        out.append({
+            "attempt": rec.get("attempt"), "failure_state": rec.get("failure_state"),
+            "cause_class": rec.get("cause_class"), "brief_change_note": rec.get("brief_change_note"),
+        })
+    return sorted(out, key=lambda r: r.get("attempt") or 0)
+
+
+def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, failure_state: str,
+                            brief_text: str, *, by=None, note=None):
+    """In-process equivalent of `tessctl retry log`, for `run`'s own
+    automated retry loop.
+
+    Deliberately DUPLICATED here (rather than calling `_cmd_retry_log`
+    directly) because that CLI entrypoint calls `sys.exit()` on refusal,
+    which would kill the whole `tessctl run` process — `run` needs a normal
+    (allowed, path_or_reason) return it can act on (escalate + halt)
+    instead. Calls the exact same underlying `_retry_precheck` /
+    `_retry_attempt_path` / `_utc_now_iso` / `_self_validate_or_raise`
+    helpers the MISSION LEDGER region's own `_cmd_retry_log` uses — see
+    that region for the canonical CLI-facing implementation this mirrors —
+    so the 3-attempt cap and the same-brief rule are enforced byte-for-byte
+    identically whether a human runs `tessctl retry log` or `tessctl run`
+    logs one automatically.
+
+    Returns (True, Path) on success (attempt file written and dogfood-
+    validated), (False, reason_str) on refusal (writes nothing, exactly
+    like `retry log`'s own refusal contract).
+    """
+    allowed, next_attempt, reason = _retry_precheck(root, mission_id, task, cause, brief_text)
+    if not allowed:
+        return False, reason
+
+    attempt_record = {
+        "mission_id": mission_id, "task": task, "attempt": next_attempt,
+        "failure_state": failure_state, "cause_class": cause,
+        "brief_text": brief_text, "logged_at": _utc_now_iso(),
+        "logged_by": by or getpass.getuser(),
+    }
+    if note:
+        attempt_record["brief_change_note"] = note
+
+    path = _retry_attempt_path(root, mission_id, task, next_attempt)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm_text = yaml.safe_dump(attempt_record, sort_keys=False)
+    body = (
+        f"# Retry attempt {next_attempt} — task `{task}` — mission `{mission_id}`\n"
+        f"(logged automatically by `tessctl run` — see missions/README.md)\n\n"
+        f"failure_state: {failure_state}  ·  cause_class: {cause}\n"
+    )
+    path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+    try:
+        _self_validate_or_raise(root, "retry", path)
+    except MissionError:
+        path.unlink(missing_ok=True)
+        raise
+    return True, path
+
+
+def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str, details: dict, *, by=None) -> Path:
+    """Writes missions/<id>/escalations/<task_id>.<reason>[-N].md — the
+    full per-attempt analysis subagent-failure-protocol.md's Attempt Cap
+    section requires ("Escalate to the operator with the full per-attempt
+    analysis log") — and flips the mission record's own `state` to
+    'code-red' (mission-states.md's EXISTING FSM state for exactly this
+    situation; NO mission.schema.json change needed — 'code-red' is already
+    one of the eleven values mission.schema.json's `state` enum accepts).
+
+    Escalation files are plain, human-readable Markdown with YAML
+    front-matter (for machine-parseable tests) — deliberately NOT a new
+    schema-validated contract type; inventing `escalation.schema.json` was
+    not asked for and is not needed for this region's job. `missions/**` is
+    already in tess.manifest.json's never_touch, so this new subdirectory
+    needs no manifest change and stays invisible to doctor/verify/lock
+    --check exactly like retries/ already does.
+    """
+    by = by or getpass.getuser()
+    d = _run_escalation_dir(root, mission_id)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{task_id}.{reason}.md"
+    n = 1
+    while path.exists():
+        n += 1
+        path = d / f"{task_id}.{reason}-{n}.md"
+
+    record = {
+        "mission_id": mission_id, "task": task_id, "reason": reason,
+        "halted_at": _utc_now_iso(), "halted_by": by,
+    }
+    record.update(details)
+    fm_text = yaml.safe_dump(record, sort_keys=False, default_flow_style=False)
+
+    lines = [
+        f"# Escalation — task `{task_id}` — mission `{mission_id}`", "",
+        f"**Reason:** {reason}", "",
+        "Per conductor/subagent-failure-protocol.md's Attempt Cap section: STOP; do not "
+        "dispatch again without the operator's direction.", "",
+    ]
+    attempts = details.get("attempts")
+    if attempts:
+        lines.append("## Per-attempt analysis")
+        for a in attempts:
+            lines.append(
+                f"- attempt {a.get('attempt')}: failure_state={a.get('failure_state')}, "
+                f"cause_class={a.get('cause_class')}"
+                + (f" — {a.get('brief_change_note')}" if a.get("brief_change_note") else "")
+            )
+        lines.append("")
+    verdict = details.get("verdict")
+    if verdict:
+        lines.append("## Blocking verdict")
+        lines.append(f"- verifier: {verdict.get('verifier')}  ·  disposition: {verdict.get('disposition')}")
+        lines.append(f"- summary: {verdict.get('summary_line')}")
+        lines.append("")
+    body = "\n".join(lines)
+    path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+
+    mission = _read_mission_record(root, mission_id)
+    mission["state"] = "code-red"
+    _write_mission_record(root, mission_id, mission)  # dogfood-validates itself
+
+    return path
+
+
+def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_brief: dict,
+                              contract_type: str, return_path_rel: str, driver: DispatchDriver, *,
+                              by=None) -> dict:
+    """Drives ONE task's (or ONE verifier's) full dispatch -> validate ->
+    typed-retry lifecycle against `driver` — identical logic for a worker
+    task's return (contract_type='return-manifest') and a verifier's verdict
+    (contract_type='verdict'), since both are "dispatch, read the contracted
+    artifact back, a schema-miss enters the SAME typed-retry loop" per
+    orchestra-model.md §4 steps 4c/4d and subagent-failure-protocol.md.
+
+    Never dispatches past the 3-attempt cap: the cap (and the same-brief
+    rule) is checked with `_retry_precheck` BEFORE every dispatch after the
+    first — a failure that would be refused logging is refused (and
+    escalated) WITHOUT wasting a real subprocess dispatch on an attempt that
+    was already known to be illegal.
+
+    Returns {"status": "complete"|"halted", "instance": dict|None,
+    "attempts": int, "halt_reason": str|None, "escalation_path": str|None}.
+    """
+    current_brief = dict(initial_brief)
+    schema = load_contract_schema(root, contract_type)
+    attempt_num = 1
+
+    while True:
+        augmented = _run_augment_brief(
+            current_brief, root=root, mission_id=mission_id, task_id=task_id,
+            contract_type=contract_type, return_path_rel=return_path_rel,
+        )
+        raw = driver.dispatch(augmented, output_schema=schema)
+        ok, violations, failure_state, cause_class, instance = _run_check_artifact(
+            root, return_path_rel, contract_type, raw
+        )
+
+        if ok:
+            return {
+                "status": "complete", "instance": instance, "attempts": attempt_num,
+                "halt_reason": None, "escalation_path": None,
+            }
+
+        brief_text = json.dumps(current_brief, sort_keys=True, indent=2)
+
+        # Is even LOGGING this failure (attempt_num) allowed? (cap + same-brief)
+        allowed, _next_attempt, reason = _retry_precheck(root, mission_id, task_id, cause_class, brief_text)
+        if not allowed:
+            esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
+                "attempts": _run_attempt_summaries(root, mission_id, task_id),
+                "last_violations": violations,
+            }, by=by)
+            return {
+                "status": "halted", "instance": None, "attempts": attempt_num,
+                "halt_reason": f"{task_id!r}: {reason}", "escalation_path": str(esc),
+            }
+
+        logged_ok, logged_val = _run_log_retry_attempt(
+            root, mission_id, task_id, cause_class, failure_state, brief_text, by=by
+        )
+        if not logged_ok:
+            esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
+                "attempts": _run_attempt_summaries(root, mission_id, task_id),
+            }, by=by)
+            return {
+                "status": "halted", "instance": None, "attempts": attempt_num,
+                "halt_reason": f"{task_id!r}: {logged_val}", "escalation_path": str(esc),
+            }
+
+        # A NEXT dispatch would be attempt_num+1 — confirm it's within the
+        # cap BEFORE looping back and actually dispatching it again.
+        allowed2, next_attempt2, reason2 = _retry_precheck(root, mission_id, task_id, "", None)
+        if not allowed2:
+            esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
+                "attempts": _run_attempt_summaries(root, mission_id, task_id),
+            }, by=by)
+            return {
+                "status": "halted", "instance": None, "attempts": attempt_num,
+                "halt_reason": reason2, "escalation_path": str(esc),
+            }
+
+        if cause_class != "transient":
+            current_brief = _run_apply_changed_brief(current_brief, violations, cause_class, next_attempt2)
+        attempt_num = next_attempt2
+
+
+def _run_execute_task(root: Path, mission_id: str, task: dict, driver: DispatchDriver, *, by=None) -> dict:
+    """Executes one crew-plan task end-to-end: dispatch -> typed-retry ->
+    (if verifier.required) dispatch the verifier -> typed-retry -> BLOCK
+    check. Returns {"task_id", "status", "attempts", "halt_reason",
+    "escalation_path"}."""
+    task_id = task["id"]
+    return_path_rel = _run_artifact_path(mission_id, task_id, "return-manifest")
+
+    outcome = _run_dispatch_with_retry(
+        root, mission_id, task_id, task["brief"], "return-manifest", return_path_rel, driver, by=by
+    )
+    if outcome["status"] == "halted":
+        return {"task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
+                "halt_reason": outcome["halt_reason"], "escalation_path": outcome["escalation_path"]}
+
+    verifier = task.get("verifier") or {}
+    if verifier.get("required"):
+        verify_task_id = f"{task_id}.verify"
+        verdict_path_rel = _run_artifact_path(mission_id, verify_task_id, "verdict")
+        verifier_brief = _run_build_verifier_brief(
+            task_id, verifier.get("agent"), verifier.get("primary_artifacts") or []
+        )
+        v_outcome = _run_dispatch_with_retry(
+            root, mission_id, verify_task_id, verifier_brief, "verdict", verdict_path_rel, driver, by=by
+        )
+        if v_outcome["status"] == "halted":
+            return {"task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
+                    "halt_reason": v_outcome["halt_reason"], "escalation_path": v_outcome["escalation_path"]}
+
+        disposition = (v_outcome["instance"] or {}).get("disposition")
+        if disposition == "BLOCK":
+            esc = _run_write_escalation(root, mission_id, verify_task_id, "verifier_block",
+                                         {"verdict": v_outcome["instance"]}, by=by)
+            return {
+                "task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
+                "halt_reason": (
+                    f"verifier {verifier.get('agent')!r} BLOCKED task {task_id!r}: "
+                    f"{v_outcome['instance'].get('summary_line')}"
+                ),
+                "escalation_path": str(esc),
+            }
+
+    return {"task_id": task_id, "status": "complete", "attempts": outcome["attempts"],
+            "halt_reason": None, "escalation_path": None}
+
+
+# ---------------------------------------------------------------------------
+# The conductor loop itself — orchestra-model.md §4 "EXECUTE STAGES".
+# ---------------------------------------------------------------------------
+
+def _do_run(root: Path, crew_plan_path, driver: DispatchDriver, *, by=None) -> dict:
+    """Runs a validated crew-plan's stages end-to-end against `driver`:
+    for each stage, in order — (a) gate check, (b) dispatch each task in
+    intra-stage dependency order, (c) read the artifact back, (d) dispatch
+    the mandatory verifier where required, (e) typed-retry on failure, (f)
+    halt + escalate on a retry-cap exhaustion or a verifier BLOCK.
+
+    Requires the crew-plan's `mission_id` to already exist as a mission
+    record (`tessctl mission new` first) — raises RunError otherwise.
+    Never raises on a per-task failure; those are always classified,
+    handled, and reflected in the returned result's `status`.
+    """
+    by = by or getpass.getuser()
+    crew_plan = _run_load_and_validate_crew_plan(root, crew_plan_path)
+    mission_id = crew_plan["mission_id"]
+
+    try:
+        _read_mission_record(root, mission_id)
+    except MissionError as e:
+        raise RunError(
+            f"tessctl run: {e} — create it first with `tessctl mission new` (the crew-plan's "
+            f"mission_id must already exist as a mission record before `run` will execute it)."
+        )
+
+    stages = sorted(crew_plan["stages"], key=lambda s: s["stage"])
+    result = {
+        "mission_id": mission_id, "status": "complete", "halt_reason": None,
+        "stages_completed": 0, "stages_total": len(stages), "tasks": [], "escalation_path": None,
+    }
+
+    for stage in stages:
+        stage_no = stage["stage"]
+        gate_name = stage["gate_in"]
+
+        # Re-read fresh every stage: an operator may clear a gate WHILE a
+        # long-running `tessctl run` is between stages.
+        mission = _read_mission_record(root, mission_id)
+        gate = next((g for g in (mission.get("gates") or []) if g.get("name") == gate_name), None)
+        if gate is None or not gate.get("cleared"):
+            result["status"] = "halted"
+            result["halt_reason"] = (
+                f"stage {stage_no}: gate {gate_name!r} is not cleared for mission {mission_id!r} — "
+                f"run `tessctl gate clear {gate_name} --mission {mission_id} --evidence <path>` first "
+                f"(orchestra-model.md §4 step 4a: 'never start early')."
+            )
+            return result  # a procedural block, not a task failure — no escalation record, no mutation
+
+        for task in _run_topo_order(stage["tasks"]):
+            outcome = _run_execute_task(root, mission_id, task, driver, by=by)
+            result["tasks"].append(outcome)
+            if outcome["status"] == "halted":
+                result["status"] = "halted"
+                result["halt_reason"] = outcome["halt_reason"]
+                result["escalation_path"] = outcome["escalation_path"]
+                return result
+
+        result["stages_completed"] = stage_no
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
+
+def _run_build_driver(args, root: Path) -> DispatchDriver:
+    name = getattr(args, "driver", None) or "claude"
+    if name not in RUN_DRIVERS:
+        raise RunError(f"tessctl run: unknown --driver {name!r} (expected {', '.join(sorted(RUN_DRIVERS))})")
+    timeout_s = getattr(args, "timeout", None) or 600.0
+
+    if name == "fake":
+        script = {}
+        script_path = getattr(args, "fake_script", None)
+        if script_path:
+            p = Path(script_path)
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            if not p.exists():
+                raise RunError(f"tessctl run: --fake-script not found: {script_path}")
+            try:
+                script = json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                raise RunError(f"tessctl run: --fake-script {script_path!r} is not valid JSON: {e}")
+        return FakeDriver(script=script)
+
+    return RUN_DRIVERS[name](cwd=root, timeout_s=timeout_s)
+
+
+def cmd_run(args, root: Path) -> None:
+    """
+    tessctl run <crew-plan> [--driver claude|codex|fake] [--timeout SECONDS]
+                [--fake-script PATH] [--by NAME] [--json]
+
+    Goal #6: the mechanical CONDUCTOR LOOP. Loads + validates a crew-plan,
+    then executes its stages end-to-end against the chosen dispatch driver —
+    gate check, dispatch, collect + validate the returned artifact,
+    mandatory verification, typed retry on failure (max 3, changed brief for
+    every non-transient cause), and a hard halt + escalation record on
+    either retry-cap exhaustion or a verifier BLOCK. Exit code 0 only on a
+    full, uninterrupted run to completion; 1 on any halt (gate not cleared,
+    retry cap exhausted, verifier BLOCK).
+    """
+    try:
+        driver = _run_build_driver(args, root)
+        result = _do_run(root, args.crew_plan, driver, by=getattr(args, "by", None))
+    except (RunError, MissionError, ContractError) as e:
+        sys.exit(f"tessctl run: {e}")
+
+    as_json = getattr(args, "json_out", False)
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"tessctl run — mission {result['mission_id']!r}")
+        print(
+            f"  status: {result['status']}  "
+            f"({result['stages_completed']}/{result['stages_total']} stage(s) completed)"
+        )
+        for t in result["tasks"]:
+            mark = "x" if t["status"] == "complete" else "!"
+            print(f"    [{mark}] {t['task_id']} — {t['status']} ({t.get('attempts', 0)} attempt(s))")
+        if result["status"] == "halted":
+            print(f"  HALTED: {result['halt_reason']}")
+            if result.get("escalation_path"):
+                print(f"  escalation: {result['escalation_path']}")
+
+    sys.exit(0 if result["status"] == "complete" else 1)
+
+
 # ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
@@ -10693,6 +11812,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_retry_check.add_argument("--json", action="store_true", dest="json_out")
 
+    # run — Goal #6: the mechanical conductor loop
+    p_run = sub.add_parser(
+        "run",
+        help="Goal #6: the mechanical conductor loop — execute a validated crew-plan's stages "
+             "end-to-end (gate check -> dispatch -> verify -> typed retry -> halt/escalate)",
+    )
+    p_run.add_argument("crew_plan", metavar="CREW-PLAN",
+                        help="path to a crew-plan.schema.json instance (.json/.yaml/.md)")
+    p_run.add_argument(
+        "--driver", choices=sorted(RUN_DRIVERS), default="claude",
+        help="dispatch driver: claude (claude -p, Tier A) | codex (codex exec, Tier B) | "
+             "fake (deterministic, tests/dry-runs only)",
+    )
+    p_run.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help="per-dispatch subprocess timeout in seconds (default: 600)")
+    p_run.add_argument("--fake-script", dest="fake_script", metavar="PATH",
+                        help="(--driver fake only) JSON file scripting FakeDriver's per-task responses")
+    p_run.add_argument("--by", help="override the recorded actor for retry/escalation records (default: current OS user)")
+    p_run.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+
     return parser
 
 
@@ -10767,6 +11906,9 @@ def main() -> None:
         "mission":      cmd_mission,
         "gate-status":  cmd_gate_status,
         "retry":        cmd_retry,
+        # Goal #6: `tessctl run` — the mechanical conductor loop (RUN region,
+        # directly below the MISSION LEDGER region).
+        "run":          cmd_run,
     }
 
     fn = dispatch.get(args.command)
@@ -10784,9 +11926,11 @@ def main() -> None:
     # MissionError (Goal #5, MISSION LEDGER region) is caught the same way —
     # every cmd_mission/cmd_gate_status/cmd_retry/_cmd_gate_clear entrypoint
     # already catches it locally too; this is the defense-in-depth backstop.
+    # RunError (Goal #6, RUN region) mirrors the same pattern — cmd_run
+    # already catches it locally too; this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except (GateError, MissionError) as e:
+    except (GateError, MissionError, RunError) as e:
         sys.exit(str(e))
 
 
