@@ -203,9 +203,14 @@ front-matter block.
 ./tessctl gate pre-push                 # THE SHIP-GATE — reads the git pre-push stdin protocol
 ./tessctl gate ci --base <ref> --head <ref>   # same ship-gate logic, explicit refs (CI entrypoint)
 
+./tessctl verdict keygen --verifier <Name>                         # turnkey: generate + register a verifier's key
 ./tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>   # sign a verdict (Phase 2b)
 ./tessctl verdict verify <file>                                    # check a verdict's signature
 ```
+
+New adopter? `./tessctl verdict keygen --verifier Reid` turns the gate on
+end to end — no manual `gpg` steps, no hand-editing `policy.yaml`. Full
+copy-paste-able walkthrough: [`docs/GATE_QUICKSTART.md`](docs/GATE_QUICKSTART.md).
 
 Phase 2 of `docs/ULTIMATE_FRAMEWORK_PLAN.md`, Design Decisions #2 ("enforcement
 moves from model-compliance to deterministic code — a `tessctl gate` spine at

@@ -23,8 +23,10 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   validate    Phase 0 contracts-as-code: check a brief/crew-plan/verdict/return-manifest
               instance against core/contracts/*.schema.json; schema-miss classifies
               degraded_output per subagent-failure-protocol.md (see core/contracts/README.md)
-  verdict     Phase 2b: `sign` a verdict's canonical content with a verifier's GPG key,
-              or `verify` a signed verdict against core/policy/policy.yaml's verifier_keys
+  verdict     Phase 2b: `keygen` turnkey-generates a verifier's local GPG identity and
+              registers it in core/policy/policy.yaml; `sign` a verdict's canonical
+              content with a verifier's GPG key; `verify` a signed verdict against
+              core/policy/policy.yaml's verifier_keys
   gate        Phase 2 (+2b): deterministic enforcement spine — pre-commit/pre-push/ci
               contract + covering-verdict + signature checks; install-hooks scaffolds the
               git hooks and the CI workflow (now push/pull_request-triggered, not just
@@ -543,6 +545,37 @@ def _check_tools(*tools: str) -> None:
             f"    diff  — override/capture patch generation (GNU diffutils)\n"
             f"    patch — patch-apply on update (GNU patch)"
         )
+
+
+def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o644) -> None:
+    """
+    Generic atomic write (temp sibling → os.replace), for callers writing to
+    a path that is deliberately OUTSIDE `guarded_write`'s live-tree manifest
+    gate — either because the target is project-instance runtime data, not
+    framework-template content (e.g. `.tess/keys/verifiers/<name>.asc`,
+    the same category as `.tess/gate/signoffs/**` or the vault blob), or
+    because it is the `.tess/core/**` pristine mirror itself, which
+    `tess.manifest.json`'s own notes document as "read by tessctl, never a
+    live-tree write target" (i.e. never reached through the manifest
+    allowlist at all — see `check_manifest_write_gate`'s docstring).
+
+    Mirrors `guarded_write`'s atomicity (no partial file ever visible) and
+    `_vault_identity_file_write`'s temp-then-replace pattern, generalized to
+    an explicit caller-supplied mode instead of a hardcoded 0600.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path_str = tempfile.mkstemp(dir=str(path.parent), prefix=".tessctl_tmp_")
+    try:
+        with os.fdopen(tmp_fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp_path_str, mode)
+        os.replace(tmp_path_str, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path_str)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -4436,6 +4469,50 @@ def cmd_reset(args, root: Path) -> None:
 # Command: lock (M1 — CI gate)
 # ---------------------------------------------------------------------------
 
+def _lock_regen_core(root: Path, only: set | None = None) -> tuple[int, int, int, list[str]]:
+    """
+    Shared re-pin logic behind `tessctl lock --regen` — re-pins each
+    considered lock entry's `base_sha` to the sha256 of the CURRENT
+    `.tess/core/<core_key>` bytes.
+
+    `only`, when given, restricts re-pinning to lock entries whose core_key
+    OR live_path string is a member of `only` — every OTHER entry is left
+    completely untouched. This is what makes it safe for a narrow, single-
+    purpose command (e.g. `verdict keygen`, which only ever writes ONE core
+    file it just produced itself) to re-pin WITHOUT the interactive
+    confirmation `tessctl lock --regen`'s CLI form requires: a scoped regen
+    can never silently "bless" an unrelated tamper/drift elsewhere in
+    `.tess/core`, because it never even looks at those entries. `only=None`
+    (the default) reproduces the original, unscoped, all-994-entries
+    behavior byte-for-byte — existing callers/tests are unaffected.
+
+    Returns (total_considered, repinned, missing, repinned_core_keys).
+    """
+    lock = load_lock(root)
+    files = lock.get("files", {})
+    total = repinned = missing = 0
+    touched: list[str] = []
+    for core_key, attrs in files.items():
+        if only is not None and core_key not in only and attrs.get("live_path") not in only:
+            continue
+        total += 1
+        core_path = root / core_key
+        if not core_path.exists():
+            missing += 1
+            continue
+        new_sha = sha256_file(core_path)
+        if attrs.get("base_sha") != new_sha:
+            lock["files"][core_key]["base_sha"] = new_sha
+            repinned += 1
+            touched.append(core_key)
+
+    lock.setdefault("framework", {})["last_updated"] = datetime.datetime.now(
+        datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    save_lock(root, lock)
+    return total, repinned, missing, touched
+
+
 def _lock_regen(args, root: Path) -> None:
     """
     MAINTAINER re-baseline.  Re-pin every lock entry's base_sha to the sha256
@@ -4447,18 +4524,33 @@ def _lock_regen(args, root: Path) -> None:
     "blesses" the present core as pristine, so doctor/verify will report 0 core
     tampers afterward — INCLUDING any change you did not intend.  It is gated
     behind --yes (non-interactive) or an interactive y/N confirmation.
+
+    --only <core-key-or-live-path> (repeatable): restrict re-baselining to
+    the named lock entries instead of all of them — see `_lock_regen_core`.
+    Omitting --only preserves the original all-entries behavior exactly.
     """
-    print(
-        "WARNING: `tessctl lock --regen` RE-BASELINES integrity to the CURRENT "
-        ".tess/core bytes.\n"
-        "         Every base_sha in tess.lock will be re-pinned to whatever core "
-        "is right now.\n"
-        "         doctor/verify will then report core as pristine — this blesses "
-        "the present\n"
-        "         core, including any unintended change. Run ONLY after a "
-        "deliberate, reviewed\n"
-        "         change to .tess/core."
-    )
+    only_arg = getattr(args, "only", None)
+    only = set(only_arg) if only_arg else None
+
+    if only:
+        print(
+            "WARNING: `tessctl lock --regen --only ...` re-baselines integrity to the "
+            "CURRENT .tess/core bytes for ONLY the named entr"
+            f"{'y' if len(only) == 1 else 'ies'} below — every other lock entry is left "
+            "untouched:\n  " + "\n  ".join(sorted(only))
+        )
+    else:
+        print(
+            "WARNING: `tessctl lock --regen` RE-BASELINES integrity to the CURRENT "
+            ".tess/core bytes.\n"
+            "         Every base_sha in tess.lock will be re-pinned to whatever core "
+            "is right now.\n"
+            "         doctor/verify will then report core as pristine — this blesses "
+            "the present\n"
+            "         core, including any unintended change. Run ONLY after a "
+            "deliberate, reviewed\n"
+            "         change to .tess/core."
+        )
 
     if not getattr(args, "yes", False):
         if not sys.stdin.isatty():
@@ -4475,24 +4567,7 @@ def _lock_regen(args, root: Path) -> None:
             print("tessctl lock --regen: aborted (no confirmation).")
             sys.exit(1)
 
-    lock = load_lock(root)
-    files = lock.get("files", {})
-    total = repinned = missing = 0
-    for core_key, attrs in files.items():
-        total += 1
-        core_path = root / core_key
-        if not core_path.exists():
-            missing += 1
-            continue
-        new_sha = sha256_file(core_path)
-        if attrs.get("base_sha") != new_sha:
-            lock["files"][core_key]["base_sha"] = new_sha
-            repinned += 1
-
-    lock.setdefault("framework", {})["last_updated"] = datetime.datetime.now(
-        datetime.timezone.utc
-    ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-    save_lock(root, lock)
+    total, repinned, missing, _touched = _lock_regen_core(root, only=only)
 
     print(
         f"tessctl lock --regen: re-baselined {total} entr"
@@ -7712,10 +7787,375 @@ def _print_verdict_verify_result(result: dict, as_json: bool) -> None:
         print(f"  {result['reason']}")
 
 
+# ---------------------------------------------------------------------------
+# Phase 2b hardening — `tessctl verdict keygen`: turnkey verifier onboarding.
+#
+# Closes the "cannot turn the gate on without manual GPG surgery" adoption
+# gap: `core/policy/policy.yaml` ships `verifier_keys: {}` on purpose (see
+# that file's own header and conductor/verdict-signing.md — a deliberate,
+# disclosed non-fabrication of a throwaway trust anchor), but a fresh
+# adopter had NO mechanical path from "I want Reid to be a real verifier" to
+# a registered key short of hand-running `gpg --full-gen-key`, `gpg
+# --export`, and hand-editing TWO copies of policy.yaml (the live one and
+# the `.tess/core` pristine mirror) without breaking `tessctl doctor`/
+# `verify`/`lock --check`. `keygen` automates exactly that sequence — the
+# SAME steps `conductor/verdict-signing.md`'s "Onboarding a verifier"
+# section already documents by hand, now scripted:
+#   1. generate a fresh, sign-only, no-passphrase-by-default local GPG
+#      identity for the named verifier (private key NEVER leaves the target
+#      GNUPGHOME's own keyring — tessctl never stores or transmits it, the
+#      same posture already documented for the release-signing key);
+#   2. export its PUBLIC half to .tess/keys/verifiers/<name>.asc;
+#   3. register {fingerprint, public_key_file} under policy.verifier_keys.
+#      <Name> in BOTH core/policy/policy.yaml (live) and
+#      .tess/core/policy/policy.yaml (the pristine core mirror tess.lock
+#      tracks) — a text-level, COMMENT-PRESERVING patch (policy.yaml's
+#      extensive header/rule commentary is real documentation; a naive
+#      yaml.safe_load + yaml.safe_dump round-trip would silently destroy it);
+#   4. re-pin ONLY that one tess.lock entry via `_lock_regen_core`'s scoped
+#      `only=` mode — the same mechanism `tessctl lock --regen` uses, just
+#      never touching (and so never able to silently "bless") any OTHER
+#      core file's unrelated drift/tamper.
+# ---------------------------------------------------------------------------
+
+def _policy_yaml_upsert_verifier_key(
+    text: str, verifier: str, fingerprint: str, key_file_rel: str,
+) -> tuple[str, bool]:
+    """
+    Text-level, comment-preserving patch of a `policy.verifier_keys` YAML
+    mapping: inserts (or, when the verifier already has an entry, REPLACES)
+    a `<Name>: {fingerprint, public_key_file}` child block under the
+    existing `verifier_keys:` key, touching nothing else in `text` — every
+    other line (including policy.yaml's extensive header/rule commentary)
+    is passed through byte-for-byte. `yaml.safe_load` + `yaml.safe_dump`
+    would round-trip the DATA correctly but silently drop every comment in
+    the file — unacceptable for a file whose comments ARE load-bearing
+    documentation (see core/policy/policy.yaml's own header).
+
+    Supports both shapes `verifier_keys` can appear in:
+      - the shipped default, inline empty-mapping form: `verifier_keys: {}`
+      - block form, with zero or more existing `<Name>:` children already
+        present (from a prior `keygen` run for a different/same verifier).
+
+    Returns (new_text, existed_before) — `existed_before` is True when
+    `verifier` already had an entry that was just replaced (the caller uses
+    this for its own idempotency/--force decision; this function itself
+    does not refuse to overwrite — that policy lives in the caller).
+
+    Raises ValueError if no `verifier_keys:` mapping key is found at all
+    (a policy.yaml this old/nonstandard needs manual registration).
+    """
+    lines = text.splitlines(keepends=True)
+
+    def _indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    vk_idx = None
+    vk_indent = None
+    for i, line in enumerate(lines):
+        if line.lstrip(" ").startswith("#"):
+            continue  # skip commented-out example blocks (e.g. the shipped walkthrough)
+        stripped = line.strip()
+        if stripped in ("verifier_keys: {}", "verifier_keys:"):
+            vk_idx = i
+            vk_indent = _indent_of(line)
+            break
+
+    if vk_idx is None:
+        raise ValueError(
+            "no `verifier_keys:` mapping key found under `policy:` — this policy.yaml "
+            "predates Phase 2b, or uses a non-standard layout `keygen`'s text patcher "
+            "does not recognize. Register the key by hand per "
+            "conductor/verdict-signing.md's 'Onboarding a verifier' section."
+        )
+
+    entry_indent = vk_indent + 2
+    field_indent = vk_indent + 4
+    new_entry = (
+        f"{' ' * entry_indent}{verifier}:\n"
+        f"{' ' * field_indent}fingerprint: \"{fingerprint}\"\n"
+        f"{' ' * field_indent}public_key_file: {key_file_rel}\n"
+    )
+    new_entry_lines = new_entry.splitlines(keepends=True)
+
+    if lines[vk_idx].strip() == "verifier_keys: {}":
+        # Empty inline form → convert to block form with the one new entry.
+        header_line = f"{' ' * vk_indent}verifier_keys:\n"
+        lines[vk_idx:vk_idx + 1] = [header_line] + new_entry_lines
+        return "".join(lines), False
+
+    # Block form: walk forward to find (a) the full extent of the
+    # verifier_keys block (first line at indent <= vk_indent, or EOF) and
+    # (b) each existing child's own (start, end) line range, so a repeat
+    # registration for the SAME verifier replaces just that child's lines
+    # rather than appending a duplicate key.
+    end_idx = vk_idx + 1
+    child_starts: list[tuple[str | None, int]] = []
+    while end_idx < len(lines):
+        line = lines[end_idx]
+        if line.strip() == "":
+            end_idx += 1
+            continue
+        this_indent = _indent_of(line)
+        if this_indent <= vk_indent:
+            break
+        if this_indent == entry_indent:
+            m = re.match(r'^[ \t]*([^\s:][^:]*):\s*$', line)
+            child_starts.append((m.group(1).strip() if m else None, end_idx))
+        end_idx += 1
+    block_end = end_idx
+
+    ranges: dict[str, tuple[int, int]] = {}
+    for idx, (name, start) in enumerate(child_starts):
+        stop = child_starts[idx + 1][1] if idx + 1 < len(child_starts) else block_end
+        if name:
+            ranges[name] = (start, stop)
+
+    if verifier in ranges:
+        s, e = ranges[verifier]
+        lines[s:e] = new_entry_lines
+        return "".join(lines), True
+
+    lines[block_end:block_end] = new_entry_lines
+    return "".join(lines), False
+
+
+def _cmd_verdict_keygen(args, root: Path) -> None:
+    """
+    tessctl verdict keygen --verifier <Name> [--force] [--gnupg-home <PATH>]
+
+    Turnkey Phase 2b onboarding (see docs/GATE_QUICKSTART.md and the module
+    comment above `_policy_yaml_upsert_verifier_key`): generates a fresh
+    sign-only local GPG identity for the named verifier, exports its PUBLIC
+    key to `.tess/keys/verifiers/<name>.asc`, registers
+    `policy.verifier_keys.<Name>` in both `core/policy/policy.yaml` (live)
+    and `.tess/core/policy/policy.yaml` (the pristine core mirror), then
+    re-pins ONLY that one tess.lock entry.
+
+    tessctl NEVER stores, backs up, or transmits the resulting PRIVATE key —
+    it lives solely in the target GNUPGHOME's own keyring (the ambient
+    default keyring unless --gnupg-home is given), exactly as if the
+    verifier had run `gpg --full-gen-key` themselves. This automates
+    conductor/verdict-signing.md's "1. The verifier generates their own GPG
+    keypair" onboarding step; it does not change who holds the key.
+
+    Idempotent: refuses to clobber an existing `.tess/keys/verifiers/<name>.asc`
+    or an existing `policy.verifier_keys.<Name>` registration unless --force
+    is given, in which case a NEW keypair is generated and both are REPLACED
+    (a manual key-rotation, automated).
+    """
+    verifier = args.verifier
+    if verifier not in VERIFIER_NAMES:
+        sys.exit(
+            f"tessctl verdict keygen: {verifier!r} is not one of the six named verifiers "
+            f"{list(VERIFIER_NAMES)} — policy.verifier_keys/allowed_verifiers/verdict.verifier "
+            f"are all schema/lint-constrained to exactly these six names "
+            f"(core/contracts/policy.schema.json, _lint_policy)."
+        )
+
+    if shutil.which("gpg") is None:
+        sys.exit(
+            "tessctl verdict keygen: `gpg` not found on PATH.\n"
+            "  Install GnuPG and retry (e.g. `brew install gnupg` / `apt-get install gnupg`)."
+        )
+
+    force = getattr(args, "force", False)
+    gnupg_home = getattr(args, "gnupg_home", None)
+    name_lower = verifier.lower()
+    key_file_rel = f".tess/keys/verifiers/{name_lower}.asc"
+    key_file_path = root / key_file_rel
+    uid_email = f"{name_lower}@verifier.tessctl.local"
+
+    # ---- Locate + load the policy instance (fail-closed if absent/unloadable) ----
+    policy_path = _gate_find_policy_instance_path(root)
+    if policy_path is None:
+        sys.exit(
+            f"tessctl verdict keygen: no policy instance found at "
+            f"{POLICY_DIR}/policy.{{yaml,yml,json}} — run `tessctl init` first "
+            f"(fail-closed: refusing to register a key against a policy file that "
+            f"does not exist)."
+        )
+    if policy_path.suffix.lower() not in (".yaml", ".yml"):
+        sys.exit(
+            f"tessctl verdict keygen: {policy_path} is JSON — keygen's comment-preserving "
+            f"registration currently supports only the YAML policy instance. Register "
+            f"{verifier}'s key under policy.verifier_keys by hand instead."
+        )
+    try:
+        existing_instance = load_contract_instance(policy_path)
+    except ContractError as e:
+        sys.exit(f"tessctl verdict keygen: cannot load {policy_path}: {e}")
+    existing_keys = ((existing_instance.get("policy") or {}).get("verifier_keys") or {})
+    already_registered = isinstance(existing_keys, dict) and verifier in existing_keys
+    already_key_file = key_file_path.exists()
+
+    if (already_registered or already_key_file) and not force:
+        details = []
+        if already_key_file:
+            details.append(f"public key file already exists at {key_file_rel}")
+        if already_registered:
+            details.append(f"policy.verifier_keys already has an entry for {verifier!r}")
+        sys.exit(
+            f"tessctl verdict keygen: refusing to clobber existing {verifier!r} key material — "
+            + "; ".join(details) + ".\n"
+            f"  Re-run with --force to generate a NEW keypair and REPLACE both the "
+            f"exported public key and the policy registration (key rotation)."
+        )
+
+    # ---- core/live mirror lookup + drift guard ----
+    live_rel = str(policy_path.relative_to(root)).replace(os.sep, "/")
+    lock = load_lock(root)
+    core_key = None
+    for ck, attrs in lock.get("files", {}).items():
+        if attrs.get("live_path") == live_rel:
+            core_key = ck
+            break
+    core_path = (root / core_key) if core_key else None
+
+    if core_path is not None and core_path.exists():
+        if core_path.read_bytes() != policy_path.read_bytes():
+            sys.exit(
+                f"tessctl verdict keygen: {core_path.relative_to(root)} (core) and {live_rel} "
+                f"(live) are NOT byte-identical — resolve this drift first "
+                f"(`tessctl doctor`, `tessctl restore`) before keygen edits either copy."
+            )
+
+    # ---- Generate the GPG identity (sign-only, no-passphrase by default) ----
+    env = dict(os.environ)
+    homedir_args: list[str] = []
+    if gnupg_home:
+        Path(gnupg_home).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(gnupg_home).chmod(0o700)
+        except OSError:
+            pass
+        homedir_args = ["--homedir", gnupg_home]
+        env["GNUPGHOME"] = gnupg_home
+
+    batch_params = (
+        "%no-protection\n"
+        "Key-Type: RSA\n"
+        "Key-Length: 4096\n"
+        "Key-Usage: sign\n"
+        f"Name-Real: {verifier} (Tess OS verdict verifier)\n"
+        "Name-Comment: generated by tessctl verdict keygen\n"
+        f"Name-Email: {uid_email}\n"
+        "Expire-Date: 0\n"
+        "%commit\n"
+    )
+    gen_r = subprocess.run(
+        ["gpg", *homedir_args, "--batch", "--gen-key"],
+        input=batch_params.encode("utf-8"), capture_output=True, env=env,
+    )
+    if gen_r.returncode != 0:
+        sys.exit(
+            f"tessctl verdict keygen: gpg key generation failed for {verifier!r}:\n"
+            f"  {gen_r.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+
+    fp_r = subprocess.run(
+        ["gpg", *homedir_args, "--list-secret-keys", "--with-colons", uid_email],
+        capture_output=True, env=env,
+    )
+    fingerprint = ""
+    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("fpr:"):
+            fingerprint = line.split(":")[9]
+            break
+    if not fingerprint or not _FULL_FP_RE.match(fingerprint):
+        sys.exit(
+            f"tessctl verdict keygen: generated a key for {verifier!r} but could not "
+            f"determine its 40-hex fingerprint from gpg — aborting before writing "
+            f"anything (fail-closed). Inspect the keyring manually: "
+            f"gpg {'--homedir ' + gnupg_home + ' ' if gnupg_home else ''}"
+            f"--list-secret-keys {uid_email}"
+        )
+    fingerprint = fingerprint.upper()
+
+    export_r = subprocess.run(
+        ["gpg", *homedir_args, "--export", "--armor", fingerprint],
+        capture_output=True, env=env,
+    )
+    if export_r.returncode != 0 or not export_r.stdout.strip():
+        sys.exit(
+            f"tessctl verdict keygen: could not export the public key just generated "
+            f"for {verifier!r} (fingerprint {fingerprint}): "
+            f"{export_r.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    public_key_armored = export_r.stdout.decode("utf-8")
+
+    # ---- Patch the live policy.yaml text (comment-preserving) ----
+    live_text = policy_path.read_text(encoding="utf-8")
+    try:
+        new_live_text, _existed = _policy_yaml_upsert_verifier_key(
+            live_text, verifier, fingerprint, key_file_rel
+        )
+    except ValueError as e:
+        sys.exit(f"tessctl verdict keygen: cannot patch {live_rel}: {e}")
+
+    # ---- Sanity round-trip BEFORE any write — fail loud, no partial state ----
+    try:
+        parsed = yaml.safe_load(new_live_text)
+    except yaml.YAMLError as e:
+        sys.exit(
+            f"tessctl verdict keygen: internal error — patched {live_rel} is not valid "
+            f"YAML ({e}); aborting before writing anything."
+        )
+    try:
+        schema = load_contract_schema(root, "policy")
+    except ContractError as e:
+        sys.exit(f"tessctl verdict keygen: cannot load policy schema: {e}")
+    base_dir = root / CONTRACTS_DIR
+    schema_errors = schema_validate(parsed, schema, schema, base_dir)
+    lint_errors = _lint_contract("policy", parsed)
+    if schema_errors or lint_errors:
+        sys.exit(
+            "tessctl verdict keygen: internal error — patched policy fails schema/lint; "
+            "aborting before writing anything:\n  " + "\n  ".join(schema_errors + lint_errors)
+        )
+    got = ((parsed.get("policy") or {}).get("verifier_keys") or {}).get(verifier) or {}
+    if got.get("fingerprint") != fingerprint or got.get("public_key_file") != key_file_rel:
+        sys.exit(
+            f"tessctl verdict keygen: internal error — patched policy does not contain "
+            f"the expected verifier_keys.{verifier} entry; aborting before writing anything."
+        )
+
+    # ---- All checks passed — write public key, then both policy copies, then re-pin ----
+    _atomic_write_bytes(key_file_path, public_key_armored.encode("utf-8"), mode=0o644)
+
+    manifest = load_manifest(root)
+    guarded_write(root, live_rel, new_live_text.encode("utf-8"), op="verdict keygen", manifest=manifest)
+
+    if core_path is not None:
+        _atomic_write_bytes(core_path, new_live_text.encode("utf-8"), mode=0o644)
+        _total, repinned, _missing, _touched = _lock_regen_core(root, only={core_key})
+        regen_note = f"  tessctl lock --regen (scoped to {core_key}): {repinned} base_sha re-pinned."
+    else:
+        regen_note = (
+            f"  WARNING: no tess.lock entry found for live_path {live_rel!r} — skipped the "
+            f"core-mirror update + lock re-pin. If this repo tracks a .tess/core mirror for "
+            f"this file, update it by hand and run `tessctl lock --regen --yes`."
+        )
+
+    print(f"tessctl verdict keygen: generated a new sign-only GPG identity for verifier {verifier!r}")
+    print(f"  fingerprint: {fingerprint}")
+    print(f"  public key:  {key_file_rel}")
+    registered_where = live_rel if core_path is None else f"{live_rel} and {core_key}"
+    print(f"  registered:  policy.verifier_keys.{verifier} in {registered_where}")
+    print(regen_note)
+    print(
+        f"  Private key stays ONLY in this local GPG keyring "
+        f"({gnupg_home or '(ambient/default keyring)'}) — tessctl never stores or transmits it.\n"
+        f"  Sign verdicts with:\n"
+        f"    tessctl verdict sign <file> --verifier {verifier} --key-id {fingerprint}"
+        + (f" --gnupg-home {gnupg_home}" if gnupg_home else "")
+    )
+
+
 def cmd_verdict(args, root: Path) -> None:
     """tessctl verdict <sign|verify> — Phase 2b verdict-signing key management."""
     sub = getattr(args, "verdict_sub", None)
-    handlers = {"sign": _cmd_verdict_sign, "verify": _cmd_verdict_verify}
+    handlers = {"keygen": _cmd_verdict_keygen, "sign": _cmd_verdict_sign, "verify": _cmd_verdict_verify}
     fn = handlers.get(sub)
     if fn is None:
         sys.exit("tessctl verdict: choose a subcommand — sign | verify")
@@ -8816,6 +9256,12 @@ def build_parser() -> argparse.ArgumentParser:
                                   "(re-baselines integrity to current core; requires --yes or interactive y/N)")
     p_lock.add_argument("--yes", action="store_true",
                         help="confirm --regen non-interactively (acknowledges re-baselining integrity to current core)")
+    p_lock.add_argument(
+        "--only", action="append", metavar="CORE_KEY_OR_LIVE_PATH",
+        help="MAINTAINER: with --regen, restrict re-baselining to this lock entry (repeatable; "
+             "matches either its core_key or its live_path) — every other entry is left untouched. "
+             "Default (omitted): re-baseline every entry, unchanged from prior behavior.",
+    )
 
     # roster — curated-squad management (M2: staged status + install sets)
     p_roster = sub.add_parser(
@@ -8982,9 +9428,30 @@ def build_parser() -> argparse.ArgumentParser:
     # verdict — Phase 2b verdict-signing key management
     p_verdict = sub.add_parser(
         "verdict",
-        help="verdict signing key management: sign a verdict, or verify a signed verdict (Phase 2b)",
+        help="verdict signing key management: generate a verifier key, sign a verdict, "
+             "or verify a signed verdict (Phase 2b)",
     )
     verdict_sub = p_verdict.add_subparsers(dest="verdict_sub", metavar="SUBCOMMAND")
+
+    p_verdict_keygen = verdict_sub.add_parser(
+        "keygen",
+        help="turnkey onboarding: generate a local GPG identity for a named verifier, "
+             "export its public key, and register it in core/policy/policy.yaml",
+    )
+    p_verdict_keygen.add_argument(
+        "--verifier", required=True, metavar="NAME",
+        help="the verifier to generate a key for (one of: Reid, Quinn, Cyra, Verity, Maialen, Lysandra)",
+    )
+    p_verdict_keygen.add_argument(
+        "--force", action="store_true",
+        help="generate a NEW keypair and REPLACE any existing public key file / policy registration "
+             "for this verifier (key rotation) — refused without this flag if either already exists",
+    )
+    p_verdict_keygen.add_argument(
+        "--gnupg-home", metavar="PATH",
+        help="generate the identity in this GNUPGHOME instead of the ambient/default gpg keyring "
+             "(mainly for testing; created with 0700 perms if missing)",
+    )
 
     p_verdict_sign = verdict_sub.add_parser(
         "sign", help="sign a verdict's canonical content with a verifier's GPG key",

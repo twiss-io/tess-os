@@ -6,6 +6,87 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`tessctl verdict keygen` — turnkey verifier onboarding, closing the
+  "cannot turn the gate on without manual GPG surgery" adoption gap.**
+  `core/policy/policy.yaml` ships `verifier_keys: {}` deliberately empty —
+  honest, but it left a fresh adopter with no mechanical path from "I want a
+  real verifier" to a registered signing key short of hand-running
+  `gpg --full-gen-key`/`gpg --export` and editing TWO copies of
+  `policy.yaml` (the live one and the `.tess/core` pristine mirror) without
+  tripping `doctor`/`verify`/`lock --check`. `tessctl verdict keygen
+  --verifier <Name>` does the whole sequence in one command:
+  - Generates a fresh, sign-only (no encrypt-capability), no-passphrase-by-
+    default local GPG identity for the named verifier (RSA-4096; `--gnupg-
+    home <PATH>` for an explicit/test keyring, ambient keyring by default).
+    tessctl never stores, backs up, or transmits the resulting PRIVATE key —
+    same custody posture as the release-signing key.
+  - Exports the PUBLIC half to `.tess/keys/verifiers/<name>.asc`.
+  - Registers `{fingerprint, public_key_file}` under
+    `policy.verifier_keys.<Name>` in BOTH `core/policy/policy.yaml` (live)
+    and `.tess/core/policy/policy.yaml` (the pristine core mirror) via a new
+    anchor-based, **comment-preserving** text patch
+    (`_policy_yaml_upsert_verifier_key`) — a plain `yaml.safe_load` +
+    `yaml.safe_dump` round-trip would silently destroy `policy.yaml`'s own
+    extensive header/rule documentation, so this is a targeted insert/replace
+    on the `verifier_keys:` block only, leaving every other line untouched.
+  - Re-pins ONLY the one `tess.lock` entry this change touches, via a new
+    scoped `only=` mode on the shared re-pin helper behind both
+    `tessctl lock --regen` and `keygen` (see "Fixed" below) — `doctor`/
+    `verify`/`lock --check` are clean immediately afterward, every time.
+  - Validates the verifier name against the same six-name enum
+    `_lint_policy` already enforces, and refuses (fail-loud) BEFORE writing
+    anything if the patched policy fails its own schema/lint or a
+    core/live `policy.yaml` drift already exists.
+  - Idempotent: refuses to clobber an existing public-key file or policy
+    registration for that verifier without `--force` (which generates a NEW
+    keypair and REPLACES both — a manual key rotation, automated).
+  - `gpg` missing from PATH is a clear, fail-closed preflight error, not a
+    raw traceback.
+- **`docs/GATE_QUICKSTART.md`** — a copy-paste-able, end-to-end walkthrough
+  (`tessctl init` → `verdict keygen` → add a real `require_verdict` rule →
+  `gate install-hooks` → cover the framework's OWN pre-existing
+  `tess-os-security-tier-doctrine` surface, since it is genuinely live in
+  this repo from minute one, not a placeholder — the "bootstrap warning"
+  `conductor/verdict-signing.md` already disclosed, now shown end to end →
+  an uncovered `src/prod/**` change BLOCKED at `git push` → the same change,
+  signed, CLEARED). Every command is runnable verbatim against a local
+  scratch bare remote; a new doc-test (`test_gate_quickstart_doc_runs_
+  verbatim_end_to_end`) extracts the doc's own fenced script and runs it,
+  unmodified, proving the walkthrough is truthful command-for-command, not
+  just a hand-written mirror of what it claims.
+- **19 new tests** — `tests/test_verdict_keygen.py` (16: the comment-
+  preserving text patcher, unit-level; the CLI's generate/register/re-pin
+  path with doctor/verify/lock-check asserted clean; idempotent refusal and
+  `--force` rotation; unknown-verifier-name and missing-`gpg` fail-closed
+  paths; core/live drift refused before any write; JSON policy instance and
+  missing-policy-instance refusals; a keygen-GENERATED key actually clearing
+  `tessctl gate ci` when properly signed, a wrong-key signature and a
+  post-signing tamper still blocking it; the quickstart doc-test), plus
+  `tests/test_lock.py` (3: `lock --regen --only` scopes to the named
+  entry/entries by core_key or live_path, leaves every other entry
+  untouched — proving a scoped regen can never silently bless an unrelated
+  tamper — and reproduces the exact prior all-entries behavior when `--only`
+  is omitted). Full suite: **479 passed** (460 existing + 19 new), zero
+  regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+  against the live working tree (`conductor/verdict-signing.md`
+  [`tier: normal`] — updated with the turnkey onboarding path — is the one
+  core-managed file this round touches; re-baselined via the new scoped
+  `tessctl lock --regen --only conductor/verdict-signing.md --yes`).
+
+### Fixed
+- **`tessctl lock --regen` gains a scoped `--only <core-key-or-live-path>`
+  mode** (repeatable), refactoring the re-pin logic into a shared
+  `_lock_regen_core(root, only=...)` helper. Motivation: the unscoped
+  `--regen` re-baselines EVERY lock entry's `base_sha` to whatever core is
+  currently on disk — correct for a genuine full re-baseline, but wrong for
+  a narrow command like `verdict keygen` that only ever writes ONE core file
+  it just produced itself; calling the unscoped form there would silently
+  "bless" any OTHER file's unrelated drift/tamper as a side effect, exactly
+  what `--regen`'s own warning already cautions against. `only=None`
+  (the default) reproduces the prior all-entries behavior byte-for-byte —
+  zero behavior change for existing callers/tests.
+
+### Added
 - **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
   (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
   Phase 2 adversarial review — "verdict + sign-off files are committer-
