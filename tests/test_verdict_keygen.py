@@ -176,6 +176,172 @@ def keygen_project(project):
     return _seed_keygen_project(project)
 
 
+def _gen_raw_secret_key(gnupg_home: Path, email: str, name_real: str) -> str:
+    """Generate a throwaway secret key DIRECTLY with gpg (bypassing tessctl
+    entirely) in `gnupg_home`, using `email` as its Name-Email. Used to seed
+    a keyring with a PRE-EXISTING key that shares keygen's own
+    `<name>@verifier.tessctl.local` uid_email convention — either an
+    attacker-planted key (collision test) or a to-be-retired key (rotation
+    test) — so a test can prove keygen resolves the fingerprint of the key
+    IT just generated, never one it merely shares an email with. Returns the
+    new key's 40-hex fingerprint, uppercase."""
+    params = (
+        "%no-protection\n"
+        "Key-Type: RSA\n"
+        "Key-Length: 2048\n"
+        "Key-Usage: sign\n"
+        f"Name-Real: {name_real}\n"
+        f"Name-Email: {email}\n"
+        "Expire-Date: 0\n"
+        "%commit\n"
+    )
+    env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
+    r = subprocess.run(
+        ["gpg", "--batch", "--gen-key"],
+        input=params.encode("utf-8"), capture_output=True, env=env,
+    )
+    assert r.returncode == 0, r.stderr.decode("utf-8", errors="replace")
+    lk = subprocess.run(
+        ["gpg", "--list-secret-keys", "--with-colons", email],
+        capture_output=True, env=env,
+    )
+    fpr = ""
+    for line in lk.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("fpr:"):
+            fpr = line.split(":")[9]
+            break
+    assert fpr, f"could not extract fingerprint for {email}"
+    return fpr.upper()
+
+
+def _secret_key_fprs_for_email(gnupg_home: Path, email: str) -> list[str]:
+    """All secret-key fingerprints in `gnupg_home` matching `email`, in the
+    order gpg lists them (creation order) — used to independently confirm
+    which key is oldest/newest in a shared keyring, so a test's assumption
+    about ordering isn't just taken on faith."""
+    env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
+    lk = subprocess.run(
+        ["gpg", "--list-secret-keys", "--with-colons", email],
+        capture_output=True, env=env,
+    )
+    return [
+        line.split(":")[9]
+        for line in lk.stdout.decode("utf-8", errors="replace").splitlines()
+        if line.startswith("fpr:")
+    ]
+
+
+def _export_armored(gnupg_home: Path, fingerprint: str) -> str:
+    env = {**os.environ, "GNUPGHOME": str(gnupg_home)}
+    r = subprocess.run(
+        ["gpg", "--homedir", str(gnupg_home), "--export", "--armor", fingerprint],
+        capture_output=True, env=env,
+    )
+    return r.stdout.decode("utf-8")
+
+
+def test_keygen_ignores_preexisting_key_sharing_uid_email_in_same_keyring(
+    keygen_project, run_cli, make_gnupg_home,
+):
+    """Regression test for the HIGH finding (Fable, reproduced end-to-end):
+    keygen resolved WHICH fingerprint to register by re-querying
+    `gpg --list-secret-keys --with-colons <uid_email>` and taking the FIRST
+    `fpr:` line. `uid_email` (`<name>@verifier.tessctl.local`) is fixed and
+    non-unique, so a keyring that already holds ANY other key sharing that
+    email — e.g. an attacker-planted key — caused keygen to register +
+    export THAT pre-existing key instead of the one it had just generated.
+
+    Deliberately pre-seeds the SAME GNUPGHOME keygen will use (not a
+    separate one — the pre-existing test suite's use of two separate
+    GNUPGHOMEs per keygen call was the exact blind spot that let this bug
+    ship undetected) with an attacker key using Reid's uid_email BEFORE
+    calling keygen. gpg lists secret keys in creation order, so a naive
+    by-email re-query would return the attacker's (older) key first."""
+    gnupg_home = make_gnupg_home()
+    attacker_fpr = _gen_raw_secret_key(
+        gnupg_home, "reid@verifier.tessctl.local", "Attacker-planted Reid",
+    )
+
+    r = run_cli(keygen_project, "verdict", "keygen", "--verifier", "Reid", "--gnupg-home", str(gnupg_home))
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    live = yaml.safe_load((keygen_project / "core" / "policy" / "policy.yaml").read_text())
+    registered_fpr = live["policy"]["verifier_keys"]["Reid"]["fingerprint"]
+
+    # The registered fingerprint must be the key keygen just generated —
+    # NEVER the attacker's pre-existing one.
+    assert registered_fpr != attacker_fpr
+
+    fprs = _secret_key_fprs_for_email(gnupg_home, "reid@verifier.tessctl.local")
+    assert len(fprs) == 2, fprs
+    assert fprs[0] == attacker_fpr  # confirms the attacker's key IS the older/first one
+    assert fprs[1] == registered_fpr  # keygen registered the newer/second (its own) key
+
+    # The exported public key on disk must be the newly-generated key's
+    # export, not the attacker's.
+    key_file = keygen_project / ".tess" / "keys" / "verifiers" / "reid.asc"
+    exported_armored = key_file.read_text(encoding="utf-8")
+    assert exported_armored == _export_armored(gnupg_home, registered_fpr)
+    assert exported_armored != _export_armored(gnupg_home, attacker_fpr)
+
+    d = run_cli(keygen_project, "doctor")
+    assert d.returncode == 0, d.stdout + d.stderr
+    v = run_cli(keygen_project, "verify")
+    assert v.returncode == 0, v.stdout + v.stderr
+
+
+def test_keygen_force_rotation_in_shared_keyring_registers_the_new_key(
+    keygen_project, run_cli, make_gnupg_home,
+):
+    """Regression test for the HIGH finding's rotation-specific corollary:
+    `gpg --list-secret-keys <uid_email>` returns BOTH keys once a keyring
+    has an original + a `--force` rotation, oldest first — a by-email
+    re-query therefore picked the OLDER key, meaning `--force` re-registered
+    the very key the operator was trying to retire (compromise persists).
+
+    Runs keygen TWICE against ONE shared GNUPGHOME (unlike
+    `test_keygen_force_rotates_key_and_stays_clean` above, which uses two
+    SEPARATE GNUPGHOMEs per call and so never exercises the keyring-
+    collision path a real rotation actually hits) and asserts the second
+    call registers the fingerprint of the key IT just generated — the
+    newest one — never the first/retiring one."""
+    gnupg_home = make_gnupg_home()
+
+    r1 = run_cli(keygen_project, "verdict", "keygen", "--verifier", "Reid", "--gnupg-home", str(gnupg_home))
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+    live1 = yaml.safe_load((keygen_project / "core" / "policy" / "policy.yaml").read_text())
+    fp1 = live1["policy"]["verifier_keys"]["Reid"]["fingerprint"]
+
+    r2 = run_cli(
+        keygen_project, "verdict", "keygen", "--verifier", "Reid",
+        "--gnupg-home", str(gnupg_home), "--force",
+    )
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    live2 = yaml.safe_load((keygen_project / "core" / "policy" / "policy.yaml").read_text())
+    fp2 = live2["policy"]["verifier_keys"]["Reid"]["fingerprint"]
+
+    # Rotation must land on the NEW key — never re-select the retiring one.
+    assert fp2 != fp1
+
+    fprs = _secret_key_fprs_for_email(gnupg_home, "reid@verifier.tessctl.local")
+    assert len(fprs) == 2, fprs
+    assert fprs[0] == fp1  # the original/retiring key — oldest, listed first by gpg
+    assert fprs[1] == fp2  # the rotation's new key — what must be registered
+
+    assert (keygen_project / "core" / "policy" / "policy.yaml").read_bytes() == \
+        (keygen_project / ".tess" / "core" / "policy" / "policy.yaml").read_bytes()
+    d = run_cli(keygen_project, "doctor")
+    assert d.returncode == 0, d.stdout + d.stderr
+    lc = run_cli(keygen_project, "lock", "--check")
+    assert lc.returncode == 0, lc.stdout + lc.stderr
+
+    # The public key exported to disk must be the NEW key's, not the old one's.
+    key_file = keygen_project / ".tess" / "keys" / "verifiers" / "reid.asc"
+    exported_armored = key_file.read_text(encoding="utf-8")
+    assert exported_armored == _export_armored(gnupg_home, fp2)
+    assert exported_armored != _export_armored(gnupg_home, fp1)
+
+
 def test_keygen_generates_registers_and_repins_cleanly(keygen_project, run_cli, make_gnupg_home):
     gnupg_home = make_gnupg_home()
     r = run_cli(keygen_project, "verdict", "keygen", "--verifier", "Reid", "--gnupg-home", str(gnupg_home))

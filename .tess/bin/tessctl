@@ -8020,6 +8020,46 @@ def _cmd_verdict_keygen(args, root: Path) -> None:
                 f"(`tessctl doctor`, `tessctl restore`) before keygen edits either copy."
             )
 
+    # ---- Pre-flight: patch + schema/lint validate policy.yaml BEFORE
+    # generating any key material. A lint/schema failure discovered only
+    # AFTER gpg has already created a real keypair would leave a live,
+    # unregistered private key sitting in the target keyring for no
+    # reason — this proves the patch is well-formed first, using a
+    # placeholder fingerprint of the exact shape (40 uppercase hex chars)
+    # the real one will have. No schema/lint rule inspects the
+    # fingerprint's VALUE, only its shape (schema `pattern`) and the
+    # verifier NAME (already checked against VERIFIER_NAMES above), so a
+    # placeholder of the same shape proves exactly what the real value
+    # will prove once it exists.
+    live_text = policy_path.read_text(encoding="utf-8")
+    _preflight_fingerprint = "0" * 40
+    try:
+        _preflight_text, _ = _policy_yaml_upsert_verifier_key(
+            live_text, verifier, _preflight_fingerprint, key_file_rel
+        )
+    except ValueError as e:
+        sys.exit(f"tessctl verdict keygen: cannot patch {live_rel}: {e}")
+    try:
+        _preflight_parsed = yaml.safe_load(_preflight_text)
+    except yaml.YAMLError as e:
+        sys.exit(
+            f"tessctl verdict keygen: internal error — patched {live_rel} is not valid "
+            f"YAML ({e}); aborting before generating any key material."
+        )
+    try:
+        schema = load_contract_schema(root, "policy")
+    except ContractError as e:
+        sys.exit(f"tessctl verdict keygen: cannot load policy schema: {e}")
+    base_dir = root / CONTRACTS_DIR
+    schema_errors = schema_validate(_preflight_parsed, schema, schema, base_dir)
+    lint_errors = _lint_contract("policy", _preflight_parsed)
+    if schema_errors or lint_errors:
+        sys.exit(
+            "tessctl verdict keygen: internal error — patched policy fails schema/lint; "
+            "aborting before generating any key material:\n  "
+            + "\n  ".join(schema_errors + lint_errors)
+        )
+
     # ---- Generate the GPG identity (sign-only, no-passphrase by default) ----
     env = dict(os.environ)
     homedir_args: list[str] = []
@@ -8043,32 +8083,62 @@ def _cmd_verdict_keygen(args, root: Path) -> None:
         "Expire-Date: 0\n"
         "%commit\n"
     )
-    gen_r = subprocess.run(
-        ["gpg", *homedir_args, "--batch", "--gen-key"],
-        input=batch_params.encode("utf-8"), capture_output=True, env=env,
-    )
+    # SECURITY: the fingerprint of the key we just generated is captured
+    # DIRECTLY from gpg's own machine-readable status stream for THIS
+    # `--gen-key` invocation (`[GNUPG:] KEY_CREATED <type> <fingerprint>`) —
+    # never by re-querying the keyring afterward with
+    # `--list-secret-keys <uid_email>`. `uid_email` is a fixed,
+    # non-unique string (`<name>@verifier.tessctl.local`); if the target
+    # keyring already holds ANY other key using that same email — an
+    # attacker-planted key, or (on `--force` rotation) the very key being
+    # retired — a by-email re-query can silently resolve to that OTHER
+    # key instead of the one this call just created, and keygen would then
+    # register + export it as if it were fresh. Reading the fingerprint off
+    # the generation operation itself has no such ambiguity: it is the
+    # fingerprint of exactly the key this process just asked gpg to create,
+    # full stop, regardless of anything else already in the keyring.
+    status_r_fd, status_w_fd = os.pipe()
+    os.set_inheritable(status_w_fd, True)
+    try:
+        gen_r = subprocess.run(
+            ["gpg", *homedir_args, "--batch", f"--status-fd={status_w_fd}", "--gen-key"],
+            input=batch_params.encode("utf-8"), capture_output=True, env=env,
+            pass_fds=(status_w_fd,),
+        )
+    finally:
+        os.close(status_w_fd)
+    status_chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(status_r_fd, 65536)
+            if not chunk:
+                break
+            status_chunks.append(chunk)
+    finally:
+        os.close(status_r_fd)
+    status_output = b"".join(status_chunks).decode("utf-8", errors="replace")
+
     if gen_r.returncode != 0:
         sys.exit(
             f"tessctl verdict keygen: gpg key generation failed for {verifier!r}:\n"
             f"  {gen_r.stderr.decode('utf-8', errors='replace').strip()}"
         )
 
-    fp_r = subprocess.run(
-        ["gpg", *homedir_args, "--list-secret-keys", "--with-colons", uid_email],
-        capture_output=True, env=env,
-    )
+    # "[GNUPG:] KEY_CREATED <P|B|S> <fingerprint>" — P/B/S is which part was
+    # created (primary-only / both / subkey-only); irrelevant here, we only
+    # want the fingerprint gpg reports for the key this exact call created.
     fingerprint = ""
-    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
-        if line.startswith("fpr:"):
-            fingerprint = line.split(":")[9]
+    for line in status_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "[GNUPG:]" and parts[1] == "KEY_CREATED":
+            fingerprint = parts[3]
             break
     if not fingerprint or not _FULL_FP_RE.match(fingerprint):
         sys.exit(
-            f"tessctl verdict keygen: generated a key for {verifier!r} but could not "
-            f"determine its 40-hex fingerprint from gpg — aborting before writing "
-            f"anything (fail-closed). Inspect the keyring manually: "
-            f"gpg {'--homedir ' + gnupg_home + ' ' if gnupg_home else ''}"
-            f"--list-secret-keys {uid_email}"
+            f"tessctl verdict keygen: gpg reported success generating a key for "
+            f"{verifier!r} but its KEY_CREATED status line did not carry a 40-hex "
+            f"fingerprint we could parse — aborting before writing anything "
+            f"(fail-closed). gpg status output:\n{status_output.strip()}"
         )
     fingerprint = fingerprint.upper()
 
@@ -8084,34 +8154,23 @@ def _cmd_verdict_keygen(args, root: Path) -> None:
         )
     public_key_armored = export_r.stdout.decode("utf-8")
 
-    # ---- Patch the live policy.yaml text (comment-preserving) ----
-    live_text = policy_path.read_text(encoding="utf-8")
+    # ---- Patch the live policy.yaml text with the REAL fingerprint
+    # (comment-preserving) — the pre-flight pass above already proved this
+    # exact patch shape is schema/lint-clean, so this is a cheap structural
+    # re-check that the patcher put the RIGHT verifier/fingerprint/file in,
+    # not a full re-validate. ----
     try:
         new_live_text, _existed = _policy_yaml_upsert_verifier_key(
             live_text, verifier, fingerprint, key_file_rel
         )
     except ValueError as e:
         sys.exit(f"tessctl verdict keygen: cannot patch {live_rel}: {e}")
-
-    # ---- Sanity round-trip BEFORE any write — fail loud, no partial state ----
     try:
         parsed = yaml.safe_load(new_live_text)
     except yaml.YAMLError as e:
         sys.exit(
             f"tessctl verdict keygen: internal error — patched {live_rel} is not valid "
             f"YAML ({e}); aborting before writing anything."
-        )
-    try:
-        schema = load_contract_schema(root, "policy")
-    except ContractError as e:
-        sys.exit(f"tessctl verdict keygen: cannot load policy schema: {e}")
-    base_dir = root / CONTRACTS_DIR
-    schema_errors = schema_validate(parsed, schema, schema, base_dir)
-    lint_errors = _lint_contract("policy", parsed)
-    if schema_errors or lint_errors:
-        sys.exit(
-            "tessctl verdict keygen: internal error — patched policy fails schema/lint; "
-            "aborting before writing anything:\n  " + "\n  ".join(schema_errors + lint_errors)
         )
     got = ((parsed.get("policy") or {}).get("verifier_keys") or {}).get(verifier) or {}
     if got.get("fingerprint") != fingerprint or got.get("public_key_file") != key_file_rel:
