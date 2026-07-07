@@ -7,25 +7,45 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/discussions)
 
-**Not an agent. A chief of staff with a staff.**
+**The ship-gate for coding agents.**
 
-Tess OS is an orchestration-first **agent operating system** for Claude Code. Not
-one assistant that grows with you — a *governed organization* of specialists. A
-single conductor (**Tess**) takes in work, routes it through six outcome
-orchestrators, and dispatches it to specialist subagents organized into guilds,
-under enforced dependency gates, mandatory adversarial verification, and a typed
-retry protocol.
+Tess OS is a harness-layer governance framework: a cryptographically-signed,
+fail-closed review gate that blocks unverified coding-agent output at the git
+pre-commit/pre-push/CI boundary, no matter which agent or tool produced the
+diff. It sits *on top of* an existing coding agent — today, Claude Code —
+rather than replacing it: the doctrine, roster, and orchestration are what the
+agent reads; the git hooks and CI are what actually enforce.
 
-It ships with an in-place **framework upgrade engine** (`tessctl`) so new
+**Current state, stated plainly:** the gate spine (`tessctl gate`, GPG-signed
+verdicts, hard floors on credentials/money/destructive-prod/client-claims) is
+real, tested, and **on `main`** — merged via
+[#38](https://github.com/twiss-io/tess-os/pull/38) (Phase 2b: gate spine
+hardening — verdict signing + CI auto-enforce, stacked on
+[#35–#37](https://github.com/twiss-io/tess-os/pulls?q=is%3Apr)). A fresh `git
+clone` of `main` today gets the gate. What it does **not** yet have is an npm
+release: the published `create-tess` package is still `0.1.0`, from before the
+gate landed — see [Quickstart](#quickstart--npm-create-tess) below for how to
+get it today via a direct clone versus what a future `npm create tess@latest`
+release will include. The orchestration layer *above* the gate (six outcome
+orchestrators, dispatch-brief contracts, typed retry) is still prose a model
+reads, not a mechanical runtime: there is no `tessctl run` and no dispatch
+driver. The gate's enforcement point (git + CI) is harness-agnostic by
+construction; the doctrine-rendering and onboarding experience is Claude Code
+only today (one registered `RenderTarget`, no Codex/Gemini/AGENTS.md adapter).
+**And, stated as plainly:** our own benchmark of whether *reading* this
+doctrine makes an agent produce better output — as opposed to the gate
+*enforcing* that unverified output can't ship — came back negative. See
+"Honest results" below before you decide what this repo is actually good for.
+
+> Tess OS is a doctrine + roster + config scaffold, an upgrade engine, and (on
+> `main`, via `git clone`) a deterministic ship-gate. It is not a running
+> application — you bring Claude Code and your own credentials.
+
+It also ships an in-place **framework upgrade engine** (`tessctl`) so new
 framework versions fold into an instance you — and your agents — have been
-editing live, instead of being clobbered by a re-scaffold.
-
-> Tess OS is a doctrine + roster + config scaffold plus an upgrade engine. It is
-> not a running application — you bring Claude Code and your own credentials.
-
-The framing: **Tess OS is the council *and* your trusted assistant** — the
-conductor you talk to, backed by a staff you can grow. The wizard, the roster, the
-upgrade engine, and the vault are the first pieces of that suite.
+editing live, instead of being clobbered by a re-scaffold. That part has been
+exercised once, over the wire (v0.1.0 → v0.1.1, 2026-06-29 — see "Status"
+below).
 
 **Try it in one command** (full walkthrough in [Quickstart](#quickstart--npm-create-tess) below):
 
@@ -51,6 +71,15 @@ npm create tess@latest
 ---
 
 ## Quickstart — `npm create tess`
+
+> **What you get today:** `npm create tess@latest` installs from the published
+> `create-tess` package (currently `0.1.0`) — the doctrine, roster, wizard, and
+> upgrade engine, **not yet the ship-gate** described above. The gate is
+> merged to `main` (`#38`) but no release has shipped it yet — a version bump
+> and `npm publish` are the only things standing between "on main" and "in the
+> package." To try the gate spine now, clone this repo at `main` directly:
+> `git clone https://github.com/twiss-io/tess-os.git && cd tess-os && ./tessctl
+> gate install-hooks`.
 
 The front door is a gamified first-run wizard. You don't fill in a config file —
 you *arrive*:
@@ -89,24 +118,80 @@ claude                # Tess reads CLAUDE.md as the entry point
 
 ## Why it's different
 
-Two compounding ideas, each defensible on Tess OS's own architecture:
+Three compounding ideas, each defensible on Tess OS's own architecture — and
+see [`docs/COMPARISON.md`](docs/COMPARISON.md) for where each one actually
+stands against the other coding-agent frameworks (GitHub Spec Kit,
+Ruflo/claude-flow, BMAD) and the app SDKs (LangGraph, CrewAI, etc.), including
+where Tess OS is behind, not just ahead:
 
-1. **Coordination depth under enforced governance.** The unit of work is not a
+1. **The signed ship-gate.** A verdict that clears a push must be a committed,
+   content-bound (git blob SHA per path), GPG-signed `disposition: APPROVE`
+   from a verifier the matched policy rule actually allows — anything else
+   (unsigned, wrong key, tampered, or simply missing) is treated as no verdict
+   at all, and hard floors (credentials, money movement, destructive prod
+   data, client-external claims) are never satisfiable by a verdict, signed or
+   not. No harness-layer competitor surveyed ships an equivalent — see
+   `docs/COMPARISON.md`'s verification row.
+
+2. **Coordination depth under enforced governance.** The unit of work is not a
    prompt; it's a *mission* routed through an outcome orchestrator and dispatched
    to a crew. Every dispatch carries a six-field brief contract. Mission flow is
    governed by dependency gates (intake → research → crew → build → review →
    verification), never a fixed clock; independent work runs in parallel. Nothing
    externally visible ships without a mandatory verifier reading the primary
    artifacts. Failed work is retried with a *changed* brief, at most three times,
-   then escalated.
+   then escalated. This layer is doctrine a model reads today, not a mechanical
+   runtime — see the "Current state" note above. **Honest caveat:** this layer
+   is doctrine a model reads; our own benchmarks show mounting it into a
+   single-agent context does not improve output — it exists for the multi-agent
+   conductor loop, and its quality contribution there is unmeasured (see
+   "Honest results" below).
 
-2. **In-place upgradeability of the framework.** Most scaffold-first tools own
+3. **In-place upgradeability of the framework.** Most scaffold-first tools own
    generated files once and have no upstream merge — a re-run overwrites your
    edits. Tess OS keeps a committed pristine copy of the framework as a merge
    base (`.tess/core/`), records a per-file status in `tess.lock`, and a 3-way
    merge folds each new *framework* version into your live tree. The engine is
    snapshot-first, hard-gates on `tessctl doctor`, halts the whole update on a
    conflict (nothing is overwritten), and quarantines security-tier files.
+
+---
+
+## Honest results — what we measured
+
+**We benchmarked our own doctrine mounted as agent context — twice, fairly,
+with a suite purpose-built to give structure room to help. It didn't help.**
+
+| Run | Comparison | Result | Cost |
+|---|---|---|---|
+| Run 1 (tasks 01–10) | weak+tess-os vs weak+bare | No delta (both 100% — suite too easy to discriminate) | 3.13× |
+| Run 1 | strong+tess-os vs strong+bare | **−10 points** (reproducible fabrication failure) | 3.18× |
+| Run 2 — FAIR (tasks 11–19, harder/discriminating, dispatch-guard friction fixed) | weak+tess-os vs weak+bare | **−11.1 points** | 2.71× |
+| Run 2 — FAIR | strong+tess-os vs strong+bare | No delta (regression gone after the fix; no benefit either) | 1.74× |
+| Run 2 — FAIR | weak+tess-os vs **strong+bare** (the literal thesis) | **−11.1 points** — strictly worse | 32% cheaper |
+
+Across 19 tasks and roughly 80 trials: **every miss happened under the
+tess-os scaffold; zero misses happened bare.** Weak-tier pass rate went down
+11 points; cost went up 1.7–2.7×. Full reports, generated from the actual
+runs, not hand-typed:
+[`proving-ground/reports/2026-07-07.md`](proving-ground/reports/2026-07-07.md)
+and
+[`proving-ground/reports/2026-07-07-fair.md`](proving-ground/reports/2026-07-07-fair.md).
+
+**This is why Tess OS's claim is enforcement, not enhancement.** The gate
+(`tessctl gate`) blocks unverified output from shipping — that claim is
+mechanical, model-independent, and untouched by this result. It does not
+claim to make your agent better, and as of 2026-07-07 we have our own
+evidence that mounting this doctrine as a single agent's context does not
+make it better and can make it worse. What the benchmark did **not** test:
+the ship-gate itself (no trial ran a diff through it), and the multi-agent
+conductor runtime (the harness's "attempts" are blind re-runs, not the typed
+retry protocol) — both are untested by this result, not vindicated by it
+either.
+
+No competitor in this category publishes a self-run negative result. We do,
+because the alternative — quietly deleting the claim instead of disclosing
+what killed it — is worse than the result itself.
 
 ---
 
@@ -322,6 +407,16 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`kb/`** — a knowledge-base scaffold (`raw/`, `wiki/`, `lint/`).
 - **`operator/`** — blank identity/profile/channel stubs you fill in; injected at
   `CLAUDE.md` render time, kept out of framework core.
+- **`docs/`** — [`COMPARISON.md`](docs/COMPARISON.md) (Tess OS vs. GitHub Spec
+  Kit, Ruflo/claude-flow, BMAD, and the LangGraph-class app SDKs, with sources
+  and where Tess OS is behind), the sourced
+  [`competitive-analysis-2026-07-07.md`](docs/competitive-analysis-2026-07-07.md)
+  it's built from, and `ULTIMATE_FRAMEWORK_PLAN.md` (the longer-range design
+  document — a plan, not a completed-work claim; carries the 2026-07-07
+  supersession notice on the enhancement thesis at the top).
+- **`proving-ground/`** — the benchmark harness that tested the enhancement
+  thesis and disproved it; see the committed, generated-from-run reports in
+  `proving-ground/reports/` and "Honest results" above.
 
 ---
 

@@ -15,6 +15,39 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 # Tess OS — The Ultimate Plug-and-Play Framework
 ## Making coding agents reliably good — even when the agent itself is not
 
+> **⚠️ SUPERSESSION NOTICE (2026-07-08) — read this before anything below.**
+> This plan's central productivity claim — that mounting the doctrine
+> described below into an agent's context makes that agent produce
+> measurably better verified output — was tested by this repo's own
+> proving-ground harness on 2026-07-07, twice, fairly, and **disproved**:
+>
+> - Run 1 (tasks 01–10): `weak+tess-os` vs `weak+bare` showed no delta
+>   (ceiling effect — both 100%); `strong+tess-os` vs `strong+bare`
+>   **regressed −10 points** at **3.18× cost**.
+> - Run 2 — FAIR (tasks 11–19, purpose-built to discriminate, a
+>   dispatch-guard friction bug fixed first): `weak+tess-os` vs `weak+bare`
+>   **regressed −11.1 points** at **2.71× cost**; `strong+tess-os` vs
+>   `strong+bare` showed no delta at 1.74× cost; and the literal thesis
+>   comparison — `weak+tess-os` vs `strong+bare` — was **strictly worse**
+>   (−11.1 points) despite being 32% cheaper.
+> - Across 19 tasks and ~80 trials: every miss happened under the tess-os
+>   scaffold; **zero misses happened bare.**
+>
+> Full reports: [`proving-ground/reports/2026-07-07.md`](../proving-ground/reports/2026-07-07.md),
+> [`proving-ground/reports/2026-07-07-fair.md`](../proving-ground/reports/2026-07-07-fair.md).
+>
+> Every "structure raises output quality" claim in this document is
+> therefore **historical design rationale**, annotated in place rather
+> than deleted (so the reasoning that led here stays legible), never a
+> standing claim. What the benchmark did **not** touch — and remains
+> undamaged — is the **ship-gate** (`tessctl gate`, git/CI-enforced,
+> model-independent) and the multi-agent conductor runtime (untested by
+> this benchmark, not vindicated by it either — see the reports'
+> discussion of scope). The framework's defensible value after this
+> result is **enforcement**: unverified output cannot ship, regardless of
+> how good or bad the producing agent is (Part D7, Part C8). That is the
+> one claim this repo now markets.
+
 > **Xavier's goal (verbatim):** "ensure this is the ultimate plug and play framework for Claude Code, Codex and frontier models AI assistant" — robust to agent quality, "especially agents that are of lower quality compared to Fable."
 
 > **Scope note — two artifacts named "tess-os."** (1) *This* repo (`projects.nosync/tess-os`) is the April-2026 **TessOS SaaS dashboard** (Next.js 16 + Supabase; agent runs, conversations, cost tracking — see `business-plan-v1.md`). (2) **`twiss-io/tess-os`** (public, live, v0.1.1, `npm create tess`) is the **framework product** this plan is about: doctrine + roster + keystone upgrade engine + vault + wizard. This plan designs the evolution of (2); (1) becomes the optional Mission-Control surface in Phase 4. The plan lives here because this is where Xavier asked for it.
@@ -23,7 +56,19 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 
 ## 1. Executive Summary — The Thesis
 
-**Reliability is a property of the system, not the model.** The Tess doctrine has already proven this in production: a 165-persona multi-agent operation runs real client work (SuperCane prod deploys, payment audits, live incident ops) on a mix of model tiers, and its post-mortems show that every serious failure was a *structure* failure, not a *model* failure — and every structural fix eliminated a whole failure class:
+**Ship-safety is a property of the boundary, not the model.** (The stronger
+claim — that system structure raises model output quality — was tested
+2026-07-07 and disproven; see the supersession notice above and
+`proving-ground/reports/`.) The Tess doctrine has already shown this much in
+production: a 165-persona multi-agent operation runs real client work
+(SuperCane prod deploys, payment audits, live incident ops) on a mix of model
+tiers, and its post-mortems show that every serious failure was a *structure*
+failure, not a *model* failure — and every structural fix eliminated a whole
+failure class. (This production incident history is a distinct claim from the
+benchmark above — it is about the multi-agent conductor runtime's containment
+record, not about mounting doctrine as context in a single headless agent
+call — and the benchmark neither confirms nor disproves it; it remains
+untested by proving-ground, not vindicated by it.)
 
 | Incident (from doctrine changelogs) | Failure class | Structural fix that now exists |
 |---|---|---|
@@ -33,9 +78,13 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 | 2026-06-01 false client status sent | Completion claimed before reading results | anti-fabrication-guard hook: completion-claim messages **denied** while a dispatch is in flight |
 | Repeated same-mistake retries burning budget | Untyped retry | Typed retry: classify cause → **changed brief** → cap at 3 → escalate with per-attempt log (`subagent-failure-protocol.md`) |
 
-The product insight: **these mechanisms are exactly what a weak agent needs.** A strong model *sometimes* survives a vague brief, skipped review, and untyped retries. A weak model never does. Structure is the equalizer — so the framework that packages this structure is, by construction, the framework that makes lower-quality agents produce high-quality output.
+**[SUPERSEDED — see notice above.]** The proving ground tested the
+equalizer hypothesis on 2026-07-07 (both runs, both tiers): doctrine-as-
+context produced zero improvement and a weak-tier regression at 1.7–2.7×
+cost. The framework's defensible value is the enforcement boundary (Part
+C8 / Part D7) — bad output can't ship — not output enhancement.
 
-**What must change to be "ultimate plug-and-play":** today the doctrine is (a) prose that only a strong model reliably self-enforces, (b) wired 100% to Claude Code (`CLAUDE.md`, `.claude/**` — the public repo contains **zero** references to Codex, Gemini, or AGENTS.md; verified by grep), and (c) enforced by exactly two bash hooks that only Claude Code can fire. The plan below converts the doctrine into **machine-checkable contracts** (schemas + a deterministic `tessctl gate` spine that works from git hooks and CI on *any* harness), splits the product into a **portable core + per-assistant adapters**, and adds the **proving ground** — a benchmark harness that demonstrates, with numbers, that a weak execution model inside the framework beats a strong model outside it.
+**What must change to be "ultimate plug-and-play":** today the doctrine is (a) prose that only a strong model reliably self-enforces, (b) wired 100% to Claude Code (`CLAUDE.md`, `.claude/**` — the public repo contains **zero** references to Codex, Gemini, or AGENTS.md; verified by grep), and (c) enforced by exactly two bash hooks that only Claude Code can fire. The plan below converts the doctrine into **machine-checkable contracts** (schemas + a deterministic `tessctl gate` spine that works from git hooks and CI on *any* harness), splits the product into a **portable core + per-assistant adapters**, and adds the **proving ground** — which tested exactly that claim and disproved it (weak+framework: −11.1 pts vs strong+bare, fair run). The harness's standing jobs are now: (a) enforcement demonstration (the gate arena), (b) regression CI for any doctrine payload change.
 
 **The eight key design decisions** (full rationale in the body):
 
@@ -52,7 +101,25 @@ The product insight: **these mechanisms are exactly what a weak agent needs.** A
 
 ---
 
-## 2. Part A — Core Thesis: How Structure Compensates for Agent Quality
+## 2. Part A — Design Rationale (HISTORICAL; enhancement claims superseded 2026-07-07)
+
+> **Reframing note.** This section was originally titled "Core Thesis: How
+> Structure Compensates for Agent Quality" and argued that each mechanism
+> below *raises* a weak agent's output quality. The 2026-07-07 benchmark
+> (see the supersession notice at the top of this document) tested that
+> claim directly — mounting this doctrine as context in a single agent's
+> workdir — and it did not hold: zero improvement, a weak-tier regression,
+> and a real cost premium. The mechanism descriptions below are kept as
+> **design history**, not deleted, because the *mechanisms themselves*
+> mostly remain accurate under a different description: they are
+> **enforcement and containment rationale** (why the gate, the schemas,
+> and the hard floors exist), not evidence that a model reading them
+> writes better code. Read every "kills F_n" / "catches F_n" claim below
+> as "was designed to address F_n," not as a measured result — the only
+> sub-mechanisms actually exercised end-to-end by the ship-gate (A.3's
+> mandatory verification, A.7's hard floors) are the ones the benchmark
+> left untouched, because they are deterministic code at the git/CI
+> boundary, not prompted behavior.
 
 The "weak agent problem" decomposes into six specific failure modes. Each doctrine mechanism targets one or more of them. This section is the theory of the product; every mechanism cited exists today in `conductor/` and is production-tested.
 
@@ -268,15 +335,31 @@ Each module: what exists → target interface → weak-agent function. All modul
 - **Weak-agent function:** this is the *"gates that block unverified output from shipping"* requirement made real. The model's quality becomes irrelevant at the ship boundary: no verdict artifact, no push. Everything upstream (briefs, retries) improves the odds; the spine caps the downside.
 
 ### C9 — The Proving Ground (conformance + benchmark harness)
-- **Exists:** nothing (261 pytest cover the *engine*, not the *doctrine's effect on agents*).
-- **Target:** `proving-ground/` — a suite of seeded, verifiable tasks (bug-with-failing-test, small feature vs spec, research-with-checkable-facts, adversarial task with a planted trap e.g. tenant-isolation hole) each with a deterministic grader. Runner executes each task 4 ways: {weak model, strong model} × {bare harness, tess-os framework}, and reports **verified-pass rate, cost, attempts-to-pass**. Published as a versioned report per release.
-- **Weak-agent function:** it *is* the thesis test. If `weak+framework ≥ strong+bare` doesn't hold on the suite, the framework isn't done — and per the evidence discipline in the public-library design doc ("no unverified stat goes into the README"), the claim can't be marketed until it's measured. This also doubles as regression CI for doctrine changes.
+- **Exists:** `proving-ground/` — built, and RUN, twice (2026-07-07). See
+  `proving-ground/README.md` and `proving-ground/reports/2026-07-07.md` +
+  `2026-07-07-fair.md`.
+- **Target (as originally scoped):** a suite of seeded, verifiable tasks (bug-with-failing-test, small feature vs spec, research-with-checkable-facts, adversarial task with a planted trap e.g. tenant-isolation hole) each with a deterministic grader. Runner executes each task 4 ways: {weak model, strong model} × {bare harness, tess-os framework}, and reports **verified-pass rate, cost, attempts-to-pass**. Published as a versioned report per release. This shipped as designed.
+- **Weak-agent function — outcome, not a plan anymore:** this WAS the
+  thesis test, and the rule this bullet originally stated now binds:
+  *"If `weak+framework ≥ strong+bare` doesn't hold on the suite, the
+  framework isn't done — and the claim can't be marketed until it's
+  measured."* It was measured. It doesn't hold — `weak+framework` lost to
+  `strong+bare` by 11.1 points in the fair run. Per this document's own
+  rule, the enhancement claim is now unmarketable, and every surface that
+  stated or implied it has been corrected (this document, `README.md`,
+  `proving-ground/README.md`). The harness's remaining jobs are
+  regression CI for doctrine-payload changes and the enforcement-arena
+  demonstration (untested by this run) described in the reports'
+  recommendations.
 
 ---
 
 ## 5. Part D — Lower-Quality-Agent Robustness (the dedicated design)
 
-The layered defense, in the order a weak agent's work flows through it. Layers 1–3 raise output quality; 4–6 catch what slips; 7–8 cap what escapes.
+The layered defense, in the order a weak agent's work flows through it.
+Layers 1–3 were **hypothesized** to raise output quality — measured
+2026-07-07: no measurable raise, weak-tier harm. Layers 4–8 (catch + cap)
+are the product.
 
 **D1. Tight, self-contained, small briefs (input control).** Everything a weak model needs travels in the brief: primary-artifact paths, conventions, constraints, the NOT-boundary, the escalation trigger. Decomposition keeps each dispatch small — small context beats big context for weak models on both attention and blast radius. *Product:* C1 templates + `brief check` lint that flags briefs whose scope smells >15 min without milestones.
 
@@ -294,7 +377,7 @@ The layered defense, in the order a weak agent's work flows through it. Layers 1
 
 **D8. Hard floors + human gates (worst-case cap).** Credentials, money, destructive prod data, client-external factual claims: always human-gated, in every adapter, in every autonomy mode. Destructive ops always 3-step (verify → go → execute). *Product:* C5.
 
-**The economics, stated plainly:** weak agents fail more, so they consume more retries and more verification — but retries of cheap models plus strong verification of a *finished artifact* costs a fraction of running the strong model end-to-end, and the gate guarantees the failure cost is bounded (max 3 attempts, nothing unverified ships). That is the product's promise in one sentence: **the framework converts model quality from a correctness risk into a mere cost/latency variable.**
+**The economics, stated plainly:** weak agents fail more, so they consume more retries and more verification — but retries of cheap models plus strong verification of a *finished artifact* costs a fraction of running the strong model end-to-end, and the gate guarantees the failure cost is bounded (max 3 attempts, nothing unverified ships). That is the product's promise in one sentence: **the gate bounds the *downside* of model quality — nothing unverified ships — at a measured cost premium (1.7–2.7× when doctrine is mounted as context; near-zero when enforcement lives only at git/CI). The upside conversion claimed here previously ("the framework converts model quality from a correctness risk into a mere cost/latency variable") was disproven — see the supersession notice.**
 
 ---
 
@@ -310,7 +393,7 @@ The layered defense, in the order a weak agent's work flows through it. Layers 1
 | Harness coverage | Claude Code only; zero AGENTS.md/Codex/Gemini anywhere in the public repo | Tier A/B/C adapters from one core | **HIGH** — the literal "plug and play for Codex and frontier models" ask |
 | Orchestration | Doctrine + strong-model conductor; no runnable workflow conductor in the public product | `tessctl run` mechanical conductor loop | MEDIUM-HIGH |
 | Install/upgrade | **Best-in-class and shipped**: create-tess wizard, keystone 3-way merge, signed OTW-verified update channel, roster staging, vault | Add harness axis + adopt-existing-repo + adapter render targets | LOW-MEDIUM (extend, don't build) |
-| Verification of the thesis | None (engine tests only) | Proving Ground benchmark | MEDIUM (but the credibility multiplier) |
+| Verification of the thesis | **Tested, 2026-07-07, twice — negative and published** (see `proving-ground/reports/`) | Gate-arena demonstration (enforcement, not enhancement) | MEDIUM — the credibility asset is now the disclosure itself, not a pending number |
 | Mission Control GUI | Designed only (2026-07-02 design doc: local 127.0.0.1 server over `claude -p` stream-json); this repo's SaaS dashboard is a separate, adjacent artifact | Optional surface, after the core | LOW (sequenced last) |
 | Public-repo hygiene | dispatch-guard ships **warn-mode** in public (block-mode is the private instance's posture); 42-vs-7 compiled-agent counts differ between README claims and shipped `.claude/agents/` (7 files at v0.1.1) | Truthful per-mode docs; counts generated from the tree | LOW but fix early (trust product) |
 
@@ -354,4 +437,4 @@ The layered defense, in the order a weak agent's work flows through it. Layers 1
 | 5 | Two dispatch drivers: native-subagent + process fan-out | Wait for vendor convergence / fan-out everywhere | Claude Code + Gemini already have native subagents (use them); `codex exec` fan-out covers Codex and doubles as the cross-model driver on all harnesses |
 | 6 | Verifier reads primary artifacts, verdict is an artifact | Verifier reads conductor summary / verbal approval | Summary-inheritance verifies nothing (doctrine's own words); artifacts are gateable |
 | 7 | Cross-model verification as adapter feature | Same-model review only | Decorrelated blind spots; the multi-harness install makes it nearly free |
-| 8 | Proving Ground before marketing claims | Claim "works with weak models" on theory | The repo's own evidence-discipline rule; also the strongest possible README asset |
+| 8 | Proving Ground before marketing claims | Claim "works with weak models" on theory | The repo's own evidence-discipline rule; ran 2026-07-07, came back negative — the strongest README asset is now the honesty itself (publishing the loss) plus the gate-arena numbers, not the disproven enhancement claim |
