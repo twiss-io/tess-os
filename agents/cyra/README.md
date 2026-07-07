@@ -1,3 +1,7 @@
+---
+model_tier: strong
+---
+
 # Cyra — Security and Risk Engineer
 
 **Status:** Founding Coding Team  

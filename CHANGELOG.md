@@ -6,6 +6,55 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Goal #11 (roster honesty) — `model_tier` vocabulary, a `coding-squad` roster preset, and stale-count fixes.**
+  This slice is scoped to `agents/`, `conductor/` (doctrine text), and top-level
+  docs only — no `.tess/bin/tessctl` engine changes. The `tessctl recruit`
+  render-into-every-adapter change and `model_tier` **consumption** logic
+  (an adapter actually reading the field to set a model) are explicitly
+  deferred to a follow-up, mechanism-level change.
+  - **`model_tier` frontmatter vocabulary** (`strong` / `cheap`, mapped from
+    role — conduct→strong, execute→cheap, verify→strong; documented in
+    `agents/README.md` § Model Tier) applied to the core coding squad's
+    `agents/<name>/README.md` frontmatter (previously none existed) and to
+    `conductor/identity.md` (the conductor): Leah/Eva/conductor = `strong`;
+    Ada/Iris/Vega = `cheap`; Reid/Cyra/Quinn = `strong`. Distinguished in
+    `conductor/agent-lifecycle.md` §10 from the pre-existing, unrelated
+    `model:` harness alias (`haiku`/`sonnet`/`opus`) in `.claude/agents/*.md`.
+  - **`coding-squad` roster preset** — a new entry in
+    `.tess/core/roster-paths.json` (`ada, iris, reid, cyra, quinn, vega` +
+    the universal base + `product-delivery-orchestrator`), distinct from the
+    existing `builders` wizard path (which omits Cyra/Vega). Verified
+    end-to-end against the real config: `roster apply coding-squad` installs
+    exactly 9 agents, stages the other 141, and `doctor`/`verify` report
+    clean. **Known gap, disclosed:** `tessctl roster apply`'s CLI argument
+    still has a hardcoded `choices=["founders","builders","operators"]` in
+    `.tess/bin/tessctl` — a one-line addition needed before `coding-squad` is
+    reachable from the CLI. That line lives in the engine file this slice is
+    barred from touching; flagged for the next tessctl-scoped change.
+  - **Roster-count drift fixed**, hand-verified against the tree (no
+    generation mechanism exists yet — that would itself be a `tessctl`
+    change): `conductor/orchestra-model.md` (`.tess/core` mirror included)
+    corrected "~165 agents" / "165 persona specs; 42 dispatchable today" /
+    "123 non-dispatchable personas" (stale — predates the 2026-06-27
+    all-150-dispatch-capable fix already recorded in `agents/README.md`) to
+    144 persona specs + 6 orchestrators = 150 dispatch-capable, and rewrote
+    §6's "bench depth" description from "Eva promotes a persona to a
+    dispatchable definition" (the old two-class model) to the current
+    staged/installed model (`tessctl recruit`/`bench`). `.tess/core/MANIFEST.md`
+    corrected "165 persona directories" — actually 165 total top-level
+    entries under `agents/` (144 persona directories + 21 guild/doctrine
+    `.md` files), a miscount that conflated the two. `docs/ULTIMATE_FRAMEWORK_PLAN.md`
+    (§B.2 tree sketch, §C7, and the E.1 gap-analysis table's public-repo-hygiene
+    row) updated to match. `agents/README.md` and root `README.md` gained an
+    explicit "dispatch-capable ≠ installed" clarification (only a curated
+    subset, as few as 7, is ever live in `.claude/agents/` for one instance).
+  - `tessctl doctor`/`verify`/`lock --check` all clean after re-pinning the
+    13 touched core-managed entries via `tessctl lock --regen --yes` (the
+    scoped `--only <path>` flag referenced in this goal's brief ships in a
+    separate, not-yet-merged PR — `--regen` without `--only` only changes
+    `base_sha` for files whose bytes actually differ, so the effect was
+    identical: exactly 13 entries re-pinned, confirmed via `git diff`). Full
+    suite: 460 passed, 0 regressions.
 - **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
   (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
   Phase 2 adversarial review — "verdict + sign-off files are committer-

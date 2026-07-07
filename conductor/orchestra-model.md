@@ -1,6 +1,6 @@
 # The Orchestra Model — Conductor, Crew-Plans, and the Single Dispatcher
 
-> System doctrine. Defines how ~165 agents coordinate under one dispatcher. Resolves the orchestrator dispatch-contradiction: in Claude Code a subagent **cannot** spawn subagents, so an outcome orchestrator cannot "activate crew" — it returns a **crew-plan** that Tess (the main loop) or a **Workflow** dispatches. Composes with [dispatch-brief.md](dispatch-brief.md), [doctrine.md](doctrine.md) gates, and [verification-routing.md](verification-routing.md). Authored 2026-06-27; source defect: `kb/wiki/synthesis/2026-06-26-tess-starter-review.md` §1.3, §4 (the tess-starter review).
+> System doctrine. Defines how the 150-agent roster (144 persona specs + 6 outcome orchestrators — see [agents/README.md](../agents/README.md)) coordinates under one dispatcher. Resolves the orchestrator dispatch-contradiction: in Claude Code a subagent **cannot** spawn subagents, so an outcome orchestrator cannot "activate crew" — it returns a **crew-plan** that Tess (the main loop) or a **Workflow** dispatches. Composes with [dispatch-brief.md](dispatch-brief.md), [doctrine.md](doctrine.md) gates, and [verification-routing.md](verification-routing.md). Authored 2026-06-27; source defect: `kb/wiki/synthesis/2026-06-26-tess-starter-review.md` §1.3, §4 (the tess-starter review). Roster-count correction (Goal #11, 2026-07): the original count in this doctrine ("~165 agents"; "165 persona specs; 42 dispatchable today") conflated the 165 top-level filesystem entries under `agents/` (144 persona directories + 21 guild/doctrine docs) with persona specs, and predates the 2026-06-27 fix that made every persona dispatch-capable (see §6 below).
 
 ---
 
@@ -180,16 +180,16 @@ A Workflow consumes the **same crew-plan contract** (§3) and runs the **same co
 
 ---
 
-## 6. How ~165 Agents Coordinate Without Chaos
+## 6. How 150 Agents Coordinate Without Chaos
 
-The roster is large (165 persona specs; 42 dispatchable today). They coordinate as an orchestra, not a free-for-all, through four mechanisms — all owned by the conductor, none requiring agent-to-agent spawning:
+The roster is large: 144 persona specs across guilds + 6 outcome orchestrators = **150 agents, all dispatch-capable** (every one has a compiled definition at `.tess/core/agents-dispatch/<name>.md`, per the 2026-06-27 fix recorded in [agents/README.md](../agents/README.md)). They coordinate as an orchestra, not a free-for-all, through four mechanisms — all owned by the conductor, none requiring agent-to-agent spawning:
 
 1. **Outcome ownership (one per mission).** An orchestrator owns the outcome and authors the single crew-plan. No second plan competes. ([cross-guild-coordination.md](cross-guild-coordination.md) one-owner rule.)
 2. **The ≤4-guild cap + stay-out rule.** Most missions touch a handful of players; the cap keeps the section small enough to conduct. Sprawl escalates to Tess rather than silently growing.
 3. **Roles, not just names.** Every task carries a role (Owner / Core Contributor / Reviewer / Control / Standby), so two players never collide on the same responsibility and a Control/Reviewer is present where the cost of error is real.
 4. **Gates serialise only what must be serial.** Independent players run in one parallel batch; dependent players wait on a gate. The mission graph (intake's output) plus the crew-plan's stages encode exactly which is which.
 
-The 123 non-dispatchable personas are **bench depth**: Eva promotes a persona to a dispatchable definition before the conductor can field it. Until then the crew-plan names a `general-purpose` agent with a full brief and a `flag_for_tess` to source the specialist — the gap is visible, never silently skipped.
+**Bench depth is now about installation, not definition.** Every agent already has a dispatch-capable definition — nothing needs "promoting to dispatchable" anymore. What varies per instance is which agents are **installed** (live at `.claude/agents/<name>.md`) versus **staged/benched** (defined in core, absent from the live tree). `tessctl roster apply <path>` seeds a curated starter squad (as few as 7 agents installed); `tessctl recruit <name>` installs a staged agent on demand; `tessctl bench <name>` reverses it. If a crew-plan needs a specialist who is currently staged, the conductor recruits them first (or, for a genuinely undefined need, names a `general-purpose` agent with a full brief and a `flag_for_tess` to source the specialist) — the gap is visible, never silently skipped.
 
 ---
 
@@ -209,4 +209,4 @@ The 123 non-dispatchable personas are **bench depth**: Eva promotes a persona to
 
 ## 8. One-Paragraph Summary
 
-There is exactly one dispatcher per mission: **Tess (the main loop) or a Workflow.** Outcome orchestrators are **routing brains** that, when dispatched in PLAN mode, **return a crew-plan** — a structured dispatch program naming each agent, its order and parallelism, its six-field dispatch brief, its gate, and its mandatory verifier — and then stop, because a Claude Code subagent cannot spawn subagents. The conductor validates the plan, dispatches the crew **one level deep** (parallel where independent, sequential where gated), reads the **primary artifacts**, runs **mandatory verification** and **typed retries**, and finally re-invokes the orchestrator in SYNTHESIS mode with the collected artifacts to produce the 10-section memo. ~165 agents stay coordinated as a synchronous orchestra through one outcome owner, one crew-plan, the ≤4-guild cap, explicit roles, and dependency gates — never through agents spawning agents.
+There is exactly one dispatcher per mission: **Tess (the main loop) or a Workflow.** Outcome orchestrators are **routing brains** that, when dispatched in PLAN mode, **return a crew-plan** — a structured dispatch program naming each agent, its order and parallelism, its six-field dispatch brief, its gate, and its mandatory verifier — and then stop, because a Claude Code subagent cannot spawn subagents. The conductor validates the plan, dispatches the crew **one level deep** (parallel where independent, sequential where gated), reads the **primary artifacts**, runs **mandatory verification** and **typed retries**, and finally re-invokes the orchestrator in SYNTHESIS mode with the collected artifacts to produce the 10-section memo. 150 agents stay coordinated as a synchronous orchestra through one outcome owner, one crew-plan, the ≤4-guild cap, explicit roles, and dependency gates — never through agents spawning agents.

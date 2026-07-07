@@ -1,3 +1,7 @@
+---
+model_tier: cheap
+---
+
 # Vega — DevOps and Infrastructure Engineer
 
 **Status:** Founding Coding Team  

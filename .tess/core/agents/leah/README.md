@@ -1,3 +1,7 @@
+---
+model_tier: strong
+---
+
 # Leah — Senior Researcher & Intelligence Lead
 
 **Status:** Permanent Crew  

@@ -169,7 +169,7 @@ tess-os/
 │   │   ├── verdict.schema.json        (severity tiers + closing verdict, typed)
 │   │   ├── return-manifest.schema.json(artifact paths + claims-with-evidence + status)
 │   │   └── policy.schema.json         (hard floors, whitelists, gate map)
-│   ├── roster/                    ← 165 persona specs + compiled agent defs (exists: agents/ + .claude/agents/)
+│   ├── roster/                    ← 144 persona specs + 6 orchestrators (150 dispatch-capable) + compiled agent defs (exists: agents/ + .claude/agents/)
 │   ├── commands/                  ← 26 command bodies, harness-neutral markdown (exists: .tess/core/commands)
 │   └── personas/                  ← conductor personas (exists: .tess/core/personas)
 │
@@ -255,8 +255,8 @@ Each module: what exists → target interface → weak-agent function. All modul
 - **Weak-agent function:** §A.6. `tessctl run` is also the *overnight/autonomous* safety story: a deterministic loop cannot "decide" to skip a gate at 3am.
 
 ### C7 — Roster + lifecycle module
-- **Exists and strong:** 165 persona specs; staged/installed roster with `tessctl roster apply / recruit / bench`; Eva's 6-condition creation gate + naming discipline (`agent-lifecycle.md`); starter squads.
-- **Target (small deltas):** per-persona `model_tier` recommendation field (conductor=strong, planner=strong, executor=cheap, verifier=strong — currently only free-text in README); `tessctl recruit` renders the persona into *every installed adapter's* format, not just `.claude/agents/`; a community registry namespace (`tessctl recruit @community/<agent>`) as the hub play from the moat strategy — gated behind the same signed-channel discipline as framework updates.
+- **Exists and strong:** 144 persona specs + 6 outcome orchestrators (150 dispatch-capable); staged/installed roster with `tessctl roster apply / recruit / bench`; Eva's 6-condition creation gate + naming discipline (`agent-lifecycle.md`); starter squads (`founders` / `builders` / `operators`, plus — Goal #11 — a dedicated `coding-squad` path for coding-agent-only adopters: `roster-paths.json`).
+- **Delivered (Goal #11, roster honesty — small slice of this line item):** per-persona `model_tier` frontmatter vocabulary (`strong` / `cheap`, mapped from role: conduct→strong, execute→cheap, verify→strong) is now defined and applied to the core coding squad's `agents/<name>/README.md` files (previously free-text in README, per the original note below) — see `agents/README.md` § Model Tier. **Still Target, deferred to a follow-up serial-`tessctl` change (explicitly out of this slice):** wiring `model_tier` into actual model selection (adapter drivers reading the field to set the harness alias); `tessctl recruit` rendering the persona into *every installed adapter's* format, not just `.claude/agents/`; a community registry namespace (`tessctl recruit @community/<agent>`) as the hub play from the moat strategy — gated behind the same signed-channel discipline as framework updates.
 - **Weak-agent function:** role prompts are *quality prosthetics* — a persona spec like Leah's ("separate facts from inferences from assumptions") measurably narrows a weak model's behavior. The lifecycle governance keeps the roster routable (naming discipline = fewer misroutes = fewer garbage dispatches).
 
 ### C8 — The Enforcement Spine (`tessctl gate`) — the new keystone-grade component
@@ -312,7 +312,7 @@ The layered defense, in the order a weak agent's work flows through it. Layers 1
 | Install/upgrade | **Best-in-class and shipped**: create-tess wizard, keystone 3-way merge, signed OTW-verified update channel, roster staging, vault | Add harness axis + adopt-existing-repo + adapter render targets | LOW-MEDIUM (extend, don't build) |
 | Verification of the thesis | None (engine tests only) | Proving Ground benchmark | MEDIUM (but the credibility multiplier) |
 | Mission Control GUI | Designed only (2026-07-02 design doc: local 127.0.0.1 server over `claude -p` stream-json); this repo's SaaS dashboard is a separate, adjacent artifact | Optional surface, after the core | LOW (sequenced last) |
-| Public-repo hygiene | dispatch-guard ships **warn-mode** in public (block-mode is the private instance's posture); 42-vs-7 compiled-agent counts differ between README claims and shipped `.claude/agents/` (7 files at v0.1.1) | Truthful per-mode docs; counts generated from the tree | LOW but fix early (trust product) |
+| Public-repo hygiene | dispatch-guard ships **warn-mode** in public (block-mode is the private instance's posture). **Roster-count drift fixed (Goal #11, 2026-07):** `agents/README.md`, `conductor/orchestra-model.md`, and `.tess/core/MANIFEST.md` all carried stale/conflated counts (165 "persona directories" that were actually 144 dirs + 21 guild docs; "42 dispatchable" predating the 2026-06-27 all-150-dispatch-capable fix); all three now state 144 persona specs + 6 orchestrators = 150 dispatch-capable, hand-verified against the tree (`find agents -mindepth 1 -maxdepth 1 -type d \| wc -l`), and explicitly distinguish "dispatch-capable" (has a core definition) from "installed" (live in `.claude/agents/`, as few as 7 by default) | Truthful per-mode docs; counts generated from the tree | LOW — counts now truthful and hand-verified; **generation-from-tree mechanism still not built** (would be a `tessctl` change, out of scope for a docs-only fix) |
 
 ### E.2 Roadmap
 
