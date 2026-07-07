@@ -10304,6 +10304,54 @@ def _run_escalation_dir(root: Path, mission_id: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# HIGH-3 defense-in-depth — belt-and-suspenders path containment.
+#
+# The PRIMARY fix for "task.id path traversal -> write OUTSIDE the repo"
+# (Fable adversarial review, BLOCK finding, reproduced: `id:
+# "../../../../../../tmp/PWNED"` validated PASS and wrote outside root,
+# escaping `never_touch`) is the `pattern` constraint now on Task.id and
+# crew_plan.mission_id in crew-plan.schema.json — a malicious id can no
+# longer validate at all, so `tessctl run` never even starts a plan
+# carrying one.
+#
+# This is the SECOND, independent layer Fable's fix explicitly asked for:
+# "defensively ASSERT the resolved artifact/return/retry path
+# is_relative_to(missions/<id>/) before every read/write (reject + fail
+# otherwise). Belt-and-suspenders." Every RUN-region function that builds a
+# missions/-scoped path from a mission_id or task_id calls this BEFORE
+# touching the filesystem — so even a hand-authored crew-plan/mission
+# record that skipped `tessctl validate` entirely (or any future code path
+# that forgets to schema-validate first) still cannot escape
+# `missions/<id>/` through this region's own file operations.
+# ---------------------------------------------------------------------------
+
+def _run_missions_root(root: Path) -> Path:
+    return (root / MISSIONS_DIR).resolve()
+
+
+def _run_assert_contained(root: Path, path, *, what: str) -> Path:
+    """Resolves `path` (repo-relative or already a `Path`) and asserts the
+    result is still inside `root/missions/` — every `tessctl run` file
+    operation (artifact read, stale-artifact clear, retry-attempt write,
+    escalation write) is scoped there. Raises RunError (fail-closed) rather
+    than silently truncating, normalizing, or "sanitizing" the path — a
+    path that needs sanitizing at this point is a bug (or an attack) to
+    surface loudly, never paper over. Returns the resolved Path on success,
+    for the caller to use directly."""
+    candidate = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+    missions_root = _run_missions_root(root)
+    try:
+        candidate.relative_to(missions_root)
+    except ValueError:
+        raise RunError(
+            f"tessctl run: refusing to {what} — resolved path {candidate} escapes "
+            f"{missions_root} (HIGH-3 containment check, fail-closed; a task id or "
+            f"mission id must never traverse outside missions/<id>/)"
+        )
+    return candidate
+
+
+# ---------------------------------------------------------------------------
 # DispatchDriver — the seam. `tessctl run` never talks to a CLI directly;
 # every dispatch (worker task AND mandatory verifier) goes through one of
 # these. Three implementations below: ClaudeCliDriver (Tier A), CodexExecDriver
@@ -10420,18 +10468,28 @@ def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -
 
 #: Default least-privilege tool allowlist for a `claude -p` dispatch — a
 #: dispatched worker needs SOME tools to do real work (read sources, write
-#: its return-manifest, run a check), but a headless `-p` invocation has no
-#: TTY to answer a permission prompt: an unapproved tool call is silently
-#: DENIED, not queued (LIVE-VERIFIED in this build: an early smoke run with
-#: no `--allowed-tools` produced three consecutive 'empty return' failures —
+#: its return-manifest), but a headless `-p` invocation has no TTY to
+#: answer a permission prompt: an unapproved tool call is silently DENIED,
+#: not queued (LIVE-VERIFIED in this build: an early smoke run with no
+#: `--allowed-tools` produced three consecutive 'empty return' failures —
 #: the dispatched session never got to write its return-manifest at all,
 #: because the Write call itself was denied with no prompt surfaced). This
 #: is deliberately NOT `--dangerously-skip-permissions` (Anthropic's own
 #: `claude --help`: "Recommended only for sandboxes with no internet
 #: access") — an explicit, visible allowlist covering ordinary brief work
-#: instead of a blanket bypass. Override via `ClaudeCliDriver(...,
-#: allowed_tools=[...])` for a tighter or looser scope.
-CLAUDE_CLI_DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+#: instead of a blanket bypass.
+#:
+#: MEDIUM-1 FIX (Fable adversarial review): `Bash` is deliberately NOT in
+#: this default set. Handing a headless dispatch arbitrary shell execution
+#: by default is the opposite of "least-privilege" — Bash is the single
+#: broadest capability a worker can be granted, and the prior default
+#: handed it to EVERY task regardless of whether the brief needed a shell
+#: at all. A task whose brief genuinely requires running commands (a test
+#: suite, a build step, a check script) must opt IN explicitly via
+#: `ClaudeCliDriver(..., allowed_tools=[...])` — Bash is never granted
+#: silently by default. Override via `ClaudeCliDriver(...,
+#: allowed_tools=[...])` for a tighter, looser, or Bash-including scope.
+CLAUDE_CLI_DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "Grep", "Glob"]
 
 
 class ClaudeCliDriver(DispatchDriver):
@@ -10731,12 +10789,87 @@ RUN_DRIVERS = {"claude": ClaudeCliDriver, "codex": CodexExecDriver, "fake": Fake
 # Crew-plan loading + intra-stage ordering
 # ---------------------------------------------------------------------------
 
+# HIGH-2 FIX (Fable adversarial review, BLOCK finding — 'gate NAME decoupled
+# from actual verification'). doctrine.md's own gate table names
+# 'verification-before-externally-visible' as the gate whose job is
+# verification-routing.md's "mandatory predecessor of any externally-visible
+# node" — but a stage's `gate_in` is just a routing label the crew-plan
+# SCHEMA has no way to cross-check against that stage's own tasks. Before
+# this fix, a task's `verifier.required` was opt-in via self-declared risk
+# flags (prod_touching/client_facing/externally_visible/irreversible_
+# decision) — a task with NONE of those flags set, sitting in a stage
+# labelled `verification-before-externally-visible`, could still carry
+# `verifier.required: false` and validate+run clean with NO verdict ever
+# dispatched (reproduced: brief "Publish the public marketing site to prod"
+# -> complete, no verdict).
+GATES_REQUIRING_VERIFIER = frozenset({"verification-before-externally-visible"})
+
+
+def _run_lint_gate_verifier_coupling(instance) -> list:
+    """`run`-scoped lint (NOT folded into the shared `_lint_crew_plan` used
+    by every other `_lint_contract("crew-plan", ...)` caller — e.g. plain
+    `tessctl validate crew-plan`, kept out of scope here on purpose):
+    every task inside a stage whose `gate_in` is a member of
+    GATES_REQUIRING_VERIFIER must itself carry a REAL, wired mandatory
+    verifier — `verifier.required: true`, `verifier.agent` one of the six
+    named verifiers (never null), and at least one `primary_artifacts`
+    entry — regardless of what that task's own
+    prod_touching/client_facing/externally_visible/irreversible_decision
+    flags say. The GATE NAME is what enforces verification here, not the
+    task author's self-classification — closing exactly the bypass Fable
+    reproduced.
+
+    Residual trust boundary, honestly documented per Fable's own framing:
+    this closes 'gate decoupled from verification' for any stage an author
+    DID label with this gate name. It does not, and structurally cannot,
+    catch a crew-plan author who never applies
+    'verification-before-externally-visible' to a stage that obviously
+    needed it in the first place — that judgment call is
+    verification-routing.md's own doctrine layer (and Tess/Review-node
+    scrutiny before a plan is ever dispatched), not something a schema/lint
+    check over the plan's own self-reported shape can mechanically
+    guarantee."""
+    violations = []
+    plan = instance.get("crew_plan") if isinstance(instance, dict) else None
+    if not isinstance(plan, dict):
+        return violations
+    for stage in plan.get("stages", []) or []:
+        if not isinstance(stage, dict) or stage.get("gate_in") not in GATES_REQUIRING_VERIFIER:
+            continue
+        stage_no = stage.get("stage")
+        for task in stage.get("tasks", []) or []:
+            if not isinstance(task, dict):
+                continue
+            verifier = task.get("verifier") or {}
+            agent = verifier.get("agent")
+            primary_artifacts = verifier.get("primary_artifacts") or []
+            if not (
+                verifier.get("required") is True
+                and agent in VERIFIER_NAMES
+                and len(primary_artifacts) >= 1
+            ):
+                violations.append(
+                    f"$.crew_plan.stages[stage={stage_no}].tasks[id={task.get('id')!r}]: "
+                    f"this stage's gate_in is {stage.get('gate_in')!r} — "
+                    f"verification-routing.md: 'mandatory — not discretionary' for anything "
+                    f"externally-visible — but this task's verifier is not a fully wired "
+                    f"required verifier (verifier.required must be true, verifier.agent one "
+                    f"of {sorted(VERIFIER_NAMES)}, and primary_artifacts non-empty). The GATE "
+                    f"NAME enforces verification here, not this task's own "
+                    f"prod_touching/client_facing/externally_visible/irreversible_decision "
+                    f"self-declaration (HIGH-2, fail-closed)."
+                )
+    return violations
+
+
 def _run_load_and_validate_crew_plan(root: Path, path) -> dict:
     """Load + schema/lint-validate a crew-plan instance, returning the
     UNWRAPPED `crew_plan` object (§3.1's top-level shape wraps everything
     one level under a `crew_plan` key). Raises RunError on ANY violation —
     `tessctl run` never executes a single stage of a plan that fails its
-    own contract."""
+    own contract. Also enforces `_run_lint_gate_verifier_coupling` (HIGH-2)
+    — a `run`-specific rule beyond the shared crew-plan lint every other
+    `tessctl validate crew-plan` caller applies."""
     file_path = Path(path)
     if not file_path.is_absolute():
         file_path = Path.cwd() / file_path
@@ -10749,6 +10882,7 @@ def _run_load_and_validate_crew_plan(root: Path, path) -> dict:
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
     violations += _lint_contract("crew-plan", instance)
+    violations += _run_lint_gate_verifier_coupling(instance)
     if violations:
         raise RunError(
             f"tessctl run: crew-plan {str(path)!r} failed validation "
@@ -10844,6 +10978,75 @@ def _run_build_verifier_brief(task_id: str, verifier_agent, primary_artifacts: l
 # valid.
 # ---------------------------------------------------------------------------
 
+def _run_check_return_manifest_artifacts_exist_under_root(root: Path, contract_type: str, instance) -> list:
+    """MEDIUM-2 FIX (Fable adversarial review): `_lint_return_manifest`'s own
+    existence check (`Path(path).exists()`, ~core region above this one)
+    resolves every declared `artifacts[].path` relative to the tessctl
+    PROCESS's CURRENT WORKING DIRECTORY — not `root`, the repo root `run`
+    itself always reads/writes every contracted path against
+    (`_run_artifact_path`: 'root/path_rel'). If `tessctl run` is ever
+    invoked from a CWD that is not exactly `root`, that mismatch means H4's
+    own 'a fabricated or stale artifact path is a schema-miss' guarantee
+    can silently accept a return-manifest whose claimed artifact does not
+    exist under `root` at all (it happened to resolve to some unrelated
+    file relative to CWD instead).
+
+    Rather than changing `_lint_return_manifest`'s signature — shared by
+    `tessctl validate` and several other lint call sites well outside this
+    run region, which would widen this fix's diff far beyond it — `run`'s
+    OWN artifact check re-verifies every declared artifact path against
+    ROOT directly here, as an independent, additive check scoped to this
+    region only. This closes the security-relevant direction (a claimed
+    artifact that does not exist under root must never be treated as
+    real) for the one code path this fix is scoped to; `tessctl validate`
+    invoked directly from a non-root CWD retains the pre-existing
+    CWD-relative behavior, an explicitly out-of-scope residual for a
+    separately-scoped follow-up."""
+    violations = []
+    if contract_type != "return-manifest" or not isinstance(instance, dict):
+        return violations
+    for i, artifact in enumerate(instance.get("artifacts", []) or []):
+        if not isinstance(artifact, dict):
+            continue
+        artifact_path = artifact.get("path")
+        if isinstance(artifact_path, str) and artifact_path and not (root / artifact_path).exists():
+            violations.append(
+                f"$.artifacts[{i}].path: '{artifact_path}' does not exist under the Tess root "
+                f"{root} (MEDIUM-2, checked ROOT-relative — not CWD-relative)"
+            )
+    return violations
+
+
+def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
+    """HIGH-1(b) FIX (Fable adversarial review, BLOCK finding — 'pre-planted
+    verdict FORGES verification'): applies the EXACT SAME signed-verdict
+    trust model `tessctl gate` already enforces (`_gate_verify_verdict_
+    signature` against `policy.verifier_keys`) INSIDE `run`'s own loop. Prior
+    to this fix, a verdict artifact only had to be schema/lint-valid to
+    satisfy a mandatory verifier dispatch — an unsigned, wrong-key, or
+    tampered verdict passed just as easily as a genuine one, because
+    signature verification was wired into `tessctl gate`'s ship-gate only,
+    never into `run`'s own per-task verifier check.
+
+    Returns (ok, reason). Every failure path is fail-closed, INCLUDING an
+    unloadable/missing policy and an EMPTY `policy.verifier_keys` (the
+    shipped default) — a required-verifier stage cannot pass without a
+    signed verdict from a registered key, full stop; there is no 'nothing
+    to check against, so let it through' branch. This is the correct,
+    honestly-documented outcome of fail-closed-by-design, not a bug: a
+    project that wants `tessctl run`'s mandatory verification to ever
+    produce a passing result must register at least one verifier's key in
+    `core/policy/policy.yaml` (`tessctl verdict keygen` automates exactly
+    that onboarding step)."""
+    policy_instance, policy_errors = _gate_load_policy(root)
+    if policy_errors:
+        return False, (
+            "cannot verify verifier signature (HIGH-1(b), fail-closed): "
+            + "; ".join(policy_errors)
+        )
+    return _gate_verify_verdict_signature(root, policy_instance, instance)
+
+
 def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_result: dict):
     """Returns (ok, violations, failure_state, cause_class, instance).
     `failure_state`/`cause_class` are None when ok is True. On failure,
@@ -10851,13 +11054,23 @@ def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_resul
     classify_validation_infra_error() for a driver-level failure or a
     missing/unparsable artifact file (Empty/Transient — same-brief retry
     permitted), classify_schema_miss() for a present-but-non-conforming
-    artifact (Degraded/context-gap by default — changed brief required)."""
+    artifact (Degraded/context-gap by default — changed brief required).
+
+    HIGH-3 defense-in-depth: the resolved artifact path is asserted
+    contained within `missions/` before any read (`_run_assert_contained`)
+    — a RunError here aborts the whole run rather than silently reading
+    outside root. HIGH-1(b): a `contract_type='verdict'` artifact that is
+    otherwise schema/lint-valid must ALSO pass signature verification
+    against `policy.verifier_keys`, or it is treated as a failed
+    verification (never a silent pass). MEDIUM-2: a return-manifest's
+    declared `artifacts[].path` entries are re-checked against ROOT, not
+    just CWD."""
     if not raw_result.get("ok"):
         failure_state = "timeout" if raw_result.get("timed_out") else "error"
         reason = raw_result.get("error") or f"{contract_type} dispatch driver reported failure"
         return False, [reason], failure_state, "transient", None
 
-    path = root / path_rel
+    path = _run_assert_contained(root, path_rel, what=f"read {contract_type} artifact")
     if not path.exists():
         classification = classify_validation_infra_error(f"file not found: {path}")
         return (
@@ -10875,9 +11088,19 @@ def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_resul
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
     violations += _lint_contract(contract_type, instance)
+    violations += _run_check_return_manifest_artifacts_exist_under_root(root, contract_type, instance)
     if violations:
         classification = classify_schema_miss(contract_type, violations)
         return False, violations, classification["failure_state"], classification["cause_class"], instance
+
+    if contract_type == "verdict":
+        sig_ok, sig_reason = _run_check_verdict_signature(root, instance)
+        if not sig_ok:
+            classification = classify_schema_miss(contract_type, [sig_reason])
+            return (
+                False, [f"verdict signature verification failed (HIGH-1(b), fail-closed): {sig_reason}"],
+                classification["failure_state"], classification["cause_class"], instance,
+            )
 
     return True, [], None, None, instance
 
@@ -10965,6 +11188,7 @@ def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, f
         attempt_record["brief_change_note"] = note
 
     path = _retry_attempt_path(root, mission_id, task, next_attempt)
+    _run_assert_contained(root, path, what=f"write retry attempt for task {task!r}")  # HIGH-3
     path.parent.mkdir(parents=True, exist_ok=True)
     fm_text = yaml.safe_dump(attempt_record, sort_keys=False)
     body = (
@@ -11000,12 +11224,15 @@ def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str
     """
     by = by or getpass.getuser()
     d = _run_escalation_dir(root, mission_id)
+    _run_assert_contained(root, d, what=f"write escalation dir for mission {mission_id!r}")  # HIGH-3
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{task_id}.{reason}.md"
+    _run_assert_contained(root, path, what=f"write escalation for task {task_id!r}")  # HIGH-3
     n = 1
     while path.exists():
         n += 1
         path = d / f"{task_id}.{reason}-{n}.md"
+        _run_assert_contained(root, path, what=f"write escalation for task {task_id!r}")  # HIGH-3
 
     record = {
         "mission_id": mission_id, "task": task_id, "reason": reason,
@@ -11046,6 +11273,43 @@ def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str
     return path
 
 
+def _run_clear_stale_artifact(root: Path, path_rel: str) -> None:
+    """HIGH-1(a) FIX (Fable adversarial review, BLOCK finding — 'pre-planted
+    verdict FORGES verification', the core hole). `missions/<id>/returns/`
+    is worker-writable (Write/Bash/Edit tools) and the worker task for a
+    stage runs BEFORE its own mandatory verifier, in that SAME directory,
+    at a predictable, contracted filename (`_run_artifact_path`). Without
+    this guard a malicious/buggy worker (or simply a stale artifact left
+    over from a prior failed attempt) could pre-plant a schema-valid
+    `disposition: APPROVE` verdict at the exact path the verifier dispatch
+    is about to write to — and if that verifier dispatch then writes
+    NOTHING (or fails before writing), `_run_check_artifact` has no way to
+    tell 'a fresh, genuine artifact' apart from 'whatever was already
+    sitting there.' Reproduced by Fable: pre-plant a valid APPROVE verdict,
+    let the verifier write nothing, `run` reports `status: complete`, exit
+    0.
+
+    Unlinking whatever is at the contracted path immediately BEFORE every
+    dispatch attempt (not just the first — a stale artifact from a PRIOR
+    failed attempt in the SAME retry loop is exactly as untrustworthy)
+    means `_run_check_artifact` can only ever read what THIS attempt's own
+    process just wrote. Fails LOUD (RunError, halting the whole run) if a
+    pre-existing file cannot be removed — per Fable's fix language, 'fail
+    the stage if it can't be removed,' never silently proceed with an
+    unknown-provenance file still on disk."""
+    path = _run_assert_contained(root, path_rel, what="clear stale artifact before dispatch")  # HIGH-3
+    if not path.exists() and not path.is_symlink():
+        return
+    try:
+        path.unlink()
+    except OSError as e:
+        raise RunError(
+            f"tessctl run: refusing to dispatch — could not remove the pre-existing artifact "
+            f"at {path_rel!r} before dispatch ({e}); a stale or pre-planted artifact must never "
+            f"survive into the verification check (HIGH-1(a), fail-closed)"
+        )
+
+
 def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_brief: dict,
                               contract_type: str, return_path_rel: str, driver: DispatchDriver, *,
                               by=None) -> dict:
@@ -11062,6 +11326,11 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
     escalated) WITHOUT wasting a real subprocess dispatch on an attempt that
     was already known to be illegal.
 
+    HIGH-1(a): the contracted artifact path is cleared of any pre-existing
+    file immediately before EVERY dispatch attempt (`_run_clear_stale_
+    artifact`) — a pre-planted or stale artifact must never survive into
+    the check.
+
     Returns {"status": "complete"|"halted", "instance": dict|None,
     "attempts": int, "halt_reason": str|None, "escalation_path": str|None}.
     """
@@ -11070,6 +11339,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
     attempt_num = 1
 
     while True:
+        _run_clear_stale_artifact(root, return_path_rel)  # HIGH-1(a)
         augmented = _run_augment_brief(
             current_brief, root=root, mission_id=mission_id, task_id=task_id,
             contract_type=contract_type, return_path_rel=return_path_rel,
@@ -11157,6 +11427,30 @@ def _run_execute_task(root: Path, mission_id: str, task: dict, driver: DispatchD
             return {"task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
                     "halt_reason": v_outcome["halt_reason"], "escalation_path": v_outcome["escalation_path"]}
 
+        # HIGH-1 incidental hardening: `_run_check_artifact`'s signature
+        # check (HIGH-1(b)) already proves SOME registered verifier's key
+        # signed this verdict — but not that it's the SPECIFIC verifier
+        # this crew-plan task actually required. A verdict claiming a
+        # DIFFERENT (still validly-signed, still-registered) verifier
+        # identity than `verifier.agent` is a routing mismatch, not a
+        # genuine pass — treat it the same as a BLOCK: halt + escalate,
+        # never silently accept.
+        verdict_verifier = (v_outcome["instance"] or {}).get("verifier")
+        if verdict_verifier != verifier.get("agent"):
+            esc = _run_write_escalation(root, mission_id, verify_task_id, "verifier_identity_mismatch", {
+                "verdict": v_outcome["instance"],
+                "expected_verifier": verifier.get("agent"),
+            }, by=by)
+            return {
+                "task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
+                "halt_reason": (
+                    f"task {task_id!r} required verifier {verifier.get('agent')!r} but the "
+                    f"returned verdict claims verifier {verdict_verifier!r} — refusing to treat "
+                    f"a mismatched verifier identity as satisfying the mandatory verifier"
+                ),
+                "escalation_path": str(esc),
+            }
+
         disposition = (v_outcome["instance"] or {}).get("disposition")
         if disposition == "BLOCK":
             esc = _run_write_escalation(root, mission_id, verify_task_id, "verifier_block",
@@ -11193,6 +11487,11 @@ def _do_run(root: Path, crew_plan_path, driver: DispatchDriver, *, by=None) -> d
     by = by or getpass.getuser()
     crew_plan = _run_load_and_validate_crew_plan(root, crew_plan_path)
     mission_id = crew_plan["mission_id"]
+    # HIGH-3 defense-in-depth: crew-plan.schema.json's `pattern` on
+    # `mission_id` is the primary fix, but assert containment here too —
+    # belt-and-suspenders against any future/alternate path into `_do_run`
+    # that skipped schema validation.
+    _run_assert_contained(root, _mission_dir(root, mission_id), what=f"read mission {mission_id!r}")
 
     try:
         _read_mission_record(root, mission_id)

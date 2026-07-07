@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-07T10:04:36.346259Z'
+  last_updated: '2026-07-07T13:48:10.489952Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5990,7 +5990,7 @@ files:
   .tess/core/contracts/crew-plan.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:a8cb60f29cbfc3630096582acc9ea634ce69763457a01224588621c8913d6a36
+    base_sha: sha256:00281ca40d01c14667e154efe896e9b04e52ca1a5fe167d9ea20280cb6c6b3a8
     live_path: core/contracts/crew-plan.schema.json
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/verdict.schema.json:

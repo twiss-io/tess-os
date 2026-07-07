@@ -11,7 +11,8 @@
         "mission_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Ties to the mission-states.md FSM record."
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "description": "Ties to the mission-states.md FSM record. HIGH-3 FIX (Fable adversarial review, BLOCK finding — 'task.id path traversal -> write OUTSIDE the repo'): constrained to a safe slug — lowercase alnum first character, then alnum/'.'/'_'/'-' only. No '/' (or '\\') can ever appear, so no path-traversal payload validates. `tessctl run` builds `missions/<mission_id>/...` directly from this field (`_run_artifact_path`, `_mission_dir` in the RUN region of `.tess/bin/tessctl`) with no other sanitization step, so it needs the identical path-traversal-proof constraint Task.id gets below. `tessctl mission new` already only ever produces safe, date-prefixed slugs via its own `_slugify()` helper — this pins that same safety guarantee at the crew-plan contract boundary too, for a hand-authored or orchestrator-produced plan file that never went through `mission new`. (Note: `mission.schema.json`'s own primary-key field, named `id` there, is a separate field this PR does not touch — see `.tess/bin/tessctl`'s RUN region for the belt-and-suspenders runtime containment check that covers this class of id regardless of which contract produced it.)"
         },
         "outcome_owner": {
           "type": "string",
@@ -95,7 +96,12 @@
     "Task": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "description": "HIGH-3 FIX (Fable adversarial review, BLOCK finding, reproduced: `id: \"../../../../../../tmp/PWNED\"` validated PASS and wrote OUTSIDE root, escaping `never_touch`). A safe slug only — lowercase alnum first character, then alnum/'.'/'_'/'-'. No '/' (or '\\') is permitted at all, so no path-traversal payload can ever validate: `_run_artifact_path` in the RUN region of `.tess/bin/tessctl` builds `missions/<mission_id>/returns/<task_id>.<ext>` directly from this field, with the dispatched task's own process (not just the conductor's own file operations) writing to that exact contracted path."
+        },
         "agent": {
           "type": "string",
           "minLength": 1,
