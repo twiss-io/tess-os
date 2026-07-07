@@ -62,6 +62,37 @@
 # complementary, repo-admin-side CODEOWNERS/ruleset recommendation this does
 # NOT replace (a signed verdict is a content control; CODEOWNERS/rulesets are
 # an independent, GitHub-native review-gate control over the same paths).
+#
+# HONESTY-CAPSTONE-AUDIT-2026-07-08 FIX (§3-c + §3-d — the SAME self-
+# protection class as A3/MEDIUM-1 above, applied to the two surfaces that
+# were still uncovered): MEDIUM-1 gated the WORKFLOW FILE that invokes the
+# gate; it never gated the ENGINE that workflow invokes (`.tess/bin/**`, plus
+# the root `tessctl` wrapper that delegates to it) or the SIGN-OFF ARTIFACT
+# DIRECTORY (`.tess/gate/signoffs/**`) a hard floor's clearance depends on.
+# Both are now added to this rule's globs:
+#   (c) same-push ENGINE tamper — `.github/workflows/tess-gate.yml` runs
+#       `python3 .tess/bin/tessctl gate ci` FROM THE PUSHED CHECKOUT. An
+#       attacker who edits `_gate_run_ship_check` (or any gate logic in
+#       `.tess/bin/tessctl`) to return not-blocked, in the SAME push as an
+#       unreviewed payload, would keep the required check green against a
+#       tampered engine — no glob here caught an edit to the engine ITSELF.
+#       Gating `.tess/bin/**` + `tessctl` means such an edit now needs its
+#       own covering, signed Reid/Cyra verdict, same as any other doctrine
+#       edit. Policy coverage alone is not sufficient against a TRULY
+#       neutered engine (a tampered engine evaluates the policy that would
+#       flag it) — see `.github/workflows/tess-gate.yml`'s own header for
+#       the complementary CI-side fix (the gate is now invoked from a
+#       PINNED, base-ref-extracted copy of the engine, never the pushed
+#       tree's own copy).
+#   (d) hard-floor sign-off forgery — `.tess/gate/signoffs/**` used to be
+#       validated by JSON SHAPE ALONE (five non-empty fields, no signature,
+#       no authentication of `authorized_by`) — ANY agent able to write a
+#       file could forge a hard-floor clearance. Gating this directory means
+#       introducing/editing a sign-off artifact is now ALSO `prod_touching`
+#       and needs its own covering Reid/Cyra verdict, layered on top of (not
+#       instead of) the new `signoff_keys`-backed cryptographic
+#       authentication below — a sign-off must now be BOTH a governed
+#       artifact AND signed by a registered operator key.
 policy:
   version: 1
 
@@ -78,9 +109,14 @@ policy:
         public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
         gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
         self-gating trap where a PR could keep the required check name while
-        neutering its step). Silently weakening any of these is exactly as
-        consequential as an unreviewed production change — treat edits here
-        as prod_touching.
+        neutering its step), PLUS — honesty-capstone-audit-2026-07-08 §3-c/
+        §3-d — the gate's OWN ENGINE (.tess/bin/** + the root tessctl
+        wrapper: the workflow gates its trigger FILE but was not gating the
+        CODE that file invokes) and the hard-floor SIGN-OFF ARTIFACT
+        DIRECTORY (.tess/gate/signoffs/**: a sign-off used to be an
+        unauthenticated JSON file any agent could write). Silently weakening
+        any of these is exactly as consequential as an unreviewed production
+        change — treat edits here as prod_touching.
       globs:
         - conductor/guardrails.md
         - conductor/verification-routing.md
@@ -92,6 +128,9 @@ policy:
         - core/policy/**
         - .tess/keys/verifiers/**
         - .github/workflows/**
+        - .tess/bin/**
+        - tessctl
+        - .tess/gate/signoffs/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
@@ -152,6 +191,52 @@ policy:
   #       public_key_file: .tess/keys/verifiers/cyra.asc
   verifier_keys: {}
 
+  # signoff_keys — honesty-capstone-audit-2026-07-08 §3-d FIX's ALLOWED-KEY
+  # SET for hard-floor SIGN-OFF artifacts (core/contracts/policy.schema.json
+  # $defs.VerifierKeyEntry — the SAME entry shape as verifier_keys above).
+  # DELIBERATELY EMPTY in this shipped default, same "hand-authored per
+  # project, do NOT fabricate" posture as verifier_keys:
+  #
+  #   Before this fix, a `.tess/gate/signoffs/<rule-id>.signoff.json` artifact
+  #   was accepted on JSON SHAPE ALONE (five non-empty fields: rule_id,
+  #   category, authorized_by, rationale, authorized_at) — no signature, no
+  #   authentication of `authorized_by` at all. Any agent able to write a
+  #   file could forge a hard-floor clearance for credentials/money-movement/
+  #   destructive-prod-data changes — mechanically FALSE against docs (incl.
+  #   AGENTS.md, see the audit's R11) claiming "the gate treats [a
+  #   .tess/gate/signoffs/ edit] as tamper and fails closed": writing a
+  #   sign-off CLEARED the floor, it did not trip anything.
+  #
+  #   Until a real entry exists here for a given `authorized_by` name, NO
+  #   signature can ever verify for that name (there is no key to check it
+  #   against), so a sign-off claiming that name can NEVER clear a hard floor
+  #   — fail-closed, not fail-open. Concretely: with signoff_keys shipped
+  #   empty, EVERY hard-floor category below is UNSATISFIABLE by any sign-off
+  #   until this project's real operator generates and registers their own
+  #   signing key — the same deliberate, disclosed consequence
+  #   verifier_keys: {} already documents above, applied to the sign-off
+  #   escape valve.
+  #
+  # To onboard a real sign-off authorizer (same walkthrough as verifier
+  # onboarding, conductor/verdict-signing.md — mirror it for sign-offs):
+  #   1. The operator generates their own GPG keypair (private key stays in
+  #      THEIR custody only — never committed, never shared).
+  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
+  #      .tess/keys/signoffs/<name-lowercase>.asc` and commit that file.
+  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
+  #      .tess/keys/signoffs/<name-lowercase>.asc}.
+  #   4. The operator signs their own sign-off artifacts with
+  #      `tessctl gate signoff sign <file> --key-id <fingerprint>`, then sets
+  #      that same <Name> as the artifact's own `authorized_by` field.
+  #
+  # Example shape (commented out — replace with a REAL registered key, never
+  # ship a placeholder fingerprint that would silently "verify" nothing):
+  #   signoff_keys:
+  #     Xavier:
+  #       fingerprint: "CCCC2222CCCC2222CCCC2222CCCC2222CCCC2222"
+  #       public_key_file: .tess/keys/signoffs/xavier.asc
+  signoff_keys: {}
+
   hard_floor_rules:
     - id: credentials
       category: credentials
@@ -164,6 +249,11 @@ policy:
         satisfiable by a verifier's verdict alone — `tessctl gate` requires an
         explicit human sign-off artifact at
         .tess/gate/signoffs/<id>.signoff.json regardless of any verdict.
+        honesty-capstone-audit-2026-07-08 §3-d FIX: that sign-off artifact
+        must now ALSO carry a signature that verifies against a registered
+        key in signoff_keys below — an unsigned/hand-authored/forged
+        sign-off can no longer clear this floor (see signoff_keys' own
+        comment for the onboarding walkthrough).
       globs:
         - "**/*.env"
         - "**/*.env.*"

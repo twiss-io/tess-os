@@ -2861,6 +2861,167 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
     return True, None
 
 
+# ---------------------------------------------------------------------------
+# honesty-capstone-audit-2026-07-08 §3-d FIX — hard-floor sign-off signing:
+# detached-signature verification. A near-verbatim structural TWIN of
+# `_gate_verify_verdict_signature` immediately above (same isolated-GNUPGHOME
+# bootstrap, same C3-exact-fingerprint-match discipline, same C1 public-key-
+# path containment, same A10c expired/revoked-key rejection via the SHARED
+# `_gpg_verify_detached_signature` helper) — kept as a SEPARATE function
+# rather than a parameterized refactor of the verdict path because the two
+# checks key off DIFFERENT policy maps (`signoff_keys` vs `verifier_keys`),
+# DIFFERENT identity fields (`authorized_by` vs `verifier`), and DIFFERENT
+# canonicalizers (`signoff_canonical_bytes` vs `verdict_canonical_bytes`) —
+# same "don't force an unrelated shared refactor onto a proven subsystem"
+# discipline `_gate_install_git_hooks`'s own module comment already applies
+# to the hook-splice code.
+# ---------------------------------------------------------------------------
+
+def _gate_verify_signoff_signature(root: Path, policy_instance: dict, data: dict) -> tuple[bool, str | None]:
+    """The single source of truth for 'is this hard-floor sign-off
+    cryptographically authenticated'. Returns (True, None) when the
+    signature verifies against a REGISTERED key for the sign-off's own
+    `authorized_by` identity in `policy.signoff_keys`; otherwise (False,
+    <human-readable reason>). Every failure branch is fail-closed: a missing
+    signature block, a malformed signature block, a stale
+    signed_content_sha256 (tamper detection, checked BEFORE the gpg
+    subprocess), an unregistered authorizer, a malformed registered
+    fingerprint, a `public_key_file` that is absolute or escapes `root` via
+    '..' traversal (same C1 containment as verdict-signature verification),
+    a missing public-key file, a failed gpg verification, a signature made
+    by a DIFFERENT key than the one registered for this authorizer (C3 exact
+    match), or a cryptographically valid signature made by a key gpg reports
+    as EXPIRED/REVOKED as of right now — all return False. This closes the
+    honesty-capstone-audit-2026-07-08 §3-d bypass: `_gate_validate_signoff`
+    used to accept a sign-off on JSON SHAPE ALONE (five non-empty fields, no
+    signature, no authentication) — any agent able to write a file could
+    forge a hard-floor clearance. `authorized_by` is now an authenticated
+    cryptographic identity, not just a free-text string field."""
+    authorized_by = data.get("authorized_by")
+    sig = data.get("signature")
+    if not isinstance(sig, dict):
+        return False, (
+            "no signature block present on this sign-off — an unsigned/hand-authored "
+            "sign-off can never clear a hard floor (fail-closed, honesty-capstone-audit-"
+            "2026-07-08 §3-d)"
+        )
+
+    algorithm = sig.get("algorithm")
+    if algorithm != SIGNOFF_SIGNATURE_ALGORITHM:
+        return False, f"signature.algorithm {algorithm!r} is not supported (expected {SIGNOFF_SIGNATURE_ALGORITHM!r})"
+
+    sig_armored = sig.get("signature_armored")
+    if not isinstance(sig_armored, str) or not sig_armored.strip():
+        return False, "signature.signature_armored is missing or empty"
+
+    declared_hash = sig.get("signed_content_sha256")
+    if not isinstance(declared_hash, str) or not re.match(r"^[0-9a-f]{64}$", declared_hash):
+        return False, "signature.signed_content_sha256 is missing or not a 64-hex-char sha256"
+
+    canonical = signoff_canonical_bytes(data)
+    actual_hash = hashlib.sha256(canonical).hexdigest()
+    if declared_hash != actual_hash:
+        return False, (
+            "signature.signed_content_sha256 does not match this sign-off's CURRENT "
+            "canonical content — the sign-off was edited/tampered with after signing "
+            "(fail-closed)"
+        )
+
+    signoff_keys = ((policy_instance.get("policy") or {}).get("signoff_keys") or {})
+    key_entry = signoff_keys.get(authorized_by) if isinstance(signoff_keys, dict) else None
+    if not isinstance(key_entry, dict):
+        return False, (
+            f"no registered public key for sign-off authorizer {authorized_by!r} in "
+            f"policy.signoff_keys (fail-closed — an unregistered authorizer's signature "
+            f"can never verify)"
+        )
+
+    fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
+    if not _FULL_FP_RE.match(fingerprint):
+        return False, (
+            f"policy.signoff_keys[{authorized_by!r}].fingerprint is not a valid 40-hex-char "
+            f"fingerprint"
+        )
+
+    key_file = key_entry.get("public_key_file")
+    if not isinstance(key_file, str) or not key_file:
+        return False, f"policy.signoff_keys[{authorized_by!r}].public_key_file is not set"
+
+    # Same C1 containment discipline as `_gate_verify_verdict_signature`'s
+    # LOW-1 fix: an absolute or '..'-bearing `public_key_file` must never
+    # resolve outside `root`.
+    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
+        return False, (
+            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is an "
+            f"absolute path or contains '..' traversal components — rejected "
+            f"(C1 containment, fail-closed)"
+        )
+    root_resolved = root.resolve()
+    key_path = (root / key_file).resolve()
+    try:
+        key_path.relative_to(root_resolved)
+    except ValueError:
+        return False, (
+            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} resolves "
+            f"outside the Tess root — rejected (C1 containment, fail-closed)"
+        )
+    if not key_path.exists():
+        return False, (
+            f"registered public key file {key_file!r} for sign-off authorizer "
+            f"{authorized_by!r} not found on disk"
+        )
+
+    isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_signoff_gpg_"))
+    try:
+        try:
+            isolated_gpg.chmod(0o700)
+        except OSError:
+            pass
+        import_r = subprocess.run(
+            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
+            capture_output=True,
+        )
+        if import_r.returncode != 0:
+            return False, (
+                f"could not import registered public key {key_file!r} for sign-off "
+                f"authorizer {authorized_by!r}: "
+                f"{import_r.stderr.decode('utf-8', errors='replace').strip()}"
+            )
+        subprocess.run(
+            ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
+            input=f"{fingerprint}:6:\n".encode(), capture_output=True,
+        )
+        verified, signing_fp, key_validity_reason = _gpg_verify_detached_signature(
+            canonical, sig_armored, isolated_gpg,
+        )
+    finally:
+        shutil.rmtree(str(isolated_gpg), ignore_errors=True)
+
+    if not verified:
+        return False, (
+            f"gpg signature verification failed for sign-off authorizer {authorized_by!r} "
+            f"(bad signature, or the signature does not match this content)"
+        )
+    if signing_fp.upper() != fingerprint:
+        return False, (
+            f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
+            f"the registered fingerprint {fingerprint} for sign-off authorizer "
+            f"{authorized_by!r} — wrong key, fail-closed (C3 exact match, no short-ID/"
+            f"proximity matching)"
+        )
+    if key_validity_reason is not None:
+        return False, (
+            f"the signature is cryptographically valid and was made by the exact key "
+            f"registered for sign-off authorizer {authorized_by!r}, but gpg reports that "
+            f"key is {key_validity_reason.upper()} as of RIGHT NOW (checked at "
+            f"verification time, not signing time) — fail-closed: a hard-floor sign-off "
+            f"signed by an {key_validity_reason} key can never clear the floor; rotate "
+            f"{authorized_by!r}'s entry in policy.signoff_keys to a currently-valid key "
+            f"and have this sign-off re-signed"
+        )
+    return True, None
+
+
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     """
     Fetch the framework version at `ref` from upstream into .tess/staging/.
@@ -7030,6 +7191,31 @@ def verdict_canonical_bytes(instance: dict) -> bytes:
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# honesty-capstone-audit-2026-07-08 §3-d FIX — hard-floor sign-off signing:
+# canonicalization. Deliberately the SAME scheme as verdict signing above
+# (same algorithm name, same compact/key-sorted-JSON-minus-`signature`
+# canonicalization) rather than inventing a second one — a sign-off artifact
+# is a small, fixed JSON shape (never authored as YAML/markdown front-matter
+# the way a verdict can be), so this is a plain twin of
+# `verdict_canonical_bytes`, not a re-derivation of it.
+# ---------------------------------------------------------------------------
+
+SIGNOFF_SIGNATURE_ALGORITHM = "gpg-detached-armor"
+
+
+def signoff_canonical_bytes(data: dict) -> bytes:
+    """Canonical byte representation of a hard-floor sign-off artifact for
+    signing AND verification: the full dict MINUS the `signature` key
+    itself, serialized as compact, key-sorted JSON — same discipline as
+    `verdict_canonical_bytes` (Phase 2b), applied here to close the
+    honesty-capstone-audit-2026-07-08 §3-d sign-off-forgery bypass (a
+    sign-off used to be accepted on JSON SHAPE ALONE, with no signature and
+    no authentication of its `authorized_by` field at all)."""
+    payload = {k: v for k, v in data.items() if k != "signature"}
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def _resolve_ref(ref: str, base_dir: Path, root_schema: dict) -> dict:
     """Resolve '$ref'. 'file.schema.json#' -> whole external document.
     'file.schema.json#/$defs/Name' -> a pointer within it. '#/$defs/Name'
@@ -8242,6 +8428,31 @@ def _gate_merge_verifier_keys_baseline_first(new_instance: dict, baseline_instan
     return merged
 
 
+def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
+    """Twin of `_gate_merge_verifier_keys_baseline_first` immediately above,
+    applied to `signoff_keys` (honesty-capstone-audit-2026-07-08 §3-d): the
+    SAME same-push key-swap variant of the self-protection class A3 already
+    closed for `verifier_keys` applies equally here — an attacker who swaps
+    a registered sign-off authorizer's fingerprint for a key they control,
+    then self-signs a forged 'clearance' sign-off claiming that authorizer's
+    name, all in the SAME push, must not succeed. `signoff_keys` lives
+    inside the SAME `core/policy/policy.yaml` as `verifier_keys`, so it is
+    exactly as self-tamperable — requiring the pre-existing (baseline) key
+    for any name the baseline already registered closes the chained variant
+    the same way. Returns `new_instance` unchanged when no baseline is
+    available (bootstrap case, same as its verdict-signing twin)."""
+    if baseline_instance is None:
+        return new_instance
+    new_policy = (new_instance or {}).get("policy", {}) or {}
+    base_policy = (baseline_instance or {}).get("policy", {}) or {}
+    merged_keys = dict(new_policy.get("signoff_keys") or {})
+    for name, entry in (base_policy.get("signoff_keys") or {}).items():
+        merged_keys[name] = entry  # baseline's registration wins for any name it already covers
+    merged = json.loads(json.dumps(new_instance))  # deep copy — never mutate the caller's dict
+    merged.setdefault("policy", {})["signoff_keys"] = merged_keys
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Covering-verdict discovery (Design Decision #6)
 #
@@ -8530,12 +8741,27 @@ def _gate_covering_gap_report(
 # verifier's verdict alone; requires a distinct human sign-off artifact.
 # ---------------------------------------------------------------------------
 
-def _gate_validate_signoff(path: Path, rule_id: str):
-    """Returns (True, 'ok') if `path` is a well-formed sign-off artifact for
-    `rule_id`; otherwise (False, reason). Deliberately NOT a `tessctl
-    validate` contract type (see policy.schema.json's top-level
-    description) — this is a small, fixed, ad hoc shape, not a fifth thing
-    the roster dispatches or the render pipeline touches."""
+def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance: dict):
+    """Returns (True, 'ok') if `path` is a well-formed, AUTHENTICATED
+    sign-off artifact for `rule_id`; otherwise (False, reason). Deliberately
+    NOT a `tessctl validate` contract type (see policy.schema.json's
+    top-level description) — this is a small, fixed, ad hoc shape, not a
+    fifth thing the roster dispatches or the render pipeline touches.
+
+    honesty-capstone-audit-2026-07-08 §3-d FIX: shape-only validation (five
+    non-empty JSON fields, checked below) used to be SUFFICIENT to clear a
+    hard floor — any agent able to write a file could author
+    `.tess/gate/signoffs/<rule-id>.signoff.json` and clear guardrails.md
+    Rule 18's hardest floor with zero authentication (mechanically
+    contradicting docs claiming "the gate treats [this] as tamper and fails
+    closed" — see the audit's R11). A hard-floor sign-off must now ALSO
+    carry a `signature` that verifies against a REGISTERED operator key in
+    `policy.signoff_keys[authorized_by]` (`_gate_verify_signoff_signature`
+    — same trust model as verdict signing: GPG signature, exact-fingerprint
+    match, C1 path containment, and expiry/revocation rejection). An
+    unsigned, hand-authored, wrong-key, expired-key, revoked-key, or
+    tampered-after-signing sign-off can never clear a hard floor —
+    fail-closed."""
     if not path.exists():
         return False, (
             f"no human sign-off artifact at {path} — guardrails.md Rule 18 hard-floor "
@@ -8557,10 +8783,18 @@ def _gate_validate_signoff(path: Path, rule_id: str):
             f"sign-off artifact at {path} rule_id {data.get('rule_id')!r} does not match "
             f"rule '{rule_id}'"
         )
+    sig_ok, sig_reason = _gate_verify_signoff_signature(root, policy_instance, data)
+    if not sig_ok:
+        return False, (
+            f"sign-off artifact at {path} failed AUTHENTICATION: {sig_reason} — "
+            f"honesty-capstone-audit-2026-07-08 §3-d fix: a hard-floor sign-off must be "
+            f"cryptographically signed by a registered operator key "
+            f"(policy.signoff_keys); shape-valid JSON alone can never clear a hard floor"
+        )
     return True, "ok"
 
 
-def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict) -> list:
+def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_instance: dict) -> list:
     reasons = []
     rule_by_id = {}
     for rules in hard_floor_matches.values():
@@ -8570,7 +8804,7 @@ def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict) -> list:
     for rule_id in sorted(rule_by_id):
         rule = rule_by_id[rule_id]
         signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
-        ok, reason = _gate_validate_signoff(signoff_path, rule_id)
+        ok, reason = _gate_validate_signoff(signoff_path, rule_id, root, policy_instance)
         if not ok:
             # A3 fix: this hard-floor rule only still applies because the
             # pre-push baseline policy required it (removed/narrowed by the
@@ -8621,7 +8855,15 @@ def _gate_run_ship_check(
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
 
     if hard_floor_matches:
-        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches)
+        # honesty-capstone-audit-2026-07-08 §3-d (chained-variant closure,
+        # same discipline as verifier_keys just above): sign-off signature
+        # verification uses a baseline-signoff_keys-first merged view — a
+        # registered sign-off authorizer's key cannot be swapped and then
+        # used to self-sign a forged 'clearance' sign-off, all in the same push.
+        effective_policy_instance_for_signoffs = _gate_merge_signoff_keys_baseline_first(
+            policy_instance, baseline_policy_instance,
+        )
+        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches, effective_policy_instance_for_signoffs)
 
     if path_rule_matches:
         # HIGH-1(c): covering-verdict discovery + current-content lookups
@@ -8851,13 +9093,13 @@ def _gate_install_git_hooks(root: Path) -> None:
         print(f"  installed git {hook_name} hook at {hook_path}")
 
 
-_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v2"
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v3"
 
 # Prior template version(s) this installer recognizes as "a tess-gate-ci file,
 # just outdated" — an install-hooks run UPGRADES these in place (overwrites
 # with the current template) rather than either silently skipping them
 # forever or treating them as some unrelated operator-authored workflow.
-_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2")
+_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3")
 
 _GATE_CI_WORKFLOW = f"""\
 {_GATE_CI_WORKFLOW_MARKER}
@@ -8876,6 +9118,27 @@ _GATE_CI_WORKFLOW = f"""\
 # conductor/verdict-signing.md and README.md's `tessctl gate` section for
 # the exact branch-protection setup this needs to actually PREVENT a merge
 # (required check name: the job name below, "tessctl gate ci").
+#
+# v3 FIX (honesty-capstone-audit-2026-07-08 §3-c — "same-push engine
+# tamper"): v2 and earlier ran `python3 .tess/bin/tessctl gate ci` straight
+# from the PUSHED checkout. An attacker who edits the gate's own decision
+# logic (e.g. `_gate_run_ship_check` in .tess/bin/tessctl) to unconditionally
+# report "not blocked", in the SAME push as an unreviewed payload, would keep
+# this required check green — the tampered engine is exactly what evaluates
+# whether the tamper itself should be blocked, so no policy rule alone can
+# catch it (the engine is what READS the policy). Fix: this job now extracts
+# and runs the engine as it existed at the push's BASE ref — never the
+# pushed tree's own copy — so a same-push engine edit is evaluated by an
+# engine an attacker never touched. `core/policy/policy.yaml`'s
+# `tess-os-security-tier-doctrine` rule now ALSO covers `.tess/bin/**` (the
+# engine) and `.tess/gate/signoffs/**` (§3-d) as a second, independent layer:
+# even setting the trusted-engine fix aside, an edit to the engine itself is
+# `prod_touching` and needs its own covering, signed Reid/Cyra verdict.
+# BOOTSTRAP NOTE: if the base ref predates the gate's adoption (no
+# `.tess/bin/tessctl` at BASE — e.g. this is the very first commit
+# introducing the gate), there is no trusted engine to extract and this job
+# FAILS CLOSED (refuses) rather than falling back to trusting the pushed
+# tree's own engine — see the "Extract trusted gate engine" step below.
 #
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
@@ -8945,11 +9208,26 @@ jobs:
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
-      - name: tessctl gate ci
+      - name: Extract trusted gate engine (base ref only — never the pushed tree)
+        id: trusted_engine
+        run: |
+          set -euo pipefail
+          BASE="${{{{ steps.refs.outputs.base }}}}"
+          TRUSTED_DIR="$(mktemp -d)"
+          if git cat-file -e "$BASE:.tess/bin/tessctl" 2>/dev/null; then
+            git show "$BASE:.tess/bin/tessctl" > "$TRUSTED_DIR/tessctl"
+            chmod +x "$TRUSTED_DIR/tessctl"
+            echo "engine_path=$TRUSTED_DIR/tessctl" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tess-gate-ci: no gate engine found at base ref '$BASE' — refusing to fall back to the PUSHED tree's own engine (honesty-capstone-audit-2026-07-08 §3-c, same-push engine-tamper fix). A tampered .tess/bin/tessctl in this push must never be trusted to evaluate itself; a missing baseline engine fails closed instead."
+            exit 1
+          fi
+
+      - name: tessctl gate ci (trusted base-ref engine; untrusted pushed tree)
         env:
           TESS_ROOT: ${{{{ github.workspace }}}}
         run: |
-          python3 .tess/bin/tessctl gate ci \\
+          python3 "${{{{ steps.trusted_engine.outputs.engine_path }}}}" gate ci \\
             --base "${{{{ steps.refs.outputs.base }}}}" \\
             --head "${{{{ steps.refs.outputs.head }}}}"
 """
@@ -8985,9 +9263,145 @@ def _cmd_gate_install_hooks(args, root: Path) -> None:
     _gate_install_ci_workflow(root)
 
 
+# ---------------------------------------------------------------------------
+# `tessctl gate signoff sign|verify` — honesty-capstone-audit-2026-07-08
+# §3-d FIX. A near-verbatim structural twin of `_cmd_verdict_sign` /
+# `_cmd_verdict_verify` (same gpg --local-user signing flow, same
+# --gnupg-home/--output plumbing, same "report the actual signing
+# fingerprint so the operator can register it" UX) — applied to hard-floor
+# sign-off artifacts instead of verdicts, so a hard-floor sign-off is no
+# longer something an operator can only hand-author as unauthenticated JSON.
+# ---------------------------------------------------------------------------
+
+def _cmd_gate_signoff_sign(args, root: Path) -> None:
+    """
+    tessctl gate signoff sign <file> --key-id <KEYID> [--gnupg-home <PATH>]
+                               [--output <PATH>]
+
+    Produces a `signature` block over a hard-floor sign-off artifact's
+    CANONICAL content (`signoff_canonical_bytes`) and writes it back into
+    the file (or --output). `authorized_by` must already be set in the
+    file — this command signs whatever identity the file already claims,
+    it does not invent or default one. tessctl never generates or stores
+    the operator's private key — same custody model as `tessctl verdict
+    sign` / release-signing (release-process.md).
+    """
+    file_path = _verdict_sign_load_file(args.file)
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(f"tessctl gate signoff sign: cannot read/parse {file_path}: {e}")
+    if not isinstance(data, dict):
+        sys.exit(f"tessctl gate signoff sign: {file_path} does not contain a JSON object")
+
+    authorized_by = data.get("authorized_by")
+    if not isinstance(authorized_by, str) or not authorized_by:
+        sys.exit(
+            "tessctl gate signoff sign: sign-off artifact has no non-empty `authorized_by` "
+            "field — cannot sign a sign-off without knowing who is authorizing it."
+        )
+
+    canonical = signoff_canonical_bytes(data)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+
+    gpg_cmd = ["gpg"]
+    env = dict(os.environ)
+    if getattr(args, "gnupg_home", None):
+        gpg_cmd += ["--homedir", args.gnupg_home]
+        env["GNUPGHOME"] = args.gnupg_home
+    gpg_cmd += [
+        "--batch", "--yes", "--local-user", args.key_id,
+        "--detach-sign", "--armor", "--output", "-",
+    ]
+    sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    if sign_r.returncode != 0:
+        sys.exit(
+            f"tessctl gate signoff sign: gpg signing failed for --key-id {args.key_id!r}:\n"
+            f"  {sign_r.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    signature_armored = sign_r.stdout.decode("utf-8")
+
+    # Report the ACTUAL signing key's full fingerprint, so the operator can
+    # cross-check/register it in core/policy/policy.yaml's signoff_keys —
+    # never trust args.key_id's own spelling (could be a short id/email/uid).
+    fp_cmd = ["gpg"]
+    if getattr(args, "gnupg_home", None):
+        fp_cmd += ["--homedir", args.gnupg_home]
+    fp_cmd += ["--list-secret-keys", "--with-colons", args.key_id]
+    fp_r = subprocess.run(fp_cmd, capture_output=True, env=env)
+    signing_fingerprint = ""
+    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("fpr:"):
+            signing_fingerprint = line.split(":")[9]
+            break
+
+    data["signature"] = {
+        "algorithm": SIGNOFF_SIGNATURE_ALGORITHM,
+        "signed_content_sha256": content_hash,
+        "signature_armored": signature_armored,
+        "signed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+    output_path = Path(args.output) if getattr(args, "output", None) else file_path
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    print(f"tessctl gate signoff sign: signed {output_path} as authorized_by {authorized_by!r}")
+    print(f"  signed_content_sha256: {content_hash}")
+    if signing_fingerprint:
+        print(f"  signing key fingerprint: {signing_fingerprint}")
+        print(
+            f"  Ensure core/policy/policy.yaml's policy.signoff_keys.{authorized_by} registers "
+            f"EXACTLY this fingerprint, or the gate will reject this signature at verify time."
+        )
+    else:
+        print(
+            "  WARNING: could not determine the signing key's full fingerprint from gpg — "
+            "verify it independently with `gpg --fingerprint <key-id>` before relying on this signature."
+        )
+
+
+def _cmd_gate_signoff_verify(args, root: Path) -> None:
+    """
+    tessctl gate signoff verify <file> --rule-id <ID> [--json]
+
+    Standalone check: does this sign-off's `signature` verify against the
+    registered public key for its `authorized_by` in policy.signoff_keys,
+    AND does its shape/rule_id match `--rule-id`? Uses the EXACT same
+    `_gate_validate_signoff` the ship-gate's hard-floor check calls — this
+    command exists so an operator (or CI) can check a sign-off in
+    isolation, without running the full ship-gate.
+    """
+    as_json = getattr(args, "json_out", False)
+    file_path = _verdict_sign_load_file(args.file)
+    rule_id = args.rule_id
+
+    policy_instance, policy_errors = _gate_load_policy(root)
+    if policy_errors:
+        result = {
+            "valid": False, "file": str(file_path),
+            "reason": f"cannot load policy (fail-closed): {'; '.join(policy_errors)}",
+        }
+        _print_verdict_verify_result(result, as_json)
+        sys.exit(1)
+
+    ok, reason = _gate_validate_signoff(file_path, rule_id, root, policy_instance)
+    result = {"valid": ok, "file": str(file_path), "reason": reason}
+    _print_verdict_verify_result(result, as_json)
+    sys.exit(0 if ok else 1)
+
+
+def _cmd_gate_signoff(args, root: Path) -> None:
+    sub = getattr(args, "signoff_sub", None)
+    handlers = {"sign": _cmd_gate_signoff_sign, "verify": _cmd_gate_signoff_verify}
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl gate signoff: choose a subcommand — sign | verify")
+    fn(args, root)
+
+
 def cmd_gate(args, root: Path) -> None:
     """
-    tessctl gate <pre-commit|pre-push|ci|install-hooks>
+    tessctl gate <pre-commit|pre-push|ci|install-hooks|signoff>
 
     Phase 2 deterministic enforcement spine. See docs/ULTIMATE_FRAMEWORK_PLAN.md
     Phase 2, Design Decisions #2 and #6, and README.md "tessctl gate".
@@ -8998,10 +9412,11 @@ def cmd_gate(args, root: Path) -> None:
         "pre-push": _cmd_gate_pre_push,
         "ci": _cmd_gate_ci,
         "install-hooks": _cmd_gate_install_hooks,
+        "signoff": _cmd_gate_signoff,
     }
     fn = handlers.get(sub)
     if fn is None:
-        sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks")
+        sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks | signoff")
     fn(args, root)
 
 
@@ -9388,6 +9803,38 @@ def build_parser() -> argparse.ArgumentParser:
         "install-hooks",
         help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
     )
+
+    # gate signoff — honesty-capstone-audit-2026-07-08 §3-d: hard-floor
+    # sign-off signing key management (sign a sign-off, or verify a signed one)
+    p_gate_signoff = gate_sub.add_parser(
+        "signoff",
+        help="hard-floor sign-off signing key management: sign a sign-off, or verify a signed one (§3-d)",
+    )
+    signoff_sub = p_gate_signoff.add_subparsers(dest="signoff_sub", metavar="SUBCOMMAND")
+
+    p_signoff_sign = signoff_sub.add_parser(
+        "sign", help="sign a hard-floor sign-off artifact's canonical content with an operator's GPG key",
+    )
+    p_signoff_sign.add_argument("file", help="path to the sign-off artifact (.tess/gate/signoffs/<rule-id>.signoff.json)")
+    p_signoff_sign.add_argument(
+        "--key-id", required=True, metavar="KEYID",
+        help="local gpg identity to sign with (fingerprint, key id, or email — passed to `gpg --local-user`)",
+    )
+    p_signoff_sign.add_argument(
+        "--gnupg-home", metavar="PATH",
+        help="use this GNUPGHOME instead of the ambient/default gpg keyring (mainly for testing)",
+    )
+    p_signoff_sign.add_argument(
+        "--output", metavar="PATH",
+        help="write the signed artifact here instead of overwriting the input file",
+    )
+
+    p_signoff_verify = signoff_sub.add_parser(
+        "verify", help="verify a sign-off's signature against core/policy/policy.yaml's signoff_keys",
+    )
+    p_signoff_verify.add_argument("file", help="path to the sign-off artifact to verify")
+    p_signoff_verify.add_argument("--rule-id", required=True, metavar="ID", help="the hard-floor rule id this sign-off must match")
+    p_signoff_verify.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
 
     return parser
 

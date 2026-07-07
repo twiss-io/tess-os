@@ -1,0 +1,5 @@
+{
+  "case_id": "02-csv-quoting-good",
+  "domain": "CSV ingestion / quoted fields",
+  "ground_truth_label": "good"
+}

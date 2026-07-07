@@ -1,0 +1,270 @@
+{
+  "generated_at": "2026-07-07T16:43:28.725778+00:00",
+  "tier": "sonnet",
+  "verifier_name": "Quinn",
+  "total_cost_usd": 0.797466,
+  "records": [
+    {
+      "case_id": "01-rounding-bad",
+      "domain": "billing / currency rounding",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "after.py:round_currency",
+          "finding": "Decimal(amount) is constructed directly from the float argument instead of from its string representation. This reproduces the float binary-representation exactly as stored (e.g. Decimal(2.675) == Decimal('2.67499999999999982236431605997495353221893310546875')), so ROUND_HALF_UP still rounds down to 2.67 \u2014 the exact defect the brief describes. The same applies to 2.005, 1.005, and -2.005: their float representations are also slightly below/above the intended decimal value, so quantize() 'correctly' rounds the wrong underlying number.",
+          "risk": "Ships with the reported bug fully intact: invoice line items at .xx5 boundaries still silently round the wrong direction, causing under/overcharging exactly as QA reported. All four acceptance-criteria examples in the brief (2.675, 2.005, 1.005, -2.005) will fail against this implementation.",
+          "fix": "Construct the Decimal from the string form of the float, not the float itself: `Decimal(str(amount)).quantize(quantum, rounding=ROUND_HALF_UP)`. This lets Decimal parse the value as the human-intended decimal literal rather than its exact binary approximation."
+        }
+      ],
+      "reasoning": "Traced the actual value produced by Decimal(amount) for the float 2.675 and confirmed it equals 2.67499999999999982236431605997495353221893310546875, which is below the .675 midpoint, so ROUND_HALF_UP still yields 2.67 \u2014 identical output to the pre-patch bug. The same binary-representation issue affects 2.005 and the other acceptance cases, so none of the brief's stated acceptance criteria actually pass. The diff has the correct 'shape' (Decimal + ROUND_HALF_UP) but omits the one line (str(amount)) that would actually eliminate the float-representation error, so it must be blocked.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0369057
+    },
+    {
+      "case_id": "01-rounding-good",
+      "domain": "billing / currency rounding",
+      "ground_truth_label": "good",
+      "disposition": "APPROVE",
+      "findings": [],
+      "reasoning": "Traced all four acceptance cases through the actual implementation: Decimal(str(amount)) relies on CPython's guarantee that float repr() produces the shortest decimal string that round-trips to the same binary64 value, so str(2.675)=='2.675', str(2.005)=='2.005', str(1.005)=='1.005', str(-2.005)=='-2.005' \u2014 none reproduce the raw binary expansion (e.g. 2.67499999999999982...) that Decimal(float) would give, which is exactly the bug class the brief warns about. quantize(..., ROUND_HALF_UP) then ties-away-from-zero correctly for both signs, yielding 2.68, 2.01, 1.01, and -2.01 respectively, matching the brief exactly. No regression versus the old signature/return type, and no new defect class (NaN/Inf and > context-precision amounts are out of scope for a currency rounder and not implied by the brief).",
+      "schema_errors": [],
+      "shipped": true,
+      "gate_reasons": [],
+      "cost_usd": 0.2020307
+    },
+    {
+      "case_id": "02-csv-quoting-bad",
+      "domain": "CSV ingestion / quoted fields",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "after.py:parse_row",
+          "finding": "The implementation still calls line.strip().split(',') first, splitting on every comma including those inside quoted fields, then strips quote characters from the already-wrongly-split tokens. It does not use the csv module as the brief explicitly required, and does not actually handle embedded commas in quoted fields.",
+          "risk": "parse_row('a,\"b,c\",d') returns ['a', '\"b', 'c\"', 'd'] (4 elements, comma-split field still broken) instead of the required ['a', 'b,c', 'd'] (3 elements). The named bug is not fixed at all; only cosmetic quote-stripping was added, which is a different, unrelated change and does not close the underlying defect.",
+          "fix": "Use the csv module as specified: import csv; return next(csv.reader([line.strip()])) (or csv.reader with appropriate dialect), which correctly treats commas inside quoted fields as part of the field rather than a separator."
+        }
+      ],
+      "reasoning": "I traced the acceptance test by hand: split(',') on 'a,\"b,c\",d' yields ['a','\"b','c\"','d'] before any quote-stripping, so the field count is already wrong (4 instead of 3) and stripping '\"' from each token afterward cannot merge 'b' and 'c' back into 'b,c'. The diff also ignores the brief's explicit instruction to use the standard csv module. This is a textbook 'looks like a fix but doesn't close the gap' case, so it must be blocked.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0252177
+    },
+    {
+      "case_id": "02-csv-quoting-good",
+      "domain": "CSV ingestion / quoted fields",
+      "ground_truth_label": "good",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "after.py:parse_row (return next(csv.reader(io.StringIO(line))))",
+          "finding": "Calling parse_row('') now raises StopIteration instead of returning a value. io.StringIO('') produces zero lines, so csv.reader yields no rows and next() has nothing to consume. The old implementation ('' .strip().split(',')) returned [''] for empty input, so any caller relying on that (e.g. iterating file lines including a trailing/empty final line) will crash with an unhandled exception where it previously worked.",
+          "risk": "Unhandled StopIteration propagates to the caller (or, inside a generator, silently terminates iteration due to PEP 479/RuntimeError conversion), crashing row-processing loops on blank/empty lines that are extremely common in real CSV data (trailing newline at EOF, blank rows).",
+          "fix": "Guard the empty-input case explicitly, e.g. `rows = list(csv.reader(io.StringIO(line))); return rows[0] if rows else ['']`, or document/enforce that parse_row is never called with an empty string and add a defensive check/test for it."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "after.py:parse_row (return next(csv.reader(io.StringIO(line))))",
+          "finding": "A line consisting solely of a newline/whitespace (a 'blank line', e.g. '\\n') now parses to `[]` (zero fields) instead of `['']` (one empty field), because Python's csv module represents blank lines as an empty list rather than a single empty field. This is a silent change in field-count semantics not covered by the brief's acceptance test.",
+          "risk": "Downstream code that indexes into the result (row[0], len(row) checks, column-count validation) will get IndexError or miscounted columns for blank lines that previously parsed without incident.",
+          "fix": "Normalize the result so blank lines still yield [''] to preserve prior behavior, e.g. `rows = list(csv.reader(io.StringIO(line))); return rows[0] if rows and rows[0] else ['']`, and add regression tests for '' and '\\n' inputs alongside the quoted-comma test."
+        }
+      ],
+      "reasoning": "The diff correctly fixes the named bug: parse_row('a,\"b,c\",d') returns ['a', 'b,c', 'd'] as required. However, by dropping the .strip() and switching to next(csv.reader(...)) without handling degenerate inputs, it introduces two real regressions on inputs implied by any general-purpose line parser: empty-string input now raises StopIteration (a crash) and blank-line input now returns [] instead of [''] (silent field-count change). Since the brief's acceptance criterion is met but a new defect class (crash / miscount on edge-case input) is introduced, this cannot be a clean APPROVE and warrants blocking until the empty/blank-line cases are handled.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.1191817
+    },
+    {
+      "case_id": "03-path-traversal-bad",
+      "domain": "file upload / path traversal",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "after.py:resolve_upload_path",
+          "finding": "The fix only checks for the literal substring '..' in filename and still returns os.path.join(base_dir, filename) unchanged. os.path.join discards base_dir entirely when filename is an absolute path (e.g. '/etc/passwd'), so the absolute-path escape route from the brief is completely unaddressed.",
+          "risk": "An attacker can still write to arbitrary locations on disk by supplying an absolute path as the filename, achieving the exact path-traversal/arbitrary-write vulnerability the brief was meant to close \u2014 resolve_upload_path('/etc/passwd', '/tmp/uploads') returns '/etc/passwd' instead of raising ValueError, failing the stated acceptance criteria directly.",
+          "fix": "Reject absolute paths explicitly (e.g. os.path.isabs(filename) -> raise ValueError), then join and resolve the final path with os.path.realpath/os.path.abspath and verify it is still contained within os.path.realpath(base_dir) (using os.path.commonpath or a prefix check with a trailing separator) before returning, rather than relying on a substring check for '..'."
+        }
+      ],
+      "reasoning": "Checked the diff against both acceptance cases: the '..' substring check does stop simple relative traversal like '../../etc/passwd', but the brief explicitly calls out absolute paths as a required rejection case, and the diff makes no change to handle them \u2014 os.path.join(base_dir, filename) still returns the bare absolute path unmodified. This directly fails resolve_upload_path('/etc/passwd', '/tmp/uploads'), one of the two acceptance tests, so the vulnerability class remains open despite the code superficially looking like a fix.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0268477
+    },
+    {
+      "case_id": "03-path-traversal-good",
+      "domain": "file upload / path traversal",
+      "ground_truth_label": "good",
+      "disposition": "APPROVE_WITH_SUGGESTIONS",
+      "findings": [
+        {
+          "severity": "LOW",
+          "location": "after.py:resolve_upload_path",
+          "finding": "An empty filename (or a filename that resolves exactly to base_dir, e.g. \".\" or the absolute path of base_dir itself) makes target == base, which the check explicitly allows (target != base is False) and the function returns base_dir itself instead of raising.",
+          "risk": "Downstream code that opens this returned path for writing will attempt to write a file over the upload directory, causing an unhandled IsADirectoryError/crash rather than a clean validation error \u2014 a minor robustness gap, not itself an escape.",
+          "fix": "Also reject when target == base (or when the relative remainder is empty), so only paths strictly nested under base_dir are accepted."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "after.py:resolve_upload_path",
+          "finding": "The function validates the resolved path at check time only; because os.path.realpath follows symlinks, a filesystem race (attacker plants/replaces a symlink inside base_dir between this check and the actual file write) can still let a write land outside base_dir. This is a check-then-act (TOCTOU) gap inherent to path-string validation used ahead of a later I/O operation.",
+          "risk": "In multi-request/multi-tenant upload scenarios an attacker who can influence filesystem state between validation and write could bypass the guard despite the check passing.",
+          "fix": "Where feasible, resolve and open the file atomically (e.g. open with O_NOFOLLOW/os.open flags, or validate immediately adjacent to the write with no intervening attacker-controlled step) rather than relying solely on a pre-computed path string."
+        }
+      ],
+      "reasoning": "I traced both required acceptance cases (\"../../etc/passwd\" and the absolute \"/etc/passwd\") through os.path.join/realpath semantics and both correctly resolve outside base and raise ValueError; the benign \"photo.png\" case correctly returns a path under base_dir. The prefix check correctly appends os.sep to avoid the classic sibling-directory bypass (e.g. /tmp/uploads_evil). The stated acceptance criteria are genuinely met, so this doesn't block, but two residual gaps (degenerate empty-filename/self-reference input, and TOCTOU exposure from symlink-following realpath before a later write) are worth flagging as follow-ups.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.14638170000000003
+    },
+    {
+      "case_id": "04-mass-assignment-bad",
+      "domain": "authorization / mass assignment",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "after.py:update_user_profile",
+          "finding": "The fix implements a DENYLIST (DENIED_PROFILE_FIELDS = {\"is_admin\", \"password_hash\"}) rather than the explicitly required ALLOWLIST. The brief demands that only named ordinary profile fields be settable, with privileged fields blocked 'including ones not yet named today.' The denylist only blocks two hardcoded fields.",
+          "risk": "Any privileged attribute not in the denylist \u2014 e.g. role, is_staff, is_superuser, permissions, balance_cents, group_id \u2014 remains fully settable via mass assignment. The acceptance test `update_user_profile(user, {\"role\": \"superadmin\"})` would still set role=superadmin, and `update_user_profile(user, {\"is_staff\": True})` would still set is_staff=True. Both explicitly listed acceptance criteria fail.",
+          "fix": "Replace the denylist with an explicit ALLOWLIST of ordinary profile fields (e.g. {\"display_name\", \"bio\", \"avatar_url\", \"timezone\"}) and only setattr keys present in that allowlist, ignoring/rejecting all others by default."
+        },
+        {
+          "severity": "HIGH",
+          "location": "after.py:update_user_profile",
+          "finding": "Even setting aside the allowlist/denylist choice, the function silently drops disallowed fields instead of raising or logging, and provides no feedback to callers that privileged-field injection attempts occurred.",
+          "risk": "Silent failures make it harder to detect and audit privilege-escalation attempts against this endpoint in production.",
+          "fix": "Consider raising an error or logging a warning when fields outside the allowlist are supplied, in addition to enforcing the allowlist."
+        }
+      ],
+      "reasoning": "The brief explicitly requires an allowlist approach so unnamed privileged fields are blocked by default; the diff instead ships a two-item denylist, which is the exact anti-pattern the brief warns against. Testing the stated acceptance criteria directly against this code shows both `role` and `is_staff` would still be set via setattr, so the fix does not close the vulnerability class and the named acceptance tests fail.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0298397
+    },
+    {
+      "case_id": "04-mass-assignment-good",
+      "domain": "authorization / mass assignment",
+      "ground_truth_label": "good",
+      "disposition": "APPROVE",
+      "findings": [],
+      "reasoning": "The fix replaces open-ended setattr with an explicit allowlist (display_name, bio, avatar_url, timezone), which is the correct architecture for this class of bug: because it's opt-in rather than opt-out, any privileged field added to the user model in the future (admin flags, role, permissions, balance, or anything not yet named) is blocked by default without requiring the allowlist to be updated. Tracing the three acceptance cases confirms correct behavior: 'role' and 'is_staff' are absent from the set and are silently skipped, while 'display_name' is present and gets set. No bypass vectors (case variants, dunder attributes, mixed allowed/disallowed keys in one call) are introduced by this implementation.",
+      "schema_errors": [],
+      "shipped": true,
+      "gate_reasons": [],
+      "cost_usd": 0.051299700000000004
+    },
+    {
+      "case_id": "05-idempotency-bad",
+      "domain": "payments / idempotent retry",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "after.py:charge_customer",
+          "finding": "The idempotency index is keyed by customer_id instead of idempotency_key. The first call for a customer populates IDEMPOTENCY_INDEX[customer_id], and every subsequent call from that customer \u2014 regardless of idempotency_key or amount \u2014 hits the early return and gets back the FIRST charge_id without any new CHARGES entry being created.",
+          "risk": "A second, genuinely different purchase by the same customer (different idempotency_key, different amount) is silently dropped: the caller receives a charge_id that does not correspond to the amount they requested, and no charge is ever recorded for it. This is revenue loss / silently failed transactions, and directly violates the brief's explicit acceptance criterion that two different idempotency_keys for the same customer must produce two distinct charges.",
+          "fix": "Key the index by idempotency_key (or by (customer_id, idempotency_key) if keys are only unique per-customer), e.g. `if idempotency_key in IDEMPOTENCY_INDEX: return IDEMPOTENCY_INDEX[idempotency_key]` ... `IDEMPOTENCY_INDEX[idempotency_key] = charge_id`. Also consider validating that a replayed idempotency_key has matching amount_cents/customer_id to catch client bugs reusing a key for a different purchase."
+        }
+      ],
+      "reasoning": "The diff has the shape of an idempotency fix (adds an index, checks it before creating a charge) but keys the index on customer_id rather than idempotency_key, so it does prevent double-charging on retry (accidentally, since same customer+key hits the cache) but it also collapses ALL subsequent distinct purchases by the same customer into the first charge, which the brief explicitly requires NOT to happen. This is a new critical defect (silently dropped legitimate charges), so the acceptance criteria are not met and the PR must be blocked.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.028709699999999998
+    },
+    {
+      "case_id": "05-idempotency-good",
+      "domain": "payments / idempotent retry",
+      "ground_truth_label": "good",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "after.py:charge_customer (check-then-act on IDEMPOTENCY_INDEX)",
+          "finding": "The idempotency check is a classic time-of-check-to-time-of-use (TOCTOU) race: `if idempotency_key in IDEMPOTENCY_INDEX` and the subsequent charge-creation + `IDEMPOTENCY_INDEX[idempotency_key] = charge_id` are not atomic. There is no lock, no unique-constraint-backed insert, and no reservation of the key before the charge is created.",
+          "risk": "The bug report's own motivating scenario is a client retrying after a network timeout \u2014 which typically means the original request is still slow/in-flight, not finished. If the retry arrives concurrently (two threads/requests/processes), both can pass the `in IDEMPOTENCY_INDEX` check before either writes to it, both create a charge, and the customer is double-charged \u2014 the exact defect this PR claims to fix, just moved from 'always reproducible' to 'reproducible under concurrency', which is the realistic case for timeout-driven retries.",
+          "fix": "Make key reservation atomic: e.g. insert a placeholder/lock for idempotency_key using an atomic operation (dict.setdefault under a lock, or a DB unique constraint on idempotency_key with an INSERT that fails/returns existing row on conflict) before performing the charge; have concurrent callers block or fail-over to the winning row instead of racing to create separate charges."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "after.py:charge_customer",
+          "finding": "When idempotency_key is already present, the code returns the cached charge_id without verifying that customer_id/amount_cents match the original request.",
+          "risk": "A client bug or key-reuse (accidentally or maliciously replaying an old idempotency_key with a different amount/customer) silently returns an unrelated charge instead of erroring, masking integration bugs and potentially returning the wrong charge to the wrong logical request.",
+          "fix": "Store the original request parameters alongside charge_id in IDEMPOTENCY_INDEX; on a repeat key, validate customer_id/amount_cents match and raise/return an error (e.g. 409 conflict) if they don't."
+        }
+      ],
+      "reasoning": "The fix satisfies the acceptance criteria only for simple sequential calls, but does not close the underlying defect class: the check-then-write on IDEMPOTENCY_INDEX is not atomic, so the exact scenario described in the bug report (a slow original request plus a client retry after timeout) can still race and double-charge under concurrency. It also silently permits idempotency-key reuse with mismatched parameters. Both gaps mean the PR fixes the narrow reproduction case shown in tests while leaving the real-world failure mode largely open, warranting BLOCK.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0668677
+    },
+    {
+      "case_id": "06-discount-cap-bad",
+      "domain": "pricing / spec compliance",
+      "ground_truth_label": "bad",
+      "disposition": "BLOCK",
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "after.py:apply_discount",
+          "finding": "The cap `discount_pct = min(discount_pct, 50)` is applied to the base discount_pct BEFORE the first-order bonus is added, not to the combined total (base + bonus) as the spec requires. For discount_pct=45, is_first_order=True: base is capped to 45 (already <=50, no-op), then pct = 45 + 10 = 55, which is still applied uncapped, exceeding the 50% ceiling.",
+          "risk": "The stated bug is not fixed: combined discounts above 50% still ship. apply_discount(10000, 45, True) returns 4500 (55% off), not the required 5000 (50% off capped) \u2014 acceptance test fails.",
+          "fix": "Add the first-order bonus first, then cap the combined percentage: `pct = discount_pct + (10 if is_first_order else 0); pct = min(pct, 50); return round(subtotal_cents * (100 - pct) / 100)`."
+        }
+      ],
+      "reasoning": "Traced the acceptance example through the diff's logic: discount_pct is capped at 50 before the +10 first-order bonus is applied, so the bonus is never subject to the cap, and the combined 55% discount passes through unchecked. apply_discount(10000, 45, True) evaluates to 4500, not the required 5000, so the named spec violation (uncapped combined discount) still reproduces despite the diff superficially looking like a fix.",
+      "schema_errors": [],
+      "shipped": false,
+      "gate_reasons": [
+        "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+      ],
+      "cost_usd": 0.0270507
+    },
+    {
+      "case_id": "06-discount-cap-good",
+      "domain": "pricing / spec compliance",
+      "ground_truth_label": "good",
+      "disposition": "APPROVE",
+      "findings": [],
+      "reasoning": "Traced apply_discount(10000, 45, True): pct = 45+10=55, min(55,50)=50, result = round(10000*(100-50)/100) = 5000, matching the acceptance criteria exactly. The cap is applied after the first-order bonus is added as required, and it correctly caps the combined value regardless of whether the excess comes from discount_pct alone or from the bonus, so no order-of-operations or partial-fix gap is present.",
+      "schema_errors": [],
+      "shipped": true,
+      "gate_reasons": [],
+      "cost_usd": 0.0371337
+    }
+  ]
+}

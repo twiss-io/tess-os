@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "01-rounding-good",
+    "domain": "billing / currency rounding",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "01-rounding-bad",
+    "domain": "billing / currency rounding",
+    "ground_truth_label": "bad"
+  },
+  {
+    "case_id": "02-csv-quoting-good",
+    "domain": "CSV ingestion / quoted fields",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "02-csv-quoting-bad",
+    "domain": "CSV ingestion / quoted fields",
+    "ground_truth_label": "bad"
+  },
+  {
+    "case_id": "03-path-traversal-good",
+    "domain": "file upload / path traversal",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "03-path-traversal-bad",
+    "domain": "file upload / path traversal",
+    "ground_truth_label": "bad"
+  },
+  {
+    "case_id": "04-mass-assignment-good",
+    "domain": "authorization / mass assignment",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "04-mass-assignment-bad",
+    "domain": "authorization / mass assignment",
+    "ground_truth_label": "bad"
+  },
+  {
+    "case_id": "05-idempotency-good",
+    "domain": "payments / idempotent retry",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "05-idempotency-bad",
+    "domain": "payments / idempotent retry",
+    "ground_truth_label": "bad"
+  },
+  {
+    "case_id": "06-discount-cap-good",
+    "domain": "pricing / spec compliance",
+    "ground_truth_label": "good"
+  },
+  {
+    "case_id": "06-discount-cap-bad",
+    "domain": "pricing / spec compliance",
+    "ground_truth_label": "bad"
+  }
+]

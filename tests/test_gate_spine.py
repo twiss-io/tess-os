@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from conftest import sign_verdict_for_test
+from conftest import sign_signoff_for_test, sign_verdict_for_test
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_SRC = REPO_ROOT / "core" / "contracts"
@@ -102,7 +102,16 @@ def _policy_with_verifier_keys(root, keys):
     file (written under .tess/keys/verifiers/<name>.asc, mirroring
     core/policy/policy.yaml's own onboarding convention) — Phase 2b. Without
     this, no verdict signed by any of these throwaway test keys could ever
-    verify, since `tessctl gate` only trusts fingerprints registered here."""
+    verify, since `tessctl gate` only trusts fingerprints registered here.
+
+    honesty-capstone-audit-2026-07-08 §3-d: also registers a `signoff_keys`
+    entry ("Xavier") reusing Reid's generated test keypair (a sign-off
+    authorizer is an arbitrary human-operator identity, NOT one of the six
+    named AI verifiers — reusing an existing test identity's real keypair
+    under a distinct registered name is a legitimate, deliberate choice, not
+    a shortcut: the crypto material is real either way, only the policy-map
+    NAME differs) — so tests can sign a real, clearing hard-floor sign-off
+    without generating a seventh throwaway GPG identity."""
     keys_dir = root / ".tess" / "keys" / "verifiers"
     keys_dir.mkdir(parents=True, exist_ok=True)
     verifier_keys = {}
@@ -113,8 +122,18 @@ def _policy_with_verifier_keys(root, keys):
             "fingerprint": key.fpr,
             "public_key_file": f".tess/keys/verifiers/{name.lower()}.asc",
         }
+    signoff_keys_dir = root / ".tess" / "keys" / "signoffs"
+    signoff_keys_dir.mkdir(parents=True, exist_ok=True)
+    (signoff_keys_dir / "xavier.asc").write_text(keys["Reid"].pubkey_armored, encoding="utf-8")
+    signoff_keys = {
+        "Xavier": {
+            "fingerprint": keys["Reid"].fpr,
+            "public_key_file": ".tess/keys/signoffs/xavier.asc",
+        },
+    }
     policy = json.loads(json.dumps(_TEST_POLICY))  # cheap deep copy
     policy["policy"]["verifier_keys"] = verifier_keys
+    policy["policy"]["signoff_keys"] = signoff_keys
     return policy
 
 
@@ -123,7 +142,9 @@ def gate_repo(project, verifier_gpg_keys):
     """A real git repo with the real core/contracts/*.schema.json + a
     test-scoped core/policy/policy.yaml (Phase 2b: registering every
     generated test verifier identity's key, so signed test verdicts can
-    actually verify), one initial commit."""
+    actually verify; honesty-capstone-audit-2026-07-08 §3-d: also
+    registering a signoff_keys entry so a real, signed hard-floor sign-off
+    can actually clear), one initial commit."""
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
@@ -134,6 +155,22 @@ def gate_repo(project, verifier_gpg_keys):
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "initial")
     return root
+
+
+def _signed_signoff(engine, key, *, rule_id="money", category="money_movement",
+                     authorized_by="Xavier", rationale="Reviewed out-of-band; approved.",
+                     authorized_at="2026-07-08T00:00:00Z"):
+    """A hard-floor sign-off dict, cryptographically signed by `key` under
+    `authorized_by`'s name — honesty-capstone-audit-2026-07-08 §3-d."""
+    signoff = {
+        "rule_id": rule_id,
+        "category": category,
+        "authorized_by": authorized_by,
+        "rationale": rationale,
+        "authorized_at": authorized_at,
+    }
+    signoff["signature"] = sign_signoff_for_test(engine, signoff, key)
+    return signoff
 
 
 def _base_sha(root):
@@ -452,7 +489,34 @@ def test_ci_blocks_hard_floor_match_even_with_covering_approve_verdict(gate_repo
     assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
 
 
-def test_ci_allows_hard_floor_match_with_valid_signoff_artifact(gate_repo, run_cli):
+def test_ci_allows_hard_floor_match_with_valid_signed_signoff_artifact(gate_repo, run_cli, engine, verifier_gpg_keys):
+    """honesty-capstone-audit-2026-07-08 §3-d: a hard-floor sign-off DOES
+    clear the floor once it is cryptographically signed by a registered
+    operator key in policy.signoff_keys — the mechanism is a real,
+    satisfiable escape valve, not permanently broken by the (d) fix."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "payments").mkdir(parents=True)
+    (gate_repo / "payments" / "charge.py").write_text("refund()\n")
+    signoff_dir = gate_repo / ".tess" / "gate" / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff = _signed_signoff(engine, verifier_gpg_keys["Reid"])  # registered as "Xavier" in gate_repo's policy
+    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
+    head = _commit_all(gate_repo, "payments change + validly-signed human signoff")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 0, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is False
+
+
+def test_ci_blocks_hard_floor_match_with_unsigned_forged_signoff_artifact(gate_repo, run_cli):
+    """honesty-capstone-audit-2026-07-08 §3-d — the bypass this fix closes:
+    an UNSIGNED, shape-valid sign-off (exactly the JSON any agent able to
+    write a file could forge, and exactly what used to clear this floor
+    pre-fix) must NOT clear a hard floor. This is the non-vacuous 'fails on
+    unpatched, passes with the fix' proof for (d): against the unpatched
+    engine this same artifact clears the gate (payload['blocked'] is
+    False); against the fixed engine it is BLOCKED."""
     base = _base_sha(gate_repo)
     (gate_repo / "payments").mkdir(parents=True)
     (gate_repo / "payments" / "charge.py").write_text("refund()\n")
@@ -464,11 +528,122 @@ def test_ci_allows_hard_floor_match_with_valid_signoff_artifact(gate_repo, run_c
         "authorized_by": "Xavier",
         "rationale": "Reviewed refund logic change directly; approved out-of-band.",
         "authorized_at": "2026-07-07T00:00:00Z",
-    }), encoding="utf-8")
-    head = _commit_all(gate_repo, "payments change + human signoff")
+    }), encoding="utf-8")  # NOTE: no `signature` block at all — an agent-forgeable artifact
+    head = _commit_all(gate_repo, "payments change + UNSIGNED forged signoff")
 
     r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any(
+        "HARD FLOOR" in reason and "money_movement" in reason and "AUTHENTICATION" in reason
+        for reason in payload["reasons"]
+    )
+
+
+def test_ci_blocks_hard_floor_match_with_hand_faked_signature_signoff(gate_repo, run_cli):
+    """A sign-off with a right-SHAPE `signature` block (algorithm + hash +
+    an armored-looking string) but garbage cryptographic content — the
+    attack this feature exists to close, not just the simpler "no signature
+    at all" case."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "payments").mkdir(parents=True)
+    (gate_repo / "payments" / "charge.py").write_text("refund()\n")
+    signoff_dir = gate_repo / ".tess" / "gate" / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff = {
+        "rule_id": "money", "category": "money_movement", "authorized_by": "Xavier",
+        "rationale": "x", "authorized_at": "2026-07-07T00:00:00Z",
+    }
+    import hashlib as _hashlib
+    canonical = json.dumps(signoff, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signoff["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": _hashlib.sha256(canonical).hexdigest(),
+        "signature_armored": (
+            "-----BEGIN PGP SIGNATURE-----\n\nSGFuZC1mYWtlZCwgbm90IGEgcmVhbCBzaWduYXR1cmUu\n"
+            "-----END PGP SIGNATURE-----\n"
+        ),
+    }
+    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
+    head = _commit_all(gate_repo, "payments change + hand-faked signoff signature")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
+
+
+def test_ci_blocks_hard_floor_match_with_wrong_key_signoff_signature(gate_repo, run_cli, engine, verifier_gpg_keys):
+    """A sign-off genuinely, validly signed — but by a key NOT registered
+    for the claimed `authorized_by` identity (Cyra's key, while claiming to
+    be "Xavier", which gate_repo registers as Reid's key)."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "payments").mkdir(parents=True)
+    (gate_repo / "payments" / "charge.py").write_text("refund()\n")
+    signoff_dir = gate_repo / ".tess" / "gate" / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff = {
+        "rule_id": "money", "category": "money_movement", "authorized_by": "Xavier",
+        "rationale": "x", "authorized_at": "2026-07-07T00:00:00Z",
+    }
+    signoff["signature"] = sign_signoff_for_test(engine, signoff, verifier_gpg_keys["Cyra"])
+    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
+    head = _commit_all(gate_repo, "payments change + wrong-key signoff signature")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
+
+
+def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(gate_repo, run_cli, engine, verifier_gpg_keys):
+    """A validly-signed sign-off is edited (rationale changed) after
+    signing, without re-signing — the recorded signed_content_sha256 no
+    longer matches, caught deterministically."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "payments").mkdir(parents=True)
+    (gate_repo / "payments" / "charge.py").write_text("refund()\n")
+    signoff_dir = gate_repo / ".tess" / "gate" / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff = _signed_signoff(engine, verifier_gpg_keys["Reid"])
+    signoff["rationale"] = "TAMPERED — widened scope after signing."
+    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
+    head = _commit_all(gate_repo, "payments change + tampered-after-signing signoff")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any(
+        "HARD FLOOR" in reason and "tampered" in reason
+        for reason in payload["reasons"]
+    )
+
+
+def test_ci_blocks_hard_floor_match_with_unregistered_signoff_authorizer(gate_repo, run_cli, engine, verifier_gpg_keys):
+    """A sign-off honestly, validly signed with a REAL key — but under an
+    `authorized_by` name that was never registered in policy.signoff_keys
+    at all. There is no key to check the signature against."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "payments").mkdir(parents=True)
+    (gate_repo / "payments" / "charge.py").write_text("refund()\n")
+    signoff_dir = gate_repo / ".tess" / "gate" / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff = _signed_signoff(engine, verifier_gpg_keys["Reid"], authorized_by="SomeoneNotRegistered")
+    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
+    head = _commit_all(gate_repo, "payments change + unregistered-authorizer signoff")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any(
+        "HARD FLOOR" in reason and "no registered public key" in reason
+        for reason in payload["reasons"]
+    )
 
 
 def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
@@ -480,7 +655,7 @@ def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
         "rationale": "x",
         "authorized_at": "2026-07-07T00:00:00Z",
     }))
-    ok, reason = engine._gate_validate_signoff(signoff, "money")
+    ok, reason = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
     assert ok is False
     assert "does not match" in reason
 
@@ -488,7 +663,7 @@ def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
 def test_signoff_missing_field_is_rejected(engine, tmp_path):
     signoff = tmp_path / "money.signoff.json"
     signoff.write_text(json.dumps({"rule_id": "money", "category": "money_movement"}))
-    ok, reason = engine._gate_validate_signoff(signoff, "money")
+    ok, reason = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
     assert ok is False
     assert "missing required field" in reason
 
