@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from pg_lib.matrix import MODEL_TIERS
+from pg_lib.scaffolds import BARE
 
 TABLE_MARKER = "<!-- PROVING_GROUND_RESULTS_TABLE -->"
 
@@ -69,18 +72,69 @@ def _aggregate_one_cell(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _split_cell_id(cell_id: str) -> Tuple[str, str]:
+    """`"weak-tess-os"` -> `("weak", "tess-os")`. Can't just `.split("-")`
+    because the `tess-os` scaffold name itself contains a hyphen — match
+    against the known tier prefixes instead (`pg_lib.matrix.MODEL_TIERS`)."""
+    for tier in MODEL_TIERS:
+        prefix = f"{tier}-"
+        if cell_id.startswith(prefix):
+            return tier, cell_id[len(prefix):]
+    raise ValueError(f"cell_id {cell_id!r} does not start with a known model tier {MODEL_TIERS}")
+
+
+def compute_cost_multipliers(aggregated: Dict[str, Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """Per-cell cost multiplier vs. that cell's same-tier `bare` baseline:
+    `tess_os_total_cost / bare_total_cost`.
+
+    This is the benchmark's own headline cost finding (`tess-os` ran
+    1.7-2.7x `bare`'s cost every task, both tiers, no exceptions — see
+    `reports/2026-07-07-fair.md`) made a first-class, always-computed
+    number instead of something a reader has to derive by hand from two
+    raw-dollar columns. A `bare` cell's own multiplier is always `1.0`
+    (it IS the baseline). A cell gets `None` (rendered `n/a`, never a
+    silently wrong number) when its same-tier `bare` counterpart is
+    missing from this run (e.g. skipped for no `ANTHROPIC_API_KEY`) or
+    when that baseline's cost is exactly `$0` (would divide by zero).
+    """
+    multipliers: Dict[str, Optional[float]] = {}
+    for cell_id, row in aggregated.items():
+        tier, scaffold = _split_cell_id(cell_id)
+        if scaffold == BARE:
+            multipliers[cell_id] = 1.0
+            continue
+        bare_row = aggregated.get(f"{tier}-{BARE}")
+        if bare_row is None or bare_row["total_cost_usd"] == 0:
+            multipliers[cell_id] = None
+        else:
+            multipliers[cell_id] = round(row["total_cost_usd"] / bare_row["total_cost_usd"], 2)
+    return multipliers
+
+
 def render_markdown_table(aggregated: Dict[str, Dict[str, Any]]) -> str:
     """One markdown table row per cell, sorted for a stable diff."""
-    header = "| Cell | Tasks passed | Verified pass rate | Total cost (USD) | Mean attempts-to-pass | Notes |\n"
-    header += "|---|---|---|---|---|---|\n"
+    multipliers = compute_cost_multipliers(aggregated)
+    header = (
+        "| Cell | Tasks passed | Verified pass rate | Total cost (USD) | "
+        "Cost vs bare (multiplier) | Mean attempts-to-pass | Notes |\n"
+    )
+    header += "|---|---|---|---|---|---|---|\n"
     rows = []
     for cell_id in sorted(aggregated):
         row = aggregated[cell_id]
         notes = "impure bare (no ANTHROPIC_API_KEY — see README)" if row["any_impure_bare"] else ""
         attempts = row["mean_attempts_to_pass"] if row["mean_attempts_to_pass"] is not None else "n/a"
+        multiplier = multipliers.get(cell_id)
+        if multiplier is None:
+            cost_multiplier = "n/a"
+        elif multiplier == 1.0 and _split_cell_id(cell_id)[1] == BARE:
+            cost_multiplier = "1.00x (baseline)"
+        else:
+            cost_multiplier = f"{multiplier:.2f}x"
         rows.append(
             f"| `{cell_id}` | {row['n_passed']}/{row['n_tasks']} | "
-            f"{row['verified_pass_rate']:.0%} | {row['total_cost_usd']:.4f} | {attempts} | {notes} |"
+            f"{row['verified_pass_rate']:.0%} | {row['total_cost_usd']:.4f} | "
+            f"{cost_multiplier} | {attempts} | {notes} |"
         )
     return header + "\n".join(rows) + "\n"
 

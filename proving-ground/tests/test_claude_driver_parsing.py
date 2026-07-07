@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 
-from pg_lib.claude_driver import _parse_output
+from pg_lib.claude_driver import _build_command, _parse_output
+from pg_lib.scaffolds import BARE, TESS_OS
 
 # Captured verbatim (trimmed to the fields _parse_output reads) from a real
 # `claude -p "..." --bare --output-format json` call with no
@@ -76,3 +77,36 @@ def test_missing_result_event_is_a_harness_level_error_not_a_crash():
     result = _parse_output(json.dumps(events), "", 0)
     assert result.ok is False
     assert result.is_error is True
+
+
+# --- Regression lock: every `claude -p` invocation this harness makes must
+# disallow Agent/Task, permanently, for BOTH scaffolds. See the fair-run
+# report (`reports/2026-07-07-fair.md`) for why: a real Agent/Task-tool
+# dispatch was observed to actually fire from a headless `claude -p` call
+# with the `tess-os` scaffold mounted, spawning a genuine nested background
+# subagent outside this harness's cost/timeout accounting. This was fixed
+# ad hoc during that run and then upstreamed into `_build_command` as an
+# unconditional flag — these tests exist so a future edit that narrows the
+# flag to one scaffold, or drops it, fails CI instead of silently
+# reintroducing the safety hole.
+
+def test_bare_command_always_disallows_agent_and_task_tools():
+    command = _build_command("do the task", "haiku", BARE, 1.0, "bypassPermissions", True)
+    assert "--disallowedTools" in command
+    idx = command.index("--disallowedTools")
+    assert command[idx + 1] == "Agent,Task"
+
+
+def test_tess_os_command_always_disallows_agent_and_task_tools():
+    command = _build_command("do the task", "haiku", TESS_OS, 1.0, "bypassPermissions", True)
+    assert "--disallowedTools" in command
+    idx = command.index("--disallowedTools")
+    assert command[idx + 1] == "Agent,Task"
+
+
+def test_disallowedTools_present_regardless_of_strict_bare_flag():
+    # strict_bare only decides whether `--bare` vs `--setting-sources
+    # project` is appended — it must never gate the safety flag.
+    for strict_bare in (True, False):
+        command = _build_command("x", "haiku", BARE, 1.0, "bypassPermissions", strict_bare)
+        assert "Agent,Task" in command

@@ -54,6 +54,15 @@ project needs.
   `return-manifest` contract draws between a claim and its evidence.
 - **Total cost (USD)** — summed `total_cost_usd` from every `claude -p`
   attempt actually run for that cell, across every task.
+- **Cost vs bare (multiplier)** — `this cell's total cost / that same
+  model tier's bare-cell total cost` (`pg_lib.report.compute_cost_multipliers`).
+  `bare` rows show `1.00x (baseline)`; `n/a` if the same-tier `bare` cell
+  wasn't run this time (skipped, or all-zero cost). This is the doctrine's
+  cost premium made a first-class, always-rendered number — not something
+  a reader has to compute by hand from the raw-dollar column. The first
+  full runs found this in the 1.7-2.7x range at both tiers, every task, no
+  exceptions (see `reports/2026-07-07-fair.md`) — this column is what lets
+  any future run report that premium explicitly instead of re-deriving it.
 - **Mean attempts-to-pass** — averaged only over tasks that eventually
   passed; `n/a` if none did.
 - **Notes** — flags `impure bare` cells (see below) and anything else

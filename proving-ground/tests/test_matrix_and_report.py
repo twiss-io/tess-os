@@ -7,7 +7,13 @@ from __future__ import annotations
 import pytest
 
 from pg_lib.matrix import build_matrix
-from pg_lib.report import TABLE_MARKER, aggregate_by_cell, render_report
+from pg_lib.report import (
+    TABLE_MARKER,
+    aggregate_by_cell,
+    compute_cost_multipliers,
+    render_markdown_table,
+    render_report,
+)
 
 
 def test_build_matrix_produces_four_cells_for_two_tiers_two_scaffolds():
@@ -98,6 +104,68 @@ def test_render_report_substitutes_a_real_table():
     assert TABLE_MARKER not in rendered
     assert "weak-bare" in rendered
     assert "1/1" in rendered
+
+
+# --- P2: per-cell cost multiplier vs. the same-tier `bare` baseline ---
+
+def test_cost_multiplier_bare_cell_is_always_one():
+    trials = [_trial("weak-bare", "01-x", 1, True, 0.05)]
+    aggregated = aggregate_by_cell(trials)
+    multipliers = compute_cost_multipliers(aggregated)
+    assert multipliers["weak-bare"] == 1.0
+
+
+def test_cost_multiplier_computed_against_same_tier_bare():
+    trials = [
+        _trial("weak-bare", "01-x", 1, True, 0.10),
+        _trial("weak-tess-os", "01-x", 1, True, 0.27),
+    ]
+    aggregated = aggregate_by_cell(trials)
+    multipliers = compute_cost_multipliers(aggregated)
+    assert multipliers["weak-tess-os"] == pytest.approx(2.7)
+
+
+def test_cost_multiplier_does_not_cross_tiers():
+    # strong-tess-os must compare against strong-bare, never weak-bare.
+    trials = [
+        _trial("weak-bare", "01-x", 1, True, 0.01),
+        _trial("strong-bare", "01-x", 1, True, 1.00),
+        _trial("strong-tess-os", "01-x", 1, True, 2.00),
+    ]
+    aggregated = aggregate_by_cell(trials)
+    multipliers = compute_cost_multipliers(aggregated)
+    assert multipliers["strong-tess-os"] == 2.0
+
+
+def test_cost_multiplier_is_none_when_same_tier_bare_missing():
+    # weak-bare was skipped this run (e.g. no ANTHROPIC_API_KEY) — must not
+    # silently divide against nothing or another tier's baseline.
+    trials = [_trial("weak-tess-os", "01-x", 1, True, 0.27)]
+    aggregated = aggregate_by_cell(trials)
+    multipliers = compute_cost_multipliers(aggregated)
+    assert multipliers["weak-tess-os"] is None
+
+
+def test_cost_multiplier_is_none_not_a_zero_division_crash_when_bare_cost_is_zero():
+    trials = [
+        _trial("weak-bare", "01-x", 1, True, 0.0),
+        _trial("weak-tess-os", "01-x", 1, True, 0.05),
+    ]
+    aggregated = aggregate_by_cell(trials)
+    multipliers = compute_cost_multipliers(aggregated)
+    assert multipliers["weak-tess-os"] is None
+
+
+def test_rendered_table_includes_cost_multiplier_column_and_values():
+    trials = [
+        _trial("weak-bare", "01-x", 1, True, 0.10),
+        _trial("weak-tess-os", "01-x", 1, True, 0.27),
+    ]
+    aggregated = aggregate_by_cell(trials)
+    table = render_markdown_table(aggregated)
+    assert "Cost vs bare (multiplier)" in table
+    assert "1.00x (baseline)" in table
+    assert "2.70x" in table
 
 
 def test_render_report_substitutes_run_metadata_placeholders():

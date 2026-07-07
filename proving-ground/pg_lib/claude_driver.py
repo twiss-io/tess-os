@@ -15,6 +15,16 @@ real `claude -p` invocation"):
   live: without `ANTHROPIC_API_KEY` set, a `--bare` call fails instantly
   with `"error":"authentication_failed"` and `"total_cost_usd":0` (zero
   spend, fails before any request goes out) — see `bare_mode_available()`.
+- `--disallowedTools Agent,Task` is PERMANENT and unconditional in
+  `_build_command`, for both scaffolds. A single-agent trial has nothing
+  legitimate to dispatch to; without this flag, an operator environment
+  with live Agent/Task-tool infrastructure can let the model under test
+  actually spawn a real nested background subagent — outside this trial's
+  cost/timeout accounting and with whatever MCP servers/credentials that
+  child session resolves (observed live, see
+  `proving-ground/reports/2026-07-07-fair.md`). Locked in by
+  `tests/test_claude_driver_parsing.py`'s `test_*_always_disallows_agent_and_task_tools`
+  tests so a future edit can't silently narrow or drop it.
 """
 from __future__ import annotations
 
