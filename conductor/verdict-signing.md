@@ -225,6 +225,54 @@ This step is **not automated by this change** — it is a repo-admin action
 (branch protection settings), out of scope for a code PR to perform
 unilaterally, and is called out here so it is not silently skipped.
 
+### Defense-in-depth — gating the gate's own workflow file
+
+A required check enforced **only** by its job name (`tessctl gate ci`, per
+step 3 above) has a well-known hole: GitHub verifies that a check with that
+*name* passed, not that the workflow file which produced it still does what
+it claims to. A PR could keep the required check name intact while
+neutering its step — e.g. replacing the `tessctl gate ci` run in
+`.github/workflows/tess-gate.yml` with `exit 0` — **in the same PR**, and
+branch protection would see a green "tessctl gate ci" and allow the merge.
+This is the universal GitHub self-gating trap: a required check can never
+fully protect its own definition through the required-check mechanism
+alone.
+
+MEDIUM-1 (Fable Phase-2b follow-up review) closes the mechanical half of
+this: `.github/workflows/**` is now itself a glob under
+`tess-os-security-tier-doctrine` in `core/policy/policy.yaml`, so any change
+to `tess-gate.yml` (or any other workflow file) is `prod_touching` and needs
+its own covering, signed Reid/Cyra verdict before `tessctl gate` will clear
+it — the same content-level control that already protects
+`conductor/guardrails.md`, `core/policy/**`, and `.tess/keys/verifiers/**`.
+
+That control is still a **content** check run by `tessctl gate` itself —
+which is exactly the workflow whose integrity is in question. As
+**belt-and-suspenders**, add an independent, GitHub-native control that does
+not depend on the gate at all:
+
+1. **CODEOWNERS.** Add an entry to `.github/CODEOWNERS` (create the file if
+   it does not exist) requiring a specific reviewer/team on any change under
+   the gate's own surface:
+   ```
+   /.github/workflows/  @<maintainer-or-security-team>
+   /core/policy/         @<maintainer-or-security-team>
+   /.tess/keys/verifiers/ @<maintainer-or-security-team>
+   ```
+2. **Branch protection ruleset.** In the same branch protection rule from
+   the previous section, enable "Require review from Code Owners" so the
+   CODEOWNERS entry above is actually enforced, not just documentary.
+3. Optionally, use a repo **ruleset** (Settings → Rules → Rulesets) with a
+   "Restrict file paths" / required-reviewers condition scoped to
+   `.github/workflows/**` for organizations on a plan that supports path-
+   scoped rulesets, as an additional layer beyond CODEOWNERS.
+
+This is a **repo-admin action**, like branch protection itself — not
+automated by this change, and called out here so it is not silently
+skipped. Two independent controls (a signed content verdict AND a
+GitHub-native required-reviewer gate) mean an attacker must defeat both to
+silently neuter the gate's own CI entrypoint, not just one.
+
 ### Bootstrap warning for a fresh adopter
 
 If a project's `core/policy/policy.yaml` rules already have real

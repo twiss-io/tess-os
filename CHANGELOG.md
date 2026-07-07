@@ -84,6 +84,68 @@ All notable changes to Tess OS are documented here. This project adheres to
     `tessctl lock --regen` per that command's documented maintainer flow).
 
 ### Fixed
+- **Fable's Phase 2b follow-up review — one MEDIUM, one LOW, both closed:**
+  - **MEDIUM-1 — the gate's own CI workflow was not covered by
+    `require_verdict`:** `.github/workflows/tess-gate.yml` (the required
+    check's own definition) was not matched by any glob in
+    `core/policy/policy.yaml`'s `tess-os-security-tier-doctrine` rule —
+    once branch protection names "tessctl gate ci" as a required check, a
+    PR could keep that exact check name while neutering its step (e.g.
+    swap the real run for `exit 0`) IN THE SAME PR, and the required-
+    check-by-name mechanism alone could not catch it (the universal
+    GitHub self-gating trap: a required check can never fully protect its
+    own definition through the required-check mechanism alone). Fixed by
+    adding `.github/workflows/**` to `tess-os-security-tier-doctrine`'s
+    globs (mirrored in `.tess/core/policy/policy.yaml`, re-pinned via
+    `tessctl lock --regen`): any change to a workflow file is now
+    `prod_touching` and needs its own covering, signed Reid/Cyra verdict,
+    same as `conductor/guardrails.md` or `.tess/keys/verifiers/**`.
+    `conductor/verdict-signing.md` gains a new "Defense-in-depth — gating
+    the gate's own workflow file" section documenting the recommended
+    CODEOWNERS entry + branch-protection "Require review from Code
+    Owners" (and, optionally, a path-scoped ruleset) as an independent,
+    GitHub-native belt-and-suspenders control over the same paths — a
+    repo-admin action, not automated by this change.
+  - **LOW-1 — `public_key_file` had no containment check:** in
+    `_gate_verify_verdict_signature`, `key_path = root / key_file` alone
+    let an ABSOLUTE `public_key_file` (`Path.__truediv__` silently
+    discards `root` for an absolute right-hand side) or a `../`-bearing
+    relative one resolve OUTSIDE `root`. Not exploitable today — the
+    registry lives in `core/policy/policy.yaml`, itself gated by
+    `tess-os-security-tier-doctrine`, and an escaped key still has to
+    produce a signature whose fingerprint matches the REGISTERED one —
+    but fixed fail-closed anyway, same C1-containment discipline
+    `check_manifest_write_gate`/`cmd_rollback` already apply elsewhere:
+    reject any `public_key_file` that is absolute or contains a literal
+    `..` component, then resolve the remaining candidate and reject it too
+    if it still falls outside `root` (catches a symlink-based escape with
+    no literal `..` in the string).
+  - **13 new tests** (`tests/test_gate_own_workflow_coverage.py`, 8: the
+    real shipped policy now globs `.github/workflows/**` and stays
+    schema-valid + byte-identical across its core/live mirror; the OLD
+    glob list provably did NOT match the workflow path while the NEW one
+    does; end-to-end against a full copy of the real shipped tree —
+    including `.github/`, unlike the existing `real_root` fixture —
+    proves editing `tess-gate.yml` with no verdict is blocked on the real,
+    unmodified policy (whose `verifier_keys` still ships empty) while an
+    unrelated docs change is unaffected; a synthetic policy scoped to the
+    same glob proves the rule is satisfiable, not a permanent block, once
+    a valid covering signed verdict exists. `tests/test_verdict_signing.py`,
+    5: absolute and `../`-traversal `public_key_file` values are rejected
+    even when the escaped path is a real, existing file — both as pure
+    unit checks on `_gate_verify_verdict_signature` and end-to-end through
+    `tessctl gate ci` with an otherwise honestly, validly-signed verdict;
+    a symlink-based escape with no literal `..` is caught by the same
+    resolve-then-contain check; a normal in-tree path is not falsely
+    rejected.) Full suite: **460 passed** (447 existing + 13 new), zero
+    regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+    against the live working tree (`core/policy/policy.yaml`
+    [`tier: security`] and `conductor/verdict-signing.md`
+    [`tier: normal`] — the two core-managed files this round touches —
+    were re-baselined via `tessctl lock --regen` after the deliberate,
+    reviewed edit).
+
+### Fixed
 - **Fable's adversarial review of Phase 2 (the gate spine) — one BLOCK, two
   MEDIUMs, one LOW, all closed:**
   - **HIGH-1 (BLOCK) — coverage was diff-unbound, not per-change:**

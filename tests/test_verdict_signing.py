@@ -20,6 +20,13 @@ Coverage (per the dispatch brief's explicit test list):
     test_gate_spine.py's test_allowed_verifiers_is_enforced_wrong_domain_...)
   * `tessctl verdict sign` + `tessctl verdict verify` CLI round-trip
   * `_lint_policy` rejects a `verifier_keys` entry under an unrecognized name
+  * LOW-1 (Fable Phase-2b follow-up, defense-in-depth): a registered
+    `public_key_file` that is an ABSOLUTE path, or that contains `../`
+    traversal escaping the Tess root, is rejected fail-closed — even when
+    the escaped path points at a real, existing key file — both as a pure
+    unit-level check on `_gate_verify_verdict_signature` and end-to-end
+    through `tessctl gate ci` with an otherwise honestly, validly-signed
+    verdict
 
 Unit-level coverage of `_gate_verify_verdict_signature` (no real GPG
 subprocess — pure structural/format checks) is separated from the
@@ -419,6 +426,186 @@ def test_verify_rejects_missing_key_file(engine, tmp_path):
     ok, reason = engine._gate_verify_verdict_signature(tmp_path, policy_instance, instance)
     assert ok is False
     assert "not found on disk" in reason
+
+
+# ---------------------------------------------------------------------------
+# LOW-1 (Fable Phase-2b follow-up, defense-in-depth): `public_key_file`
+# containment. `key_path = root / key_file` alone would let an ABSOLUTE
+# `public_key_file` (Path.__truediv__ silently discards `root` for an
+# absolute right-hand side) or a `../`-bearing relative one resolve OUTSIDE
+# `root`. Both unit-level checks below plant a REAL, existing decoy key file
+# outside root — proving the rejection is genuinely about containment (fires
+# BEFORE the pre-existing "not found on disk" check), not a coincidental
+# not-found from a broken path.
+# ---------------------------------------------------------------------------
+
+def test_verify_rejects_absolute_public_key_file(engine, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    decoy = tmp_path / "outside-root" / "decoy.asc"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("decoy key material\n", encoding="utf-8")
+
+    instance = {"verifier": "Reid"}
+    canonical = engine.verdict_canonical_bytes(instance)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    instance["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": "x",
+    }
+    policy_instance = {
+        "policy": {"verifier_keys": {"Reid": {"fingerprint": "A" * 40, "public_key_file": str(decoy)}}},
+    }
+    ok, reason = engine._gate_verify_verdict_signature(root, policy_instance, instance)
+    assert ok is False
+    assert "absolute path" in reason
+    assert "C1 containment" in reason
+    # Never even reached the (otherwise-truthy) existence check.
+    assert "not found on disk" not in reason
+
+
+def test_verify_rejects_traversal_public_key_file(engine, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    decoy = tmp_path / "decoy.asc"
+    decoy.write_text("decoy key material\n", encoding="utf-8")
+
+    instance = {"verifier": "Reid"}
+    canonical = engine.verdict_canonical_bytes(instance)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    instance["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": "x",
+    }
+    policy_instance = {
+        "policy": {"verifier_keys": {"Reid": {"fingerprint": "A" * 40, "public_key_file": "../decoy.asc"}}},
+    }
+    ok, reason = engine._gate_verify_verdict_signature(root, policy_instance, instance)
+    assert ok is False
+    assert "traversal" in reason
+    assert "C1 containment" in reason
+    assert "not found on disk" not in reason
+
+
+def test_verify_containment_check_does_not_reject_normal_in_tree_path(engine, tmp_path):
+    """Sanity: a normal, in-tree `public_key_file` (the only supported
+    shape) is not rejected by the new containment check — it still fails at
+    the pre-existing 'not found on disk' step (the file genuinely doesn't
+    exist in this unit test), proving the fix does not regress the
+    legitimate, in-repo path."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    instance = {"verifier": "Reid"}
+    canonical = engine.verdict_canonical_bytes(instance)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    instance["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": "x",
+    }
+    policy_instance = {
+        "policy": {"verifier_keys": {
+            "Reid": {"fingerprint": "A" * 40, "public_key_file": ".tess/keys/verifiers/reid.asc"},
+        }},
+    }
+    ok, reason = engine._gate_verify_verdict_signature(root, policy_instance, instance)
+    assert ok is False
+    assert "not found on disk" in reason
+
+
+def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
+    """LOW-1's second containment layer: a `public_key_file` value with NO
+    literal '..' component (so it passes the first, string-level check) can
+    still resolve outside `root` if it is — or passes through — a symlink
+    planted inside the repo pointing OUTSIDE it. `.resolve()` follows
+    symlinks, so the `relative_to(root_resolved)` check catches this case
+    too, surfacing the separate 'resolves outside the Tess root' message."""
+    if os.name == "nt":
+        pytest.skip("symlinks require elevated privileges on Windows")
+    root = tmp_path / "repo"
+    (root / ".tess" / "keys" / "verifiers").mkdir(parents=True)
+    decoy = tmp_path / "outside-root-decoy.asc"
+    decoy.write_text("decoy key material\n", encoding="utf-8")
+    link = root / ".tess" / "keys" / "verifiers" / "reid.asc"
+    link.symlink_to(decoy)
+
+    instance = {"verifier": "Reid"}
+    canonical = engine.verdict_canonical_bytes(instance)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    instance["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": "x",
+    }
+    policy_instance = {
+        "policy": {"verifier_keys": {
+            "Reid": {"fingerprint": "A" * 40, "public_key_file": ".tess/keys/verifiers/reid.asc"},
+        }},
+    }
+    ok, reason = engine._gate_verify_verdict_signature(root, policy_instance, instance)
+    assert ok is False
+    assert "resolves outside the Tess root" in reason
+    assert "C1 containment" in reason
+
+
+@pytest.fixture
+def outside_root_key(tmp_path_factory, verifier_gpg_keys):
+    """Reid's REAL bundled public key, written somewhere entirely outside
+    any test repo's root (via tmp_path_factory, not tmp_path, so it never
+    shares an ancestor with `project.root` — a stand-in for an attacker, or
+    an accidental misconfiguration, registering a key path that escapes the
+    repo)."""
+    d = tmp_path_factory.mktemp("outside-tess-root")
+    p = d / "reid.asc"
+    p.write_text(verifier_gpg_keys["Reid"].pubkey_armored, encoding="utf-8")
+    return p
+
+
+def test_public_key_file_escaping_root_is_rejected_end_to_end(project, verifier_gpg_keys, run_cli, engine, outside_root_key):
+    """LOW-1 end-to-end: even an HONESTLY, validly-signed verdict cannot
+    clear the gate if `policy.verifier_keys` registers a `public_key_file`
+    that escapes `root` via '../' traversal — the containment check fires
+    inside `_gate_verify_verdict_signature` before any gpg subprocess runs,
+    and `tessctl gate ci` reports the block through the real CLI, not just
+    the isolated function."""
+    root = project.root
+    shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
+    (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+    key = verifier_gpg_keys["Reid"]
+    rel_escape = os.path.relpath(str(outside_root_key), str(root))
+    assert ".." in Path(rel_escape).parts  # sanity: genuinely escapes root
+    policy = _policy_dict(["Reid"], {"Reid": {"fingerprint": key.fpr, "public_key_file": rel_escape}})
+    (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
+    _init_repo(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "initial")
+
+    base = _base_sha(root)
+    (root / "src" / "prod").mkdir(parents=True)
+    (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(root, "src/prod/app.py")
+    verdict = _base_verdict(["src/prod/**"], {"src/prod/app.py": blob})
+    verdict["signature"] = sign_verdict_for_test(engine, verdict, key)
+    _write_verdict(root, "missions/m1/verdicts/prod-src.verdict.md", verdict)
+    head = _commit_all(root, "prod change + honestly-signed verdict, but key registry escapes root")
+
+    r = run_cli(root, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    # The literal '../' in the registered path is caught by the FIRST
+    # containment check (absolute-or-'..'-component rejection) — the
+    # separate "resolves outside the Tess root" message is reserved for a
+    # relative path with no literal '..' that still escapes root via a
+    # symlink (see test_verify_rejects_symlink_escape_public_key_file below).
+    assert any(
+        "src/prod/app.py" in reason
+        and "traversal components" in reason
+        and "C1 containment" in reason
+        for reason in payload["reasons"]
+    )
 
 
 def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):

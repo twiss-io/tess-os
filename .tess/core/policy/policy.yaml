@@ -45,6 +45,23 @@
 # registry is exactly as consequential as tampering with policy.yaml itself,
 # and requires its own covering Reid/Cyra verdict — closing the "who guards the
 # key registry" loop.
+#
+# MEDIUM-1 FIX (Fable Phase-2b follow-up review — the universal GitHub
+# self-gating trap): `.github/workflows/**` is now ALSO in
+# tess-os-security-tier-doctrine's globs. Before this fix, `.github/workflows/
+# tess-gate.yml` (the gate's own CI entrypoint) was NOT covered by any
+# `require_verdict` rule — once branch protection names "tessctl gate ci" as
+# a required check, a malicious PR could keep that exact check name while
+# neutering its step (e.g. replace the `tessctl gate ci` run with `exit 0`)
+# IN THE SAME PR, and the required-check-by-name mechanism would still show
+# green. Gating the workflow directory itself means any such edit is now
+# `prod_touching` and needs its own covering, signed Reid/Cyra verdict —
+# closing the "who guards the gate's own trigger" loop the same way
+# `.tess/keys/verifiers/**` already closed "who guards the key registry."
+# See conductor/verdict-signing.md's "Defense-in-depth" section for the
+# complementary, repo-admin-side CODEOWNERS/ruleset recommendation this does
+# NOT replace (a signed verdict is a content control; CODEOWNERS/rulesets are
+# an independent, GitHub-native review-gate control over the same paths).
 policy:
   version: 1
 
@@ -57,10 +74,13 @@ policy:
         conductor/dispatch-brief.md) plus the schemas that make dispatch-brief
         and verification-routing machine-checkable (core/contracts/brief.schema.json,
         core/contracts/verdict.schema.json), and the gate's own policy surface
-        (core/contracts/policy.schema.json, core/policy/**, and — Phase 2b —
-        the verifier public-key registry at .tess/keys/verifiers/**). Silently
-        weakening any of these is exactly as consequential as an unreviewed
-        production change — treat edits here as prod_touching.
+        (core/contracts/policy.schema.json, core/policy/**, the verifier
+        public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
+        gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
+        self-gating trap where a PR could keep the required check name while
+        neutering its step). Silently weakening any of these is exactly as
+        consequential as an unreviewed production change — treat edits here
+        as prod_touching.
       globs:
         - conductor/guardrails.md
         - conductor/verification-routing.md
@@ -71,6 +91,7 @@ policy:
         - core/contracts/policy.schema.json
         - core/policy/**
         - .tess/keys/verifiers/**
+        - .github/workflows/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

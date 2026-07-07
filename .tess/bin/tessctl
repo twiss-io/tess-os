@@ -2670,9 +2670,11 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
     an unsigned verdict, a malformed signature block, a stale
     signed_content_sha256 (tamper detection — checked BEFORE the more
     expensive gpg subprocess call), an unregistered verifier, a malformed
-    registered fingerprint, a missing public-key file, a failed gpg
-    verification, or a signature made by a DIFFERENT key than the one
-    registered for this verifier (C3 exact match) all return False. Pure
+    registered fingerprint, a `public_key_file` that is absolute or escapes
+    `root` via '..' traversal (LOW-1, C1 containment), a missing public-key
+    file, a failed gpg verification, or a signature made by a DIFFERENT key
+    than the one registered for this verifier (C3 exact match) all return
+    False. Pure
     with respect to `instance` and `policy_instance` — does not consult
     `covers_paths`/`artifact_hashes`/`allowed_verifiers`-per-rule at all;
     those remain the gate's own separate, per-(path, rule) checks."""
@@ -2723,7 +2725,34 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
     key_file = key_entry.get("public_key_file")
     if not isinstance(key_file, str) or not key_file:
         return False, f"policy.verifier_keys[{verifier!r}].public_key_file is not set"
-    key_path = root / key_file
+
+    # LOW-1 (Fable Phase-2b follow-up, defense-in-depth): containment check.
+    # `key_path = root / key_file` alone lets an ABSOLUTE `public_key_file`
+    # (Path.__truediv__ treats an absolute right-hand side as a full override,
+    # silently discarding `root`) or a `../`-bearing relative one resolve
+    # OUTSIDE `root` — e.g. reading an attacker-planted key from anywhere on
+    # disk. Not exploitable TODAY: `core/policy/policy.yaml` is itself gated
+    # by this repo's own tess-os-security-tier-doctrine rule (any edit needs
+    # its own covering Reid/Cyra verdict), and even an escaped key still has
+    # to produce a signature whose fingerprint matches the REGISTERED one —
+    # but reject it fail-closed anyway, same C1-containment discipline
+    # check_manifest_write_gate / cmd_rollback already apply to every other
+    # filesystem path this tool touches.
+    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
+        return False, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is an "
+            f"absolute path or contains '..' traversal components — rejected "
+            f"(C1 containment, fail-closed)"
+        )
+    root_resolved = root.resolve()
+    key_path = (root / key_file).resolve()
+    try:
+        key_path.relative_to(root_resolved)
+    except ValueError:
+        return False, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} resolves "
+            f"outside the Tess root — rejected (C1 containment, fail-closed)"
+        )
     if not key_path.exists():
         return False, (
             f"registered public key file {key_file!r} for verifier {verifier!r} not found on disk"
