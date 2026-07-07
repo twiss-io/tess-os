@@ -11047,7 +11047,134 @@ def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
     return _gate_verify_verdict_signature(root, policy_instance, instance)
 
 
-def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_result: dict):
+def _run_artifact_current_blob_hash(root: Path, path_rel: str) -> str | None:
+    """LOW FIX (Fable re-verification — gate-parity residual): computes the
+    CURRENT git blob SHA-1 of the on-disk file at `root/path_rel`, via `git
+    hash-object` — the SAME content-addressed hash format `tessctl gate`'s
+    own `artifact_hashes` binding already consumes (`_gate_git_ls_tree`'s
+    `blob_sha`; see `docs/GATE_QUICKSTART.md`'s own `git hash-object <path>`
+    recipe for how a genuine verifier populates `artifact_hashes` in the
+    first place — verdict.schema.json's own field description says the same:
+    'git hash-object <path> before commit, or git rev-parse <ref>:<path> /
+    git ls-tree <ref> -- <path> after').
+
+    Deliberately NOT `_gate_git_ls_tree`/`_gate_git_cat_file` (which read a
+    COMMITTED blob at a specific ref via `git ls-tree`): a task's real
+    artifacts are typically still UNCOMMITTED working-tree files at the
+    moment `run`'s own per-task verifier check fires (the task just
+    finished; nothing has been pushed, and may never be — `run` and `gate`
+    operate at different points in the lifecycle). `git hash-object`
+    computes the IDENTICAL blob SHA git would assign this exact content were
+    it committed right now, without requiring a commit, a ref, or even a
+    `.git` directory to exist (verified: `git hash-object` works outside any
+    git repository at all) — the correct working-tree-safe counterpart of
+    the same content-addressing primitive `tessctl gate` uses against
+    committed refs, not a reimplementation of it.
+
+    Fails CLOSED — returns None, never raises — on any containment failure,
+    a missing/non-file target, or a subprocess error; a path that cannot be
+    hashed can never satisfy the binding check below, the same fail-closed
+    posture `_gate_git_cat_file` already established for an unreadable
+    candidate verdict blob."""
+    try:
+        target = (root / path_rel).resolve()
+        target.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    if not target.is_file():
+        return None
+    r = subprocess.run(["git", "hash-object", str(target)], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def _run_check_verdict_artifact_binding(root: Path, instance: dict, task_artifact_paths: list) -> tuple:
+    """LOW FIX (Fable re-verification finding): closes the one remaining gap
+    between `run`'s own per-task verdict check and `tessctl gate`'s ship-gate
+    trust model. `_run_check_verdict_signature` (above) already proves a
+    verdict's SIGNATURE verifies against a registered verifier's key —
+    exactly `_gate_verify_verdict_signature`'s own check, reused verbatim.
+    But a validly-signed APPROVE verdict genuinely produced for a DIFFERENT
+    task/context is still just as valid a signature on THIS task's verifier
+    dispatch — nothing, until this check, stopped that verdict from being
+    REPLAYED here. `tessctl gate` never has this gap: its own covering-
+    verdict search (`_gate_path_covering_status`) requires, per changed
+    path, a covering verdict whose `covers_paths` glob-matches the path AND
+    whose `artifact_hashes[path]` equals the path's CURRENT git blob SHA — a
+    verdict binds to the CONTENT it actually reviewed, not just a path
+    shape, so an old or foreign verdict can never quietly "cover" a new
+    change.
+
+    This function applies that IDENTICAL two-part binding rule
+    (`path_matches_globs` — reused verbatim, the exact same top-level glob
+    matcher `_gate_path_covering_status` itself calls, not reimplemented —
+    plus a git-blob-SHA equality check) to THIS task's own real, on-disk
+    artifacts instead of a push-diff's changed paths: every path in
+    `task_artifact_paths` (the primary task's return-manifest
+    `artifacts[].path` list — what this task ACTUALLY produced, never the
+    crew-plan task's own `verifier.primary_artifacts` field, which is only a
+    routing hint written before the task ever ran) must be covered by
+    `instance.covers_paths` AND have an `artifact_hashes` entry equal to
+    that path's CURRENT content hash (`_run_artifact_current_blob_hash`,
+    git's working-tree-safe counterpart of `_gate_git_ls_tree`'s ref-based
+    blob lookup — see its own docstring for why `run` cannot reuse the
+    ref-based lookup directly). Any task artifact failing either half means
+    the verdict does not demonstrably cover what THIS task produced —
+    REJECTED, fail-closed, exactly like an unsigned or wrong-key verdict.
+
+    Scoped to `disposition: APPROVE` only, mirroring `tessctl gate`'s own
+    scope: `_gate_find_covering_approved_verdicts` never even considers a
+    BLOCK verdict for covering-checks in the first place, because only an
+    APPROVE claims to clear/cover anything — a BLOCK's job is to halt, and a
+    replayed-but-still-halting BLOCK is not the exploit this fix closes (the
+    LOW finding is specifically about a replayed verdict being used to FORGE
+    a PASS, never to forge a fail; a replayed BLOCK costs an attacker
+    nothing they couldn't already get by writing any fresh, validly-signed
+    BLOCK).
+
+    A task with zero declared artifacts (`task_artifact_paths` empty) has
+    nothing to bind — vacuously True; this can only happen for a return-
+    manifest whose own `status` is NOT complete/partial/degraded, since
+    return-manifest.schema.json's own `allOf` rule already forces
+    `artifacts: minItems 1` for those three statuses.
+
+    Returns (ok, reason) — reason is None when ok, else a human-readable
+    explanation of which artifact path failed which half of the binding."""
+    if instance.get("disposition") != "APPROVE":
+        return True, None
+    if not task_artifact_paths:
+        return True, None
+    covers_paths = instance.get("covers_paths") or []
+    artifact_hashes = instance.get("artifact_hashes") or {}
+    for path_rel in task_artifact_paths:
+        if not isinstance(path_rel, str) or not path_rel:
+            continue
+        if not path_matches_globs(path_rel, covers_paths):
+            return False, (
+                f"verdict.covers_paths {covers_paths!r} does not cover this task's actual "
+                f"artifact {path_rel!r} — a verdict must bind to what THIS task produced, not "
+                f"merely glob-match some other path (cross-task verdict-replay guard, fail-closed)"
+            )
+        current_hash = _run_artifact_current_blob_hash(root, path_rel)
+        if current_hash is None:
+            return False, (
+                f"could not compute a current content hash for this task's artifact "
+                f"{path_rel!r} to check against verdict.artifact_hashes (fail-closed)"
+            )
+        reviewed_hash = artifact_hashes.get(path_rel)
+        if reviewed_hash != current_hash:
+            return False, (
+                f"verdict.artifact_hashes[{path_rel!r}] ({reviewed_hash!r}) does not match this "
+                f"task's actual CURRENT content hash ({current_hash!r}) — the verdict was not "
+                f"written for the artifact this task actually produced (cross-task verdict-replay "
+                f"guard, fail-closed)"
+            )
+    return True, None
+
+
+def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_result: dict,
+                         task_artifact_paths: list | None = None):
     """Returns (ok, violations, failure_state, cause_class, instance).
     `failure_state`/`cause_class` are None when ok is True. On failure,
     reuses the EXACT SAME classification helpers `cmd_validate` uses:
@@ -11064,7 +11191,14 @@ def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_resul
     against `policy.verifier_keys`, or it is treated as a failed
     verification (never a silent pass). MEDIUM-2: a return-manifest's
     declared `artifacts[].path` entries are re-checked against ROOT, not
-    just CWD."""
+    just CWD. LOW FIX (Fable re-verification, gate-parity residual): a
+    signature-verified `contract_type='verdict'` artifact must ALSO bind —
+    via `_run_check_verdict_artifact_binding` — to `task_artifact_paths`
+    (the primary task's own actual, real artifacts, when checking a
+    verdict; always `None`/ignored when checking a return-manifest itself),
+    or it is treated as a failed verification exactly like a bad signature
+    — closing cross-task verdict replay, the one gap left between `run`'s
+    trust model and `tessctl gate`'s."""
     if not raw_result.get("ok"):
         failure_state = "timeout" if raw_result.get("timed_out") else "error"
         reason = raw_result.get("error") or f"{contract_type} dispatch driver reported failure"
@@ -11099,6 +11233,22 @@ def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_resul
             classification = classify_schema_miss(contract_type, [sig_reason])
             return (
                 False, [f"verdict signature verification failed (HIGH-1(b), fail-closed): {sig_reason}"],
+                classification["failure_state"], classification["cause_class"], instance,
+            )
+
+        # LOW FIX (Fable re-verification): a validly-signed verdict is not
+        # enough on its own — it must also bind, via covers_paths +
+        # artifact_hashes, to what THIS task actually produced. Only
+        # reached once the signature is already proven genuine, exactly
+        # like `_gate_path_covering_status` only checks allowed_verifiers/
+        # artifact_hashes AFTER its own signature check passes.
+        binding_ok, binding_reason = _run_check_verdict_artifact_binding(
+            root, instance, task_artifact_paths or []
+        )
+        if not binding_ok:
+            classification = classify_schema_miss(contract_type, [binding_reason])
+            return (
+                False, [f"verdict artifact-hash binding failed (gate-parity, fail-closed): {binding_reason}"],
                 classification["failure_state"], classification["cause_class"], instance,
             )
 
@@ -11312,7 +11462,7 @@ def _run_clear_stale_artifact(root: Path, path_rel: str) -> None:
 
 def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_brief: dict,
                               contract_type: str, return_path_rel: str, driver: DispatchDriver, *,
-                              by=None) -> dict:
+                              by=None, task_artifact_paths: list | None = None) -> dict:
     """Drives ONE task's (or ONE verifier's) full dispatch -> validate ->
     typed-retry lifecycle against `driver` — identical logic for a worker
     task's return (contract_type='return-manifest') and a verifier's verdict
@@ -11331,6 +11481,16 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
     artifact`) — a pre-planted or stale artifact must never survive into
     the check.
 
+    `task_artifact_paths` (LOW FIX, gate-parity): only meaningful when
+    `contract_type == 'verdict'` — the primary task's own real return-
+    manifest `artifacts[].path` list, forwarded verbatim into every
+    `_run_check_artifact` call this retry loop makes so a re-dispatched
+    verifier's new verdict is bound-checked against the SAME real artifacts
+    on every attempt (the underlying task's own artifacts never change
+    across a verifier's own retries — only the verifier's brief does).
+    Always `None` for a `contract_type='return-manifest'` call, where it is
+    simply ignored.
+
     Returns {"status": "complete"|"halted", "instance": dict|None,
     "attempts": int, "halt_reason": str|None, "escalation_path": str|None}.
     """
@@ -11346,7 +11506,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
         )
         raw = driver.dispatch(augmented, output_schema=schema)
         ok, violations, failure_state, cause_class, instance = _run_check_artifact(
-            root, return_path_rel, contract_type, raw
+            root, return_path_rel, contract_type, raw, task_artifact_paths=task_artifact_paths
         )
 
         if ok:
@@ -11420,8 +11580,20 @@ def _run_execute_task(root: Path, mission_id: str, task: dict, driver: DispatchD
         verifier_brief = _run_build_verifier_brief(
             task_id, verifier.get("agent"), verifier.get("primary_artifacts") or []
         )
+        # LOW FIX (Fable re-verification, gate-parity): what this task
+        # ACTUALLY produced — the return-manifest's own declared
+        # `artifacts[].path` list, just checked and accepted above — never
+        # the crew-plan task's `verifier.primary_artifacts` routing hint
+        # (which is authored before the task ever runs and, per the
+        # crew-plan schema, need not even be a real repo path). This is
+        # what the verdict's covers_paths/artifact_hashes must bind to.
+        task_artifact_paths = [
+            a.get("path") for a in ((outcome["instance"] or {}).get("artifacts") or [])
+            if isinstance(a, dict) and isinstance(a.get("path"), str) and a.get("path")
+        ]
         v_outcome = _run_dispatch_with_retry(
-            root, mission_id, verify_task_id, verifier_brief, "verdict", verdict_path_rel, driver, by=by
+            root, mission_id, verify_task_id, verifier_brief, "verdict", verdict_path_rel, driver,
+            by=by, task_artifact_paths=task_artifact_paths,
         )
         if v_outcome["status"] == "halted":
             return {"task_id": task_id, "status": "halted", "attempts": outcome["attempts"],

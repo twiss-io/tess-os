@@ -160,11 +160,20 @@ def _write_policy_with_keys(root, keys, *, only=None):
 
 
 def _signed_verdict(engine, key, *, verifier="Reid", disposition="APPROVE",
-                     findings=None, primary_artifacts=None):
+                     findings=None, primary_artifacts=None,
+                     covers_paths=None, artifact_hashes=None):
     """Builds a schema-valid verdict dict and signs it with `key` (a
     SimpleNamespace from the `verifier_gpg_keys` fixture), using the
     engine's own `verdict_canonical_bytes()` so the signature verifies
-    exactly like a real `tessctl verdict sign` output would."""
+    exactly like a real `tessctl verdict sign` output would.
+
+    `covers_paths`/`artifact_hashes` (LOW FIX test scaffolding, gate-parity
+    residual): OMITTED entirely by default — exactly the pre-fix shape every
+    OTHER test in this file still legitimately uses, since those tests all
+    fail (or are meant to fail) at signature/identity checks that run
+    BEFORE `_run_check_verdict_artifact_binding` ever fires. Only the tests
+    that need a verdict to actually clear the new binding check pass them
+    explicitly."""
     if findings is None:
         findings = [{
             "severity": "CRITICAL", "location": "fake:1", "finding": "Scripted BLOCK finding",
@@ -187,8 +196,34 @@ def _signed_verdict(engine, key, *, verifier="Reid", disposition="APPROVE",
         ),
         "disposition": disposition,
     }
+    if covers_paths is not None:
+        verdict["covers_paths"] = covers_paths
+    if artifact_hashes is not None:
+        verdict["artifact_hashes"] = artifact_hashes
     verdict["signature"] = sign_verdict_for_test(engine, verdict, key)
     return verdict
+
+
+def _real_artifact_return_instance(mission_id, task_id, artifact_rel, *, description="Real output"):
+    """A schema-valid return-manifest `instance` dict declaring exactly ONE
+    real, test-controlled artifact at `artifact_rel` (the caller is
+    responsible for actually writing that file to disk BEFORE this instance
+    is used, so `_run_check_return_manifest_artifacts_exist_under_root`'s
+    existence check — and, with the LOW fix, the artifact-hash binding
+    check's own hashing — both see genuine on-disk content). LOW FIX test
+    scaffolding: used in place of FakeDriver's own self-referencing default
+    return-manifest (`artifacts: [{"path": <the manifest's own path>}]`)
+    whenever a test needs to predict, in advance, the EXACT content whose
+    git-blob-hash a verdict's `artifact_hashes` must match — a self-
+    referencing default's content depends on FakeDriver's own internal
+    dict shape, which these tests should not have to replicate."""
+    return {
+        "task_id": task_id, "mission_id": mission_id, "agent": "fake-agent",
+        "status": "complete", "self_reported_complete": True,
+        "artifacts": [{"path": artifact_rel, "description": description}],
+        "claims": [{"claim": f"{task_id} done", "inferred": False, "evidence": artifact_rel}],
+        "flags": [],
+    }
 
 
 def _brief(objective="Do the task."):
@@ -267,13 +302,31 @@ def test_run_two_stage_plan_end_to_end_success(engine, rroot, verifier_gpg_keys,
     ])
     plan_path = _write_plan(rroot, "plan.json", plan)
 
+    # LOW FIX (gate-parity) test scaffolding: "build"'s real artifact must
+    # exist on disk BEFORE the run, so its git-blob-hash is known in
+    # advance and the signed verdict below can genuinely bind to it.
+    build_artifact_rel = "build-artifact.txt"
+    (rroot / build_artifact_rel).write_text("Real build artifact content.\n", encoding="utf-8")
+    build_return_instance = _real_artifact_return_instance(mission_id, "build", build_artifact_rel)
+    build_hash = engine._run_artifact_current_blob_hash(rroot, build_artifact_rel)
+
     # HIGH-1(b): a mandatory verifier's verdict must be SIGNED by a
     # registered key to satisfy `run` now — FakeDriver's own "good" mode
     # verdict has no signature, so this test (a genuine passing-path
     # regression guard, not just a HIGH-1 proof test) provides one via the
-    # scripted "instance" override.
-    signed_verdict = _signed_verdict(engine, verifier_gpg_keys["Reid"], disposition="APPROVE")
-    driver = engine.FakeDriver(script={"build.verify": {"mode": "good", "instance": signed_verdict}})
+    # scripted "instance" override. LOW FIX (gate-parity): it must ALSO
+    # genuinely cover+hash "build"'s real artifact now, or the new binding
+    # check would (correctly) reject even this genuine same-task verdict.
+    signed_verdict = _signed_verdict(
+        engine, verifier_gpg_keys["Reid"], disposition="APPROVE",
+        primary_artifacts=[build_artifact_rel],
+        covers_paths=[build_artifact_rel],
+        artifact_hashes={build_artifact_rel: build_hash},
+    )
+    driver = engine.FakeDriver(script={
+        "build": {"mode": "good", "instance": build_return_instance},
+        "build.verify": {"mode": "good", "instance": signed_verdict},
+    })
     result = engine._do_run(rroot, plan_path, driver, by="tester")
 
     assert result["status"] == "complete", result
@@ -926,12 +979,27 @@ def test_run_verifier_identity_mismatch_treated_as_failed_verification(
     ])
     plan_path = _write_plan(rroot, "plan.json", plan)
 
+    # LOW FIX (gate-parity) test scaffolding: Quinn's verdict must
+    # genuinely cover+hash "build"'s real artifact — otherwise the NEW
+    # binding check (not the identity-mismatch check this test targets)
+    # would be what rejects it, and the test would no longer be proving
+    # what its name says it proves.
+    build_artifact_rel = "build-artifact.txt"
+    (rroot / build_artifact_rel).write_text("Real build artifact content.\n", encoding="utf-8")
+    build_return_instance = _real_artifact_return_instance(mission_id, "build", build_artifact_rel)
+    build_hash = engine._run_artifact_current_blob_hash(rroot, build_artifact_rel)
+
     # Genuinely, validly signed BY Quinn, claiming to BE Quinn (a real,
     # registered verifier — not a wrong-key forgery). The crew-plan
     # required Reid.
-    quinn_verdict = _signed_verdict(engine, verifier_gpg_keys["Quinn"], verifier="Quinn", disposition="APPROVE")
+    quinn_verdict = _signed_verdict(
+        engine, verifier_gpg_keys["Quinn"], verifier="Quinn", disposition="APPROVE",
+        primary_artifacts=[build_artifact_rel],
+        covers_paths=[build_artifact_rel],
+        artifact_hashes={build_artifact_rel: build_hash},
+    )
     driver = engine.FakeDriver(script={
-        "build": {"mode": "good"},
+        "build": {"mode": "good", "instance": build_return_instance},
         "build.verify": {"mode": "good", "instance": quinn_verdict},
     })
     result = engine._do_run(rroot, plan_path, driver, by="tester")
@@ -1124,3 +1192,178 @@ def test_run_check_artifact_rejects_return_manifest_whose_declared_artifact_is_c
         "relative to CWD (not root) was accepted"
     )
     assert any("root" in v.lower() for v in violations), violations
+
+
+# ---------------------------------------------------------------------------
+# 15. LOW (Fable re-verification, gate-parity residual) — `run`'s verdict
+#     check must bind a verdict's `covers_paths`/`artifact_hashes` to what
+#     THIS task actually produced, not just verify its signature. Without
+#     this, a validly-signed APPROVE verdict genuinely written for a
+#     DIFFERENT task's artifacts could be replayed to satisfy THIS task's
+#     mandatory verifier — the one gap left between `run`'s trust model and
+#     `tessctl gate`'s own diff-bound covering-verdict check.
+# ---------------------------------------------------------------------------
+
+def test_run_verdict_artifact_binding_rejects_cross_task_replay(
+    engine, rroot, verifier_gpg_keys, monkeypatch
+):
+    """LOW FIX proof — the residual this PR closes: a validly-signed,
+    disposition:APPROVE verdict written for a DIFFERENT task's real artifact
+    ("task A") — correct covers_paths, correct artifact_hashes, a real GPG
+    signature from a registered key, exactly what a genuine verifier flow
+    produces — is scripted as THIS task's ("build", standing in for "task
+    B") verifier response instead. "build" produced its OWN, genuinely
+    different artifact (different path AND different content) that the
+    replayed verdict's covers_paths/artifact_hashes says nothing about.
+    WITHOUT `_run_check_verdict_artifact_binding`, the signature check alone
+    is satisfied (it IS a real, validly-signed, registered-key APPROVE) and
+    this cross-task replay would silently clear the mandatory verifier. WITH
+    the fix, "build"'s real artifact is not covered/hashed by the replayed
+    verdict at all, so the binding check rejects it and the run halts on
+    retry-cap exhaustion instead of completing."""
+    monkeypatch.chdir(rroot)
+    _write_policy_with_keys(rroot, verifier_gpg_keys)
+    mission_id = _new_mission(engine, rroot)
+    evidence = rroot / "evidence.md"
+    evidence.write_text("proof\n", encoding="utf-8")
+    _clear_all_five_gates(engine, rroot, mission_id, evidence)
+
+    # "Task A" — some OTHER task/context entirely, reviewed and approved
+    # elsewhere. A real, validly-signed, genuinely-covering verdict for
+    # TASK A's own artifact.
+    task_a_artifact = rroot / "task-a-artifact.txt"
+    task_a_artifact.write_text("Task A's real, previously-reviewed output.\n", encoding="utf-8")
+    task_a_hash = engine._run_artifact_current_blob_hash(rroot, "task-a-artifact.txt")
+    replayed_verdict = _signed_verdict(
+        engine, verifier_gpg_keys["Reid"], disposition="APPROVE",
+        primary_artifacts=["task-a-artifact.txt"],
+        covers_paths=["task-a-artifact.txt"],
+        artifact_hashes={"task-a-artifact.txt": task_a_hash},
+    )
+
+    # "build" (standing in for "task B") produces its OWN, genuinely
+    # different real artifact — different path, different content, never
+    # mentioned anywhere in the replayed verdict above.
+    build_artifact_rel = "task-b-artifact.txt"
+    (rroot / build_artifact_rel).write_text("Task B's real, DIFFERENT output.\n", encoding="utf-8")
+    build_return_instance = _real_artifact_return_instance(mission_id, "build", build_artifact_rel)
+
+    plan = _crew_plan(mission_id, [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("build", verifier_required=True, verifier_agent="Reid")]},
+    ])
+    plan_path = _write_plan(rroot, "plan.json", plan)
+
+    driver = engine.FakeDriver(script={
+        "build": {"mode": "good", "instance": build_return_instance},
+        "build.verify": {"mode": "good", "instance": replayed_verdict},
+    })
+    result = engine._do_run(rroot, plan_path, driver, by="tester")
+
+    assert result["status"] == "halted", (
+        "LOW regression: a verdict signed for and covering a DIFFERENT task's artifact "
+        "satisfied THIS task's mandatory verifier (cross-task verdict replay) -- "
+        + json.dumps(result)
+    )
+    assert result["escalation_path"]
+
+    # Confirm the SPECIFIC rejection reason is the binding check, not some
+    # unrelated failure — every logged retry attempt names the mismatch.
+    retries_dir = _mission_dir(rroot, mission_id) / "retries"
+    attempt_files = sorted(retries_dir.glob("build.verify.attempt-*.md"))
+    assert attempt_files, "expected at least one logged retry attempt for build.verify"
+    combined = "\n".join(p.read_text(encoding="utf-8") for p in attempt_files)
+    assert "artifact-hash binding" in combined or "does not cover" in combined, combined
+
+
+def test_run_verdict_artifact_binding_accepts_genuine_covering_verdict(
+    engine, rroot, verifier_gpg_keys, monkeypatch
+):
+    """Happy-path companion proof: a verdict that IS genuinely signed for,
+    and correctly covers+hashes, THIS task's own real artifact must still
+    pass — the binding check is not a blanket rejection, only a targeted
+    one. A verifier that writes the verdict for the artifacts it actually
+    reviewed (the only way a real, honest verifier flow ever produces a
+    verdict — see docs/GATE_QUICKSTART.md's own `git hash-object` recipe)
+    clears the binding check exactly like it always should."""
+    monkeypatch.chdir(rroot)
+    _write_policy_with_keys(rroot, verifier_gpg_keys)
+    mission_id = _new_mission(engine, rroot)
+    evidence = rroot / "evidence.md"
+    evidence.write_text("proof\n", encoding="utf-8")
+    _clear_all_five_gates(engine, rroot, mission_id, evidence)
+
+    artifact_rel = "genuine-artifact.txt"
+    (rroot / artifact_rel).write_text("Genuinely reviewed output.\n", encoding="utf-8")
+    return_instance = _real_artifact_return_instance(mission_id, "build", artifact_rel)
+    current_hash = engine._run_artifact_current_blob_hash(rroot, artifact_rel)
+    genuine_verdict = _signed_verdict(
+        engine, verifier_gpg_keys["Reid"], disposition="APPROVE",
+        primary_artifacts=[artifact_rel],
+        covers_paths=[artifact_rel],
+        artifact_hashes={artifact_rel: current_hash},
+    )
+
+    plan = _crew_plan(mission_id, [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("build", verifier_required=True, verifier_agent="Reid")]},
+    ])
+    plan_path = _write_plan(rroot, "plan.json", plan)
+
+    driver = engine.FakeDriver(script={
+        "build": {"mode": "good", "instance": return_instance},
+        "build.verify": {"mode": "good", "instance": genuine_verdict},
+    })
+    result = engine._do_run(rroot, plan_path, driver, by="tester")
+
+    assert result["status"] == "complete", result
+    assert all(t["status"] == "complete" for t in result["tasks"])
+
+    build_verdict_path = _mission_dir(rroot, mission_id) / "returns" / "build.verify.verdict.json"
+    assert build_verdict_path.exists()
+    v = _run_cli(rroot, "validate", "verdict", str(build_verdict_path))
+    assert v.returncode == 0, v.stdout + v.stderr
+
+
+def test_run_verdict_artifact_binding_skipped_for_block_disposition(
+    engine, rroot, verifier_gpg_keys, monkeypatch
+):
+    """Gate-parity scope proof: the binding check applies ONLY to
+    disposition:APPROVE verdicts, mirroring `tessctl gate`'s own
+    `_gate_find_covering_approved_verdicts`, which never even considers a
+    BLOCK verdict for covering-checks — only an APPROVE claims to clear
+    anything. A validly-signed BLOCK with NO covers_paths/artifact_hashes at
+    all must still halt the run on its own terms (a genuine BLOCK), not be
+    rejected for a binding mismatch it was never trying to claim in the
+    first place."""
+    monkeypatch.chdir(rroot)
+    _write_policy_with_keys(rroot, verifier_gpg_keys)
+    mission_id = _new_mission(engine, rroot)
+    evidence = rroot / "evidence.md"
+    evidence.write_text("proof\n", encoding="utf-8")
+    _clear_all_five_gates(engine, rroot, mission_id, evidence)
+
+    artifact_rel = "build-artifact.txt"
+    (rroot / artifact_rel).write_text("Real build artifact content.\n", encoding="utf-8")
+    return_instance = _real_artifact_return_instance(mission_id, "build", artifact_rel)
+
+    # No covers_paths/artifact_hashes at all — would fail the binding check
+    # if it applied to BLOCK, exactly like the pre-fix default shape.
+    blocking_verdict = _signed_verdict(engine, verifier_gpg_keys["Reid"], disposition="BLOCK")
+
+    plan = _crew_plan(mission_id, [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("build", verifier_required=True, verifier_agent="Reid")]},
+    ])
+    plan_path = _write_plan(rroot, "plan.json", plan)
+
+    driver = engine.FakeDriver(script={
+        "build": {"mode": "good", "instance": return_instance},
+        "build.verify": {"mode": "blocking", "instance": blocking_verdict},
+    })
+    result = engine._do_run(rroot, plan_path, driver, by="tester")
+
+    assert result["status"] == "halted"
+    assert "BLOCKED" in result["halt_reason"], result["halt_reason"]
+    esc_fm = yaml.safe_load(_frontmatter_text(Path(result["escalation_path"]).read_text(encoding="utf-8")))
+    assert esc_fm["reason"] == "verifier_block"
