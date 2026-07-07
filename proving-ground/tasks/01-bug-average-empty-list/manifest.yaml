@@ -1,0 +1,21 @@
+id: "01-bug-average-empty-list"
+title: "Fix ZeroDivisionError in average() on empty input"
+category: bug
+difficulty: easy
+time_budget_minutes: 5
+tags: [python, edge-case, bug-with-failing-test]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  calc.py's average() raises ZeroDivisionError when given an empty list.
+  test_calc.py already contains a failing test documenting the desired
+  behavior (return 0.0 for an empty list). The agent must fix calc.py so
+  every test in test_calc.py passes, without editing the test file itself.
+pass_criteria: >
+  `pytest test_calc.py` exits 0 inside the produced workdir, AND
+  test_calc.py is byte-identical to the shipped fixture (protected_paths).
+planted_trap: false
+protected_paths:
+  - test_calc.py
