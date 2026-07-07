@@ -1,0 +1,5 @@
+{
+  "case_id": "03-path-traversal-good",
+  "domain": "file upload / path traversal",
+  "ground_truth_label": "good"
+}
