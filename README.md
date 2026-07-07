@@ -7,25 +7,37 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/discussions)
 
-**Not an agent. A chief of staff with a staff.**
+**The ship-gate for coding agents.**
 
-Tess OS is an orchestration-first **agent operating system** for Claude Code. Not
-one assistant that grows with you — a *governed organization* of specialists. A
-single conductor (**Tess**) takes in work, routes it through six outcome
-orchestrators, and dispatches it to specialist subagents organized into guilds,
-under enforced dependency gates, mandatory adversarial verification, and a typed
-retry protocol.
+Tess OS is a harness-layer governance framework: a cryptographically-signed,
+fail-closed review gate that blocks unverified coding-agent output at the git
+pre-commit/pre-push/CI boundary, no matter which agent or tool produced the
+diff. It sits *on top of* an existing coding agent — today, Claude Code —
+rather than replacing it: the doctrine, roster, and orchestration are what the
+agent reads; the git hooks and CI are what actually enforce.
 
-It ships with an in-place **framework upgrade engine** (`tessctl`) so new
+**Current state, stated plainly:** the gate spine (`tessctl gate`, GPG-signed
+verdicts, hard floors on credentials/money/destructive-prod/client-claims) is
+real and tested — 460 passing tests — on this unmerged branch,
+`phase-2b-gate-hardening` (stacked on open PRs
+[#35–#38](https://github.com/twiss-io/tess-os/pulls?q=is%3Apr)). Public `main`
+does not include any of it yet — a fresh clone from `main` today gets the
+v0.1.1-era tree. The orchestration layer *above* the gate (six outcome
+orchestrators, dispatch-brief contracts, typed retry) is still prose a model
+reads, not a mechanical runtime: there is no `tessctl run` and no dispatch
+driver. The gate's enforcement point (git + CI) is harness-agnostic by
+construction; the doctrine-rendering and onboarding experience is Claude Code
+only today (one registered `RenderTarget`, no Codex/Gemini/AGENTS.md adapter).
+
+> Tess OS is a doctrine + roster + config scaffold, an upgrade engine, and (on
+> this branch) a deterministic ship-gate. It is not a running application —
+> you bring Claude Code and your own credentials.
+
+It also ships an in-place **framework upgrade engine** (`tessctl`) so new
 framework versions fold into an instance you — and your agents — have been
-editing live, instead of being clobbered by a re-scaffold.
-
-> Tess OS is a doctrine + roster + config scaffold plus an upgrade engine. It is
-> not a running application — you bring Claude Code and your own credentials.
-
-The framing: **Tess OS is the council *and* your trusted assistant** — the
-conductor you talk to, backed by a staff you can grow. The wizard, the roster, the
-upgrade engine, and the vault are the first pieces of that suite.
+editing live, instead of being clobbered by a re-scaffold. That part has been
+exercised once, over the wire (v0.1.0 → v0.1.1, 2026-06-29 — see "Status"
+below).
 
 **Try it in one command** (full walkthrough in [Quickstart](#quickstart--npm-create-tess) below):
 
@@ -51,6 +63,14 @@ npm create tess@latest
 ---
 
 ## Quickstart — `npm create tess`
+
+> **What you get today:** `npm create tess@latest` installs from the published
+> `create-tess` package (currently `0.1.0`) — the doctrine, roster, wizard, and
+> upgrade engine, **not yet the ship-gate** described above (`tessctl gate`
+> lands from `phase-2b-gate-hardening` once its PRs merge and a release ships
+> it). To try the gate spine now, clone this repo at the
+> `phase-2b-gate-hardening` branch directly and run `tessctl gate
+> install-hooks`.
 
 The front door is a gamified first-run wizard. You don't fill in a config file —
 you *arrive*:
@@ -89,18 +109,32 @@ claude                # Tess reads CLAUDE.md as the entry point
 
 ## Why it's different
 
-Two compounding ideas, each defensible on Tess OS's own architecture:
+Three compounding ideas, each defensible on Tess OS's own architecture — and
+see [`docs/COMPARISON.md`](docs/COMPARISON.md) for where each one actually
+stands against the other coding-agent frameworks (GitHub Spec Kit,
+Ruflo/claude-flow, BMAD) and the app SDKs (LangGraph, CrewAI, etc.), including
+where Tess OS is behind, not just ahead:
 
-1. **Coordination depth under enforced governance.** The unit of work is not a
+1. **The signed ship-gate.** A verdict that clears a push must be a committed,
+   content-bound (git blob SHA per path), GPG-signed `disposition: APPROVE`
+   from a verifier the matched policy rule actually allows — anything else
+   (unsigned, wrong key, tampered, or simply missing) is treated as no verdict
+   at all, and hard floors (credentials, money movement, destructive prod
+   data, client-external claims) are never satisfiable by a verdict, signed or
+   not. No harness-layer competitor surveyed ships an equivalent — see
+   `docs/COMPARISON.md`'s verification row.
+
+2. **Coordination depth under enforced governance.** The unit of work is not a
    prompt; it's a *mission* routed through an outcome orchestrator and dispatched
    to a crew. Every dispatch carries a six-field brief contract. Mission flow is
    governed by dependency gates (intake → research → crew → build → review →
    verification), never a fixed clock; independent work runs in parallel. Nothing
    externally visible ships without a mandatory verifier reading the primary
    artifacts. Failed work is retried with a *changed* brief, at most three times,
-   then escalated.
+   then escalated. This layer is doctrine a model reads today, not a mechanical
+   runtime — see the "Current state" note above.
 
-2. **In-place upgradeability of the framework.** Most scaffold-first tools own
+3. **In-place upgradeability of the framework.** Most scaffold-first tools own
    generated files once and have no upstream merge — a re-run overwrites your
    edits. Tess OS keeps a committed pristine copy of the framework as a merge
    base (`.tess/core/`), records a per-file status in `tess.lock`, and a 3-way
@@ -322,6 +356,12 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`kb/`** — a knowledge-base scaffold (`raw/`, `wiki/`, `lint/`).
 - **`operator/`** — blank identity/profile/channel stubs you fill in; injected at
   `CLAUDE.md` render time, kept out of framework core.
+- **`docs/`** — [`COMPARISON.md`](docs/COMPARISON.md) (Tess OS vs. GitHub Spec
+  Kit, Ruflo/claude-flow, BMAD, and the LangGraph-class app SDKs, with sources
+  and where Tess OS is behind), the sourced
+  [`competitive-analysis-2026-07-07.md`](docs/competitive-analysis-2026-07-07.md)
+  it's built from, and `ULTIMATE_FRAMEWORK_PLAN.md` (the longer-range design
+  document — a plan, not a completed-work claim).
 
 ---
 
