@@ -29,6 +29,13 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               contract + covering-verdict + signature checks; install-hooks scaffolds the
               git hooks and the CI workflow (now push/pull_request-triggered, not just
               workflow_dispatch)
+  trace       Goal #8: local-first mission trace log — every `gate`/`validate`
+              invocation appends a schema-valid JSONL event to missions/<id>/trace.jsonl
+              (or a per-run fallback under .tess/trace/runs/ when no mission id is
+              inferable). `trace export --format otlp-json` maps the JSONL to OTel GenAI
+              semantic-convention agent spans (OTLP/JSON) for ingestion by any APM that
+              understands gen_ai.* — a pure local file transform, no network call ever
+              made (see docs/OBSERVABILITY.md)
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -48,6 +55,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 try:
@@ -7504,9 +7513,11 @@ def cmd_validate(args, root: Path) -> None:
     """
     contract_type = args.contract_type
     as_json = getattr(args, "json_out", False)
+    _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     file_path = Path(args.file)
     if not file_path.is_absolute():
         file_path = Path.cwd() / file_path
+    _trace_file_rel = _trace_rel_or_str(root, file_path)  # Goal #8: mission trace log
 
     try:
         schema = load_contract_schema(root, contract_type)
@@ -7520,6 +7531,11 @@ def cmd_validate(args, root: Path) -> None:
             "violations": [reason],
             "classification": classify_validation_infra_error(reason),
         }
+        _trace_record(  # Goal #8: mission trace log
+            root, phase="validate", action="validate", outcome="error", exit_code=2,
+            duration_s=time.perf_counter() - _trace_t0, file_path=_trace_file_rel,
+            contract_type=contract_type, reasons=[reason],
+        )
         _print_validate_result(result, as_json)
         sys.exit(2)
 
@@ -7536,6 +7552,12 @@ def cmd_validate(args, root: Path) -> None:
     if violations:
         result["classification"] = classify_schema_miss(contract_type, violations)
 
+    _trace_record(  # Goal #8: mission trace log
+        root, phase="validate", action="validate",
+        outcome="block" if violations else "pass", exit_code=1 if violations else 0,
+        duration_s=time.perf_counter() - _trace_t0, file_path=_trace_file_rel,
+        contract_type=contract_type, violations_count=len(violations), reasons=violations,
+    )
     _print_validate_result(result, as_json)
     sys.exit(0 if not violations else 1)
 
@@ -8332,23 +8354,36 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
 
 def _cmd_gate_pre_commit(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
+    _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     try:
         changed = _gate_changed_paths_staged(root)
     except GateSpineError as e:
-        _gate_print_result("pre-commit", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        result = {"blocked": True, "reasons": [str(e)], "changed_paths": []}
+        _trace_record(  # Goal #8: mission trace log
+            root, phase="gate", action="gate.pre-commit", outcome="error", exit_code=1,
+            duration_s=time.perf_counter() - _trace_t0, changed_paths=[], reasons=result["reasons"],
+        )
+        _gate_print_result("pre-commit", result, as_json)
         sys.exit(1)
 
     violations = _gate_validate_contracts(root, changed)
     result = {"blocked": bool(violations), "reasons": [f"[contract] {v}" for v in violations], "changed_paths": changed}
+    _trace_record(  # Goal #8: mission trace log
+        root, phase="gate", action="gate.pre-commit",
+        outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
+        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed,
+        violations_count=len(violations), reasons=result["reasons"],
+    )
     _gate_print_result("pre-commit", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
 
 
 def _cmd_gate_pre_push(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
+    verdict_dirs = getattr(args, "verdict_dirs", None)
+    _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     base = getattr(args, "base", None)
     head = getattr(args, "head", None)
-    verdict_dirs = getattr(args, "verdict_dirs", None)
 
     try:
         if base or head:
@@ -8359,10 +8394,20 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         else:
             changed, head_shas = _gate_changed_paths_from_stdin(root)
     except GateSpineError as e:
-        _gate_print_result("pre-push", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        result = {"blocked": True, "reasons": [str(e)], "changed_paths": []}
+        _trace_record(  # Goal #8: mission trace log
+            root, phase="gate", action="gate.pre-push", outcome="error", exit_code=1,
+            duration_s=time.perf_counter() - _trace_t0, changed_paths=[], reasons=result["reasons"],
+        )
+        _gate_print_result("pre-push", result, as_json)
         sys.exit(1)
 
     result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas)
+    _trace_record(  # Goal #8: mission trace log
+        root, phase="gate", action="gate.pre-push",
+        outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
+        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=result["reasons"],
+    )
     _gate_print_result("pre-push", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
 
@@ -8370,13 +8415,24 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
 def _cmd_gate_ci(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
     verdict_dirs = getattr(args, "verdict_dirs", None)
+    _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     try:
         changed = _gate_diff_paths(root, args.base, args.head)
     except GateSpineError as e:
-        _gate_print_result("ci", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
+        result = {"blocked": True, "reasons": [str(e)], "changed_paths": []}
+        _trace_record(  # Goal #8: mission trace log
+            root, phase="gate", action="gate.ci", outcome="error", exit_code=1,
+            duration_s=time.perf_counter() - _trace_t0, changed_paths=[], reasons=result["reasons"],
+        )
+        _gate_print_result("ci", result, as_json)
         sys.exit(1)
 
     result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head])
+    _trace_record(  # Goal #8: mission trace log
+        root, phase="gate", action="gate.ci",
+        outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
+        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=result["reasons"],
+    )
     _gate_print_result("ci", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
 
@@ -8668,6 +8724,464 @@ def cmd_gate(args, root: Path) -> None:
     fn = handlers.get(sub)
     if fn is None:
         sys.exit("tessctl gate: choose a subcommand — pre-commit | pre-push | ci | install-hooks")
+    fn(args, root)
+
+
+# ===========================================================================
+# TRACE — Goal #8: mission trace log + OTel GenAI export
+#
+# Deliberately isolated as its OWN self-contained region (own exception type,
+# own private `_trace_*` namespace, own CLI subcommand, own dispatch entry) —
+# a pure ADDITION appended after every existing subsystem, touching no
+# existing function body except a few one/two-line, clearly-marked call-sites
+# inside `_cmd_gate_pre_commit` / `_cmd_gate_pre_push` / `_cmd_gate_ci` /
+# `cmd_validate` (search "Goal #8" in those functions). No `tessctl run`
+# exists yet in this engine (docs/ULTIMATE_FRAMEWORK_PLAN.md's Phase 2
+# honest re-scope note is explicit that the mechanical conductor loop is
+# still unbuilt) — nothing to instrument there until it exists.
+#
+# Local-first, NO network, by construction: every function below only ever
+# does (a) stdlib hashing/uuid/time/json bookkeeping, or (b) a local
+# filesystem read/write under `root`. Nothing in this region imports or
+# calls anything from `socket`, `http`, `urllib`, or any HTTP client — the
+# OTLP-JSON "export" is a pure in-memory JSON reshape of on-disk JSONL, never
+# a POST to a collector. See tests/test_trace_otel.py's socket-guard tests
+# and docs/OBSERVABILITY.md's "no-network guarantee" section.
+#
+# Record shape: one JSON object per line in a `trace.jsonl` file, schema
+# `TRACE_EVENT_SCHEMA` below (validated with the SAME generic `schema_validate()`
+# engine core/contracts/*.schema.json already use — no new contract-type file
+# added to core/contracts/**, since a trace event is engine telemetry, not a
+# fifth mission contract). Location: `missions/<id>/trace.jsonl` when a
+# mission id can be inferred from the paths the gate/validate call actually
+# touched (the same `missions/<id>/...` convention `core/contracts/README.md`
+# and `GATE_CONTRACT_PATH_PATTERNS` already use); otherwise a per-run
+# fallback at `.tess/trace/runs/<run_id>.jsonl` (local runtime state, same
+# bucket as `.tess/snapshots/**` / `.tess/staging/**` — gitignored, never
+# core-managed, never touched by the manifest write-gate).
+# ===========================================================================
+
+TRACE_SCHEMA_VERSION = "tess.trace.v1"
+TRACE_MAX_REASONS = 20  # JSONL lines stay bounded even for a huge violation list
+
+TRACE_EVENT_SCHEMA = {
+    "type": "object",
+    "required": [
+        "schema", "event_id", "timestamp", "run_id", "mission_id",
+        "phase", "action", "outcome", "exit_code", "duration_ms",
+        "subject", "counts", "reasons",
+    ],
+    "properties": {
+        "schema": {"type": "string", "const": TRACE_SCHEMA_VERSION},
+        "event_id": {"type": "string", "minLength": 1},
+        "timestamp": {
+            "type": "string",
+            "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$",
+        },
+        "run_id": {"type": "string", "minLength": 1},
+        "mission_id": {"type": ["string", "null"]},
+        "phase": {"type": "string", "enum": ["gate", "validate"]},
+        "action": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "enum": ["pass", "block", "error"]},
+        "exit_code": {"type": "integer"},
+        "duration_ms": {"type": ["number", "null"]},
+        "subject": {"type": "object"},
+        "counts": {"type": "object"},
+        "reasons": {"type": "array", "items": {"type": "string"}, "maxItems": TRACE_MAX_REASONS + 1},
+    },
+    "additionalProperties": False,
+}
+
+
+class TraceError(Exception):
+    """Raised only when a trace event fails its OWN schema — a bug in the
+    tracer itself, never a verdict on the thing it observed. Distinct from
+    GateError / GateSpineError (different subsystems, own exit-code
+    discipline); callers of `_trace_record` never let this propagate (see
+    its docstring) — it exists so `_trace_append_event` itself, and its unit
+    tests, can fail loud on a genuine tracer bug rather than writing a
+    malformed line."""
+
+
+_TRACE_MISSION_ID_RE = re.compile(r"^missions/([^/]+)/")
+
+# One id per OS process (lazily generated on first use): every trace event
+# emitted by a single `tessctl gate ...` / `tessctl validate ...` invocation
+# shares one `run_id`, so a future multi-event command (or `trace export`)
+# can group them. Never used as a security/identity token — purely a local
+# correlation key.
+_TRACE_RUN_ID: str | None = None
+
+
+def _trace_current_run_id() -> str:
+    global _TRACE_RUN_ID
+    if _TRACE_RUN_ID is None:
+        _TRACE_RUN_ID = uuid.uuid4().hex
+    return _TRACE_RUN_ID
+
+
+def _trace_utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _trace_infer_mission_id(paths) -> str | None:
+    """The `missions/<id>/...` convention's <id>, from whichever changed
+    path(s) a gate/validate call actually touched — sorted so the choice is
+    deterministic even if a change spans more than one mission id (picks the
+    lexicographically-first, same tie-break discipline `_gate_iter_verdict_files`
+    already uses via `sorted(tree_index)`). None means: no path in this call
+    was mission-scoped — the fallback per-run path is used instead."""
+    ids = set()
+    for p in paths or []:
+        if not p:
+            continue
+        m = _TRACE_MISSION_ID_RE.match(Path(p).as_posix())
+        if m:
+            ids.add(m.group(1))
+    return sorted(ids)[0] if ids else None
+
+
+def _trace_rel_or_str(root: Path, path: Path) -> str:
+    """Best-effort root-relative posix path string for a `subject.file`
+    field / mission-id inference — falls back to the raw string form for a
+    path outside `root` (e.g. `tessctl validate` invoked against an
+    out-of-tree file) rather than raising."""
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
+def _trace_capped_reasons(reasons) -> list:
+    reasons = [str(r) for r in (reasons or [])]
+    if len(reasons) > TRACE_MAX_REASONS:
+        overflow = len(reasons) - TRACE_MAX_REASONS
+        return reasons[:TRACE_MAX_REASONS] + [f"...and {overflow} more (truncated for the trace log)"]
+    return reasons
+
+
+def _trace_log_path(root: Path, mission_id: str | None, run_id: str) -> Path:
+    if mission_id:
+        return root / "missions" / mission_id / "trace.jsonl"
+    return root / ".tess" / "trace" / "runs" / f"{run_id}.jsonl"
+
+
+def _trace_build_event(*, phase: str, action: str, outcome: str, exit_code: int,
+                        duration_ms: float | None, mission_id: str | None,
+                        subject: dict | None = None, counts: dict | None = None,
+                        reasons=None) -> dict:
+    return {
+        "schema": TRACE_SCHEMA_VERSION,
+        "event_id": uuid.uuid4().hex,
+        "timestamp": _trace_utc_now_iso(),
+        "run_id": _trace_current_run_id(),
+        "mission_id": mission_id,
+        "phase": phase,
+        "action": action,
+        "outcome": outcome,
+        "exit_code": int(exit_code),
+        "duration_ms": round(float(duration_ms), 3) if duration_ms is not None else None,
+        "subject": subject or {},
+        "counts": counts or {},
+        "reasons": _trace_capped_reasons(reasons),
+    }
+
+
+def _trace_append_event(root: Path, event: dict) -> Path:
+    """Schema-validate (fail loud on OUR OWN bug — see TraceError) then
+    append one JSONL line, local file only. Returns the path written."""
+    violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
+    if violations:
+        raise TraceError(f"tessctl trace: refusing to write a schema-invalid trace event: {violations}")
+    path = _trace_log_path(root, event.get("mission_id"), event["run_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, sort_keys=True) + "\n")
+    return path
+
+
+def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_code: int,
+                   duration_s: float, changed_paths: list | None = None,
+                   file_path: str | None = None, contract_type: str | None = None,
+                   violations_count: int | None = None, reasons: list | None = None) -> None:
+    """Best-effort trace-event recorder for one gate/validate invocation.
+
+    Deliberately NEVER raises out of this function: a trace-log write
+    failure (disk full, permissions, a genuine TraceError bug) must never
+    flip the exit code of the security-critical command it merely observes
+    — the gate's fail-closed contract governs the SHIP decision
+    (conductor/verification-routing.md), not this side-channel. Per the
+    project's error-handling standard ("never swallow errors silently"),
+    a failure here is still surfaced — as a one-line stderr WARNING — it is
+    just never fatal to the caller."""
+    try:
+        mission_paths = list(changed_paths) if changed_paths is not None else ([file_path] if file_path else [])
+        mission_id = _trace_infer_mission_id(mission_paths)
+        subject: dict = {}
+        if file_path is not None:
+            subject["file"] = file_path
+        if contract_type is not None:
+            subject["contract_type"] = contract_type
+        if changed_paths is not None:
+            subject["changed_paths_count"] = len(changed_paths)
+        counts: dict = {}
+        if changed_paths is not None:
+            counts["changed_paths"] = len(changed_paths)
+        if violations_count is not None:
+            counts["violations"] = violations_count
+        event = _trace_build_event(
+            phase=phase, action=action, outcome=outcome, exit_code=exit_code,
+            duration_ms=duration_s * 1000.0, mission_id=mission_id,
+            subject=subject, counts=counts, reasons=reasons,
+        )
+        _trace_append_event(root, event)
+    except Exception as e:  # best-effort observability — see docstring above
+        print(f"tessctl trace: WARNING — could not record trace event ({e}); continuing (non-fatal)", file=sys.stderr)
+
+
+def _trace_discover_jsonl_files(root: Path, mission_id: str | None = None) -> list:
+    """Every trace.jsonl this repo currently has on disk, local-only. With
+    `mission_id`: just that mission's file (if it exists). Without: every
+    `missions/*/trace.jsonl` PLUS every per-run fallback file under
+    `.tess/trace/runs/` — sorted for deterministic export ordering."""
+    if mission_id:
+        p = root / "missions" / mission_id / "trace.jsonl"
+        return [p] if p.exists() else []
+    found = []
+    missions_dir = root / "missions"
+    if missions_dir.is_dir():
+        found += sorted(missions_dir.glob("*/trace.jsonl"))
+    fallback_dir = root / ".tess" / "trace" / "runs"
+    if fallback_dir.is_dir():
+        found += sorted(fallback_dir.glob("*.jsonl"))
+    return found
+
+
+def _trace_iter_jsonl_lines(path: Path):
+    """Yields (1-based lineno, raw line text) for every non-blank line in
+    `path`. A missing file yields nothing (never raises) — `trace export`
+    treats a vanished/never-written trace file the same as "zero events",
+    not an error."""
+    if not path.exists():
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for lineno, line in enumerate(f, start=1):
+            if line.strip():
+                yield lineno, line
+
+
+# ---------------------------------------------------------------------------
+# OTel GenAI mapping — verified against the upstream semantic-conventions-genai
+# registry (docs/gen-ai/gen-ai-agent-spans.md, "Invoke agent internal span":
+# Span kind INTERNAL, examples "LangChain agents, CrewAI agents" — the same
+# in-process shape a deterministic engine invocation like `tessctl gate`/
+# `tessctl validate` fits). Every gate/validate event becomes one
+# `gen_ai.invoke_agent` internal span:
+#   - gen_ai.operation.name = "invoke_agent"                       (Required)
+#   - gen_ai.agent.name / .id / .description                      (Conditionally
+#     required when available — always populated here)
+#   - gen_ai.conversation.id = the inferred mission_id, when present (the
+#     doctrine's own "when instrumenting frameworks that manage conversation/
+#     session state" case — a mission IS the session a sequence of gate/
+#     validate events belongs to)
+#   - error.type                                                   (Conditionally
+#     required if the operation ended in an error — set whenever outcome is
+#     "block" or "error"; a custom value per the spec's own "otherwise a
+#     custom value MAY be used")
+# Everything Tess-OS-specific that ISN'T part of the gen_ai.* registry (the
+# changed-path counts, contract type, reasons, etc.) is namespaced under
+# `tess.*` — semconv explicitly allows additional attributes alongside the
+# required/recommended set; nothing here overloads a gen_ai.* key with a
+# non-standard meaning.
+# ---------------------------------------------------------------------------
+
+_OTLP_SPAN_KIND_INTERNAL = 1
+_OTLP_STATUS_OK = 1
+_OTLP_STATUS_ERROR = 2
+
+_TESS_TRACE_SCOPE_NAME = "tess-os.tessctl.trace"
+_TESS_TRACE_SCOPE_VERSION = "1.0.0"
+
+_TRACE_AGENT_DESCRIPTIONS = {
+    "gate.pre-commit": "Tess OS deterministic gate spine — pre-commit contract validation",
+    "gate.pre-push": "Tess OS deterministic gate spine — the ship-gate (pre-push)",
+    "gate.ci": "Tess OS deterministic gate spine — CI ship-gate",
+    "validate": "Tess OS contracts-as-code schema/lint validator",
+}
+
+
+def _trace_hex_id(seed: str, nbytes: int) -> str:
+    """A deterministic, correctly-sized OTLP id: `nbytes*2` lowercase hex
+    chars derived from sha256(seed) — never random, so re-exporting the same
+    JSONL always produces byte-identical OTLP-JSON (reproducible, diffable,
+    easy to test), and always exactly the length OTLP requires (16 hex for
+    a span id, 32 hex for a trace id) regardless of the seed string's own
+    length."""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[: nbytes * 2]
+
+
+def _trace_iso_to_unix_nanos(iso_ts: str) -> int:
+    dt = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    return int(dt.timestamp() * 1_000_000_000)
+
+
+def _otlp_attr(key: str, value) -> dict:
+    """One OTLP `KeyValue` — protobuf-JSON's int64 mapping is a STRING
+    (verified against the canonical example.trace.json in
+    open-telemetry/opentelemetry-proto), so intValue is `str(value)`, not a
+    raw JSON number."""
+    if isinstance(value, bool):
+        return {"key": key, "value": {"boolValue": value}}
+    if isinstance(value, int):
+        return {"key": key, "value": {"intValue": str(value)}}
+    if isinstance(value, float):
+        return {"key": key, "value": {"doubleValue": value}}
+    return {"key": key, "value": {"stringValue": str(value)}}
+
+
+def _trace_event_to_otlp_span(event: dict) -> dict:
+    run_id = event.get("run_id", "")
+    event_id = event.get("event_id", "")
+    trace_id = _trace_hex_id(f"tess-trace:{run_id}", 16)
+    span_id = _trace_hex_id(f"tess-span:{event_id}", 8)
+
+    action = event.get("action", "unknown")
+    agent_name = f"tessctl.{action}"
+    outcome = event.get("outcome", "error")
+    is_error = outcome in ("block", "error")
+
+    start_nanos = _trace_iso_to_unix_nanos(event["timestamp"])
+    duration_ms = event.get("duration_ms") or 0
+    end_nanos = start_nanos + int(duration_ms * 1_000_000)
+
+    attributes = [
+        _otlp_attr("gen_ai.operation.name", "invoke_agent"),
+        _otlp_attr("gen_ai.agent.name", agent_name),
+        _otlp_attr("gen_ai.agent.id", f"tessctl:{action}"),
+        _otlp_attr(
+            "gen_ai.agent.description",
+            _TRACE_AGENT_DESCRIPTIONS.get(action, "Tess OS deterministic engine invocation"),
+        ),
+    ]
+    if event.get("mission_id"):
+        attributes.append(_otlp_attr("gen_ai.conversation.id", event["mission_id"]))
+    if is_error:
+        attributes.append(_otlp_attr("error.type", f"tess.{outcome}"))
+
+    subject = event.get("subject") or {}
+    for key in sorted(subject):
+        attributes.append(_otlp_attr(f"tess.{event.get('phase', 'tess')}.{key}", subject[key]))
+    counts = event.get("counts") or {}
+    for key in sorted(counts):
+        attributes.append(_otlp_attr(f"tess.count.{key}", counts[key]))
+    attributes.append(_otlp_attr("tess.run.id", run_id))
+    attributes.append(_otlp_attr("tess.event.id", event_id))
+    attributes.append(_otlp_attr("tess.exit_code", event.get("exit_code", 0)))
+    reasons = event.get("reasons") or []
+    if reasons:
+        attributes.append(_otlp_attr("tess.reasons", "; ".join(reasons)))
+
+    return {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": f"invoke_agent {agent_name}",
+        "kind": _OTLP_SPAN_KIND_INTERNAL,
+        "startTimeUnixNano": str(start_nanos),
+        "endTimeUnixNano": str(end_nanos),
+        "attributes": attributes,
+        "status": {
+            "code": _OTLP_STATUS_ERROR if is_error else _OTLP_STATUS_OK,
+            "message": outcome,
+        },
+    }
+
+
+def _trace_events_to_otlp_json(events: list) -> dict:
+    """events (already schema-validated TRACE_EVENT_SCHEMA instances) ->
+    one OTLP/JSON `TracesData` document (resourceSpans -> scopeSpans ->
+    spans), structure verified against the canonical
+    open-telemetry/opentelemetry-proto `examples/trace.json`."""
+    return {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        _otlp_attr("service.name", "tess-os"),
+                        _otlp_attr("service.namespace", "tessctl"),
+                        _otlp_attr("tess.trace.schema", TRACE_SCHEMA_VERSION),
+                    ],
+                },
+                "scopeSpans": [
+                    {
+                        "scope": {"name": _TESS_TRACE_SCOPE_NAME, "version": _TESS_TRACE_SCOPE_VERSION},
+                        "spans": [_trace_event_to_otlp_span(e) for e in events],
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def _cmd_trace_export(args, root: Path) -> None:
+    export_format = getattr(args, "export_format", None)
+    if export_format != "otlp-json":
+        sys.exit(f"tessctl trace export: unsupported --format {export_format!r} (only 'otlp-json' is implemented)")
+
+    in_paths = getattr(args, "in_paths", None)
+    if in_paths:
+        jsonl_paths = [p if Path(p).is_absolute() else root / p for p in in_paths]
+        jsonl_paths = [Path(p) for p in jsonl_paths]
+    else:
+        jsonl_paths = _trace_discover_jsonl_files(root, getattr(args, "mission_id", None))
+
+    events, skipped = [], []
+    for jp in jsonl_paths:
+        if not jp.exists():
+            skipped.append(f"{jp}: file not found")
+            continue
+        for lineno, line in _trace_iter_jsonl_lines(jp):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as e:
+                skipped.append(f"{jp}:{lineno}: unparsable JSON ({e})")
+                continue
+            violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
+            if violations:
+                skipped.append(f"{jp}:{lineno}: schema-invalid ({'; '.join(violations)})")
+                continue
+            events.append(event)
+
+    otlp_doc = _trace_events_to_otlp_json(events)
+    output = json.dumps(otlp_doc, indent=2)
+
+    out_arg = getattr(args, "out", None)
+    if out_arg:
+        out_path = Path(out_arg)
+        if not out_path.is_absolute():
+            out_path = Path.cwd() / out_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(output + "\n", encoding="utf-8")
+        print(f"tessctl trace export: wrote {len(events)} span(s) ({len(skipped)} skipped) to {out_path}")
+    else:
+        print(output)
+
+    for s in skipped:
+        print(f"  SKIPPED: {s}", file=sys.stderr)
+
+
+def cmd_trace(args, root: Path) -> None:
+    """
+    tessctl trace <export>
+
+    Goal #8: local-first mission trace log + OTel GenAI export. See
+    docs/OBSERVABILITY.md for what's captured, how to export, and the
+    no-network guarantee.
+    """
+    sub = getattr(args, "trace_sub", None)
+    handlers = {"export": _cmd_trace_export}
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl trace: choose a subcommand — export")
     fn(args, root)
 
 
@@ -9055,6 +9569,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
     )
 
+    # trace — Goal #8: mission trace log + OTel GenAI export
+    p_trace = sub.add_parser(
+        "trace",
+        help="mission trace log: local JSONL event trail from gate/validate + OTel GenAI OTLP-JSON export (no network)",
+    )
+    trace_sub = p_trace.add_subparsers(dest="trace_sub", metavar="SUBCOMMAND")
+
+    p_trace_export = trace_sub.add_parser(
+        "export",
+        help="export trace.jsonl event(s) as OTLP-JSON (OTel GenAI semantic conventions) — local transform, no network",
+    )
+    p_trace_export.add_argument(
+        "--format", required=True, choices=["otlp-json"], dest="export_format",
+        help="output format (only otlp-json is implemented)",
+    )
+    p_trace_export.add_argument(
+        "--mission-id", metavar="ID",
+        help="export only missions/<ID>/trace.jsonl (default: discover every missions/*/trace.jsonl "
+             "plus the local per-run fallback files under .tess/trace/runs/)",
+    )
+    p_trace_export.add_argument(
+        "--in", action="append", dest="in_paths", metavar="PATH",
+        help="explicit JSONL file(s) to export (repeatable; overrides discovery)",
+    )
+    p_trace_export.add_argument(
+        "--out", metavar="PATH", help="write the OTLP-JSON document here instead of stdout",
+    )
+
     return parser
 
 
@@ -9123,6 +9665,8 @@ def main() -> None:
         "verdict":      cmd_verdict,
         # Phase 2: deterministic gate spine (Decisions #2/#6)
         "gate":         cmd_gate,
+        # Goal #8: mission trace log + OTel GenAI export
+        "trace":        cmd_trace,
     }
 
     fn = dispatch.get(args.command)

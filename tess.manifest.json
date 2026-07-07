@@ -50,6 +50,7 @@
     ".tess/staging/**",
     ".tess/modified.json",
     ".tess/update.lock",
+    ".tess/trace/**",
     "main.py",
     "pyproject.toml",
     "uv.lock",
@@ -73,6 +74,7 @@
     ".env / .env.* / .claude/settings.local.json": "secrets and local allowlists; Claude Code merges settings.local.json natively.",
     "*.local.md / **/*.local.md": "append-first shadow files — the 80% customization path (spec §5 Layer 2); appended after core on resolve, never overwritten.",
     ".tess/*": "tessctl's own transactional state (snapshots, staging, provenance log, lock). NOTE: .tess/core/** is the pristine merge-base source — read by tessctl, never a live-tree write target, so it is intentionally absent from BOTH lists.",
+    ".tess/trace/**": "Goal #8: the no-mission-id fallback trace-log path (.tess/trace/runs/<run_id>.jsonl) — local runtime state written directly by `_trace_append_event` (never through guarded_write / the manifest write-gate), same bucket as .tess/snapshots/** and .tess/staging/** above. Mission-scoped trace events (missions/<id>/trace.jsonl) are NOT covered by this entry — they are mission-record data, the same un-manifested bucket missions/<id>/verdicts/** already lives in.",
     "python/data layer": "main.py, pyproject.toml, uv.lock, .python-version, .venv/** — the repo's Python/uv tooling, not framework doctrine.",
     "example-project/ , starter/ , docs/ , infrastructure/ , .agents/": "non-framework subtrees present in this messy repo; explicitly fenced off.",
     "adapters/**": "Phase 1 render-target-adapter documentation seam (docs/ULTIMATE_FRAMEWORK_PLAN.md Part B architecture; item 3 of the Phase 1 brief). Pure prose describing the RenderTarget interface implemented in .tess/bin/tessctl (RENDER_TARGETS registry) — same fenced-off treatment as docs/**, since there is no core->live split to track here (no .tess/core/adapters/** mirror exists; nothing to render). Revisit if/when Phase 2+ targets ship adapter-specific config fragments that DO need core-tracking."

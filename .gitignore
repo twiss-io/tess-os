@@ -67,6 +67,11 @@ channels/
 !.tess/staging/.gitkeep
 .tess/conflicts/
 .tess/modified.json
+# Goal #8: mission trace log — the no-mission-id fallback path only
+# (missions/<id>/trace.jsonl is a mission-record artifact, same bucket as
+# missions/<id>/verdicts/**, and is NOT ignored here).
+.tess/trace/runs/*
+!.tess/trace/runs/.gitkeep
 .tess/update.lock
 
 # ─────────────────────────────────────────────────────────────

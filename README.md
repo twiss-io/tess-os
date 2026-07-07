@@ -284,6 +284,30 @@ check name: the job name `tessctl gate ci`) — see
 setup steps (a repo-admin action, not automated by this change) and the
 fresh-adopter bootstrap warning.
 
+### `tessctl trace` — mission trace log + OTel GenAI export
+
+```bash
+./tessctl trace export --format otlp-json                     # every trace.jsonl this repo has, to stdout
+./tessctl trace export --format otlp-json --mission-id m1      # just missions/m1/trace.jsonl
+./tessctl trace export --format otlp-json --out spans.json     # write to disk instead of stdout
+```
+
+Every `gate`/`validate` invocation above already appends one structured JSONL
+event — local-first, no daemon, no network — to `missions/<id>/trace.jsonl`
+(when a mission id is inferable) or a per-run fallback under
+`.tess/trace/runs/`. `trace export --format otlp-json` maps that JSONL to
+[OTel GenAI semantic-convention][genai] agent spans (OTLP/JSON) — the same
+`gen_ai.*` shape Datadog, Honeycomb, New Relic, and the OTel Collector
+already ingest, and CrewAI/LangGraph instrumentations already emit — so
+Tess OS becomes legible to any APM that understands `gen_ai.*` without a
+single network call ever leaving the machine: the export is a pure local
+file-to-file JSON reshape, and getting the result into a collector is a
+separate, explicit, operator-run step. Full capture list, the exact
+attribute mapping, and the no-network guarantee (including the socket-guard
+tests that prove it): `docs/OBSERVABILITY.md`.
+
+[genai]: https://github.com/open-telemetry/semantic-conventions-genai
+
 ---
 
 ## How a mission runs
@@ -374,6 +398,14 @@ This is an early public foundation. What is real and committed today:
   adapter, `.gemini`/generic render targets, or `tessctl run` (the mechanical
   conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest
   re-scope note.
+- **Observability (Goal #8)**: `tessctl gate`/`tessctl validate` now append a
+  schema-valid JSONL trace event to `missions/<id>/trace.jsonl` (or a
+  per-run fallback under `.tess/trace/runs/`) on every invocation, and
+  `tessctl trace export --format otlp-json` maps that log to OTel GenAI
+  semantic-convention agent spans — legible to any APM that understands
+  `gen_ai.*`, with zero network calls (a pure local file-to-file transform,
+  proven by a static import scan plus socket-guard tests). `tessctl run`
+  (which does not exist yet) is not instrumented — see `docs/OBSERVABILITY.md`.
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.
