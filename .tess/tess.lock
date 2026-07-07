@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-07T04:48:28.305937Z'
+  last_updated: '2026-07-07T14:36:46.674250Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5619,7 +5619,7 @@ files:
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:3c42684360d620902262e4a89fa149ea956affc06771cb646b6a1ba0b63ca5ef
+    base_sha: sha256:418f6b46bad5898b879ef8ee4b533d26875348270f7a562f454d459cf32082a8
     live_path: .claude/hooks/dispatch-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/task-lock-clear.sh:
