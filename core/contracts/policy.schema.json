@@ -69,7 +69,7 @@
             "type": "string",
             "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"]
           },
-          "description": "Which of verification-routing.md's six named verifiers may cover this rule. Advisory in Phase 2 (the gate does not yet reject a covering verdict for being the 'wrong' verifier — see core/policy/policy.yaml's header) but required non-empty whenever `require_verdict: true` so the policy at least DECLARES who is supposed to be signing off."
+          "description": "Which of verification-routing.md's six named verifiers may cover this rule. M1 FIX (Fable Phase-2 adversarial review): ENFORCED, not advisory — `tessctl gate`'s covering-verdict check rejects a schema-valid, disposition:APPROVE, covers_paths-matching verdict as non-covering if its `verifier` is not in this list (e.g. Lysandra's APPROVE cannot clear a `prod-api` rule whose `allowed_verifiers` is `[Reid, Quinn]`). Required non-empty whenever `require_verdict: true` so the policy always DECLARES who is supposed to be signing off, and that declaration now has teeth."
         }
       },
       "required": ["id", "description", "globs", "classification", "require_verdict"],

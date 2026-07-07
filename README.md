@@ -216,15 +216,23 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
   contracts before they're even committed.
 - **`pre-push` (the ship-gate)** — for every path changed in what's being
   pushed, classifies it against `core/policy/policy.yaml`. Any path matching a
-  `require_verdict: true` rule is BLOCKED unless a schema-valid verdict exists
-  somewhere in the tree with `disposition: APPROVE` and a `covers_paths` glob
-  matching that path (a HIGH finding still forces `BLOCK` unless explicitly
-  accepted — the Phase 0 verdict schema rule applies unchanged). Any path
-  matching a hard-floor rule (credentials / money movement / destructive prod
-  data / client-external claims — `guardrails.md` Rule 18) is BLOCKED
-  regardless of any verdict, unless an explicit human sign-off artifact exists
-  at `.tess/gate/signoffs/<rule-id>.signoff.json` — a verifier's APPROVE can
-  never clear a hard floor.
+  `require_verdict: true` rule is BLOCKED unless a COMMITTED verdict — part of
+  the actual pushed ref(s), never an uncommitted working-tree file — is
+  schema-valid, carries `disposition: APPROVE`, has a `covers_paths` glob
+  matching that path, names a `verifier` the matched rule's
+  `allowed_verifiers` actually permits, and records THIS path's current git
+  blob SHA in `artifact_hashes` (a HIGH finding still forces `BLOCK` unless
+  explicitly accepted — the Phase 0 verdict schema rule applies unchanged).
+  Verification is per-change: a verdict clears the exact content it reviewed,
+  never a permanent toll on the glob — re-editing a covered file, or adding a
+  new file under the same `covers_paths` glob, requires its own covering
+  verdict. `covers_paths` can never be a blanket 'master key' glob (`**`, bare
+  `*`, `**/*`, `**/**`) — a verdict carrying one is schema/lint-invalid and
+  covers nothing. Any path matching a hard-floor rule (credentials / money
+  movement / destructive prod data / client-external claims — `guardrails.md`
+  Rule 18) is BLOCKED regardless of any verdict, unless an explicit human
+  sign-off artifact exists at `.tess/gate/signoffs/<rule-id>.signoff.json` — a
+  verifier's APPROVE can never clear a hard floor.
 - **`ci`** — identical ship-gate logic over an explicit `--base`/`--head` ref
   range, the harness-independent backstop that still catches a push made with
   `git push --no-verify` (local hooks are advisory; CI is not).
@@ -232,6 +240,20 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
 **Fail-closed by design:** a missing/invalid policy file, a git command that
 fails, or an unreadable verdict all count as a block, never a silent allow —
 ambiguity resolves to refuse, not permit.
+
+**Trust boundary (honest disclosure, same posture `allowed_verifiers` was
+always documented with):** the gate raises the floor against an honest,
+rule-following review flow — it is not an unbypassable wall against a
+dishonest one. Git hooks are local and bypassable (`git push --no-verify`;
+`ci` is the harness-independent backstop for exactly that reason). Verdicts
+and sign-off artifacts are committer-authored, plain files with no
+cryptographic signature — a committer who controls their own branch can
+hand-author any verdict content, including a false `verifier` name or a
+fabricated `artifact_hashes` entry, the same way they could always fabricate
+a `disposition: APPROVE`. Binding coverage to a git blob SHA (HIGH-1) stops a
+verdict from silently re-covering content it never reviewed; it does not,
+and cannot, prove a specific human or agent actually read that content —
+that remains a process-integrity property, not a forgery-resistance one.
 
 ---
 
@@ -288,15 +310,28 @@ This is an early public foundation. What is real and committed today:
   the retry protocol's signal. Full retry orchestration (dispatching the
   changed-brief retry itself) remains out of scope — this ships the
   deterministic check and the classification.
-- **The gate spine (Phase 2)**: `tessctl gate` — deterministic pre-commit
-  (staged contract validation), pre-push (the ship-gate: blocks
-  prod/client/external changes without a covering `disposition: APPROVE`
-  verdict), and CI (`gate ci`) entrypoints, plus `tessctl gate install-hooks`
+- **The gate spine (Phase 2, hardened post-adversarial-review)**: `tessctl
+  gate` — deterministic pre-commit (staged contract validation), pre-push
+  (the ship-gate: blocks prod/client/external changes without a covering,
+  COMMITTED, content-bound `disposition: APPROVE` verdict from an allowed
+  verifier), and CI (`gate ci`) entrypoints, plus `tessctl gate install-hooks`
   to install/upgrade the git hooks and a `workflow_dispatch`-triggered CI
   workflow template. `core/policy/policy.yaml` is the policy-as-data instance
   the gate reads; hard-floor categories (credentials/money/destructive-prod-
   data/client-external-claims) require an explicit human sign-off artifact and
-  are never satisfiable by a verdict alone. Scope note: this phase does NOT
+  are never satisfiable by a verdict alone. Fable's adversarial review of this
+  phase found one BLOCK (HIGH-1 — coverage was diff-unbound: any schema-valid
+  APPROVE verdict anywhere in the working tree permanently cleared its
+  `covers_paths` glob for every future push, `**` acted as a master key, and
+  an uncommitted pre-push verdict counted) plus two MEDIUMs (`allowed_verifiers`
+  was advisory only; `**`/`*` glob semantics missed root-level files and let a
+  single `*` span directories). All closed: coverage is now bound to the
+  reviewed git blob SHA per path (`artifact_hashes`), master-key globs are
+  schema/lint-rejected, only committed verdicts on the pushed ref(s) count,
+  `allowed_verifiers` is enforced, and the glob matcher is fixed — see this
+  README's `tessctl gate` section and CHANGELOG.md for the full disclosure,
+  including the residual trust-boundary note (verdicts are process-value
+  artifacts, not cryptographically signed). Scope note: this phase does NOT
   include a Codex adapter, `.gemini`/generic render targets, or `tessctl run`
   (the mechanical conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s
   Phase 2 honest re-scope note.

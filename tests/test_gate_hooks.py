@@ -251,6 +251,7 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _git(e2e_repo, "hash-object", "src/prod/app.py").stdout.strip()
     verdict_path = e2e_repo / "missions" / "m1" / "verdicts" / "prod-src.verdict.md"
     verdict_path.parent.mkdir(parents=True)
     verdict = {
@@ -262,6 +263,7 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
         "summary_line": "Reviewed. Found 0 CRITICAL, 0 HIGH, 0 MEDIUM, 0 LOW. Top priority: none.",
         "disposition": "APPROVE",
         "covers_paths": ["src/prod/**"],
+        "artifact_hashes": {"src/prod/app.py": blob},
     }
     verdict_path.write_text("---\n" + yaml.safe_dump(verdict) + "---\n\nBody.\n", encoding="utf-8")
     _git(e2e_repo, "add", "-A")

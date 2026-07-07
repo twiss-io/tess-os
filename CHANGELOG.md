@@ -5,6 +5,98 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **Fable's adversarial review of Phase 2 (the gate spine) — one BLOCK, two
+  MEDIUMs, one LOW, all closed:**
+  - **HIGH-1 (BLOCK) — coverage was diff-unbound, not per-change:**
+    `_gate_find_covering_approved_verdicts` walked the ENTIRE working tree
+    (`rglob`) for any schema-valid `disposition: APPROVE` verdict whose
+    `covers_paths` glob matched a changed path — it answered "does a
+    covering verdict exist ANYWHERE," not "was THIS change reviewed."
+    Consequences: a single verdict permanently cleared its glob for every
+    future push (re-editing a covered file, or adding a brand-new file
+    under the same glob, was silently waved through); `covers_paths: ["**"]`
+    was a master key; and for `pre-push`, the covering verdict did not even
+    need to be committed. Fixed on three fronts:
+    - **(a) Coverage bound to the reviewed content** — `verdict.schema.json`
+      gains `artifact_hashes` (optional, additive — mirrors `covers_paths`'s
+      own introduction), mapping a repo-relative path to the exact git blob
+      SHA-1 the verifier reviewed. This is the content-hash loop-closer
+      `docs/ULTIMATE_FRAMEWORK_PLAN.md` §C2 named but deferred ("the
+      `artifacts_read` field with content hashes makes 'the verifier
+      actually read the primary artifact' itself checkable"). The gate now
+      requires the recorded hash to equal the path's CURRENT blob SHA at the
+      pushed head — a verdict for an OLD version of a file, or a path never
+      named in `artifact_hashes` at all, does not clear it. Verification is
+      genuinely per-change.
+    - **(b) Over-broad `covers_paths` rejected** — `_lint_verdict` refuses
+      `**`, bare `*`, `**/*`, and `**/**` as `covers_paths` entries (via new
+      `is_overbroad_glob`); a verdict carrying one is schema/lint-invalid as
+      a whole and can never satisfy the ship-gate for any path, never mind
+      "every" path.
+    - **(c) Committed verdicts only, resolved against the pushed ref(s)** —
+      covering-verdict discovery moved from `root.rglob("*")` over the
+      on-disk working tree to `git ls-tree -r` over the actual pushed head
+      sha(s) (new `_gate_git_ls_tree` / `_gate_git_tree_index` / rewritten
+      `_gate_iter_verdict_files` / `_gate_find_covering_approved_verdicts`,
+      reading blob content via `git cat-file`, not the filesystem). An
+      uncommitted (even `git add`-staged) verdict, or one committed only on
+      a different branch, can no longer clear the ship-gate. This also
+      closes **LOW-1** (symlink-following): `git ls-tree` reports a symlink
+      as its own non-blob mode, and `_gate_git_ls_tree` excludes it outright
+      — the gate never resolves a symlink to decide coverage.
+  - **M1 — `allowed_verifiers` is now enforced, not advisory:** the covering
+    verdict's `verifier` field (already required by Phase 0's schema) must
+    be in the matched policy rule's `allowed_verifiers`; a wrong-domain
+    APPROVE (Fable's example: Lysandra, a creative-taste reviewer, clearing
+    a `prod-api` rule requiring `[Reid, Quinn]`) no longer clears the gate.
+    `policy.schema.json`'s own field description and `core/policy/policy.yaml`'s
+    header — which previously documented this as a "deliberately deferred
+    Phase 2+ tightening" — are updated to match.
+  - **M2 — glob-matcher semantics fixed:** `path_matches_globs`'s previous
+    implementation (`fnmatch.translate` + a NUL-placeholder trick for `**`)
+    had two bugs, both with visible pre-existing workarounds elsewhere in
+    the file (the vault guard's separate `_age_by_extension` check and
+    `_VAULT_SENSITIVE_GLOBS_NORMALIZED` list existed specifically because
+    `**/*.age` "misses" root-level files). Replaced with a hand-rolled
+    per-segment translator (`_glob_segment_regex` / `_glob_to_regex`):
+    (1) `**` now matches zero-or-more whole path segments in ANY position
+    (leading/middle/trailing), so `**/*.env` now ALSO gates a root-level
+    `.env` (previously it required at least one directory component — this
+    directly fixes `core/policy/policy.yaml`'s own credentials hard-floor
+    glob, no glob-string changes needed); (2) a bare `*`/`?` inside any
+    other segment is now `/`-excluded, so `src/*` covers direct children of
+    `src/` only and no longer behaves identically to `src/**`.
+  - **LOW-2 — documented, not just fixed:** a new optional
+    `verifier_signoff_note` field on the verdict schema, plus explicit
+    README.md/CHANGELOG.md disclosure, states plainly that `verifier` /
+    `covers_paths` / `artifact_hashes` are PROCESS-VALUE fields (a
+    deliberate, rule-following artifact) — not a forgery-resistance
+    mechanism. Nothing here cryptographically signs a verdict or proves a
+    specific human/agent authored it; a committer controlling their own
+    branch can still hand-author any verdict content. The gate raises the
+    floor against an honest, rule-following review flow; it is not an
+    unbypassable wall against a dishonest one — the same disclosure posture
+    `allowed_verifiers` always carried, now applied project-wide.
+  - **11 new tests** proving: a verdict clears only the exact reviewed
+    content and a subsequent edit re-blocks (per-change verification); a
+    brand-new file under an already-covered glob is not silently covered; a
+    `**`/blanket `covers_paths` is rejected at both the CLI and the lint
+    level; `allowed_verifiers` is enforced (wrong-domain APPROVE doesn't
+    clear, the same shape from the allowed verifier does); the two glob
+    fixes (root `.env` gated end-to-end through the real hard-floor glob
+    shape; `src/*` doesn't span into `src/prod/deep/`); an uncommitted
+    (even staged) pre-push verdict doesn't clear; a verdict committed only
+    on a different branch doesn't clear; and the stdin pre-push protocol
+    path (not just explicit `--base`/`--head`) correctly threads the pushed
+    head sha(s) through to the covering-verdict check. Full suite:
+    **427 passed** (416 existing + 11 new), zero regressions. `tessctl
+    doctor` / `verify` / `lock --check` all clean against the live working
+    tree (the three tier:security core files this fix touches —
+    `verdict.schema.json`, `policy.schema.json`, `core/policy/policy.yaml`
+    — were re-baselined via `tessctl lock --regen` after the deliberate,
+    reviewed edit, per that command's own documented maintainer flow).
+
 ### Added
 - **Phase 2 of the Ultimate Framework Plan — the gate spine
   (Design Decision #2 "deterministic gate spine at git/CI" + Design

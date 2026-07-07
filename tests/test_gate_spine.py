@@ -112,8 +112,17 @@ def _commit_all(root, message):
     return _git(root, "rev-parse", "HEAD").stdout.strip()
 
 
-def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", findings=None):
-    return {
+def _blob_sha(root, rel_path):
+    """The git blob SHA-1 a file's CURRENT on-disk content would get once
+    committed — `git hash-object` is a pure function of content, so this is
+    valid to call BEFORE the commit that will actually introduce the blob
+    (the exact sequence every HIGH-1 'covering verdict' test below uses: hash
+    the file, embed the hash in the verdict, THEN commit both together)."""
+    return _git(root, "hash-object", rel_path).stdout.strip()
+
+
+def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", findings=None, artifact_hashes=None):
+    verdict = {
         "verifier": verifier,
         "output_domain": "Code diff / PR",
         "primary_artifacts_read": list(covers_paths),
@@ -123,6 +132,9 @@ def _valid_verdict(covers_paths, disposition="APPROVE", verifier="Reid", finding
         "disposition": disposition,
         "covers_paths": list(covers_paths),
     }
+    if artifact_hashes is not None:
+        verdict["artifact_hashes"] = dict(artifact_hashes)
+    return verdict
 
 
 def _write_verdict(root, rel_path, verdict_dict):
@@ -160,9 +172,10 @@ def test_ci_allows_prod_touching_change_with_covering_approve_verdict(gate_repo,
     base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
     _write_verdict(
         gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(covers_paths=["src/prod/**"]),
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
     )
     head = _commit_all(gate_repo, "add prod change + covering verdict")
 
@@ -244,10 +257,12 @@ def test_ci_blocks_when_covering_verdict_has_unaccepted_high_finding(gate_repo, 
     assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
 
     # Sanity: with the HIGH finding explicitly accepted, the SAME shape passes.
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
     ok_verdict = _valid_verdict(
         covers_paths=["src/prod/**"],
         disposition="APPROVE",
         findings=bad_verdict["findings"],
+        artifact_hashes={"src/prod/app.py": blob},
     )
     ok_verdict["severity_counts"]["high"] = 1
     ok_verdict["accepted_high_findings"] = [
@@ -490,9 +505,284 @@ def test_pre_push_stdin_protocol_blocks(gate_repo, run_cli):
     assert any("src/prod/app.py" in reason for reason in payload["reasons"])
 
 
+def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli):
+    """The stdin-protocol path threads `head_shas` through to the covering-
+    verdict check exactly like explicit --base/--head does — proven
+    independently since _gate_changed_paths_from_stdin's return shape
+    changed (HIGH-1(c)) to also surface the pushed head sha(s)."""
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+    )
+    head = _commit_all(gate_repo, "prod change + covering verdict")
+
+    stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
+    r = run_cli(gate_repo, "gate", "pre-push", "--json", input_text=stdin)
+    assert r.returncode == 0, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is False
+
+
 def test_pre_push_requires_both_base_and_head_or_neither(gate_repo, run_cli):
     r = run_cli(gate_repo, "gate", "pre-push", "--base", "HEAD~1", "--json")
     assert r.returncode == 1
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
     assert any("--base and --head must both be given" in reason for reason in payload["reasons"])
+
+
+# ---------------------------------------------------------------------------
+# Fable Phase-2 adversarial review fixes: HIGH-1 (bind coverage to the diff),
+# M1 (allowed_verifiers enforced), M2 (glob semantics). Five proofs, per the
+# dispatch brief:
+#   (i)   a verdict clears ONLY the exact reviewed change — a subsequent edit
+#         to the same path is BLOCKED again (per-change verification)
+#   (ii)  a '**'/blanket verdict is REJECTED (no master key)
+#   (iii) allowed_verifiers is enforced (wrong-domain APPROVE doesn't clear)
+#   (iv)  the glob fixes (root .env gated; src/* doesn't span deep)
+#   (v)   an uncommitted pre-push verdict doesn't clear
+# ---------------------------------------------------------------------------
+
+# (i) per-change verification -------------------------------------------------
+
+def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate_repo, run_cli):
+    """HIGH-1(a): a covering verdict binds to the CONTENT it reviewed (via
+    artifact_hashes), not just the path glob. Re-editing the SAME path after
+    the verdict was written must re-trigger the ship-gate — verification is
+    per-change, not a permanent toll paid once per glob."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod v1')\n")
+    blob_v1 = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob_v1}),
+    )
+    head1 = _commit_all(gate_repo, "v1 + covering verdict")
+
+    r1 = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head1, "--json")
+    assert r1.returncode == 0, r1.stdout + r1.stderr  # v1 genuinely covered
+
+    # Re-edit the SAME file — content changes, verdict is left untouched.
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod v2 -- different content')\n")
+    head2 = _commit_all(gate_repo, "v2 -- re-edit, verdict now stale")
+
+    r2 = run_cli(gate_repo, "gate", "ci", "--base", head1, "--head", head2, "--json")
+    assert r2.returncode == 1, r2.stdout + r2.stderr
+    payload = json.loads(r2.stdout)
+    assert payload["blocked"] is True
+    assert any(
+        "src/prod/app.py" in reason and "does not record THIS path's CURRENT content" in reason
+        for reason in payload["reasons"]
+    )
+
+
+def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(gate_repo, run_cli):
+    """HIGH-1(a), companion case: artifact_hashes only vouches for the files
+    it actually names. A brand-new file added later under the SAME
+    covers_paths glob — one the verdict never reviewed — is not covered
+    just because an old sibling file under that glob was."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+    )
+    head1 = _commit_all(gate_repo, "app.py + covering verdict")
+    r1 = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head1, "--json")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    (gate_repo / "src" / "prod" / "new_module.py").write_text("print('new')\n")
+    head2 = _commit_all(gate_repo, "add new_module.py under src/prod/**")
+
+    r2 = run_cli(gate_repo, "gate", "ci", "--base", head1, "--head", head2, "--json")
+    assert r2.returncode == 1, r2.stdout + r2.stderr
+    payload = json.loads(r2.stdout)
+    assert payload["blocked"] is True
+    assert any("src/prod/new_module.py" in reason for reason in payload["reasons"])
+
+
+# (ii) master-key rejection ----------------------------------------------------
+
+def test_blanket_covers_paths_glob_is_rejected_as_master_key(gate_repo, run_cli):
+    """HIGH-1(b): a verdict may never declare '**' (or an equivalent
+    blanket shape) in covers_paths to clear every future prod change in one
+    review. Such a verdict is schema/lint-invalid as a whole and can never
+    satisfy the ship-gate for ANY path."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/master-key.verdict.md",
+        _valid_verdict(covers_paths=["**"], artifact_hashes={"src/prod/app.py": blob}),
+    )
+    head = _commit_all(gate_repo, "prod change + '**' master-key verdict")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
+
+
+def test_validate_rejects_blanket_covers_paths_glob(engine):
+    """Direct schema/lint proof, independent of the gate CLI: `tessctl
+    validate verdict`'s lint pass flags every '**'-shaped covers_paths entry,
+    and does NOT flag a properly-scoped glob."""
+    for blanket in ("**", "*", "**/*", "**/**"):
+        errors = engine._lint_verdict(_valid_verdict(covers_paths=[blanket], artifact_hashes={}))
+        assert any("master key" in e for e in errors), f"{blanket!r} should be rejected"
+
+    ok_errors = engine._lint_verdict(_valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={}))
+    assert ok_errors == []
+
+
+# (iii) allowed_verifiers enforced ---------------------------------------------
+
+def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate_repo, run_cli):
+    """M1 fix: allowed_verifiers is no longer advisory. The test policy's
+    'prod-src' rule only allows Reid — a schema-valid, covers_paths-matching,
+    content-bound APPROVE from a DIFFERENT verifier (Lysandra — a creative-
+    taste reviewer with no standing on a prod-src rule) must not clear it."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/wrong-verifier.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], verifier="Lysandra",
+            artifact_hashes={"src/prod/app.py": blob},
+        ),
+    )
+    head = _commit_all(gate_repo, "prod change + wrong-verifier APPROVE")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any(
+        "src/prod/app.py" in reason and "allowed verifier" in reason
+        for reason in payload["reasons"]
+    )
+
+    # Sanity: the identical change, reviewed by the rule's ACTUAL allowed
+    # verifier (Reid), clears it.
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/wrong-verifier.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], verifier="Reid",
+            artifact_hashes={"src/prod/app.py": blob},
+        ),
+    )
+    head2 = _commit_all(gate_repo, "swap to the rule's allowed verifier")
+    r2 = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head2, "--json")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+
+# (iv) glob semantics fixes -----------------------------------------------------
+
+def test_glob_fix_double_star_matches_root_level_file(engine):
+    """M2 fix: '**/x' must ALSO match a root-level 'x' — e.g. a credentials
+    rule glob '**/*.env' must gate a top-level '.env', not just a nested
+    'config/.env' (previously it required at least one directory component)."""
+    assert engine.path_matches_globs(".env", ["**/*.env"]) is True
+    assert engine.path_matches_globs("config/.env", ["**/*.env"]) is True
+
+
+def test_glob_fix_single_star_does_not_span_directories(engine):
+    """M2 fix: a bare '*' inside a glob segment must not span '/' — 'src/*'
+    covers direct children of src/ only, not arbitrarily-deep prod paths
+    underneath it (previously 'src/*' behaved identically to 'src/**')."""
+    assert engine.path_matches_globs("src/app.py", ["src/*"]) is True
+    assert engine.path_matches_globs("src/prod/deep/app.py", ["src/*"]) is False
+
+
+def test_glob_fix_gates_a_real_root_level_env_file(gate_repo, run_cli):
+    """End-to-end proof against the real policy.yaml shape (a '**/*.env'
+    hard-floor glob, same convention core/policy/policy.yaml ships): a
+    root-level '.env' is now genuinely gated, not silently missed."""
+    policy = {
+        "policy": {
+            "version": 1,
+            "rules": [],
+            "hard_floor_rules": [{
+                "id": "credentials",
+                "category": "credentials",
+                "description": "d",
+                "globs": ["**/*.env"],
+            }],
+        }
+    }
+    (gate_repo / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
+    _git(gate_repo, "add", "-A")
+    _git(gate_repo, "commit", "-q", "-m", "policy: real-shaped credentials glob")
+    base = _base_sha(gate_repo)
+
+    (gate_repo / ".env").write_text("SECRET=1\n")
+    head = _commit_all(gate_repo, "add root .env")
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("HARD FLOOR" in reason and "credentials" in reason for reason in payload["reasons"])
+
+
+# (v) uncommitted pre-push verdict does not clear ------------------------------
+
+def test_uncommitted_verdict_on_disk_does_not_clear_the_ship_gate(gate_repo, run_cli):
+    """HIGH-1(c): a verdict-shaped file sitting on disk — even `git add`-
+    staged — but NOT committed (not part of the pushed ref) must never
+    satisfy the ship-gate. Coverage is resolved against the COMMITTED tree
+    at the pushed head via `git ls-tree`, never an rglob over the working
+    tree."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    head = _commit_all(gate_repo, "prod change, no verdict yet")
+
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+    )
+    _git(gate_repo, "add", "missions/m1/verdicts/prod-src.verdict.md")  # staged, never committed
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
+
+
+def test_verdict_committed_on_a_different_branch_does_not_clear_the_pushed_head(gate_repo, run_cli):
+    """HIGH-1(c), companion case: a verdict committed on some OTHER branch
+    (fully committed, just not reachable from the ref actually being pushed)
+    must not clear the ship-gate for the ref that IS being pushed."""
+    base = _base_sha(gate_repo)
+    original_branch = _git(gate_repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(gate_repo, "src/prod/app.py")
+    head = _commit_all(gate_repo, "prod change, no verdict on this branch")
+
+    _git(gate_repo, "checkout", "-q", "-b", "side-branch-with-verdict")
+    _write_verdict(
+        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob}),
+    )
+    _commit_all(gate_repo, "verdict lives only on this side branch")
+    _git(gate_repo, "checkout", "-q", original_branch)
+
+    r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    assert r.returncode == 1, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])

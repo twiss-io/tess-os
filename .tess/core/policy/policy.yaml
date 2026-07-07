@@ -20,12 +20,20 @@
 #     anything. Replace it with your project's actual prod/client-facing paths
 #     on adoption; do not leave it as a false sense of coverage.
 #
-# Advisory note (Phase 2 scope): `allowed_verifiers` is declared per rule (the
-# schema requires it whenever require_verdict:true) but `tessctl gate` does not
-# yet REJECT a covering verdict for naming a verifier outside that list — it only
-# checks disposition:APPROVE + covers_paths. Enforcing the allowed_verifiers list
-# itself is a documented, deliberately deferred Phase 2+ tightening (flagged for
-# review, not silently implemented as if it were already checked).
+# M1 FIX (Fable Phase-2 adversarial review — was: "Advisory note... tessctl gate
+# does not yet REJECT a covering verdict for naming a verifier outside that
+# list"): `allowed_verifiers` is now ENFORCED. A covering verdict must (a)
+# schema+lint validate, (b) carry disposition:APPROVE, (c) have a covers_paths
+# glob matching the changed path, (d) name a `verifier` in the matched rule's
+# allowed_verifiers, AND (e) record this path's CURRENT content in
+# artifact_hashes (core/contracts/verdict.schema.json) — missing any of these
+# means the verdict no longer counts as covering, and `tessctl gate` reports
+# which condition failed.
+#
+# Glob semantics note (M2 fix): `**/*.env` below now ALSO matches a root-level
+# `.env` (previously it required at least one directory component — see
+# path_matches_globs's own header comment in .tess/bin/tessctl for the bug and
+# fix); `*` inside any other segment never spans `/`.
 policy:
   version: 1
 
