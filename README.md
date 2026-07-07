@@ -205,6 +205,9 @@ front-matter block.
 
 ./tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>   # sign a verdict (Phase 2b)
 ./tessctl verdict verify <file>                                    # check a verdict's signature
+
+./tessctl gate signoff sign <file> --key-id <KEYID>                # sign a hard-floor sign-off
+./tessctl gate signoff verify <file> --rule-id <ID>                 # check a sign-off's signature
 ```
 
 Phase 2 of `docs/ULTIMATE_FRAMEWORK_PLAN.md`, Design Decisions #2 ("enforcement
@@ -239,9 +242,16 @@ APPROVE verdict"). Three mounting points, one deterministic logic:
   identically to "no covering verdict at all" — fail-closed. Any path
   matching a hard-floor rule (credentials / money movement / destructive prod
   data / client-external claims — `guardrails.md` Rule 18) is BLOCKED
-  regardless of any verdict, unless an explicit human sign-off artifact
-  exists at `.tess/gate/signoffs/<rule-id>.signoff.json` — a verifier's
-  APPROVE (signed or not) can never clear a hard floor.
+  regardless of any verdict, unless an explicit, cryptographically SIGNED
+  human sign-off artifact exists at `.tess/gate/signoffs/<rule-id>.signoff.json`
+  — a verifier's APPROVE (signed or not) can never clear a hard floor, and
+  (honesty-capstone-audit-2026-07-08 §3-d) neither can an unsigned/hand-
+  authored sign-off: the artifact must carry a `signature` that verifies
+  against a registered key in `policy.signoff_keys` (same GPG trust model as
+  verdict signing — `tessctl gate signoff sign|verify`), and
+  `.tess/gate/signoffs/**` is itself now policy-covered under
+  `tess-os-security-tier-doctrine` — a sign-off is a governed artifact AND
+  must be authenticated, not either/or.
 - **`ci`** — identical ship-gate logic over an explicit `--base`/`--head` ref
   range, the harness-independent backstop that still catches a push made with
   `git push --no-verify` (local hooks are advisory; CI is not).
@@ -283,6 +293,19 @@ check name: the job name `tessctl gate ci`) — see
 `conductor/verdict-signing.md`'s "CI auto-enforce" section for the exact
 setup steps (a repo-admin action, not automated by this change) and the
 fresh-adopter bootstrap warning.
+
+**Self-protection (honesty-capstone-audit-2026-07-08 §3-c/§3-d):** the gate
+now protects its OWN engine and OWN authentication artifacts, not just its
+trigger file and policy config. `.tess/bin/**` (the engine) and the root
+`tessctl` wrapper are policy-covered under `tess-os-security-tier-doctrine`
+(same as `core/policy/**` and `.github/workflows/**`) — an edit to the
+engine itself needs its own covering, signed Reid/Cyra verdict. On top of
+that, the CI workflow (v3) never trusts the pushed tree's own copy of the
+engine to evaluate itself: a dedicated "Extract trusted gate engine" step
+extracts and runs `.tess/bin/tessctl` as it existed **at the push's base
+ref**, failing closed if no baseline engine exists. `.tess/gate/signoffs/**`
+is likewise now policy-covered, layered on top of the sign-off signature
+requirement described above.
 
 ---
 
