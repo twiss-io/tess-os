@@ -2631,14 +2631,52 @@ def _verify_tag_secure(
 # discipline as _verify_tag_secure throughout.
 # ---------------------------------------------------------------------------
 
-def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Path) -> tuple[bool, str]:
+def _gpg_signing_key_validity_reason(raw_status_output: str) -> str | None:
+    """Scan gpg's `--status-fd` machine-readable output for the ONE line gpg
+    emits classifying a checked signature: exactly one of GOODSIG / EXPSIG /
+    EXPKEYSIG / REVKEYSIG / BADSIG / ERRSIG per signature (documented in
+    GnuPG's own doc/DETAILS). Critically — verified empirically, not
+    assumed — EXPKEYSIG and REVKEYSIG still come with a VALIDSIG line and a
+    process exit code of 0: the cryptographic math is genuinely fine, gpg is
+    additionally telling us the signing KEY's current standing (checked at
+    VERIFICATION time, against gpg's live key/revocation state — NOT
+    whether the key was good back when it was used to sign) is bad.
+    `_gate_verify_verdict_signature` (A10c fix, Gate Arena finding) treats
+    either as fail-closed. Returns 'revoked', 'expired', or None (gpg's
+    status stream says the key's standing is fine as far as it can tell —
+    this function does not independently re-check key validity itself; it
+    trusts gpg's own classification of the exact key that made THIS
+    signature, which is exactly the classification gpg recomputes fresh
+    every time `--verify` runs, i.e. AT VERIFICATION TIME)."""
+    for line in raw_status_output.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == "[GNUPG:]":
+            if parts[1] == "REVKEYSIG":
+                return "revoked"
+            if parts[1] == "EXPKEYSIG":
+                return "expired"
+    return None
+
+
+def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Path) -> tuple[bool, str, str | None]:
     """Verify `sig_armored` (an ASCII-armored detached signature) against
     `payload` bytes using gpg homed at `homedir` — an ISOLATED GNUPGHOME the
     caller has already seeded with exactly the key(s) it wants to trust for
-    this check. Returns (verified_ok, signing_fingerprint); the fingerprint
-    is '' when verification failed or no VALIDSIG line could be parsed from
-    gpg's output (reuses `_parse_gpg_fingerprint`, the same parser
-    `_verify_tag_secure` uses for `git verify-tag --raw`)."""
+    this check. Returns (verified_ok, signing_fingerprint, key_validity_reason):
+      - verified_ok / signing_fingerprint — UNCHANGED cryptographic-validity
+        contract from before the A10c fix: verified_ok is True iff gpg's
+        exit code is 0 AND a VALIDSIG line could be parsed; the fingerprint
+        is '' when verification failed or no VALIDSIG line was present
+        (reuses `_parse_gpg_fingerprint`, the same parser `_verify_tag_secure`
+        uses for `git verify-tag --raw`).
+      - key_validity_reason (A10c, new) — 'expired' | 'revoked' | None, from
+        `_gpg_signing_key_validity_reason`. Deliberately a SEPARATE return
+        value rather than folded into `verified_ok`: gpg still reports a
+        cryptographically valid signature in this case (verified_ok stays
+        True), so keeping it separate lets `_gate_verify_verdict_signature`
+        surface the SPECIFIC expired/revoked reason to the operator instead
+        of a generic 'verification failed' message, while still failing
+        closed overall."""
     tmp_dir = Path(tempfile.mkdtemp(prefix="tessctl_verdict_verify_", dir=str(homedir)))
     try:
         payload_path = tmp_dir / "payload.bin"
@@ -2656,7 +2694,8 @@ def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Pa
             + vr.stderr.decode("utf-8", errors="replace")
         )
         fp = _parse_gpg_fingerprint(raw)
-        return (vr.returncode == 0 and bool(fp)), fp
+        key_validity_reason = _gpg_signing_key_validity_reason(raw)
+        return (vr.returncode == 0 and bool(fp)), fp, key_validity_reason
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
@@ -2672,9 +2711,13 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
     expensive gpg subprocess call), an unregistered verifier, a malformed
     registered fingerprint, a `public_key_file` that is absolute or escapes
     `root` via '..' traversal (LOW-1, C1 containment), a missing public-key
-    file, a failed gpg verification, or a signature made by a DIFFERENT key
-    than the one registered for this verifier (C3 exact match) all return
-    False. Pure
+    file, a failed gpg verification, a signature made by a DIFFERENT key
+    than the one registered for this verifier (C3 exact match), or — A10c
+    FIX (Gate Arena finding, disclosed 2026-07-07) — a signature that is
+    cryptographically valid and made by the exact registered key, but whose
+    key gpg reports as EXPIRED or REVOKED as of right now (checked at
+    verification time, not signing time — see
+    `_gpg_signing_key_validity_reason`) — all return False. Pure
     with respect to `instance` and `policy_instance` — does not consult
     `covers_paths`/`artifact_hashes`/`allowed_verifiers`-per-rule at all;
     those remain the gate's own separate, per-(path, rule) checks."""
@@ -2779,7 +2822,9 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
             ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
             input=f"{fingerprint}:6:\n".encode(), capture_output=True,
         )
-        verified, signing_fp = _gpg_verify_detached_signature(canonical, sig_armored, isolated_gpg)
+        verified, signing_fp, key_validity_reason = _gpg_verify_detached_signature(
+            canonical, sig_armored, isolated_gpg,
+        )
     finally:
         shutil.rmtree(str(isolated_gpg), ignore_errors=True)
 
@@ -2793,6 +2838,25 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
             f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
             f"the registered fingerprint {fingerprint} for verifier {verifier!r} — wrong "
             f"key, fail-closed (C3 exact match, no short-ID/proximity matching)"
+        )
+    # A10c FIX (Gate Arena finding, disclosed 2026-07-07: "a verdict signed
+    # with an already-expired/revoked key still verifies"). Checked LAST,
+    # after crypto validity and exact-key match both already passed, so the
+    # block message is as specific as possible — this is the one remaining
+    # way a genuinely correctly-signed verdict can still fail: the KEY
+    # itself is no longer trustworthy, per gpg's own live EXPKEYSIG/
+    # REVKEYSIG classification (checked at VERIFICATION time, not signing
+    # time — see `_gpg_signing_key_validity_reason`).
+    if key_validity_reason is not None:
+        return False, (
+            f"the signature is cryptographically valid and was made by the exact key "
+            f"registered for verifier {verifier!r}, but gpg reports that key is "
+            f"{key_validity_reason.upper()} as of RIGHT NOW (checked at verification "
+            f"time, not signing time) — A10c fix, fail-closed: a verdict signed by an "
+            f"{key_validity_reason} key can never cover a path, even one signed while "
+            f"the key was still good; rotate {verifier!r}'s entry in "
+            f"policy.verifier_keys to a currently-valid key and have this verdict "
+            f"re-signed"
         )
     return True, None
 
@@ -7873,17 +7937,22 @@ def _gate_changed_paths_from_stdin(root: Path):
     remote sha) is diffed against git's empty-tree object so its very first
     commit's files are included, not silently skipped.
 
-    Returns (changed_paths, head_shas) — `head_shas` is every pushed
-    `local_sha` (the actual commits being pushed), used by HIGH-1(c)'s
-    committed-verdicts-only fix to resolve covering-verdict discovery and
-    current-content lookups against exactly what's being pushed, never the
-    on-disk working tree (which may hold uncommitted or even untracked
-    verdict-shaped files that were never part of this push at all)."""
+    Returns (changed_paths, head_shas, base_shas) — `head_shas` is every
+    pushed `local_sha` (the actual commits being pushed), used by
+    HIGH-1(c)'s committed-verdicts-only fix to resolve covering-verdict
+    discovery and current-content lookups against exactly what's being
+    pushed, never the on-disk working tree (which may hold uncommitted or
+    even untracked verdict-shaped files that were never part of this push
+    at all). `base_shas` (A3 fix) is the parallel list of each ref's
+    resolved base (`remote_sha`, or git's empty-tree object for a
+    brand-new ref) — used by `_gate_load_policy_at_base` to recover the
+    pre-push policy baseline for the policy-self-tamper check."""
     lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
     if not lines:
-        return [], []  # nothing being pushed (e.g. a ref deletion) — nothing to gate
+        return [], [], []  # nothing being pushed (e.g. a ref deletion) — nothing to gate
     changed = set()
     head_shas = []
+    base_shas = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
@@ -7894,7 +7963,8 @@ def _gate_changed_paths_from_stdin(root: Path):
         base = EMPTY_TREE_SHA if set(remote_sha) == {"0"} else remote_sha
         changed.update(_gate_diff_paths(root, base, local_sha))
         head_shas.append(local_sha)
-    return sorted(changed), head_shas
+        base_shas.append(base)
+    return sorted(changed), head_shas, base_shas
 
 
 # ---------------------------------------------------------------------------
@@ -7957,6 +8027,219 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
             if globs and path_matches_globs(rel_path, globs):
                 hard_floor_matches.setdefault(rel_path, []).append(hf_rule)
     return path_rule_matches, hard_floor_matches
+
+
+# ---------------------------------------------------------------------------
+# A3 FIX — policy self-tamper (Gate Arena finding, disclosed 2026-07-07):
+# "Deleting or weakening policy.yaml's own self-gating rule in the SAME
+# push as an unreviewed payload is NOT caught: `_gate_load_policy` reads
+# the policy off the checked-out working tree with no base-ref pin and no
+# diff-against-previous-policy check. So an attacker weakens the rule that
+# would have gated their bad code, in the same PR, and ships both."
+#
+# Root cause: `_gate_classify_paths` above is called with ONLY the
+# newly-pushed policy. If that same push deletes or narrows the rule that
+# used to require a verdict for some path (including `core/policy/policy.
+# yaml` itself — this repo's own shipped policy already covers
+# `core/policy/**` under `tess-os-security-tier-doctrine`), the deleted/
+# narrowed rule simply never fires, because nothing else in the pipeline
+# remembers it ever existed.
+#
+# Fix: classify changed paths against the UNION of what the NEW
+# (just-pushed) policy requires and what the BASELINE (pre-push, base-ref)
+# policy ALREADY required (`_gate_load_policy_at_base` + `_gate_union_
+# baseline_matches`). A rule's requirement, once it exists at the base
+# ref, cannot be made to silently stop applying to THIS push's own
+# changes — including changes to the policy file that carried the rule.
+# This is additive-only: every rule the NEW policy still declares (or adds
+# for the first time) applies exactly as before; only a rule's
+# disappearance, narrowing, or loosening IN THIS SAME PUSH is neutralized
+# for this push specifically. A brand-new project introducing policy.yaml
+# for the first time (no baseline exists yet) is unaffected — nothing to
+# union against, ordinary NEW-policy-only classification applies, same as
+# before this fix (matches the "hand-authored per project" bootstrap
+# stance `core/policy/policy.yaml`'s own header already documents).
+#
+# A second, narrower closure in the SAME class: `policy.verifier_keys`
+# lives INSIDE core/policy/policy.yaml too, so it is exactly as
+# self-tamperable as any rule field — an attacker could otherwise widen
+# `allowed_verifiers` to add a name they control, OR swap an already-
+# allowed verifier's registered fingerprint for a key they control, and
+# then self-sign a "covering" verdict using material they JUST installed
+# in the SAME push. `_gate_merge_rule_restrictive` (intersects
+# allowed_verifiers so a verifier not already trusted in BOTH old and new
+# cannot satisfy a rule for this push) and `_gate_merge_verifier_keys_
+# baseline_first` (signature verification always prefers the BASELINE's
+# registered fingerprint for a verifier name the baseline already
+# registered) close this chained variant the same way.
+# ---------------------------------------------------------------------------
+
+def _gate_git_show_at_ref(root: Path, ref: str, rel_path: str) -> str | None:
+    """Text content of `rel_path` AS IT EXISTED AT `ref` (`git cat-file blob
+    <ref>:<rel_path>`) — NEVER the working tree. Returns None if the path
+    did not exist at that ref (brand-new file, or `ref` predates it) or the
+    blob can't be read/decoded as text — both are legitimate 'no prior
+    version at this ref' outcomes, not errors (mirrors `_gate_git_cat_file`'s
+    own does-not-raise contract, for the same reason: a single missing/
+    unreadable historical blob must not abort the whole tamper check —
+    `_gate_load_policy_at_base` below tries every candidate policy filename
+    across every given base ref and simply treats a total miss as 'no
+    baseline available')."""
+    r = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "blob", f"{ref}:{rel_path}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
+    """The policy instance AS IT EXISTED at the push's base ref(s), i.e.
+    BEFORE any commit in this push — used only to detect policy self-tamper
+    (A3). Deliberately a plain structural parse (`_parse_contract_instance_
+    text`), NOT a schema/lint revalidation like `_gate_load_policy` performs
+    for the live/new policy: the baseline content already passed the gate
+    (or predates the gate's adoption) when it was committed, so re-running
+    schema/lint here would only add a way for an unrelated historical
+    quirk to silently suppress the tamper check — this function's only job
+    is to recover `rules[]` / `hard_floor_rules[]` / `verifier_keys` for
+    comparison purposes.
+
+    Returns None — NOT a fail-closed condition on its own (see this
+    section's module comment above) — when no policy file existed at ANY
+    given base ref (brand-new project, nothing to tamper), when none of
+    `base_shas` resolve, or when the historical content fails to parse. A
+    missing/unparsable baseline can only ever leave enforcement UNCHANGED
+    from before this fix (ordinary NEW-policy-only classification), never
+    WEAKEN it — the fail-CLOSED guarantee this fix adds lives entirely in
+    what happens when a baseline IS found and DOES union in a requirement,
+    not in whether one was available to find."""
+    for base_sha in base_shas or []:
+        for name in POLICY_INSTANCE_CANDIDATES:
+            text = _gate_git_show_at_ref(root, base_sha, f"{POLICY_DIR}/{name}")
+            if text is None:
+                continue
+            try:
+                instance = _parse_contract_instance_text(text, Path(name).suffix, name)
+            except ContractError:
+                continue
+            if isinstance(instance, dict):
+                return instance
+    return None
+
+
+def _gate_merge_rule_restrictive(new_rule: dict, base_rule: dict) -> dict:
+    """When the SAME rule `id` matches the SAME changed path under both the
+    NEW (just-pushed) and BASELINE (pre-push) policy, the EFFECTIVE
+    `allowed_verifiers` enforced for THIS push is the INTERSECTION of the
+    two — never wider than either side alone. Closes the 'widen
+    allowed_verifiers in the same push' variant of policy self-tamper: a
+    verifier newly added in this exact push (present in new, absent from
+    baseline) is not yet cross-validated by anything that predates this
+    push, so a self-signed 'covering' verdict from that brand-new name must
+    not count for changes made in the SAME push that added them. Globs and
+    require_verdict do not need merging here — the caller
+    (`_gate_union_baseline_matches`) only ever calls this for a `rel_path`
+    where BOTH the new rule and the base rule already independently
+    matched via `_gate_classify_paths`; a rule that stopped matching (glob
+    narrowed) or stopped requiring a verdict under the NEW policy simply
+    never reaches here as `new_rule` at all (see the caller)."""
+    merged = dict(new_rule)
+    new_allowed = set(new_rule.get("allowed_verifiers") or [])
+    base_allowed = set(base_rule.get("allowed_verifiers") or [])
+    merged["allowed_verifiers"] = sorted(new_allowed & base_allowed)
+    return merged
+
+
+def _gate_union_baseline_matches(
+    baseline_policy_instance: dict, changed_paths: list, path_rule_matches: dict, hard_floor_matches: dict,
+) -> None:
+    """Mutates `path_rule_matches` / `hard_floor_matches` IN PLACE, adding in
+    whatever the BASELINE (pre-push) policy ALSO required for the same
+    changed paths, deduped by rule id per path. For a rule id present under
+    BOTH new and baseline for the same path, the effective rule is the
+    NEW rule with `allowed_verifiers` narrowed to the intersection with
+    baseline's (`_gate_merge_rule_restrictive`) — never wider. For a rule
+    id present ONLY at baseline for this path (removed entirely, or no
+    longer matching this path under the new policy's narrower glob/
+    require_verdict), the baseline's rule is added VERBATIM, tagged
+    `_gate_baseline_only: True` so `_gate_covering_gap_report` can surface
+    a precise, auditable message about exactly which rule survived from
+    the pre-push baseline. Additive only — a rule the new policy
+    STRENGTHENS (narrows further, or a brand-new rule with no baseline
+    counterpart) is never touched here.
+
+    hard_floor_rules have no `allowed_verifiers` to intersect (a human
+    sign-off artifact is required regardless of who 'approves') — simple
+    id-presence union, same baseline-only tagging."""
+    base_path_rule_matches, base_hard_floor_matches = _gate_classify_paths(baseline_policy_instance, changed_paths)
+
+    for rel_path, base_rules in base_path_rule_matches.items():
+        new_rules = path_rule_matches.setdefault(rel_path, [])
+        base_by_id = {r.get("id"): r for r in base_rules}
+        merged_rules = []
+        seen_ids = set()
+        for new_rule in new_rules:
+            rid = new_rule.get("id")
+            seen_ids.add(rid)
+            base_rule = base_by_id.get(rid)
+            merged_rules.append(_gate_merge_rule_restrictive(new_rule, base_rule) if base_rule else new_rule)
+        for rid, base_rule in base_by_id.items():
+            if rid in seen_ids:
+                continue
+            marked = dict(base_rule)
+            marked["_gate_baseline_only"] = True
+            merged_rules.append(marked)
+            seen_ids.add(rid)
+        path_rule_matches[rel_path] = merged_rules
+
+    for rel_path, base_rules in base_hard_floor_matches.items():
+        existing = hard_floor_matches.setdefault(rel_path, [])
+        existing_ids = {r.get("id") for r in existing}
+        for rule in base_rules:
+            if rule.get("id") in existing_ids:
+                continue
+            marked = dict(rule)
+            marked["_gate_baseline_only"] = True
+            existing.append(marked)
+            existing_ids.add(rule.get("id"))
+
+
+def _gate_merge_verifier_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
+    """An effective policy_instance for SIGNATURE VERIFICATION whose
+    `verifier_keys` prefers the BASELINE's (pre-push) registered key for
+    any verifier name the baseline already registered, falling back to the
+    NEW policy's registration only for names the baseline did NOT yet
+    register (bootstrap-friendly: a genuinely new verifier onboarded for
+    the first time in this exact push is not penalized). `rules[]` /
+    `hard_floor_rules[]` come from the UNION step elsewhere
+    (`_gate_union_baseline_matches`) — this function touches ONLY
+    verifier_keys, and only for the purpose of resolving a covering
+    verdict's signature.
+
+    Why baseline-first: `verifier_keys` lives INSIDE core/policy/
+    policy.yaml, so it is exactly as self-tamperable as any rule in the
+    same file. Without this, an attacker could swap an allowed verifier's
+    registered fingerprint for a key they control AND self-sign a
+    'covering' verdict claiming that verifier's name, all in the same
+    push — the rule-level union/intersection alone does not catch this,
+    since the forged verdict's `verifier` field is a real, allowed name;
+    only the PHYSICAL KEY behind that name changed. Requiring the
+    pre-existing key (the one nobody could have altered as part of this
+    push) closes that chained variant of the same self-tamper class.
+    Returns `new_instance` unchanged when no baseline is available (see
+    `_gate_load_policy_at_base`'s own bootstrap note)."""
+    if baseline_instance is None:
+        return new_instance
+    new_policy = (new_instance or {}).get("policy", {}) or {}
+    base_policy = (baseline_instance or {}).get("policy", {}) or {}
+    merged_keys = dict(new_policy.get("verifier_keys") or {})
+    for name, entry in (base_policy.get("verifier_keys") or {}).items():
+        merged_keys[name] = entry  # baseline's registration wins for any name it already covers
+    merged = json.loads(json.dumps(new_instance))  # deep copy — never mutate the caller's dict
+    merged.setdefault("policy", {})["verifier_keys"] = merged_keys
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -8180,6 +8463,22 @@ def _gate_covering_gap_report(
         rule_ids = ", ".join(sorted({r.get("id", "?") for r in rules}))
         classes = sorted({c for r in rules for c in (r.get("classification") or [])})
         allowed = sorted({v for r in rules for v in (r.get("allowed_verifiers") or [])})
+        # A3 fix: at least one matched rule survives ONLY because the
+        # pre-push baseline policy required it — the newly-pushed policy
+        # either removed it, narrowed it past matching this path, or turned
+        # off its require_verdict (see _gate_union_baseline_matches). Say so
+        # explicitly, so the block message is legible as "you tried to
+        # weaken this rule in this same push" rather than looking like a
+        # phantom rule reference.
+        baseline_note = (
+            " — A3 fail-closed: rule(s) "
+            + ", ".join(sorted({r.get("id", "?") for r in rules if r.get("_gate_baseline_only")}))
+            + " were REMOVED, NARROWED, or had require_verdict turned off by the NEWLY-PUSHED "
+            "policy, but ALREADY REQUIRED a verdict for this path in the pre-push baseline "
+            "policy — a single push cannot both weaken the policy and rely on the weakened "
+            "policy to pass"
+            if any(r.get("_gate_baseline_only") for r in rules) else ""
+        )
         if why == "unsigned":
             # Surface the SPECIFIC signature-verification failure for the
             # verdict(s) that at least glob-matched, rather than a generic
@@ -8195,6 +8494,7 @@ def _gate_covering_gap_report(
                 f"{rel_path}: a covering APPROVE verdict exists for this path, but its "
                 f"signature does not verify ({detail}) — Phase 2b fix: an unsigned, "
                 f"hand-faked, wrong-key, or tampered verdict can never clear the gate"
+                f"{baseline_note}"
             )
         elif why == "wrong-verifier":
             reasons.append(
@@ -8202,6 +8502,7 @@ def _gate_covering_gap_report(
                 f"but none was authored by an allowed verifier (policy rule(s) {rule_ids} "
                 f"require verifier in {allowed}) — M1 fix: allowed_verifiers is enforced, not "
                 f"advisory, and Phase 2b ties it to the cryptographic signer identity"
+                f"{baseline_note}"
             )
         elif why == "stale-content":
             reasons.append(
@@ -8211,6 +8512,7 @@ def _gate_covering_gap_report(
                 f"fix: verification is per-change; an old, stale, or missing content hash does "
                 f"not clear a new or re-edited version of this file, or a brand-new file under "
                 f"the same covers_paths glob"
+                f"{baseline_note}"
             )
         else:
             reasons.append(
@@ -8218,6 +8520,7 @@ def _gate_covering_gap_report(
                 f"classification: {', '.join(classes) or 'unclassified'}) — Decision #6: the "
                 f"ship-gate refuses without a schema-valid, COMMITTED verdict carrying "
                 f"disposition: APPROVE and a covers_paths entry matching this path"
+                f"{baseline_note}"
             )
     return reasons
 
@@ -8269,7 +8572,16 @@ def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict) -> list:
         signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
         ok, reason = _gate_validate_signoff(signoff_path, rule_id)
         if not ok:
-            reasons.append(f"HARD FLOOR [{rule.get('category')}] rule '{rule_id}': {reason}")
+            # A3 fix: this hard-floor rule only still applies because the
+            # pre-push baseline policy required it (removed/narrowed by the
+            # newly-pushed policy) — see _gate_union_baseline_matches.
+            baseline_note = (
+                " — A3 fail-closed: REMOVED/NARROWED by the newly-pushed policy, but "
+                "ALREADY REQUIRED at the pre-push baseline — a single push cannot both "
+                "weaken the policy and rely on the weakened policy to pass"
+                if rule.get("_gate_baseline_only") else ""
+            )
+            reasons.append(f"HARD FLOOR [{rule.get('category')}] rule '{rule_id}': {reason}{baseline_note}")
     return reasons
 
 
@@ -8277,7 +8589,10 @@ def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict) -> list:
 # The shared ship-check — used identically by `gate pre-push` and `gate ci`.
 # ---------------------------------------------------------------------------
 
-def _gate_run_ship_check(root: Path, changed_paths: list, verdict_dirs: list = None, head_shas: list = None) -> dict:
+def _gate_run_ship_check(
+    root: Path, changed_paths: list, verdict_dirs: list = None,
+    head_shas: list = None, base_shas: list = None,
+) -> dict:
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
@@ -8290,7 +8605,20 @@ def _gate_run_ship_check(root: Path, changed_paths: list, verdict_dirs: list = N
         # is ungated, so refuse outright rather than silently allow.
         return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
 
+    # A3 FIX (policy self-tamper, Gate Arena finding): classify against the
+    # UNION of what the NEW (just-pushed) policy requires and what the
+    # BASELINE (pre-push, base-ref) policy ALREADY required — see this
+    # module's "A3 FIX — policy self-tamper" comment block above
+    # `_gate_git_show_at_ref` for the full rationale. `base_shas` is None
+    # for pre-commit-style callers (there is no "push" yet to have a base
+    # ref); `_gate_load_policy_at_base` treats an empty/missing list as "no
+    # baseline available," which degrades to the pre-fix, NEW-policy-only
+    # behavior — never a security regression, just no additional coverage.
+    baseline_policy_instance = _gate_load_policy_at_base(root, base_shas or [])
+
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
+    if baseline_policy_instance is not None:
+        _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
 
     if hard_floor_matches:
         reasons += _gate_hard_floor_gap_report(root, hard_floor_matches)
@@ -8304,8 +8632,13 @@ def _gate_run_ship_check(root: Path, changed_paths: list, verdict_dirs: list = N
         except GateSpineError as e:
             reasons.append(f"[gate] {e}")
             return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+        # A3 fix (chained-variant closure): signature verification for a
+        # covering verdict uses a baseline-verifier_keys-first merged view
+        # — a verifier's registered key cannot be swapped and then used to
+        # self-sign the swap's own covering verdict, all in the same push.
+        effective_policy_instance = _gate_merge_verifier_keys_baseline_first(policy_instance, baseline_policy_instance)
         approved = _gate_find_covering_approved_verdicts(root, tree_index, verdict_dirs)
-        reasons += _gate_covering_gap_report(path_rule_matches, approved, tree_index, root, policy_instance)
+        reasons += _gate_covering_gap_report(path_rule_matches, approved, tree_index, root, effective_policy_instance)
 
     return {"blocked": bool(reasons), "reasons": reasons, "changed_paths": changed_paths}
 
@@ -8356,13 +8689,14 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
                 raise GateSpineError("tessctl gate pre-push: --base and --head must both be given, or neither (stdin protocol mode)")
             changed = _gate_diff_paths(root, base, head)
             head_shas = [head]
+            base_shas = [base]
         else:
-            changed, head_shas = _gate_changed_paths_from_stdin(root)
+            changed, head_shas, base_shas = _gate_changed_paths_from_stdin(root)
     except GateSpineError as e:
         _gate_print_result("pre-push", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
         sys.exit(1)
 
-    result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas)
+    result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas, base_shas)
     _gate_print_result("pre-push", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
 
@@ -8376,7 +8710,7 @@ def _cmd_gate_ci(args, root: Path) -> None:
         _gate_print_result("ci", {"blocked": True, "reasons": [str(e)], "changed_paths": []}, as_json)
         sys.exit(1)
 
-    result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head])
+    result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head], [args.base])
     _gate_print_result("ci", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
 
