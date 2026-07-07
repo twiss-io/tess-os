@@ -166,22 +166,35 @@ with a suite purpose-built to give structure room to help. It didn't help.**
 |---|---|---|---|
 | Run 1 (tasks 01–10) | weak+tess-os vs weak+bare | No delta (both 100% — suite too easy to discriminate) | 3.13× |
 | Run 1 | strong+tess-os vs strong+bare | **−10 points** (reproducible fabrication failure) | 3.18× |
-| Run 2 — FAIR (tasks 11–19, harder/discriminating, dispatch-guard friction fixed) | weak+tess-os vs weak+bare | **−11.1 points** | 2.71× |
+| Run 2 — FAIR (tasks 11–19, harder/discriminating, dispatch-guard friction fixed) | weak+tess-os vs weak+bare | **−11.1 points (8/9 vs 9/9, n=9)** | 2.71× |
 | Run 2 — FAIR | strong+tess-os vs strong+bare | No delta (regression gone after the fix; no benefit either) | 1.74× |
-| Run 2 — FAIR | weak+tess-os vs **strong+bare** (the literal thesis) | **−11.1 points** — strictly worse | 32% cheaper |
+| Run 2 — FAIR | weak+tess-os vs **strong+bare** (the literal thesis) | **−11.1 points (8/9 vs 9/9, n=9)** — strictly worse | 32% cheaper |
+
+**Caveat that applies to every `bare` cell above:** this build environment
+had no `ANTHROPIC_API_KEY` configured, so true `--bare` isolation (which
+requires that key) was unavailable; every `bare` cell was run with
+`--allow-impure-bare` instead and is tagged `impure_bare: true` in the raw
+data — it still inherits the operator's installed plugins, MCP servers, and
+tool list rather than a stripped baseline. Read "bare" in this table as
+"bare, approximately," not a pristine zero-context control — both reports
+disclose this caveat; it doesn't change the direction of the result, but
+the precise deltas should be read with it in mind.
 
 Across 19 tasks and roughly 80 trials: **every miss happened under the
 tess-os scaffold; zero misses happened bare.** Weak-tier pass rate went down
-11 points; cost went up 1.7–2.7×. Full reports, generated from the actual
-runs, not hand-typed:
+11 points (n=9 — too small a sample for a rate; directional, not a
+precision claim); cost went up 1.7–2.7×. Full reports, generated from the
+actual runs, not hand-typed:
 [`proving-ground/reports/2026-07-07.md`](proving-ground/reports/2026-07-07.md)
 and
 [`proving-ground/reports/2026-07-07-fair.md`](proving-ground/reports/2026-07-07-fair.md).
 
-**This is why Tess OS's claim is enforcement, not enhancement.** The gate
-(`tessctl gate`) blocks unverified output from shipping — that claim is
-mechanical, model-independent, and untouched by this result. It does not
-claim to make your agent better, and as of 2026-07-07 we have our own
+**This is why Tess OS's claim is enforcement, not enhancement — stated at
+the grain it actually operates:** a change to a policy-flagged path cannot
+ship without a signed covering verdict, at git/CI, provided CI runs as a
+required check from a trusted engine. That claim is mechanical,
+model-independent within its scope, and untouched by this result. It does
+not claim to make your agent better, and as of 2026-07-07 we have our own
 evidence that mounting this doctrine as a single agent's context does not
 make it better and can make it worse. What the benchmark did **not** test:
 the ship-gate itself (no trial ran a diff through it), and the multi-agent
@@ -189,9 +202,9 @@ conductor runtime (the harness's "attempts" are blind re-runs, not the typed
 retry protocol) — both are untested by this result, not vindicated by it
 either.
 
-No competitor in this category publishes a self-run negative result. We do,
-because the alternative — quietly deleting the claim instead of disclosing
-what killed it — is worse than the result itself.
+None of the competitors we surveyed in this category publishes a self-run
+negative result. We do, because the alternative — quietly deleting the claim
+instead of disclosing what killed it — is worse than the result itself.
 
 ---
 

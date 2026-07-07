@@ -13,7 +13,7 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 ---
 
 # Tess OS — The Ultimate Plug-and-Play Framework
-## Making coding agents reliably good — even when the agent itself is not
+## Enforcing safe shipping for coding agents — independent of the agent's quality
 
 > **⚠️ SUPERSESSION NOTICE (2026-07-08) — read this before anything below.**
 > This plan's central productivity claim — that mounting the doctrine
@@ -26,12 +26,18 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 >   **regressed −10 points** at **3.18× cost**.
 > - Run 2 — FAIR (tasks 11–19, purpose-built to discriminate, a
 >   dispatch-guard friction bug fixed first): `weak+tess-os` vs `weak+bare`
->   **regressed −11.1 points** at **2.71× cost**; `strong+tess-os` vs
->   `strong+bare` showed no delta at 1.74× cost; and the literal thesis
->   comparison — `weak+tess-os` vs `strong+bare` — was **strictly worse**
->   (−11.1 points) despite being 32% cheaper.
+>   **regressed −11.1 points (8/9 vs 9/9, n=9)** at **2.71× cost**;
+>   `strong+tess-os` vs `strong+bare` showed no delta at 1.74× cost; and
+>   the literal thesis comparison — `weak+tess-os` vs `strong+bare` — was
+>   **strictly worse** (−11.1 points, 8/9 vs 9/9, n=9) despite being 32%
+>   cheaper.
 > - Across 19 tasks and ~80 trials: every miss happened under the tess-os
->   scaffold; **zero misses happened bare.**
+>   scaffold; **zero misses happened bare.** Every `bare` cell in both
+>   runs was run with `--allow-impure-bare` (no `ANTHROPIC_API_KEY` in
+>   this build environment forced impure-bare mode — see the reports'
+>   "Known limitation" sections); "bare" here means "bare, approximately"
+>   (still inheriting the operator's plugins/MCP/tool list), not a
+>   stripped baseline.
 >
 > Full reports: [`proving-ground/reports/2026-07-07.md`](../proving-ground/reports/2026-07-07.md),
 > [`proving-ground/reports/2026-07-07-fair.md`](../proving-ground/reports/2026-07-07-fair.md).
@@ -44,9 +50,11 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 > model-independent) and the multi-agent conductor runtime (untested by
 > this benchmark, not vindicated by it either — see the reports'
 > discussion of scope). The framework's defensible value after this
-> result is **enforcement**: unverified output cannot ship, regardless of
-> how good or bad the producing agent is (Part D7, Part C8). That is the
-> one claim this repo now markets.
+> result is **enforcement**, stated at the grain it actually operates:
+> **a change to a policy-flagged path cannot ship without a signed
+> covering verdict, at git/CI, provided CI runs as a required check from
+> a trusted engine** (Part D7, Part C8). That is the one claim this repo
+> now markets.
 
 > **Xavier's goal (verbatim):** "ensure this is the ultimate plug and play framework for Claude Code, Codex and frontier models AI assistant" — robust to agent quality, "especially agents that are of lower quality compared to Fable."
 
@@ -63,8 +71,10 @@ claim — that system structure raises model output quality — was tested
 production: a 165-persona multi-agent operation runs real client work
 (SuperCane prod deploys, payment audits, live incident ops) on a mix of model
 tiers, and its post-mortems show that every serious failure was a *structure*
-failure, not a *model* failure — and every structural fix eliminated a whole
-failure class. (This production incident history is a distinct claim from the
+failure, not a *model* failure — and no recurrence of that failure class has
+been observed since each corresponding structural fix (bounded to the
+incidents on record, not a claim the failure class is provably eliminated).
+(This production incident history is a distinct claim from the
 benchmark above — it is about the multi-agent conductor runtime's containment
 record, not about mounting doctrine as context in a single headless agent
 call — and the benchmark neither confirms nor disproves it; it remains
@@ -175,7 +185,7 @@ The "weak agent problem" decomposes into six specific failure modes. Each doctri
 **Mechanism** (`conductor/subagent-failure-protocol.md`): five failure states (empty / partial / degraded / timeout / error) × four cause classes (transient / context-gap / wrong-approach / wrong-task). **Same-brief retries forbidden for every non-transient cause** — the retry brief must specifically address the classified cause. Cap: 3 attempts, then STOP and escalate with the full per-attempt analysis log. Partial returns are salvaged (re-dispatch only the remainder). Systemic failures (multiple agents failing) are diagnosed as system issues and don't consume the cap.
 
 **How it catches a weak agent:** weak models fail *more often*, so the retry loop is where framework quality compounds. Three properties matter:
-1. **The changed-brief requirement converts each failure into information.** A weak agent that failed on context-gap gets a brief with the missing context injected — the *system* learns even though the model doesn't. This is why weak-agent output quality rises across attempts instead of flatlining.
+1. **The changed-brief requirement converts each failure into information.** A weak agent that failed on context-gap gets a brief with the missing context injected — the *system* learns even though the model doesn't. This is the design rationale for why weak-agent output quality would rise across attempts instead of flatlining — **unmeasured**: the proving-ground benchmark's trials averaged ~1.0–1.1 attempts-to-pass, so it does not isolate or confirm a within-task, across-attempt improvement effect.
 2. **The cap bounds the cost of weakness.** Weak agents inside the framework have a worst case: 3 attempts + escalation, narrated per-attempt. No silent budget bleed.
 3. **Cause classification routes the fix to the right place.** "Wrong-task" reframes the Objective; "wrong-approach" names what failed; "context-gap" enriches sources. Untyped retries (the norm elsewhere) re-roll the dice; typed retries reshape the dice.
 
@@ -324,7 +334,7 @@ Each module: what exists → target interface → weak-agent function. All modul
 ### C7 — Roster + lifecycle module
 - **Exists and strong:** 165 persona specs; staged/installed roster with `tessctl roster apply / recruit / bench`; Eva's 6-condition creation gate + naming discipline (`agent-lifecycle.md`); starter squads.
 - **Target (small deltas):** per-persona `model_tier` recommendation field (conductor=strong, planner=strong, executor=cheap, verifier=strong — currently only free-text in README); `tessctl recruit` renders the persona into *every installed adapter's* format, not just `.claude/agents/`; a community registry namespace (`tessctl recruit @community/<agent>`) as the hub play from the moat strategy — gated behind the same signed-channel discipline as framework updates.
-- **Weak-agent function:** role prompts are *quality prosthetics* — a persona spec like Leah's ("separate facts from inferences from assumptions") measurably narrows a weak model's behavior. The lifecycle governance keeps the roster routable (naming discipline = fewer misroutes = fewer garbage dispatches).
+- **Weak-agent function:** role prompts are *quality prosthetics* — a persona spec like Leah's ("separate facts from inferences from assumptions") is designed to narrow (unmeasured) a weak model's behavior — no benchmark to date isolates a persona-prompt effect from the rest of the mounted doctrine payload, and the proving-ground result above found no net benefit from the payload as a whole. The lifecycle governance keeps the roster routable (naming discipline = fewer misroutes = fewer garbage dispatches).
 
 ### C8 — The Enforcement Spine (`tessctl gate`) — the new keystone-grade component
 - **Exists as precedent:** vault's git pre-commit/pre-push guards; keystone's doctor/verify hard-gates; Claude Code block-mode hooks.
@@ -332,7 +342,7 @@ Each module: what exists → target interface → weak-agent function. All modul
   1. **Git hooks** (pre-commit: brief/verdict/return schema checks for changed mission files, secret scan [exists]; pre-push: *ship-check* — any commit touching paths declared prod/client-facing in `policy.yaml` requires a covering APPROVE verdict artifact; refuses otherwise).
   2. **CI action** (`tess-os/gate-action`): same checks + `tessctl verify` (framework integrity) on every PR — the harness-independent backstop that works even when a rogue/weak agent bypasses local hooks with `--no-verify`.
   3. **Harness hooks** where they exist (Claude Code PreToolUse wrappers over the same CLI).
-- **Weak-agent function:** this is the *"gates that block unverified output from shipping"* requirement made real. The model's quality becomes irrelevant at the ship boundary: no verdict artifact, no push. Everything upstream (briefs, retries) improves the odds; the spine caps the downside.
+- **Weak-agent function:** this is the bounded honest form of the requirement made real — *a change to a policy-flagged path cannot ship without a signed covering verdict, at git/CI, provided CI runs as a required check from a trusted engine.* Within that scope, the producing model's quality becomes irrelevant at the ship boundary: no covering verdict artifact, no push. Everything upstream (briefs, retries) improves the odds; the spine caps the downside for the paths it actually covers.
 
 ### C9 — The Proving Ground (conformance + benchmark harness)
 - **Exists:** `proving-ground/` — built, and RUN, twice (2026-07-07). See
@@ -344,7 +354,9 @@ Each module: what exists → target interface → weak-agent function. All modul
   *"If `weak+framework ≥ strong+bare` doesn't hold on the suite, the
   framework isn't done — and the claim can't be marketed until it's
   measured."* It was measured. It doesn't hold — `weak+framework` lost to
-  `strong+bare` by 11.1 points in the fair run. Per this document's own
+  `strong+bare` by 11.1 points in the fair run (8/9 vs 9/9, n=9 — too
+  small a sample for a rate; directional, not a precision claim). Per
+  this document's own
   rule, the enhancement claim is now unmarketable, and every surface that
   stated or implied it has been corrected (this document, `README.md`,
   `proving-ground/README.md`). The harness's remaining jobs are
@@ -377,7 +389,7 @@ are the product.
 
 **D8. Hard floors + human gates (worst-case cap).** Credentials, money, destructive prod data, client-external factual claims: always human-gated, in every adapter, in every autonomy mode. Destructive ops always 3-step (verify → go → execute). *Product:* C5.
 
-**The economics, stated plainly:** weak agents fail more, so they consume more retries and more verification — but retries of cheap models plus strong verification of a *finished artifact* costs a fraction of running the strong model end-to-end, and the gate guarantees the failure cost is bounded (max 3 attempts, nothing unverified ships). That is the product's promise in one sentence: **the gate bounds the *downside* of model quality — nothing unverified ships — at a measured cost premium (1.7–2.7× when doctrine is mounted as context; near-zero when enforcement lives only at git/CI). The upside conversion claimed here previously ("the framework converts model quality from a correctness risk into a mere cost/latency variable") was disproven — see the supersession notice.**
+**The economics, stated plainly:** weak agents fail more, so they consume more retries and more verification — but retries of cheap models plus strong verification of a *finished artifact* costs a fraction of running the strong model end-to-end, and the gate guarantees the failure cost is bounded (max 3 attempts, nothing unverified ships on the paths the gate covers). That is the product's promise in one sentence: **the gate bounds the *downside* of model quality — a covered path can't ship without a signed verdict — at a measured cost premium (1.7–2.7× when doctrine is mounted as context; the cost of enforcement living only at git/CI, with no doctrine mounted, has not itself been separately measured by this benchmark and is not asserted here as near-zero). The upside conversion claimed here previously ("the framework converts model quality from a correctness risk into a mere cost/latency variable") was disproven — see the supersession notice.**
 
 ---
 

@@ -11,8 +11,12 @@
 > `reports/2026-07-07-fair.md` (Run 2 — FAIR, tasks 11–19, harder
 > discriminating tasks, dispatch-guard friction fixed). Headline: across
 > 19 tasks and ~80 trials, `weak+tess-os` never beat `weak+bare`, lost to
-> it by 11.1 points in the fair run, and cost 1.7–2.7× more in every
-> mounted-doctrine cell measured. The sections below (written before
+> it by 11.1 points in the fair run (8/9 vs 9/9, n=9 — too small a sample
+> for a rate; directional, not a precision claim), and cost 1.7–2.7× more
+> in every mounted-doctrine cell measured. Every `bare` cell in both runs
+> ran with `--allow-impure-bare` (no `ANTHROPIC_API_KEY` in this build
+> environment — see "Known limitation" below); read "bare" as "bare,
+> approximately," not a stripped baseline. The sections below (written before
 > either run) are kept as the harness's original design spec; where they
 > describe the pitch as an open question, treat that as historical —
 > the "Central pitch, corrected" section right below is the current
@@ -25,10 +29,12 @@ mounting this repo's doctrine into a model's context would let a
 lower-tier model close the gap to a higher-tier model's verified output
 quality. This harness tested that pitch on 2026-07-07 (twice) and
 disproved it: see `reports/2026-07-07.md` and
-`reports/2026-07-07-fair.md`. The pitch is now **enforcement** (the
-ship-gate, `tessctl gate`, blocks unverified output from shipping
-regardless of the producing agent's quality); this harness's standing
-jobs are the two below, not the thesis test.
+`reports/2026-07-07-fair.md`. The pitch is now **enforcement**, stated at
+the grain it actually operates: the ship-gate (`tessctl gate`) means a
+change to a policy-flagged path cannot ship without a signed covering
+verdict, at git/CI, provided CI runs as a required check from a trusted
+engine — the producing agent's quality is irrelevant within that scope;
+this harness's standing jobs are the two below, not the thesis test.
 
 It does three jobs — the first is answered, not open:
 1. ~~**The thesis test.** Does `weak model + tess-os scaffold` approach or
@@ -39,10 +45,13 @@ It does three jobs — the first is answered, not open:
    profile — is checked against the same suite before it ships, and must
    show a non-negative pass-rate delta at that payload size.
 3. **The enforcement arena** (planned, not yet built) — the honest
-   demonstration of what the gate actually claims: that unverified output
-   cannot ship, and a measured bad-ship-rate reduction from gate +
-   verifier, replacing the retired thesis-test job as the harness's
-   headline number.
+   demonstration of what the gate actually claims at its real grain: that
+   a change to a policy-flagged path cannot ship without a signed
+   covering verdict, at git/CI, provided CI runs as a required check from
+   a trusted engine. Its output will be a measured bad-ship-rate
+   reduction from gate + verifier, replacing the retired thesis-test job
+   as the harness's headline number — no such number exists yet; this job
+   has not been run.
 
 Kept, inverted: **a real number beats an adjective — including when the
 number is bad.** That principle is why jobs 2 and 3 above exist, and why
