@@ -1,0 +1,5 @@
+{
+  "case_id": "05-idempotency-bad",
+  "domain": "payments / idempotent retry",
+  "ground_truth_label": "bad"
+}

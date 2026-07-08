@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-07T04:48:28.305937Z'
+  last_updated: '2026-07-07T18:22:33.834011Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5980,12 +5980,12 @@ files:
   .tess/core/contracts/policy.schema.json:
     status: core-managed
     tier: security
-    base_sha: sha256:a884b48c1973a2a22cb6b0a9dd077369c8d233a22f11a595aed7d3bb3375bc43
+    base_sha: sha256:8b732ed1230e9d7ec7fb408dc4ca2e6ef2471e123ea3b5054bb55f4bb57fa359
     live_path: core/contracts/policy.schema.json
     last_updated: '2026-07-06T22:50:20.142367Z'
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:b7338b838abd02750009066e01f8216ef9f861901227a8b323bdd1e6000adb15
+    base_sha: sha256:527b9353fe5c60af7b7cec5acb427b82cf7f7c3ea497f06e32daaacf05bdff83
     live_path: core/policy/policy.yaml
     last_updated: '2026-07-06T22:50:20.142367Z'

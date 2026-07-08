@@ -181,12 +181,17 @@ def test_editing_gate_workflow_with_no_verdict_is_blocked_on_real_shipped_policy
 
     workflow = root / WORKFLOW_REL
     # Simulate exactly the attack MEDIUM-1 closes: neuter the ship-gate step
-    # while keeping everything else (job name, trigger config) intact.
+    # while keeping everything else (job name, trigger config) intact. v3
+    # (honesty-capstone-audit-2026-07-08 §3-c) renamed the final step from
+    # bare "tessctl gate ci" to "tessctl gate ci (trusted base-ref engine;
+    # untrusted pushed tree)" — target that exact current step name so this
+    # still exercises a real content change, not a silent no-op replace.
     text = workflow.read_text(encoding="utf-8")
+    final_step_marker = "      - name: tessctl gate ci (trusted base-ref engine; untrusted pushed tree)\n"
+    assert final_step_marker in text, "fixture workflow must contain the current v3 final step name"
     text = text.replace(
-        "      - name: tessctl gate ci\n",
-        "      - name: tessctl gate ci (neutered)\n        run: exit 0\n"
-        "      - name: tessctl gate ci\n",
+        final_step_marker,
+        "      - name: tessctl gate ci (neutered)\n        run: exit 0\n" + final_step_marker,
         1,
     )
     workflow.write_text(text, encoding="utf-8")

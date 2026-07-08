@@ -343,6 +343,32 @@ def sign_verdict_for_test(engine, verdict: dict, key) -> dict:
     }
 
 
+def sign_signoff_for_test(engine, signoff: dict, key) -> dict:
+    """Twin of `sign_verdict_for_test` for hard-floor sign-off artifacts
+    (honesty-capstone-audit-2026-07-08 §3-d) — produces a `signature` block
+    for `signoff`, signed by GPG identity `key`, using the ENGINE's own
+    `signoff_canonical_bytes()` so the test signs exactly the same canonical
+    form `tessctl gate` will recompute at verify time. `key` need not be one
+    of the six named AI verifiers — a sign-off's `authorized_by` is an
+    arbitrary human-operator identity, so any generated test GPG identity
+    (e.g. one of `verifier_gpg_keys`'s entries, reused under a different
+    registered name) works fine here."""
+    canonical = engine.signoff_canonical_bytes(signoff)
+    content_hash = hashlib.sha256(canonical).hexdigest()
+    env = {**os.environ, "GNUPGHOME": str(key.home)}
+    r = subprocess.run(
+        ["gpg", "--homedir", str(key.home), "--batch", "--yes",
+         "--local-user", key.fpr, "--detach-sign", "--armor", "--output", "-"],
+        input=canonical, capture_output=True, env=env,
+    )
+    assert r.returncode == 0, r.stderr.decode("utf-8", errors="replace")
+    return {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": content_hash,
+        "signature_armored": r.stdout.decode("utf-8"),
+    }
+
+
 def make_upstream(path: Path, gpg, tag, *, sign="signed",
                   core_files=None, engine_bytes=None,
                   lock_files=None, symlinks=None, unsafe_paths=False):

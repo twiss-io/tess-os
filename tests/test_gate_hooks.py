@@ -137,7 +137,7 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v2" in text
+    assert "# tess-gate-ci v3" in text
     assert "workflow_dispatch" in text
     assert "tessctl gate ci" in text
     import yaml
@@ -152,6 +152,15 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     assert triggers["push"]["branches"] == ["main"]
     assert triggers["pull_request"]["branches"] == ["main"]
     assert parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
+    # v3 (honesty-capstone-audit-2026-07-08 §3-c): a dedicated step extracts
+    # the engine at the BASE ref before the final step ever runs it — the
+    # final step must reference that extracted path, never
+    # `.tess/bin/tessctl` from the pushed checkout directly.
+    step_names = [s.get("name") for s in parsed["jobs"]["ship-gate"]["steps"]]
+    assert any("trusted" in (n or "").lower() for n in step_names)
+    final_run = parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
+    assert "steps.trusted_engine.outputs.engine_path" in final_run
+    assert ".tess/bin/tessctl gate ci" not in final_run
 
 
 def test_install_ci_workflow_idempotent(engine, tmp_path):
@@ -162,11 +171,12 @@ def test_install_ci_workflow_idempotent(engine, tmp_path):
     assert first == second
 
 
-def test_install_ci_workflow_upgrades_v1_to_v2(engine, tmp_path):
+def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     """Phase 2b: an operator who already installed the v1 (workflow_dispatch-
-    only) template gets actively UPGRADED to v2 (push/pull_request added) on
-    the next `install-hooks` run — not silently skipped forever, and not
-    mistaken for an unrelated operator-authored workflow."""
+    only) template gets actively UPGRADED to the current template
+    (push/pull_request added, v3's trusted-engine step included) on the next
+    `install-hooks` run — not silently skipped forever, and not mistaken for
+    an unrelated operator-authored workflow."""
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
     v1_text = (
@@ -185,10 +195,44 @@ def test_install_ci_workflow_upgrades_v1_to_v2(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v2" in upgraded
+    assert "# tess-gate-ci v3" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
     assert "push:" in upgraded
     assert "pull_request:" in upgraded
+    assert "steps.trusted_engine.outputs.engine_path" in upgraded
+
+
+def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
+    """honesty-capstone-audit-2026-07-08 §3-c: an operator on the v2 template
+    (CI auto-enforce, but still trusting the pushed tree's own engine) is
+    actively upgraded to v3 (trusted base-ref engine extraction) on the next
+    `install-hooks` run — the same-push engine-tamper fix cannot depend on
+    every adopter remembering to re-run install-hooks by luck."""
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    v2_text = (
+        "# tess-gate-ci v2\n"
+        "name: Tess OS ship-gate\n"
+        "on:\n"
+        "  workflow_dispatch: {}\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "jobs:\n"
+        "  ship-gate:\n"
+        "    name: tessctl gate ci\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: tessctl gate ci\n"
+        "        run: python3 .tess/bin/tessctl gate ci --base x --head y\n"
+    )
+    (wf_dir / "tess-gate.yml").write_text(v2_text, encoding="utf-8")
+
+    engine._gate_install_ci_workflow(tmp_path)
+
+    upgraded = (wf_dir / "tess-gate.yml").read_text()
+    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v2" not in upgraded
+    assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
 
 def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine, tmp_path):
