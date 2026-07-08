@@ -102,7 +102,13 @@ def test_valid_policy_instance_passes(engine):
 
 def test_policy_is_fifth_contract_schema(engine):
     assert engine.CONTRACT_SCHEMAS["policy"] == "policy.schema.json"
-    assert set(engine.CONTRACT_SCHEMAS) == {"brief", "crew-plan", "verdict", "return-manifest", "policy"}
+    # Goal #5 adds a sixth and seventh contract (mission, retry — see
+    # core/contracts/mission.schema.json / retry.schema.json and the
+    # MISSION LEDGER region of .tess/bin/tessctl) alongside Phase 0's
+    # original four and Phase 2's policy schema.
+    assert set(engine.CONTRACT_SCHEMAS) == {
+        "brief", "crew-plan", "verdict", "return-manifest", "policy", "mission", "retry",
+    }
 
 
 # ---------------------------------------------------------------------------

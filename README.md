@@ -451,6 +451,35 @@ tests that prove it): `docs/OBSERVABILITY.md`.
 
 [genai]: https://github.com/open-telemetry/semantic-conventions-genai
 
+### `tessctl mission` — mission records as code
+
+```bash
+./tessctl mission new "Revenue conversation Q3 push" --outcome-type build
+./tessctl mission status <id>                    # human-readable, or --json
+./tessctl gate-status <id>                        # which of the five gates are cleared
+./tessctl gate clear research-before-build --mission <id> --evidence path/to/leah-brief.md
+                                                   # REFUSES without --evidence, or if it
+                                                   # doesn't point at a real file
+./tessctl retry log <task> --mission <id> --cause context-gap \
+    --failure-state degraded --brief path/to/attempt-brief.md
+                                                   # REFUSES a 4th attempt, or a same-brief
+                                                   # retry for a non-transient cause
+./tessctl retry check <task> --mission <id>       # dry-run the same decision, no writes
+```
+
+Two doctrine files that were previously prose only — `conductor/doctrine.md`'s
+five gates and `conductor/subagent-failure-protocol.md`'s typed retry
+protocol — become deterministic, file-backed checks. `tessctl mission new`
+scaffolds `missions/<id>/mission.md` + `mission.json` (two serializations of
+one record, validated against the new `core/contracts/mission.schema.json`);
+`tessctl gate clear` refuses to mark a gate cleared without a real, on-disk
+evidence artifact; `tessctl retry log`/`retry check` read the ledger already
+on disk (`missions/<id>/retries/<task>.attempt-N.md`,
+`core/contracts/retry.schema.json`) to mechanically enforce the 3-attempt cap
+and the "no same-brief retry for a non-transient cause" rule — the same rule
+that used to depend entirely on the conductor remembering to apply it. Full
+convention: `missions/README.md`.
+
 ---
 
 ## How a mission runs
@@ -474,9 +503,10 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`conductor/`** — the doctrine layer: identity, guardrails, the dispatch-brief
   contract, verification routing, the failure/retry protocol, and the command
   system (wired `.claude/commands/`).
-- **`core/contracts/`** — the four doctrine contracts (dispatch-brief, crew-plan,
-  verdict, return-manifest) as JSON Schemas, checked via `tessctl validate`. The
-  first piece of the portable `core/` the framework is growing into.
+- **`core/contracts/`** — seven doctrine contracts (dispatch-brief, crew-plan,
+  verdict, return-manifest, policy, mission, retry) as JSON Schemas, checked via
+  `tessctl validate`. The first piece of the portable `core/` the framework is
+  growing into.
 - **`agents/`** — the roster of specialist persona specs across guilds. The
   compiled, managed dispatch definitions live in `.claude/agents/`.
 - **`.tess/`** — the upgrade engine: `bin/tessctl`, the pristine merge-base
@@ -499,6 +529,9 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`proving-ground/`** — the benchmark harness that tested the enhancement
   thesis and disproved it; see the committed, generated-from-run reports in
   `proving-ground/reports/` and "Honest results" above.
+- **`missions/`** — per-project mission records `tessctl mission new` scaffolds
+  (`mission.md`/`mission.json`, `retries/`); not framework doctrine, not
+  keystone-tracked — see `missions/README.md`.
 
 ---
 
@@ -559,6 +592,18 @@ This is an early public foundation. What is real and committed today:
   `gen_ai.*`, with zero network calls (a pure local file-to-file transform,
   proven by a static import scan plus socket-guard tests). `tessctl run`
   (which does not exist yet) is not instrumented — see `docs/OBSERVABILITY.md`.
+- **Mission records as code (Goal #5)**: `tessctl mission new|status`,
+  `gate-status`, `gate clear` (mission-scoped, alongside the enforcement-spine
+  `gate` subcommands above), and `retry log|check` — turning
+  `conductor/doctrine.md`'s five gates and `conductor/subagent-failure-
+  protocol.md`'s typed retry protocol into deterministic, file-backed checks.
+  Two new contracts (`mission.schema.json`, `retry.schema.json`, wired into
+  `tessctl validate`/`doctor`/`verify`/`lock --check` the same way as the
+  original five); `missions/<id>/` is per-project data, not framework
+  doctrine (see `missions/README.md`). Not yet built: the CLI does not (yet)
+  scaffold `missions/<id>/briefs/`/`verdicts/` (C1/C2's existing
+  `brief`/`verdict` schemas already validate a file at any path; wiring them
+  into this same directory convention is a follow-on, not this goal).
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.
