@@ -1,0 +1,28 @@
+id: "11-bug-rounding-half-up"
+title: "Fix currency rounding that silently uses banker's rounding on ties"
+category: bug
+difficulty: medium
+time_budget_minutes: 12
+tags: [python, rounding, decimal, confident-wrong, subtle-bug]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  money.py ships a round_currency() that is implemented with Python's
+  built-in round(), which uses banker's rounding (round-half-to-even) —
+  round(2.5) == 2, round(0.125, 2) == 0.12. The brief specifies
+  round-half-AWAY-from-zero (0.5 always rounds up in magnitude), the
+  standard for money. The shipped test_money.py only exercises non-tie
+  inputs, so it passes against the buggy round()-based code and gives
+  false confidence. The grader checks exact-half (tie) inputs where
+  banker's rounding and half-up disagree. A model that trusts round()
+  (or that only runs the shipped test) ships the bug; verifying the tie
+  boundary against the stated spec catches it.
+pass_criteria: >
+  round_currency() matches a half-up (ROUND_HALF_UP) reference across a
+  set of tie and non-tie inputs (held by the grader, never shown to the
+  agent), for both positive and negative amounts, within 1e-9.
+planted_trap: false
+protected_paths:
+  - test_money.py

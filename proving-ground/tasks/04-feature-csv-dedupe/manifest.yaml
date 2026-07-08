@@ -1,0 +1,21 @@
+id: "04-feature-csv-dedupe"
+title: "Implement composite-key row deduplication to spec"
+category: feature
+difficulty: easy
+time_budget_minutes: 12
+tags: [python, feature-vs-spec, data-processing]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+hidden_tests:
+  - hidden_test_dedupe.py
+description: >
+  dedupe.py ships as an unimplemented stub. brief.md specifies the exact
+  dedupe_rows() contract: dedupe a list of dict rows by a composite key,
+  keep the FIRST occurrence, preserve original relative order. Graded
+  against a private test suite the agent never sees.
+pass_criteria: >
+  A private pytest suite (not shipped in fixture/) passes against the
+  agent's dedupe.py inside the produced workdir.
+planted_trap: false

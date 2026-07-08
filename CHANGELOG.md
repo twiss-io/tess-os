@@ -81,6 +81,18 @@ All notable changes to Tess OS are documented here. This project adheres to
     untouched.
 
 ### Added
+- **Proving Ground — the measurement harness for the weak-model+structure thesis**
+  (`proving-ground/`, PR #40): 10 seeded tasks spanning bug-with-failing-test,
+  feature-vs-spec, research-with-checkable-facts, and two planted traps
+  (tenant isolation, SQL injection), each gradeable without human judgment
+  via `proving-ground/grade.py`. `proving-ground/run.py` is the matrix runner
+  (weak/strong model tiers x bare/tess-os scaffolds, 4 cells) driving headless
+  `claude -p` trials; `pg_lib.report.aggregate_by_cell` is the only path a
+  number reaches a report through — no hand-typed stats. 64 harness unit
+  tests green; a full 4-cell x 10-task benchmark run is a separate, later
+  step (out of scope for this PR — see the harness `README.md`'s cost
+  estimate). The dispatch-guard headless-exception fix above was discovered
+  running this harness and has already shipped separately.
 - **Goal #11 (roster honesty) — `model_tier` vocabulary, a `coding-squad` roster preset, and stale-count fixes.**
   This slice is scoped to `agents/`, `conductor/` (doctrine text), and top-level
   docs only — no `.tess/bin/tessctl` engine changes. The `tessctl recruit`

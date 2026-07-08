@@ -1,0 +1,119 @@
+# Task contract
+
+Every task lives at `tasks/<id>/` and follows the same shape:
+
+```
+tasks/<id>/
+├── manifest.yaml       # the machine-checkable contract for this task
+├── brief.md            # the prompt handed to the agent as-is
+├── fixture/            # everything COPIED into the agent's workdir
+├── grader.py           # grade(workdir) -> GradeResult — see pg_lib/types.py
+├── answer_key.json      # (research tasks only) NEVER copied to the agent
+└── hidden_test_*.py     # (some feature/trap tasks) NEVER copied to the agent
+```
+
+**The line that matters most:** anything under `fixture/` is what the
+agent sees. Anything else in the task directory (`answer_key.json`,
+`hidden_test_*.py`, `grader.py` itself) is grading-only and must never be
+readable from inside the agent's workdir. `pg_lib.manifest.load_manifest`
+enforces this at dry-run time — an `answer_key` or `hidden_tests` entry
+that resolves to a path inside `fixture_dir` fails validation outright.
+
+## manifest.yaml fields
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes | Must exactly match the directory name. |
+| `title` | string | yes | One-line human summary. |
+| `category` | `bug`\|`feature`\|`research`\|`trap` | yes | What kind of task this is — the dry-run check requires all four categories to be represented across the suite. |
+| `difficulty` | `easy`\|`medium`\|`hard` | yes | Informational; not used for grading. |
+| `time_budget_minutes` | positive int | yes | Informational estimate of how long a competent agent should need. |
+| `tags` | list of strings | no | Free-form labels. |
+| `brief` | string | yes | Filename (relative to the task dir) of the prompt handed to the agent verbatim as the `claude -p` prompt. |
+| `fixture_dir` | string | yes | Directory (relative to the task dir) copied wholesale into the agent's workdir. Must be non-empty. |
+| `grader` | string | yes | Filename of the Python module implementing the grading entrypoint. |
+| `grader_entrypoint` | string | no (default `grade`) | The callable name inside `grader` — signature `(workdir: pathlib.Path) -> GradeResult`. |
+| `description` | string | yes | What the task is testing and why. |
+| `pass_criteria` | string | yes | The deterministic condition for a pass, in plain English. |
+| `planted_trap` | bool | no (default `false`) | Set `true` for the security/footgun-class tasks (07, 08, 16, 17). At least one task in the suite must set this. |
+| `protected_paths` | list of strings | no (default `[]`) | Fixture-relative paths that must stay byte-identical in the produced workdir — enforced generically by `pg_lib.grading.grade_task` BEFORE the task's own `grader.py` ever runs. Use this for any file the agent could edit to cheat rather than fix the underlying problem (most commonly: the test file whose failure defines the task). |
+| `hidden_tests` | list of strings | no (default `[]`) | Task-dir-level (never `fixture_dir`-level) pytest files the grader copies into the workdir at grading time only — the private test suite for feature-vs-spec tasks. |
+| `answer_key` | string or null | no | Task-dir-level (never `fixture_dir`-level) JSON file a research task's grader compares the agent's `answer.json` against. |
+
+## The four categories, and why each is graded the way it is
+
+- **`bug`** (01, 02, 09, 11, 12, 18) — a fixture ships with a real,
+  already-failing pytest suite, or (for the harder tasks) plausible-but-
+  wrong code plus a **decoy** test that passes against it. The
+  fixture-shipped `test_*.py` is listed in `protected_paths` so it can't be
+  edited away. The simplest tasks (01/02/09) grade on the visible test's
+  exit code; the harder ones (11 banker's-vs-half-up rounding, 12 CSV
+  quoted-field parsing, 18 idempotency-retry-after-failure) grade with a
+  **data-driven** grader that imports the module and checks edge cases the
+  shipped/decoy test never exercises — so "make the visible test green"
+  is not enough.
+
+- **`feature`** (03, 04, 10, 13, 14, 19) — a stub function/class plus an
+  explicit spec (in `brief.md`, or a machine-readable `contract.json` for
+  10). Grading is against a suite the agent never sees (`hidden_tests`, or
+  a reference implementation the grader holds itself), so a lookup-table
+  cheat against the disclosed examples alone cannot pass. The harder ones
+  bury the discriminator in a subtle requirement the disclosed examples
+  don't stress: 13 (fully-anchored exact match — `re.match` over-accepts),
+  14 (case-insensitive, order-preserving, first-casing dedupe), 19
+  (floor rounding + range validation + int return).
+
+- **`research`** (05, 06, 15) — a small corpus (synthetic/fictional docs,
+  or a synthetic log/transactions file) with one and only one correct set
+  of answers, computed and pinned in `answer_key.json`. Grading is pure
+  JSON comparison (`pg_lib.grading.compare_answer_json`) with float
+  tolerance and case/whitespace-insensitive string matching — no
+  LLM-as-judge, no human in the loop. Task 05 plants a fact deliberately
+  **not** in the corpus (fabrication trap); task 15 is a **cascading**
+  multi-step chain where a wrong intermediate (e.g. defining "busiest
+  month" by revenue instead of row count) corrupts every downstream field.
+
+- **`trap`** (07, 08, 16, 17) — a realistic footgun modeled on a real bug
+  class (cross-tenant data leak; SQL injection; path traversal; mass
+  assignment / privilege escalation). Grading actively attacks the
+  produced implementation (an injection payload; a second tenant's context;
+  a `../` traversal input; an `updates` dict carrying `is_admin`) rather
+  than just checking a happy path — a "no-op"/lazy implementation that
+  avoids the vulnerability by doing nothing useful is also checked for and
+  fails. Tasks 16 and 17 deliberately do **not** announce the security
+  risk in the brief (unlike 08, which shows the vulnerable draft): the
+  discriminator is whether the agent tests the adversarial input at all.
+
+## Anti-cheat design, summarized
+
+1. **Protected paths** — the test/spec file that defines "done" can't be
+   edited to fake a pass.
+2. **Hidden tests / hidden reference implementations** — the actual
+   grading criteria are never in the agent's workdir at all.
+3. **Symmetric / adversarial checks** — trap-task graders check both
+   "did you fix the vulnerability" AND "did you also keep the feature
+   working" (an isolation fix that returns `[]` for everyone, or a search
+   function that always returns nothing, both fail).
+4. **Independent grader-held reference implementations** (task 10) —
+   grading isn't limited to the disclosed examples, so hardcoding them
+   cannot pass.
+5. **Pytest-hijack rejection** (01, 02, 03, 04, 09 — every pytest-graded
+   task) — `pg_lib.grading.run_pytest_in_workdir` scans the produced
+   workdir for a `conftest.py` / `pytest.ini` / `tox.ini` /
+   `sitecustomize.py` / `setup.cfg` / `pyproject.toml` before ever
+   invoking pytest, and grades FAIL as a cheat-attempt if it finds one —
+   none of these ship in any task's `fixture/`, so their presence is
+   itself the signal. This closes an agent planting a
+   `pytest_runtest_makereport` hook that flips every failed test to
+   passed, which would otherwise force a green grade on an unfixed bug
+   without editing the protected test file at all (protected-path
+   checking alone never catches this — the cheat lives in a *new* file,
+   not a modified one). The invocation itself is additionally hardened
+   with `python -I -m pytest --noconftest -p no:cacheprovider` and a
+   stripped `PYTHONPATH`/`PYTHONSTARTUP` subprocess env, as
+   defense-in-depth. See `tests/test_grading_pytest_hijack.py`.
+
+Every one of these is exercised by a crafted "known good" / "known bad"
+fixture in `tests/test_graders_*.py` (plus `tests/test_grading_pytest_hijack.py`
+for #5) — see the top-level `proving-ground/README.md` for how to run
+them.

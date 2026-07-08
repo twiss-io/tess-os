@@ -1,0 +1,8 @@
+{
+  "total_requests": 40,
+  "count_5xx": 4,
+  "count_4xx": 2,
+  "busiest_endpoint": "/api/machines",
+  "busiest_endpoint_count": 25,
+  "avg_response_ms_status_200": 49.7
+}

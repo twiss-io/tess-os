@@ -1,0 +1,23 @@
+id: "06-research-log-analysis"
+title: "Compute exact quantitative facts from a synthetic access log"
+category: research
+difficulty: easy
+time_budget_minutes: 10
+tags: [research, checkable-facts, log-analysis]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+answer_key: answer_key.json
+description: >
+  fixture/access.log is a small synthetic web-server log with a fixed,
+  known ground truth (computed directly from the file, not estimated —
+  see answer_key.json). The agent must compute exact counts/averages from
+  the log and write answer.json. Purely arithmetic over given data, so
+  there is exactly one correct numeric answer per field.
+pass_criteria: >
+  workdir/answer.json exists, is valid JSON, and matches answer_key.json
+  field-for-field (numeric tolerance 0.05 for the rounded average).
+planted_trap: false
+protected_paths:
+  - access.log
