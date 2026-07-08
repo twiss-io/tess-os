@@ -1,0 +1,41 @@
+{
+  "name": "tess-gui",
+  "version": "0.1.0",
+  "description": "Optional local dashboard for Tess OS — Mission Launcher, Live Mission View, Metrics, and Roster Browser over your own logged-in Claude Code CLI.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": true,
+  "bin": {
+    "tess-gui": "bin/tess-gui.mjs"
+  },
+  "files": [
+    "bin",
+    "server",
+    "client",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/tess-gui.mjs",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  },
+  "keywords": [
+    "tess",
+    "tess-os",
+    "claude-code",
+    "dashboard",
+    "mission-control"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/twiss-io/tess-os.git",
+    "directory": "gui"
+  }
+}

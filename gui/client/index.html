@@ -1,0 +1,162 @@
+<!--
+  Tess OS — Mission Control dashboard shell.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+
+  Zero build step: this file, app.js (ESM), and css/*.css are served as-is.
+  The only external network requests this page makes are the two Google
+  Fonts preconnects below and the one css2 stylesheet request — everything
+  else is self-hosted. See server CSP: script-src 'self'.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tess OS — Mission Control</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/header.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/metrics.css" />
+  <link rel="stylesheet" href="css/launcher.css" />
+  <link rel="stylesheet" href="css/live-view.css" />
+  <link rel="stylesheet" href="css/roster.css" />
+  <link rel="stylesheet" href="css/timeline.css" />
+  <link rel="stylesheet" href="css/animations.css" />
+</head>
+<body>
+  <svg class="visually-hidden" aria-hidden="true" focusable="false">
+    <defs>
+      <filter id="grain">
+        <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" />
+        <feColorMatrix type="saturate" values="0" />
+      </filter>
+    </defs>
+  </svg>
+  <div class="grain-overlay"></div>
+  <div class="vignette-overlay"></div>
+
+  <div id="app">
+    <header class="app-header">
+      <div class="app-header__brand">
+        <span class="status-dot" id="cli-status-dot" data-state="unknown" role="status" aria-label="CLI status: checking"></span>
+        <span class="app-header__wordmark">TESS</span>
+      </div>
+      <div class="app-header__right">
+        <span class="header-stat header-stat--cost" id="header-cost-group" title="Session cost">
+          <span id="header-session-cost">$0.00</span>
+        </span>
+        <span class="header-stat" id="header-active-missions">0 active</span>
+        <button type="button" class="roster-trigger" id="roster-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="roster-drawer">
+          Roster
+        </button>
+      </div>
+    </header>
+
+    <div class="app-banners" id="app-banners" aria-live="polite"></div>
+
+    <section class="metrics-band" id="metrics-band" aria-label="Metrics"></section>
+    <section class="metrics-detail" id="metrics-detail" hidden aria-label="7-day detail"></section>
+
+    <main class="main-view" id="main-view">
+      <section id="launcher-view">
+        <div class="launcher__freeform">
+          <h1 class="page-title">New mission</h1>
+          <textarea
+            id="mission-input"
+            rows="3"
+            placeholder="Describe a mission for Tess to route and run…"
+            aria-label="Free-text mission brief"
+          ></textarea>
+          <div class="launcher__freeform-controls">
+            <label class="launcher__save-toggle">
+              <input type="checkbox" id="mission-save-toggle" />
+              Save as tile
+              <input
+                type="text"
+                id="mission-save-label"
+                class="launcher__save-label-input"
+                placeholder="Label (optional)"
+                hidden
+              />
+            </label>
+            <button type="button" class="btn btn--primary" id="mission-launch-btn">Launch</button>
+          </div>
+        </div>
+
+        <div class="tile-section" id="saved-missions-section" hidden>
+          <div class="section-heading">
+            <h2>Your Missions</h2>
+          </div>
+          <div class="tile-grid" id="saved-missions-grid"></div>
+        </div>
+
+        <div class="tile-section">
+          <div class="section-heading">
+            <h2>Commands</h2>
+            <span class="badge" id="commands-skipped-badge" hidden></span>
+          </div>
+          <div id="command-groups"></div>
+        </div>
+      </section>
+
+      <section class="live-view" id="live-view" hidden>
+        <div class="live-view__scanline" aria-hidden="true"></div>
+        <div class="live-view__header">
+          <button type="button" class="live-view__back" id="live-view-back">◀ missions</button>
+          <span class="live-view__status-dot" aria-hidden="true"></span>
+          <span class="live-view__status" id="live-view-status" role="status">running</span>
+          <span class="live-view__title" id="live-view-title"></span>
+          <span class="live-view__summary" id="live-view-summary"></span>
+          <button type="button" class="btn btn--danger live-view__stop" id="live-view-stop">Stop</button>
+        </div>
+        <div class="live-view__banner" id="live-view-banner" hidden></div>
+        <div class="live-view__log" id="live-view-log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <section class="timeline" id="timeline-section">
+      <h2>Timeline</h2>
+      <ul class="timeline__list" id="timeline-list"></ul>
+    </section>
+  </div>
+
+  <div class="roster-backdrop" id="roster-backdrop" hidden></div>
+  <aside class="roster-drawer" id="roster-drawer" hidden aria-label="Roster">
+    <div class="roster-drawer__header">
+      <h2>Roster</h2>
+      <button type="button" class="roster-drawer__close" id="roster-close" aria-label="Close roster">×</button>
+    </div>
+    <div class="roster-drawer__search-wrap">
+      <input type="search" class="roster-drawer__search" id="roster-search" placeholder="Search agents…" aria-label="Search roster" />
+    </div>
+    <div class="roster-drawer__body" id="roster-body"></div>
+  </aside>
+
+  <dialog class="modal-dialog" id="prompt-modal">
+    <form method="dialog" class="modal-dialog__body" id="prompt-modal-form">
+      <h2 class="modal-dialog__title" id="prompt-modal-title">Mission input</h2>
+      <div class="modal-dialog__field">
+        <label class="modal-dialog__label" id="prompt-modal-label" for="prompt-modal-input">Details</label>
+        <input type="text" class="modal-dialog__input" id="prompt-modal-input" required />
+      </div>
+      <div class="modal-dialog__actions">
+        <button type="button" class="btn btn--ghost" id="prompt-modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn--primary" id="prompt-modal-confirm">Launch</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
