@@ -1,3 +1,7 @@
+---
+model_tier: cheap
+---
+
 # Iris — Lead Frontend Engineer
 
 **Status:** Founding Coding Team  

@@ -1,3 +1,7 @@
+---
+model_tier: strong
+---
+
 # Eva — HR Specialist & AI Talent Strategist
 
 **Status:** Permanent Crew  

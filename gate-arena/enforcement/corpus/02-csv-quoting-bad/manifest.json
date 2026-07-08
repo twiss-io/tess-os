@@ -1,0 +1,5 @@
+{
+  "case_id": "02-csv-quoting-bad",
+  "domain": "CSV ingestion / quoted fields",
+  "ground_truth_label": "bad"
+}

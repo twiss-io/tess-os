@@ -1,3 +1,7 @@
+---
+model_tier: strong
+---
+
 # Quinn — QA and Reliability Architect
 
 **Status:** Founding Coding Team  

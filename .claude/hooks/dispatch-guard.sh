@@ -15,11 +15,45 @@
 # Safe set = reconciliation of CLAUDE.md Rule Zero + guardrails.md Rule 1:
 # doctrine files (CLAUDE.md, conductor/*, agents/README.md, .claude/agents/*),
 # project memory files, and trivial orchestration commands.
+#
+# HEADLESS / no-subagent-available exception (Proving Ground finding,
+# proving-ground/reports/2026-07-07.md): Rule Zero ("always dispatch, never
+# execute solo") presupposes a caller that HOLDS the Agent/Task tool — the
+# real Tess orchestrator. A headless single-agent execution context (a
+# `claude -p` worker, `codex exec`, or any harness with no subagent-dispatch
+# capability at all) has structurally nothing to dispatch TO, so the warning
+# is pure friction with no corrective action available to the model. The
+# benchmark measured this: a 3.1-3.2x cost/latency overhead on every task,
+# AND a reproducible fabrication regression (task 05-research-roster-facts,
+# strong+tess-os failed all 3 attempts an unassisted strong+bare run passed
+# cleanly) plausibly caused by the model re-litigating "should I be doing
+# this myself" against a contextually-wrong warning instead of the task's
+# actual instructions.
+#
+# When the CALLER/SCAFFOLD sets TESS_HEADLESS=1 (or the alias
+# TESS_NO_SUBAGENTS=1 — either is sufficient) this hook becomes a pure
+# no-op: it still consumes stdin (protocol contract — PreToolUse hooks are
+# fed the tool-call JSON and must not leave it unread) but exits 0 before
+# ANY other check, including the dispatch-lock check below, and NEVER emits
+# a systemMessage. This is opt-in by the render target / harness, never
+# inferred from process state — the real Tess orchestrator session never
+# sets either variable, so its warn-mode behavior below is byte-for-byte
+# unchanged. Presence-based, not boolean-parsed: ANY non-empty value
+# (including the string "0") counts as set — unset or empty ("") is the
+# only way to leave headless mode off. See conductor/hook-testing-protocol.md
+# and this file's companion test, tests/test_dispatch_guard_headless.py.
 
 LOCK_DIR="/tmp/tess-dispatch-locks"
 TESS_ROOT="$CLAUDE_PROJECT_DIR"
 
 input="$(cat)"
+
+# Headless / no-subagent-available context — see header comment. Checked
+# FIRST, ahead of the dispatch-lock check, since a headless harness cannot
+# have a valid dispatch lock in the first place and this must win regardless.
+if [ -n "${TESS_HEADLESS:-}" ] || [ -n "${TESS_NO_SUBAGENTS:-}" ]; then
+  exit 0
+fi
 
 # Dispatch in flight (any lock fresher than the 4h stale threshold) -> assume
 # subagent context, stay silent. The window MUST match STALE_MIN=240 in

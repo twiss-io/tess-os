@@ -84,8 +84,11 @@ def _seed(project):
 # Registry + interface shape
 # ---------------------------------------------------------------------------
 
-def test_registry_contains_claude_code_only_in_phase_1(engine):
-    assert set(engine.RENDER_TARGETS) == {"claude-code"}
+def test_registry_contains_claude_code_and_phase_2_targets(engine):
+    """Phase 2 adds "codex" and "generic" to the registry alongside Phase 1's
+    "claude-code" — see tests/test_render_targets_codex_generic.py for their
+    own dedicated coverage (this file stays claude-code-focused)."""
+    assert set(engine.RENDER_TARGETS) == {"claude-code", "codex", "generic"}
     target = engine.RENDER_TARGETS["claude-code"]
     assert isinstance(target, engine.RenderTarget)
     assert target.name == "claude-code"
@@ -206,9 +209,12 @@ def test_cli_list_targets(project, run_cli):
 
 
 def test_cli_unknown_target_rejected_by_argparse(project, run_cli):
+    """"codex" is now a REGISTERED target (Phase 2) — use a name that is
+    genuinely unknown to prove the choices= validation still rejects an
+    unrecognized --target."""
     _seed(project)
     project.write()
-    r = run_cli(project.root, "render", "--target", "codex")
+    r = run_cli(project.root, "render", "--target", "nonexistent-target")
     assert r.returncode != 0
     assert "invalid choice" in r.stderr
 

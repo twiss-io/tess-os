@@ -1,0 +1,24 @@
+id: "13-feature-code-exact-match"
+title: "Validate a 4-digit code with a fully-anchored, exact match"
+category: feature
+difficulty: medium
+time_budget_minutes: 10
+tags: [python, regex, validation, confident-wrong, anchoring]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  is_valid_code(s) must return True only when s is exactly four ASCII
+  digits and nothing else. The confident-but-wrong implementation,
+  re.match(r"\d{4}", s), accepts "12345" (match() is not end-anchored),
+  and even re.match(r"\d{4}$", s) accepts "1234\n" (in Python, $ matches
+  just before a trailing newline). The grader includes both traps plus
+  the correct rejections; the reference is re.fullmatch(r"[0-9]{4}", s).
+  A model that reaches for the obvious re.match ships an over-accepting
+  validator; testing "12345" and a trailing newline catches it.
+pass_criteria: >
+  is_valid_code returns the same boolean as re.fullmatch(r"[0-9]{4}", s)
+  for a held-out set of valid and invalid strings (including the
+  over-length and trailing-newline traps).
+planted_trap: false

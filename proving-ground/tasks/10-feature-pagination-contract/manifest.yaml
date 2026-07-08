@@ -1,0 +1,26 @@
+id: "10-feature-pagination-contract"
+title: "Implement a paginated response envelope to a machine-readable contract"
+category: feature
+difficulty: medium
+time_budget_minutes: 15
+tags: [python, feature-vs-spec, api-contract, data-driven-grading]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  fixture/contract.json is a machine-readable API contract (rules +
+  worked examples) for paginate_response(). fixture/pagination_contract.py
+  ships as an unimplemented stub. Grading is purely data-driven: the
+  grader holds its own reference implementation of the contract and
+  compares the agent's output against it across the disclosed examples
+  PLUS additional generated cases the agent never sees (so literally
+  hardcoding the three disclosed examples cannot pass).
+pass_criteria: >
+  The agent's paginate_response() matches the grader's independent
+  reference implementation of contract.json across every disclosed
+  example and every generated held-out case, AND contract.json itself is
+  byte-identical to the shipped fixture (protected_paths).
+planted_trap: false
+protected_paths:
+  - contract.json

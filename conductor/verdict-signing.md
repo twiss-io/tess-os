@@ -109,6 +109,33 @@ Reid/Cyra verdict (closing the "who guards the key registry" loop).
 
 ### Onboarding a verifier
 
+**Turnkey path (recommended — `tessctl verdict keygen`, added to close the
+"cannot turn the gate on without manual GPG surgery" adoption gap; full
+walkthrough: `docs/GATE_QUICKSTART.md`):**
+
+```bash
+tessctl verdict keygen --verifier Reid
+```
+
+Does steps 1–3 below in one command: generates a fresh, sign-only, local
+GPG identity for the named verifier; exports the PUBLIC half to
+`.tess/keys/verifiers/<name>.asc`; registers `{fingerprint,
+public_key_file}` under `policy.verifier_keys.<Name>` in BOTH
+`core/policy/policy.yaml` and the `.tess/core/policy/policy.yaml` pristine
+mirror (a comment-preserving text patch — `policy.yaml`'s own extensive
+header documentation is never lost); re-pins the one `tess.lock` entry this
+touches (scoped — never blesses any OTHER core file's drift/tamper as a side
+effect, unlike an unscoped `tessctl lock --regen`). Idempotent: refuses to
+clobber an existing key/registration for that verifier without `--force`
+(which generates a NEW keypair and REPLACES both — a manual key rotation,
+automated). tessctl never stores or transmits the resulting PRIVATE
+key — it lives solely in the local GPG keyring (ambient, or `--gnupg-home`),
+exactly as if the verifier had run `gpg --full-gen-key` themselves. Step 4
+below still applies regardless of which path generated the key.
+
+**Manual path (an already-existing keypair, or full control over key
+parameters):**
+
 1. The verifier generates their own GPG keypair (private key never leaves
    their custody).
 2. Export the public half and commit it:
@@ -120,6 +147,9 @@ Reid/Cyra verdict (closing the "who guards the key registry" loop).
        fingerprint: "<the exact 40-hex fingerprint>"
        public_key_file: .tess/keys/verifiers/reid.asc
    ```
+
+**Either path, then:**
+
 4. That change to `core/policy/policy.yaml` is itself `prod_touching`
    (`tess-os-security-tier-doctrine`) and needs its own covering, signed
    Reid/Cyra verdict before it ships — the key registry cannot bootstrap

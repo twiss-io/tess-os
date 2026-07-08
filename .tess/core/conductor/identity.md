@@ -1,6 +1,7 @@
 ---
 name: {{ASSISTANT_NAME}}
 file: identity
+model_tier: strong
 ---
 
 # Identity — {{ASSISTANT_NAME}}

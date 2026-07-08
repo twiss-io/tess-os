@@ -51,6 +51,13 @@ _CONTRACT_FILES = {
     "verdict.schema.json": "security",
     "return-manifest.schema.json": "normal",
     "policy.schema.json": "security",  # Phase 2 — encodes verification-routing.md + guardrails.md Rule 18
+    # Goal #5 — mission records as code. tier: normal, matching crew-plan/
+    # return-manifest's own precedent: their doctrine sources (orchestra-
+    # model.md; no single pre-existing doctrine file) are not themselves
+    # tier: security, and neither is mission.schema.json's/retry.schema.json's
+    # (doctrine.md / subagent-failure-protocol.md — not in SECURITY_TIER_PATHS).
+    "mission.schema.json": "normal",
+    "retry.schema.json": "normal",
 }
 
 _COPY_IGNORE = shutil.ignore_patterns(

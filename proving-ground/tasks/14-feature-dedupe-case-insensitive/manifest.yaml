@@ -1,0 +1,25 @@
+id: "14-feature-dedupe-case-insensitive"
+title: "Dedupe emails case-insensitively, preserving first-seen order and casing"
+category: feature
+difficulty: medium
+time_budget_minutes: 12
+tags: [python, spec-adherence, dedupe, ordering]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  dedupe_emails must remove duplicates treating addresses that differ only
+  in letter case as the same, keep the FIRST occurrence (original casing),
+  and preserve input order. Three plausible one-liners each break one
+  clause: dict.fromkeys(emails) dedupes case-SENSITIVELY (keeps both
+  "Bob@x" and "bob@x"); list(set(...)) loses order; lowercasing the output
+  destroys the original casing. Disclosed examples are all same-case, so a
+  case-sensitive dedupe passes them; the grader's held-out cases mix case
+  and order. Careful reading of all three clauses (or testing a mixed-case
+  input) is what passes.
+pass_criteria: >
+  dedupe_emails equals a case-insensitive, order-preserving, first-casing
+  reference across a held-out set including mixed-case duplicates and
+  order-sensitive inputs.
+planted_trap: false

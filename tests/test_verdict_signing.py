@@ -41,6 +41,9 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+import time
+import types
 from pathlib import Path
 
 import pytest
@@ -723,3 +726,215 @@ def test_cli_sign_produces_schema_valid_signature_block(project, run_cli, verifi
     assert sig["algorithm"] == "gpg-detached-armor"
     assert len(sig["signed_content_sha256"]) == 64
     assert "BEGIN PGP SIGNATURE" in sig["signature_armored"]
+
+
+# ---------------------------------------------------------------------------
+# A10c (Gate Arena finding, disclosed 2026-07-07): "`_gate_verify_verdict_
+# signature` verifies cryptographic validity + fingerprint match, but does
+# NOT check whether the signing GPG key is EXPIRED or REVOKED — a verdict
+# signed with an already-expired/revoked key still verifies." Both proofs
+# below use a REAL, independently-generated GPG identity (never the
+# session-scoped `verifier_gpg_keys`, which are deliberately non-expiring)
+# so the key's expiry/revocation is genuinely exercised through real `gpg`,
+# not mocked.
+# ---------------------------------------------------------------------------
+
+def _gen_a10c_test_key(name: str, expire: str = "0"):
+    """A throwaway ed25519 GPG identity in its own isolated GNUPGHOME, with
+    a caller-controlled `Expire-Date` — independent of conftest.py's
+    session-scoped `verifier_gpg_keys` (always Expire-Date: 0) so these
+    tests can control key validity precisely. Homedir lives directly under
+    `/tmp` with a short prefix for the same reason `conftest.py`'s own
+    `gpg_key`/`_gen_verifier_gpg_identity` fixtures document: gpg-agent's
+    UNIX socket path has a ~104-char limit that pytest's own deep `tmp_path`
+    blows past."""
+    home = Path(tempfile.mkdtemp(prefix=f"tessa10c{name.lower()[:3]}", dir="/tmp"))
+    os.chmod(home, 0o700)
+    email = f"{name.lower()}-a10c@tess.test"
+    params = home / "keyparams"
+    params.write_text(
+        "%no-protection\n"
+        "Key-Type: eddsa\n"
+        "Key-Curve: ed25519\n"
+        "Key-Usage: sign\n"
+        f"Name-Real: Tess Test A10c {name}\n"
+        f"Name-Email: {email}\n"
+        f"Expire-Date: {expire}\n"
+        "%commit\n"
+    )
+    env = {**os.environ, "GNUPGHOME": str(home)}
+    r = subprocess.run(["gpg", "--batch", "--gen-key", str(params)], capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        shutil.rmtree(home, ignore_errors=True)
+        pytest.skip(f"gpg key generation failed: {r.stderr}")
+    lk = subprocess.run(["gpg", "--with-colons", "--list-keys", email], capture_output=True, text=True, env=env)
+    fpr, expire_epoch = "", None
+    for line in lk.stdout.splitlines():
+        fields = line.split(":")
+        if fields[0] == "pub" and len(fields) > 6 and fields[6]:
+            expire_epoch = int(fields[6])
+        if fields[0] == "fpr":
+            fpr = fields[9]
+    if not fpr:
+        shutil.rmtree(home, ignore_errors=True)
+        pytest.skip("could not extract fingerprint for A10c test key")
+    exp = subprocess.run(["gpg", "--homedir", str(home), "--export", "--armor", fpr],
+                         capture_output=True, text=True, env=env)
+    return types.SimpleNamespace(home=home, fpr=fpr, pubkey_armored=exp.stdout, email=email, expire_epoch=expire_epoch)
+
+
+def _revoke_a10c_test_key(key) -> str:
+    """Imports `key`'s OWN revocation certificate (generated automatically
+    by `gpg --gen-key`, stashed under `openpgp-revocs.d/`) into its own
+    homedir keyring, then returns the freshly re-exported (now genuinely
+    revoked) ASCII-armored public key. The caller MUST overwrite whatever
+    bundled `.asc` file the gate reads with this new export — the gate
+    imports that bundled file fresh into its OWN isolated GNUPGHOME per
+    check (never `key.home`'s keyring), so the revocation is only visible
+    to the gate once the bundled export reflects it."""
+    env = {**os.environ, "GNUPGHOME": str(key.home)}
+    rev_files = list((key.home / "openpgp-revocs.d").glob("*.rev"))
+    assert rev_files, f"no revocation certificate found under {key.home}"
+    # GnuPG inserts a leading ':' before the PEM-style markers as a guard
+    # against accidental use of the file — strip it before importing.
+    rev_clean = rev_files[0].read_text(encoding="utf-8").replace(":-----BEGIN", "-----BEGIN")
+    rev_path = key.home / "revocation_clean.asc"
+    rev_path.write_text(rev_clean, encoding="utf-8")
+    r = subprocess.run(
+        ["gpg", "--homedir", str(key.home), "--batch", "--yes", "--import", str(rev_path)],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    exp = subprocess.run(["gpg", "--homedir", str(key.home), "--export", "--armor", key.fpr],
+                         capture_output=True, text=True, env=env)
+    key.pubkey_armored = exp.stdout
+    return key.pubkey_armored
+
+
+def _teardown_a10c_test_key(key) -> None:
+    subprocess.run(["gpgconf", "--homedir", str(key.home), "--kill", "gpg-agent"],
+                   capture_output=True, env={**os.environ, "GNUPGHOME": str(key.home)})
+    shutil.rmtree(str(key.home), ignore_errors=True)
+
+
+def test_verdict_signed_by_expired_key_is_rejected(project, run_cli, engine):
+    """A10c: a verdict cryptographically signed by a key that is NOW
+    EXPIRED (checked at verification time, not signing time — the key was
+    genuinely still valid when it signed) must never clear the gate, even
+    though the signature math and the exact registered fingerprint both
+    check out. This is the disclosed Gate Arena gap, closed."""
+    root = project.root
+    key = _gen_a10c_test_key("Reid", expire="seconds=6")
+    try:
+        shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
+        (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+        rel = _bundle_key(root, "Reid", key)
+        policy = _policy_dict(["Reid"], {"Reid": {"fingerprint": key.fpr, "public_key_file": rel}})
+        (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
+        _init_repo(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "initial")
+
+        base = _base_sha(root)
+        (root / "src" / "prod").mkdir(parents=True)
+        (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+        blob = _blob_sha(root, "src/prod/app.py")
+        verdict = _base_verdict(["src/prod/**"], {"src/prod/app.py": blob})
+        verdict["signature"] = sign_verdict_for_test(engine, verdict, key)  # signed WHILE still valid
+        _write_verdict(root, "missions/m1/verdicts/prod-src.verdict.md", verdict)
+        head = _commit_all(root, "prod change + verdict signed by a key that will soon expire")
+
+        # Wait until the key is DEFINITELY expired, timed off the key's OWN
+        # recorded expiration epoch (not a fixed sleep) — deterministic
+        # regardless of how long setup above took.
+        assert key.expire_epoch is not None, "test key has no recorded expiration"
+        remaining = key.expire_epoch - time.time() + 2
+        if remaining > 0:
+            time.sleep(remaining)
+
+        r = run_cli(root, "gate", "ci", "--base", base, "--head", head, "--json")
+        assert r.returncode == 1, r.stdout + r.stderr
+        payload = json.loads(r.stdout)
+        assert payload["blocked"] is True
+        assert any(
+            "src/prod/app.py" in reason and "EXPIRED" in reason
+            for reason in payload["reasons"]
+        ), payload["reasons"]
+    finally:
+        _teardown_a10c_test_key(key)
+
+
+def test_verdict_signed_by_revoked_key_is_rejected(project, run_cli, engine):
+    """A10c: a verdict signed by a key that has since been REVOKED (a real
+    self-revocation certificate imported into the verifying export) must
+    never clear the gate."""
+    root = project.root
+    key = _gen_a10c_test_key("Reid", expire="0")
+    try:
+        shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
+        (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+        rel = _bundle_key(root, "Reid", key)
+        policy = _policy_dict(["Reid"], {"Reid": {"fingerprint": key.fpr, "public_key_file": rel}})
+        (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
+        _init_repo(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "initial")
+
+        base = _base_sha(root)
+        (root / "src" / "prod").mkdir(parents=True)
+        (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+        blob = _blob_sha(root, "src/prod/app.py")
+        verdict = _base_verdict(["src/prod/**"], {"src/prod/app.py": blob})
+        verdict["signature"] = sign_verdict_for_test(engine, verdict, key)
+        _write_verdict(root, "missions/m1/verdicts/prod-src.verdict.md", verdict)
+        head = _commit_all(root, "prod change + verdict signed by a key that will be revoked")
+
+        _revoke_a10c_test_key(key)
+        (root / rel).write_text(key.pubkey_armored, encoding="utf-8")  # bundled export now reflects the revocation
+
+        r = run_cli(root, "gate", "ci", "--base", base, "--head", head, "--json")
+        assert r.returncode == 1, r.stdout + r.stderr
+        payload = json.loads(r.stdout)
+        assert payload["blocked"] is True
+        assert any(
+            "src/prod/app.py" in reason and "REVOKED" in reason
+            for reason in payload["reasons"]
+        ), payload["reasons"]
+    finally:
+        _teardown_a10c_test_key(key)
+
+
+def test_gpg_signing_key_validity_reason_parses_expkeysig(engine):
+    """Unit-level, no real gpg subprocess: `_gpg_signing_key_validity_reason`
+    recognizes gpg's own EXPKEYSIG status line."""
+    raw = (
+        "[GNUPG:] NEWSIG\n"
+        "[GNUPG:] KEY_CONSIDERED ABCDEF0123456789ABCDEF0123456789ABCDEF01 0\n"
+        "[GNUPG:] EXPKEYSIG DEADBEEFDEADBEEF Some Test Uid <uid@test>\n"
+        "[GNUPG:] VALIDSIG ABCDEF0123456789ABCDEF0123456789ABCDEF01 2026-01-01 1700000000 0 4 0 22 10 00 "
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
+    )
+    assert engine._gpg_signing_key_validity_reason(raw) == "expired"
+
+
+def test_gpg_signing_key_validity_reason_parses_revkeysig(engine):
+    """Unit-level: recognizes gpg's own REVKEYSIG status line."""
+    raw = (
+        "[GNUPG:] NEWSIG\n"
+        "[GNUPG:] REVKEYSIG DEADBEEFDEADBEEF Some Test Uid <uid@test>\n"
+        "[GNUPG:] VALIDSIG ABCDEF0123456789ABCDEF0123456789ABCDEF01 2026-01-01 1700000000 0 4 0 22 10 00 "
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
+    )
+    assert engine._gpg_signing_key_validity_reason(raw) == "revoked"
+
+
+def test_gpg_signing_key_validity_reason_none_for_goodsig(engine):
+    """Unit-level sanity: an ordinary GOODSIG (no expiry/revocation) is not
+    misclassified — the new check must not false-positive on a healthy key."""
+    raw = (
+        "[GNUPG:] NEWSIG\n"
+        "[GNUPG:] GOODSIG DEADBEEFDEADBEEF Some Test Uid <uid@test>\n"
+        "[GNUPG:] VALIDSIG ABCDEF0123456789ABCDEF0123456789ABCDEF01 2026-01-01 1700000000 0 4 0 22 10 00 "
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
+    )
+    assert engine._gpg_signing_key_validity_reason(raw) is None

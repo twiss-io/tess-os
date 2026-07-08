@@ -1,0 +1,22 @@
+id: "03-feature-token-bucket-ratelimiter"
+title: "Implement a token-bucket rate limiter to spec"
+category: feature
+difficulty: medium
+time_budget_minutes: 20
+tags: [python, feature-vs-spec, rate-limiting]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+hidden_tests:
+  - hidden_test_ratelimiter.py
+description: >
+  ratelimiter.py ships as an unimplemented stub. brief.md specifies the
+  exact TokenBucket contract (constructor args, allow() signature, refill
+  semantics, capping, and the "a denied request must not consume tokens"
+  rule). The agent implements it from the spec alone; grading runs a
+  private test suite the agent never sees against the implementation.
+pass_criteria: >
+  A private pytest suite (not shipped in fixture/) passes against the
+  agent's ratelimiter.py inside the produced workdir.
+planted_trap: false

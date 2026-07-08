@@ -21,6 +21,9 @@
 | `.tess/core/templates/CLAUDE.md.tpl` | `CLAUDE.md` (rendered + operator/ stubs) |
 | `.tess/core/templates/claude-md/*.md` | `CLAUDE.md` (composed fragments) |
 | `.tess/core/templates/client/_template/**` | `clients/_template/**` |
+| `.tess/core/templates/agents-md/AGENTS.md.tpl` + `harness-note.md` | `AGENTS.md` (Phase 2 — core-internal, `live_path: null`; see below) |
+| `.tess/core/templates/agents-md/codex-config.toml.tpl` | `.codex/config.toml` (Phase 2 — core-internal, `live_path: null`; see below) |
+| `.tess/core/commands/*.md` | `.claude/commands/*.md` (tracked) **and** `.codex/prompts/*.md` + `prompts/*.md` (Phase 2 — untracked-render-generated, see below) |
 | `.tess/core/contracts/**` | `core/contracts/**` (Phase 1) |
 | `.tess/core/MANIFEST.md` | — (core index, not a live doctrine path) |
 
@@ -69,7 +72,7 @@
 
 ## agents/ — persona prose specs
 
-736 files across 165 persona directories, each mapping `.tess/core/agents/<name>/** -> agents/<name>/**` (tier: normal).
+736 files across **165 top-level entries** under `.tess/core/agents/` — **144 persona directories** + 21 guild/doctrine `.md` files (`README.md` and the `*-guild.md` / `*-governance.md` / `intelligence-staffing.md` / `coding-team.md` docs) — each mapping `.tess/core/agents/<name>/** -> agents/<name>/**` (tier: normal). Roster honesty fix (Goal #11, 2026-07): the prior wording said "165 persona directories," conflating the two counts; verified by `find .tess/core/agents -mindepth 1 -maxdepth 1 -type d | wc -l` (144) vs `find .tess/core/agents -maxdepth 1 -type f -name '*.md' | wc -l` (21).
 
 Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, anais, apolline, arielle, athena, aurora, aveline, beatrice, berenice, bettina, bianca, brand-guild.md, briony, callista, camille, cecily, celeste, celine, cerise, clara, clarisse, clio, coding-team.md, colette, coralie, corinne, corisande, cosima, creative-design-guild.md, cressida, cx-client-success-guild.md, cyra, danica, daphne, data-analytics-guild.md, delphine, domitille, elara, elena, elodie, eloise, elspeth, emmeline, estelle, eulalie, eva, evangeline, evelina, events-stagecraft-guild.md, finance-investor-guild.md, fiorella, fleur, floriane, freya, gaiane, genevieve, gia, growth-governance.md, growth-guild.md, helena, hesper, ilaria, imogen, intelligence-staffing.md, iris, isadora, iseult, isolde, jessamine, josephine, jovienne, juliette, lavinia, leah, legal-risk-guild.md, leonora, linnea, liora, livia, lucasta, lucienne, lysandra, madeleine, maelle, maialen, marcelline, margot, marina, mariselle, melisande, mira, mireille, mireya, morwenna, nadia, naomi, nerissa, noelle, noemi, nova, octavia, odette, ondine, opaline, ops-guild.md, oriana, orielle, ottilie, paloma, people-talent-guild.md, petra, procurement-vendor-guild.md, product-guild.md, queniva, quinn, reid, renee, research-knowledge-guild.md, romilly, rosalie, rowena, roxane, sabella, sabine, sales-bd-guild.md, selene, seraphine, sienna, simone, sofia, soraya, strategy-governance.md, strategy-guild.md, talia, tamsin, tatienne, thais, thea, theodora, transactions-ma-guild.md, valeria, valina, vega, verena, verity, vespera, victoria, violette, virelai, vivienne, xanthe, yselle, yvette, zara, zelie, zephirine, zinnia, zorine
 
@@ -285,6 +288,32 @@ source, `core/contracts/**` is the resolved live output.
 | `contracts/crew-plan.schema.json` | `core/contracts/crew-plan.schema.json` | normal |
 | `contracts/verdict.schema.json` | `core/contracts/verdict.schema.json` | security |
 | `contracts/return-manifest.schema.json` | `core/contracts/return-manifest.schema.json` | normal |
+
+## templates/agents-md/ — Phase 2: Codex + generic render-target templates
+
+`AGENTS.md`, `.codex/prompts/**`, `.codex/config.toml`, and `prompts/**` are
+rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
+`adapters/codex/README.md` + `adapters/generic/README.md`). Neither target
+is enabled by default (`tess.manifest.json`'s `render_targets.enabled` stays
+`["claude-code"]` — see that key's own `_doc`).
+
+`AGENTS.md.tpl` and `harness-note.md` have `live_path: null` (core-internal —
+Check A / base_sha integrity only, the same pattern `personas/*.md` uses):
+their live output is conditional on a target being enabled per-install, so
+giving them an ordinary `live_path` would make doctor/verify treat `AGENTS.md`
+as unconditionally required the moment `codex`/`generic` is merely
+*registered* — see `_check_untracked_render_generated()` for how live-tree
+drift-checking works for these paths instead.
+
+| Core file | Live path | Tier |
+|---|---|---|
+| `templates/agents-md/AGENTS.md.tpl` | `null` (core-internal) | normal |
+| `templates/agents-md/harness-note.md` | `null` (core-internal) | normal |
+| `templates/agents-md/codex-config.toml.tpl` | `null` (core-internal) | normal |
+
+`AGENTS.md.tpl` reuses `templates/claude-md/rule-zero.md`, `hard-floor.md`,
+`system-laws.md`, and `directory.md` VERBATIM (see `render_agents_md()`'s
+docstring) — no duplicate doctrine text exists for those four sections.
 
 ## (root) — settings + index
 

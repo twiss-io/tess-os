@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/mission.schema.json",
+  "title": "Mission Record Contract",
+  "description": "Machine-checkable form of a mission record — Goal #5 ('tessctl mission + the typed-retry ledger: mission records as code'), turning docs/ULTIMATE_FRAMEWORK_PLAN.md §C3's prose target ('mission record as data: missions/<id>/plan.yaml + missions/<id>/state.json — which gates cleared, when, evidenced by which artifact') into a schema. `id`/`state` tie to conductor/mission-states.md's FSM; `gates[].name` is the SAME five-entry enum crew-plan.schema.json's `Stage.gate_in` already uses verbatim (conductor/doctrine.md 'The Gates' table) — one gate vocabulary, not two. Unlike crew-plan/policy (which wrap their instance in a `crew_plan`/`policy` key), this contract is FLAT at the top level — same style as brief.schema.json/return-manifest.schema.json — because its primary authored form is `missions/<id>/mission.md`'s YAML front-matter, where a human-editable file reads far more naturally as `id: ...` / `state: ...` at the top than nested under a wrapper key. `tessctl mission new`/`gate clear` write the SAME fields to BOTH `mission.md` (front-matter + a short human body) and `mission.json` (pure JSON) — either file validates against this ONE schema (mirrors the existing brief/verdict/crew-plan/return-manifest convention that an instance may be authored as .md, .yaml/.yml, or .json).",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "`<YYYY-MM-DD>-<kebab-slug>` — the SAME date-slug convention ~/.claude/rules/research.md already mandates for research filenames, and the shape orchestra-model.md §3.1's own worked example uses for `mission_id` ('2026-06-27-rev-conv-001'). `tessctl mission new <name>` derives this; a collision appends a numeric suffix (`-2`, `-3`, ...)."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable mission name, as given to `tessctl mission new`."
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp ('...Z' suffix), set once at `tessctl mission new` time."
+    },
+    "created_by": {
+      "type": "string",
+      "description": "Who ran `tessctl mission new` (defaults to the OS user; optional so a hand-authored record need not carry it)."
+    },
+    "outcome_type": {
+      "type": "string",
+      "enum": ["decide", "design", "build", "convert", "recover", "govern", "review", "communicate", "scale"],
+      "description": "orchestra-model.md §3.1 / crew-plan.schema.json's own outcome_type enum, verbatim, applied one level up at the mission (not per-task-plan) scope. Optional — a mission may be scaffolded before this is known."
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "intake", "framing", "routed", "active", "under-review",
+        "awaiting-decision", "execution-planning", "closed", "archived",
+        "paused", "code-red"
+      ],
+      "description": "conductor/mission-states.md's eleven FSM states, kebab-cased ('UNDER REVIEW' -> 'under-review', etc.). `tessctl mission new` always seeds `intake` (mission-states.md: 'every mission starts here')."
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/Gate" },
+      "description": "One entry per canonical dependency gate (doctrine.md 'The Gates' table), always all five, seeded pending at `mission new` time. tessctl validate's mission lint (`_lint_mission`) additionally checks the five names are exactly the canonical set with no duplicates and no strangers — a relational, cross-array-item rule plain JSON Schema cannot express (same class of check crew-plan.schema.json's duplicate-task-id lint already performs)."
+    }
+  },
+  "required": ["id", "name", "created_at", "state", "gates"],
+  "additionalProperties": false,
+  "$defs": {
+    "Gate": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "intake-before-anything",
+            "research-before-build",
+            "crew-before-deploy",
+            "review-before-synthesis",
+            "verification-before-externally-visible"
+          ],
+          "description": "The exact five canonical gate strings crew-plan.schema.json's `Stage.gate_in` enum already defines (doctrine.md 'The Gates' table + orchestra-model.md §3.2 rule 3) — reused verbatim, not re-invented."
+        },
+        "cleared": {
+          "type": "boolean",
+          "description": "`tessctl gate clear <gate> --mission <id> --evidence <path>` is the ONLY thing that may flip this true — and it refuses to do so without a real, existing evidence artifact (docs/ULTIMATE_FRAMEWORK_PLAN.md §C3: 'tessctl gate clear <gate> --evidence <path> (refuses without evidence)')."
+        },
+        "cleared_by": {
+          "type": ["string", "null"],
+          "description": "Who ran `gate clear` (OS user by default). null while pending — modeled as an always-present key (brief.schema.json's own 'always-present key' style) so the shape stays deterministic whether or not the gate has cleared yet."
+        },
+        "cleared_at": {
+          "type": ["string", "null"],
+          "description": "UTC ISO-8601 timestamp of the clear. null while pending."
+        },
+        "evidence": {
+          "type": ["string", "null"],
+          "description": "Repo-relative path to the artifact that backs this gate's clearance. null while pending; non-empty and existence-checked (tessctl validate's mission lint) once cleared — 'a file that must exist at a contracted path either exists or doesn't' (ULTIMATE_FRAMEWORK_PLAN.md §A.2), applied here to gate evidence the same way return-manifest.schema.json already applies it to returned artifacts."
+        }
+      },
+      "required": ["name", "cleared"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["cleared"],
+        "properties": { "cleared": { "const": true } }
+      },
+      "then": {
+        "required": ["cleared_by", "cleared_at", "evidence"],
+        "properties": {
+          "cleared_by": { "type": "string", "minLength": 1 },
+          "cleared_at": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 }
+        },
+        "$comment": "A gate cannot be cleared:true while leaving who/when/evidence null — mirrors brief.schema.json's milestones-required-when-prod_touching conditional and crew-plan.schema.json's verifier-required-when-triggering conditional."
+      }
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

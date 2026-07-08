@@ -1,0 +1,109 @@
+/*
+  Tess OS Mission Control — keyframes.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+
+  Only transform/opacity are animated, with two documented exceptions:
+  scanline-sweep (background-position, per Iseult's direction doc) and
+  discrete, non-animated color changes on state borders (120-150ms linear
+  transitions handled inline on the affected selectors, not here).
+*/
+@keyframes tile-enter {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drawer-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes log-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes focus-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes scanline-sweep {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: -220% 0;
+  }
+}
+
+@keyframes success-flash {
+  0% {
+    box-shadow: 0 0 0 1px var(--color-success), 0 0 32px rgba(46, 209, 123, 0.35);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
+@keyframes stat-flash {
+  0% {
+    color: var(--color-accent);
+  }
+  100% {
+    color: inherit;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

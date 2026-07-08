@@ -1,0 +1,29 @@
+{
+  "function": "paginate_response",
+  "signature": "paginate_response(items: list, page: int, page_size: int) -> dict",
+  "description": "Build a paginated API response envelope for `items` on the given zero-indexed `page` of size `page_size`.",
+  "rules": [
+    "Returns a dict with exactly these keys: items, page, page_size, total, total_pages, has_next, has_prev.",
+    "`items` in the response is the slice of the input `items` for the requested page.",
+    "`total` is len(items) — the full input list length, not the returned page's length.",
+    "`total_pages` is ceil(total / page_size), except total_pages is 0 when total == 0.",
+    "`has_next` is true if and only if there is at least one item after this page's slice.",
+    "`has_prev` is true if and only if page > 0.",
+    "If `page` is beyond the last page (or the input is empty), the response `items` is [] and `has_next` is false; `has_prev` still just reflects `page > 0`.",
+    "If `page_size` <= 0, raise ValueError."
+  ],
+  "examples": [
+    {
+      "input": {"items": ["a", "b", "c", "d", "e"], "page": 0, "page_size": 2},
+      "output": {"items": ["a", "b"], "page": 0, "page_size": 2, "total": 5, "total_pages": 3, "has_next": true, "has_prev": false}
+    },
+    {
+      "input": {"items": ["a", "b", "c", "d", "e"], "page": 2, "page_size": 2},
+      "output": {"items": ["e"], "page": 2, "page_size": 2, "total": 5, "total_pages": 3, "has_next": false, "has_prev": true}
+    },
+    {
+      "input": {"items": [], "page": 0, "page_size": 5},
+      "output": {"items": [], "page": 0, "page_size": 5, "total": 0, "total_pages": 0, "has_next": false, "has_prev": false}
+    }
+  ]
+}

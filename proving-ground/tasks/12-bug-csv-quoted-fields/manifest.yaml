@@ -1,0 +1,26 @@
+id: "12-bug-csv-quoted-fields"
+title: "Parse a CSV line correctly when fields are quoted and contain commas"
+category: bug
+difficulty: medium
+time_budget_minutes: 15
+tags: [python, csv, parsing, subtle-bug]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  csvparse.py ships a parse_fields() implemented as line.split(",") — the
+  obvious approach, and it passes the shipped test_csvparse.py because
+  every row in that test is quote-free and comma-free within fields. The
+  grader compares parse_fields against Python's own csv.reader across rows
+  that include quoted fields containing commas and doubled-quote escapes —
+  exactly the case split(",") mangles. A model that ships the naive split
+  (or only runs the shipped test) fails; testing a single quoted-comma row
+  reveals the bug immediately.
+pass_criteria: >
+  parse_fields(line) equals csv.reader's field list for a held-out set of
+  rows (plain, quoted-with-commas, doubled-quote-escaped, empty-field),
+  none of which appear in the shipped test.
+planted_trap: false
+protected_paths:
+  - test_csvparse.py

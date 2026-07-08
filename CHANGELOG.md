@@ -5,7 +5,510 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **`dispatch-guard.sh` — headless / no-subagent-available exception**
+  (Ada, Lead Backend Engineer, 2026-07-07, closing a finding from Ada's own
+  Proving Ground benchmark run, `proving-ground/reports/2026-07-07.md`):
+  the hook's warn-mode "RULE ZERO WARNING — stop and dispatch" `systemMessage`
+  fired on every non-safe-listed `Bash`/`Edit`/`Write` call regardless of
+  whether the calling context actually HAD a subagent-dispatch capability to
+  act on the warning. Rule Zero ("always dispatch, never execute solo")
+  correctly targets the real Tess orchestrator (which holds the Agent/Task
+  tool) but is structurally inapplicable in a headless single-agent
+  execution context (a `claude -p` worker, `codex exec`, or any harness with
+  no subagent layer) — there the model has nothing to dispatch TO, so every
+  warning is pure friction with zero corrective action available. The
+  benchmark measured this directly: a 3.1-3.2x cost/latency overhead on
+  every task under the `tess-os` scaffold vs. `bare`, at both model tiers,
+  plus a reproducible fabrication regression (`05-research-roster-facts`:
+  `strong+tess-os` failed all 3 attempts an unassisted `strong+bare` run
+  passed cleanly on attempt 1) most plausibly caused by the model spending
+  attention re-litigating "should I be doing this myself" against a
+  contextually-wrong warning instead of the task's actual instructions.
+  - **The fix:** both shipped copies (`.tess/core/hooks/dispatch-guard.sh`,
+    the core master, and its live mirror `.claude/hooks/dispatch-guard.sh`)
+    now check for an explicit, opt-in **`TESS_HEADLESS=1`** environment
+    flag (alias: `TESS_NO_SUBAGENTS=1` — either is sufficient) as the very
+    FIRST decision in the script, ahead of even the existing
+    dispatch-in-flight lock check, and short-circuit to a pure no-op (exit
+    0, no `systemMessage`) when set. Stdin is still fully consumed first
+    (protocol contract) either way. This is presence-based, not
+    boolean-parsed — the string `"0"` still counts as "set"; only unset or
+    empty (`""`) leaves headless mode off — documented inline and pinned by
+    a dedicated test so the quirk is never "fixed" by accident. The
+    real Tess orchestrator session never sets either variable, so its
+    warn-mode behavior is byte-for-byte unchanged; only an explicitly
+    opted-in headless caller is affected.
+  - **`tessctl lock --regen --only <path>` (repeatable, new flag):** the
+    maintainer re-baseline verb previously only supported an unscoped,
+    whole-tree `--regen` — which "blesses" every lock entry's `base_sha` to
+    current core, including any unrelated, unreviewed drift elsewhere as a
+    side effect. Added `--only PATH` (matches either `core_key` or
+    `live_path`, same resolution rule `tessctl reset` already used) to scope
+    a re-baseline to a named, reviewed set of files; unresolved paths fail
+    loud (`sys.exit`) rather than silently no-op'ing. Used here to re-pin
+    ONLY `dispatch-guard.sh`'s entry — `tessctl lock --regen --only
+    .claude/hooks/dispatch-guard.sh --yes`. Unscoped `--regen` is unchanged
+    and still available for genuinely repo-wide re-baselines.
+  - **Coordination point (not built here, flagged for the next Proving
+    Ground re-run):** the harness's `tess-os` scaffold
+    (`proving-ground/pg_lib/scaffolds.py`, branch `goal-proving-ground`,
+    not yet merged to `main`) mounts `.claude/` verbatim into each headless
+    trial's workdir but does not currently set `TESS_HEADLESS`/
+    `TESS_NO_SUBAGENTS` in the `claude -p` subprocess environment
+    (`pg_lib/claude_driver.py`). A re-run intended to measure this fix's
+    effect needs that harness-side env var added — this is Proving Ground
+    surface, owned by whoever picks up that branch next, not touched by
+    this change.
+  - **20 new tests** (`tests/test_dispatch_guard_headless.py`, 15: default
+    warn-mode behavior is unchanged for both `Bash` and `Edit`, the
+    pre-existing doctrine safe-list is unaffected, both flags/aliases
+    silence the warning for both tool types, the flag's presence-based
+    (not boolean-parsed) semantics including the `"0"` quirk and the
+    empty-string non-suppression case, the hook never blocks regardless of
+    headless state, the two shipped copies stay byte-identical and both
+    honor the flag, and the headless check structurally precedes both the
+    stdin-read and the dispatch-lock check in source; `tests/test_lock.py`,
+    4: `--only` scopes a re-baseline to a named entry while
+    leaving an untouched, still-tampered entry alone, accepts the
+    `core_key` form as well as `live_path`, fails loud on an unresolvable
+    path, and remains gated behind `--yes`/interactive confirmation exactly
+    like unscoped `--regen`). Full suite: **479 passed** (460 existing + 19
+    new), zero regressions. `tessctl doctor` / `verify` / `lock --check` all
+    clean against the live working tree — `dispatch-guard.sh`'s single lock
+    entry was re-baselined via the new scoped `tessctl lock --regen --only`
+    (not an unscoped regen), leaving every other entry's `base_sha`
+    untouched.
+
+- **`tessctl lock --regen` gains a scoped `--only <core-key-or-live-path>`
+  mode** (repeatable), refactoring the re-pin logic into a shared
+  `_lock_regen_core(root, only=...)` helper. Motivation: the unscoped
+  `--regen` re-baselines EVERY lock entry's `base_sha` to whatever core is
+  currently on disk — correct for a genuine full re-baseline, but wrong for
+  a narrow command like `verdict keygen` that only ever writes ONE core file
+  it just produced itself; calling the unscoped form there would silently
+  "bless" any OTHER file's unrelated drift/tamper as a side effect, exactly
+  what `--regen`'s own warning already cautions against. `only=None`
+  (the default) reproduces the prior all-entries behavior byte-for-byte —
+  zero behavior change for existing callers/tests.
+- **G3 (2026-07-08) — the AGENTS.md payload initially shipped for the new
+  `codex`/`generic` render targets (see "Added" below) exported the exact
+  harm a 2026-07-07 proving-ground benchmark measured, and was re-scoped to
+  a lean WORKER doctrine profile before this branch merged.** Two fair
+  benchmark runs (`proving-ground/reports/2026-07-07*.md`) disproved the
+  "structure makes weak agents better" thesis and identified the specific
+  mechanism: mounting the full orchestration doctrine ("always dispatch,
+  never execute solo," six outcome orchestrators, the mission-ceremony
+  command table) into a single-agent harness is not neutral — in the fair
+  run's verification probes, the mounted CLAUDE.md caused a weak model to
+  attempt an actual nested subagent spawn on a task that only asked for
+  `python3 --version`. The Codex/generic AGENTS.md render initially shipped
+  that exact payload, verbatim, to Codex, Cursor, Copilot, Gemini CLI, Zed,
+  and Devin — none of which can dispatch at all.
+  - **`RenderTarget.doctrine_profile`** — new field, `"orchestrator"` or
+    `"worker"` (`DOCTRINE_PROFILES`). Data on the target class, not a CLI
+    flag someone forgets. `claude-code` → `"orchestrator"` (the genuine
+    case — Claude Code holds the Agent/Task tool). `codex` / `generic` →
+    `"worker"` (no in-session subagent tool). A new
+    `RenderTarget.doctrine_digest_paths()` hook names the subset of a
+    target's rendered artifacts that carry actual doctrine prose (as
+    opposed to mirrored, individually-authored files it also happens to
+    write) — `{"CLAUDE.md"}` for `claude-code`, `{"AGENTS.md"}` for
+    `codex`/`generic`.
+  - **AGENTS.md.tpl re-cut to the lean worker profile** (~57 rendered
+    lines, was ~180+): two new WORKER-ONLY fragments —
+    `.tess/core/templates/agents-md/worker-hard-floor.md` (the ~5-line hard
+    floor: credentials, money movement, destructive production data,
+    client-external claims — the four genuinely universal safety gates) and
+    `.tess/core/templates/agents-md/gate-compliance.md` (the ship-gate's
+    compliance facts: which paths require a signed verdict, which files a
+    worker must never touch) — plus a new operator-fillable, empty-by-
+    default `operator/build-facts-stub.md` zone (`{{OPERATOR_BUILD_FACTS}}`)
+    for the one "environment fact" this framework cannot know on a
+    downstream project's behalf. `{{CORE_RULE_ZERO}}`, `{{CORE_SYSTEM_LAWS}}`,
+    the inline "Outcome Orchestrators" section, and the 26-row
+    `{{COMMAND_TABLE}}` are REMOVED from `AGENTS_TOKEN_MAP` / the template —
+    all name or assume a dispatchable crew that does not exist for a
+    worker-profile harness. `{{CORE_DIRECTORY}}` is also dropped (not
+    harmful, just heavy — ~45 lines — to stay inside budget). Per the
+    reckoning's honest constraint, nothing new was added on a performance
+    bet: every line is a repo/gate fact or a safety floor, none is a
+    behavioral claim. `.codex/prompts/*.md` / `prompts/*.md` still mirror
+    every command body verbatim, unchanged — auditing those mirrors is
+    separately tracked future work (reckoning §2.5), not part of this fix.
+    Now-dead helpers `_parse_command_description()`, `_command_catalog()`,
+    `_render_command_table()` removed (no longer called).
+  - **Worker-profile denylist drift check** — `_check_worker_profile_denylist()`,
+    wired into `tessctl doctor`, `verify`, and `lock --check` (new
+    `WORKER_DOCTRINE_DENYLIST`: "always dispatch", "never execute solo",
+    "rule zero", "outcome orchestrator", "dispatch brief contract",
+    "dispatch-guard.sh"). Runs against every REGISTERED worker-profile
+    target's `doctrine_digest_paths()` via the same pure
+    `expected_live_bytes()` function doctor/verify's existing drift-checking
+    already calls — fires even before a worker target is enabled for a
+    given install, so a future template edit can never silently re-export
+    this harm. Fails loud (exit 1) in all three commands; `doctor --json`
+    carries the same `"DOCTRINE LEAK"` marker as the human-readable mode
+    (the same "must count explicitly or human-mode fails open" discipline
+    `missing_count` already established).
+  - The orchestrator profile (`CLAUDE.md`, Claude Code as Tess) is
+    UNCHANGED — untouched fragments, byte-identical render, verified by
+    `tests/test_render_target_doctrine_profile.py`'s positive control.
+  - **34 new tests** — `tests/test_render_target_doctrine_profile.py` (6:
+    registry sweep, known profile values, base-class defaults,
+    `doctrine_digest_paths()` per target, orchestrator-profile-unchanged
+    positive control) and `tests/test_worker_profile_denylist.py` (12: the
+    real shipped render is clean, a synthetic regression fixture is
+    genuinely caught — not a check that always passes — case-insensitivity,
+    runs-regardless-of-enablement, and `doctor`/`verify`/`lock --check` all
+    fail loud on it). `tests/test_render_targets_codex_generic.py` updated
+    for the new fragment/token set (25 → 30, net of the dropped
+    command-table assertion replaced with a "table is absent" assertion).
+    Full suite: 504 → 527 (some renumbering from the prior 479→504 line),
+    zero regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+    against the live working tree; `tess.lock` re-baselined via
+    `tessctl lock --regen --yes` (4 entries: the two edited templates plus
+    the two new fragment files).
+
 ### Added
+- **Proving Ground — the measurement harness for the weak-model+structure thesis**
+  (`proving-ground/`, PR #40): 10 seeded tasks spanning bug-with-failing-test,
+  feature-vs-spec, research-with-checkable-facts, and two planted traps
+  (tenant isolation, SQL injection), each gradeable without human judgment
+  via `proving-ground/grade.py`. `proving-ground/run.py` is the matrix runner
+  (weak/strong model tiers x bare/tess-os scaffolds, 4 cells) driving headless
+  `claude -p` trials; `pg_lib.report.aggregate_by_cell` is the only path a
+  number reaches a report through — no hand-typed stats. 64 harness unit
+  tests green; a full 4-cell x 10-task benchmark run is a separate, later
+  step (out of scope for this PR — see the harness `README.md`'s cost
+  estimate). The dispatch-guard headless-exception fix above was discovered
+  running this harness and has already shipped separately.
+- **Goal #11 (roster honesty) — `model_tier` vocabulary, a `coding-squad` roster preset, and stale-count fixes.**
+  This slice is scoped to `agents/`, `conductor/` (doctrine text), and top-level
+  docs only — no `.tess/bin/tessctl` engine changes. The `tessctl recruit`
+  render-into-every-adapter change and `model_tier` **consumption** logic
+  (an adapter actually reading the field to set a model) are explicitly
+  deferred to a follow-up, mechanism-level change.
+  - **`model_tier` frontmatter vocabulary** (`strong` / `cheap`, mapped from
+    role — conduct→strong, execute→cheap, verify→strong; documented in
+    `agents/README.md` § Model Tier) applied to the core coding squad's
+    `agents/<name>/README.md` frontmatter (previously none existed) and to
+    `conductor/identity.md` (the conductor): Leah/Eva/conductor = `strong`;
+    Ada/Iris/Vega = `cheap`; Reid/Cyra/Quinn = `strong`. Distinguished in
+    `conductor/agent-lifecycle.md` §10 from the pre-existing, unrelated
+    `model:` harness alias (`haiku`/`sonnet`/`opus`) in `.claude/agents/*.md`.
+  - **`coding-squad` roster preset** — a new entry in
+    `.tess/core/roster-paths.json` (`ada, iris, reid, cyra, quinn, vega` +
+    the universal base + `product-delivery-orchestrator`), distinct from the
+    existing `builders` wizard path (which omits Cyra/Vega). Verified
+    end-to-end against the real config: `roster apply coding-squad` installs
+    exactly 9 agents, stages the other 141, and `doctor`/`verify` report
+    clean. **Known gap, disclosed:** `tessctl roster apply`'s CLI argument
+    still has a hardcoded `choices=["founders","builders","operators"]` in
+    `.tess/bin/tessctl` — a one-line addition needed before `coding-squad` is
+    reachable from the CLI. That line lives in the engine file this slice is
+    barred from touching; flagged for the next tessctl-scoped change.
+  - **Roster-count drift fixed**, hand-verified against the tree (no
+    generation mechanism exists yet — that would itself be a `tessctl`
+    change): `conductor/orchestra-model.md` (`.tess/core` mirror included)
+    corrected "~165 agents" / "165 persona specs; 42 dispatchable today" /
+    "123 non-dispatchable personas" (stale — predates the 2026-06-27
+    all-150-dispatch-capable fix already recorded in `agents/README.md`) to
+    144 persona specs + 6 orchestrators = 150 dispatch-capable, and rewrote
+    §6's "bench depth" description from "Eva promotes a persona to a
+    dispatchable definition" (the old two-class model) to the current
+    staged/installed model (`tessctl recruit`/`bench`). `.tess/core/MANIFEST.md`
+    corrected "165 persona directories" — actually 165 total top-level
+    entries under `agents/` (144 persona directories + 21 guild/doctrine
+    `.md` files), a miscount that conflated the two. `docs/ULTIMATE_FRAMEWORK_PLAN.md`
+    (§B.2 tree sketch, §C7, and the E.1 gap-analysis table's public-repo-hygiene
+    row) updated to match. `agents/README.md` and root `README.md` gained an
+    explicit "dispatch-capable ≠ installed" clarification (only a curated
+    subset, as few as 7, is ever live in `.claude/agents/` for one instance).
+  - `tessctl doctor`/`verify`/`lock --check` all clean after re-pinning the
+    13 touched core-managed entries via `tessctl lock --regen --yes` (the
+    scoped `--only <path>` flag referenced in this goal's brief ships in a
+    separate, not-yet-merged PR — `--regen` without `--only` only changes
+    `base_sha` for files whose bytes actually differ, so the effect was
+    identical: exactly 13 entries re-pinned, confirmed via `git diff`). Full
+    suite: 460 passed, 0 regressions.
+- **`tessctl run <crew-plan>` — the mechanical CONDUCTOR LOOP (Goal #6).**
+  The framework's structural bet: the conductor loop (gate check → dispatch
+  → read the returned artifact back → mandatory verification → typed retry
+  → halt/escalate) was doctrine a strong Claude Code session enforced
+  through discipline. It is now DETERMINISTIC CODE — a gate cannot be
+  "decided around" at 3am, a schema-miss cannot be waved through, and a
+  verifier's BLOCK cannot be quietly stepped past, regardless of which CLI
+  (or how strong a model) is dispatching.
+  - A new `DispatchDriver` seam (abstract `dispatch(brief, output_schema=
+    None) -> dict`) with three implementations: `ClaudeCliDriver` (`claude
+    -p --output-format stream-json`, Tier A), `CodexExecDriver` (`codex exec
+    --experimental-json --output-schema <file>`, Tier B — implemented
+    strictly against this repo's own documented-verified flags; NOT
+    live-tested, since the `codex` binary is not installed in this build
+    environment — a documented follow-up), and `FakeDriver` (deterministic,
+    no real CLI, scriptable per task to "good" / "schema-missing" /
+    "missing-file" / "blocking" / "error" — the core test-coverage vehicle).
+  - `tessctl run` loads + validates a crew-plan, requires its `mission_id`
+    to already exist as a mission record (`tessctl mission new` first),
+    then executes each stage in order: gate check against the SAME mission
+    record `gate-status` reads (never starts early), dispatches each task
+    (and its mandatory verifier, when `verifier.required: true`) via the
+    chosen driver, reads the contracted return-manifest/verdict artifact
+    back off disk itself (never trusts the driver's own summary), and
+    on a schema-miss enters the EXISTING typed-retry ledger (`_retry_
+    precheck`/the retry-log machinery, unmodified) — changed brief for
+    every non-transient cause, capped at 3 attempts, never dispatching a
+    4th time past the cap. A verifier's genuine `disposition: BLOCK` is an
+    immediate hard halt (not auto-retried); either halt reason writes a
+    full per-attempt escalation record to `missions/<id>/escalations/` and
+    flips the mission record's own `state` to the existing `code-red` FSM
+    value (no `mission.schema.json` change needed).
+  - v1 scope, documented: stages dispatch sequentially (real OS-level
+    concurrency for `parallel: true` stages is a follow-up — it only
+    changes wall-clock time, not correctness); SYNTHESIS (orchestra-
+    model.md §4 step 5) is out of scope — `run` executes EXECUTE STAGES
+    only.
+  - All new logic is isolated in one contiguous "RUN" region of
+    `.tess/bin/tessctl`, directly below the MISSION LEDGER region — no
+    other region (KEYGEN, RENDER, TRACE, MISSION LEDGER) is touched beyond
+    the same three additive touch points those regions themselves already
+    established (dispatch table, `build_parser()`, `main()`'s exception
+    catch tuple). No new contract type; `run` validates against the six
+    contracts (crew-plan, brief, return-manifest, verdict, mission, retry)
+    that already exist.
+  - 13 new tests (`tests/test_run.py`): a 2-stage plan running end-to-end
+    against `FakeDriver` (including a mandatory verifier dispatch); a
+    schema-missing return retrying to the 3-attempt cap then escalating
+    (asserting the ledger entries, that no 4th dispatch call is ever made,
+    and the escalation record + `code-red` state); a verifier BLOCK halting
+    before the next stage ever dispatches; a gate left uncleared halting
+    with zero dispatch calls; CLI wiring (`tessctl run --driver fake
+    --fake-script ...`) end-to-end via subprocess; `missions/**` (including
+    the new `returns/`/`escalations/` subdirs) staying invisible to
+    `doctor`/`verify`/`lock --check`, exactly like `retries/` already does
+    for Goal #5; and two regression tests (added after the live smoke run
+    below caught a real bug) proving `ClaudeCliDriver` always constructs its
+    CLI invocation with an explicit `--allowed-tools` allowlist, never the
+    blanket `--dangerously-skip-permissions` bypass. Full suite green (545
+    total, was 532).
+  - A live smoke run against the real `claude -p` CLI was performed manually
+    during this build (a trivial 1-task plan) — not wired into the
+    automated suite (a paid, network-dependent call has no place running
+    unattended on every test invocation); a `codex`-driven live smoke is a
+    documented follow-up. It caught a genuine bug the FakeDriver tests
+    structurally cannot: a headless `claude -p` dispatch with no explicit
+    `--allowed-tools` silently DENIES a tool call (e.g. `Write`) with no
+    prompt surfaced — the first live attempt burned all 3 retry attempts
+    with `failure_state: empty` (the dispatched session never got to write
+    its return-manifest at all) before this was diagnosed and fixed by
+    passing an explicit, least-privilege `--allowed-tools` allowlist
+    (`Read Write Edit Bash Grep Glob` by default, overridable) rather than
+    `--dangerously-skip-permissions`. The re-run completed on the first
+    attempt, writing a schema-valid return-manifest that independently
+    passes `tessctl validate return-manifest`.
+- **`tessctl mission` + the typed-retry ledger — mission records as code
+  (Goal #5).** Converts two pieces of doctrine PROSE (`conductor/
+  doctrine.md`'s five gates, `conductor/subagent-failure-protocol.md`'s
+  typed retry protocol) into DETERMINISTIC CHECKS: a weak conductor can no
+  longer skip a gate or loop a failed retry, because the tool itself
+  refuses to let it.
+  - `tessctl mission new <name>` scaffolds a mission record
+    (`missions/<id>/mission.md` + `mission.json` — two serializations of
+    the same fields, id derived as `<YYYY-MM-DD>-<slug>` with collision
+    suffixing) and dogfood-validates what it writes before returning.
+    `tessctl mission status <id>` reads it back (human or `--json`),
+    including a retry-ledger summary.
+  - `tessctl gate-status <id>` — read-only report of which of the five
+    canonical gates (the SAME `gate_in` strings `crew-plan.schema.json`
+    already defines) are cleared. `tessctl gate clear <gate> --mission <id>
+    --evidence <path>` — the write side, added to the existing `gate`
+    subcommand group — REFUSES without `--evidence` (argparse-level) and
+    REFUSES when the evidence path does not exist on disk; records
+    who/when/evidence in the mission record on success.
+  - `tessctl retry log <task> --mission <id> --cause <type> --failure-state
+    <state> --brief <path>` writes `missions/<id>/retries/<task>.attempt-
+    N.md`, refusing (writing nothing) past the 3-attempt cap or for a
+    same-brief retry on a non-transient cause (a literal, whitespace-
+    trimmed string comparison against the immediately preceding attempt's
+    stored brief text — transient causes are explicitly exempted, matching
+    subagent-failure-protocol.md). `tessctl retry check` dry-runs the exact
+    same decision without writing anything, and without `--cause`/`--brief`
+    reports a cap-only check.
+  - Two new contracts, `core/contracts/mission.schema.json` and
+    `retry.schema.json` (`tier: normal`, matching `crew-plan.schema.json`'s
+    precedent), wired into `tessctl validate`/`doctor`/`verify`/
+    `lock --check` exactly like the original five. A mission-record lint
+    (`_lint_mission`) closes the same class of gap `return-manifest.schema.
+    json`'s artifact-existence check already closes: a gate claiming
+    `cleared: true` with an `evidence` path that does not exist on disk is
+    schema/lint-invalid.
+  - `missions/<id>/` is per-project mission DATA, not framework doctrine —
+    added to `tess.manifest.json`'s `never_touch` (same fenced-off
+    treatment `kb/**`/`clients/*/**` already get), invisible to `tessctl
+    restore`/`render`/`update`. `missions/README.md` documents the
+    convention.
+  - All new command logic is isolated in one contiguous "MISSION LEDGER"
+    region of `.tess/bin/tessctl` (directly below `cmd_gate()`), separate
+    from the file's existing render-target and verdict-signing regions, to
+    keep future rebases across in-flight goals low-conflict.
+  - 28 new tests (`tests/test_mission_ledger.py`); full suite green (532
+    total, was 504).
+  - Scope note: this build does NOT wire `missions/<id>/briefs/`/`verdicts/`
+    scaffolding — `core/contracts/brief.schema.json`/`verdict.schema.json`
+    already exist and `tessctl validate brief|verdict <file>` already works
+    against a file at any path; adding a command that scaffolds those files
+    under `missions/<id>/` automatically remains a follow-on (C1/C2's CLI
+    wiring, per `docs/ULTIMATE_FRAMEWORK_PLAN.md`).
+- **`codex` + `generic` render targets — AGENTS.md emission (Goal #4:
+  "plug-and-play for Codex and frontier models"), proving the Phase 1
+  RenderTarget seam is genuinely load-bearing for a second and third real
+  target, not just a mock.** Tess OS's render-target layer had exactly one
+  target (`claude-code`); AGENTS.md is the Linux-Foundation-stewarded
+  standard read natively by Codex, Cursor, Copilot, Gemini CLI, Zed, and
+  Devin (60,000+ repos) — GitHub Spec Kit supports 30+ agents, Tess OS
+  supported one.
+  - `CodexRenderTarget` (Tier B) and `GenericRenderTarget` (Tier C) in
+    `.tess/bin/tessctl`, registered in `RENDER_TARGETS` alongside
+    `claude-code`. `tessctl render --target codex` emits `AGENTS.md`
+    (≤2,000 words, doctrine-linked, Rule Zero + the Doctrine
+    Gates/Verification/Retries/Hard-Floor sections reused VERBATIM from the
+    same core fragments CLAUDE.md composes — zero duplicated doctrine text)
+    **[SUPERSEDED 2026-07-08 — see "Fixed" below: this payload measured as
+    harmful to a single-agent harness and was re-scoped to a lean worker
+    digest before this branch merged]**,
+    `.codex/prompts/*.md` (mirroring the 26 command bodies into Codex's
+    native custom-prompt convention), and a `.codex/config.toml` fragment
+    (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`,
+    verified against Codex's real config precedence/trust model).
+    `tessctl render --target generic` emits the SAME `AGENTS.md` (see
+    `render_agents_md()`'s docstring — harness-neutral by design, no
+    ordering hazard if both targets are ever enabled at once) plus a plain
+    `prompts/*.md` mirror.
+  - New shared core fragment `.tess/core/templates/claude-md/hard-floor.md`,
+    extracted from CLAUDE.md.tpl's previously-inline "Doctrine Gates" /
+    "Verification, Retries, and the Hard Floor" sections (byte-identical
+    CLAUDE.md output verified before/after) — now genuinely reused by BOTH
+    CLAUDE.md and AGENTS.md via a new `{{CORE_HARD_FLOOR}}` token.
+  - `tess.manifest.json`'s `owned_globs` extended with `AGENTS.md`,
+    `.codex/prompts/**`, `.codex/config.toml`, `prompts/**`. Neither target
+    is in `render_targets.enabled` by default (registered-but-off — the
+    future harness-select wizard axis, not a hardcoded global default, is
+    meant to make this call per-install; adopt today via
+    `tessctl render --target codex` / `--target generic`, or add the name
+    yourself).
+  - New `_check_untracked_render_generated()` doctor/verify/`lock --check`
+    pass: `.codex/prompts/*.md` / `prompts/*.md` mirror `.tess/core/commands/*.md`
+    bodies that are ALREADY tess.lock-tracked under a different live_path
+    (`.claude/commands/*.md`) — the lock schema has no way to give a second
+    live destination to an already-tracked core_key, so this new pass
+    drift-checks those paths independently (a not-yet-rendered path is
+    tolerated, not flagged; an existing-but-hand-edited path IS flagged,
+    remedy `tessctl render`). Verified NOT to regress `claude-code`'s own
+    (fully lock-tracked) artifacts.
+  - `adapters/codex/README.md`, `adapters/generic/README.md` — full artifact
+    maps, matching `adapters/claude-code/README.md`'s existing format;
+    `adapters/README.md` updated (shipped-targets list, added step 7 to
+    "Adding a target", fixed a stale `~/.codex/prompts` reference).
+  - Tests: `tests/test_render_targets_codex_generic.py` (25 new tests —
+    registry/interface shape, AGENTS.md shared-bytes proof, expected_live_bytes
+    parity, CLI render for both targets, determinism, idempotency, write-gate
+    enforcement, the untracked-render-generated pass in all three call sites,
+    and a real signed-fetch `tessctl update` cycle proving a doctrine edit
+    re-propagates into AGENTS.md). `tests/test_render_targets.py` updated for
+    the 3-target registry (was asserting exactly one target; `"codex"` is no
+    longer a valid "unknown target" fixture). Full suite: 479 → 504, all
+    green. (The G3 doctrine-profile fix above — 504 → 527 — is logged under
+    "Fixed" at the top of this section, not duplicated here.)
+- **`tessctl verdict keygen` — turnkey verifier onboarding, closing the
+  "cannot turn the gate on without manual GPG surgery" adoption gap.**
+  `core/policy/policy.yaml` ships `verifier_keys: {}` deliberately empty —
+  honest, but it left a fresh adopter with no mechanical path from "I want a
+  real verifier" to a registered signing key short of hand-running
+  `gpg --full-gen-key`/`gpg --export` and editing TWO copies of
+  `policy.yaml` (the live one and the `.tess/core` pristine mirror) without
+  tripping `doctor`/`verify`/`lock --check`. `tessctl verdict keygen
+  --verifier <Name>` does the whole sequence in one command:
+  - Generates a fresh, sign-only (no encrypt-capability), no-passphrase-by-
+    default local GPG identity for the named verifier (RSA-4096; `--gnupg-
+    home <PATH>` for an explicit/test keyring, ambient keyring by default).
+    tessctl never stores, backs up, or transmits the resulting PRIVATE key —
+    same custody posture as the release-signing key.
+  - Exports the PUBLIC half to `.tess/keys/verifiers/<name>.asc`.
+  - Registers `{fingerprint, public_key_file}` under
+    `policy.verifier_keys.<Name>` in BOTH `core/policy/policy.yaml` (live)
+    and `.tess/core/policy/policy.yaml` (the pristine core mirror) via a new
+    anchor-based, **comment-preserving** text patch
+    (`_policy_yaml_upsert_verifier_key`) — a plain `yaml.safe_load` +
+    `yaml.safe_dump` round-trip would silently destroy `policy.yaml`'s own
+    extensive header/rule documentation, so this is a targeted insert/replace
+    on the `verifier_keys:` block only, leaving every other line untouched.
+  - Re-pins ONLY the one `tess.lock` entry this change touches, via a new
+    scoped `only=` mode on the shared re-pin helper behind both
+    `tessctl lock --regen` and `keygen` (see "Fixed" below) — `doctor`/
+    `verify`/`lock --check` are clean immediately afterward, every time.
+  - Validates the verifier name against the same six-name enum
+    `_lint_policy` already enforces, and refuses (fail-loud) BEFORE writing
+    anything if the patched policy fails its own schema/lint or a
+    core/live `policy.yaml` drift already exists.
+  - Idempotent: refuses to clobber an existing public-key file or policy
+    registration for that verifier without `--force` (which generates a NEW
+    keypair and REPLACES both — a manual key rotation, automated).
+  - `gpg` missing from PATH is a clear, fail-closed preflight error, not a
+    raw traceback.
+- **`docs/GATE_QUICKSTART.md`** — a copy-paste-able, end-to-end walkthrough
+  (`tessctl init` → `verdict keygen` → add a real `require_verdict` rule →
+  `gate install-hooks` → cover the framework's OWN pre-existing
+  `tess-os-security-tier-doctrine` surface, since it is genuinely live in
+  this repo from minute one, not a placeholder — the "bootstrap warning"
+  `conductor/verdict-signing.md` already disclosed, now shown end to end →
+  an uncovered `src/prod/**` change BLOCKED at `git push` → the same change,
+  signed, CLEARED). Every command is runnable verbatim against a local
+  scratch bare remote; a new doc-test (`test_gate_quickstart_doc_runs_
+  verbatim_end_to_end`) extracts the doc's own fenced script and runs it,
+  unmodified, proving the walkthrough is truthful command-for-command, not
+  just a hand-written mirror of what it claims.
+- **19 new tests** — `tests/test_verdict_keygen.py` (16: the comment-
+  preserving text patcher, unit-level; the CLI's generate/register/re-pin
+  path with doctor/verify/lock-check asserted clean; idempotent refusal and
+  `--force` rotation; unknown-verifier-name and missing-`gpg` fail-closed
+  paths; core/live drift refused before any write; JSON policy instance and
+  missing-policy-instance refusals; a keygen-GENERATED key actually clearing
+  `tessctl gate ci` when properly signed, a wrong-key signature and a
+  post-signing tamper still blocking it; the quickstart doc-test), plus
+  `tests/test_lock.py` (3: `lock --regen --only` scopes to the named
+  entry/entries by core_key or live_path, leaves every other entry
+  untouched — proving a scoped regen can never silently bless an unrelated
+  tamper — and reproduces the exact prior all-entries behavior when `--only`
+  is omitted). Full suite: **479 passed** (460 existing + 19 new), zero
+  regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+  against the live working tree (`conductor/verdict-signing.md`
+  [`tier: normal`] — updated with the turnkey onboarding path — is the one
+  core-managed file this round touches; re-baselined via the new scoped
+  `tessctl lock --regen --only conductor/verdict-signing.md --yes`).
+- **Goal #8 — mission trace log + OTel GenAI export** (observability, no
+  phone-home): `.tess/bin/tessctl` gains an isolated `TRACE` region —
+  `tessctl gate pre-commit|pre-push|ci` and `tessctl validate` now append
+  exactly one schema-valid JSONL event (`TRACE_EVENT_SCHEMA`, `schema:
+  "tess.trace.v1"`) per invocation to `missions/<id>/trace.jsonl` (when a
+  mission id is inferable from the `missions/<id>/...` convention) or a
+  per-run fallback under `.tess/trace/runs/` (local runtime state, same
+  gitignored bucket as `.tess/snapshots/**`/`.tess/staging/**`). New
+  `tessctl trace export --format otlp-json` maps the JSONL to [OTel GenAI
+  semantic-convention](https://github.com/open-telemetry/semantic-conventions-genai)
+  `invoke_agent` internal agent spans (OTLP/JSON, verified against the
+  canonical `opentelemetry-proto` example) — legible to any APM that
+  understands `gen_ai.*` (Datadog, Honeycomb, New Relic, the OTel Collector)
+  without Tess OS ever making a network call: the export is a pure local
+  JSON reshape of on-disk JSONL, proven by a static no-networking-import
+  scan of the whole engine plus socket-guard tests that monkeypatch
+  `socket.socket`/`create_connection`/`getaddrinfo` and call the
+  gate/validate/export code paths directly. `tessctl run` (the mechanical
+  conductor loop) is not instrumented because it does not exist yet in this
+  engine — see this file's own Phase 2 honest re-scope note below. Full
+  capture list, the exact attribute mapping, and the no-network guarantee:
+  `docs/OBSERVABILITY.md`. 38 new tests (`tests/test_trace_otel.py`); the
+  full suite remains green.
 - **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
   (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
   Phase 2 adversarial review — "verdict + sign-off files are committer-
