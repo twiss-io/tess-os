@@ -5,24 +5,58 @@
 > are regenerated from it"). Sequencing rationale, same document: "Proving
 > Ground before any marketing claim (the repo's own evidence rule)."
 
-Tess OS's central pitch is that **structure lets a weaker model produce
-verified-reliable output** — the dispatch-brief contract, the gates, the
-mandatory verifier, the typed retry loop. As of this build, that claim had
-**zero published numbers** behind it anywhere in this repo. This directory
-is the harness that measures it: a small, seeded task suite; a
-deterministic grader per task; a matrix runner that executes `{weak
-model, strong model} x {bare harness, tess-os scaffold}` via headless
-`claude -p`; and a report format that is generated FROM a run, never
-hand-typed.
+> **UPDATE (2026-07-08) — the test described below has been run, twice,
+> and the thesis it was built to test did not hold.** See
+> `reports/2026-07-07.md` (Run 1, tasks 01–10) and
+> `reports/2026-07-07-fair.md` (Run 2 — FAIR, tasks 11–19, harder
+> discriminating tasks, dispatch-guard friction fixed). Headline: across
+> 19 tasks and ~80 trials, `weak+tess-os` never beat `weak+bare`, lost to
+> it by 11.1 points in the fair run (8/9 vs 9/9, n=9 — too small a sample
+> for a rate; directional, not a precision claim), and cost 1.7–2.7× more
+> in every mounted-doctrine cell measured. Every `bare` cell in both runs
+> ran with `--allow-impure-bare` (no `ANTHROPIC_API_KEY` in this build
+> environment — see "Known limitation" below); read "bare" as "bare,
+> approximately," not a stripped baseline. The sections below (written before
+> either run) are kept as the harness's original design spec; where they
+> describe the pitch as an open question, treat that as historical —
+> the "Central pitch, corrected" section right below is the current
+> status.
 
-It does three jobs at once:
-1. **The thesis test.** Does `weak model + tess-os scaffold` approach or
-   beat `strong model + bare harness` on this suite?
-2. **Regression CI for doctrine changes.** Any edit to `conductor/` or
-   `.claude/` can be checked against the same suite to see if it helped,
-   hurt, or did nothing.
-3. **The single strongest README asset** — a real number beats an
-   adjective.
+## Central pitch, corrected
+
+Tess OS's central pitch *was* structure-as-enhancement — the claim that
+mounting this repo's doctrine into a model's context would let a
+lower-tier model close the gap to a higher-tier model's verified output
+quality. This harness tested that pitch on 2026-07-07 (twice) and
+disproved it: see `reports/2026-07-07.md` and
+`reports/2026-07-07-fair.md`. The pitch is now **enforcement**, stated at
+the grain it actually operates: the ship-gate (`tessctl gate`) means a
+change to a policy-flagged path cannot ship without a signed covering
+verdict, at git/CI, provided CI runs as a required check from a trusted
+engine — the producing agent's quality is irrelevant within that scope;
+this harness's standing jobs are the two below, not the thesis test.
+
+It does three jobs — the first is answered, not open:
+1. ~~**The thesis test.** Does `weak model + tess-os scaffold` approach or
+   beat `strong model + bare harness` on this suite?~~ **Answered:** no —
+   see the reports. This job is retired.
+2. **Regression CI for doctrine payloads.** Any edit to `conductor/` or
+   `.claude/` — or, going forward, any per-render-target doctrine
+   profile — is checked against the same suite before it ships, and must
+   show a non-negative pass-rate delta at that payload size.
+3. **The enforcement arena** (planned, not yet built) — the honest
+   demonstration of what the gate actually claims at its real grain: that
+   a change to a policy-flagged path cannot ship without a signed
+   covering verdict, at git/CI, provided CI runs as a required check from
+   a trusted engine. Its output will be a measured bad-ship-rate
+   reduction from gate + verifier, replacing the retired thesis-test job
+   as the harness's headline number — no such number exists yet; this job
+   has not been run.
+
+Kept, inverted: **a real number beats an adjective — including when the
+number is bad.** That principle is why jobs 2 and 3 above exist, and why
+this update note is at the top of the file instead of a quiet edit
+further down.
 
 ## What's here
 
@@ -37,6 +71,8 @@ proving-ground/
 │                            aggregation/rendering) — see docstrings in each module
 ├── tasks/                   19 seeded tasks — see tasks/README.md for the manifest contract
 ├── tests/                   pytest suite: unit-tests every grader + the dry-run + the CLI
+├── reports/                 the two committed, generated-from-run reports (2026-07-07,
+│                            2026-07-07-fair) — the actual evidence, not a template
 └── results/                 generated run output (gitignored — see .gitignore)
 ```
 
