@@ -119,6 +119,13 @@ paths = [
     "core/policy/policy.yaml",
     ".tess/keys/verifiers/reid.asc",
     ".github/workflows/tess-gate.yml",
+    # honesty-capstone-audit-2026-07-08 §3-c/§3-d self-protection fix widened
+    # tess-os-security-tier-doctrine's own globs to also cover the gate's OWN
+    # engine (.tess/bin/** + the root tessctl wrapper) and the hard-floor
+    # sign-off artifact directory — both exist from minute one same as
+    # everything else above, so the bootstrap verdict must cover them too.
+    ".tess/bin/tessctl",
+    "tessctl",
 ]
 artifact_hashes = {}
 for path in paths:
