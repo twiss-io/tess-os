@@ -29,11 +29,33 @@ hand-copied. What was missing structurally (not behaviorally) was a
 be added that isn't "edit the Claude-Code-shaped function until it also
 happens to emit `AGENTS.md`." `RenderTarget` is that boundary.
 
+## Doctrine profile (G3, 2026-07-08)
+
+Every target also declares `doctrine_profile` — `"orchestrator"` or
+`"worker"` (see `DOCTRINE_PROFILES` in `.tess/bin/tessctl`). This answers one
+question: does the harness this target renders for genuinely hold a
+dispatchable crew (the Agent/Task tool, a roster to hand work to)?
+`claude-code` is `"orchestrator"` — the one case where "always dispatch" is
+true. `codex` and `generic` are `"worker"` — no in-session subagent tool, so
+the full CLAUDE.md payload (Rule Zero, the six outcome orchestrators, the
+mission-ceremony command table) does not describe their reality and is
+exactly the payload a 2026-07-07 proving-ground benchmark measured as
+harmful when mounted into a single-agent harness (a weak model attempted a
+nested subagent spawn on a bare `python3 --version` task). `AGENTS.md`'s own
+payload was re-scoped to a lean worker digest as a direct result (see
+`adapters/codex/README.md` "Doctrine profile"); a cheap denylist drift check
+(`_check_worker_profile_denylist()`, wired into `doctor`/`verify`/`lock
+--check`) fails loud if an orchestration-doctrine phrase ever leaks back into
+a worker-profile render. A new target's `doctrine_profile` is not optional —
+`tests/test_render_target_doctrine_profile.py` sweeps the registry and fails
+if any registered target skips declaring it.
+
 ## The interface
 
 ```python
 class RenderTarget:
     name: str = ""                                   # stable id, used by --target
+    doctrine_profile: str = ""                        # "orchestrator" | "worker" — see above
 
     def live_globs(self) -> list[str]:
         """Live-tree glob patterns this target owns. MUST be a subset of
@@ -102,54 +124,107 @@ explicit ask is not the silent-default case MED-3 guards against).
 `tessctl render --list-targets` prints the registry — flagging which targets
 are enabled for this install — without rendering.
 
-## The one shipped target: Claude Code (Tier A reference)
+## The shipped targets
 
-`ClaudeCodeRenderTarget` (`name = "claude-code"`) formalizes the engine's
-pre-existing render scope: CLAUDE.md (template + operator stubs),
-`.claude/settings.json`, `conductor/identity.md`, `conductor/personality.md`,
-`clients/_template/CLAUDE.md`. See `adapters/claude-code/README.md` for the
-full artifact map and the documented render/restore scope boundary.
+- **Claude Code** (Tier A reference) — `ClaudeCodeRenderTarget`
+  (`name = "claude-code"`) formalizes the engine's pre-existing render scope:
+  CLAUDE.md (template + operator stubs), `.claude/settings.json`,
+  `conductor/identity.md`, `conductor/personality.md`,
+  `clients/_template/CLAUDE.md`. See `adapters/claude-code/README.md` for the
+  full artifact map and the documented render/restore scope boundary.
+- **Codex** (Tier B, Phase 2) — `CodexRenderTarget` (`name = "codex"`)
+  renders `AGENTS.md`, `.codex/prompts/*.md` (mirroring the 26 command
+  bodies), and a `.codex/config.toml` fragment. See
+  `adapters/codex/README.md`.
+- **Generic** (Tier C, Phase 2) — `GenericRenderTarget` (`name = "generic"`)
+  renders the SAME `AGENTS.md` (see "AGENTS.md ownership" in
+  `adapters/codex/README.md`) plus a plain `prompts/*.md` mirror, for any
+  other AGENTS.md-reading agent. See `adapters/generic/README.md`.
 
-## Adding Phase 2 / Phase 3 targets
+Neither `codex` nor `generic` is in `tess.manifest.json`'s
+`render_targets.enabled` default (`["claude-code"]`) — registering a target
+in `RENDER_TARGETS` is not the same as enabling it for every install; see
+that key's own `_doc` field for the rollout reasoning (the future
+harness-select wizard axis, not a hardcoded global default, is meant to make
+this call per-install). Preview either with `tessctl render --target codex`
+/ `--target generic`, or opt in permanently via `render_targets.enabled`.
 
-A new target (e.g. `codex`, rendering `AGENTS.md` + `~/.codex/prompts/*.md` +
-a `config.toml` fragment, per `docs/ULTIMATE_FRAMEWORK_PLAN.md` §B.2) needs:
+## Adding a target (steps this phase actually followed)
 
 1. A `RenderTarget` subclass in `.tess/bin/tessctl` implementing `live_globs()`
    and `render()`, plus `expected_live_bytes()` for any path it compiles with
    more than generic `{{TOKEN}}` substitution, and `render_generated_paths()`
    for every path `render()` writes (both default to "nothing" on the base
    class, but a target that skips them gets no drift-checking or `doctor
-   --fix`/`tessctl render` remedy-routing on its own outputs).
+   --fix`/`tessctl render` remedy-routing on its own outputs). ALSO declare
+   `doctrine_profile` (`"orchestrator"` only if the harness genuinely holds a
+   dispatchable crew — see "Doctrine profile" above; `"worker"` otherwise,
+   which is the default assumption for a new target) and, if the target
+   renders its own standalone doctrine-digest file, `doctrine_digest_paths()`
+   — `tests/test_render_target_doctrine_profile.py` sweeps the registry and
+   fails on a target that skips declaring a valid profile.
 2. Its live-tree glob patterns added to `tess.manifest.json`'s `owned_globs`
    (the write gate is an allowlist — a target's writes are refused until its
    paths are declared owned).
 3. If the target renders from **new** core source files (not already under
    `.tess/core/**`), those files get their own `.tess/core/<subtree>/**`
-   mirror + `tess.lock` entries — the same pattern this phase used to wire
-   `core/contracts/**` (see `core/contracts/README.md` "Wired into keystone
-   tracking").
+   mirror + `tess.lock` entries. Two shapes exist, depending on whether the
+   new file has its own dedicated live destination or shares one an existing
+   core file already owns:
+   - A file with its OWN live destination (e.g.
+     `.tess/core/templates/agents-md/AGENTS.md.tpl`) gets `live_path: null`
+     ("core-internal" — Check A / base_sha integrity only; the SAME pattern
+     `.tess/core/personas/*.md` already uses) if the destination's existence
+     is conditional on a target's per-install enablement (MED-3) — giving it
+     an ordinary `live_path` would make doctor/verify treat that live file as
+     unconditionally required, breaking a claude-code-only install the
+     moment the new target is merely *registered*. Live-tree drift-checking
+     for these paths instead runs through
+     `_check_untracked_render_generated()` (see point 7 below).
+   - A file that shares its live destination with an ALREADY-tracked core
+     file (e.g. `.tess/core/commands/*.md`, whose existing entry already
+     maps it to `.claude/commands/*.md`) gets NO new lock entry at all — the
+     lock schema keys one entry per `core_key` with exactly one `live_path`,
+     so a second destination for an already-tracked file has nowhere to go
+     without duplicating bytes. Its Check A is already covered by the
+     existing entry; only Check B for the *new* destination is needed — see
+     point 7.
 4. A one-line registration in `RENDER_TARGETS`.
 5. A one-line addition to `tess.manifest.json`'s `render_targets.enabled` list
    when the target is ready to render by default for new installs (MED-3) —
    registering it in `RENDER_TARGETS` alone does NOT enable it; that split is
    deliberate (lets a target ship registered-but-off while it's being proven
    out, and lets the wizard's future harness-select axis — axis 6, still
-   Phase 2 scope — write this list per-install instead of the engine
-   hardcoding one global default).
+   deferred — write this list per-install instead of the engine hardcoding
+   one global default). Codex and generic ship registered-but-off (see "The
+   shipped targets" above).
 6. Its own copy-phase, if it needs one — a target is not required to (and, per
    the documented scope note in `ClaudeCodeRenderTarget`, does not have to)
-   reuse `_do_restore`, which is Claude-Code-shaped.
+   reuse `_do_restore`, which is Claude-Code-shaped. `CodexRenderTarget` /
+   `GenericRenderTarget` both implement their own (mirroring
+   `.tess/core/commands/*.md` into `.codex/prompts/**` / `prompts/**`).
+7. If any of the target's compiled artifacts fall into point 3's "shares an
+   already-tracked core file's destination" shape, they need
+   `_check_untracked_render_generated()` — a Phase 2 addition to
+   `.tess/bin/tessctl`, wired into `cmd_doctor`/`cmd_verify`/`cmd_lock
+   --check` — to get live-drift checking at all (see that function's
+   docstring; `tests/test_render_targets_codex_generic.py` exercises it
+   directly). This is the one genuinely new piece of doctor/verify machinery
+   Phase 2 added — everything else follows the Phase 1 seam unchanged.
 
 No step touches `core/doctrine/` content, the lock file *schema*, or the
-manifest write-gate *logic* — only its allowlist data. That is the seam
-working as designed: the core doesn't know or care how many targets render
-it. And because doctor/verify/update now consult the registry (not two
+manifest write-gate *logic* — only its allowlist data (point 7's addition is
+new *classification* logic, not a schema or write-gate change). That is the
+seam working as designed: the core doesn't know or care how many targets
+render it. And because doctor/verify/update consult the registry (not
 Claude-shaped special cases), a new target that implements the full
 interface gets correct drift-checking, atomic re-render on `tessctl update`,
 and per-install enablement for free — see
-`tests/test_render_target_seam_is_load_bearing.py`, which proves this with a
-second, non-Claude mock target.
+`tests/test_render_target_seam_is_load_bearing.py` (proves this with a
+second, non-Claude mock target) and `tests/test_render_targets_codex_generic.py`
+(proves it again with the two REAL Phase 2 targets, including a real
+signed-fetch `tessctl update` cycle showing a doctrine edit re-propagate
+into `AGENTS.md`).
 
 ## Capability tiers (for context; not enforced by this seam)
 
@@ -159,5 +234,5 @@ fan-out via `codex exec` conducts instead); rules-file-only assistants
 (Cursor, Copilot-class) are Tier C (`generic` target — doctrine + gate spine
 only, no orchestration). The `RenderTarget` interface itself is
 tier-agnostic — it only renders artifacts. Dispatch-driver differences
-(native subagent vs. process fan-out) are a Phase 2+ concern layered on top,
-not part of this seam.
+(native subagent vs. process fan-out) are a per-target concern layered on
+top, not part of this seam.

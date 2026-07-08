@@ -62,6 +62,19 @@ directly (two independent synthetic projects with identical core content
 render byte-identical output; two consecutive calls on one project produce
 identical bytes on both calls).
 
+## Doctrine profile (G3, 2026-07-08)
+
+`ClaudeCodeRenderTarget.doctrine_profile == "orchestrator"` — the one case
+where the full CLAUDE.md payload (Rule Zero, the six outcome orchestrators,
+the mission-ceremony command table) is true of the harness reading it:
+Claude Code as Tess genuinely holds the Agent/Task tool. This profile is
+UNCHANGED by G3 — the re-scope applied only to `codex`/`generic`'s AGENTS.md
+(see `adapters/codex/README.md` "Doctrine profile"). Its own defense is
+operational (routing, parallelism, verification discipline, audit trail),
+not a claim that the doctrine makes output smarter — the 2026-07-07
+proving-ground benchmark could not test a conductor loop and makes no claim
+either way for this profile.
+
 ## Adding a Phase 2/3 target
 
 See `adapters/README.md` "Adding Phase 2 / Phase 3 targets" for the general

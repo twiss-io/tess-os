@@ -193,16 +193,103 @@ def is_security_tier(core_key: str, attrs: dict) -> bool:
 CLAUDE_TOKEN_MAP = {
     "{{CORE_RULE_ZERO}}":       ".tess/core/templates/claude-md/rule-zero.md",
     "{{CORE_SYSTEM_LAWS}}":     ".tess/core/templates/claude-md/system-laws.md",
+    "{{CORE_HARD_FLOOR}}":      ".tess/core/templates/claude-md/hard-floor.md",
     "{{CORE_ORCHESTRATORS}}":   ".tess/core/templates/claude-md/orchestrators.md",
     "{{CORE_COMMANDS}}":        ".tess/core/templates/claude-md/commands.md",
     "{{CORE_DIRECTORY}}":       ".tess/core/templates/claude-md/directory.md",
 }
+
+# Token → file mapping for AGENTS.md template rendering (Phase 2 — Codex +
+# generic render targets; RE-SCOPED 2026-07-08 to the WORKER doctrine profile
+# — G3 / the 2026-07-07 honest reckoning, see RenderTarget.doctrine_profile
+# below). AGENTS.md is the ONLY render (today) whose targets are all
+# worker-profile, so its whole token map changed shape, not just its values:
+#
+#   - {{WORKER_HARD_FLOOR}} / {{WORKER_GATE_COMPLIANCE}} are WORKER-ONLY
+#     fragments with NO CLAUDE.md equivalent — the orchestrator's own
+#     `claude-md/hard-floor.md` bundles the hard floor together with
+#     dependency gates, verification routing, and the retry protocol (all
+#     orchestration ceremony that presumes a dispatchable crew). The two
+#     fragments below carry ONLY the ~5-line hard floor and the gate's
+#     compliance facts — see their own file headers for why nothing else is
+#     added: per the reckoning, no doctrine payload has ever measured as
+#     HELPING a single-agent harness, so nothing here ships on a
+#     performance bet, only facts (the gate exists; don't touch its files)
+#     and a safety floor (unmeasured on purpose, kept for consequence).
+#   - {{HARNESS_NOTE}} documents the `.codex/prompts/**` / `prompts/**`
+#     command-body mirrors (unchanged — a fact about what's on disk, not
+#     doctrine).
+#
+# Deliberately DROPPED versus the pre-G3 map (see the harm this fixes in
+# AGENTS.md.tpl's own doctrine-drop banner + tests/test_worker_profile_denylist.py):
+# CORE_RULE_ZERO, CORE_SYSTEM_LAWS, CORE_ORCHESTRATORS, CORE_DIRECTORY,
+# CORE_COMMANDS/the 26-command table — CORE_RULE_ZERO/CORE_SYSTEM_LAWS/
+# CORE_ORCHESTRATORS/the command table name or assume dispatch mechanics
+# (the Agent tool, `.claude/agents/`, six outcome orchestrators, mode-switch
+# slash commands) that do not hold for a single-agent harness, and are
+# exactly the payload the 2026-07-07 proving-ground benchmark measured as
+# harmful (a weak model attempted a nested subagent spawn on a bare
+# `python3 --version` task under this exact doctrine). CORE_DIRECTORY is
+# dropped for a different reason — not harmful, just heavy (~45 lines) —
+# to keep this always-mounted digest inside its ~40-60 line budget; the
+# repo's own README (or {{OPERATOR_BUILD_FACTS}} below) is the right place
+# for layout facts a worker harness actually needs. `.codex/prompts/*.md` /
+# `prompts/*.md` still mirror every command body verbatim (unchanged — see
+# CodexRenderTarget/GenericRenderTarget.render()); only AGENTS.md's own
+# always-mounted digest is re-scoped. Auditing the mirrored command bodies
+# themselves is future work (2026-07-07 reckoning §2.5), not part of this fix.
+AGENTS_TOKEN_MAP = {
+    "{{WORKER_HARD_FLOOR}}":       ".tess/core/templates/agents-md/worker-hard-floor.md",
+    "{{WORKER_GATE_COMPLIANCE}}":  ".tess/core/templates/agents-md/gate-compliance.md",
+    "{{HARNESS_NOTE}}":            ".tess/core/templates/agents-md/harness-note.md",
+}
+AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
+CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
+COMMANDS_CORE_DIR = ".tess/core/commands"
 
 OPERATOR_TOKEN_MAP = {
     "{{OPERATOR_IDENTITY}}":    "operator/identity-stub.md",
     "{{OPERATOR_PROFILE}}":     "operator/user-profile.md",
     "{{OPERATOR_CHANNELS}}":    "operator/org-channels.md",
 }
+
+# Operator token map for AGENTS.md (worker profile) — parallel to
+# OPERATOR_TOKEN_MAP above, but its own map: AGENTS.md's operator-fillable
+# zones are NOT the same as CLAUDE.md's (identity/profile/channels are
+# orchestrator-shaped; a worker harness needs project build/test/lint facts
+# instead — the one "environment facts" category this framework genuinely
+# cannot know on a downstream project's behalf, so it ships as an explicit,
+# empty-by-default operator stub rather than a fabricated claim). See
+# operator/build-facts-stub.md's own header for the inject:false contract.
+AGENTS_OPERATOR_TOKEN_MAP = {
+    "{{OPERATOR_BUILD_FACTS}}": "operator/build-facts-stub.md",
+}
+
+# RenderTarget.doctrine_profile's two valid values (G3 / 2026-07-07 honest
+# reckoning). "orchestrator" = the full CLAUDE.md payload (Rule Zero, the six
+# outcome orchestrators, the mission-ceremony command table) — correct ONLY
+# where the reading harness genuinely has a dispatchable crew (Claude Code as
+# Tess today; a future claude-code-subagent render is worker-profile by
+# definition even though it also runs inside Claude Code — see
+# RenderTarget.doctrine_profile's own docstring). "worker" = the lean payload
+# (environment facts + gate compliance + hard floor, zero orchestration
+# doctrine) — every other render target, by default.
+DOCTRINE_PROFILES = ("orchestrator", "worker")
+
+# Denylist drift check (G3): phrases the 2026-07-07 proving-ground benchmark
+# measured as the actual harm mechanism (a weak model spawned a nested
+# subagent under this exact doctrine on a bare `python3 --version` task —
+# proving-ground/reports/2026-07-07*.md). Matched case-insensitively as
+# substrings against decoded worker-profile doctrine-digest content — see
+# _check_worker_profile_denylist() below the RENDER_TARGETS registry.
+WORKER_DOCTRINE_DENYLIST = (
+    "always dispatch",
+    "never execute solo",
+    "rule zero",
+    "outcome orchestrator",
+    "dispatch brief contract",
+    "dispatch-guard.sh",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +1023,137 @@ def render_settings_json(root: Path) -> str:
         json.loads(rendered)
     except json.JSONDecodeError as e:
         sys.exit(f"tessctl render: settings-core.json renders to invalid JSON: {e}")
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# AGENTS.md rendering (Phase 2 — Codex + generic render targets)
+#
+# Shared, harness-NEUTRAL by design: both CodexRenderTarget and
+# GenericRenderTarget call render_agents_md(root) with no harness argument,
+# so AGENTS.md is byte-identical regardless of which of the two is enabled —
+# or which renders LAST if an install unusually enables both at once (see
+# adapters/README.md "AGENTS.md ownership"). This sidesteps an ordering
+# hazard a harness-flavored AGENTS.md would otherwise create (two targets
+# racing to own the same root-level file with different content), and keeps
+# faith with the RenderTarget interface's own DETERMINISTIC/IDEMPOTENT
+# contract: same core -> same output, full stop, independent of render order.
+# ---------------------------------------------------------------------------
+
+def _command_names(root: Path) -> list:
+    """Sorted command names (filename stems) under `.tess/core/commands/` —
+    the SAME 26 files the claude-code target restores to
+    `.claude/commands/**`. Sorted explicitly so output is stable across
+    filesystems/platforms whose directory-listing order is not guaranteed."""
+    cmd_dir = root / COMMANDS_CORE_DIR
+    if not cmd_dir.exists():
+        return []
+    return sorted(p.stem for p in cmd_dir.glob("*.md"))
+
+
+def _render_command_prompt_bytes(root: Path, name: str) -> bytes | None:
+    """The bytes a harness's native-prompt mirror (`.codex/prompts/<name>.md`
+    or `prompts/<name>.md`) should contain for command `name` — the command
+    body verbatim, through the same generic {{TOKEN}} substitution every
+    other rendered artifact gets (apply_token_sub is a no-op today: no
+    shipped command body contains a `{{...}}` token, but this keeps the
+    mirror consistent with the rest of the render pipeline for free).
+    Returns None if the command no longer exists in core (deleted upstream).
+
+    Deliberately does NOT call render_core_to_live() — that function starts
+    by asking every ENABLED target's expected_live_bytes() for live_rel,
+    which for these exact paths IS this function's own caller
+    (CodexRenderTarget/GenericRenderTarget.expected_live_bytes) — calling it
+    from here would recurse infinitely."""
+    core_path = root / COMMANDS_CORE_DIR / f"{name}.md"
+    if not core_path.exists():
+        return None
+    return apply_token_sub(core_path.read_text(encoding="utf-8"), root).encode("utf-8")
+
+
+def render_agents_md(root: Path) -> str:
+    """
+    Render the portable AGENTS.md digest shared by BOTH the `codex` and
+    `generic` render targets (see this module's "AGENTS.md rendering"
+    section banner for why it takes no harness argument).
+
+    WORKER doctrine profile (G3, re-scoped 2026-07-08 — see
+    RenderTarget.doctrine_profile and AGENTS_TOKEN_MAP's own header for the
+    full rationale). Every doctrine payload CLAUDE.md.tpl carries — Rule
+    Zero, System Laws, the Outcome Orchestrators section, the 26-row command
+    table — is DELIBERATELY ABSENT: all name or assume a dispatchable crew
+    (the Agent tool, `.claude/agents/`, six outcome orchestrators, mode-
+    switch slash commands) that does not exist for Codex (Tier B — no
+    in-session subagent tool) or an arbitrary generic harness, and is
+    exactly the payload the 2026-07-07 proving-ground benchmark measured as
+    harmful to a single-agent harness (a weak model attempted a nested
+    subagent spawn on a bare `python3 --version` task under this doctrine).
+    CLAUDE.md.tpl's `directory.md` fragment (CORE_DIRECTORY) is also NOT
+    reused here — not harmful, just heavy (~45 lines) — to keep this
+    always-mounted digest inside its ~40-60 line budget (AGENTS_TOKEN_MAP's
+    own header has the full reasoning). In its place: {{WORKER_HARD_FLOOR}}
+    / {{WORKER_GATE_COMPLIANCE}} (two WORKER-ONLY fragments — safety floor +
+    gate-compliance facts, nothing else) and {{OPERATOR_BUILD_FACTS}} (an
+    operator-fillable, empty-by-default zone for the one class of
+    "environment fact" this framework cannot know on a downstream project's
+    behalf: ITS build/test/lint commands — see AGENTS_OPERATOR_TOKEN_MAP).
+    `.codex/prompts/*.md` / `prompts/*.md` still mirror every command body
+    verbatim, unchanged — only this always-mounted digest's own payload is
+    re-scoped.
+    """
+    tpl_path = root / AGENTS_MD_TPL
+    if not tpl_path.exists():
+        sys.exit(f"tessctl render: template not found at {tpl_path}")
+    tpl = tpl_path.read_text(encoding="utf-8")
+
+    for token, rel_path in AGENTS_TOKEN_MAP.items():
+        frag_path = root / rel_path
+        if frag_path.exists():
+            content = frag_path.read_text(encoding="utf-8").strip()
+        else:
+            content = f"<!-- MISSING: {rel_path} -->"
+        tpl = tpl.replace(token, content)
+
+    # Operator-fillable zones (parse_operator_stub's inject:true/false
+    # contract — same convention render_claude_md() uses for
+    # OPERATOR_TOKEN_MAP). Empty/inject:false by default: the framework
+    # ships zero fabricated build/test/lint facts about a downstream
+    # project it cannot see into.
+    for token, rel_path in AGENTS_OPERATOR_TOKEN_MAP.items():
+        op_path = root / rel_path
+        if op_path.exists():
+            raw = op_path.read_text(encoding="utf-8")
+            content = parse_operator_stub(raw, op_path)
+        else:
+            content = ""
+        tpl = tpl.replace(token, content)
+
+    # M4/M6: operator token substitution, same final pass render_claude_md()
+    # applies — resolves {{ASSISTANT_NAME}}/{{OPERATOR_NAME}}/{{TESS_ROOT}} in
+    # both the fragments above and the template's own prose.
+    tpl = apply_token_sub(tpl, root)
+    return tpl
+
+
+def render_codex_config_toml(root: Path) -> str:
+    """
+    Render `.codex/config.toml` from the static core fragment — see
+    `.tess/core/templates/agents-md/codex-config.toml.tpl`'s own header
+    comment for the approval_policy/sandbox_mode defaults and why Codex only
+    honoring this file for TRUSTED projects makes shipping conservative
+    defaults here safe (they can only narrow, never broaden, the operator's
+    own `~/.codex/config.toml`).
+    """
+    src = root / CODEX_CONFIG_TOML_TPL
+    if not src.exists():
+        sys.exit(f"tessctl render: {CODEX_CONFIG_TOML_TPL} not found at {src}")
+    raw = src.read_text(encoding="utf-8")
+    rendered = apply_token_sub(raw, root)
+    if "{{" in rendered:
+        sys.exit(
+            f"tessctl render: {CODEX_CONFIG_TOML_TPL} has an unresolved "
+            f"{{{{TOKEN}}}} after substitution"
+        )
     return rendered
 
 
@@ -1795,6 +2013,32 @@ class RenderTarget:
 
     name: str = ""
 
+    # G3 (2026-07-08, the 2026-07-07 honest reckoning) — doctrine_profile is
+    # DATA on the target class, not a CLI flag someone forgets (see
+    # DOCTRINE_PROFILES above). It answers exactly one question: does the
+    # harness this target renders for genuinely have a dispatchable crew
+    # (the Agent/Task tool, a roster to hand work to)?
+    #   "orchestrator" — yes. The FULL doctrine (Rule Zero, the six outcome
+    #     orchestrators, the mission-ceremony command table) describes that
+    #     harness's actual job. Correct ONLY where it is true — Claude Code
+    #     as Tess today. A future `claude-code-subagent` render (the
+    #     `.claude/agents/` dispatch personas) is WORKER-profile by
+    #     definition even though it also runs inside Claude Code: a subagent
+    #     cannot itself spawn subagents, so "always dispatch" is just as
+    #     false there as it is for Codex.
+    #   "worker" — no. The lean payload only: environment facts, gate
+    #     compliance, the hard floor. Zero orchestration doctrine. This is
+    #     every OTHER target's default, and it is the profile the
+    #     2026-07-07 proving-ground benchmark showed is the honest one for a
+    #     single-agent harness — mounting the orchestrator payload there
+    #     measured as harmful (a weak model attempted a nested subagent
+    #     spawn on a bare `python3 --version` task), never as helpful.
+    # No default here on purpose — every concrete subclass MUST declare its
+    # own value (see tests/test_render_target_doctrine_profile.py's registry
+    # sweep), so a future target can never silently ship undeclared (and
+    # therefore un-drift-checked) doctrine.
+    doctrine_profile: str = ""
+
     def live_globs(self) -> list:
         raise NotImplementedError
 
@@ -1809,6 +2053,22 @@ class RenderTarget:
     def render_generated_paths(self, root: Path) -> set:
         """HIGH-1/MED-3: this target's compiled/generated live paths. Base:
         empty set (a copy-only target need not override this)."""
+        return set()
+
+    def doctrine_digest_paths(self, root: Path) -> set:
+        """G3: the subset of render_generated_paths() that carries actual
+        DOCTRINE PROSE (Rule Zero / hard floor / system laws / etc.), as
+        opposed to mirrored, individually-authored artifacts this target
+        also happens to write (e.g. Codex/generic's 26 `.codex/prompts/*.md`
+        / `prompts/*.md` command-body mirrors — each is its OWN authored
+        file with its own review history, not a copy of THIS target's
+        doctrine digest, and auditing them for orchestration-doctrine leakage
+        is separately tracked future work, not this seam's job).
+        _check_worker_profile_denylist() scans ONLY these paths — this is
+        the doctrine payload G3 actually re-scoped (AGENTS.md's own digest),
+        not every artifact a worker-profile target writes. Base: empty set
+        (a target with no standalone doctrine-digest file need not override
+        this)."""
         return set()
 
 
@@ -1842,6 +2102,9 @@ class ClaudeCodeRenderTarget(RenderTarget):
     """
 
     name = "claude-code"
+    doctrine_profile = "orchestrator"  # G3: the genuine case — Claude Code
+                                       # holds the Agent/Task tool, so "always
+                                       # dispatch" describes a real capability.
 
     def live_globs(self) -> list:
         return [
@@ -1851,6 +2114,9 @@ class ClaudeCodeRenderTarget(RenderTarget):
             "clients/_template/CLAUDE.md",
             ".claude/settings.json",
         ]
+
+    def doctrine_digest_paths(self, root: Path) -> set:
+        return {"CLAUDE.md"}
 
     def render(self, root: Path, verbose: bool = False) -> dict:
         _do_render(root, verbose=verbose)
@@ -1880,11 +2146,139 @@ class ClaudeCodeRenderTarget(RenderTarget):
         return set(self.live_globs())
 
 
-# Registry — Phase 2/3 add "codex" / "gemini" / "generic" here (and nowhere
-# else: no change to core loading, the lock schema, or the manifest write
-# gate is required to register a new target).
+class CodexRenderTarget(RenderTarget):
+    """
+    Tier B target (Phase 2 — docs/ULTIMATE_FRAMEWORK_PLAN.md Part B §B.2;
+    full artifact map in adapters/codex/README.md). Compiles:
+
+      * `AGENTS.md` — render_agents_md(root). SHARED with `generic` (see
+        that function's docstring) — byte-identical regardless of which of
+        the two targets is enabled.
+      * `.codex/prompts/*.md` — one per `.tess/core/commands/*.md` command
+        body, mirrored into Codex's native custom-prompt convention. This is
+        this target's OWN copy-phase (adapters/README.md "Adding Phase 2/3
+        targets" step 6) — `_do_restore` is Claude-Code-shaped and does not
+        reach `.codex/**`, so Codex needs its own render()-driven copy, not
+        a reuse of restore's generic loop.
+      * `.codex/config.toml` — render_codex_config_toml(root); a project-
+        scoped `approval_policy`/`sandbox_mode` default Codex only honors
+        for a project the operator has marked trusted.
+
+    `.codex/prompts/*.md` are intentionally NOT individually tess.lock-
+    tracked: the underlying `.tess/core/commands/*.md` source is ALREADY
+    base_sha-pinned by the claude-code target's own (pre-existing)
+    `.claude/commands/**` lock entries, and the lock schema has no way to
+    give a SECOND live destination to an already-tracked core_key without
+    either duplicating the core bytes under a new path (a real drift risk —
+    two sources of truth for one doctrine file) or widening `live_path` to a
+    list across every lock consumer in this file (a much larger, riskier
+    change for this phase). Instead, doctor/verify/`lock --check` drift-check
+    these paths via the untracked-render-generated pass — see
+    `_check_untracked_render_generated()` below `render_generated_live_paths()`.
+    """
+
+    name = "codex"
+    doctrine_profile = "worker"  # G3: Codex has no in-session subagent tool —
+                                 # "always dispatch" would be false here.
+
+    def live_globs(self) -> list:
+        return ["AGENTS.md", ".codex/prompts/**", ".codex/config.toml"]
+
+    def doctrine_digest_paths(self, root: Path) -> set:
+        return {"AGENTS.md"}
+
+    def render(self, root: Path, verbose: bool = False) -> dict:
+        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
+        names = _command_names(root)
+        for name in names:
+            body = _render_command_prompt_bytes(root, name)
+            if body is not None:
+                guarded_write(root, f".codex/prompts/{name}.md", body, op="render")
+        guarded_write(
+            root, ".codex/config.toml",
+            render_codex_config_toml(root).encode("utf-8"), op="render",
+        )
+        if verbose:
+            print(f"  rendered  AGENTS.md")
+            print(f"  rendered  .codex/prompts/** ({len(names)} prompts)")
+            print(f"  rendered  .codex/config.toml")
+        return {"target": self.name, "status": "rendered"}
+
+    def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
+        if live_rel == "AGENTS.md":
+            return render_agents_md(root).encode("utf-8")
+        if live_rel == ".codex/config.toml":
+            return render_codex_config_toml(root).encode("utf-8")
+        if live_rel.startswith(".codex/prompts/") and live_rel.endswith(".md"):
+            name = live_rel[len(".codex/prompts/"):-len(".md")]
+            return _render_command_prompt_bytes(root, name)
+        return None
+
+    def render_generated_paths(self, root: Path) -> set:
+        paths = {"AGENTS.md", ".codex/config.toml"}
+        paths.update(f".codex/prompts/{name}.md" for name in _command_names(root))
+        return paths
+
+
+class GenericRenderTarget(RenderTarget):
+    """
+    Tier C target (Phase 2 — adapters/generic/README.md): the "plug-and-play
+    for any AGENTS.md-reading agent" target — no harness-specific dispatch
+    mechanics assumed (rules-file-only assistants: Cursor, Copilot-class;
+    see adapters/README.md "Capability tiers"). Compiles the SAME AGENTS.md
+    as `codex` (render_agents_md — see its docstring on why AGENTS.md is
+    harness-neutral) plus `prompts/*.md`, a plain, tool-agnostic mirror of
+    `.tess/core/commands/**` with no frontmatter conventions assumed of the
+    reading tool.
+    """
+
+    name = "generic"
+    doctrine_profile = "worker"  # G3: no dispatch mechanics assumed at all.
+
+    def live_globs(self) -> list:
+        return ["AGENTS.md", "prompts/**"]
+
+    def doctrine_digest_paths(self, root: Path) -> set:
+        return {"AGENTS.md"}
+
+    def render(self, root: Path, verbose: bool = False) -> dict:
+        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
+        names = _command_names(root)
+        for name in names:
+            body = _render_command_prompt_bytes(root, name)
+            if body is not None:
+                guarded_write(root, f"prompts/{name}.md", body, op="render")
+        if verbose:
+            print(f"  rendered  AGENTS.md")
+            print(f"  rendered  prompts/** ({len(names)} prompts)")
+        return {"target": self.name, "status": "rendered"}
+
+    def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
+        if live_rel == "AGENTS.md":
+            return render_agents_md(root).encode("utf-8")
+        if live_rel.startswith("prompts/") and live_rel.endswith(".md"):
+            name = live_rel[len("prompts/"):-len(".md")]
+            return _render_command_prompt_bytes(root, name)
+        return None
+
+    def render_generated_paths(self, root: Path) -> set:
+        paths = {"AGENTS.md"}
+        paths.update(f"prompts/{name}.md" for name in _command_names(root))
+        return paths
+
+
+# Registry — Phase 2 adds "codex" and "generic" here (and nowhere else: no
+# change to core loading, the lock schema, or the manifest write gate is
+# required to register a new target — see adapters/README.md "Adding Phase
+# 2/3 targets"). Neither is in tess.manifest.json's render_targets.enabled
+# default (["claude-code"] — MED-3) — registering a target is not the same
+# as enabling it for every existing install; an operator opts in via
+# `tessctl render --target codex` / `--target generic` explicitly, or by
+# adding the name to their own manifest's render_targets.enabled list.
 RENDER_TARGETS: dict = {
     "claude-code": ClaudeCodeRenderTarget(),
+    "codex": CodexRenderTarget(),
+    "generic": GenericRenderTarget(),
 }
 
 
@@ -1946,6 +2340,233 @@ def render_generated_live_paths(root: Path) -> frozenset:
     for target in enabled_render_targets(root).values():
         paths |= target.render_generated_paths(root)
     return frozenset(paths)
+
+
+# ---------------------------------------------------------------------------
+# Worker-profile denylist drift check (G3 — 2026-07-08, the 2026-07-07
+# honest reckoning). Cheap, mechanical protection so a future edit to
+# AGENTS.md.tpl (or any future worker-profile target's own doctrine-digest
+# template) can never silently re-export the exact harm the proving-ground
+# benchmark measured: mounting "always dispatch, never execute solo" and its
+# ceremony into a harness with no dispatchable crew.
+# ---------------------------------------------------------------------------
+
+def _worker_profile_targets() -> list:
+    """Every REGISTERED target (regardless of THIS install's per-install
+    enablement — see enabled_render_targets()) whose doctrine_profile is
+    'worker'. Deliberately regardless-of-enablement: this check is a
+    property of the CORE render logic (does the template ever produce
+    denylisted content?), not of one install's live state — a
+    claude-code-only install must still catch a template regression before
+    anyone opts a worker target in."""
+    return [t for t in RENDER_TARGETS.values() if t.doctrine_profile == "worker"]
+
+
+def _check_worker_profile_denylist(root: Path) -> list:
+    """
+    Assert every worker-profile target's doctrine-digest content (see
+    RenderTarget.doctrine_digest_paths()) never contains a phrase from
+    WORKER_DOCTRINE_DENYLIST. Runs the SAME expected_live_bytes() pure
+    function doctor/verify's drift-checking already calls — no live file
+    needs to exist on disk for this to fire, so it catches a bad template
+    edit immediately, not just after the next `tessctl render --target
+    codex`.
+
+    Returns a list of violation dicts: {"target", "live_path", "phrase"}.
+    Empty list = clean. Fails OPEN (returns []) if a target's render inputs
+    don't exist yet (e.g. a partial/legacy core predating Phase 2) — this is
+    a CONTENT-correctness check layered on top of doctor/verify's existing
+    EXISTENCE checks, not a replacement for them.
+    """
+    violations = []
+    for target in _worker_profile_targets():
+        try:
+            digest_paths = target.doctrine_digest_paths(root)
+        except Exception:
+            continue
+        for live_rel in sorted(digest_paths):
+            try:
+                content = target.expected_live_bytes(root, live_rel)
+            except SystemExit:
+                continue
+            if content is None:
+                continue
+            try:
+                text = content.decode("utf-8").lower()
+            except UnicodeDecodeError:
+                continue
+            for phrase in WORKER_DOCTRINE_DENYLIST:
+                if phrase in text:
+                    violations.append({
+                        "target": target.name,
+                        "live_path": live_rel,
+                        "phrase": phrase,
+                    })
+    return violations
+
+
+def _check_untracked_render_generated(root: Path, covered: set) -> list:
+    """
+    Phase 2 (Codex + generic targets): drift-check a render target's
+    compiled artifacts that have NO individual tess.lock entry of their own —
+    e.g. CodexRenderTarget's 26 `.codex/prompts/*.md` mirrors of the SAME
+    `.tess/core/commands/*.md` bodies the claude-code surface already tracks
+    under a DIFFERENT live_path (`.claude/commands/*.md`).
+
+    Why these have no lock entry: the lock schema keys one entry per
+    core_key with exactly one `live_path`. A second live destination for an
+    ALREADY-tracked core file (like `.tess/core/commands/wake.md`, whose
+    existing entry maps it to `.claude/commands/wake.md`) cannot get its own
+    entry without either (a) duplicating the core bytes under a second
+    `.tess/core/**` path — a real drift risk, two "sources of truth" for one
+    doctrine file — or (b) widening `live_path` to a list, a materially
+    larger and riskier change touching every lock-consuming command in this
+    file for a Phase 2 addition. Neither is worth it here: the underlying
+    core file is ALREADY base_sha-pinned (Check A) by its own, pre-existing
+    lock entry, so only a live-drift comparison (Check B) is actually needed
+    for the second destination — which is exactly what this function does,
+    using the SAME `expected_live_bytes()` hook doctor/verify already consult
+    for every lock-tracked path.
+
+    `covered`: the set of every live_path already present in tess.lock
+    (built by the caller from `attrs.get("live_path")` across
+    `lock["files"]`) — a path in this set is skipped here because its own
+    lock entry already checks it (e.g. `CLAUDE.md`, `.claude/settings.json`,
+    `AGENTS.md` if a future phase ever tracks it directly). Only ENABLED
+    targets are considered (MED-3): a disabled target's declared paths are
+    not expected to exist live at all.
+
+    A path that does not exist yet is SKIPPED, not flagged — an enabled
+    target that simply hasn't been rendered yet (or a test fixture that only
+    seeds a subset of a target's artifacts) is not an integrity failure the
+    way a lock-tracked `core-managed` file going missing is; the ordinary
+    per-lock-entry loop already owns "must exist" semantics for anything
+    that's supposed to be unconditionally present (CLAUDE.md, settings.json,
+    etc. all carry their own lock entries precisely so THEY keep that
+    guarantee). This function only ever adds DRIFT detection for a path that
+    exists but doesn't match the target's own expected_live_bytes() — the
+    one thing no lock entry can currently express for these paths.
+
+    Returns a list of dicts in the SAME shape doctor_check_file() returns
+    (core_key, live_path, lock_status, tier, is_security, pristine, issues,
+    staged_warn, drift, core_tamper) so callers can fold these results
+    directly into their existing per-file result list / counters with no
+    special-casing.
+
+    MEDIUM fix (Fable finding): a path that does not exist is EITHER —
+
+      (a) genuinely never rendered for THIS target (a target just enabled,
+          or a test fixture that only seeds a subset of a target's
+          artifacts) — benign, skipped, exactly as before; or
+      (b) drift — the artifact SHOULD exist (its target is enabled and its
+          own render source is still present) but has been deleted after a
+          real render, or a new source appeared and the target hasn't been
+          re-rendered since. Flagged the same way a hand-edited EXISTING
+          artifact already was.
+
+    The pre-fix code could not tell these apart — it treated "missing" as
+    uniformly (a), so `rm .codex/prompts/close.md` or even `rm AGENTS.md`
+    on an already-rendered install went undetected by doctor, verify, AND
+    `lock --check` (the doctrine-bearing AGENTS.md could vanish with no
+    signal at all). The fix: a target counts as "has been rendered at
+    least once for this install" iff at least one of its OWN artifacts is
+    either already live on disk or covered by its own lock entry — a
+    target with zero such evidence has never run, so its declared paths
+    simply not existing yet is the documented startup state, not a
+    failure. A target WITH that evidence that is nonetheless missing one
+    of its OTHER declared paths has lost an artifact that should be
+    there — that is now reported exactly like any other drift.
+
+    "Its OWN artifacts" deliberately EXCLUDES any path also declared by
+    another currently-ENABLED target (today: AGENTS.md, rendered
+    byte-identically by both `codex` and `generic` — see those classes'
+    docstrings). Without this exclusion, enabling both targets but only
+    ever running `render --target generic` would make AGENTS.md's mere
+    presence "prove" codex has rendered too, false-flagging codex's own,
+    never-yet-rendered `.codex/config.toml` / `.codex/prompts/*.md` as
+    "deleted."
+
+    LOW (noted, not fixed here): a DISABLED target's artifacts are excluded
+    entirely (enabled_render_targets() above) even when they happen to
+    exist on disk — e.g. this very repo ships a committed AGENTS.md /
+    .codex/** while render_targets.enabled defaults to ["claude-code"]
+    only, and neither is drift-checked today. Deliberately NOT widened to
+    scan disabled targets' paths whenever present: `.codex/config.toml`
+    and `AGENTS.md` are paths OTHER tools legitimately own independently of
+    Tess (the Codex CLI itself; any AGENTS.md-reading assistant) — an
+    install that has never enabled the codex/generic target could have its
+    own unrelated file at that exact path, and flagging that as
+    "UNCAPTURED DRIFT" would be a new false positive this fix must not
+    introduce. Covering disabled-but-shipped artifacts needs its own
+    opt-in signal (e.g. "this repo's committed AGENTS.md was itself
+    produced by `tessctl render`, not hand-authored elsewhere"), not a
+    blanket disabled-target scan — left for a follow-up.
+    """
+    results = []
+    enabled = enabled_render_targets(root)
+    for name, target in enabled.items():
+        target_rels = sorted(target.render_generated_paths(root))
+
+        # Paths also owned by another currently-enabled target (AGENTS.md
+        # today) prove nothing about whether THIS target specifically has
+        # ever rendered — exclude them from the "has this target run
+        # before" evidence set.
+        other_targets_paths: set = set()
+        for other_name, other_target in enabled.items():
+            if other_name != name:
+                other_targets_paths |= other_target.render_generated_paths(root)
+        evidence_rels = [r for r in target_rels if r not in other_targets_paths]
+        rendered_before = any(
+            (root / r).exists() or r in covered for r in evidence_rels
+        )
+
+        for live_rel in target_rels:
+            if live_rel in covered:
+                continue
+            live_path = root / live_rel
+            r = {
+                "core_key": None,
+                "live_path": live_rel,
+                "lock_status": "core-managed",
+                "tier": "normal",
+                "is_security": False,
+                "pristine": None,
+                "issues": [],
+                "staged_warn": [],
+                "drift": False,
+                "core_tamper": False,
+            }
+            if not live_path.exists():
+                if not rendered_before:
+                    continue  # genuinely never rendered yet — not a failure
+                expected = target.expected_live_bytes(root, live_rel)
+                if expected is None:
+                    continue  # source itself is gone too — nothing to flag against
+                r["pristine"] = False
+                r["drift"] = True
+                r["issues"].append(
+                    "UNCAPTURED DRIFT — render-generated file is missing "
+                    "(deleted after render, or its source changed and the "
+                    "target was never re-rendered)"
+                )
+                results.append(r)
+                continue
+            expected = target.expected_live_bytes(root, live_rel)
+            if expected is None:
+                # Declared as generated but this target has no bespoke
+                # compile for this specific path (shouldn't happen for a
+                # well-formed target — render_generated_paths() and
+                # expected_live_bytes() are meant to agree) — skip rather
+                # than false-flag; nothing authoritative to compare against.
+                continue
+            if sha256_bytes(expected) == sha256_file(live_path):
+                r["pristine"] = True
+            else:
+                r["pristine"] = False
+                r["drift"] = True
+                r["issues"].append("UNCAPTURED DRIFT — live file has been edited without capture")
+            results.append(r)
+    return results
 
 
 def _render_enabled_targets(root: Path, verbose: bool = False) -> list:
@@ -2035,6 +2656,33 @@ def cmd_render(args, root: Path) -> None:
 # Command: doctor
 # ---------------------------------------------------------------------------
 
+def _doctor_result_is_error(r: dict) -> bool:
+    """
+    Shared blocking-error classification for one doctor_check_file()-shaped
+    result dict — used by BOTH the lock-entry loop and the Phase 2
+    untracked-render-generated pass in cmd_doctor, so the two loops can never
+    silently drift apart on what counts as a failure. Extracted verbatim
+    from cmd_doctor's own pre-Phase-2 inline logic (the machine-readable
+    --json exit code must fail on exactly the same blocking conditions as
+    the human-readable summary — the previous substring heuristic missed
+    CORE TAMPER and QUARANTINED, whose issue strings contain none of the
+    matched substrings, so `doctor --json` exited 0 on a tampered or
+    quarantined core; a fail-open integrity gate).
+    """
+    is_error = bool(
+        r.get("core_tamper")
+        or r.get("lock_status") == "quarantined"
+        or (r.get("drift") and r.get("lock_status") == "core-managed")
+    )
+    if not is_error:
+        for issue in r["issues"]:
+            if ("UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue
+                    or "missing" in issue.lower() or "DOCTRINE LEAK" in issue):
+                is_error = True
+                break
+    return is_error
+
+
 def cmd_doctor(args, root: Path) -> None:
     """
     SHA-integrity check every core-managed file.
@@ -2070,27 +2718,53 @@ def cmd_doctor(args, root: Path) -> None:
         r = doctor_check_file(core_key, attrs, root)
         results.append(r)
 
-        # The machine-readable (--json) exit code must fail on exactly the same
-        # blocking conditions as the human-readable summary below. The previous
-        # substring heuristic missed CORE TAMPER and QUARANTINED (whose issue
-        # strings contain none of the matched substrings), so `doctor --json`
-        # exited 0 on a tampered or quarantined core — a fail-open integrity gate.
-        is_error = bool(
-            r.get("core_tamper")
-            or r.get("lock_status") == "quarantined"
-            or (r.get("drift") and r.get("lock_status") == "core-managed")
-        )
-        if not is_error:
-            for issue in r["issues"]:
-                if ("UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue
-                        or "missing" in issue.lower()):
-                    is_error = True
-                    break
-
-        if is_error:
+        if _doctor_result_is_error(r):
             errors += 1
         elif r["issues"]:
             warnings += 1
+
+    # Phase 2 (Codex + generic targets): a render target's compiled artifacts
+    # that have NO individual tess.lock entry (e.g. CodexRenderTarget's 26
+    # `.codex/prompts/*.md` mirrors — see _check_untracked_render_generated's
+    # docstring for why they can't get one) are otherwise INVISIBLE to this
+    # lock-entry-driven loop. `covered` is every live_path already tracked
+    # above; anything in an ENABLED target's render_generated_paths() but NOT
+    # in `covered` gets its own drift check here, folded into the same
+    # `results`/errors/warnings this loop already produces.
+    covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
+    for r in _check_untracked_render_generated(root, covered_live_paths):
+        if path_filter and r["live_path"] != path_filter:
+            continue
+        results.append(r)
+        if _doctor_result_is_error(r):
+            errors += 1
+        elif r["issues"]:
+            warnings += 1
+
+    # G3 (2026-07-08): worker-profile denylist drift check — fail loud if an
+    # orchestration-doctrine phrase ("always dispatch", "RULE ZERO", etc.)
+    # ever leaks into a single-agent harness's doctrine digest (AGENTS.md
+    # today). Folded into the SAME `results`/errors accounting as every other
+    # doctor check via _doctor_result_is_error's shared "DOCTRINE LEAK"
+    # marker, so --json and human mode can never disagree on whether this
+    # blocks.
+    for dv in _check_worker_profile_denylist(root):
+        if path_filter and dv["live_path"] != path_filter:
+            continue
+        r = {
+            "core_key": f"<{dv['target']}:{dv['live_path']}>",
+            "live_path": dv["live_path"],
+            "lock_status": "worker-profile-denylist",
+            "drift": False,
+            "issues": [
+                f"DOCTRINE LEAK — worker-profile target '{dv['target']}' render of "
+                f"{dv['live_path']} contains denylisted phrase {dv['phrase']!r} "
+                f"(orchestration doctrine must not reach a single-agent harness — "
+                f"see WORKER_DOCTRINE_DENYLIST)"
+            ],
+        }
+        results.append(r)
+        errors += 1
 
     if as_json:
         print(json.dumps(results, indent=2, default=str))
@@ -2227,8 +2901,18 @@ def cmd_doctor(args, root: Path) -> None:
         if any("missing" in issue.lower() for issue in r["issues"])
     )
 
+    # G3 (2026-07-08): same "must count explicitly or human-mode fails open"
+    # discipline the missing_count comment above already documents — a
+    # DOCTRINE LEAK is recorded only as a plain issue by the loop above, so
+    # without this it would print an ISSUE line and then still exit 0.
+    doctrine_leak_count = sum(
+        1 for r in results
+        if any("DOCTRINE LEAK" in issue for issue in r["issues"])
+    )
+
     blocking = (drift_count > 0 or quarantined_count > 0
-                or core_tamper_count > 0 or missing_count > 0)
+                or core_tamper_count > 0 or missing_count > 0
+                or doctrine_leak_count > 0)
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
@@ -2254,6 +2938,11 @@ def cmd_doctor(args, root: Path) -> None:
     if missing_count > 0:
         print(f"\ndoctor: FAIL — {missing_count} missing core/live file(s). "
               f"Restore from git or re-run `tessctl render`.")
+        sys.exit(1)
+    if doctrine_leak_count > 0:
+        print(f"\ndoctor: FAIL — {doctrine_leak_count} worker-profile doctrine leak(s) detected. "
+              f"Orchestration doctrine (\"always dispatch\", RULE ZERO, etc.) must never reach "
+              f"a single-agent harness's doctrine digest — fix the template/fragment and re-render.")
         sys.exit(1)
     print("\ndoctor: OK")
 
@@ -4356,15 +5045,46 @@ def cmd_verify(args, root: Path) -> None:
 
         ok_count += 1
 
+    # Phase 2 (Codex + generic targets): fold in drift-checking for any
+    # ENABLED target's compiled artifacts that have no individual tess.lock
+    # entry — see _check_untracked_render_generated()'s docstring for why
+    # (e.g. CodexRenderTarget's 26 `.codex/prompts/*.md` mirrors of the
+    # ALREADY lock-tracked `.tess/core/commands/*.md` bodies). A path that
+    # hasn't been rendered yet is skipped by that function (not a failure);
+    # only an existing-but-drifted path is ever returned here.
+    covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
+    for r in _check_untracked_render_generated(root, covered_live_paths):
+        live_rel = r["live_path"]
+        if r.get("drift"):
+            normal_drifts.append(live_rel)
+            print(
+                f"  LIVE DRIFT  {live_rel}  "
+                f"— render-generated file is stale (run `tessctl render`)"
+            )
+        else:
+            ok_count += 1
+
+    # G3 (2026-07-08): worker-profile denylist drift check — see
+    # _check_worker_profile_denylist()'s docstring. A single failing loud
+    # check, independent of live-file existence, so it fires even before
+    # anyone has ever rendered a worker-profile target for this install.
+    doctrine_leaks = _check_worker_profile_denylist(root)
+    for dv in doctrine_leaks:
+        print(
+            f"  DOCTRINE LEAK  {dv['live_path']}  — worker-profile target "
+            f"'{dv['target']}' contains denylisted phrase {dv['phrase']!r} "
+            f"(orchestration doctrine must not reach a single-agent harness)"
+        )
+
     print(f"\n{'='*60}")
     print(
         f"ok: {ok_count}  |  staged warns: {len(staged_warns)}  |  "
         f"core tampers: {len(core_tampers)}  |  "
         f"security drifts: {len(security_drifts)}  |  live drifts: {len(normal_drifts)}  |  "
-        f"quarantined: {len(quarantined_files)}"
+        f"quarantined: {len(quarantined_files)}  |  doctrine leaks: {len(doctrine_leaks)}"
     )
 
-    if core_tampers or security_drifts or normal_drifts or quarantined_files:
+    if core_tampers or security_drifts or normal_drifts or quarantined_files or doctrine_leaks:
         print("\nverify: FAIL")
         if core_tampers:
             print(f"  {len(core_tampers)} core tamper(s) — restore .tess/core from git or `tessctl rollback`")
@@ -4382,6 +5102,8 @@ def cmd_verify(args, root: Path) -> None:
                       f"run `tessctl capture <path>`")
         if quarantined_files:
             print(f"  {len(quarantined_files)} quarantined file(s) — run `tessctl approve <path> --rationale ...`")
+        if doctrine_leaks:
+            print(f"  {len(doctrine_leaks)} worker-profile doctrine leak(s) — fix the template/fragment and re-render")
         sys.exit(1)
     else:
         warn_note = f"; {len(staged_warns)} staged warn(s) — un-recruitable entries" if staged_warns else ""
@@ -4915,6 +5637,23 @@ def cmd_lock(args, root: Path) -> None:
             issues.append(("QUARANTINED", live_rel))
         elif r.get("drift") and status == "core-managed":
             issues.append(("DRIFT", live_rel))
+
+    # Phase 2 (Codex + generic targets): see _check_untracked_render_generated's
+    # docstring — an ENABLED target's compiled artifacts with no individual
+    # lock entry (e.g. `.codex/prompts/*.md`) are otherwise invisible to this
+    # lock-entry-only CI gate. A path not yet rendered is skipped (not a
+    # failure) by that function; only an existing-but-drifted path returns.
+    covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
+    for r in _check_untracked_render_generated(root, covered_live_paths):
+        if r.get("drift"):
+            issues.append(("DRIFT", r["live_path"]))
+
+    # G3 (2026-07-08): worker-profile denylist drift check — see
+    # _check_worker_profile_denylist()'s docstring. Wired here too so the CI
+    # gate (`tessctl lock --check`) catches an orchestration-doctrine leak
+    # into a worker-profile render the same way `doctor`/`verify` do.
+    for dv in _check_worker_profile_denylist(root):
+        issues.append(("DOCTRINE-LEAK", f"{dv['live_path']} ({dv['target']}: {dv['phrase']!r})"))
 
     if issues:
         print(f"tessctl lock --check: FAIL — {len(issues)} issue(s)")
