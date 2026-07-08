@@ -22,7 +22,8 @@ land inside a working agent OS with a first mission open.
 2. Runs the **journey** (interactive) or resolves all axes from **flags**
    (non-interactive / CI).
 3. On confirm, **promotes** the template into the target (excluding `create-tess/`
-   and `.git`), writes `operator/profile.json`, then drives the keystone:
+   and the template's own `.git`), writes `operator/profile.json`, then drives
+   the keystone:
    ```
    tessctl roster apply <path>     # install the starter squad + universal base
    tessctl set-operator <name>     # who the conductor addresses
@@ -30,7 +31,17 @@ land inside a working agent OS with a first mission open.
    tessctl pathway <key>           # the conductor's persona
    tessctl render                  # bake CLAUDE.md + doctrine from operator stubs
    ```
-4. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
+4. **Activates the gate** — `git init` (a fresh, history-less repo on branch
+   `main`; skipped if the target is already inside a git work tree) followed
+   by `tessctl gate install-hooks` (live pre-commit/pre-push hooks + the
+   `tess-gate.yml` CI workflow). This is what actually turns the shipped
+   contract-enforcement gate **on** — without it, a scaffolded instance has a
+   fully rendered doctrine tree but zero enforcement live. Best-effort: if it
+   can't complete (e.g. git isn't installed), the wizard does **not** fail or
+   roll back an otherwise-good instance — it prints explicit, copy-pasteable
+   next-steps instead. Opt out with `--no-git-init` / `--no-gate-hooks` if you
+   want to init git elsewhere or wire hooks yourself.
+5. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
    **first-mission greeting in the chosen persona's voice**.
 
 ## The five axes
@@ -57,8 +68,9 @@ npm create tess my-os -- --yes \
 Flags: `--operator`/`--name`, `--conductor`/`--assistant`, `--vibe`, `--path`,
 `--pathway`, `--telegram`, `--target`/`--dir` (or first positional),
 `--template-source` (env `TESS_TEMPLATE_SOURCE`), `--force`, `--no-doctor`,
-`--no-verify`, `--yes`. A flags-mode validation violation is a hard non-zero
-exit (no re-prompt). A non-TTY stdin auto-enables non-interactive mode.
+`--no-verify`, `--no-git-init`, `--no-gate-hooks`, `--yes`. A flags-mode
+validation violation is a hard non-zero exit (no re-prompt). A non-TTY stdin
+auto-enables non-interactive mode.
 
 **Defaults are `--yes`-gated.** Per design doc §5.4, defaults apply only with
 `--yes`. In non-interactive mode **without** `--yes`, every axis is required

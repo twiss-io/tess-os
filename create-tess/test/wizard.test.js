@@ -8,7 +8,12 @@
 //   (c) the conductor name applied (or the 'Tess' default)
 //   (d) personality.md carries the chosen pathway's persona
 //   (e) `tessctl doctor` AND `tessctl verify` exit 0 in the produced instance
-//   (f) create-tess/ and .git are NOT scaffolded into the target
+//   (f) create-tess/ is NOT scaffolded into the target, and the template's
+//       OWN .git (history) never leaks in — but a FRESH, history-less .git
+//       now exists (gate activation, see (g))
+//   (g) gate activation: `git init` ran (branch `main`, zero commits — never
+//       the template's history) and `tessctl gate install-hooks` installed
+//       live pre-commit/pre-push hooks + the CI workflow
 //
 // Run: npm test   (or `node --test`)
 import { test, after } from 'node:test';
@@ -207,14 +212,48 @@ for (const combo of COMBOS) {
       `tessctl verify non-zero\nSTDOUT:\n${verify.stdout}\nSTDERR:\n${verify.stderr}`,
     );
 
-    // (f) create-tess/ and .git must NOT be scaffolded into the target.
+    // (f) create-tess/ must NOT be scaffolded into the target.
     assert.ok(
       !existsSync(join(target, 'create-tess')),
       'create-tess/ leaked into the scaffolded instance',
     );
+
+    // (g) gate activation: git init ran (fresh repo, zero commits — proves
+    // this is NOT the template's own .git leaking in) and
+    // `tessctl gate install-hooks` installed live hooks + the CI workflow.
     assert.ok(
-      !existsSync(join(target, '.git')),
-      '.git leaked into the scaffolded instance',
+      existsSync(join(target, '.git')),
+      '.git must exist — the wizard must `git init` a fresh repo (gate activation)',
+    );
+    const branch = spawnSync('git', ['branch', '--show-current'], {
+      cwd: target,
+      encoding: 'utf8',
+    });
+    assert.equal(branch.stdout.trim(), 'main', 'git init must set the initial branch to main');
+    const log = spawnSync('git', ['log', '--oneline'], { cwd: target, encoding: 'utf8' });
+    assert.notEqual(
+      log.status,
+      0,
+      'the fresh repo must have ZERO commits — the template\'s own history must never leak in',
+    );
+
+    for (const hook of ['pre-commit', 'pre-push']) {
+      const hookPath = join(target, '.git', 'hooks', hook);
+      assert.ok(existsSync(hookPath), `${hook} hook must be installed by gate activation`);
+      const body = readFileSync(hookPath, 'utf8');
+      assert.match(body, /tess-gate-guard v1/, `${hook} hook must carry the gate-guard marker`);
+    }
+    assert.ok(
+      existsSync(join(target, '.github', 'workflows', 'tess-gate.yml')),
+      'the gate CI workflow must be installed by install-hooks',
+    );
+
+    // The gate must actually work post-activation, not just look installed.
+    const gatePreCommit = tessctl(target, 'gate', 'pre-commit');
+    assert.equal(
+      gatePreCommit.status,
+      0,
+      `tessctl gate pre-commit must pass on a clean repo\n${gatePreCommit.stdout}\n${gatePreCommit.stderr}`,
     );
   });
 }
@@ -366,4 +405,93 @@ test('M2: --force clean-replaces managed dirs, no stale files survive', { timeou
   );
   const doctor = tessctl(target, 'doctor');
   assert.equal(doctor.status, 0, `doctor after --force failed\n${doctor.stderr}`);
+});
+
+// ── Gate activation — opt-out flags + fallback next-steps ───────────────────
+test('gate activation: --no-git-init/--no-gate-hooks skip activation and print manual next-steps', () => {
+  const target = mkdtempSync(join(tmpdir(), 'create-tess-noflags-'));
+  tempDirs.push(target);
+  const combo = COMBOS[0];
+  const run = spawnSync(
+    process.execPath,
+    [
+      ENTRY,
+      '--yes',
+      `--operator=${combo.operator}`,
+      `--vibe=${combo.vibe}`,
+      `--path=${combo.path}`,
+      `--pathway=${combo.pathway}`,
+      `--conductor=${combo.conductor}`,
+      `--template-source=${TEMPLATE_SOURCE}`,
+      `--target=${target}`,
+      '--no-git-init',
+      '--no-gate-hooks',
+    ],
+    { cwd: PKG_DIR, encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, `wizard exited non-zero\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`);
+  assert.ok(!existsSync(join(target, '.git')), '--no-git-init must skip git init');
+  assert.match(
+    run.stdout,
+    /ship-gate is NOT fully enforcing yet/,
+    'must surface the fallback warning when activation is skipped',
+  );
+  assert.match(run.stdout, /1\. cd /, 'fallback must include a numbered cd step');
+  assert.match(run.stdout, /git init/, 'fallback must include the git init next-step');
+  assert.match(
+    run.stdout,
+    /tessctl gate install-hooks/,
+    'fallback must include the install-hooks next-step',
+  );
+  // Still a good instance — gate activation being skipped must not fail the run.
+  const doctor = tessctl(target, 'doctor');
+  assert.equal(doctor.status, 0, `doctor must still pass\n${doctor.stderr}`);
+});
+
+// ── Gate activation — target nested in an existing git repo is left alone ───
+test('gate activation: an already-git target is detected and left untouched (hooks still installed)', () => {
+  const target = mkdtempSync(join(tmpdir(), 'create-tess-alreadygit-'));
+  tempDirs.push(target);
+  const initExisting = spawnSync('git', ['init', '--quiet', '-b', 'trunk'], {
+    cwd: target,
+    encoding: 'utf8',
+  });
+  assert.equal(initExisting.status, 0, `pre-seeding an existing repo failed\n${initExisting.stderr}`);
+
+  const combo = COMBOS[0];
+  const run = spawnSync(
+    process.execPath,
+    [
+      ENTRY,
+      '--yes',
+      `--operator=${combo.operator}`,
+      `--vibe=${combo.vibe}`,
+      `--path=${combo.path}`,
+      `--pathway=${combo.pathway}`,
+      `--conductor=${combo.conductor}`,
+      `--template-source=${TEMPLATE_SOURCE}`,
+      `--target=${target}`,
+      '--force',
+    ],
+    { cwd: PKG_DIR, encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, `wizard exited non-zero\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`);
+
+  // The pre-existing branch name must survive — the wizard must NOT re-init.
+  const branch = spawnSync('git', ['branch', '--show-current'], { cwd: target, encoding: 'utf8' });
+  assert.equal(
+    branch.stdout.trim(),
+    'trunk',
+    'an existing git repo must be left untouched (branch name preserved)',
+  );
+  assert.match(
+    run.stdout,
+    /git repository — already present/,
+    'must report that the existing repo was detected and left alone',
+  );
+  // Hooks still get installed into the existing .git/hooks.
+  assert.ok(
+    existsSync(join(target, '.git', 'hooks', 'pre-commit')),
+    'hooks must still be installed into a pre-existing repo',
+  );
 });

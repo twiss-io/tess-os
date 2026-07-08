@@ -1,7 +1,7 @@
 // index.js — create-tess orchestrator.
 // Bootstrap → fetch template → journey (interactive or flags) → promote →
 // write operator profile → keystone bake → doctor/verify → arrival greeting.
-import { resolve, join } from 'node:path';
+import { resolve, join, relative } from 'node:path';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -17,7 +17,7 @@ import {
   isLocalSource,
 } from './scaffold.js';
 import { loadRoster, installSetForPath, squadDisplayNames } from './roster.js';
-import { writeProfile, bake, check } from './keystone.js';
+import { writeProfile, bake, check, activateGate } from './keystone.js';
 import { runJourney } from './journey.js';
 import { VIBES } from './content/vibes.js';
 import { buildArrival, RECRUIT_TIP } from './content/pathways.js';
@@ -126,6 +126,47 @@ function rollbackTarget(targetDir, preexisted) {
   }
 }
 
+// Best-effort hint for the "cd" step in the fallback next-steps — relative to
+// cwd when the target is a descendant of it, else the absolute path.
+function relTargetHint(targetDir) {
+  const rel = relative(process.cwd(), targetDir);
+  return rel && !rel.startsWith('..') ? rel : targetDir;
+}
+
+// Report whether the ship-gate is actually live after scaffold. Prints a
+// plain confirmation on success; on any incompleteness (git missing, hooks
+// step failed, or the operator opted out via --no-git-init/--no-gate-hooks)
+// it falls back to explicit, copy-pasteable numbered next-steps — the
+// acceptable minimum when automatic activation doesn't land clean.
+function printGateStatus(gate, targetDir) {
+  if (gate.gitInit === 'done') okLine('git init — repository created');
+  else if (gate.gitInit === 'already') okLine('git repository — already present (left untouched)');
+
+  if (gate.hooksInstalled === true && gate.gitHooksLive) {
+    okLine('tessctl gate install-hooks — pre-commit/pre-push hooks + CI workflow live');
+  }
+
+  const gateNotLive =
+    gate.gitInit === 'failed' ||
+    gate.hooksInstalled === false ||
+    (gate.hooksInstalled === true && !gate.gitHooksLive) ||
+    gate.gitInit === 'skipped' ||
+    gate.hooksInstalled === 'skipped';
+
+  if (!gateNotLive) return;
+
+  const hint = relTargetHint(targetDir);
+  process.stdout.write(
+    `\n  ${plain ? '!' : c.yellow('!')} The ship-gate is NOT fully enforcing yet — activate it yourself:\n`,
+  );
+  if (gate.error) process.stdout.write(dim(`    ${gate.error.split('\n')[0]}\n`));
+  const steps = [];
+  if (targetDir !== resolve(process.cwd())) steps.push(`cd ${hint}`);
+  if (gate.gitInit !== 'done' && gate.gitInit !== 'already') steps.push('git init');
+  steps.push('python3 .tess/bin/tessctl gate install-hooks');
+  steps.forEach((s, i) => process.stdout.write(`    ${i + 1}. ${s}\n`));
+}
+
 function printArrival(vibe, choices, checks) {
   const ctx = {
     operator: choices.operator,
@@ -180,6 +221,7 @@ export async function main(argv) {
   let choices;
   let vibe;
   let checks;
+  let gate;
   try {
     const srcKind = isLocalSource(source) ? 'local template' : 'git';
     process.stdout.write(
@@ -222,6 +264,15 @@ export async function main(argv) {
       );
     }
 
+    // Gate activation — `git init` + `tessctl gate install-hooks` (best-effort,
+    // never throws; see keystone.js activateGate() for why this is
+    // deliberately outside the rollback contract above).
+    gate = activateGate(targetDir, {
+      onStep: makeBakeProgress(vibe),
+      skipGitInit: Boolean(opts.noGitInit),
+      skipHooks: Boolean(opts.noGateHooks),
+    });
+
     // Integrity checks (unless skipped). check() never throws — it returns
     // booleans — so it stays outside the rollback gate.
     checks = check(targetDir, { doctor: !opts.noDoctor, verify: !opts.noVerify });
@@ -231,6 +282,7 @@ export async function main(argv) {
 
   if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
   if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
+  printGateStatus(gate, targetDir);
   process.stdout.write('  ' + (plain ? '*' : accent('★')) + '  Your system is live.\n');
 
   // Arrival — the conductor speaks the operator's name back (design doc §3.6).
@@ -240,5 +292,5 @@ export async function main(argv) {
   if (checks.doctor === false || checks.verify === false) {
     process.exitCode = 2;
   }
-  return { targetDir, choices: { ...choices, set: undefined }, checks };
+  return { targetDir, choices: { ...choices, set: undefined }, checks, gate };
 }
