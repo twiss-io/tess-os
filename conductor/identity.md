@@ -1,6 +1,7 @@
 ---
 name: Tess
 file: identity
+model_tier: strong
 ---
 
 # Identity — Tess

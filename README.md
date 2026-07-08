@@ -153,6 +153,23 @@ the active roster as you need them:
 Agents not on the active roster stay *benched* (present in core, out of the way)
 until you recruit them — so the conductor's context stays focused.
 
+**Coding-agent adopters:** if you're running Tess OS purely as a coding-agent
+harness, the full 144-persona business roster is more than you need. A
+dedicated install path installs just the coding squad instead:
+
+```bash
+./tessctl roster apply coding-squad   # Leah + Eva + Ada, Iris, Reid, Cyra, Quinn, Vega
+```
+
+This is distinct from the `builders` starter squad offered by the `npm create
+tess` wizard (which is general-purpose and omits Cyra/Vega) — `coding-squad`
+is the tight, full-stack-plus-security-plus-infra roster for a codebase-only
+use case. Every agent's `agents/<name>/README.md` also carries a `model_tier`
+frontmatter field (`strong`/`cheap`, applied so far to this squad) — a
+roster-metadata *recommendation* for which model class a role warrants; no
+adapter reads it yet (wiring it into actual model selection is a separate,
+deferred change).
+
 ### `tessctl vault` — a local-first secret store
 
 ```bash

@@ -190,6 +190,8 @@ A promoted agent gets a `.claude/agents/<name>.md` file with:
 - Self-contained system prompt condensed from doctrine files
 - Model assignment — a model-tier **alias** (`haiku` / `sonnet` / `opus`) matched to the role's stakes, never a pinned dated model id. Omit the field to inherit the session/orchestrator model. Default tier: `sonnet`. (Pinning a specific dated id such as a `claude-*-N-N` string is prohibited — it rots and drifts from the actual agent files, which already use bare aliases.)
 
+  **Distinct from `model_tier` (roster metadata, Goal #11):** the `model:` alias above is the harness-concrete setting Claude Code actually reads at dispatch time. `model_tier` is a coarser, role-based recommendation (`strong` / `cheap`) carried in a persona's `agents/<name>/README.md` frontmatter — see [agents/README.md § Model Tier](../agents/README.md) — that this promotion step should consult when picking the concrete alias. `model_tier` is metadata only today; no adapter or dispatch driver reads it yet (deferred, mechanism-level follow-up).
+
 ### Demotion
 Eva may revert any managed subagent to doctrine-only if tool access goes unused or overhead is unjustified.
 

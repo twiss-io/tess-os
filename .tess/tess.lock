@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-08T15:37:37.237539Z'
+  last_updated: '2026-07-08T15:40:40.708010Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:02ff257bcc8a1a8ea6b0783eca8e0378c7f6540205ef08d9db3fc857e391f568
+    base_sha: sha256:293d65ad5c0aacef95f7cf51e5a54b8c847a7daae81a7d17c22db0e0be88eeca
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -957,13 +957,13 @@ files:
   .tess/core/agents/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2c4cca03aab9e144461a983782a0edc544f69b93cf55d482e4764e93372dcc9b
+    base_sha: sha256:5af7594814b884c85376d7f9fe8f43b7a591839263c7707c9a95e2e916f52ccb
     live_path: agents/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/ada/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:7dc9a41ecf9fce60d4945c632379a992351d88014f9abfbe025cb737c3794077
+    base_sha: sha256:3ef6f1553dac68e0f86cc6ef4a403bdc34fec4746a041bd60c6515a5400533b1
     live_path: agents/ada/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/ada/capabilities.md:
@@ -1953,7 +1953,7 @@ files:
   .tess/core/agents/cyra/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2d62d215c4655b976cbbd103132fecbb061ab1b794b87082c5d83487a0f38a54
+    base_sha: sha256:698a0c28357c9f51f8c50c708a3e25b5bfd191cffd9e7f461e6deac787ad8308
     live_path: agents/cyra/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/cyra/capabilities.md:
@@ -2349,7 +2349,7 @@ files:
   .tess/core/agents/eva/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:1b265831a48d86a063dd33fa70843d194da36df40a6d8642d856dfa6e2f86b09
+    base_sha: sha256:b0397f63bba17105b985c2e28f1a63dd6e3e5157942e6ce04bfc0068e91e64e4
     live_path: agents/eva/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/eva/agent-profile-template.md:
@@ -2823,7 +2823,7 @@ files:
   .tess/core/agents/iris/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:7e566e420df9425f3b87a22f0a5e567aa4cff085a397c3a8e797f5fbf09e33e3
+    base_sha: sha256:0289fc532263a747819fe13b027c616653cda687e6aa3d12cca5397ec2d792df
     live_path: agents/iris/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/iris/capabilities.md:
@@ -3093,7 +3093,7 @@ files:
   .tess/core/agents/leah/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2db53c02b77a74f31e2a7840496ba3ea494360c62f1d8be11b1d6db85426219b
+    base_sha: sha256:e6d55525f5995c92c49693a9c858b61d3ebfd016d0a79abb582994ce10c9e049
     live_path: agents/leah/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/leah/capabilities.md:
@@ -4191,7 +4191,7 @@ files:
   .tess/core/agents/quinn/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:82dacc139eaa71224b20caa0707cf32b89df99539afda1957ddb1c8997921dd6
+    base_sha: sha256:f372b4aaa04b1788c5291812d5ff0aebf7ccb45326000f36b8c597c760a8453a
     live_path: agents/quinn/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/quinn/capabilities.md:
@@ -4221,7 +4221,7 @@ files:
   .tess/core/agents/reid/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:18d56bd45ff33083e543db2eeb97947ce0c12deb3a5c08755a57d81acf3315fc
+    base_sha: sha256:a7d5e342c37016c24643e2a128af914383a9a39684273fd99dd55b12d604a655
     live_path: agents/reid/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/reid/capabilities.md:
@@ -4893,7 +4893,7 @@ files:
   .tess/core/agents/vega/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:27510b279607748e42d0cdc796c7e950f64121100426e73a4aab91217304025d
+    base_sha: sha256:d03a2143f8a0dd549d7fd5a9efc021b802b4daa77a6201aa349592ed0d0b13f1
     live_path: agents/vega/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/vega/capabilities.md:
@@ -5391,7 +5391,7 @@ files:
   .tess/core/conductor/agent-lifecycle.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6ddd6d0cdfbc5bc032824f372339f1aff95f41c385c2c0be47b8075ec541ab64
+    base_sha: sha256:6956f68a08c45fa781783c087eb62914ec9296be2ea9c1c38295cf1bafc50c33
     live_path: conductor/agent-lifecycle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/channel-guardrails.md:
@@ -5451,7 +5451,7 @@ files:
   .tess/core/conductor/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2c8c49ac10325a68f934fe12c407dcf976972816024dd77d62302d41465da945
+    base_sha: sha256:a603f480e53b7a387a645b52ae57b1be95f788ed8e396c1d4fef647992f87186
     live_path: conductor/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/memory-model.md:
@@ -5475,7 +5475,7 @@ files:
   .tess/core/conductor/orchestra-model.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8b776110b3af34fd1f400462a0bac2b4aff46a3ec733928fecce9600e7b7b198
+    base_sha: sha256:0c9a750762f5f70c81dc1a90759858b7d4d6440f5abdc4963c0db17e6a1c4e52
     live_path: conductor/orchestra-model.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/README.md:

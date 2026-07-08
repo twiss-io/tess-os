@@ -1,3 +1,7 @@
+---
+model_tier: cheap
+---
+
 # Ada — Lead Backend Engineer
 
 **Status:** Founding Coding Team  
