@@ -220,6 +220,29 @@ All notable changes to Tess OS are documented here. This project adheres to
   [`tier: normal`] — updated with the turnkey onboarding path — is the one
   core-managed file this round touches; re-baselined via the new scoped
   `tessctl lock --regen --only conductor/verdict-signing.md --yes`).
+- **Goal #8 — mission trace log + OTel GenAI export** (observability, no
+  phone-home): `.tess/bin/tessctl` gains an isolated `TRACE` region —
+  `tessctl gate pre-commit|pre-push|ci` and `tessctl validate` now append
+  exactly one schema-valid JSONL event (`TRACE_EVENT_SCHEMA`, `schema:
+  "tess.trace.v1"`) per invocation to `missions/<id>/trace.jsonl` (when a
+  mission id is inferable from the `missions/<id>/...` convention) or a
+  per-run fallback under `.tess/trace/runs/` (local runtime state, same
+  gitignored bucket as `.tess/snapshots/**`/`.tess/staging/**`). New
+  `tessctl trace export --format otlp-json` maps the JSONL to [OTel GenAI
+  semantic-convention](https://github.com/open-telemetry/semantic-conventions-genai)
+  `invoke_agent` internal agent spans (OTLP/JSON, verified against the
+  canonical `opentelemetry-proto` example) — legible to any APM that
+  understands `gen_ai.*` (Datadog, Honeycomb, New Relic, the OTel Collector)
+  without Tess OS ever making a network call: the export is a pure local
+  JSON reshape of on-disk JSONL, proven by a static no-networking-import
+  scan of the whole engine plus socket-guard tests that monkeypatch
+  `socket.socket`/`create_connection`/`getaddrinfo` and call the
+  gate/validate/export code paths directly. `tessctl run` (the mechanical
+  conductor loop) is not instrumented because it does not exist yet in this
+  engine — see this file's own Phase 2 honest re-scope note below. Full
+  capture list, the exact attribute mapping, and the no-network guarantee:
+  `docs/OBSERVABILITY.md`. 38 new tests (`tests/test_trace_otel.py`); the
+  full suite remains green.
 - **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
   (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
   Phase 2 adversarial review — "verdict + sign-off files are committer-
