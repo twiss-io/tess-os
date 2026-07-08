@@ -133,6 +133,39 @@ function relTargetHint(targetDir) {
   return rel && !rel.startsWith('..') ? rel : targetDir;
 }
 
+// B1 (gap-loop R2) — the hooks are live, but a fresh instance ships with
+// `policy.verifier_keys: {}` (core/policy/policy.yaml — no verifier
+// onboarded yet). That makes the `tess-os-security-tier-doctrine` rule
+// UNSATISFIABLE by anyone: its `require_verdict` covers conductor/guardrails.md,
+// core/policy/**, .github/workflows/**, and friends — exactly the paths a
+// brand-new instance's first commit necessarily touches (they're baked/copied
+// by the scaffold itself). So the very FIRST `git push` that includes any of
+// those paths is fail-closed refused by the pre-push hook we just installed —
+// and, before this fix, nothing on the success path said so. This prints the
+// disclosure plus the three real ways out, honestly, right where the operator
+// will see it.
+function printFirstPushNotice() {
+  const bang = plain ? '!' : c.yellow('!');
+  process.stdout.write(
+    `\n  ${bang} Heads up: your first push touching doctrine paths will be BLOCKED.\n`,
+  );
+  process.stdout.write(
+    dim(
+      '    The ship-gate requires a signed APPROVE verdict for changes under\n' +
+        '    conductor/guardrails.md, core/policy/**, .github/workflows/**, and a\n' +
+        '    few other doctrine paths — and this fresh install ships with\n' +
+        '    policy.verifier_keys: {} (no verifier onboarded yet), so that\n' +
+        '    requirement cannot be met by anyone yet. This is fail-closed by\n' +
+        '    design (core/policy/policy.yaml), not a bug — but it was undisclosed\n' +
+        '    until now. Your options:\n' +
+        '      - git push --no-verify        bypass the hook for this push only\n' +
+        '      - --no-gate-hooks             (re-scaffold flag) skip installing the hooks at all\n' +
+        '      - onboard a real verifier      see conductor/verdict-signing.md\n' +
+        '                                     (`tessctl verdict keygen` is on the way)\n',
+    ),
+  );
+}
+
 // Report whether the ship-gate is actually live after scaffold. Prints a
 // plain confirmation on success; on any incompleteness (git missing, hooks
 // step failed, or the operator opted out via --no-git-init/--no-gate-hooks)
@@ -153,7 +186,10 @@ function printGateStatus(gate, targetDir) {
     gate.gitInit === 'skipped' ||
     gate.hooksInstalled === 'skipped';
 
-  if (!gateNotLive) return;
+  if (!gateNotLive) {
+    printFirstPushNotice();
+    return;
+  }
 
   const hint = relTargetHint(targetDir);
   process.stdout.write(

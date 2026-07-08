@@ -146,10 +146,30 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.tess/staging/.gitkeep',
     'agents/leah/README.md',
     '.gitignore',
-    '.github/workflows/ci.yml',
+    '.github/workflows/tess-gate.yml',
   ]) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);
   }
+});
+
+// B3 (gap-loop R2) — the scaffold copies `.github/workflows/` verbatim, so
+// without an exact-path exclude a produced instance inherited this repo's OWN
+// framework-internal CI (its pytest/doctor/verify suite, its release-cut
+// pipeline, its npm-publish pipeline) alongside the one workflow a user
+// instance actually needs: the doctrine ship-gate's CI entrypoint.
+test('B3: framework-internal workflows are excluded, tess-gate.yml is kept', () => {
+  for (const p of [
+    '.github/workflows/ci.yml',
+    '.github/workflows/release.yml',
+    '.github/workflows/publish-npm.yml',
+  ]) {
+    assert.equal(isExcludedRel(p), true, `${p} must be excluded from the scaffold`);
+  }
+  assert.equal(
+    isExcludedRel('.github/workflows/tess-gate.yml'),
+    false,
+    'tess-gate.yml (the user-relevant ship-gate CI) must be kept',
+  );
 });
 
 // Quinn MEDIUM (drift) — the EXCLUDE_* set had drifted from the secret block of

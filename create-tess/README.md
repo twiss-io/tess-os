@@ -44,6 +44,29 @@ land inside a working agent OS with a first mission open.
 5. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
    **first-mission greeting in the chosen persona's voice**.
 
+## Heads up: your first push touching doctrine paths will be blocked
+
+The hooks installed in step 4 are real — and a fresh instance ships with
+`policy.verifier_keys: {}` in `core/policy/policy.yaml` (no verifier onboarded
+yet). The ship-gate's `tess-os-security-tier-doctrine` rule requires a
+**signed** APPROVE verdict for changes under `conductor/guardrails.md`,
+`core/policy/**`, `.github/workflows/**`, and a few other doctrine paths —
+and those are exactly the paths a brand-new instance's first commit
+necessarily touches (they're baked/copied by the scaffold itself). With no
+verifier key registered, that requirement is unsatisfiable by anyone, so
+**the very first `git push` will be refused, fail-closed.** This is by
+design (see `core/policy/policy.yaml`'s header), not a bug — but the wizard
+did not previously say so. The success output now prints this same notice;
+it's repeated here for reference. Your options:
+
+- **`git push --no-verify`** — bypass the git hook for this push only (a
+  git-native escape hatch, not a gate change).
+- **`--no-gate-hooks`** — pass this flag to the wizard (or a re-scaffold) to
+  skip installing the hooks altogether.
+- **Onboard a real verifier** — the actual fix; see
+  `conductor/verdict-signing.md` for the trust model. A turnkey
+  `tessctl verdict keygen` command is landing in a follow-up release.
+
 ## The five axes
 
 | Axis | Values | `--yes` default |

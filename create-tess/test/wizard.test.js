@@ -248,6 +248,34 @@ for (const combo of COMBOS) {
       'the gate CI workflow must be installed by install-hooks',
     );
 
+    // B1 (gap-loop R2) — the hooks-live success path must disclose the
+    // first-push brick (verifier_keys: {} ships empty, so the very first
+    // push touching doctrine paths is fail-closed refused) and name all
+    // three real escape hatches, rather than silently saying "Your system
+    // is live" over an undisclosed landmine.
+    assert.match(
+      run.stdout,
+      /first push touching doctrine paths will be BLOCKED/,
+      'success path must disclose the first-push brick',
+    );
+    assert.match(run.stdout, /git push --no-verify/, 'must name the --no-verify escape hatch');
+    assert.match(run.stdout, /--no-gate-hooks/, 'must name the --no-gate-hooks escape hatch');
+    assert.match(
+      run.stdout,
+      /verdict-signing\.md/,
+      'must point at verifier onboarding docs',
+    );
+
+    // B3 (gap-loop R2) — the produced instance must NOT inherit this repo's
+    // OWN framework-internal CI (its pytest suite, its release-cut pipeline,
+    // its npm-publish pipeline); only the ship-gate CI is user-relevant.
+    for (const wf of ['ci.yml', 'release.yml', 'publish-npm.yml']) {
+      assert.ok(
+        !existsSync(join(target, '.github', 'workflows', wf)),
+        `.github/workflows/${wf} must NOT be scaffolded into a produced instance`,
+      );
+    }
+
     // The gate must actually work post-activation, not just look installed.
     const gatePreCommit = tessctl(target, 'gate', 'pre-commit');
     assert.equal(
