@@ -1269,8 +1269,13 @@ def test_run_verdict_artifact_binding_rejects_cross_task_replay(
 
     # Confirm the SPECIFIC rejection reason is the binding check, not some
     # unrelated failure — every logged retry attempt names the mismatch.
+    # Filename note: the retry ledger's on-disk key is `_retry_task_slug`'s
+    # kebab-slug of the task id (MEDIUM-1, Fable integrity review, part of
+    # goal-mission-ledger's own history) — "build.verify" slugifies to
+    # "build-verify" (dot is non-alnum, collapsed to a hyphen like every
+    # other separator), NOT the literal dotted string.
     retries_dir = _mission_dir(rroot, mission_id) / "retries"
-    attempt_files = sorted(retries_dir.glob("build.verify.attempt-*.md"))
+    attempt_files = sorted(retries_dir.glob("build-verify.attempt-*.md"))
     assert attempt_files, "expected at least one logged retry attempt for build.verify"
     combined = "\n".join(p.read_text(encoding="utf-8") for p in attempt_files)
     assert "artifact-hash binding" in combined or "does not cover" in combined, combined
