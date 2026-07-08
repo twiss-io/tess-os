@@ -4661,29 +4661,85 @@ def cmd_reset(args, root: Path) -> None:
 # Command: lock (M1 — CI gate)
 # ---------------------------------------------------------------------------
 
+def _lock_resolve_only_paths(files: dict, only_paths: list) -> dict:
+    """
+    Resolve each `--only` path argument to its tess.lock core_key.
+
+    Matches either the core_key itself (e.g. `.tess/core/hooks/foo.sh`) or its
+    live_path (e.g. `.claude/hooks/foo.sh`) — same resolution rule cmd_reset
+    already uses for its single `path` argument. Fails loud (sys.exit) on any
+    unresolved path rather than silently skipping it, so a typo can never
+    result in a partial, silently-incomplete re-baseline.
+    """
+    resolved = {}
+    for target_path in only_paths:
+        core_key = None
+        for k, a in files.items():
+            if a.get("live_path") == target_path or k == target_path:
+                core_key = k
+                break
+        if not core_key:
+            sys.exit(f"tessctl lock --regen --only: path not found in tess.lock: {target_path}")
+        resolved[core_key] = files[core_key]
+    return resolved
+
+
 def _lock_regen(args, root: Path) -> None:
     """
-    MAINTAINER re-baseline.  Re-pin every lock entry's base_sha to the sha256
+    MAINTAINER re-baseline.  Re-pin lock entries' base_sha to the sha256
     of the CURRENT .tess/core/<core_key> bytes, re-baselining integrity to
     whatever core is right now.
 
     Use ONLY after a deliberate, reviewed change to .tess/core (e.g. a
-    de-identification scrub that intentionally altered core bytes).  This verb
-    "blesses" the present core as pristine, so doctor/verify will report 0 core
-    tampers afterward — INCLUDING any change you did not intend.  It is gated
-    behind --yes (non-interactive) or an interactive y/N confirmation.
+    de-identification scrub, or a targeted hook fix, that intentionally
+    altered core bytes).  This verb "blesses" the present core as pristine
+    for the entries it touches, so doctor/verify will report those as
+    pristine afterward — INCLUDING any change you did not intend.  It is
+    gated behind --yes (non-interactive) or an interactive y/N confirmation.
+
+    --only PATH (repeatable): scope the re-baseline to ONE OR MORE specific
+    entries (matched by core_key or live_path) instead of the whole tree.
+    This is the surgical form — it blesses ONLY the named entries and leaves
+    every other lock entry's base_sha untouched, so an unrelated, unreviewed
+    drift elsewhere in core can never be blessed as a side effect of a
+    narrow, reviewed fix. Prefer --only whenever the change is scoped to a
+    known, small set of files (the common case); reserve a full unscoped
+    --regen for genuinely repo-wide, deliberate re-baselines.
     """
-    print(
-        "WARNING: `tessctl lock --regen` RE-BASELINES integrity to the CURRENT "
-        ".tess/core bytes.\n"
-        "         Every base_sha in tess.lock will be re-pinned to whatever core "
-        "is right now.\n"
-        "         doctor/verify will then report core as pristine — this blesses "
-        "the present\n"
-        "         core, including any unintended change. Run ONLY after a "
-        "deliberate, reviewed\n"
-        "         change to .tess/core."
-    )
+    only_paths = getattr(args, "only", None) or []
+
+    lock = load_lock(root)
+    files = lock.get("files", {})
+
+    if only_paths:
+        target_files = _lock_resolve_only_paths(files, only_paths)
+        scope_desc = ", ".join(sorted(target_files.get(k, {}).get("live_path", k) for k in target_files))
+        print(
+            "WARNING: `tessctl lock --regen --only` RE-BASELINES integrity to the "
+            "CURRENT .tess/core bytes,\n"
+            f"         scoped to: {scope_desc}\n"
+            "         base_sha for ONLY the entries above will be re-pinned; every "
+            "other lock entry is\n"
+            "         left untouched. doctor/verify will report those specific "
+            "entries as pristine\n"
+            "         afterward — INCLUDING any change you did not intend within "
+            "them. Run ONLY after\n"
+            "         a deliberate, reviewed change to those files."
+        )
+    else:
+        target_files = files
+        print(
+            "WARNING: `tessctl lock --regen` RE-BASELINES integrity to the CURRENT "
+            ".tess/core bytes.\n"
+            "         Every base_sha in tess.lock will be re-pinned to whatever core "
+            "is right now.\n"
+            "         doctor/verify will then report core as pristine — this blesses "
+            "the present\n"
+            "         core, including any unintended change. Run ONLY after a "
+            "deliberate, reviewed\n"
+            "         change to .tess/core. Prefer `--only <path>` to scope this to "
+            "a known set of files."
+        )
 
     if not getattr(args, "yes", False):
         if not sys.stdin.isatty():
@@ -4700,10 +4756,9 @@ def _lock_regen(args, root: Path) -> None:
             print("tessctl lock --regen: aborted (no confirmation).")
             sys.exit(1)
 
-    lock = load_lock(root)
-    files = lock.get("files", {})
     total = repinned = missing = 0
-    for core_key, attrs in files.items():
+    for core_key in target_files:
+        attrs = files[core_key]
         total += 1
         core_path = root / core_key
         if not core_path.exists():
@@ -4719,8 +4774,9 @@ def _lock_regen(args, root: Path) -> None:
     ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
     save_lock(root, lock)
 
+    scope_note = " (scoped)" if only_paths else ""
     print(
-        f"tessctl lock --regen: re-baselined {total} entr"
+        f"tessctl lock --regen{scope_note}: re-baselined {total} entr"
         f"{'y' if total == 1 else 'ies'} to current core "
         f"({repinned} base_sha changed, {missing} core file(s) missing)."
     )
@@ -4741,6 +4797,13 @@ def cmd_lock(args, root: Path) -> None:
              pristine.  Use ONLY after a deliberate, reviewed change to core.
              Gated behind --yes or an interactive y/N prompt; prints a clear
              warning that it re-baselines integrity to current core.
+
+    --regen --only PATH (repeatable): scope the re-baseline to one or more
+             specific entries (matched by core_key or live_path) instead of
+             the whole tree — the surgical form, preferred whenever a change
+             is scoped to a known set of files, since it leaves every other
+             lock entry's base_sha untouched (no risk of blessing unrelated,
+             unreviewed drift as a side effect).
     """
     check = getattr(args, "check", False)
     regen = getattr(args, "regen", False)
@@ -9565,6 +9628,9 @@ def build_parser() -> argparse.ArgumentParser:
                                   "(re-baselines integrity to current core; requires --yes or interactive y/N)")
     p_lock.add_argument("--yes", action="store_true",
                         help="confirm --regen non-interactively (acknowledges re-baselining integrity to current core)")
+    p_lock.add_argument("--only", metavar="PATH", action="append",
+                        help="scope --regen to only this entry (repeatable; matches core_key or live_path). "
+                             "Prefer this over an unscoped --regen for any change touching a known set of files.")
 
     # roster — curated-squad management (M2: staged status + install sets)
     p_roster = sub.add_parser(

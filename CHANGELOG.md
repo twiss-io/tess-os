@@ -5,6 +5,81 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **`dispatch-guard.sh` — headless / no-subagent-available exception**
+  (Ada, Lead Backend Engineer, 2026-07-07, closing a finding from Ada's own
+  Proving Ground benchmark run, `proving-ground/reports/2026-07-07.md`):
+  the hook's warn-mode "RULE ZERO WARNING — stop and dispatch" `systemMessage`
+  fired on every non-safe-listed `Bash`/`Edit`/`Write` call regardless of
+  whether the calling context actually HAD a subagent-dispatch capability to
+  act on the warning. Rule Zero ("always dispatch, never execute solo")
+  correctly targets the real Tess orchestrator (which holds the Agent/Task
+  tool) but is structurally inapplicable in a headless single-agent
+  execution context (a `claude -p` worker, `codex exec`, or any harness with
+  no subagent layer) — there the model has nothing to dispatch TO, so every
+  warning is pure friction with zero corrective action available. The
+  benchmark measured this directly: a 3.1-3.2x cost/latency overhead on
+  every task under the `tess-os` scaffold vs. `bare`, at both model tiers,
+  plus a reproducible fabrication regression (`05-research-roster-facts`:
+  `strong+tess-os` failed all 3 attempts an unassisted `strong+bare` run
+  passed cleanly on attempt 1) most plausibly caused by the model spending
+  attention re-litigating "should I be doing this myself" against a
+  contextually-wrong warning instead of the task's actual instructions.
+  - **The fix:** both shipped copies (`.tess/core/hooks/dispatch-guard.sh`,
+    the core master, and its live mirror `.claude/hooks/dispatch-guard.sh`)
+    now check for an explicit, opt-in **`TESS_HEADLESS=1`** environment
+    flag (alias: `TESS_NO_SUBAGENTS=1` — either is sufficient) as the very
+    FIRST decision in the script, ahead of even the existing
+    dispatch-in-flight lock check, and short-circuit to a pure no-op (exit
+    0, no `systemMessage`) when set. Stdin is still fully consumed first
+    (protocol contract) either way. This is presence-based, not
+    boolean-parsed — the string `"0"` still counts as "set"; only unset or
+    empty (`""`) leaves headless mode off — documented inline and pinned by
+    a dedicated test so the quirk is never "fixed" by accident. The
+    real Tess orchestrator session never sets either variable, so its
+    warn-mode behavior is byte-for-byte unchanged; only an explicitly
+    opted-in headless caller is affected.
+  - **`tessctl lock --regen --only <path>` (repeatable, new flag):** the
+    maintainer re-baseline verb previously only supported an unscoped,
+    whole-tree `--regen` — which "blesses" every lock entry's `base_sha` to
+    current core, including any unrelated, unreviewed drift elsewhere as a
+    side effect. Added `--only PATH` (matches either `core_key` or
+    `live_path`, same resolution rule `tessctl reset` already used) to scope
+    a re-baseline to a named, reviewed set of files; unresolved paths fail
+    loud (`sys.exit`) rather than silently no-op'ing. Used here to re-pin
+    ONLY `dispatch-guard.sh`'s entry — `tessctl lock --regen --only
+    .claude/hooks/dispatch-guard.sh --yes`. Unscoped `--regen` is unchanged
+    and still available for genuinely repo-wide re-baselines.
+  - **Coordination point (not built here, flagged for the next Proving
+    Ground re-run):** the harness's `tess-os` scaffold
+    (`proving-ground/pg_lib/scaffolds.py`, branch `goal-proving-ground`,
+    not yet merged to `main`) mounts `.claude/` verbatim into each headless
+    trial's workdir but does not currently set `TESS_HEADLESS`/
+    `TESS_NO_SUBAGENTS` in the `claude -p` subprocess environment
+    (`pg_lib/claude_driver.py`). A re-run intended to measure this fix's
+    effect needs that harness-side env var added — this is Proving Ground
+    surface, owned by whoever picks up that branch next, not touched by
+    this change.
+  - **20 new tests** (`tests/test_dispatch_guard_headless.py`, 15: default
+    warn-mode behavior is unchanged for both `Bash` and `Edit`, the
+    pre-existing doctrine safe-list is unaffected, both flags/aliases
+    silence the warning for both tool types, the flag's presence-based
+    (not boolean-parsed) semantics including the `"0"` quirk and the
+    empty-string non-suppression case, the hook never blocks regardless of
+    headless state, the two shipped copies stay byte-identical and both
+    honor the flag, and the headless check structurally precedes both the
+    stdin-read and the dispatch-lock check in source; `tests/test_lock.py`,
+    4: `--only` scopes a re-baseline to a named entry while
+    leaving an untouched, still-tampered entry alone, accepts the
+    `core_key` form as well as `live_path`, fails loud on an unresolvable
+    path, and remains gated behind `--yes`/interactive confirmation exactly
+    like unscoped `--regen`). Full suite: **479 passed** (460 existing + 19
+    new), zero regressions. `tessctl doctor` / `verify` / `lock --check` all
+    clean against the live working tree — `dispatch-guard.sh`'s single lock
+    entry was re-baselined via the new scoped `tessctl lock --regen --only`
+    (not an unscoped regen), leaving every other entry's `base_sha`
+    untouched.
+
 ### Added
 - **Phase 2b — gate spine hardening: verdict signing + CI auto-enforce**
   (closes the two MORE-SECURE fixes flagged as the main residual by Fable's
