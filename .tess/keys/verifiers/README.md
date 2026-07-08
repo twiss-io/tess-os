@@ -32,7 +32,20 @@ path to this file). `core/policy/policy.yaml` ships with `verifier_keys: {}`
 unregistered verifier's verdicts can never cover any path, fail-closed, not a
 silent bypass).
 
+`tessctl verdict keygen --verifier <Name>` does both the key-file half
+(generate + export here) and the registration half (both copies of
+`policy.yaml`, comment-preserving, re-pinned) in one command — see
+`conductor/verdict-signing.md`'s "Onboarding a verifier" section and
+`docs/GATE_QUICKSTART.md` for the full walkthrough. The manual
+`gpg --export --armor` path documented there still works unchanged for a
+verifier who already has a keypair or wants full control over key
+parameters.
+
 ## Currently registered
 
-None yet. This is a disclosed, deferred onboarding step — not an oversight.
-See `core/policy/policy.yaml`'s `verifier_keys` comment block.
+None yet, for THIS repo's own real Reid/Cyra trust anchors. This is a
+disclosed, deferred onboarding step — not an oversight, and not something
+`tessctl verdict keygen`'s existence changes: generating a real key for this
+repo's own `tess-os-security-tier-doctrine` rule is a maintainer
+private-key-custody decision, not fabricated here. See
+`core/policy/policy.yaml`'s `verifier_keys` comment block.

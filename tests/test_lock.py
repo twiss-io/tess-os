@@ -62,10 +62,15 @@ def test_lock_regen_refused_without_yes_noninteractive(project, run_cli):
 
 
 # ---------------------------------------------------------------------------
-# lock --regen --only <path> — surgical re-baseline (Ada, 2026-07-07,
-# dispatch-guard.sh headless-fix task). Scopes the re-baseline to a named
-# entry instead of blessing the whole tree, so a reviewed fix to ONE file
-# never silently blesses unrelated, unreviewed drift elsewhere in core.
+# lock --regen --only <path> — surgical re-baseline. Scopes the re-baseline
+# to a named entry instead of blessing the whole tree, so a reviewed fix to
+# ONE file never silently blesses unrelated, unreviewed drift elsewhere in
+# core. Added independently by two goals that both needed it: Ada's
+# dispatch-guard.sh headless-fix task (2026-07-07), and `tessctl verdict
+# keygen` (which needs to re-pin the ONE core file it just touched without
+# blessing any OTHER file's unrelated drift/tamper as a side effect — see
+# `_lock_regen_core` in .tess/bin/tessctl and tests/test_verdict_keygen.py).
+# Reconciled onto one shared implementation at merge time.
 # ---------------------------------------------------------------------------
 
 
@@ -129,6 +134,22 @@ def test_lock_regen_only_accepts_core_key_form(project, run_cli):
     assert "agents/leah/README.md" in r2.stdout
 
 
+def test_lock_regen_only_matches_by_core_key_too(project, run_cli):
+    """The core_key form also resolves correctly end-to-end in the simple
+    single-tamper case (no unrelated entry left behind to check)."""
+    _seed(project)
+    core_key = ".tess/core/conductor/a.md"
+    (project.root / core_key).write_text("alpha v2 reviewed\n")
+    project.write_live("conductor/a.md", "alpha v2 reviewed\n")
+
+    r = run_cli(project.root, "lock", "--regen", "--yes", "--only", core_key)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "re-baselined 1 entry" in r.stdout
+
+    r2 = run_cli(project.root, "lock", "--check")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+
 def test_lock_regen_only_unknown_path_fails_loud(project, run_cli):
     _seed(project)
     r = run_cli(project.root, "lock", "--regen", "--only", "nonexistent/path.md", "--yes")
@@ -142,3 +163,19 @@ def test_lock_regen_only_still_gated_behind_yes(project, run_cli):
     r = run_cli(project.root, "lock", "--regen", "--only", "conductor/a.md", input_text="")
     assert r.returncode != 0
     assert "refused" in (r.stdout + r.stderr).lower()
+
+
+def test_lock_regen_without_only_is_unchanged_behavior(project, run_cli):
+    """Omitting --only must reproduce the exact prior all-entries behavior —
+    no regression for existing callers/tests."""
+    _seed(project)
+    core_a = project.root / ".tess" / "core" / "conductor" / "a.md"
+    core_a.write_text("alpha v2 reviewed\n")
+    project.write_live("conductor/a.md", "alpha v2 reviewed\n")
+
+    r = run_cli(project.root, "lock", "--regen", "--yes")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "re-baselined 2 entries" in r.stdout  # both seeded entries considered
+
+    r2 = run_cli(project.root, "lock", "--check")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
