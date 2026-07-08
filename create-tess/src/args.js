@@ -12,6 +12,7 @@
 //   unattended     : --yes
 //   overwrite      : --force
 //   skip checks    : --no-doctor / --no-verify
+//   skip gate      : --no-git-init / --no-gate-hooks
 //   telegram       : --telegram=<channel-id>
 
 export const DEFAULTS = {
@@ -52,6 +53,8 @@ const BOOL_ALIASES = {
   '--force': 'force',
   '--no-doctor': 'noDoctor',
   '--no-verify': 'noVerify',
+  '--no-git-init': 'noGitInit',
+  '--no-gate-hooks': 'noGateHooks',
   '--help': 'help',
   '-h': 'help',
 };
@@ -62,6 +65,8 @@ export function parseArgs(argv) {
     force: false,
     noDoctor: false,
     noVerify: false,
+    noGitInit: false,
+    noGateHooks: false,
     help: false,
     telegram: null,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
@@ -152,6 +157,10 @@ OPTIONS
   --force                        overwrite a non-empty / existing-install target
   --no-doctor                    skip the post-bake integrity check
   --no-verify                    skip the post-bake verify check
+  --no-git-init                  skip the automatic git init (default: on;
+                                 skipped anyway if the target is already a
+                                 git repo)
+  --no-gate-hooks                skip tessctl gate install-hooks (default: on)
   --yes, -y                      run fully unattended with defaults for unset flags
   --help, -h                     show this help
 `;

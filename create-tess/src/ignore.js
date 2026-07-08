@@ -62,6 +62,19 @@ export const EXCLUDE_DIR_PREFIXES = [
   '.claude/channels',
 ];
 
+// B3 (gap-loop R2) — exact relative-path excludes. `.github/workflows/` is
+// otherwise copied verbatim, so a scaffolded instance was inheriting THIS
+// repo's own framework-internal CI: `ci.yml` (tess-os's own pytest/doctor/
+// verify suite), `release.yml` (this repo's release-cut pipeline), and
+// `publish-npm.yml` (this repo's npm-publish pipeline) — none of which apply
+// to, or are runnable in, a user's produced instance. Only `tess-gate.yml`
+// (the doctrine ship-gate's CI entrypoint) is user-relevant and must ship.
+export const EXCLUDE_REL_PATHS = new Set([
+  '.github/workflows/ci.yml',
+  '.github/workflows/release.yml',
+  '.github/workflows/publish-npm.yml',
+]);
+
 // Excluded CONTENT under these dirs, while the dir itself and its `.gitkeep`
 // placeholder are preserved (so the produced instance keeps the empty structure
 // but never inherits the author's actual snapshots / staging state).
@@ -90,6 +103,10 @@ export function isExcludedRel(rel) {
 
   // Explicit keeps win over every exclude pattern.
   if (KEEP_BASENAMES.has(base)) return false;
+
+  // Exact relative-path excludes (framework-internal files under an
+  // otherwise-kept directory — see EXCLUDE_REL_PATHS above).
+  if (EXCLUDE_REL_PATHS.has(norm)) return true;
 
   // Name/component excludes (anywhere in the path).
   if (parts.some((p) => EXCLUDE_NAMES.has(p))) return true;

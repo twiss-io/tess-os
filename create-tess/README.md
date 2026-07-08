@@ -22,7 +22,8 @@ land inside a working agent OS with a first mission open.
 2. Runs the **journey** (interactive) or resolves all axes from **flags**
    (non-interactive / CI).
 3. On confirm, **promotes** the template into the target (excluding `create-tess/`
-   and `.git`), writes `operator/profile.json`, then drives the keystone:
+   and the template's own `.git`), writes `operator/profile.json`, then drives
+   the keystone:
    ```
    tessctl roster apply <path>     # install the starter squad + universal base
    tessctl set-operator <name>     # who the conductor addresses
@@ -30,8 +31,41 @@ land inside a working agent OS with a first mission open.
    tessctl pathway <key>           # the conductor's persona
    tessctl render                  # bake CLAUDE.md + doctrine from operator stubs
    ```
-4. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
+4. **Activates the gate** — `git init` (a fresh, history-less repo on branch
+   `main`; skipped if the target is already inside a git work tree) followed
+   by `tessctl gate install-hooks` (live pre-commit/pre-push hooks + the
+   `tess-gate.yml` CI workflow). This is what actually turns the shipped
+   contract-enforcement gate **on** — without it, a scaffolded instance has a
+   fully rendered doctrine tree but zero enforcement live. Best-effort: if it
+   can't complete (e.g. git isn't installed), the wizard does **not** fail or
+   roll back an otherwise-good instance — it prints explicit, copy-pasteable
+   next-steps instead. Opt out with `--no-git-init` / `--no-gate-hooks` if you
+   want to init git elsewhere or wire hooks yourself.
+5. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
    **first-mission greeting in the chosen persona's voice**.
+
+## Heads up: your first push touching doctrine paths will be blocked
+
+The hooks installed in step 4 are real — and a fresh instance ships with
+`policy.verifier_keys: {}` in `core/policy/policy.yaml` (no verifier onboarded
+yet). The ship-gate's `tess-os-security-tier-doctrine` rule requires a
+**signed** APPROVE verdict for changes under `conductor/guardrails.md`,
+`core/policy/**`, `.github/workflows/**`, and a few other doctrine paths —
+and those are exactly the paths a brand-new instance's first commit
+necessarily touches (they're baked/copied by the scaffold itself). With no
+verifier key registered, that requirement is unsatisfiable by anyone, so
+**the very first `git push` will be refused, fail-closed.** This is by
+design (see `core/policy/policy.yaml`'s header), not a bug — but the wizard
+did not previously say so. The success output now prints this same notice;
+it's repeated here for reference. Your options:
+
+- **`git push --no-verify`** — bypass the git hook for this push only (a
+  git-native escape hatch, not a gate change).
+- **`--no-gate-hooks`** — pass this flag to the wizard (or a re-scaffold) to
+  skip installing the hooks altogether.
+- **Onboard a real verifier** — the actual fix; see
+  `conductor/verdict-signing.md` for the trust model. A turnkey
+  `tessctl verdict keygen` command is landing in a follow-up release.
 
 ## The five axes
 
@@ -57,8 +91,9 @@ npm create tess my-os -- --yes \
 Flags: `--operator`/`--name`, `--conductor`/`--assistant`, `--vibe`, `--path`,
 `--pathway`, `--telegram`, `--target`/`--dir` (or first positional),
 `--template-source` (env `TESS_TEMPLATE_SOURCE`), `--force`, `--no-doctor`,
-`--no-verify`, `--yes`. A flags-mode validation violation is a hard non-zero
-exit (no re-prompt). A non-TTY stdin auto-enables non-interactive mode.
+`--no-verify`, `--no-git-init`, `--no-gate-hooks`, `--yes`. A flags-mode
+validation violation is a hard non-zero exit (no re-prompt). A non-TTY stdin
+auto-enables non-interactive mode.
 
 **Defaults are `--yes`-gated.** Per design doc §5.4, defaults apply only with
 `--yes`. In non-interactive mode **without** `--yes`, every axis is required

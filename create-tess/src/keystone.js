@@ -108,6 +108,130 @@ export function bake(targetDir, choices, onStep = () => {}) {
   return steps;
 }
 
+// ---------------------------------------------------------------------------
+// Gate activation — `git init` + `tessctl gate install-hooks`.
+//
+// Without this, a freshly scaffolded instance has a fully rendered doctrine
+// tree and a working tessctl, but ZERO enforcement live: no `.git`, so no
+// pre-commit/pre-push hooks, and the CI workflow tessctl writes
+// (.github/workflows/tess-gate.yml) is dormant until it lives inside a repo
+// that actually pushes commits through GitHub Actions. The gate is the
+// headline feature the README sells — the wizard has to turn it on, not just
+// hand over the parts.
+//
+// Deliberately NOT wrapped into the bake() rollback contract in index.js: an
+// instance that finished bake() + writeProfile() and passes doctor/verify is
+// already a good, working Tess OS install. If `git init` or
+// `gate install-hooks` fails (git missing, an odd permissions issue, already
+// nested inside a foreign repo in some unexpected way), the operator still
+// has that working install — activateGate() reports the failure so the
+// caller can surface manual next-steps, rather than discarding a good
+// scaffold over an activation step that isn't part of the instance's
+// correctness contract.
+// ---------------------------------------------------------------------------
+
+// True when `targetDir` is already inside a git work tree. Uses
+// `git rev-parse --is-inside-work-tree` rather than checking for a `.git`
+// entry in targetDir alone, so a target nested inside a parent repo (e.g. an
+// operator scaffolding into an existing monorepo) is correctly detected as
+// "already git" and left untouched.
+export function isInsideGitWorkTree(targetDir) {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: targetDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return out.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function gitErrorMessage(err) {
+  if (err && err.code === 'ENOENT') {
+    return 'git is not installed (or not on PATH) — install git and run `git init` manually.';
+  }
+  const detail = [err.stdout, err.stderr].filter(Boolean).join('\n').trim();
+  return detail || err.message;
+}
+
+// Best-effort: `git init` (skipped if already inside a git work tree, or if
+// skipGitInit is set) then `tessctl gate install-hooks` (skipped if skipHooks
+// is set). Never throws — failures are reported on the returned result so the
+// caller can decide how to surface them (see index.js).
+//
+// Returns:
+//   gitInit         'done' | 'already' | 'skipped' | 'failed' | null
+//   alreadyGitRepo  boolean
+//   hooksInstalled  true | false | 'skipped' | null (null = not attempted)
+//   gitHooksLive    boolean — the git pre-commit/pre-push hooks are actually
+//                   on disk (false if install-hooks ran but found no
+//                   `.git/hooks/` to write into — see tessctl's own NOTE)
+//   hooksOut        stdout from `tessctl gate install-hooks` (on success)
+//   error           combined error detail, or null
+export function activateGate(
+  targetDir,
+  { onStep = () => {}, skipGitInit = false, skipHooks = false } = {},
+) {
+  const result = {
+    gitInit: null,
+    alreadyGitRepo: false,
+    hooksInstalled: null,
+    gitHooksLive: false,
+    hooksOut: '',
+    error: null,
+  };
+
+  if (skipGitInit) {
+    result.gitInit = 'skipped';
+    result.alreadyGitRepo = isInsideGitWorkTree(targetDir);
+  } else if (isInsideGitWorkTree(targetDir)) {
+    result.alreadyGitRepo = true;
+    result.gitInit = 'already';
+  } else {
+    try {
+      onStep('Initialising git repository', 'start');
+      execFileSync('git', ['init', '--quiet', '-b', 'main'], {
+        cwd: targetDir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      result.gitInit = 'done';
+      onStep('Initialising git repository', 'done');
+    } catch (err) {
+      result.gitInit = 'failed';
+      result.error = gitErrorMessage(err);
+    }
+  }
+
+  if (skipHooks) {
+    result.hooksInstalled = 'skipped';
+    return result;
+  }
+  // No `.git` to hook into (git init failed and this wasn't already a repo) —
+  // don't run install-hooks and call it a success; it would only write the
+  // (inert) CI workflow file and print a NOTE. Surface the git failure via
+  // next-steps instead (index.js) rather than muddying it with a partial
+  // hooks result.
+  if (result.gitInit === 'failed') {
+    result.hooksInstalled = null;
+    return result;
+  }
+  try {
+    onStep('Installing gate hooks (tessctl gate install-hooks)', 'start');
+    result.hooksOut = tessctl(targetDir, ['gate', 'install-hooks']);
+    result.hooksInstalled = true;
+    result.gitHooksLive = /installed git (pre-commit|pre-push) hook/.test(result.hooksOut);
+    onStep('Installing gate hooks (tessctl gate install-hooks)', 'done');
+  } catch (err) {
+    result.hooksInstalled = false;
+    result.error = result.error ? `${result.error}\n${err.message}` : err.message;
+  }
+
+  return result;
+}
+
 // Post-bake integrity checks. Returns { doctor, verify } booleans.
 export function check(targetDir, { doctor = true, verify = true } = {}) {
   const result = { doctor: null, verify: null };
