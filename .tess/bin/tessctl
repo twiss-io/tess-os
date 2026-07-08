@@ -13693,6 +13693,482 @@ def cmd_run(args, root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Goal #9 — `tessctl mcp serve`: the gate as an MCP server (MCP region).
+# Spec: Model Context Protocol 2025-06-18 — JSON-RPC 2.0 over stdio, newline-
+# delimited framing, no embedded newlines per message
+# (https://modelcontextprotocol.io/specification/2025-06-18/basic/transports,
+# .../basic/lifecycle, .../server/tools). stdlib-only: no `mcp` SDK / pip
+# dependency — this file's own header already states the runtime contract
+# ("Python 3 (stdlib + pyyaml). No Node. Self-contained single file."), and
+# JSON-RPC-over-stdio needs nothing beyond `json` + stdin/stdout.
+#
+# WHY: MCP is the one tool protocol every harness speaks (Claude Code, Codex,
+# Gemini, Cursor). Exposing the gate's checks as MCP tools moves enforcement
+# IN-SESSION — an agent can validate/gate-check DURING a session, not only
+# at the git pre-commit/pre-push/CI boundary.
+#
+# Every tool function below is a thin, non-sys.exit()-ing wrapper around
+# EXISTING tessctl functions from other regions — it reuses their logic
+# verbatim (same schema/lint/gate/mission/roster primitives the CLI itself
+# calls), never reimplements it:
+#   validate_contract  -> load_contract_schema / load_contract_instance /
+#                          schema_validate / _lint_contract / classify_* —
+#                          the exact primitives cmd_validate (VALIDATE
+#                          region) calls, just returned instead of printed.
+#   gate_check_paths   -> _gate_run_ship_check() directly — the SAME shared
+#                          ship-check function _cmd_gate_pre_push and
+#                          _cmd_gate_ci both call (GATE region above).
+#   mission_status     -> _read_mission_record() — the same read
+#                          _cmd_mission_status uses (MISSION LEDGER region).
+#   roster_list        -> load_lock() + _agent_keys_by_name() — the same
+#                          data _roster_list prints (ROSTER region).
+# ---------------------------------------------------------------------------
+
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MCP_SERVER_NAME = "tessctl"
+MCP_SERVER_VERSION = "0.1.0"  # tracks tessctl's own Goal cadence, not semver-strict yet
+
+# JSON-RPC 2.0 standard error codes (spec §5.1), reused by MCP verbatim.
+JSONRPC_PARSE_ERROR = -32700
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_METHOD_NOT_FOUND = -32601
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
+
+
+class McpError(Exception):
+    """A JSON-RPC PROTOCOL-level error (unknown method, invalid params,
+    parse error) — as opposed to a TOOL EXECUTION error, which the MCP spec
+    requires be reported INSIDE the tools/call *result* (`isError: true`),
+    never as a JSON-RPC error (spec 'Error Handling': 'Protocol Errors' vs
+    'Tool Execution Errors'). Carries the JSON-RPC error `code` to use."""
+
+    def __init__(self, code: int, message: str, data=None):
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations — each takes (root, arguments) and returns a
+# JSON-serializable dict. Business-logic/expected failures (schema-invalid
+# contract, unknown mission id, ...) are returned as data, not raised;
+# McpError is reserved for malformed CALL PARAMETERS (the tools/call
+# request itself is bad), which the dispatcher below turns into a genuine
+# JSON-RPC protocol error rather than a tool result.
+# ---------------------------------------------------------------------------
+
+def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
+    """validate_contract — same schema+lint pass `tessctl validate` runs
+    (cmd_validate, VALIDATE region above): load_contract_schema /
+    load_contract_instance / schema_validate / _lint_contract /
+    classify_validation_infra_error / classify_schema_miss, called
+    directly. Accepts EITHER a `path` (resolved against the tess root,
+    exactly like the CLI) or inline `content` + `format`
+    (json|yaml|yml|md) for a draft instance that has not been written to
+    disk yet (e.g. an agent still iterating on a brief in its own
+    context)."""
+    contract_type = arguments.get("contract_type")
+    if not isinstance(contract_type, str) or not contract_type:
+        raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `contract_type` (string) is required")
+
+    path_arg = arguments.get("path")
+    content_arg = arguments.get("content")
+    fmt_arg = arguments.get("format")
+
+    if not path_arg and content_arg is None:
+        raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: one of `path` or `content` is required")
+    if path_arg and content_arg is not None:
+        raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: give `path` OR `content`, not both")
+
+    if path_arg:
+        if not isinstance(path_arg, str):
+            raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `path` must be a string")
+        file_path = Path(path_arg)
+        if not file_path.is_absolute():
+            file_path = root / file_path
+        label = str(file_path)
+    else:
+        if not isinstance(fmt_arg, str) or fmt_arg.lower().lstrip(".") not in ("json", "yaml", "yml", "md"):
+            raise McpError(
+                JSONRPC_INVALID_PARAMS,
+                "validate_contract: `format` must be one of json|yaml|yml|md when `content` is given",
+            )
+        if not isinstance(content_arg, str):
+            raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `content` must be a string")
+        label = f"<inline {contract_type} content>"
+
+    try:
+        schema = load_contract_schema(root, contract_type)
+        if path_arg:
+            instance = load_contract_instance(file_path)
+        else:
+            instance = _parse_contract_instance_text(content_arg, "." + fmt_arg.lower().lstrip("."), label)
+    except ContractError as e:
+        reason = str(e)
+        return {
+            "valid": False,
+            "contract_type": contract_type,
+            "file": label,
+            "violations": [reason],
+            "classification": classify_validation_infra_error(reason),
+        }
+
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract(contract_type, instance)
+    result = {"valid": not violations, "contract_type": contract_type, "file": label, "violations": violations}
+    if violations:
+        result["classification"] = classify_schema_miss(contract_type, violations)
+    return result
+
+
+def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
+    """gate_check_paths — the SAME verdict-coverage decision engine as
+    `tessctl gate pre-push` / `tessctl gate ci`: calls _gate_run_ship_check()
+    directly (GATE region above) rather than re-deriving its logic, so the
+    verdict returned here is provably identical to what a push/CI run of
+    those paths at `head` would get. Given an explicit set of paths (the
+    caller — e.g. an in-session agent — already knows which paths it
+    touched, so no git-diff derivation happens here) plus a `head` ref/sha
+    to resolve committed-verdict coverage against (mirrors `gate pre-push
+    --base/--head` / `gate ci --base/--head`'s head_shas=[head]; defaults
+    to the current HEAD commit if omitted)."""
+    paths = arguments.get("paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+        raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `paths` (non-empty array of strings) is required")
+    head = arguments.get("head")
+    if head is not None and not isinstance(head, str):
+        raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `head`, if given, must be a string ref/sha")
+    verdict_dirs = arguments.get("verdict_dirs")
+    if verdict_dirs is not None and not (
+        isinstance(verdict_dirs, list) and all(isinstance(d, str) for d in verdict_dirs)
+    ):
+        raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `verdict_dirs`, if given, must be an array of strings")
+
+    if head is None:
+        try:
+            head = _gate_run_git(root, "rev-parse", "HEAD").strip()
+        except GateSpineError as e:
+            return {"blocked": True, "reasons": [str(e)], "changed_paths": paths, "head": None}
+
+    try:
+        result = _gate_run_ship_check(root, paths, verdict_dirs, [head])
+    except GateSpineError as e:
+        return {"blocked": True, "reasons": [str(e)], "changed_paths": paths, "head": head}
+    result["head"] = head
+    return result
+
+
+def _mcp_tool_mission_status(root: Path, arguments: dict) -> dict:
+    """mission_status — reads a mission record exactly like `tessctl
+    mission status --json` (_cmd_mission_status, MISSION LEDGER region
+    above) via _read_mission_record(); a missing/unreadable mission is
+    reported as `found: false` in the tool result, never a crashed
+    session."""
+    mission_id = arguments.get("mission_id")
+    if not isinstance(mission_id, str) or not mission_id:
+        raise McpError(JSONRPC_INVALID_PARAMS, "mission_status: `mission_id` (string) is required")
+    try:
+        record = _read_mission_record(root, mission_id)
+    except MissionError as e:
+        return {"found": False, "mission_id": mission_id, "error": str(e)}
+
+    gates = record.get("gates", []) or []
+    cleared = sum(1 for g in gates if isinstance(g, dict) and g.get("cleared"))
+    return {
+        "found": True,
+        "mission_id": mission_id,
+        "record": record,
+        "gates_cleared": cleared,
+        "gates_total": len(gates),
+    }
+
+
+def _mcp_tool_roster_list(root: Path, arguments: dict) -> dict:
+    """roster_list — the same installed/staged split `tessctl roster list`
+    prints (_roster_list, ROSTER region above), reusing load_lock() +
+    _agent_keys_by_name() verbatim; returned as structured lists instead
+    of a column-formatted table."""
+    lock = load_lock(root)
+    by_name = _agent_keys_by_name(lock)
+    installed, staged = [], []
+    for agent_name in sorted(by_name.keys()):
+        core_key = by_name[agent_name]
+        attrs = lock["files"][core_key]
+        status = attrs.get("status", "core-managed")
+        (staged if status == "staged" else installed).append(agent_name)
+    return {
+        "installed": installed,
+        "staged": staged,
+        "installed_count": len(installed),
+        "staged_count": len(staged),
+    }
+
+
+# name -> {description, inputSchema, fn} — the tools/list + tools/call source of truth.
+MCP_TOOLS = {
+    "validate_contract": {
+        "description": (
+            "Validate a contract instance (brief | crew-plan | verdict | return-manifest | "
+            "mission | retry | policy) against its JSON Schema + relational lint — the same "
+            "check `tessctl validate` runs. Accepts a `path` on disk, or inline `content` + "
+            "`format` for a draft that has not been written to disk yet."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "contract_type": {
+                    "type": "string",
+                    "enum": sorted(CONTRACT_SCHEMAS.keys()),
+                    "description": "Which contract schema to validate against.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Path to the contract instance file (.json/.yaml/.yml/.md). Relative "
+                        "paths resolve against the tess project root."
+                    ),
+                },
+                "content": {"type": "string", "description": "Inline contract-instance content, instead of `path`."},
+                "format": {
+                    "type": "string",
+                    "enum": ["json", "yaml", "yml", "md"],
+                    "description": "Required alongside `content`: which format it's written in.",
+                },
+            },
+            "required": ["contract_type"],
+        },
+        "fn": _mcp_tool_validate_contract,
+    },
+    "gate_check_paths": {
+        "description": (
+            "Run the gate's verdict-coverage ship-check for an explicit set of paths — the "
+            "SAME decision engine `tessctl gate pre-push` / `tessctl gate ci` use "
+            "(_gate_run_ship_check), so the result is identical to what a push of those paths "
+            "at `head` would get. Moves gate enforcement IN-SESSION: check before you ever "
+            "commit or push."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Repo-relative paths to check.",
+                },
+                "head": {
+                    "type": "string",
+                    "description": "Git ref/sha to resolve committed-verdict coverage against. Defaults to the current HEAD.",
+                },
+                "verdict_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Restrict covering-verdict discovery to these directories (default: whole tree).",
+                },
+            },
+            "required": ["paths"],
+        },
+        "fn": _mcp_tool_gate_check_paths,
+    },
+    "mission_status": {
+        "description": (
+            "Read a mission record from the mission ledger (missions/<id>/mission.md|json) — "
+            "gate/retry summary included."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mission_id": {"type": "string", "description": "Mission id, e.g. 2026-07-07-my-mission."},
+            },
+            "required": ["mission_id"],
+        },
+        "fn": _mcp_tool_mission_status,
+    },
+    "roster_list": {
+        "description": "List the agent roster: which agents are installed (core-managed, live) vs staged/benched.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "fn": _mcp_tool_roster_list,
+    },
+}
+
+
+def _mcp_call_tool(root: Path, name: str, arguments) -> dict:
+    tool = MCP_TOOLS.get(name)
+    if tool is None:
+        raise McpError(JSONRPC_INVALID_PARAMS, f"Unknown tool: {name}")
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        raise McpError(JSONRPC_INVALID_PARAMS, f"tools/call arguments for {name!r} must be an object")
+    return tool["fn"](root, arguments)
+
+
+def _mcp_tools_list_result() -> dict:
+    return {
+        "tools": [
+            {"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]}
+            for name, spec in sorted(MCP_TOOLS.items())
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# JSON-RPC 2.0 request handling + the stdio transport loop.
+# ---------------------------------------------------------------------------
+
+def _mcp_handle_request(root: Path, req: dict):
+    """Handle one parsed JSON-RPC message. Returns the response dict to
+    write back (already carrying jsonrpc/id), or None for a notification
+    (a request object with no `id` member) — JSON-RPC 2.0 §4/4.1: a
+    notification never gets a response, success OR error."""
+    is_notification = "id" not in req
+    msg_id = req.get("id")
+    method = req.get("method")
+
+    def ok(result: dict):
+        return None if is_notification else {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+    def err(code: int, message: str, data=None):
+        if is_notification:
+            return None
+        error = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+    if not isinstance(method, str):
+        return err(JSONRPC_INVALID_REQUEST, "Invalid Request: missing/non-string `method`")
+
+    try:
+        if method == "initialize":
+            return ok({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            })
+        if method in ("notifications/initialized", "initialized"):
+            return None  # client notification, post-initialize handshake — no response
+        if method == "ping":
+            return ok({})
+        if method == "tools/list":
+            return ok(_mcp_tools_list_result())
+        if method == "tools/call":
+            params = req.get("params") or {}
+            tool_name = params.get("name")
+            arguments = params.get("arguments")
+            if not isinstance(tool_name, str):
+                return err(JSONRPC_INVALID_PARAMS, "tools/call requires string `params.name`")
+            try:
+                result = _mcp_call_tool(root, tool_name, arguments)
+            except McpError as e:
+                return err(e.code, str(e), e.data)
+            except Exception as e:  # noqa: BLE001 — deliberate boundary: an exception raised
+                # INSIDE a tool's own execution is a business-logic/runtime failure, which the
+                # MCP spec's "Tool Execution Errors" require be reported as `isError: true` in
+                # the tools/call RESULT, never as a JSON-RPC protocol error.
+                return ok({"content": [{"type": "text", "text": f"{tool_name}: {e}"}], "isError": True})
+            return ok({
+                "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                "structuredContent": result,
+                "isError": False,
+            })
+        return err(JSONRPC_METHOD_NOT_FOUND, f"Method not found: {method}")
+    except McpError as e:
+        return err(e.code, str(e), e.data)
+
+
+def _mcp_handle_message(root: Path, req) -> dict | None:
+    """Fail-safe wrapper around _mcp_handle_request: nothing in request
+    handling may ever crash the stdio loop / kill the session — an
+    unexpected bug becomes a JSON-RPC internal error, not a dead pipe.
+    Also the single place that rejects a non-object message per JSON-RPC's
+    Request shape."""
+    if not isinstance(req, dict):
+        return {
+            "jsonrpc": "2.0", "id": None,
+            "error": {"code": JSONRPC_INVALID_REQUEST, "message": "Invalid Request: not a JSON object"},
+        }
+    try:
+        return _mcp_handle_request(root, req)
+    except Exception as e:  # noqa: BLE001 — see docstring: this is the last-resort catch-all.
+        if "id" not in req:
+            return None  # was a notification — still no response, even on our own bug
+        return {
+            "jsonrpc": "2.0", "id": req.get("id"),
+            "error": {"code": JSONRPC_INTERNAL_ERROR, "message": f"Internal error: {e}"},
+        }
+
+
+def _mcp_read_line(stream) -> str | None:
+    """Read exactly one newline-delimited JSON-RPC message from `stream`
+    (stdio transport — spec: 'Messages are delimited by newlines, and MUST
+    NOT contain embedded newlines.'). Returns None at EOF (the client
+    closing its write end / our stdin — the documented stdio shutdown
+    sequence). Blank lines between messages are skipped (harmless
+    whitespace padding some clients emit)."""
+    while True:
+        line = stream.readline()
+        if line == "":
+            return None  # EOF
+        line = line.strip()
+        if not line:
+            continue
+        return line
+
+
+def _mcp_serve(root: Path, in_stream=None, out_stream=None) -> None:
+    """The stdio MCP server loop. Reads one newline-delimited JSON-RPC
+    message at a time from `in_stream` (default sys.stdin), dispatches it,
+    writes the JSON-RPC response (if any) to `out_stream` (default
+    sys.stdout) on its own line, and flushes immediately — a client
+    blocked on read() must never wait on our own buffering. Exits cleanly
+    at EOF. `in_stream`/`out_stream` are injectable so tests can drive the
+    loop directly over real OS pipes without a subprocess, in addition to
+    the subprocess-level stdio tests."""
+    in_stream = in_stream if in_stream is not None else sys.stdin
+    out_stream = out_stream if out_stream is not None else sys.stdout
+
+    while True:
+        line = _mcp_read_line(in_stream)
+        if line is None:
+            return
+
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError as e:
+            resp = {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": JSONRPC_PARSE_ERROR, "message": f"Parse error: {e}"},
+            }
+            out_stream.write(json.dumps(resp) + "\n")
+            out_stream.flush()
+            continue
+
+        if isinstance(req, list):
+            # JSON-RPC batch: accepted for spec-completeness (nothing in the
+            # stdio transport spec forbids a batch on one line), though real
+            # MCP clients send one message per line in practice.
+            responses = [r for r in (_mcp_handle_message(root, item) for item in req) if r is not None]
+            if responses:
+                out_stream.write(json.dumps(responses) + "\n")
+                out_stream.flush()
+            continue
+
+        resp = _mcp_handle_message(root, req)
+        if resp is not None:
+            out_stream.write(json.dumps(resp) + "\n")
+            out_stream.flush()
+
+
+def cmd_mcp(args, root: Path) -> None:
+    sub = getattr(args, "mcp_sub", None)
+    if sub != "serve":
+        sys.exit("tessctl mcp: choose a subcommand — serve")
+    _mcp_serve(root)
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
@@ -14274,6 +14750,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--by", help="override the recorded actor for retry/escalation records (default: current OS user)")
     p_run.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
 
+    # mcp (Goal #9) — the gate as an MCP server
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="Goal #9: MCP server — expose validate/gate/mission/roster as MCP tools over stdio",
+    )
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_sub", metavar="SUBCOMMAND")
+    mcp_sub.add_parser(
+        "serve",
+        help="run a stdio JSON-RPC 2.0 MCP server (initialize / tools/list / tools/call); see docs/MCP.md",
+    )
+
     return parser
 
 
@@ -14353,6 +14840,9 @@ def main() -> None:
         # Goal #6: `tessctl run` — the mechanical conductor loop (RUN region,
         # directly below the MISSION LEDGER region).
         "run":          cmd_run,
+        # Goal #9: `tessctl mcp serve` — the gate as an MCP server (MCP
+        # region, directly below the RUN region).
+        "mcp":          cmd_mcp,
     }
 
     fn = dispatch.get(args.command)
