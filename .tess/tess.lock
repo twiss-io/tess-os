@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-08T16:16:05.017949Z'
+  last_updated: '2026-07-08T16:43:43.915871Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:293d65ad5c0aacef95f7cf51e5a54b8c847a7daae81a7d17c22db0e0be88eeca
+    base_sha: sha256:8e78d994d6910d6a59e478c3d40c2a9bbc9c5a07df3fbdedb4e58c5991a56c38
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5716,7 +5716,7 @@ files:
   .tess/core/templates/CLAUDE.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:37204ef5ca876233b301f6b6c10542545b06a765bececcdd21a99dd1de94bf29
+    base_sha: sha256:7e6435c61387e71c1c88875ee7e570a4008b78f03c7a3c971617a9fa09d7c1d7
     live_path: CLAUDE.md
     render: template
     last_updated: 2026-06-28 00:00:00+00:00
