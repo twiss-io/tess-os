@@ -604,6 +604,26 @@ This is an early public foundation. What is real and committed today:
   scaffold `missions/<id>/briefs/`/`verdicts/` (C1/C2's existing
   `brief`/`verdict` schemas already validate a file at any path; wiring them
   into this same directory convention is a follow-on, not this goal).
+- **`tessctl run <crew-plan>` — the mechanical conductor loop (Goal #6)**:
+  loads + validates a crew-plan, then executes its stages end-to-end
+  against a `DispatchDriver` — `ClaudeCliDriver` (`claude -p`, Tier A) or
+  `CodexExecDriver` (`codex exec`, Tier B; implemented against this repo's
+  own documented-verified flags but not yet live-tested — no `codex` binary
+  in this build environment). Gate check (never starts early), dispatch,
+  read the returned artifact back off disk (never trusts the summary),
+  mandatory verification, typed retry on a schema-miss (changed brief,
+  capped at 3, never dispatching past the cap), and a hard halt +
+  escalation record (mission `state` → `code-red`) on either the retry cap
+  or a genuine verifier `BLOCK`. A `FakeDriver` (deterministic, scriptable
+  to good/schema-missing/blocking/error responses) is the core test
+  vehicle; one live smoke run against the real `claude -p` CLI completed
+  end-to-end and caught a real bug along the way (a headless dispatch with
+  no explicit `--allowed-tools` silently denies tool calls — now fixed with
+  a least-privilege allowlist, not a blanket permissions bypass). v1 scope:
+  stages dispatch sequentially (not true OS-level concurrency for
+  `parallel: true` stages); SYNTHESIS (the two-pass orchestrator hand-off)
+  is not yet wired — `run` executes EXECUTE STAGES only. See CHANGELOG.md
+  for the full disclosure.
 - The **engine's integrity layer**: snapshot-first updates, the `doctor`
   hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
   detection, and atomic staging swap.

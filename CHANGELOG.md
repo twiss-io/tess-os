@@ -232,6 +232,81 @@ All notable changes to Tess OS are documented here. This project adheres to
     `base_sha` for files whose bytes actually differ, so the effect was
     identical: exactly 13 entries re-pinned, confirmed via `git diff`). Full
     suite: 460 passed, 0 regressions.
+- **`tessctl run <crew-plan>` — the mechanical CONDUCTOR LOOP (Goal #6).**
+  The framework's structural bet: the conductor loop (gate check → dispatch
+  → read the returned artifact back → mandatory verification → typed retry
+  → halt/escalate) was doctrine a strong Claude Code session enforced
+  through discipline. It is now DETERMINISTIC CODE — a gate cannot be
+  "decided around" at 3am, a schema-miss cannot be waved through, and a
+  verifier's BLOCK cannot be quietly stepped past, regardless of which CLI
+  (or how strong a model) is dispatching.
+  - A new `DispatchDriver` seam (abstract `dispatch(brief, output_schema=
+    None) -> dict`) with three implementations: `ClaudeCliDriver` (`claude
+    -p --output-format stream-json`, Tier A), `CodexExecDriver` (`codex exec
+    --experimental-json --output-schema <file>`, Tier B — implemented
+    strictly against this repo's own documented-verified flags; NOT
+    live-tested, since the `codex` binary is not installed in this build
+    environment — a documented follow-up), and `FakeDriver` (deterministic,
+    no real CLI, scriptable per task to "good" / "schema-missing" /
+    "missing-file" / "blocking" / "error" — the core test-coverage vehicle).
+  - `tessctl run` loads + validates a crew-plan, requires its `mission_id`
+    to already exist as a mission record (`tessctl mission new` first),
+    then executes each stage in order: gate check against the SAME mission
+    record `gate-status` reads (never starts early), dispatches each task
+    (and its mandatory verifier, when `verifier.required: true`) via the
+    chosen driver, reads the contracted return-manifest/verdict artifact
+    back off disk itself (never trusts the driver's own summary), and
+    on a schema-miss enters the EXISTING typed-retry ledger (`_retry_
+    precheck`/the retry-log machinery, unmodified) — changed brief for
+    every non-transient cause, capped at 3 attempts, never dispatching a
+    4th time past the cap. A verifier's genuine `disposition: BLOCK` is an
+    immediate hard halt (not auto-retried); either halt reason writes a
+    full per-attempt escalation record to `missions/<id>/escalations/` and
+    flips the mission record's own `state` to the existing `code-red` FSM
+    value (no `mission.schema.json` change needed).
+  - v1 scope, documented: stages dispatch sequentially (real OS-level
+    concurrency for `parallel: true` stages is a follow-up — it only
+    changes wall-clock time, not correctness); SYNTHESIS (orchestra-
+    model.md §4 step 5) is out of scope — `run` executes EXECUTE STAGES
+    only.
+  - All new logic is isolated in one contiguous "RUN" region of
+    `.tess/bin/tessctl`, directly below the MISSION LEDGER region — no
+    other region (KEYGEN, RENDER, TRACE, MISSION LEDGER) is touched beyond
+    the same three additive touch points those regions themselves already
+    established (dispatch table, `build_parser()`, `main()`'s exception
+    catch tuple). No new contract type; `run` validates against the six
+    contracts (crew-plan, brief, return-manifest, verdict, mission, retry)
+    that already exist.
+  - 13 new tests (`tests/test_run.py`): a 2-stage plan running end-to-end
+    against `FakeDriver` (including a mandatory verifier dispatch); a
+    schema-missing return retrying to the 3-attempt cap then escalating
+    (asserting the ledger entries, that no 4th dispatch call is ever made,
+    and the escalation record + `code-red` state); a verifier BLOCK halting
+    before the next stage ever dispatches; a gate left uncleared halting
+    with zero dispatch calls; CLI wiring (`tessctl run --driver fake
+    --fake-script ...`) end-to-end via subprocess; `missions/**` (including
+    the new `returns/`/`escalations/` subdirs) staying invisible to
+    `doctor`/`verify`/`lock --check`, exactly like `retries/` already does
+    for Goal #5; and two regression tests (added after the live smoke run
+    below caught a real bug) proving `ClaudeCliDriver` always constructs its
+    CLI invocation with an explicit `--allowed-tools` allowlist, never the
+    blanket `--dangerously-skip-permissions` bypass. Full suite green (545
+    total, was 532).
+  - A live smoke run against the real `claude -p` CLI was performed manually
+    during this build (a trivial 1-task plan) — not wired into the
+    automated suite (a paid, network-dependent call has no place running
+    unattended on every test invocation); a `codex`-driven live smoke is a
+    documented follow-up. It caught a genuine bug the FakeDriver tests
+    structurally cannot: a headless `claude -p` dispatch with no explicit
+    `--allowed-tools` silently DENIES a tool call (e.g. `Write`) with no
+    prompt surfaced — the first live attempt burned all 3 retry attempts
+    with `failure_state: empty` (the dispatched session never got to write
+    its return-manifest at all) before this was diagnosed and fixed by
+    passing an explicit, least-privilege `--allowed-tools` allowlist
+    (`Read Write Edit Bash Grep Glob` by default, overridable) rather than
+    `--dangerously-skip-permissions`. The re-run completed on the first
+    attempt, writing a schema-valid return-manifest that independently
+    passes `tessctl validate return-manifest`.
 - **`tessctl mission` + the typed-retry ledger — mission records as code
   (Goal #5).** Converts two pieces of doctrine PROSE (`conductor/
   doctrine.md`'s five gates, `conductor/subagent-failure-protocol.md`'s
