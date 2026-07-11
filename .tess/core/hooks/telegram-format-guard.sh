@@ -30,15 +30,24 @@ fi
 # Strip backslashes from MarkdownV2 reserved chars (BRE, not ERE — ERE was eating the literal backslash)
 cleaned="$(printf '%s' "$text" | sed 's/\\\([_*()~`>#+={}.!|-]\)/\1/g' | sed 's/\\\(\[\)/\1/g' | sed 's/\\\(\]\)/\1/g')"
 
-# Emit hookSpecificOutput to mutate the tool input
+# Emit hookSpecificOutput to update the tool input. `updatedInput` REPLACES
+# the tool's entire input (it is not a merge — see Claude Code hooks docs,
+# "PreToolUse: updatedInput directly under hookSpecificOutput replaces a
+# tool's arguments before it runs"). `modifiedToolInput` is NOT a real hook
+# field, so the strip previously never applied at all even though the
+# systemMessage below claimed it did. Build the replacement from the
+# ORIGINAL tool_input and only overwrite `text`, so every other field
+# (chat_id, reply_to, files, etc.) survives untouched.
+updated_input="$(printf '%s' "$input" | jq --arg cleaned "$cleaned" '.tool_input | .text = $cleaned')"
+
 jq -n \
-  --arg cleaned "$cleaned" \
+  --argjson updated_input "$updated_input" \
   '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      modifiedToolInput: { text: $cleaned }
+      updatedInput: $updated_input
     },
-    systemMessage: "Telegram format guard: stripped MarkdownV2 escapes from text since format!=markdownv2. Default to plain prose; set format=markdownv2 if you want markup."
+    systemMessage: "Telegram format guard: stripped MarkdownV2 escapes from text since format!=markdownv2 (all other tool_input fields preserved). Default to plain prose; set format=markdownv2 if you want markup."
   }'
 
 exit 0

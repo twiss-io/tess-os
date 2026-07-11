@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-08T16:54:51.641163Z'
+  last_updated: '2026-07-11T06:28:14.900526Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5637,7 +5637,7 @@ files:
   .tess/core/hooks/telegram-format-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:3545c23e19b42d72f4f78067fdf0d105c8c026df4ffd5e64316b5b4a5df79de0
+    base_sha: sha256:1902f2dd8a29fe8faa63d386bbc38c6bcf4e879ae17df302a90c3814965020cc
     live_path: .claude/hooks/telegram-format-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/utc-local-context.sh:
