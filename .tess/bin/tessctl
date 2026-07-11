@@ -4771,6 +4771,29 @@ def cmd_override(args, root: Path) -> None:
 # Command: rollback
 # ---------------------------------------------------------------------------
 
+def _is_snapshot_dir(p: Path) -> bool:
+    """True if `p` is a real tessctl-created snapshot directory — not a
+    stray scaffold entry like `.tess/snapshots/.gitkeep` (a FILE that
+    `Path.iterdir()` returns right alongside real snapshot dirs on a fresh
+    scaffold, and that previously slipped through untyped into rollback's
+    candidate list, producing a false "success" that restored nothing).
+
+    A directory qualifies if it carries a recognized full-snapshot marker
+    (`tess.lock.snapshot`, written by `snapshot_live_tree`; or the legacy
+    `.kind` marker from pre-N1 snapshots still present on older disks), or
+    if it is a single-file `-pre` snapshot directory that actually holds
+    restorable content (written by `snapshot_single_file`, which never
+    writes `tess.lock.snapshot`).
+    """
+    if not p.is_dir():
+        return False
+    if (p / "tess.lock.snapshot").exists() or (p / ".kind").exists():
+        return True
+    if p.name.endswith("-pre"):
+        return any(f.is_file() for f in p.rglob("*"))
+    return False
+
+
 def cmd_rollback(args, root: Path) -> None:
     """
     Restore from a .tess/snapshots/<ts> + rewrite tess.lock.
@@ -4780,16 +4803,26 @@ def cmd_rollback(args, root: Path) -> None:
     snaps_dir = root / SNAPSHOTS_DIR
 
     if not snaps_dir.exists():
-        sys.exit("tessctl rollback: no snapshots found (.tess/snapshots/ missing)")
+        sys.exit("tessctl rollback: no snapshots exist (.tess/snapshots/ missing)")
 
-    # M2: sort by mtime (explicit), not name; separate full vs. single-file -pre snapshots
-    all_snaps = sorted(snaps_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+    # M2: sort by mtime (explicit), not name; separate full vs. single-file -pre snapshots.
+    # Mechanical fix: filter to _is_snapshot_dir() candidates only — snaps_dir
+    # also holds scaffold placeholders (e.g. .gitkeep) that are FILES, not
+    # snapshots, and must never be selected as a rollback target.
+    all_snaps = sorted(
+        (p for p in snaps_dir.iterdir() if _is_snapshot_dir(p)),
+        key=lambda p: p.stat().st_mtime,
+    )
     if not all_snaps:
-        sys.exit("tessctl rollback: no snapshots found")
+        sys.exit(
+            "tessctl rollback: no snapshots exist — nothing to restore.\n"
+            "  (.tess/snapshots/ contains no recognized snapshot directories.\n"
+            "   Run a command that snapshots first — e.g. `tessctl update` — before rolling back.)"
+        )
 
     if to_ts:
         snap = snaps_dir / to_ts
-        if not snap.exists():
+        if not snap.exists() or not _is_snapshot_dir(snap):
             available = [s.name for s in all_snaps]
             sys.exit(f"tessctl rollback: snapshot '{to_ts}' not found.\n  Available: {', '.join(available)}")
     else:
@@ -4814,6 +4847,7 @@ def cmd_rollback(args, root: Path) -> None:
     #   1. Reject absolute rel paths or .. traversal components.
     #   2. Resolve dst and assert it stays inside root.
     root_resolved = root.resolve()
+    restored_count = 0
     for src in snap.rglob("*"):
         if src.is_dir():
             continue
@@ -4837,6 +4871,7 @@ def cmd_rollback(args, root: Path) -> None:
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
+        restored_count += 1
         print(f"  restored  {rel}")
 
     # Rewrite tess.lock from snapshot
@@ -4845,7 +4880,13 @@ def cmd_rollback(args, root: Path) -> None:
         shutil.copy2(lock_snap, root / LOCK_FILE)
         print(f"  restored  tess.lock (from snapshot)")
 
-    print(f"\nrollback: complete — restored to {snap.name}")
+    if restored_count == 0:
+        print(f"\nWARN  rollback: 0 files restored from {snap.name} — snapshot directory was empty.")
+        print("  Nothing changed on disk. Verify this is the snapshot you intended (`tessctl rollback --to <ts>`).")
+    else:
+        print(f"\nrollback: complete — restored {restored_count} file(s) from {snap.name}")
+    print("  Note: rollback only overwrites files present in the snapshot — it does NOT remove")
+    print("  files added to the live tree since the snapshot was taken.")
     print("  Run `tessctl doctor` to verify.")
 
 

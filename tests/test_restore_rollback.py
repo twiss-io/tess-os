@@ -10,6 +10,8 @@ restore + rollback.
 
 from __future__ import annotations
 
+import pytest
+
 from conftest import ns
 
 
@@ -94,3 +96,53 @@ def test_rollback_restores_lock_snapshot(project):
     project.mod.cmd_rollback(ns(to=ts), project.root)
     restored = project.mod.load_lock(project.root)
     assert restored["framework"]["version"] == "2.0.0"
+
+
+def test_rollback_on_fresh_scaffold_fails_cleanly_not_false_success(project):
+    """Regression: .tess/snapshots/.gitkeep is a scaffold placeholder FILE
+    (present on every real, freshly-scaffolded Tess OS project — see
+    tess-os .tess/snapshots/.gitkeep), not a snapshot. Before the fix,
+    Path.iterdir() picked it up as a candidate, rollback treated it as the
+    "most recent full snapshot", restored 0 files, and exited 0 — a false
+    success. It must now fail loudly instead."""
+    (project.root / ".tess" / "snapshots" / ".gitkeep").write_bytes(b"")
+
+    with pytest.raises(SystemExit) as ei:
+        project.mod.cmd_rollback(ns(to=None), project.root)
+    msg = str(ei.value)
+    assert "no snapshots exist" in msg.lower()
+    # sys.exit(<non-empty str>) is a non-zero exit for the process.
+    assert ei.value.code not in (0, None)
+
+
+def test_rollback_ignores_gitkeep_and_uses_real_snapshot(project):
+    """A stray .gitkeep sitting alongside a real snapshot must never be
+    selected — the real (mtime-latest) full snapshot always wins."""
+    (project.root / ".tess" / "snapshots" / ".gitkeep").write_bytes(b"")
+    project.add("conductor/snap.md", "original\n", status="core-managed")
+    lock = project.write()
+    project.mod.snapshot_live_tree(project.root, lock)
+    project.write_live("conductor/snap.md", "corrupted later\n")
+
+    project.mod.cmd_rollback(ns(to=None), project.root)
+    assert project.read_live("conductor/snap.md") == "original\n"
+
+
+def test_rollback_warns_when_zero_files_restored(project, capsys):
+    """An empty-but-real snapshot dir (has the tess.lock.snapshot marker,
+    but the tracked live file no longer exists to copy) must warn loudly
+    about restoring 0 files rather than silently reporting success."""
+    project.add("conductor/gone.md", "will be deleted\n", status="core-managed")
+    lock = project.write()
+    ts = project.mod.snapshot_live_tree(project.root, lock)
+    # Delete the live file so the snapshot dir itself ends up holding only
+    # the tess.lock.snapshot marker (0 restorable content files).
+    (project.root / ".tess" / "snapshots" / ts / "conductor" / "snap.md").unlink(missing_ok=True)
+    for f in (project.root / ".tess" / "snapshots" / ts).rglob("*"):
+        if f.is_file() and f.name != "tess.lock.snapshot":
+            f.unlink()
+
+    project.mod.cmd_rollback(ns(to=ts), project.root)
+    out = capsys.readouterr().out
+    assert "0 files restored" in out
+    assert "WARN" in out
