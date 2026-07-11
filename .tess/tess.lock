@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-11T06:28:14.900526Z'
+  last_updated: '2026-07-11T06:37:29.481074Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8e78d994d6910d6a59e478c3d40c2a9bbc9c5a07df3fbdedb4e58c5991a56c38
+    base_sha: sha256:6961a571fd74a700fca5a5cd70f1240a93565cd26495efbf11f172f16d04416c
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5646,6 +5646,12 @@ files:
     base_sha: sha256:0e7b4ede1ab13bb5085b9cfcfa17f2195de64c1be077a20b53161c324778fa6e
     live_path: .claude/hooks/utc-local-context.sh
     last_updated: 2026-06-27 10:00:00+00:00
+  .tess/core/hooks/vault-dispatch-scan.py:
+    status: core-managed
+    tier: security
+    base_sha: sha256:3ba200acba94f6ccde69eb8c84447b1026a207e210a2ba4fffbf76014e2108f8
+    live_path: .claude/hooks/vault-dispatch-scan.py
+    last_updated: '2026-07-11T00:00:00.000000Z'
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal

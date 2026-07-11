@@ -5,9 +5,15 @@ doctor + verify.
   * uncaptured live drift → doctor FAILs (exit 1)
   * .tess/core tamper (bytes != base_sha) → verify FAILs (exit 1)
   * security-tier live edit (status core-managed) → verify SECURITY DRIFT (exit 1)
+  * every hook command in settings-core.json resolves to a core-managed
+    tess.lock entry (mechanical fix — vault-dispatch-scan.py shipped
+    registered in settings-core.json but untracked in tess.lock, invisible
+    to doctor/verify/restore)
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -93,3 +99,104 @@ def test_verify_detects_security_tier_drift(project, capsys):
     assert ei.value.code == 1
     out = capsys.readouterr().out
     assert "SECURITY DRIFT" in out
+
+
+# ---------------------------------------------------------------------------
+# Hook-registration completeness check (mechanical fix): doctor asserts
+# every hook command referenced in settings-core.json resolves to a
+# core-managed tess.lock entry.
+# ---------------------------------------------------------------------------
+
+def _write_settings_core(project, *, hook_live_rel="hooks/some-scanner.py",
+                          extra_inline=False):
+    hooks = {
+        "PreToolUse": [
+            {
+                "matcher": "^(Task|Agent)$",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"$CLAUDE_PROJECT_DIR/.claude/{hook_live_rel}",
+                    },
+                ],
+            },
+        ],
+    }
+    if extra_inline:
+        hooks["PostToolUse"] = [
+            {
+                "matcher": "Agent",
+                "hooks": [
+                    {
+                        "type": "command",
+                        # An inline shell one-liner, not a hook-script file
+                        # reference — must never be flagged.
+                        "command": "echo '{\"systemMessage\": \"done\"}'",
+                    },
+                ],
+            },
+        ]
+    settings_path = project.root / ".tess" / "core" / "settings-core.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+
+def test_doctor_flags_hook_registered_in_settings_but_not_in_lock(project, capsys):
+    """Regression: a hook wired into settings-core.json's hooks{} block with
+    NO matching tess.lock entry (vault-dispatch-scan.py's exact bug) must
+    fail doctor loudly instead of being silently invisible."""
+    _clean_project(project)
+    _write_settings_core(project)
+    # Deliberately do NOT register .claude/hooks/some-scanner.py in the lock.
+
+    with pytest.raises(SystemExit) as ei:
+        project.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), project.root)
+    assert ei.value.code == 1
+    out = capsys.readouterr().out
+    assert "HOOK NOT CORE-MANAGED" in out
+    assert ".claude/hooks/some-scanner.py" in out
+
+
+def test_doctor_passes_when_hook_is_registered_core_managed(project, capsys):
+    """The positive case: once the hook has a core-managed tess.lock entry
+    at the exact live_path settings-core.json references, doctor is clean."""
+    _clean_project(project)
+    _write_settings_core(project)
+    project.add(
+        ".claude/hooks/some-scanner.py", "# scanner\n",
+        core_key=".tess/core/hooks/some-scanner.py",
+        status="core-managed", tier="security",
+    )
+    project.write()
+
+    project.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), project.root)
+    out = capsys.readouterr().out
+    assert "doctor: OK" in out
+    assert "HOOK NOT CORE-MANAGED" not in out
+
+
+def test_doctor_ignores_inline_non_file_hook_commands(project, capsys):
+    """An inline shell one-liner (e.g. `echo '...'`) is not a hook-script
+    file reference and must never be flagged as unregistered."""
+    _clean_project(project)
+    _write_settings_core(project, extra_inline=True)
+    project.add(
+        ".claude/hooks/some-scanner.py", "# scanner\n",
+        core_key=".tess/core/hooks/some-scanner.py",
+        status="core-managed", tier="security",
+    )
+    project.write()
+
+    project.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), project.root)
+    out = capsys.readouterr().out
+    assert "doctor: OK" in out
+
+
+def test_doctor_hook_check_is_a_noop_without_settings_core_json(project, capsys):
+    """No settings-core.json on disk (e.g. a minimal synthetic root) must
+    fail open — this is a completeness check layered on top of the normal
+    per-file checks, not a hard requirement that the file exists."""
+    _clean_project(project)  # no settings-core.json written
+    project.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), project.root)
+    out = capsys.readouterr().out
+    assert "doctor: OK" in out

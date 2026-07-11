@@ -2384,13 +2384,78 @@ def render_generated_live_paths(root: Path) -> frozenset:
 
 
 # ---------------------------------------------------------------------------
-# Worker-profile denylist drift check (G3 — 2026-07-08, the 2026-07-07
-# honest reckoning). Cheap, mechanical protection so a future edit to
-# AGENTS.md.tpl (or any future worker-profile target's own doctrine-digest
-# template) can never silently re-export the exact harm the proving-ground
-# benchmark measured: mounting "always dispatch, never execute solo" and its
-# ceremony into a harness with no dispatchable crew.
+# Hook-registration completeness check (mechanical fix — vault-dispatch-scan.py
+# shipped as a live .claude/hooks/ file, registered in settings-core.json's
+# hooks{} block, but with NO .tess/core/hooks/ master and NO tess.lock entry
+# at all: doctor/verify/restore were structurally blind to a SECURITY hook —
+# it could drift, be deleted, or be silently neutered with zero integrity
+# signal, and `tessctl restore` would never re-seed it because restore only
+# ever acts on files that already have a lock entry.
 # ---------------------------------------------------------------------------
+
+def _check_hooks_registered_in_lock(root: Path, lock: dict) -> list:
+    """
+    Walk EVERY hook command string in .tess/core/settings-core.json's
+    hooks{} block (all event types — UserPromptSubmit/PreToolUse/PostToolUse/
+    SessionEnd/etc. — not a hardcoded subset, so a future event type is
+    covered automatically), resolve any command that references a
+    `$CLAUDE_PROJECT_DIR/.claude/hooks/<file>` path, and assert a matching
+    tess.lock entry exists with status core-managed at that exact live_path.
+
+    Commands that are not hook-script file references (e.g. the inline
+    `echo '{"systemMessage": ...}'` PostToolUse hook) are ignored — only
+    `.claude/hooks/**` references are checked; this is a registration/
+    manifest-completeness check, not a general command-safety scan.
+
+    Returns a list of violation dicts: {"command", "live_path"}. Empty list
+    = every referenced hook file is properly core-managed (visible to
+    doctor/verify/restore).
+    """
+    settings_path = root / ".tess" / "core" / "settings-core.json"
+    if not settings_path.exists():
+        return []
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    core_managed_live_paths = {
+        a.get("live_path") for a in lock.get("files", {}).values()
+        if a.get("status") == "core-managed" and a.get("live_path")
+    }
+
+    hooks_section = settings.get("hooks", {})
+    if not isinstance(hooks_section, dict):
+        return []
+
+    violations = []
+    seen_live_paths: set = set()
+    for _event_name, matcher_groups in hooks_section.items():
+        if not isinstance(matcher_groups, list):
+            continue
+        for group in matcher_groups:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                command = entry.get("command", "")
+                if not isinstance(command, str):
+                    continue
+                # Only check commands that directly reference a
+                # .claude/hooks/<file> script — not inline shell one-liners
+                # (e.g. `echo '...'`), which carry no file to track.
+                m = re.search(r"\$CLAUDE_PROJECT_DIR/(\.claude/hooks/[^\s'\"]+)", command)
+                if not m:
+                    continue
+                live_rel = m.group(1)
+                if live_rel in seen_live_paths:
+                    continue
+                seen_live_paths.add(live_rel)
+                if live_rel not in core_managed_live_paths:
+                    violations.append({"command": command, "live_path": live_rel})
+    return violations
+
 
 def _worker_profile_targets() -> list:
     """Every REGISTERED target (regardless of THIS install's per-install
@@ -2807,6 +2872,31 @@ def cmd_doctor(args, root: Path) -> None:
         results.append(r)
         errors += 1
 
+    # Mechanical fix: hook-registration completeness check — see
+    # _check_hooks_registered_in_lock()'s docstring (vault-dispatch-scan.py
+    # shipped registered in settings-core.json but untracked in tess.lock;
+    # doctor/verify/restore were structurally blind to it). Folded into the
+    # SAME `results`/errors accounting via the shared "HOOK NOT CORE-MANAGED"
+    # marker, same pattern as the DOCTRINE LEAK check above.
+    for hv in _check_hooks_registered_in_lock(root, lock):
+        if path_filter and hv["live_path"] != path_filter:
+            continue
+        r = {
+            "core_key": f"<settings-core.json:{hv['live_path']}>",
+            "live_path": hv["live_path"],
+            "lock_status": "hook-not-registered",
+            "drift": False,
+            "issues": [
+                f"HOOK NOT CORE-MANAGED — settings-core.json references "
+                f"{hv['live_path']} (command: {hv['command']!r}) but no "
+                f"tess.lock entry with status core-managed exists at that "
+                f"live_path — doctor/verify/restore are blind to this hook. "
+                f"Add it to .tess/core/hooks/ and register it in tess.lock."
+            ],
+        }
+        results.append(r)
+        errors += 1
+
     if as_json:
         print(json.dumps(results, indent=2, default=str))
         sys.exit(1 if errors else 0)
@@ -2951,9 +3041,16 @@ def cmd_doctor(args, root: Path) -> None:
         if any("DOCTRINE LEAK" in issue for issue in r["issues"])
     )
 
+    # Same "must count explicitly or human-mode fails open" discipline —
+    # see _check_hooks_registered_in_lock()'s docstring.
+    hook_not_registered_count = sum(
+        1 for r in results
+        if any("HOOK NOT CORE-MANAGED" in issue for issue in r["issues"])
+    )
+
     blocking = (drift_count > 0 or quarantined_count > 0
                 or core_tamper_count > 0 or missing_count > 0
-                or doctrine_leak_count > 0)
+                or doctrine_leak_count > 0 or hook_not_registered_count > 0)
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
@@ -2984,6 +3081,11 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"\ndoctor: FAIL — {doctrine_leak_count} worker-profile doctrine leak(s) detected. "
               f"Orchestration doctrine (\"always dispatch\", RULE ZERO, etc.) must never reach "
               f"a single-agent harness's doctrine digest — fix the template/fragment and re-render.")
+        sys.exit(1)
+    if hook_not_registered_count > 0:
+        print(f"\ndoctor: FAIL — {hook_not_registered_count} hook(s) referenced in settings-core.json "
+              f"are not core-managed in tess.lock. doctor/verify/restore cannot protect a hook they "
+              f"don't know about — add it to .tess/core/hooks/ and register it in tess.lock.")
         sys.exit(1)
     print("\ndoctor: OK")
 
