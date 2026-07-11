@@ -200,7 +200,11 @@ def test_headless_check_precedes_dispatch_lock_check_in_source():
     # The CODE check (the `if [ -n "${TESS_HEADLESS...` line), not the first
     # mention of the token, which appears earlier in the header comment.
     headless_code_idx = text.index('if [ -n "${TESS_HEADLESS:-}" ]')
-    lock_check_idx = text.index('find "$LOCK_DIR"')
+    # Session-scoped dispatch-lock check (Ada, framework reliability batch —
+    # the lock-dir split-brain fix): the check now builds THIS session's
+    # specific lock path rather than globbing `find "$LOCK_DIR" -name
+    # '*.lock'` for any lock in the shared dir.
+    lock_check_idx = text.index('lock="$LOCK_DIR/$sid.lock"')
     assert headless_code_idx < lock_check_idx, (
         "the TESS_HEADLESS/TESS_NO_SUBAGENTS check must be evaluated before "
         "the dispatch-lock check so it wins unconditionally in a headless "

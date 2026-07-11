@@ -43,7 +43,7 @@
 # only way to leave headless mode off. See conductor/hook-testing-protocol.md
 # and this file's companion test, tests/test_dispatch_guard_headless.py.
 
-LOCK_DIR="/tmp/tess-dispatch-locks"
+LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
 TESS_ROOT="$CLAUDE_PROJECT_DIR"
 
 input="$(cat)"
@@ -55,12 +55,27 @@ if [ -n "${TESS_HEADLESS:-}" ] || [ -n "${TESS_NO_SUBAGENTS:-}" ]; then
   exit 0
 fi
 
-# Dispatch in flight (any lock fresher than the 4h stale threshold) -> assume
-# subagent context, stay silent. The window MUST match STALE_MIN=240 in
-# task-lock-set.sh / task-lock-clear.sh, which prune and ignore locks >4h old;
-# a wider 24h window would keep suppressing the warning for up to a day on a
-# leaked lock from a crashed session.
-if [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -240 2>/dev/null | grep -q .; then
+# Dispatch in flight -> key on THIS session's lock specifically (the hook
+# input carries session_id, same field/sanitization task-lock-set.sh writes
+# with), NOT "any *.lock in the shared dir". A lock belonging to a DIFFERENT
+# concurrent Claude Code session must never suppress THIS session's own Rule
+# Zero warning — that was the split-brain: with TESS_LOCK_DIR unset, every
+# session shares /tmp/tess-dispatch-locks/, so session B executing solo
+# stayed silently unwarned merely because session A had an unrelated
+# dispatch in flight. A dispatched SUBAGENT's own tool calls correctly stay
+# suppressed here because a subagent runs within its dispatching session's
+# SAME session_id (hooks "fire in ALL contexts including dispatched
+# subagents" per conductor/hook-testing-protocol.md — there is no separate
+# subagent session_id to key on). The freshness window MUST match
+# STALE_MIN=240 in task-lock-set.sh / task-lock-clear.sh, which prune and
+# ignore locks >4h old; a wider window would keep suppressing the warning
+# for up to a day on a leaked lock from a crashed session.
+sid="$(printf '%s' "$input" | jq -r '.session_id // "global"' 2>/dev/null)" || sid="global"
+[ -n "$sid" ] && [ "$sid" != "null" ] || sid="global"
+sid="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')"
+[ -n "$sid" ] || sid="global"
+lock="$LOCK_DIR/$sid.lock"
+if [ -f "$lock" ] && find "$lock" -mmin -240 2>/dev/null | grep -q .; then
   exit 0
 fi
 

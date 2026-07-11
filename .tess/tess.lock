@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-11T06:37:29.481074Z'
+  last_updated: '2026-07-11T06:46:21.007388Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5613,13 +5613,13 @@ files:
   .tess/core/hooks/anti-fabrication-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:a1eb9bd3983bd7b1b6f82255232bf69ddc75ea573fce8c7b33b0263308fab9a0
+    base_sha: sha256:1aedf4e535a416e0eef2ef0d1fca9d3d3d96b9c83fd152b8e2d245e389b40b6d
     live_path: .claude/hooks/anti-fabrication-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:418f6b46bad5898b879ef8ee4b533d26875348270f7a562f454d459cf32082a8
+    base_sha: sha256:1873a1c3abf66d5337a712434ba0e5ed267eeef8c62a7a9b6a238d693e31ff33
     live_path: .claude/hooks/dispatch-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/task-lock-clear.sh:

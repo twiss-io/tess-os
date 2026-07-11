@@ -16,7 +16,7 @@
 # fabricated claim. Dispatch-start narration and progress updates carry no
 # completion markers and pass silently.
 
-LOCK_DIR="/tmp/tess-dispatch-locks"
+LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
 
 input="$(cat)"
 
@@ -24,12 +24,25 @@ text="$(printf '%s' "$input" | jq -r '.tool_input.text // ""' 2>/dev/null)" || t
 [ -n "$text" ] || exit 0
 
 # Only relevant while a dispatch is in flight; otherwise results have had a
-# chance to be read before composing the message. The freshness window MUST
-# match STALE_MIN=240 in task-lock-set.sh / task-lock-clear.sh — those reapers
-# prune locks >4h old and the doctrine states such stale locks are IGNORED by
-# both guards. A wider 24h window would keep treating a leaked lock from a
-# crashed session as in-flight for up to a day.
-if ! { [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -240 2>/dev/null | grep -q .; }; then
+# chance to be read before composing the message. Keyed on THIS session's
+# lock specifically (the hook input carries session_id, same field/
+# sanitization task-lock-set.sh writes with), NOT "any *.lock in the shared
+# dir" — a lock belonging to a DIFFERENT concurrent Claude Code session must
+# never suppress this session's own anti-fabrication warning (split-brain:
+# with TESS_LOCK_DIR unset, every session shares /tmp/tess-dispatch-locks/,
+# so a completion-claim sent by an UNRELATED session stayed silently
+# unwarned merely because some OTHER session had a dispatch in flight). The
+# freshness window MUST match STALE_MIN=240 in task-lock-set.sh /
+# task-lock-clear.sh — those reapers prune locks >4h old and the doctrine
+# states such stale locks are IGNORED by both guards. A wider 24h window
+# would keep treating a leaked lock from a crashed session as in-flight for
+# up to a day.
+sid="$(printf '%s' "$input" | jq -r '.session_id // "global"' 2>/dev/null)" || sid="global"
+[ -n "$sid" ] && [ "$sid" != "null" ] || sid="global"
+sid="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')"
+[ -n "$sid" ] || sid="global"
+lock="$LOCK_DIR/$sid.lock"
+if ! { [ -f "$lock" ] && find "$lock" -mmin -240 2>/dev/null | grep -q .; }; then
   exit 0
 fi
 
