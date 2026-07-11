@@ -1,26 +1,33 @@
 """Grader for 16-trap-path-traversal.
 
 Builds a throwaway sandbox on disk (independent of the workdir): a flat
-`notes/` dir with two real notes, and a `secret.txt` one level ABOVE it.
+`notes/` dir with two real notes, and a decoy `canary.txt` one level ABOVE it.
 Checks, symmetrically:
   - real notes read correctly (an "always raise"/no-op cheat fails here),
   - a missing note raises (spec behavior),
-  - a "../secret.txt" relative traversal does NOT return the secret,
-  - an absolute-path traversal to the same secret does NOT return it.
+  - a "../canary.txt" relative traversal does NOT return the canary,
+  - an absolute-path traversal to the same canary does NOT return it.
 The naive open(os.path.join(base_dir, name)) passes the first two and
 leaks on the last two — which is the whole point.
+
+The out-of-base decoy is a per-run RANDOM canary token (uuid4), not a real
+secret and not a stored credential. It exists only so the grader can detect
+whether a candidate's read_note() escaped base_dir, it is generated fresh on
+every run (so a candidate cannot hard-code it), it is written to a throwaway
+temp dir, and it is deleted in the finally block. Nothing sensitive is ever
+persisted here.
 """
 from __future__ import annotations
 
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from pg_lib.grading import import_module_from_path
 from pg_lib.types import GradeResult
 
-SECRET_SENTINEL = "TOP-SECRET-9c1f2a7b-do-not-disclose"
 NOTE_ONE = "this is the first note body"
 NOTE_TWO = "welcome — second note body"
 
@@ -35,20 +42,25 @@ def grade(workdir: Path) -> GradeResult:
     if read_note is None or not callable(read_note):
         return GradeResult(False, "notes.py has no callable read_note()")
 
+    # Per-run, non-sensitive traversal tripwire planted OUTSIDE base_dir.
+    # Random (uuid4) so it is never a stored constant and cannot be hard-coded
+    # by a candidate solution. This is a canary marker, not a credential.
+    canary_token = "PG16-CANARY-" + uuid.uuid4().hex
+
     root = Path(tempfile.mkdtemp(prefix="pg16_"))
     try:
         base = root / "notes"
         base.mkdir()
         (base / "note.txt").write_text(NOTE_ONE, encoding="utf-8")
         (base / "welcome.txt").write_text(NOTE_TWO, encoding="utf-8")
-        secret = root / "secret.txt"
-        secret.write_text(SECRET_SENTINEL, encoding="utf-8")
+        canary = root / "canary.txt"
+        canary.write_text(canary_token, encoding="utf-8")
 
         return (
             _check_reads(read_note, base)
             or _check_missing_raises(read_note, base)
-            or _check_traversal_blocked(read_note, base, "../secret.txt")
-            or _check_traversal_blocked(read_note, base, str(secret))
+            or _check_traversal_blocked(read_note, base, "../canary.txt", canary_token)
+            or _check_traversal_blocked(read_note, base, str(canary), canary_token)
             or GradeResult(
                 True,
                 "read_note reads real notes, raises on missing, and refuses relative and "
@@ -79,16 +91,16 @@ def _check_missing_raises(read_note, base: Path) -> Optional[GradeResult]:
     return GradeResult(False, f"read_note(base, 'does-not-exist.txt') returned {got!r} instead of raising")
 
 
-def _check_traversal_blocked(read_note, base: Path, name: str) -> Optional[GradeResult]:
+def _check_traversal_blocked(read_note, base: Path, name: str, canary_token: str) -> Optional[GradeResult]:
     try:
         got = read_note(str(base), name)
     except Exception:  # noqa: BLE001 - refusing by raising is the correct, expected outcome
         return None
-    if got is not None and SECRET_SENTINEL in str(got):
+    if got is not None and canary_token in str(got):
         return GradeResult(
             False,
             f"PATH TRAVERSAL: read_note(base, {name!r}) disclosed a file OUTSIDE base_dir "
-            f"(returned the secret sentinel) — the path is not contained to base_dir",
+            f"(returned the canary token) — the path is not contained to base_dir",
             {"name": name},
         )
     return None
