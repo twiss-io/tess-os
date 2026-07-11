@@ -1,9 +1,24 @@
 [project]
 name = "tess"
-version = "0.1.0"
-description = "Add your description here"
+# Corrected 2026-07-11: this field was left at the uv-init placeholder "0.1.0"
+# through both the v0.1.0 and v0.1.1 tagged releases (see .tess/tess.lock's
+# framework.version, the release source of truth) and was never bumped
+# alongside them. This is a metadata correction to match what is already
+# tagged and released, not a new release cut. See docs/VERSIONING.md for the
+# full policy on how this field relates to tess.lock / package.json / the
+# git tag.
+version = "0.1.1"
+description = "Tess OS engine (tessctl) — the in-place framework upgrade engine, contracts-as-code validator, and signed ship-gate for the Tess OS governed multi-agent framework for Claude Code."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "browser-use>=0.12.6",
 ]
+
+# NOTE (known gap, not fixed by this version correction — see PR #56 /
+# CHANGELOG.md [Unreleased] Security and docs/VERSIONING.md): browser-use
+# actually requires Python >=3.11, and the committed uv.lock header reads
+# >=3.13, so `requires-python = ">=3.9"` above does not reflect a version
+# uv can actually resolve a fresh lock under. Left as-is here deliberately —
+# reconciling it is a support-policy decision for a maintainer, not a docs
+# task, and PR #56 explicitly scoped it out for the same reason.

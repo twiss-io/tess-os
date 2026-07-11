@@ -21,21 +21,27 @@ verdicts, hard floors on credentials/money/destructive-prod/client-claims) is
 real, tested, and **on `main`** — merged via
 [#38](https://github.com/twiss-io/tess-os/pull/38) (Phase 2b: gate spine
 hardening — verdict signing + CI auto-enforce, stacked on
-[#35–#37](https://github.com/twiss-io/tess-os/pulls?q=is%3Apr)). A fresh `git
-clone` of `main` today gets the gate. What it does **not** yet have is an npm
-release: the published `create-tess` package is still `0.1.0`, from before the
-gate landed — see [Quickstart](#quickstart--npm-create-tess) below for how to
-get it today via a direct clone versus what a future `npm create tess@latest`
-release will include. The orchestration layer *above* the gate (six outcome
-orchestrators, dispatch-brief contracts, typed retry) is still prose a model
-reads, not a mechanical runtime: there is no `tessctl run` and no dispatch
-driver. The gate's enforcement point (git + CI) is harness-agnostic by
-construction; the doctrine-rendering and onboarding experience is Claude Code
-only today (one registered `RenderTarget`, no Codex/Gemini/AGENTS.md adapter).
-**And, stated as plainly:** our own benchmark of whether *reading* this
-doctrine makes an agent produce better output — as opposed to the gate
-*enforcing* that unverified output can't ship — came back negative. See
-"Honest results" below before you decide what this repo is actually good for.
+[#35–#37](https://github.com/twiss-io/tess-os/pulls?q=is%3Apr)). Since then,
+`main` has also picked up `tessctl run` (a mechanical, sequential conductor
+loop that dispatches a crew-plan's stages against `claude -p`/`codex exec`,
+gate-checks before every stage, reads the artifact back off disk instead of
+trusting the summary, and hard-halts on a verifier `BLOCK` or an exhausted
+retry — see "Status" below for its real v1 scope and what's still missing,
+notably `parallel: true` stages still run sequentially and the SYNTHESIS
+hand-off isn't wired) and a `codex`/`generic` `RenderTarget` that emits
+`AGENTS.md` for non-Claude-Code harnesses. **None of this is in a tagged
+release yet** — `git tag` stops at `v0.1.1` (2026-06-29), which predates all
+of it; `docs/VERSIONING.md` and `CHANGELOG.md`'s `[Unreleased]` section carry
+the full accounting and the proposed next version number. A fresh `git clone`
+of `main` gets all of it today; the published `create-tess` npm package is
+still `0.1.0`, from before even the gate spine landed — see
+[Quickstart](#quickstart--npm-create-tess) below for how to get the current
+state today via a direct clone versus what a future `npm create tess@latest`
+release will include. **And, stated as plainly:** our own benchmark of
+whether *reading* this doctrine makes an agent produce better output — as
+opposed to the gate *enforcing* that unverified output can't ship — came back
+negative. See "Honest results" below before you decide what this repo is
+actually good for.
 
 > Tess OS is a doctrine + roster + config scaffold, an upgrade engine, and (on
 > `main`, via `git clone`) a deterministic ship-gate. It is not a running
@@ -519,7 +525,12 @@ external factual claims) always returns to the operator, even in autonomous mode
 - **`kb/`** — a knowledge-base scaffold (`raw/`, `wiki/`, `lint/`).
 - **`operator/`** — blank identity/profile/channel stubs you fill in; injected at
   `CLAUDE.md` render time, kept out of framework core.
-- **`docs/`** — [`COMPARISON.md`](docs/COMPARISON.md) (Tess OS vs. GitHub Spec
+- **`docs/`** — see [`docs/README.md`](docs/README.md) for the full index.
+  Highlights: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the system-layer
+  overview — gate spine, doctrine, engine, vault — with pointers into this
+  README's deeper sections), [`VERSIONING.md`](docs/VERSIONING.md) (the
+  SemVer policy and how the framework/npm version numbers relate),
+  [`COMPARISON.md`](docs/COMPARISON.md) (Tess OS vs. GitHub Spec
   Kit, Ruflo/claude-flow, BMAD, and the LangGraph-class app SDKs, with sources
   and where Tess OS is behind), the sourced
   [`competitive-analysis-2026-07-07.md`](docs/competitive-analysis-2026-07-07.md)

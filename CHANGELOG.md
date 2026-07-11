@@ -5,6 +5,62 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+> **Proposed next version: `0.2.0` — NOT YET CUT.** Everything below has
+> landed on `main` since the `v0.1.1` tag (2026-06-29) but has not been
+> tagged, GitHub-released, or published to npm. `0.2.0` (not `0.1.2`) is
+> proposed because this batch is release-note-substantial new capability —
+> `tessctl run` (the mechanical conductor loop), contracts-as-code, the
+> verdict-signing gate spine, mission records as code, OTel trace export,
+> and the Codex/generic render targets — not a patch-only batch, per
+> [`docs/VERSIONING.md`](docs/VERSIONING.md)'s "what bumps MINOR" rule. See
+> `docs/VERSIONING.md` and `conductor/release-process.md` for the release
+> checklist this number will go through when a maintainer decides to cut it.
+
+### Security
+- **PR [#56](https://github.com/twiss-io/tess-os/pull/56) — cleared all 22
+  open Dependabot alerts + the 1 open code-scanning alert (CWE-312
+  clear-text storage), 2026-07-11.** Real fixes, no suppressions:
+  - **Dependency bumps (transitive, via `browser-use`):** `aiohttp`
+    3.13.4 → **3.14.1** (11 alerts: CVE-2026-34993 untrusted
+    deserialization, CVE-2026-47265 cross-origin redirect,
+    CVE-2026-54276 DigestAuth cross-origin credential leak,
+    CVE-2026-50269 CRLF injection, + 7 more); `pypdf` 6.10.2 → **6.13.3**
+    (9 alerts: CVE-2026-48735/49460/49461 RAM exhaustion,
+    CVE-2026-54530/54531/54651 infinite loops, + 3 more); `soupsieve`
+    2.8.3 → **2.8.4** (2 alerts: CVE-2026-49477 ReDoS, CVE-2026-49476
+    memory exhaustion). `browser-use` hard-pins the vulnerable `aiohttp`/
+    `pypdf` versions on every release including latest (0.13.3), so the
+    fix is a `[tool.uv] override-dependencies` resolver pin in
+    `pyproject.toml` rather than a normal version bump — `browser-use`
+    is not exercised by the test suite or the runtime engine (see
+    `requirements-dev.txt`), so raising these transitive pins is safe.
+    `soupsieve` moved via normal resolution, no override needed.
+  - **CWE-312 clear-text storage (`proving-ground/tasks/16-trap-path-
+    traversal/grader.py`):** a path-traversal decoy constant
+    (`SECRET_SENTINEL`) written to a throwaway `tempfile.mkdtemp()` dir
+    and `rmtree`'d in `finally` was flagged by CodeQL's
+    `py/clear-text-storage-sensitive-data` rule. It was never a real
+    secret — the literal was already public in source and existed only
+    so the grader could detect a candidate `read_note()` escaping
+    `base_dir`. Fixed by generating the decoy as a random `uuid4` at
+    runtime instead of a hardcoded constant (a strictly stronger
+    tripwire — a candidate can't hard-code it) and renaming the
+    misleading `SECRET_*`/`secret` identifiers to `canary`/`CANARY`,
+    removing the CodeQL source. Grader pass/fail behavior for the naive-
+    vulnerable, correct, and no-op reference solutions is unchanged; 2
+    new regression tests pin the per-run randomness.
+  - Verified: engine suite 741 passed, proving-ground suite 116 passed
+    (114 baseline + 2 new), `tessctl doctor`/`verify` clean, zero
+    regressions against the pre-change baseline.
+  - **Flagged for a maintainer decision (not fixed in #56):** a
+    pre-existing `requires-python` inconsistency — `pyproject.toml`
+    declares `>=3.9`, `browser-use` actually requires `>=3.11`, and the
+    committed `uv.lock` header reads `>=3.13`. No support-policy change
+    was made in #56; see `docs/VERSIONING.md`'s "known gaps" note.
+  - PR open at the time of writing, not yet merged to `main`; this entry
+    documents the fix as staged for inclusion in the next release once
+    #56 merges.
+
 ### Fixed
 - **`dispatch-guard.sh` — headless / no-subagent-available exception**
   (Ada, Lead Backend Engineer, 2026-07-07, closing a finding from Ada's own
