@@ -7,3 +7,17 @@ requires-python = ">=3.9"
 dependencies = [
     "browser-use>=0.12.6",
 ]
+
+[tool.uv]
+# Security overrides (Dependabot). browser-use hard-pins two transitive
+# dependencies to versions that carry published advisories:
+#   - aiohttp==3.13.4  (GHSA advisories fixed in 3.14.1)
+#   - pypdf==6.10.2    (GHSA advisory fixed in 6.13.3)
+# No release of browser-use relaxes these exact pins, so force the minimal
+# patched versions here. browser-use is not exercised by the test suite or the
+# runtime engine (see requirements-dev.txt: pytest, pyyaml, pyrage), so raising
+# these transitive pins is safe for this repository's actual usage.
+override-dependencies = [
+    "aiohttp==3.14.1",
+    "pypdf==6.13.3",
+]
