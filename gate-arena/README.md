@@ -1,5 +1,30 @@
 # The Gate Arena
 
+## Addendum (2026-07-15) — corpus expanded to 15, reconciled to 14/15
+
+**Superseded by the fixes below; the pre-2026-07-15 12/12 write-up is
+preserved unmodified further down this file, per this repo's own
+"no goalpost-moving after seeing the numbers" discipline.** Three NEW
+attack classes (A13, A14, A15) were added, targeting families the original
+12-attack corpus never exercised: TOCTOU/evaluate-then-swap, multi-push
+split-payload, and dependency/supply-chain injection. Full detail,
+mechanism-by-mechanism, is in each attack's own returned `mechanism` string
+(see `bypass/attacks.py`) and `results/bypass-scorecard.md`/`.json`
+(committed, regenerated every run).
+
+| # | Attack | Result | Status |
+|---|---|---|---|
+| A13 | **Evaluate-then-swap (TOCTOU).** Three sub-probes: (a) content-swap after a green check (CONTROL — the engine is stateless and correctly re-validates); (b) a governed prod file converted blob→symlink was a git TYPE change (T) EXCLUDED by the diff-filter, making the swap invisible to the classifier; (c) `_gate_load_policy`, contract-shape validation, and hard-floor sign-off validation all read the ON-DISK working tree instead of the committed `--head` ref — disk state at check time has no enforced correspondence to the ref actually being evaluated (an ordinary `pull_request` checkout, by `actions/checkout`'s own documented default, checks out a synthetic MERGE commit, not `pull_request.head.sha`). (c) defeated even A11's "trusted, base-ref-extracted engine" CI fix — pinning the engine binary does not pin the data it reads. **Both (b) and (c) were REAL, FOUND bypasses.** Fixed: diff-filter is now `ACMRT`; policy/contract/sign-off validation now resolve content via the committed head ref's own git tree (the same `git ls-tree`/`git cat-file` primitive covering-verdict discovery already used), never disk. | 5/5 sub-probes BLOCKED | **CLOSED** |
+| A14 | **Multi-commit split-payload across separately-merged pushes.** Splits a weaken-policy-then-exploit tamper (which A3 correctly blocks in ONE push) into two independently-gated merges: push 1 gets a real, validly-signed Reid verdict for a policy "cleanup" that narrows/removes a rule; push 2 ships an unreviewed prod change against the now-legitimately-weakened baseline. Push 2 is **NOT blocked** — A3's baseline-union is scoped to the immediately-preceding push only, so it does not (and is not designed to) compose across a sequence of separately-reviewed pushes. **This is NOT a forgery/technical bypass** — every cryptographic/signature/artifact-hash check held; push 1 required and got a real, key-custodied signature from an approving reviewer. It is a disclosed, real limitation of any human-verdict system: once a narrowing is legitimately reviewed and approved, it becomes the trusted baseline going forward, and the gate has no mechanism (nor claims one) for flagging a sequence of individually-approved changes that cumulatively erode coverage. | SLIPPED THROUGH (push 2) | **OPEN — disclosed, design fix proposed, not implemented** |
+| A15 | **Dependency/supply-chain injection.** The gate's classification model is purely path-glob-based with no built-in notion that a dependency manifest/lockfile is prod_touching. FOUND: as shipped before this PR, neither the arena's fixture nor this repo's own real, live `core/policy/policy.yaml` had any rule for `uv.lock`/`pyproject.toml`/`package.json`/`requirements*.txt` etc. — a real, live gap, not just a fixture artifact — even though this repo's own governed CI workflows install and execute exactly what those files declare. Fixed (enumerated): a new `dependency-manifests` rule now covers every manifest/lockfile format this repo actually uses. Disclosed, NOT fixed: an unlisted format or non-lockfile supply-chain vector (proven via a Dockerfile base-image-tag probe) remains invisible — an enumeration fix, not a general capability. | BLOCKED (enumerated format); residual gap confirmed open by design | **PARTIALLY CLOSED — enumerated instance fixed, general limitation disclosed** |
+
+**Result: 14/15 scripted attacks BLOCKED.** One real, disclosed, non-forgery
+finding remains open (A14) — reported honestly, not papered over, with a
+proposed (not yet implemented) design fix in `RESULTS.md`'s addendum below
+and A14's own `mechanism` string in `results/bypass-scorecard.md`.
+
+---
+
 An honest, adversarial test of the ONE claim `proving-ground/` never tested:
 not "does the doctrine make agents produce better output" (tested twice,
 disproven — see `proving-ground/reports/2026-07-07.md` and

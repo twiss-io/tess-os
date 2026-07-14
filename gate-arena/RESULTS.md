@@ -5,6 +5,71 @@ Committed to `goal-gate-arena`, built per
 Read `PRE_REGISTERED_CAVEAT.md` — committed before any Layer B result
 existed — for the binding rules this write-up follows.
 
+## Addendum (2026-07-15) — corpus expanded to 15, reconciled to 14/15
+
+**Superseded by the fixes below; the 2026-07-08 addendum and the original
+8/10 write-up are preserved unmodified further down this file, per this
+repo's own "no goalpost-moving after seeing the numbers" discipline.**
+Three NEW attack classes probed families the 12-attack corpus never
+exercised:
+
+- **A13** (evaluate-then-swap / TOCTOU) found and closed TWO real engine
+  gaps: (b) a governed prod file converted blob→symlink was a git TYPE
+  change silently excluded by the diff-filter, making the swap invisible to
+  the classifier; (c) `_gate_load_policy`, contract-shape validation, and
+  hard-floor sign-off validation all read the ON-DISK working tree instead
+  of the committed `--head` git ref — disk state at check time has no
+  enforced correspondence to the ref actually being evaluated (an ordinary
+  `pull_request` checkout, per `actions/checkout`'s own documented default,
+  checks out a synthetic MERGE commit, not `pull_request.head.sha`). (c) is
+  the sharper finding: it defeated even A11's "trusted, base-ref-extracted
+  engine" CI fix, since a pristine, never-tampered engine copy still read
+  disk for these three data sources — pinning the ENGINE BINARY does not
+  pin the DATA it reads. Both are **CLOSED**: diff-filter is now `ACMRT`;
+  policy/contract/sign-off validation now resolve content via the committed
+  head ref's own git tree, never disk.
+- **A14** (multi-commit split-payload across separately-merged pushes) is
+  **NOT closed** — a genuine, disclosed finding, but NOT a forgery/technical
+  bypass: splitting a weaken-policy-then-exploit tamper across two pushes
+  (push 1: a real, validly-signed Reid verdict narrows a rule; push 2: an
+  unreviewed prod change exploiting the now-legitimately-narrowed baseline)
+  succeeds, because A3's baseline-union is scoped to the immediately
+  preceding push only. Every cryptographic control held; this is a
+  disclosed, inherent limitation of any human-verdict system, not a code
+  bug — reported honestly. **Proposed design fixes (none implemented —
+  each is a product/policy-design call for the project's security owner,
+  not a narrowly-scoped engine correctness fix like A13's):** (1) a
+  `narrows_coverage` verdict field (or a mechanical diff-based inference)
+  requiring a stricter review bar — e.g. both Reid AND Cyra, not either —
+  for any policy change that removes/narrows a rule's globs or
+  `hard_floor_rules`; (2) extend `_gate_load_policy_at_base` to compare
+  against a configurable longer-lived trusted floor (e.g. last tagged
+  release) instead of only the immediate parent push, trading bootstrap
+  simplicity for resistance to slow erosion; (3) a CODEOWNERS-enforced,
+  process-level review gate on any `rules[]`/`hard_floor_rules[]`
+  narrowing, independent of the cryptographic verdict — same posture as
+  `conductor/verdict-signing.md`'s existing defense-in-depth CODEOWNERS
+  recommendation.
+- **A15** (dependency/supply-chain injection) found a REAL, LIVE gap in
+  this repo's own shipped `core/policy/policy.yaml`, not just the arena's
+  fixture: no rule classified `uv.lock`/`pyproject.toml`/`package.json`/
+  `requirements*.txt` as prod_touching, even though this repo's own
+  governed CI workflows install and execute exactly what those files
+  declare. **PARTIALLY CLOSED**: a new `dependency-manifests` rule covers
+  every manifest/lockfile format this repo actually uses; an unlisted
+  format or non-lockfile supply-chain vector (proven via a Dockerfile
+  base-image-tag probe) remains disclosed, open, and NOT claimed fixed.
+
+**Result: 14/15 scripted attacks BLOCKED** (`results/bypass-scorecard.md` /
+`.json`, committed, regenerated every run — full mechanism-by-mechanism
+detail lives in each attack's own `mechanism` string there). See
+`gate-arena/README.md` for the per-attack table. 14/15 is a corpus score,
+never "unbypassable" — key custody, repo-admin power, AND now the disclosed
+A14 human-process boundary all remain outside what this arena can, or
+claims to, close.
+
+---
+
 ## Addendum (2026-07-08, honesty-capstone-audit-2026-07-08) — reconciled to 12/12
 
 **Superseded by the fixes below; original 8/10 write-up preserved

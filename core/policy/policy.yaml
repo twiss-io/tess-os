@@ -93,6 +93,29 @@
 #       instead of) the new `signoff_keys`-backed cryptographic
 #       authentication below — a sign-off must now be BOTH a governed
 #       artifact AND signed by a registered operator key.
+#
+# GATE-ARENA A13/A15 FIX (2026-07-15 — 3 new adversarial-corpus attack
+# classes, gate-arena/bypass/attacks.py): A13 (TOCTOU — "evaluate one
+# commit, a different commit/on-disk-state is what actually lands") found
+# and closed three ENGINE-level gaps in .tess/bin/tessctl itself (policy +
+# contract-shape validation reading the on-disk working tree instead of the
+# committed head ref; the same gap in hard-floor sign-off validation; a
+# blob->symlink TYPE change silently excluded by the diff-filter) — see
+# .tess/bin/tessctl's own "A13 FIX" comment blocks for the code-level detail;
+# no policy.yaml change was needed for A13. A15 (dependency/supply-chain
+# injection) found the opposite kind of gap — not an engine bug, but a
+# policy CONTENT gap: this file had no rule at all for dependency
+# manifests/lockfiles, so uv.lock/pyproject.toml/package.json etc. could be
+# edited to inject a malicious/typosquatted dependency with ZERO verdict
+# requirement, even though this repo's own governed CI workflows install
+# and execute exactly what those files declare. The new `dependency-
+# manifests` rule below closes the SPECIFIC, disclosed instance for every
+# manifest/lockfile format actually in this repo (plus common formats it
+# doesn't currently use, so adding one later doesn't ship silently
+# uncovered) — see that rule's own description for what this fix does NOT
+# generalize to (an unlisted lockfile format, or a non-lockfile supply-chain
+# vector, remains uncovered — the same disclosed, adopter's-responsibility
+# posture example-prod-service-placeholder already documents).
 policy:
   version: 1
 
@@ -131,6 +154,50 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+      classification: [prod_touching]
+      require_verdict: true
+      allowed_verifiers: [Reid, Cyra]
+
+    - id: dependency-manifests
+      description: >-
+        gate-arena bypass corpus A15 (disclosed 2026-07-15 — "dependency /
+        supply-chain injection"): the gate's classification model is PURELY
+        path-glob-based and has NO built-in notion that a dependency
+        manifest/lockfile is prod_touching — an edit to one is exactly as
+        consequential as an edit to the application code it resolves
+        (typosquat, malicious version pin, compromised transitive dep,
+        install-time code execution via a package's own build hooks), but
+        until this rule existed NOTHING in this repo's policy classified
+        uv.lock/pyproject.toml/package.json/etc. as needing a verdict at
+        all — a governed, unmodified CI workflow installs and executes
+        whatever these files declare. Globs below cover every real
+        manifest/lockfile actually present in this repo today (root
+        Python: uv.lock, pyproject.toml, requirements-dev.txt; root +
+        create-tess/ + gui/ Node: package.json, package-lock.json;
+        starter/: pnpm-lock.yaml) plus the common formats for ecosystems
+        this repo does not currently use, so adding one later doesn't
+        silently ship uncovered. THIS IS AN ENUMERATED, NOT A GENERAL, FIX:
+        a lockfile format not listed here (or a non-lockfile supply-chain
+        vector — a vendored dependency, a container base-image tag bump, a
+        git submodule pointer) is NOT covered by this rule and remains the
+        same disclosed, inherent limitation of a path-glob-based gate that
+        example-prod-service-placeholder's own comment already documents
+        for prod-path coverage generally — hand-authored per project, not
+        auto-globbed, and not a substitute for actually reviewing dependency
+        changes.
+      globs:
+        - "**/package.json"
+        - "**/package-lock.json"
+        - "**/pnpm-lock.yaml"
+        - "**/yarn.lock"
+        - "**/requirements*.txt"
+        - "**/pyproject.toml"
+        - "**/uv.lock"
+        - "**/Pipfile.lock"
+        - "**/poetry.lock"
+        - "**/Gemfile.lock"
+        - "**/go.sum"
+        - "**/Cargo.lock"
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

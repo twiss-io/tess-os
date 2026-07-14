@@ -9394,33 +9394,83 @@ def _gate_infer_contract_type(rel_path: str) -> str | None:
     return None
 
 
-def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: str) -> list:
-    """Schema + lint check a single on-disk contract instance. Returns a list
-    of violation strings (empty = valid). A file that can't even be loaded
+def _gate_read_head_blob_text(root: Path, rel_path: str, tree_index: dict) -> tuple:
+    """Resolve `rel_path`'s content AS COMMITTED at the pushed head ref(s)
+    (via `tree_index`, built by `_gate_git_tree_index` from `git ls-tree` —
+    the SAME source of truth covering-verdict discovery already uses, HIGH-
+    1(c)). Returns (found: bool, text: str | None) — found=False means the
+    path is absent from the head tree (deleted, or never existed there);
+    found=True with text=None means the blob exists but could not be
+    decoded/read (fail-closed territory for the caller, same posture as an
+    on-disk ContractError). Gate-arena finding A13 (TOCTOU — 'evaluate one
+    commit, but a DIFFERENT on-disk state is what content-reads actually
+    use'): this is the single choke point every A13-affected caller below
+    now goes through instead of reading `root / rel_path` off the working
+    tree directly."""
+    blobs = tree_index.get(rel_path)
+    if not blobs:
+        return False, None
+    for blob_sha in blobs:
+        text = _gate_git_cat_file(root, blob_sha)
+        if text is not None:
+            return True, text
+    return True, None
+
+
+def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: str, tree_index: dict = None) -> list:
+    """Schema + lint check a single contract instance. Returns a list of
+    violation strings (empty = valid). A file that can't even be loaded
     (unparsable YAML/JSON, missing front-matter, unknown extension) is
     reported as ONE violation string — fail-closed: an unreadable file that
-    LOOKS like a contract is never silently skipped."""
-    abs_path = root / rel_path
-    if not abs_path.exists():
-        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
-    try:
-        schema = load_contract_schema(root, contract_type)
-        instance = load_contract_instance(abs_path)
-    except ContractError as e:
-        return [f"{rel_path}: {e}"]
+    LOOKS like a contract is never silently skipped.
+
+    A13 FIX (Gate Arena finding — TOCTOU): when `tree_index` is given (every
+    `gate ci` / `gate pre-push` call always has one — see `_gate_run_ship_
+    check`), content is read from the COMMITTED head ref's own git tree via
+    `_gate_read_head_blob_text`, never the on-disk working tree — the disk at
+    check time has no enforced correspondence to the ref actually being
+    diffed/merged/pushed (a stale checkout, a build step that runs before
+    the gate, or — per actions/checkout's own documented default behavior of
+    checking out the synthetic MERGE commit rather than `pull_request.head.
+    sha` — an entirely ordinary PR checkout) could already disagree with
+    `--head` before this ever runs. `tree_index=None` (only ever exercised
+    by direct unit-test calls, never by the ship-gate's own two entrypoints)
+    preserves the original on-disk read for backward compatibility."""
+    if tree_index is not None:
+        found, text = _gate_read_head_blob_text(root, rel_path, tree_index)
+        if not found:
+            return []  # not present at head (deleted, or never existed there) — nothing to validate
+        if text is None:
+            return [f"{rel_path}: could not read this path's committed content at HEAD — fail-closed"]
+        try:
+            schema = load_contract_schema(root, contract_type)
+            instance = _parse_contract_instance_text(text, Path(rel_path).suffix, rel_path)
+        except ContractError as e:
+            return [f"{rel_path}: {e}"]
+    else:
+        abs_path = root / rel_path
+        if not abs_path.exists():
+            return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+        try:
+            schema = load_contract_schema(root, contract_type)
+            instance = load_contract_instance(abs_path)
+        except ContractError as e:
+            return [f"{rel_path}: {e}"]
     base_dir = root / CONTRACTS_DIR
     errors = schema_validate(instance, schema, schema, base_dir)
     errors += _lint_contract(contract_type, instance)
     return [f"{rel_path} {e}" for e in errors]
 
 
-def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
+def _gate_validate_contracts(root: Path, rel_paths: list, tree_index: dict = None) -> list:
     """tessctl gate's contract-enforcement pass (point 3 of the Phase 2
     brief): every brief/crew-plan/verdict/return-manifest/policy file in the
     changed set is validated against its schema + lint. Returns the combined
     violation list across all recognized contract files; [] means every
     recognized contract file in `rel_paths` is schema-valid (or there were
-    none to check)."""
+    none to check). `tree_index` — A13 fix — is threaded through to
+    `_gate_validate_one_contract_file` so content is read from the
+    committed head ref, not the on-disk working tree."""
     violations = []
     for rel_path in rel_paths:
         contract_type = _gate_infer_contract_type(rel_path)
@@ -9428,7 +9478,7 @@ def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
             continue
         violations += [
             f"[{contract_type}] {v}"
-            for v in _gate_validate_one_contract_file(root, rel_path, contract_type)
+            for v in _gate_validate_one_contract_file(root, rel_path, contract_type, tree_index)
         ]
     return violations
 
@@ -9451,15 +9501,36 @@ def _gate_run_git(root: Path, *args: str) -> str:
 
 
 def _gate_changed_paths_staged(root: Path) -> list:
-    """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    """Pre-commit mode: files staged for the next commit.
+
+    A13 FIX (Gate Arena finding — TOCTOU 'type-swap'): the diff filter now
+    ALSO includes T (type-change), not just A/C/M/R. A governed path
+    converted blob->symlink (or symlink->blob) is a git TYPE change — the
+    previous ACMR-only filter silently excluded it from `changed_paths`
+    entirely, so a prod-touching file could be swapped for a symlink
+    resolving to an ungoverned payload with ZERO classification and zero
+    covering-verdict requirement (the gate never even saw the path as
+    'changed'). Combined with `_gate_git_ls_tree`'s deliberate mode-120000
+    exclusion (LOW-1 — a symlink can never itself satisfy ship-gate coverage
+    because its target content isn't trustworthy path metadata), a path that
+    becomes a symlink at head now correctly shows up in `changed_paths`,
+    gets classified by policy same as any other change to that path, and can
+    NEVER be treated as 'covered' (its `current_shas` in the tree index is
+    always empty for a symlink entry) — fail-closed, not silently invisible."""
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMRT")
     return [line for line in out.splitlines() if line.strip()]
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
-    when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    when given --base/--head, and internally for the stdin protocol).
+
+    A13 FIX (Gate Arena finding — TOCTOU 'type-swap'): diff-filter now
+    includes T (type-change) alongside A/C/M/R — see
+    `_gate_changed_paths_staged`'s docstring immediately above for the full
+    rationale; identical fix, applied to the ref-range path used by every
+    `gate ci` / `gate pre-push` invocation."""
+    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMRT", base, head)
     return [line for line in out.splitlines() if line.strip()]
 
 
@@ -9513,28 +9584,68 @@ def _gate_find_policy_instance_path(root: Path):
     return None
 
 
-def _gate_load_policy(root: Path):
+def _gate_load_policy(root: Path, tree_index: dict = None):
     """Load + validate core/policy/policy.{yaml,yml,json} against
     core/contracts/policy.schema.json. Returns (instance, []) on success, or
     (None, [reason, ...]) — the None return is the fail-closed signal: the
     caller must treat an unloadable/invalid policy as a block, never as
-    'nothing to check.'"""
-    policy_path = _gate_find_policy_instance_path(root)
-    if policy_path is None:
-        return None, [
-            f"no policy instance found at {POLICY_DIR}/policy.{{yaml,yml,json}} — "
-            f"fail-closed: the gate cannot classify changed paths without a policy"
-        ]
-    try:
-        schema = load_contract_schema(root, "policy")
-        instance = load_contract_instance(policy_path)
-    except ContractError as e:
-        return None, [f"{policy_path.relative_to(root)}: {e}"]
+    'nothing to check.'
+
+    A13 FIX (Gate Arena finding — TOCTOU): when `tree_index` is given (every
+    `gate ci` / `gate pre-push` call always has one), the policy actually
+    ENFORCED for classification is the one COMMITTED at the pushed head
+    ref(s) (`_gate_read_head_blob_text`, the same `git ls-tree`/`git
+    cat-file`-backed source of truth covering-verdict discovery already
+    uses), never the on-disk working tree. Before this fix, a build step run
+    before the gate, a stale/partial checkout, or an ordinary `pull_request`
+    checkout (actions/checkout's documented default is the synthetic MERGE
+    commit, not `pull_request.head.sha`) could leave a WEAKER policy on disk
+    than the one actually committed at `head` — and since classification
+    read disk, a rule that unambiguously exists in `head`'s own git tree
+    (the version that lands / gets merged) could be silently skipped.
+    `tree_index=None` (only ever exercised by direct unit-test calls, never
+    by the ship-gate's own two entrypoints) preserves the original on-disk
+    read for backward compatibility."""
+    if tree_index is not None:
+        policy_rel = None
+        for name in POLICY_INSTANCE_CANDIDATES:
+            candidate = f"{POLICY_DIR}/{name}"
+            if candidate in tree_index:
+                policy_rel = candidate
+                break
+        if policy_rel is None:
+            return None, [
+                f"no policy instance found at {POLICY_DIR}/policy.{{yaml,yml,json}} in the "
+                f"COMMITTED head ref's own git tree — fail-closed: the gate cannot classify "
+                f"changed paths without a policy"
+            ]
+        found, text = _gate_read_head_blob_text(root, policy_rel, tree_index)
+        if not found or text is None:
+            return None, [f"{policy_rel}: could not read committed content at HEAD — fail-closed"]
+        try:
+            schema = load_contract_schema(root, "policy")
+            instance = _parse_contract_instance_text(text, Path(policy_rel).suffix, policy_rel)
+        except ContractError as e:
+            return None, [f"{policy_rel}: {e}"]
+        label = policy_rel
+    else:
+        policy_path = _gate_find_policy_instance_path(root)
+        if policy_path is None:
+            return None, [
+                f"no policy instance found at {POLICY_DIR}/policy.{{yaml,yml,json}} — "
+                f"fail-closed: the gate cannot classify changed paths without a policy"
+            ]
+        try:
+            schema = load_contract_schema(root, "policy")
+            instance = load_contract_instance(policy_path)
+        except ContractError as e:
+            return None, [f"{policy_path.relative_to(root)}: {e}"]
+        label = policy_path.relative_to(root)
     base_dir = root / CONTRACTS_DIR
     errors = schema_validate(instance, schema, schema, base_dir)
     errors += _lint_contract("policy", instance)
     if errors:
-        return None, [f"{policy_path.relative_to(root)} fails schema/lint: {e}" for e in errors]
+        return None, [f"{label} fails schema/lint: {e}" for e in errors]
     return instance, []
 
 
@@ -10088,7 +10199,7 @@ def _gate_covering_gap_report(
 # verifier's verdict alone; requires a distinct human sign-off artifact.
 # ---------------------------------------------------------------------------
 
-def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance: dict):
+def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance: dict, tree_index: dict = None, signoff_rel: str = None):
     """Returns (True, 'ok') if `path` is a well-formed, AUTHENTICATED
     sign-off artifact for `rule_id`; otherwise (False, reason). Deliberately
     NOT a `tessctl validate` contract type (see policy.schema.json's
@@ -10108,17 +10219,49 @@ def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance
     match, C1 path containment, and expiry/revocation rejection). An
     unsigned, hand-authored, wrong-key, expired-key, revoked-key, or
     tampered-after-signing sign-off can never clear a hard floor —
-    fail-closed."""
-    if not path.exists():
-        return False, (
-            f"no human sign-off artifact at {path} — guardrails.md Rule 18 hard-floor "
-            f"categories are never satisfiable by a verifier's verdict alone; requires an "
-            f"explicit operator sign-off artifact (see README.md 'tessctl gate')"
-        )
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}"
+    fail-closed.
+
+    A13 FIX (Gate Arena finding — TOCTOU): when `tree_index` is given (every
+    `gate ci` / `gate pre-push` call always has one), the sign-off must be
+    COMMITTED at the pushed head ref's own git tree (`signoff_rel` is the
+    rel-path key into `tree_index` — `_gate_read_head_blob_text`), never
+    merely present on the on-disk working tree. Before this fix, a sign-off
+    artifact could be planted on disk (uncommitted — no `git log`/`git show`
+    would ever reveal it) and clear a credentials/money-movement/
+    destructive-prod-data hard floor with ZERO audit trail in the
+    repository's own history, exactly the gap A7 already closed for ordinary
+    covering verdicts but never for hard-floor sign-offs specifically.
+    `tree_index=None` (only ever exercised by direct unit-test calls, never
+    by the ship-gate's own two entrypoints) preserves the original on-disk
+    read for backward compatibility."""
+    if tree_index is not None:
+        found, text = _gate_read_head_blob_text(root, signoff_rel, tree_index)
+        if not found:
+            return False, (
+                f"no human sign-off artifact COMMITTED at HEAD for {signoff_rel} — "
+                f"guardrails.md Rule 18 hard-floor categories are never satisfiable by a "
+                f"verifier's verdict alone, nor by an uncommitted/on-disk-only artifact; "
+                f"requires an explicit operator sign-off artifact actually present in the "
+                f"pushed commit's own git tree (see README.md 'tessctl gate')"
+            )
+        if text is None:
+            return False, f"sign-off artifact at {signoff_rel} could not be read from HEAD's git tree"
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            return False, f"sign-off artifact at {signoff_rel} is unreadable/invalid JSON: {e}"
+        path = signoff_rel
+    else:
+        if not path.exists():
+            return False, (
+                f"no human sign-off artifact at {path} — guardrails.md Rule 18 hard-floor "
+                f"categories are never satisfiable by a verifier's verdict alone; requires an "
+                f"explicit operator sign-off artifact (see README.md 'tessctl gate')"
+            )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}"
     if not isinstance(data, dict):
         return False, f"sign-off artifact at {path} is not a JSON object"
     required = ("rule_id", "category", "authorized_by", "rationale", "authorized_at")
@@ -10141,7 +10284,7 @@ def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance
     return True, "ok"
 
 
-def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_instance: dict) -> list:
+def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_instance: dict, tree_index: dict = None) -> list:
     reasons = []
     rule_by_id = {}
     for rules in hard_floor_matches.values():
@@ -10150,8 +10293,9 @@ def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_ins
     signoffs_dir = root / GATE_SIGNOFF_DIR
     for rule_id in sorted(rule_by_id):
         rule = rule_by_id[rule_id]
+        signoff_rel = f"{GATE_SIGNOFF_DIR}/{rule_id}.signoff.json"
         signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
-        ok, reason = _gate_validate_signoff(signoff_path, rule_id, root, policy_instance)
+        ok, reason = _gate_validate_signoff(signoff_path, rule_id, root, policy_instance, tree_index, signoff_rel)
         if not ok:
             # A3 fix: this hard-floor rule only still applies because the
             # pre-push baseline policy required it (removed/narrowed by the
@@ -10177,9 +10321,38 @@ def _gate_run_ship_check(
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
-    reasons = [f"[contract] {v}" for v in _gate_validate_contracts(root, changed_paths)]
+    # A13 FIX (Gate Arena finding, disclosed 2026-07-15 — TOCTOU: "the gate
+    # evaluates verdict coverage at one commit; a different commit's ON-DISK
+    # state is what content-reads actually use"). Both callers of this
+    # function (`gate ci`, `gate pre-push`) always pass a non-empty
+    # `head_shas` by the time execution reaches here (the only caller that
+    # can have an empty/absent head_shas is the pre-push stdin protocol with
+    # nothing pushed, which returns `changed=[]` upstream and is already
+    # handled by the early return above) — so the tree index for the
+    # ACTUAL, COMMITTED pushed ref(s) is built ONCE, up front, and is now the
+    # single source of truth for every content-read this function performs:
+    # policy load, contract-shape validation, hard-floor sign-off
+    # authentication, AND covering-verdict discovery (the last of these was
+    # already tree-based since HIGH-1(c); the first three used to read the
+    # ON-DISK WORKING TREE instead, which has NO enforced correspondence to
+    # `head_shas` — a build step run before the gate, a stale/partial
+    # checkout, or (per actions/checkout's own documented default behavior
+    # of checking out the synthetic MERGE commit for `pull_request` events,
+    # not `pull_request.head.sha`) an entirely ordinary PR checkout could
+    # already disagree with `--head` before this ever runs, silently
+    # dropping a rule/sign-off requirement that unambiguously exists in
+    # `head`'s own git tree — the version that actually lands / gets
+    # merged. Moving tree-index construction here (previously it was built
+    # later, only inside the covering-verdict branch) closes all three at
+    # once with a single, already-audited primitive.
+    try:
+        tree_index = _gate_git_tree_index(root, head_shas or [])
+    except GateSpineError as e:
+        return {"blocked": True, "reasons": [f"[gate] {e}"], "changed_paths": changed_paths}
 
-    policy_instance, policy_errors = _gate_load_policy(root)
+    reasons = [f"[contract] {v}" for v in _gate_validate_contracts(root, changed_paths, tree_index)]
+
+    policy_instance, policy_errors = _gate_load_policy(root, tree_index)
     if policy_errors:
         reasons += [f"[policy] {e}" for e in policy_errors]
         # Fail-closed: an untrusted policy means we cannot safely know what
@@ -10210,17 +10383,12 @@ def _gate_run_ship_check(
         effective_policy_instance_for_signoffs = _gate_merge_signoff_keys_baseline_first(
             policy_instance, baseline_policy_instance,
         )
-        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches, effective_policy_instance_for_signoffs)
+        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches, effective_policy_instance_for_signoffs, tree_index)
 
     if path_rule_matches:
         # HIGH-1(c): covering-verdict discovery + current-content lookups
         # are resolved against the COMMITTED tree at the actual pushed
         # ref(s) — never an rglob over the on-disk working tree.
-        try:
-            tree_index = _gate_git_tree_index(root, head_shas or [])
-        except GateSpineError as e:
-            reasons.append(f"[gate] {e}")
-            return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
         # A3 fix (chained-variant closure): signature verification for a
         # covering verdict uses a baseline-verifier_keys-first merged view
         # — a verifier's registered key cannot be swapped and then used to
