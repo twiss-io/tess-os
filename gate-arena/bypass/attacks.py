@@ -1,5 +1,5 @@
 """
-gate-arena/bypass/attacks.py — the 12 scripted bypass-attempt classes.
+gate-arena/bypass/attacks.py — the 15 scripted bypass-attempt classes.
 
 Each attack function takes a fresh `lib.FixtureRepo` and returns a dict:
     {
@@ -21,11 +21,29 @@ original 10-attack corpus with the two NEW bypass classes the honesty
 capstone audit found — the SAME self-protection class as A3/A8 (the thing
 governing a push isn't protected from that push), applied to the gate's own
 ENGINE (A11) and the hard-floor SIGN-OFF artifact (A12).
+
+A13 + A14 + A15 (gate-arena expansion 2026-07-15 — red-team pass over the
+three attack families the original corpus never exercised) probe three
+NEW surfaces:
+  - A13 evaluate-then-swap (TOCTOU family): does the gate re-validate at the
+    MERGED head's content, and can a governed file be SWAPPED in a way its
+    diff-based classifier cannot see?
+  - A14 multi-commit split-payload: is detection scoped to a single push/diff
+    such that a tamper assembled across SEPARATELY-MERGED pushes is missed?
+  - A15 dependency / supply-chain injection: can unreviewed behavior reach
+    production through a dependency manifest / lockfile the gate's
+    prod_touching globs never inspect (but a governed workflow install-and-
+    executes)?
+Each is reported with the same weight and the same two-outcome honesty as
+A1–A12: BLOCKED, or SLIPPED THROUGH (a real finding). Where a probe SLIPS,
+it is written up as a security finding in gate-arena/bypass/FINDINGS.md and
+the pass-count in gate-arena/README.md is stated exactly, never rounded up.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -747,6 +765,321 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         fx.teardown()
 
 
+# ---------------------------------------------------------------------------
+# A13 — EVALUATE-THEN-SWAP (TOCTOU family). Two sub-probes against the
+# "swap the blessed content out from under the gate" idea:
+#
+#   (a) content-swap (blob -> blob): the gate returns green for commit X
+#       (compliant: prod change + valid signed verdict); a DIFFERENT commit Y
+#       (malicious, no verdict) then replaces X at the same ref (force-push /
+#       rebase / post-approval amend). The task question: does the gate
+#       re-validate the MERGED head's content, or trust its earlier green for
+#       X? `tessctl gate` is stateless — it evaluates whatever base..head it
+#       is handed — so this probe measures whether re-running on Y actually
+#       re-blocks (it should) and locates the residual TOCTOU window in the
+#       CI-trigger / branch-protection layer (already disclosed as the
+#       repo-admin boundary, not the engine).
+#
+#   (b) TYPE-swap (blob -> symlink): convert a governed prod file from a
+#       regular blob into a SYMLINK pointing at an ungoverned payload, in the
+#       merged head. `_gate_diff_paths` runs `git diff --diff-filter=ACMR`
+#       (Added/Copied/Modified/Renamed) — a blob->symlink change is a git
+#       TYPE change (status letter T), which that filter EXCLUDES, AND
+#       `_gate_git_ls_tree` drops mode-120000 symlink entries (LOW-1). So the
+#       governed path transitions from "regular file, requires a covering
+#       verdict" to "symlink, invisible to the gate" with NO verdict required
+#       for the transition — the file's resolved runtime behavior is swapped
+#       with the gate returning green. Verified empirically, not assumed.
+# ---------------------------------------------------------------------------
+
+def attack_A13_toctou_evaluate_then_swap(base_dir: Path, engine) -> dict:
+    results = {}
+
+    # (a) content-swap: X blessed, Y swapped in — does the engine re-validate?
+    fx = _new_fixture(base_dir, engine, "A13a")
+    try:
+        base = fx.base_sha
+        (fx.root / "src" / "prod" / "app.py").write_text("print('prod v2 — reviewed')\n", encoding="utf-8")
+        blob = blob_sha(fx.root, "src/prod/app.py")
+        verdict = base_verdict(["src/prod/**"], {"src/prod/app.py": blob}, verifier="Quinn")
+        verdict["signature"] = fx.sign(verdict, "Quinn")
+        write_verdict(fx.root, "verdicts/prod-src.verdict.md", verdict)
+        head_x = commit_all(fx.root, "prod v2 + valid signed verdict (the APPROVED commit X)")
+        _r_x, payload_x = fx.gate_ci(base, head_x)
+        x_green = not payload_x["blocked"]  # time-of-check: gate blessed X
+
+        # SWAP: discard X and land Y (malicious, NO verdict) at the same ref —
+        # exactly what a force-push / rebase-then-merge does after X went green.
+        git(fx.root, "reset", "--hard", base)
+        (fx.root / "src" / "prod" / "app.py").write_text("print('prod v3 — MALICIOUS, never reviewed')\n", encoding="utf-8")
+        head_y = commit_all(fx.root, "prod v3 — swapped in after X was green (commit Y)")
+        _r_y, payload_y = fx.gate_ci(base, head_y)  # does the gate re-validate Y's content?
+        y_blocked = payload_y["blocked"]
+        results["content_swap"] = {
+            "blocked": y_blocked,
+            "x_green": x_green,
+            "reasons": payload_y["reasons"],
+            "note": (
+                "the engine is stateless and re-validates whatever base..head it is handed: "
+                "X went green, Y (the swapped-in malicious head) is independently BLOCKED when "
+                "the gate is re-run on it. The residual TOCTOU window — a CI/branch-protection "
+                "layer that reuses X's green status for a merged Y without re-running on Y — is "
+                "the repo-admin boundary README.md already discloses, not an engine gap."
+                if y_blocked else
+                "the gate did NOT re-block the swapped-in malicious head Y — engine-level "
+                "evaluate-then-swap slips."
+            ),
+        }
+    finally:
+        fx.teardown()
+
+    # (b) TYPE-swap: convert a governed prod blob into a symlink -> ungoverned payload.
+    fx = _new_fixture(base_dir, engine, "A13b")
+    try:
+        base = fx.base_sha  # src/prod/app.py is a governed regular blob (v1) at base
+        # An ungoverned payload the symlink will resolve to (matches no policy
+        # rule). Benign on purpose — a print, not a shell sink: this is a
+        # fixture string the arena never executes; it only needs to stand in
+        # for "arbitrary attacker-chosen prod behavior" to make the point.
+        (fx.root / "payload.py").write_text(
+            "# Attacker-controlled. Ungoverned path (not under any policy glob).\n"
+            "print('prod-behavior-swapped-without-review')\n",
+            encoding="utf-8",
+        )
+        app = fx.root / "src" / "prod" / "app.py"
+        app.unlink()
+        os.symlink("../../payload.py", app)  # blob -> symlink : git status letter T
+        head = commit_all(fx.root, "chore: relink app.py (payload.py is ungoverned) — type-swap")
+        r, payload = fx.gate_ci(base, head)
+        changed = payload["changed_paths"] if payload else []
+        blocked = payload["blocked"] if payload else (r.returncode != 0)
+        app_seen = "src/prod/app.py" in changed
+        results["type_swap"] = {
+            "blocked": blocked,
+            "changed_paths": changed,
+            "app_py_classified": app_seen,
+            "reasons": payload["reasons"] if payload else None,
+            "note": (
+                "src/prod/app.py converted blob->symlink is a git TYPE change (T), EXCLUDED by "
+                "`git diff --diff-filter=ACMR` (see _gate_diff_paths), and dropped from the tree "
+                "index by _gate_git_ls_tree's mode-120000 exclusion (LOW-1) — so the governed "
+                "prod path is neither classified nor content-checked; its resolved runtime "
+                "behavior is swapped to ungoverned payload.py with the gate returning green and "
+                "zero covering verdict. app.py in changed_paths: " + str(app_seen)
+            ),
+        }
+    finally:
+        fx.teardown()
+
+    # The class holds only if BOTH sub-probes are defended. (b) is the finding.
+    all_blocked = all(v["blocked"] for v in results.values())
+    mechanism = " | ".join(
+        f"{k}: {'BLOCKED' if v['blocked'] else 'SLIPPED'} — {v['note']}" for k, v in results.items()
+    )
+    return {
+        "id": "A13", "name": "evaluate-then-swap (TOCTOU): content-swap + blob->symlink type-swap",
+        "description": (
+            "Swap the content the gate already blessed. (a) A malicious commit Y replaces the "
+            "approved commit X at the same ref — does the gate re-validate Y's content? "
+            "(b) A governed prod file is converted blob->symlink so the diff-based classifier "
+            "(git diff --diff-filter=ACMR, which excludes type-changes) never sees the change."
+        ),
+        "blocked": all_blocked, "mechanism": mechanism, "evidence": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# A14 — MULTI-COMMIT SPLIT-PAYLOAD across separately-MERGED pushes. A3 proves
+# the gate blocks a weaken-the-policy-AND-exploit-it tamper when both halves
+# ride the SAME push (base..head unions the pre-push baseline policy). This
+# probes whether that protection COMPOSES across the push boundary: split the
+# same logical tamper into two independently-gated merges —
+#   push 1: weaken the policy (remove the prod-src rule) WITH a valid signed
+#           Reid verdict for the policy edit (models a reviewer approving a
+#           benign-looking "cleanup" PR — the policy file is itself governed,
+#           so this half is correctly gated and cannot land key-free);
+#   push 2: ship the malicious prod change with NO verdict, based on the
+#           already-weakened tree.
+# A3's baseline is only ever `args.base` — the IMMEDIATELY-preceding merge —
+# so once the weakening has landed in push 1, push 2's baseline is already
+# weak and the malicious code faces no rule. The control case (both edits in
+# ONE push off the original strong base) must still be A3-BLOCKED.
+# ---------------------------------------------------------------------------
+
+def attack_A14_split_payload_across_pushes(base_dir: Path, engine) -> dict:
+    import yaml
+    results = {}
+
+    fx = _new_fixture(base_dir, engine, "A14")
+    try:
+        b0 = fx.base_sha  # strong baseline: prod-src rule present
+
+        # --- PUSH 1: weaken policy (remove prod-src) + a valid signed Reid verdict. ---
+        policy_path = fx.root / "core" / "policy" / "policy.yaml"
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        policy["policy"]["rules"] = [r for r in policy["policy"]["rules"] if r.get("id") != "prod-src"]
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+        pol_blob = blob_sha(fx.root, "core/policy/policy.yaml")
+        v = base_verdict(["core/policy/**"], {"core/policy/policy.yaml": pol_blob}, verifier="Reid")
+        v["signature"] = fx.sign(v, "Reid")
+        write_verdict(fx.root, "verdicts/policy-cleanup.verdict.md", v)
+        p1 = commit_all(fx.root, "chore: simplify policy (remove 'unused' prod-src rule)")
+        _r1, payload1 = fx.gate_ci(b0, p1)
+        push1_blocked = payload1["blocked"]
+
+        # --- PUSH 2: malicious prod change, NO verdict, based on the weakened tree. ---
+        (fx.root / "src" / "prod" / "app.py").write_text("print('prod v2 — MALICIOUS, unreviewed')\n", encoding="utf-8")
+        p2 = commit_all(fx.root, "prod change (no verdict — baseline already weakened in push 1)")
+        _r2, payload2 = fx.gate_ci(p1, p2)
+        push2_blocked = payload2["blocked"]
+    finally:
+        fx.teardown()
+
+    # --- CONTROL: the SAME two edits in ONE push off the strong base b0 => A3 must BLOCK. ---
+    fx2 = _new_fixture(base_dir, engine, "A14ctl")
+    try:
+        b0c = fx2.base_sha
+        policy_path = fx2.root / "core" / "policy" / "policy.yaml"
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        policy["policy"]["rules"] = [r for r in policy["policy"]["rules"] if r.get("id") != "prod-src"]
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+        (fx2.root / "src" / "prod" / "app.py").write_text("print('prod v2 — MALICIOUS, unreviewed')\n", encoding="utf-8")
+        combined = commit_all(fx2.root, "chore: simplify policy + prod change (same push)")
+        _rc, payload_ctl = fx2.gate_ci(b0c, combined)
+        single_push_blocked = payload_ctl["blocked"]
+    finally:
+        fx2.teardown()
+
+    results["push1_policy_weaken"] = {"blocked": push1_blocked, "reasons": payload1["reasons"]}
+    results["push2_malicious_prod"] = {"blocked": push2_blocked, "reasons": payload2["reasons"]}
+    results["control_single_push"] = {"blocked": single_push_blocked, "reasons": payload_ctl["reasons"]}
+
+    # The class is "defended" only if the split malicious push (push 2) is blocked.
+    blocked = push2_blocked
+    mechanism = (
+        f"CONTROL (both edits, one push off strong base): {'BLOCKED' if single_push_blocked else 'SLIPPED'} "
+        f"(A3 baseline-union). SPLIT push 1 (policy weaken + valid signed Reid verdict): "
+        f"{'BLOCKED' if push1_blocked else 'landed'} ({payload1['reasons']}). SPLIT push 2 "
+        f"(malicious prod, NO verdict, base = weakened push-1 head): "
+        f"{'BLOCKED' if push2_blocked else 'NOT BLOCKED — SLIPPED THROUGH'} ({payload2['reasons']}). "
+        f"A3's baseline is only the immediately-preceding merge, so protection does NOT compose "
+        f"across the push boundary once a weakening has landed. DEPENDENCY: push 1 is correctly "
+        f"gated and requires a real Reid/Cyra verdict to land (key custody / an approving reviewer) "
+        f"— the erosion is not key-free; it is the disclosed 'a merged weakening lowers the floor' "
+        f"boundary, sharpened by push 2 shipping arbitrary unreviewed prod code with a GREEN gate "
+        f"and no flag."
+    )
+    return {
+        "id": "A14", "name": "multi-commit split-payload across separately-merged pushes",
+        "description": (
+            "Split a weaken-policy-then-exploit tamper (A3-blocked in one push) into two "
+            "independently-gated merges: an approved policy 'cleanup' that removes a rule, then "
+            "an unreviewed prod change against the now-weakened baseline. Does A3's same-push "
+            "protection compose across the push boundary?"
+        ),
+        "blocked": blocked, "mechanism": mechanism, "evidence": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# A15 — DEPENDENCY / SUPPLY-CHAIN INJECTION. The gate's self-protection rule
+# (tess-os-security-tier-doctrine) deliberately governs `.github/workflows/**`
+# (MEDIUM-1: guard the gate's own CI trigger). But the DEPENDENCY MANIFESTS
+# those governed workflows install-and-execute — `requirements-dev.txt`,
+# `pyproject.toml`, `package-lock.json`, etc. — are in NO policy glob. This
+# repo's real `.github/workflows/ci.yml` runs `pip install -r
+# requirements-dev.txt` then `python -m pytest`, and `npm ci` from
+# `create-tess/package-lock.json` — so an unreviewed edit to a manifest
+# injects code that a governed, UNMODIFIED workflow then executes in CI, with
+# zero covering verdict. The attacker never touches a file the gate inspects.
+# CONTROL: editing the workflow FILE itself is gated (A8's class) — proving
+# the gate protects the trigger but not the trigger's supply chain.
+# ---------------------------------------------------------------------------
+
+def attack_A15_supply_chain_dependency_injection(base_dir: Path, engine) -> dict:
+    results = {}
+    fx = _new_fixture(base_dir, engine, "A15")
+    try:
+        # Seed the real supply-chain surface into the baseline: a dependency
+        # manifest + a governed workflow that install-and-executes it (mirrors
+        # this repo's actual ci.yml). Committed as the baseline (pre-existing,
+        # already-reviewed history) so the attack diff is base2..head.
+        (fx.root / "requirements-dev.txt").write_text("pytest>=7.0\nPyYAML>=6.0\n", encoding="utf-8")
+        wf = fx.root / ".github" / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        (wf / "ci.yml").write_text(
+            "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - run: pip install -r requirements-dev.txt\n"
+            "      - run: python -m pytest\n",
+            encoding="utf-8",
+        )
+        base2 = commit_all(fx.root, "ci: add test workflow + requirements-dev.txt (baseline)")
+
+        # ATTACK: edit ONLY the ungoverned dependency manifest — inject a dep
+        # the governed ci.yml will `pip install` and pytest will import/execute.
+        (fx.root / "requirements-dev.txt").write_text(
+            "pytest>=7.0\nPyYAML>=6.0\n"
+            "evil-telemetry==6.6.6  # attacker-injected: arbitrary code on install/import in CI\n",
+            encoding="utf-8",
+        )
+        head = commit_all(fx.root, "chore: pin an extra dev dependency")
+        r, payload = fx.gate_ci(base2, head)
+        manifest_blocked = payload["blocked"] if payload else (r.returncode != 0)
+        results["manifest_edit"] = {
+            "blocked": manifest_blocked,
+            "changed_paths": payload["changed_paths"] if payload else None,
+            "reasons": payload["reasons"] if payload else None,
+            "note": (
+                "requirements-dev.txt matches NO rule in the forked-verbatim shipped policy — "
+                "not classified, no verdict required. The governed, UNMODIFIED ci.yml "
+                "(`pip install -r requirements-dev.txt` + `python -m pytest`) then installs and "
+                "executes the injected dependency in CI. Unreviewed behavior ships with the gate "
+                "green."
+            ),
+        }
+
+        # CONTROL: editing the workflow FILE itself IS gated (.github/workflows/**).
+        (wf / "ci.yml").write_text(
+            "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - run: echo tampered\n",
+            encoding="utf-8",
+        )
+        head_wf = commit_all(fx.root, "ci: edit the workflow file directly (control)")
+        r2, payload2 = fx.gate_ci(base2, head_wf)
+        workflow_blocked = payload2["blocked"] if payload2 else (r2.returncode != 0)
+        results["control_workflow_edit"] = {
+            "blocked": workflow_blocked,
+            "reasons": payload2["reasons"] if payload2 else None,
+            "note": ".github/workflows/** IS governed — a direct workflow edit needs a Reid/Cyra verdict.",
+        }
+    finally:
+        fx.teardown()
+
+    # Defended only if the manifest edit is also blocked. It is the finding.
+    blocked = results["manifest_edit"]["blocked"]
+    mechanism = (
+        f"dependency manifest (requirements-dev.txt) edit: "
+        f"{'BLOCKED' if results['manifest_edit']['blocked'] else 'NOT BLOCKED — SLIPPED THROUGH'} "
+        f"({results['manifest_edit']['reasons']}). CONTROL — direct workflow-file edit: "
+        f"{'BLOCKED' if results['control_workflow_edit']['blocked'] else 'SLIPPED'} "
+        f"({results['control_workflow_edit']['reasons']}). The gate governs the CI trigger FILE "
+        f"(.github/workflows/**) but NOT the dependency manifests that governed workflow "
+        f"install-and-executes — a supply-chain edit routes around the gate's own self-protection. "
+        f"BOUNDARY: the arena proves the ENGINE returns green for the manifest edit; the "
+        f"install-and-execute (RCE-in-CI) consequence is grounded in this repo's real committed "
+        f".github/workflows/ci.yml, not spun up here — same disclosure posture as A8/A11."
+    )
+    return {
+        "id": "A15", "name": "dependency / supply-chain injection (ungoverned manifest)",
+        "description": (
+            "Inject unreviewed behavior through a dependency manifest / lockfile the gate's "
+            "prod_touching globs never inspect but a governed workflow install-and-executes — "
+            "without touching any file the gate watches."
+        ),
+        "blocked": blocked, "mechanism": mechanism, "evidence": results,
+    }
+
+
 ALL_ATTACKS = [
     attack_A1_no_verify_local_bypass,
     attack_A2_hard_floor_valid_verdict_insufficient,
@@ -760,4 +1093,7 @@ ALL_ATTACKS = [
     attack_A10_shape_attacks,
     attack_A11_same_push_engine_tamper,
     attack_A12_hard_floor_signoff_forgery,
+    attack_A13_toctou_evaluate_then_swap,
+    attack_A14_split_payload_across_pushes,
+    attack_A15_supply_chain_dependency_injection,
 ]

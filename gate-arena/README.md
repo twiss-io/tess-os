@@ -15,7 +15,7 @@ of the mistake the proving-ground benchmark just punished.
 
 ## Layer A — the bypass corpus (deterministic, `bypass/`)
 
-Twelve scripted attack classes against a fixture repo running the REAL
+Fifteen scripted attack classes against a fixture repo running the REAL
 `.tess/bin/tessctl` engine (copied verbatim from this checkout), real `git`,
 real `gpg`, and a policy **forked verbatim from this repo's own shipped
 `core/policy/policy.yaml`** (not a synthetic toy — the self-gating rule that
@@ -28,8 +28,13 @@ Run it: `python3 gate-arena/bypass/run_bypass_corpus.py` (no API calls, no
 cost — pure deterministic software testing, requires `git` + `gpg` on
 PATH).
 
-**Result: 12/12 attacks BLOCKED.** The original 10-attack corpus (A1–A10)
-ran 8/10 at first pass, with two real, disclosed gaps — both since closed:
+**Result: 12/15 attacks BLOCKED** (this expansion added A13–A15 and each
+surfaced a real gap; A13 is closed by a small engine fix in this same PR — see
+below — leaving A14 + A15 as open, disclosed findings). Full write-up of the
+three new classes: `bypass/FINDINGS.md`.
+
+The original 10-attack corpus (A1–A10) ran 8/10 at first pass, with two real,
+disclosed gaps — both since closed:
 
 | # | Finding | Status |
 |---|---|---|
@@ -46,6 +51,17 @@ applied to two surfaces MEDIUM-1/A3 never reached:
 | A11 | **Same-push ENGINE tamper** (§3-c). `.github/workflows/tess-gate.yml` ran `python3 .tess/bin/tessctl gate ci` FROM THE PUSHED CHECKOUT, and `.tess/bin/**` was in NO policy glob — an attacker editing `_gate_run_ship_check` itself to self-attest clean, in the same push as an unreviewed payload, kept the required check green against a tampered engine (A8's disclosure covered the workflow FILE; this is the ENGINE that file invokes). Fixed: `.tess/bin/**` + the root `tessctl` wrapper are now policy-covered, AND the CI workflow (v3) extracts and runs the engine AS IT EXISTED AT THE PUSH'S BASE REF, never the pushed tree's own copy. | **CLOSED** |
 | A12 | **Hard-floor sign-off forgery** (§3-d). `.tess/gate/signoffs/<rule-id>.signoff.json` was validated by JSON SHAPE ALONE (five non-empty fields) — no signature, no authentication — and the directory was not policy-covered; any agent able to write a file could forge a hard-floor clearance. Fixed: a sign-off must now carry a signature verifying against a registered key in `policy.signoff_keys`, AND `.tess/gate/signoffs/**` is now policy-covered (a governed artifact, not just an authenticated one). | **CLOSED** |
 
+The gate-arena expansion (2026-07-15) added three NEW classes probing the
+evaluate-then-swap (TOCTOU), split-payload, and dependency/supply-chain
+families the original corpus never exercised. Each surfaced a real gap.
+Full detail: `bypass/FINDINGS.md`.
+
+| # | Attack | Status |
+|---|---|---|
+| A13 | **Evaluate-then-swap.** (a) content-swap (blob→blob) is BLOCKED — the engine is stateless and re-validates the merged head's content, so a swapped-in malicious commit is independently re-blocked. (b) **type-swap (blob→symlink)** was a ★BYPASS: `_gate_diff_paths` uses `git diff --diff-filter=ACMR`, which EXCLUDES git type-changes (status `T`), and `_gate_git_ls_tree` drops mode-120000 symlinks (LOW-1) — so converting a governed file to a symlink pointing at ungoverned content shipped green with zero verdict. Fixed in this PR (separate commit): `--diff-filter=ACMR` → `--diff-filter=ACMRT`, so a type-swap is classified and fails closed. | **CLOSED** (fix in this PR) |
+| A14 | **Multi-commit split-payload across merges.** A3 blocks weaken-policy-then-exploit in ONE push, but not when split into two independently-merged pushes: an approved "cleanup" PR that removes a rule (push 1, correctly gated — needs a real Reid verdict) permanently lowers the baseline, so a later unreviewed prod change (push 2) ships green with no flag. A3's baseline is only the immediately-preceding merge. NOT key-free (depends on push 1 being approved) — a confused-deputy erosion, not a clean bypass. | **OPEN** (disclosed; fix design in FINDINGS.md) |
+| A15 | **Dependency / supply-chain injection.** The gate governs `.github/workflows/**` (MEDIUM-1) but NOT the dependency manifests those governed workflows install-and-execute (`requirements-dev.txt`, `package-lock.json`, …). This repo's real `ci.yml` runs `pip install -r requirements-dev.txt` + `pytest` and `npm ci`; an unreviewed manifest edit (typosquat/malicious pin) ships green and executes in CI with zero verdict. Key-free. | **OPEN** (disclosed; fix = add manifest globs to policy, a coverage decision for Tess+Xavier — FINDINGS.md) |
+
 Full detail, mechanism-by-mechanism: `results/bypass-scorecard.md` /
 `.json` (committed — see the honesty capstone audit's R10: a security
 number that only lives in a PR description, not a committed artifact,
@@ -61,8 +77,11 @@ the same reason: they prove the CONTENT/ENGINE checks refuse to clear a
 neutered `.github/workflows/tess-gate.yml` / a tampered `.tess/bin/tessctl`
 in the same push; they cannot prove, from inside this arena, that a real
 GitHub required-status-check would still refuse to go green if that
-neutered artifact is what actually executes. 12/12 is a corpus score, not a
-proof of unbypassability — see `RESULTS.md`'s must-not-claims.
+neutered artifact is what actually executes. 12/15 (13/15 after the A13 fix
+commit) is a corpus score, not a proof of unbypassability — it means precisely
+these 15 pre-registered attacks were run and these were the outcomes, and A14 +
+A15 remain OPEN, disclosed findings. See `RESULTS.md`'s must-not-claims and
+`bypass/FINDINGS.md`.
 
 ## Layer B — the enforcement metric (probabilistic, `enforcement/`)
 
