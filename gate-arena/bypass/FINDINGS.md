@@ -15,9 +15,10 @@ was actually run; raw per-probe evidence is in
 three new classes surfaced a real gap. One of them (A13, blob→symlink
 type-swap) is closed by a small engine fix committed *after* this findings
 file (see "Fix" under A13, and the commit history — the finding is recorded
-before the fix, deliberately). A14 and A15 are left OPEN with proposed fix
-designs; they are coverage/architecture decisions for Tess + Xavier, not
-folded into this red-team PR.
+before the fix, deliberately); **with that fix applied (this PR's second
+commit) the score is 13/15**, A14 and A15 still open. A14 and A15 are left OPEN
+with proposed fix designs; they are coverage/architecture decisions for
+Tess + Xavier, not folded into this red-team PR.
 
 | ID | Class | Verdict | Key-free? |
 |---|---|---|---|

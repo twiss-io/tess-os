@@ -9452,14 +9452,24 @@ def _gate_run_git(root: Path, *args: str) -> str:
 
 def _gate_changed_paths_staged(root: Path) -> list:
     """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    # gate-arena A13b fix: include T (type-change) alongside ACMR. A governed
+    # regular file converted to a SYMLINK is a git type-change (status T);
+    # without T it was excluded from classification entirely (and
+    # _gate_git_ls_tree also drops the resulting mode-120000 symlink — LOW-1),
+    # letting a governed path be swapped to a symlink -> ungoverned content
+    # with no covering verdict. Adding T is strictly additive (more paths
+    # classified, never fewer) so it cannot weaken any existing block.
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMRT")
     return [line for line in out.splitlines() if line.strip()]
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
     when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    # gate-arena A13b fix: --diff-filter=ACMRT (was ACMR) so a blob->symlink
+    # TYPE-swap of a governed file is classified and fails closed, instead of
+    # being invisible. See _gate_changed_paths_staged above / bypass/FINDINGS.md.
+    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMRT", base, head)
     return [line for line in out.splitlines() if line.strip()]
 
 

@@ -28,10 +28,12 @@ Run it: `python3 gate-arena/bypass/run_bypass_corpus.py` (no API calls, no
 cost — pure deterministic software testing, requires `git` + `gpg` on
 PATH).
 
-**Result: 12/15 attacks BLOCKED** (this expansion added A13–A15 and each
-surfaced a real gap; A13 is closed by a small engine fix in this same PR — see
-below — leaving A14 + A15 as open, disclosed findings). Full write-up of the
-three new classes: `bypass/FINDINGS.md`.
+**Result: 13/15 attacks BLOCKED** after the A13 fix in this PR. The expansion
+added A13–A15 and each surfaced a real gap; the finding run first recorded them
+at **12/15** (preserved in the commit history and `bypass/FINDINGS.md` — the
+finding is committed *before* the fix on purpose). A13's blob→symlink type-swap
+is closed by the engine fix in this PR's second commit; A14 + A15 remain open,
+disclosed findings. Full write-up of the three new classes: `bypass/FINDINGS.md`.
 
 The original 10-attack corpus (A1–A10) ran 8/10 at first pass, with two real,
 disclosed gaps — both since closed:
