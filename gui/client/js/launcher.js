@@ -57,6 +57,7 @@ function makeTile(command, { onLaunchImmediate, onLaunchWithArg }) {
     {
       type: 'button',
       className: 'tile',
+      'data-launch-control': 'true',
       onClick: () => (argSpec ? onLaunchWithArg(command.name, argSpec) : onLaunchImmediate(command.name)),
     },
     [
@@ -121,7 +122,12 @@ function makeSavedTile(mission, { onLaunch, onRemove }) {
   return el('div', { className: 'tile-wrapper' }, [
     el(
       'button',
-      { type: 'button', className: 'tile tile--saved', onClick: () => onLaunch(mission) },
+      {
+        type: 'button',
+        className: 'tile tile--saved',
+        'data-launch-control': 'true',
+        onClick: () => onLaunch(mission),
+      },
       [el('span', { className: 'tile__label' }, [mission.label]), el('span', { className: 'tile__desc' }, [preview])],
     ),
     el(

@@ -58,8 +58,20 @@ node /path/to/instance/gui/bin/tess-gui.mjs --dir /path/to/instance
 - The Claude Code CLI installed and already logged in
   (`claude auth status` should show you as authenticated)
 - Minimum supported CLI version: **2.0.0**. `tess-gui` runs a startup
-  preflight check and will fail loudly with an upgrade message rather than
-  surface a raw CLI error mid-mission if your version is older.
+  preflight check. The dashboard keeps its launch controls disabled until
+  `/api/health` reports a compatible CLI, including while that check is
+  unresolved or the local server cannot be reached.
+
+### Launch admission
+
+The dashboard preflight is a conservative usability check, not an authority
+boundary or a diagnostic interface. `POST /api/missions` on the local server
+is authoritative: it repeats its own compatibility check immediately before
+spawning a mission and rejects unavailable, missing, unresolved, failed, or
+incompatible CLI health. The browser may therefore disable a launch that the
+server could later accept, and the server may still reject a request after a
+compatible browser health response. The UI does not promise to diagnose why a
+launch was rejected.
 
 ## Known first-run behavior
 
