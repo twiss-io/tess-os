@@ -4,727 +4,149 @@
 [![create-tess on npm](https://img.shields.io/npm/v/create-tess?label=create-tess)](https://www.npmjs.com/package/create-tess)
 [![Latest release](https://img.shields.io/github/v/release/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/twiss-io/tess-os/ci.yml?label=CI)](https://github.com/twiss-io/tess-os/actions/workflows/ci.yml)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![GitHub Discussions](https://img.shields.io/github/discussions/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/discussions)
 
-**The ship-gate for coding agents.**
+> **Status: technology preview. Do not use the current release or `main` to protect production merges.**
 
-Tess OS is a harness-layer governance framework: a cryptographically-signed,
-fail-closed review gate that blocks unverified coding-agent output at the git
-pre-commit/pre-push/CI boundary, no matter which agent or tool produced the
-diff. It sits *on top of* an existing coding agent — today, Claude Code —
-rather than replacing it: the doctrine, roster, and orchestration are what the
-agent reads; the git hooks and CI are what actually enforce.
+Tess OS is a local governance and review harness for work produced by coding
+agents. It records policy and review evidence around repository changes, then
+can run a gate before a protected delivery step.
 
-**Current state, stated plainly:** the gate spine (`tessctl gate`, GPG-signed
-verdicts, hard floors on credentials/money/destructive-prod/client-claims) is
-real, tested, and **on `main`** — merged via
-[#38](https://github.com/twiss-io/tess-os/pull/38) (Phase 2b: gate spine
-hardening — verdict signing + CI auto-enforce, stacked on
-[#35–#37](https://github.com/twiss-io/tess-os/pulls?q=is%3Apr)). A fresh `git
-clone` of `main` today gets the gate. What it does **not** yet have is an npm
-release: the published `create-tess` package is still `0.1.0`, from before the
-gate landed — see [Quickstart](#quickstart--npm-create-tess) below for how to
-get it today via a direct clone versus what a future `npm create tess@latest`
-release will include. The orchestration layer *above* the gate (six outcome
-orchestrators, dispatch-brief contracts, typed retry) is still prose a model
-reads, not a mechanical runtime: there is no `tessctl run` and no dispatch
-driver. The gate's enforcement point (git + CI) is harness-agnostic by
-construction; the doctrine-rendering and onboarding experience is Claude Code
-only today (one registered `RenderTarget`, no Codex/Gemini/AGENTS.md adapter).
-**And, stated as plainly:** our own benchmark of whether *reading* this
-doctrine makes an agent produce better output — as opposed to the gate
-*enforcing* that unverified output can't ship — came back negative. See
-"Honest results" below before you decide what this repo is actually good for.
+It is not a model-improvement product. It does not make an agent smarter,
+prove a model's reasoning, or make an unsupported platform safe. Its value is
+the discipline and evidence around work that Tess OS can actually observe and
+enforce.
 
-> Tess OS is a doctrine + roster + config scaffold, an upgrade engine, and (on
-> `main`, via `git clone`) a deterministic ship-gate. It is not a running
-> application — you bring Claude Code and your own credentials.
+## What works today
 
-It also ships an in-place **framework upgrade engine** (`tessctl`) so new
-framework versions fold into an instance you — and your agents — have been
-editing live, instead of being clobbered by a re-scaffold. That part has been
-exercised once, over the wire (v0.1.0 → v0.1.1, 2026-06-29 — see "Status"
-below).
+- A local CLI, `tessctl`, for policy checks, artifact validation, local traces,
+  framework rendering, and mission records.
+- A signed-review gate that blocks a governed change when it lacks a valid,
+  covering approval artifact.
+- A reference Claude Code render target and driver.
+- An opt-in Codex render target that produces `AGENTS.md`, `.codex/config.toml`,
+  and prompt files; a Codex driver also exists.
+- An opt-in generic target that produces `AGENTS.md` and plain prompt files.
+- A local, sequential `tessctl run` conductor loop with mission gates, return
+  artifact validation, bounded retries, and escalation.
+- Local JSONL traces for selected gate and validation commands, with an
+  operator-run OpenTelemetry JSON export.
 
-**Try it in one command** (full walkthrough in [Quickstart](#quickstart--npm-create-tess) below):
+These are current repository capabilities, not equivalent provider support
+claims. Read the [support and status guide](docs/STATUS.md) before deciding
+whether an integration fits a particular workflow.
+
+## Important limits today
+
+Tess OS is deliberately fail-closed when no covering approval exists. The
+shipped policy intentionally has empty verifier and sign-off registries, so a
+message such as **"no covering APPROVE verdict found"** is an expected block,
+not an invitation to create a key or work around the gate.
+
+Two production prerequisites remain unresolved:
+
+1. The first verifier/sign-off trust anchor needs an external, human-owned
+   custody design. Candidate repository content must never establish the
+   authority that approves itself.
+2. GitHub must make the real gate and CI results required checks before a gate
+   can protect a branch. That enforcement is not configured today.
+
+Until both are complete, a passing local command or GitHub Action is useful
+engineering evidence, but not a production admission control. The committed
+`gate-arena` scorecard on `main` is **12/12**; the multi-push policy-reduction
+case A14 remains open. That score is disclosed evidence, not a production
+readiness certificate.
+
+Do **not** generate, register, or sign a verifier or sign-off key to clear a
+gate. Key custody is a designated human ceremony owned by Xavier. See
+[Gate operation and custody](docs/GATE_QUICKSTART.md).
+
+## Supported surfaces
+
+| Surface | Status | What that means |
+|---|---|---|
+| Claude Code | **Native integration, uncertified preview** | Tess OS has a reference render target and driver. This is not yet a production-certified protected workflow. |
+| Codex | **Pilot** | Tess OS can render Codex project files and has a driver, but the driver is not live-tested against native event samples and has no native-parity certification. |
+| Generic `AGENTS.md` tools | **Interoperability baseline** | Tess OS can emit instructions and plain prompts. This does not prove native orchestration, tool control, or feature parity in every host. |
+| Perplexity | **Not supported as a Tess OS adapter** | There is no repository adapter or driver. A future bounded, read-only research-worker role is under consideration; it is not a coding-harness integration. |
+| Gemini and other platforms | **Not supported** | A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
+| Tess Cloud | **Planned** | A separate, optional cloud-sync product; it does not exist in this repository and will depend on stable Tess OS contracts. |
+| Tess Vault | **Planned** | A separate agent-era secret-capability product; it is not a required Tess OS service and must not expose secrets to agents, evidence, or memory. |
+
+## How the gate is meant to work
+
+```text
+repository change
+  -> policy identifies governed paths
+  -> review evidence is checked against the immutable base/head artifacts
+  -> independent required CI check reports pass or block
+  -> protected VCS rule admits or rejects delivery
+```
+
+The gate only has its intended meaning when every step is in place. Current
+`main` also has unresolved tree-consistency and type-swap hardening from the
+adversarial corpus, so this diagram is a target delivery model rather than a
+claim that every trust input is already bound correctly. A model, adapter, MCP
+server, or local hook does not replace independent review or VCS enforcement.
+
+### Safe evaluation
+
+You may inspect the reviewed source and run read-only diagnostics in an
+isolated, non-production repository. For `gate ci`, use two existing immutable
+refs; replace the placeholders only with the refs you are reviewing:
 
 ```bash
-npm create tess@latest
+git clone https://github.com/twiss-io/tess-os.git
+cd tess-os
+./tessctl doctor
+./tessctl verify
+./tessctl gate ci --base <BASE_REF> --head <HEAD_REF>
 ```
 
-⭐ **If Tess OS is useful to you, consider [starring the repo](https://github.com/twiss-io/tess-os)** — it helps other people find it.
-
-<!--
-  DEMO PLACEHOLDER — add a screenshot or GIF of the `npm create tess` first-run
-  wizard here (the 5-axis gamified onboarding and the conductor's first greeting).
-  Suggested asset path: docs/assets/wizard-demo.gif
-  Do not commit a fake/placeholder image — wire in the real recording when ready.
--->
-
-> **Official repository.** `github.com/twiss-io/tess-os` is the canonical,
-> official home of Tess OS. Forks are welcome under Apache-2.0 — but a fork is
-> **not** official, not endorsed, and must follow the [trademark
-> policy](TRADEMARK.md): build on the code freely, but **rebrand** (you may say
-> "built with Tess OS", you may not name your fork "Tess OS").
-
----
-
-## Quickstart — `npm create tess`
-
-> **What you get today:** `npm create tess@latest` installs from the published
-> `create-tess` package (currently `0.1.0`) — the doctrine, roster, wizard, and
-> upgrade engine, **not yet the ship-gate** described above. The gate is
-> merged to `main` (`#38`) but no release has shipped it yet — a version bump
-> and `npm publish` are the only things standing between "on main" and "in the
-> package." To try the gate spine now, clone this repo at `main` directly:
-> `git clone https://github.com/twiss-io/tess-os.git && cd tess-os && ./tessctl
-> gate install-hooks`.
-
-The front door is a gamified first-run wizard. You don't fill in a config file —
-you *arrive*:
-
-```bash
-npm create tess@latest
-```
-
-Five choices, then the conductor greets you in-voice with a first mission open:
-
-| Axis | What you pick |
-|---|---|
-| **Name** | what the conductor calls you (the operator) |
-| **Vibe** | the world / narrative skin — `rpg`, `command`, or `studio` |
-| **Squad** | a starter crew of *real* agents — Founder, Builder, or Operator |
-| **Conductor** | name your conductor (default: Tess) |
-| **Pathway** | how the conductor speaks — chief-of-staff, co-founder, strategist, guide, or operator |
-
-The wizard stages the template into a temp dir first, validates your choices
-against the real roster, and only then promotes it into your target — **cancel
-leaves zero state behind**. On confirm it drives the keystone (`roster apply →
-set-operator → rename → pathway → render`), runs `doctor` + `verify`, and prints
-the conductor's first greeting in the persona's voice.
-
-Prefer it raw? The runtime artifact is just the git template — a fresh clone
-works because Claude reads the doctrine directly and the engine is committed:
-
-```bash
-git clone https://github.com/twiss-io/tess-os.git mind && cd mind
-./tessctl init        # write the lock + manifest + operator stubs, render CLAUDE.md
-cp .env.example .env  # then fill in your own values
-claude                # Tess reads CLAUDE.md as the entry point
-```
-
----
-
-## Why it's different
-
-Three compounding ideas, each defensible on Tess OS's own architecture — and
-see [`docs/COMPARISON.md`](docs/COMPARISON.md) for where each one actually
-stands against the other coding-agent frameworks (GitHub Spec Kit,
-Ruflo/claude-flow, BMAD) and the app SDKs (LangGraph, CrewAI, etc.), including
-where Tess OS is behind, not just ahead:
-
-1. **The signed ship-gate.** A verdict that clears a push must be a committed,
-   content-bound (git blob SHA per path), GPG-signed `disposition: APPROVE`
-   from a verifier the matched policy rule actually allows — anything else
-   (unsigned, wrong key, tampered, or simply missing) is treated as no verdict
-   at all, and hard floors (credentials, money movement, destructive prod
-   data, client-external claims) are never satisfiable by a verdict, signed or
-   not. No harness-layer competitor surveyed ships an equivalent — see
-   `docs/COMPARISON.md`'s verification row.
-
-2. **Coordination depth under enforced governance.** The unit of work is not a
-   prompt; it's a *mission* routed through an outcome orchestrator and dispatched
-   to a crew. Every dispatch carries a six-field brief contract. Mission flow is
-   governed by dependency gates (intake → research → crew → build → review →
-   verification), never a fixed clock; independent work runs in parallel. Nothing
-   externally visible ships without a mandatory verifier reading the primary
-   artifacts. Failed work is retried with a *changed* brief, at most three times,
-   then escalated. This layer is doctrine a model reads today, not a mechanical
-   runtime — see the "Current state" note above. **Honest caveat:** this layer
-   is doctrine a model reads; our own benchmarks show mounting it into a
-   single-agent context does not improve output — it exists for the multi-agent
-   conductor loop, and its quality contribution there is unmeasured (see
-   "Honest results" below).
-
-3. **In-place upgradeability of the framework.** Most scaffold-first tools own
-   generated files once and have no upstream merge — a re-run overwrites your
-   edits. Tess OS keeps a committed pristine copy of the framework as a merge
-   base (`.tess/core/`), records a per-file status in `tess.lock`, and a 3-way
-   merge folds each new *framework* version into your live tree. The engine is
-   snapshot-first, hard-gates on `tessctl doctor`, halts the whole update on a
-   conflict (nothing is overwritten), and quarantines security-tier files.
-
----
-
-## Honest results — what we measured
-
-**We benchmarked our own doctrine mounted as agent context — twice, fairly,
-with a suite purpose-built to give structure room to help. It didn't help.**
-
-| Run | Comparison | Result | Cost |
-|---|---|---|---|
-| Run 1 (tasks 01–10) | weak+tess-os vs weak+bare | No delta (both 100% — suite too easy to discriminate) | 3.13× |
-| Run 1 | strong+tess-os vs strong+bare | **−10 points** (reproducible fabrication failure) | 3.18× |
-| Run 2 — FAIR (tasks 11–19, harder/discriminating, dispatch-guard friction fixed) | weak+tess-os vs weak+bare | **−11.1 points (8/9 vs 9/9, n=9)** | 2.71× |
-| Run 2 — FAIR | strong+tess-os vs strong+bare | No delta (regression gone after the fix; no benefit either) | 1.74× |
-| Run 2 — FAIR | weak+tess-os vs **strong+bare** (the literal thesis) | **−11.1 points (8/9 vs 9/9, n=9)** — strictly worse | 32% cheaper |
-
-**Caveat that applies to every `bare` cell above:** this build environment
-had no `ANTHROPIC_API_KEY` configured, so true `--bare` isolation (which
-requires that key) was unavailable; every `bare` cell was run with
-`--allow-impure-bare` instead and is tagged `impure_bare: true` in the raw
-data — it still inherits the operator's installed plugins, MCP servers, and
-tool list rather than a stripped baseline. Read "bare" in this table as
-"bare, approximately," not a pristine zero-context control — both reports
-disclose this caveat; it doesn't change the direction of the result, but
-the precise deltas should be read with it in mind.
-
-Across 19 tasks and roughly 80 trials: **every miss happened under the
-tess-os scaffold; zero misses happened bare.** Weak-tier pass rate went down
-11 points (n=9 — too small a sample for a rate; directional, not a
-precision claim); cost went up 1.7–2.7×. Full reports, generated from the
-actual runs, not hand-typed:
-[`proving-ground/reports/2026-07-07.md`](proving-ground/reports/2026-07-07.md)
-and
-[`proving-ground/reports/2026-07-07-fair.md`](proving-ground/reports/2026-07-07-fair.md).
-
-**This is why Tess OS's claim is enforcement, not enhancement — stated at
-the grain it actually operates:** a change to a policy-flagged path cannot
-ship without a signed covering verdict, at git/CI, provided CI runs as a
-required check from a trusted engine. That claim is mechanical,
-model-independent within its scope, and untouched by this result. It does
-not claim to make your agent better, and as of 2026-07-07 we have our own
-evidence that mounting this doctrine as a single agent's context does not
-make it better and can make it worse. What the benchmark did **not** test:
-the ship-gate itself (no trial ran a diff through it), and the multi-agent
-conductor runtime (the harness's "attempts" are blind re-runs, not the typed
-retry protocol) — both are untested by this result, not vindicated by it
-either.
-
-None of the competitors we surveyed in this category publishes a self-run
-negative result. We do, because the alternative — quietly deleting the claim
-instead of disclosing what killed it — is worse than the result itself.
-
----
-
-## `tess update` — upgrade in place, non-destructively
-
-```bash
-./tessctl update      # snapshot → doctor gate → 3-way merge new framework → re-pin
-```
-
-The whole point: you can adopt Tess OS, edit it heavily for months, and still pull
-a newer *framework* version without losing your edits. The engine snapshots first,
-refuses to start if `doctor` isn't clean, 3-way-merges each framework file, and
-**halts the entire update on the first conflict** — nothing is overwritten behind
-your back. Security-tier files are quarantined for explicit approval.
-
-> Scope, stated honestly: "upgrade in place" covers **framework files** —
-> doctrine, agents, commands, hooks, skills, and the client *template*. It does
-> not auto-migrate client folders you have already created; those are yours.
-
----
-
-## The roster + orchestrators
-
-- **144 specialist agents in the roster** — 141 fully specified, 3 stubs
-  (petra/reid/clio) — across guilds: research, engineering, design, brand,
-  client, ops, growth, and more. The permanent crew is **Leah** (research,
-  informs first) and **Eva** (talent strategy).
-- **Six outcome orchestrators** — a routing layer between Tess and the guilds:
-  Founder's Office, Revenue, Product & Delivery, Client Experience, Strategic
-  Growth, and Operational Reliability. Orchestrators are routing brains that
-  return a crew-plan; Tess (or a workflow) is the sole dispatcher.
-
-### `tessctl recruit` — grow your staff
-
-A new instance starts with a small starter squad, not all 144. Bring more onto
-the active roster as you need them:
-
-```bash
-./tessctl recruit vega cyra freya     # by name
-./tessctl recruit revenue             # an orchestrator + its guild
-./tessctl roster list                 # installed vs staged
-```
-
-Agents not on the active roster stay *benched* (present in core, out of the way)
-until you recruit them — so the conductor's context stays focused.
-
-**Coding-agent adopters:** if you're running Tess OS purely as a coding-agent
-harness, the full 144-persona business roster is more than you need. A
-dedicated install path installs just the coding squad instead:
-
-```bash
-./tessctl roster apply coding-squad   # Leah + Eva + Ada, Iris, Reid, Cyra, Quinn, Vega
-```
-
-This is distinct from the `builders` starter squad offered by the `npm create
-tess` wizard (which is general-purpose and omits Cyra/Vega) — `coding-squad`
-is the tight, full-stack-plus-security-plus-infra roster for a codebase-only
-use case. Every agent's `agents/<name>/README.md` also carries a `model_tier`
-frontmatter field (`strong`/`cheap`, applied so far to this squad) — a
-roster-metadata *recommendation* for which model class a role warrants; no
-adapter reads it yet (wiring it into actual model selection is a separate,
-deferred change).
-
-### `tessctl vault` — a local-first secret store
-
-```bash
-./tessctl vault init                  # generate an age identity
-./tessctl vault set github/token      # value read from prompt/stdin — never argv
-./tessctl vault exec --ref github/token -- gh auth status   # JIT injection
-```
-
-The vault keeps secrets **encrypted at rest** (age / X25519 via `pyrage`, or an
-`age`/`rage` CLI) and references them by `vault://` ref instead of pasting raw
-values. It installs git **pre-commit and pre-push guards** that scan for secret
-and vault material before anything leaves your machine.
-
-> **Honest scope:** the vault is a **local-first store plus a backstop**, not a
-> guarantee. The guards meaningfully reduce the chance of committing a credential,
-> but no client-side scanner can promise a secret "cannot leak." Treat it as
-> defense-in-depth: rotate real credentials, review what you commit, and don't
-> grant production access you wouldn't grant a new hire.
-
-### `tessctl validate` — contracts-as-code
-
-```bash
-./tessctl validate brief my-brief.md              # dispatch-brief.md's six fields
-./tessctl validate crew-plan plan.yaml             # orchestra-model.md §3.1/§3.2
-./tessctl validate verdict verdict.json --json     # review-output-standards.md
-./tessctl validate return-manifest return.json
-```
-
-The five core contracts — `brief`, `crew-plan`, `verdict`, `return-manifest`,
-`policy` — are JSON Schemas at `core/contracts/*.schema.json`, each grounded in
-the exact doctrine text it encodes (see `core/contracts/README.md`). A contract
-instance that fails validation is a **schema-miss**: `tessctl validate`
-classifies it `degraded_output` (per `conductor/subagent-failure-protocol.md`'s
-failure-state table) and exits non-zero, so a git hook or CI action can gate on
-it deterministically — the point is that a weak agent's output either matches
-the contracted shape or it doesn't; existence and shape are model-independent
-checks. Instances can be `.json`, `.yaml`/`.yml`, or `.md` with a YAML
-front-matter block.
-
-### `tessctl gate` — the enforcement spine
-
-```bash
-./tessctl gate install-hooks           # install/upgrade the pre-commit + pre-push git hooks
-                                        # + the CI workflow (now push/pull_request-triggered)
-                                        # (idempotent; splices above any pre-existing hook —
-                                        #  same coexistence pattern as `tessctl vault init`)
-./tessctl gate pre-commit               # contract validation on STAGED files (fast, local)
-./tessctl gate pre-push                 # THE SHIP-GATE — reads the git pre-push stdin protocol
-./tessctl gate ci --base <ref> --head <ref>   # same ship-gate logic, explicit refs (CI entrypoint)
-
-./tessctl verdict keygen --verifier <Name>                         # turnkey: generate + register a verifier's key
-./tessctl verdict sign <file> --verifier <Name> --key-id <KEYID>   # sign a verdict (Phase 2b)
-./tessctl verdict verify <file>                                    # check a verdict's signature
-
-./tessctl gate signoff sign <file> --key-id <KEYID>                # sign a hard-floor sign-off
-./tessctl gate signoff verify <file> --rule-id <ID>                 # check a sign-off's signature
-```
-
-New adopter? `./tessctl verdict keygen --verifier Reid` turns the gate on
-end to end — no manual `gpg` steps, no hand-editing `policy.yaml`. Full
-copy-paste-able walkthrough: [`docs/GATE_QUICKSTART.md`](docs/GATE_QUICKSTART.md).
-
-Phase 2 of `docs/ULTIMATE_FRAMEWORK_PLAN.md`, Design Decisions #2 ("enforcement
-moves from model-compliance to deterministic code — a `tessctl gate` spine at
-git pre-commit/pre-push + CI; git is the only runtime every assistant shares")
-and #6 ("verification produces a gateable artifact — signed verdict files; the
-ship-gate refuses pushes on prod/client-flagged paths without a covering
-APPROVE verdict"). Three mounting points, one deterministic logic:
-
-- **`pre-commit`** — validates any staged brief/crew-plan/verdict/
-  return-manifest/policy file against its schema + lint (reuses
-  `tessctl validate`'s engine directly). Fast, local, catches malformed
-  contracts before they're even committed.
-- **`pre-push` (the ship-gate)** — for every path changed in what's being
-  pushed, classifies it against `core/policy/policy.yaml`. Any path matching a
-  `require_verdict: true` rule is BLOCKED unless a COMMITTED verdict — part of
-  the actual pushed ref(s), never an uncommitted working-tree file — is
-  schema-valid, carries `disposition: APPROVE`, has a `covers_paths` glob
-  matching that path, carries a valid cryptographic `signature` that verifies
-  against `policy.verifier_keys[verifier]`'s registered key (Phase 2b — see
-  `conductor/verdict-signing.md`), names a `verifier` the matched rule's
-  `allowed_verifiers` actually permits, and records THIS path's current git
-  blob SHA in `artifact_hashes` (a HIGH finding still forces `BLOCK` unless
-  explicitly accepted — the Phase 0 verdict schema rule applies unchanged).
-  Verification is per-change: a verdict clears the exact content it reviewed,
-  never a permanent toll on the glob — re-editing a covered file, or adding a
-  new file under the same `covers_paths` glob, requires its own covering
-  verdict. `covers_paths` can never be a blanket 'master key' glob (`**`, bare
-  `*`, `**/*`, `**/**`) — a verdict carrying one is schema/lint-invalid and
-  covers nothing. An unsigned verdict, a signature from an unregistered or
-  mismatched key, or a verdict edited after signing (tamper) is treated
-  identically to "no covering verdict at all" — fail-closed. Any path
-  matching a hard-floor rule (credentials / money movement / destructive prod
-  data / client-external claims — `guardrails.md` Rule 18) is BLOCKED
-  regardless of any verdict, unless an explicit, cryptographically SIGNED
-  human sign-off artifact exists at `.tess/gate/signoffs/<rule-id>.signoff.json`
-  — a verifier's APPROVE (signed or not) can never clear a hard floor, and
-  (honesty-capstone-audit-2026-07-08 §3-d) neither can an unsigned/hand-
-  authored sign-off: the artifact must carry a `signature` that verifies
-  against a registered key in `policy.signoff_keys` (same GPG trust model as
-  verdict signing — `tessctl gate signoff sign|verify`), and
-  `.tess/gate/signoffs/**` is itself now policy-covered under
-  `tess-os-security-tier-doctrine` — a sign-off is a governed artifact AND
-  must be authenticated, not either/or.
-- **`ci`** — identical ship-gate logic over an explicit `--base`/`--head` ref
-  range, the harness-independent backstop that still catches a push made with
-  `git push --no-verify` (local hooks are advisory; CI is not).
-
-**Fail-closed by design:** a missing/invalid policy file, a git command that
-fails, or an unreadable verdict all count as a block, never a silent allow —
-ambiguity resolves to refuse, not permit.
-
-**Trust boundary (honest disclosure, updated for Phase 2b — verdict
-signing):** a covering verdict must now carry a cryptographic `signature`
-(GPG detached signature over the verdict's canonical content) that verifies
-against the registered public key for its claimed `verifier` in
-`core/policy/policy.yaml`'s `policy.verifier_keys` — an unsigned, hand-faked,
-wrong-key, or tampered-after-signing verdict is rejected, fail-closed, and
-can never cover a path. Signing ties to `allowed_verifiers`: a genuine
-signature from a real, registered verifier who simply isn't permitted for
-the matched rule still does not clear it. Together with HIGH-1's diff-binding
-(`artifact_hashes`), a covering verdict now means: **the right verifier,
-cryptographically authenticated, signed off on the exact content being
-shipped** — hand-authoring a fake `disposition: APPROVE` no longer works.
-
-The remaining boundary is **key custody, not the mechanism**: whoever holds
-a verifier's private key can sign as them (the same boundary every signature
-scheme has, including this repo's own release-tag signing — see
-`release-process.md`). `tessctl` never generates or stores a verifier's
-private key. Git hooks remain local and bypassable (`git push --no-verify`;
-`ci` is the harness-independent backstop for exactly that reason, and now
-triggers automatically on `push`/`pull_request` — see "CI auto-enforce"
-below). Full trust model, key onboarding, and the disclosed/deferred piece
-(this repo's own Reid/Cyra keys are not yet generated — `verifier_keys`
-ships empty on purpose): `conductor/verdict-signing.md`.
-
-**CI auto-enforce:** `.github/workflows/tess-gate.yml` now triggers on
-`push` (protected branches) and `pull_request`, in addition to
-`workflow_dispatch` — the ship-gate runs automatically rather than requiring
-someone to remember to invoke it. A CI check alone is only advisory until
-configured as a **required status check** in branch protection (required
-check name: the job name `tessctl gate ci`) — see
-`conductor/verdict-signing.md`'s "CI auto-enforce" section for the exact
-setup steps (a repo-admin action, not automated by this change) and the
-fresh-adopter bootstrap warning.
-
-**Self-protection (honesty-capstone-audit-2026-07-08 §3-c/§3-d):** the gate
-now protects its OWN engine and OWN authentication artifacts, not just its
-trigger file and policy config. `.tess/bin/**` (the engine) and the root
-`tessctl` wrapper are policy-covered under `tess-os-security-tier-doctrine`
-(same as `core/policy/**` and `.github/workflows/**`) — an edit to the
-engine itself needs its own covering, signed Reid/Cyra verdict. On top of
-that, the CI workflow (v3) never trusts the pushed tree's own copy of the
-engine to evaluate itself: a dedicated "Extract trusted gate engine" step
-extracts and runs `.tess/bin/tessctl` as it existed **at the push's base
-ref**, failing closed if no baseline engine exists. `.tess/gate/signoffs/**`
-is likewise now policy-covered, layered on top of the sign-off signature
-requirement described above.
-
-### `tessctl trace` — mission trace log + OTel GenAI export
-
-```bash
-./tessctl trace export --format otlp-json                     # every trace.jsonl this repo has, to stdout
-./tessctl trace export --format otlp-json --mission-id m1      # just missions/m1/trace.jsonl
-./tessctl trace export --format otlp-json --out spans.json     # write to disk instead of stdout
-```
-
-Every `gate`/`validate` invocation above already appends one structured JSONL
-event — local-first, no daemon, no network — to `missions/<id>/trace.jsonl`
-(when a mission id is inferable) or a per-run fallback under
-`.tess/trace/runs/`. `trace export --format otlp-json` maps that JSONL to
-[OTel GenAI semantic-convention][genai] agent spans (OTLP/JSON) — the same
-`gen_ai.*` shape Datadog, Honeycomb, New Relic, and the OTel Collector
-already ingest, and CrewAI/LangGraph instrumentations already emit — so
-Tess OS becomes legible to any APM that understands `gen_ai.*` without a
-single network call ever leaving the machine: the export is a pure local
-file-to-file JSON reshape, and getting the result into a collector is a
-separate, explicit, operator-run step. Full capture list, the exact
-attribute mapping, and the no-network guarantee (including the socket-guard
-tests that prove it): `docs/OBSERVABILITY.md`.
-
-[genai]: https://github.com/open-telemetry/semantic-conventions-genai
-
-### `tessctl mission` — mission records as code
-
-```bash
-./tessctl mission new "Revenue conversation Q3 push" --outcome-type build
-./tessctl mission status <id>                    # human-readable, or --json
-./tessctl gate-status <id>                        # which of the five gates are cleared
-./tessctl gate clear research-before-build --mission <id> --evidence path/to/leah-brief.md
-                                                   # REFUSES without --evidence, or if it
-                                                   # doesn't point at a real file
-./tessctl retry log <task> --mission <id> --cause context-gap \
-    --failure-state degraded --brief path/to/attempt-brief.md
-                                                   # REFUSES a 4th attempt, or a same-brief
-                                                   # retry for a non-transient cause
-./tessctl retry check <task> --mission <id>       # dry-run the same decision, no writes
-```
-
-Two doctrine files that were previously prose only — `conductor/doctrine.md`'s
-five gates and `conductor/subagent-failure-protocol.md`'s typed retry
-protocol — become deterministic, file-backed checks. `tessctl mission new`
-scaffolds `missions/<id>/mission.md` + `mission.json` (two serializations of
-one record, validated against the new `core/contracts/mission.schema.json`);
-`tessctl gate clear` refuses to mark a gate cleared without a real, on-disk
-evidence artifact; `tessctl retry log`/`retry check` read the ledger already
-on disk (`missions/<id>/retries/<task>.attempt-N.md`,
-`core/contracts/retry.schema.json`) to mechanically enforce the 3-attempt cap
-and the "no same-brief retry for a non-transient cause" rule — the same rule
-that used to depend entirely on the conductor remembering to apply it. Full
-convention: `missions/README.md`.
-
----
-
-## How a mission runs
-
-Every task is dispatched — the conductor never executes specialist work itself.
-Guard hooks enforce dispatch discipline, anti-fabrication, and channel formatting.
-The gates are dependency-ordered, not lockstep:
-
-```
-intake → research (Leah) → crew (Eva) → build → review → verification → synthesis
-```
-
-No gate may be skipped, waived, or satisfied retroactively. The clarification
-hard floor (credentials, money movement, destructive production operations,
-external factual claims) always returns to the operator, even in autonomous mode.
-
----
-
-## What's in the box
-
-- **`conductor/`** — the doctrine layer: identity, guardrails, the dispatch-brief
-  contract, verification routing, the failure/retry protocol, and the command
-  system (wired `.claude/commands/`).
-- **`core/contracts/`** — seven doctrine contracts (dispatch-brief, crew-plan,
-  verdict, return-manifest, policy, mission, retry) as JSON Schemas, checked via
-  `tessctl validate`. The first piece of the portable `core/` the framework is
-  growing into.
-- **`agents/`** — the roster of specialist persona specs across guilds. The
-  compiled, managed dispatch definitions live in `.claude/agents/`.
-- **`.tess/`** — the upgrade engine: `bin/tessctl`, the pristine merge-base
-  `core/`, and the committed `tess.lock`.
-- **`.claude/`** — Claude Code configuration: managed agents, guard hooks, a
-  permissions baseline, and generic design/processing skills.
-- **`create-tess/`** — the `npm create tess` wizard.
-- **`clients/_template/`** — a per-client mini-operating-system template you copy
-  for each new client.
-- **`kb/`** — a knowledge-base scaffold (`raw/`, `wiki/`, `lint/`).
-- **`operator/`** — blank identity/profile/channel stubs you fill in; injected at
-  `CLAUDE.md` render time, kept out of framework core.
-- **`docs/`** — [`COMPARISON.md`](docs/COMPARISON.md) (Tess OS vs. GitHub Spec
-  Kit, Ruflo/claude-flow, BMAD, and the LangGraph-class app SDKs, with sources
-  and where Tess OS is behind), the sourced
-  [`competitive-analysis-2026-07-07.md`](docs/competitive-analysis-2026-07-07.md)
-  it's built from, and `ULTIMATE_FRAMEWORK_PLAN.md` (the longer-range design
-  document — a plan, not a completed-work claim; carries the 2026-07-07
-  supersession notice on the enhancement thesis at the top).
-- **`proving-ground/`** — the benchmark harness that tested the enhancement
-  thesis and disproved it; see the committed, generated-from-run reports in
-  `proving-ground/reports/` and "Honest results" above.
-- **`missions/`** — per-project mission records `tessctl mission new` scaffolds
-  (`mission.md`/`mission.json`, `retries/`); not framework doctrine, not
-  keystone-tracked — see `missions/README.md`.
-
----
-
-## Status — read this before you trust it
-
-This is an early public foundation. What is real and committed today:
-
-- The **governed organization**: the full doctrine, the roster, the six
-  orchestrators, the gates, the dispatch-brief contract, the verification routing,
-  and the retry protocol.
-- **Contracts-as-code (Phase 0, extended Phase 2)**: five core contracts
-  (`brief`, `crew-plan`, `verdict`, `return-manifest`, `policy`) as JSON
-  Schemas under `core/contracts/`, a dependency-free validator (`tessctl
-  validate`), and the schema-miss → `degraded_output` classification wired to
-  the retry protocol's signal. Full retry orchestration (dispatching the
-  changed-brief retry itself) remains out of scope — this ships the
-  deterministic check and the classification.
-- **The gate spine (Phase 2, hardened post-adversarial-review; Phase 2b —
-  verdict signing + CI auto-enforce)**: `tessctl gate` — deterministic
-  pre-commit (staged contract validation), pre-push (the ship-gate: blocks
-  prod/client/external changes without a covering, COMMITTED, content-bound,
-  **cryptographically SIGNED** `disposition: APPROVE` verdict from an
-  allowed verifier), and CI (`gate ci`) entrypoints, plus
-  `tessctl gate install-hooks` to install/upgrade the git hooks and a CI
-  workflow template that now triggers on `push`/`pull_request` (in addition
-  to `workflow_dispatch`). `tessctl verdict sign`/`verdict verify` manage
-  the signing key lifecycle. `core/policy/policy.yaml` is the policy-as-data
-  instance the gate reads (now including `verifier_keys`, the allowed-key
-  set); hard-floor categories (credentials/money/destructive-prod-
-  data/client-external-claims) require an explicit human sign-off artifact and
-  are never satisfiable by a verdict alone. Fable's adversarial review of the
-  original Phase 2 found one BLOCK (HIGH-1 — coverage was diff-unbound: any
-  schema-valid APPROVE verdict anywhere in the working tree permanently
-  cleared its `covers_paths` glob for every future push, `**` acted as a
-  master key, and an uncommitted pre-push verdict counted) plus two MEDIUMs
-  (`allowed_verifiers` was advisory only; `**`/`*` glob semantics missed
-  root-level files and let a single `*` span directories); that review also
-  flagged the residual now closed by Phase 2b — verdicts were committer-
-  authored plain files with no cryptographic signature. All closed: coverage
-  is bound to the reviewed git blob SHA per path (`artifact_hashes`),
-  master-key globs are schema/lint-rejected, only committed verdicts on the
-  pushed ref(s) count, `allowed_verifiers` is enforced, the glob matcher is
-  fixed, AND a covering verdict must now carry a valid signature tied to its
-  claimed verifier's registered key — see this README's `tessctl gate`
-  section, `conductor/verdict-signing.md`, and CHANGELOG.md for the full
-  disclosure, including the residual trust boundary that remains (key
-  custody, not the mechanism — see `conductor/verdict-signing.md`) and the
-  disclosed, deferred piece (this repo's own Reid/Cyra signing keys are not
-  yet generated/registered). Scope note: this phase does NOT include a Codex
-  adapter, `.gemini`/generic render targets, or `tessctl run` (the mechanical
-  conductor loop) — see `docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest
-  re-scope note.
-- **Observability (Goal #8)**: `tessctl gate`/`tessctl validate` now append a
-  schema-valid JSONL trace event to `missions/<id>/trace.jsonl` (or a
-  per-run fallback under `.tess/trace/runs/`) on every invocation, and
-  `tessctl trace export --format otlp-json` maps that log to OTel GenAI
-  semantic-convention agent spans — legible to any APM that understands
-  `gen_ai.*`, with zero network calls (a pure local file-to-file transform,
-  proven by a static import scan plus socket-guard tests). `tessctl run`
-  (which does not exist yet) is not instrumented — see `docs/OBSERVABILITY.md`.
-- **Mission records as code (Goal #5)**: `tessctl mission new|status`,
-  `gate-status`, `gate clear` (mission-scoped, alongside the enforcement-spine
-  `gate` subcommands above), and `retry log|check` — turning
-  `conductor/doctrine.md`'s five gates and `conductor/subagent-failure-
-  protocol.md`'s typed retry protocol into deterministic, file-backed checks.
-  Two new contracts (`mission.schema.json`, `retry.schema.json`, wired into
-  `tessctl validate`/`doctor`/`verify`/`lock --check` the same way as the
-  original five); `missions/<id>/` is per-project data, not framework
-  doctrine (see `missions/README.md`). Not yet built: the CLI does not (yet)
-  scaffold `missions/<id>/briefs/`/`verdicts/` (C1/C2's existing
-  `brief`/`verdict` schemas already validate a file at any path; wiring them
-  into this same directory convention is a follow-on, not this goal).
-- **`tessctl run <crew-plan>` — the mechanical conductor loop (Goal #6)**:
-  loads + validates a crew-plan, then executes its stages end-to-end
-  against a `DispatchDriver` — `ClaudeCliDriver` (`claude -p`, Tier A) or
-  `CodexExecDriver` (`codex exec`, Tier B; implemented against this repo's
-  own documented-verified flags but not yet live-tested — no `codex` binary
-  in this build environment). Gate check (never starts early), dispatch,
-  read the returned artifact back off disk (never trusts the summary),
-  mandatory verification, typed retry on a schema-miss (changed brief,
-  capped at 3, never dispatching past the cap), and a hard halt +
-  escalation record (mission `state` → `code-red`) on either the retry cap
-  or a genuine verifier `BLOCK`. A `FakeDriver` (deterministic, scriptable
-  to good/schema-missing/blocking/error responses) is the core test
-  vehicle; one live smoke run against the real `claude -p` CLI completed
-  end-to-end and caught a real bug along the way (a headless dispatch with
-  no explicit `--allowed-tools` silently denies tool calls — now fixed with
-  a least-privilege allowlist, not a blanket permissions bypass). v1 scope:
-  stages dispatch sequentially (not true OS-level concurrency for
-  `parallel: true` stages); SYNTHESIS (the two-pass orchestrator hand-off)
-  is not yet wired — `run` executes EXECUTE STAGES only. See CHANGELOG.md
-  for the full disclosure.
-- The **engine's integrity layer**: snapshot-first updates, the `doctor`
-  hard-gate, conflict-halts-the-update, security-tier quarantine, hash-based drift
-  detection, and atomic staging swap.
-- The **vault** as described above — encrypted-at-rest store, `vault://` refs, JIT
-  `exec`, and the pre-commit/pre-push backstop (a risk reducer, not a guarantee).
-- The **signed upgrade channel**: the FETCH, signature-verify, merge, version bump,
-  and `tess self-update` paths are fully exercised and verified live over the wire —
-  see below.
-
-**Over-the-wire upgrade: VERIFIED** (v0.1.0 → v0.1.1, exercised 2026-06-29):
-
-A fresh clone was checked out at v0.1.0. Running `tess update --ref v0.1.1`
-performed the full upgrade chain:
-1. **FETCH** — cloned v0.1.1 from `https://github.com/twiss-io/tess-os.git` over HTTPS
-2. **Signature verification** — `git verify-tag --raw` in an isolated GNUPGHOME seeded
-   only with the pinned key; output: `signature OK (isolated keyring) — fingerprint
-   matches pinned key`
-3. **Merge** — conductor/README.md fast-forwarded; conductor/release-process.md adopted
-   via A2 (new-file adoption)
-4. **Version bump** — `framework.version` → `0.1.1`, `upstream_ref` → `v0.1.1` (Step 8)
-5. **`tess self-update --ref v0.1.1`** — verified signature, parse-checked new engine,
-   backed up previous engine, installed, ran doctor: all clean
-
-Post-upgrade `tess doctor` and `tess verify` both returned `OK`. The fingerprint pin
-(`EBEABC618C11B6A7340A7D1601DD637667B8CC89`) is set in `tess.lock` and is enforced on
-every future update; unsigned or wrong-key tags are rejected before any extraction.
-
-The test suite is portable and green (Python: engine, vault, render, merge, hook
-coexistence; Node: the wizard).
-
----
-
-## Recommended model setup
-
-Tess (the conductor) runs best on an Opus-class Claude model. Specialist subagents
-run well on Sonnet-class models. Configure this per Claude Code's model settings.
-
-## Bring your own secrets
-
-This repo ships **zero secrets and zero client data** by design — no tokens, keys,
-credentials, server addresses, or client records anywhere. Provision your own:
-
-- Create a Telegram bot via [@BotFather](https://t.me/BotFather) for the channel.
-- Supply API keys via the vault (`tessctl vault set …`), environment variables
-  (`.env`, gitignored), or your own secrets manager — never commit them.
-- Guard hooks reference `$CLAUDE_PROJECT_DIR`, so paths stay relative to wherever
-  you clone.
-- Review `conductor/guardrails.md` before granting the system any production access.
-
----
-
-## Community / Get help / Training
-
-- **Community, discussions & questions** — use [GitHub
-  Discussions](https://github.com/twiss-io/tess-os/discussions) for questions,
-  ideas, "how do I…", and community conversation. Please don't use the issue
-  tracker for support.
-- **Docs** — the in-repo doctrine under [`conductor/`](conductor/README.md) is
-  the source of truth.
-- **Bugs & features** — open an [issue](https://github.com/twiss-io/tess-os/issues)
-  using the templates.
-- **Security** — do **not** open a public issue; report privately per
-  [SECURITY.md](SECURITY.md).
-- **Training / managed setup** — want Tess OS installed and run for your team, or
-  hands-on onboarding? Reach out: **legal@twiss.io**. (Offered separately; not
-  part of the Apache-2.0 distribution.)
+Do not use this sequence to activate a production branch. In particular, do
+not run key-generation, key-registration, or verdict-signing commands as a
+bootstrap shortcut.
+
+## npm and source status
+
+The public `create-tess` package is currently **0.1.0** and lags repository
+`main`; it is not production onboarding for the signed gate. The package can
+still scaffold a local Tess OS instance, but it does not solve the custody or
+required-check prerequisites above.
+
+For exact source behavior, use a reviewed GitHub tag or commit and read its
+release notes. A future npm release will be documented only after a
+reproducible release rehearsal and the production prerequisites are complete.
+
+## Where to start
+
+- [Support and status](docs/STATUS.md) — capability labels and current limits.
+- [Gate operation and custody](docs/GATE_QUICKSTART.md) — safe diagnostics and
+  the boundary around the human-owned key ceremony.
+- [Adapters](adapters/README.md) — render targets and their limits.
+- [Mission and orchestration model](missions/README.md) — current conductor
+  contracts and evidence model.
+- [Observability](docs/OBSERVABILITY.md) — local trace/export behavior.
+- [Comparison and roadmap](docs/COMPARISON.md) — factual current-state
+  comparison rather than unsupported feature claims.
+- [Security policy](SECURITY.md) — reporting and local-first security posture.
+
+## Honest framing
+
+Tess OS has tested its own doctrine as agent context and found no evidence that
+the doctrine itself improves model output; in some runs it made outcomes worse.
+That result is why the project is framed around governance and provable review
+discipline rather than model quality. The relevant question is not whether an
+agent is "better" after reading Tess OS. It is whether a protected delivery has
+the independently verifiable evidence that policy requires.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). In short: branch, keep the gates green
-(`pytest`, the create-tess `node --test`, `tessctl doctor` + `verify`), never
-commit a secret, and don't introduce AGPL-licensed code into this Apache-2.0 repo.
-Contributions here are Apache-2.0 (inbound = outbound); no CLA is required for
-Tess OS — see [CLA.md](CLA.md) for how the *future* AGPL standalone vault differs.
-
-Please also read the [Code of Conduct](CODE_OF_CONDUCT.md).
-
-### Attribution
-
-If you build on Tess OS, **keep the [NOTICE](NOTICE) file** (Apache-2.0 §4(d)
-requires it) and a short **"built with Tess OS"** credit is appreciated. That is
-all the attribution Apache-2.0 asks for — nothing more is required. The project
-**name and marks** are a separate matter: see the [trademark
-policy](TRADEMARK.md).
+Contributions are welcome, but changes to the gate, policy, trust material,
+workflows, release path, and provider integrations require particularly careful
+review. Do not attempt to unblock a missing approval by self-issuing a key or
+verdict. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-**Apache-2.0.** See [LICENSE](LICENSE) and the third-party attributions in
-[NOTICE](NOTICE). The code is Apache-2.0; the **marks** are not licensed by it —
-see [TRADEMARK.md](TRADEMARK.md).
-
-**Open-core model:**
-
-| Layer | What it is | License |
-|---|---|---|
-| **Tess OS** (this repo) | the permissive shell — build freely | **Apache-2.0** |
-| **Embedded vault** (`tessctl vault`, in this repo) | the "lite" client | **Apache-2.0** |
-| **Standalone Twiss Vault** (`twiss-io/vault`, future, separate repo) | the protected product | **AGPL-3.0 + CLA** |
-
-> The vault embedded in this repository is part of Tess OS and is Apache-2.0. The
-> *standalone* vault product is planned under **AGPL-3.0 + a CLA** (which enables
-> dual-licensing for commercial use) in a **separate** repository. **No
-> AGPL-licensed code is present in this Apache-2.0 repo.** Need it installed or
-> managed for your team? **legal@twiss.io**.
+Apache-2.0. Forks must follow the [trademark policy](TRADEMARK.md).

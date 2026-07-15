@@ -10,9 +10,16 @@ npx create-tess
 
 You name yourself, choose a world (a narrative skin), pick a starter squad of
 real agents, name your conductor, choose how that conductor talks to you — and
-land inside a working agent OS with a first mission open.
+land inside a locally scaffolded Tess OS instance with a first mission open.
 
 `npm create tess` → keystone render → live agent OS.
+
+> **Status:** `create-tess` is a local scaffolding wizard, not production
+> onboarding for the Tess OS review gate. The published package currently lags
+> repository `main`; do not use it to claim a production-protected workflow.
+> Its rendered default is Claude Code-oriented. Codex and generic targets need
+> explicit post-install opt-in and remain subject to the support limits in
+> [the root README](../README.md#supported-surfaces).
 
 ## What it does
 
@@ -31,41 +38,43 @@ land inside a working agent OS with a first mission open.
    tessctl pathway <key>           # the conductor's persona
    tessctl render                  # bake CLAUDE.md + doctrine from operator stubs
    ```
-4. **Activates the gate** — `git init` (a fresh, history-less repo on branch
+4. **Installs local gate hooks** — `git init` (a fresh, history-less repo on branch
    `main`; skipped if the target is already inside a git work tree) followed
    by `tessctl gate install-hooks` (live pre-commit/pre-push hooks + the
-   `tess-gate.yml` CI workflow). This is what actually turns the shipped
-   contract-enforcement gate **on** — without it, a scaffolded instance has a
-   fully rendered doctrine tree but zero enforcement live. Best-effort: if it
-   can't complete (e.g. git isn't installed), the wizard does **not** fail or
-   roll back an otherwise-good instance — it prints explicit, copy-pasteable
-   next-steps instead. Opt out with `--no-git-init` / `--no-gate-hooks` if you
-   want to init git elsewhere or wire hooks yourself.
+   `tess-gate.yml` CI workflow). Hooks provide local feedback only. They do not
+   create a verifier, establish the trust root, or make GitHub checks required.
+   Best-effort: if this step cannot complete (for example, Git is unavailable),
+   the wizard does not roll back an otherwise-good local instance. Opt out with
+   `--no-git-init` / `--no-gate-hooks` when you will configure a non-production
+   repository separately.
 5. Runs `tessctl doctor` + `tessctl verify` and prints the conductor's
    **first-mission greeting in the chosen persona's voice**.
 
-## Heads up: your first push touching doctrine paths will be blocked
+## Heads up: a blocked governed push is expected
 
-The hooks installed in step 4 are real — and a fresh instance ships with
-`policy.verifier_keys: {}` in `core/policy/policy.yaml` (no verifier onboarded
-yet). The ship-gate's `tess-os-security-tier-doctrine` rule requires a
-**signed** APPROVE verdict for changes under `conductor/guardrails.md`,
-`core/policy/**`, `.github/workflows/**`, and a few other doctrine paths —
-and those are exactly the paths a brand-new instance's first commit
-necessarily touches (they're baked/copied by the scaffold itself). With no
-verifier key registered, that requirement is unsatisfiable by anyone, so
-**the very first `git push` will be refused, fail-closed.** This is by
-design (see `core/policy/policy.yaml`'s header), not a bug — but the wizard
-did not previously say so. The success output now prints this same notice;
-it's repeated here for reference. Your options:
+A fresh instance ships with intentionally empty verifier and sign-off
+registries. A governed change can therefore block with **"no covering APPROVE
+verdict found"**. That is a correct fail-closed result, not a wizard error.
 
-- **`git push --no-verify`** — bypass the git hook for this push only (a
-  git-native escape hatch, not a gate change).
-- **`--no-gate-hooks`** — pass this flag to the wizard (or a re-scaffold) to
-  skip installing the hooks altogether.
-- **Onboard a real verifier** — the actual fix; see
-  `conductor/verdict-signing.md` for the trust model. A turnkey
-  `tessctl verdict keygen` command is landing in a follow-up release.
+Do not generate, register, or self-sign a key or verdict to make the gate pass.
+Do not use a bypass to present a protected change as approved. The initial
+trust anchor is a human-owned Xavier custody ceremony, and GitHub required-check
+enforcement remains a separate production prerequisite.
+
+For experimentation, keep the scaffold in an isolated, non-production
+repository. For any governed or production-bound change, stop and follow the
+[gate custody boundary](../docs/GATE_QUICKSTART.md).
+
+## What this wizard does not configure
+
+- It does not select or certify a coding-agent platform. The default rendered
+  workflow is Claude Code-oriented.
+- It does not configure Codex/native-event parity, generic-host feature parity,
+  Perplexity, Gemini, or every other coding-agent tool.
+- It does not create a production trust root, verifier/sign-off authority, or
+  required GitHub check.
+- It does not provision Tess Cloud, Tess Vault, advanced shared memory, or
+  credentials for an agent.
 
 ## The five axes
 

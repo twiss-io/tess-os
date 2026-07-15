@@ -33,12 +33,10 @@ decision points exist in the engine today:
 | `tessctl gate ci` | `gate` | `gate.ci` |
 | `tessctl validate <type> <file>` | `validate` | `validate` |
 
-**Not instrumented, on purpose:** `tessctl run` (the mechanical conductor
-loop) does not exist yet in this engine —
-`docs/ULTIMATE_FRAMEWORK_PLAN.md`'s Phase 2 honest re-scope note says so
-explicitly. There is nothing to trace there until it is built; when it ships,
-it gets the same treatment (a handful of `_trace_record(...)` call-sites, not
-a redesign — the recorder and the schema are already general-purpose).
+**Not instrumented yet:** `tessctl run` exists as a sequential mechanical
+conductor loop, but it does not currently emit the trace events documented on
+this page. Its future instrumentation can use the same recorder and schema; it
+does not require a telemetry redesign.
 
 Every invocation of the four call-sites above appends **exactly one** event,
 whether the outcome is a clean pass, a deterministic block, or a fail-closed
@@ -201,8 +199,7 @@ tool provides. Tess OS itself never phones home.
   across a mission's briefs → verdict → returns chain. The JSONL already
   carries enough (`mission_id`, `run_id`) to build that later without a
   schema break.
-- **`tessctl run`** — not instrumented because it does not exist yet (see
-  above).
+- **`tessctl run`** — exists, but is not yet instrumented (see above).
 - **Streaming / live tail** — the trace is append-only JSONL; there is no
   `tessctl trace tail` or watch mode. `tail -f missions/<id>/trace.jsonl |
   jq .` works today without any new tooling.

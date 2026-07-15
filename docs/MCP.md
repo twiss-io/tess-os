@@ -1,15 +1,19 @@
-# `tessctl mcp serve` — the gate as an MCP server
+# `tessctl mcp serve` — selected Tess checks over MCP
 
-Goal #9. MCP (Model Context Protocol) is the one tool protocol every harness
-speaks — Claude Code, Codex, Gemini CLI, Cursor. `tessctl mcp serve` exposes
-four of tessctl's existing checks (contract validation, the gate's
-verdict-coverage ship-check, mission-record reads, roster reads) as MCP
-tools over a stdio JSON-RPC 2.0 transport, so an agent can call them
+MCP (Model Context Protocol) is an interoperability protocol used by many
+clients, not a universal capability or a trust mechanism. `tessctl mcp serve`
+exposes four existing checks (contract validation, the gate's verdict-coverage
+ship-check, mission-record reads, roster reads) as MCP tools over a stdio
+JSON-RPC 2.0 transport, so an agent can call them
 **during a session** instead of only at the git pre-commit / pre-push / CI
 boundary. It does not replace `tessctl gate install-hooks` — the git-boundary
 enforcement stays exactly as it was (docs/GATE_QUICKSTART.md). This is an
 additional, earlier checkpoint: an agent can ask "would this be blocked?"
 before it ever stages a commit.
+
+The server does not issue approvals, establish verifier trust, or make a
+platform a certified Tess OS adapter. Only the Claude Code configuration path
+is smoke-tested here; other client snippets need independent validation.
 
 Protocol: [MCP 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18)
 — JSON-RPC 2.0 messages, one per line, over stdin/stdout (the

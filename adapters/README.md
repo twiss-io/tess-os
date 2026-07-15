@@ -1,16 +1,18 @@
 # Adapters — the render-target seam
 
-> Spec: `docs/ULTIMATE_FRAMEWORK_PLAN.md` Phase 1 ("Portable core + render
-> targets") and Design Decision #1 ("Doctrine compiles, never copied — one
-> `core/` source rendered per-harness by the keystone engine").
+> Current status: Tess OS ships the `claude-code`, `codex`, and `generic`
+> render targets. Claude is the reference integration; Codex is a pilot; and
+> generic output is an interoperability baseline, not universal host support.
+> See [Support and status](../docs/STATUS.md) before treating a target as a
+> protected workflow.
 > Implementation: `.tess/bin/tessctl` — `RenderTarget` / `ClaudeCodeRenderTarget`
 > / `RENDER_TARGETS`. CLI: `tessctl render --target <name>` / `--list-targets`.
 
 This directory is documentation, not code. Per the repo's single-file Python
 CLI convention (`.tess/bin/tessctl`), the render-target classes live inside
-the engine itself — `adapters/` is the human-facing seam contract that
-Phase 2 (Codex) and Phase 3 (Gemini, generic) build against, so a new target
-can be added without touching core loading, the lock schema, or the manifest
+the engine itself. `adapters/` describes that human-facing seam: current
+Claude Code, Codex, and generic targets, plus the requirements a future target
+must meet without changing core loading, the lock schema, or the manifest
 write gate.
 
 `adapters/**` is intentionally **not** wired into `tess.manifest.json`'s
@@ -228,11 +230,9 @@ into `AGENTS.md`).
 
 ## Capability tiers (for context; not enforced by this seam)
 
-Per the plan's Degradation Policy (§B.2): Claude Code and Gemini are Tier A/A−
-(native subagents); Codex is Tier B (no in-session subagent tool — process
-fan-out via `codex exec` conducts instead); rules-file-only assistants
-(Cursor, Copilot-class) are Tier C (`generic` target — doctrine + gate spine
-only, no orchestration). The `RenderTarget` interface itself is
-tier-agnostic — it only renders artifacts. Dispatch-driver differences
-(native subagent vs. process fan-out) are a per-target concern layered on
-top, not part of this seam.
+These tiers describe design intent, not a support promise. Claude Code is the
+reference target; Codex is a pilot with a process-driver model; generic only
+emits `AGENTS.md` and plain prompts. Gemini and other platforms are not Tess OS
+targets today. The `RenderTarget` interface itself is tier-agnostic: it renders
+artifacts, while lifecycle/dispatch capability remains a separately verified
+adapter concern.

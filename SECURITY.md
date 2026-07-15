@@ -43,8 +43,10 @@ A good report helps us reproduce and triage quickly:
 
 ## Scope and threat model
 
-Tess OS is a **doctrine + roster + config scaffold plus an upgrade engine** for
-Claude Code. It is not a hosted service; it runs on your machine with the
+Tess OS is a local governance framework with a doctrine/roster scaffold,
+upgrade engine, and coding-agent render targets. Claude Code is the reference
+integration; Codex is a pilot and generic output is an interoperability
+baseline. It is not a hosted service; it runs on your machine with the
 credentials and access **you** grant it. Keep this in mind when assessing impact.
 
 We are especially interested in reports concerning:

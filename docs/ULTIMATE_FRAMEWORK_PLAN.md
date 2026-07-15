@@ -15,6 +15,13 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 # Tess OS — The Ultimate Plug-and-Play Framework
 ## Enforcing safe shipping for coding agents — independent of the agent's quality
 
+> **Historical architecture plan:** this document is a dated design record,
+> not the current support contract or an operational runbook. It contains
+> completed, deferred, and superseded proposals. For current product claims,
+> integration labels, and security limits, use [Support and status](STATUS.md)
+> and the root [README](../README.md). In particular, do not use this plan to
+> bootstrap verifier/sign-off authority or to claim a platform is supported.
+
 > **⚠️ SUPERSESSION NOTICE (2026-07-08) — read this before anything below.**
 > This plan's central productivity claim — that mounting the doctrine
 > described below into an agent's context makes that agent produce

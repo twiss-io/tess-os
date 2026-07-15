@@ -1,16 +1,13 @@
-# Generic render target (Tier C)
+# Generic render target — interoperability baseline
 
 Implementation: `GenericRenderTarget` in `.tess/bin/tessctl`
 (`name = "generic"`, registered in `RENDER_TARGETS`).
 
-This is the "plug-and-play for any AGENTS.md-reading agent" target: the
-[AGENTS.md](https://agents.md) convention — a README for agents, stewarded
-by the Agentic AI Foundation under the Linux Foundation — is read natively
-by Codex, Cursor, GitHub Copilot, Gemini CLI, Zed, Devin, and 60,000+ other
-repositories. `generic` assumes NONE of their harness-specific conventions
-(no `.claude/` frontmatter, no Codex config.toml, no bespoke prompt-loader
-path) — just the standard file, plus a plain mirror of this project's
-commands.
+This target emits the portable minimum: an `AGENTS.md` file plus a plain
+mirror of this project's commands. Hosts may choose to read `AGENTS.md`, but
+their discovery, tool permissions, command handling, and subagent behavior
+remain host-specific. `generic` is not proof of native integration or feature
+parity for every tool that recognizes the convention.
 
 ## What it renders
 
@@ -54,6 +51,14 @@ Tier C (adapters/README.md "Capability tiers"): rules-file-only assistants
 orchestration/dispatch mechanics assumed. This is the floor every harness
 gets for free — `codex`/`claude-code` layer harness-specific mechanics
 (native prompts, subagent dispatch) on top of the same doctrine.
+
+## Governance boundary
+
+Generic rendering emits `AGENTS.md` and prompt mirrors only. It does not
+configure CI, branch protection, a verifier or sign-off trust root, or native
+gate enforcement for any host. Do not treat rendered files as approval or a
+bootstrap instruction; use the ref-bound diagnostics in
+[Gate operation and custody](../../docs/GATE_QUICKSTART.md) instead.
 
 ## Doctrine profile (G3, 2026-07-08)
 

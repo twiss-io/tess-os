@@ -1,4 +1,10 @@
-# Codex render target (Tier B)
+# Codex render target — pilot
+
+> This is a shipped Tess OS render target, not certified native-parity support.
+> The driver has not been live-tested against Codex event samples. Treat the
+> files below as a project-level pilot and confirm current Codex behavior in
+> your environment before relying on them. See
+> [Support and status](../../docs/STATUS.md).
 
 Implementation: `CodexRenderTarget` in `.tess/bin/tessctl`
 (`name = "codex"`, registered in `RENDER_TARGETS`).

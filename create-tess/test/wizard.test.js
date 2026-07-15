@@ -248,23 +248,23 @@ for (const combo of COMBOS) {
       'the gate CI workflow must be installed by install-hooks',
     );
 
-    // B1 (gap-loop R2) — the hooks-live success path must disclose the
-    // first-push brick (verifier_keys: {} ships empty, so the very first
-    // push touching doctrine paths is fail-closed refused) and name all
-    // three real escape hatches, rather than silently saying "Your system
-    // is live" over an undisclosed landmine.
+    // A successful local scaffold must not be presented as production-ready.
+    // It must disclose the expected fail-closed result and hand custody back
+    // to Xavier without suggesting a bypass or self-bootstrap path.
     assert.match(
       run.stdout,
-      /first push touching doctrine paths will be BLOCKED/,
-      'success path must disclose the first-push brick',
+      /Local scaffold ready; protected production work remains blocked/,
+      'success path must distinguish local setup from production protection',
     );
-    assert.match(run.stdout, /git push --no-verify/, 'must name the --no-verify escape hatch');
-    assert.match(run.stdout, /--no-gate-hooks/, 'must name the --no-gate-hooks escape hatch');
     assert.match(
       run.stdout,
-      /verdict-signing\.md/,
-      'must point at verifier onboarding docs',
+      /no covering APPROVE verdict\s+found/,
+      'success path must disclose the expected fail-closed result',
     );
+    assert.match(run.stdout, /escalate to Xavier/, 'must return custody to Xavier');
+    for (const unsafeGuidance of ['git push --no-verify', 'onboard a real verifier', 'verdict keygen']) {
+      assert.doesNotMatch(run.stdout, new RegExp(unsafeGuidance));
+    }
 
     // B3 (gap-loop R2) — the produced instance must NOT inherit this repo's
     // OWN framework-internal CI (its pytest suite, its release-cut pipeline,
