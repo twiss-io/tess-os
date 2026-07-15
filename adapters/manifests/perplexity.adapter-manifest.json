@@ -1,0 +1,15 @@
+{
+  "schema_version": "tess.adapter-manifest.v1",
+  "adapter_id": "perplexity",
+  "provider": "Perplexity",
+  "support_level": "C0",
+  "status": "not-supported",
+  "capabilities": [],
+  "evidence": [
+    {"kind": "status-page", "path": "docs/STATUS.md", "note": "Records that Tess OS has no Perplexity adapter or driver today."}
+  ],
+  "limits": [
+    "No Tess OS adapter, driver, provider credential flow, or conformance evidence exists.",
+    "A future read-only research-worker role is a proposal, not an integration or a protected-workflow path."
+  ]
+}

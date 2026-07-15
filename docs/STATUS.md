@@ -17,13 +17,13 @@ repository today from pilot work and product plans.
 | Capability or surface | Label | Current boundary |
 |---|---|---|
 | Local policy and gate CLI | **Verified current state** | The engine can validate policy/evidence and fail closed. It is not a production admission control until first-key custody and GitHub required checks are fixed. |
-| Claude Code target and driver | **Verified current state** | Reference integration. It remains an uncertified preview for protected delivery. |
-| Codex target and driver | **Pilot** | The renderer emits `AGENTS.md`, `.codex/config.toml`, and prompt files. The driver is not live-tested against native event samples and does not have native-parity certification. |
-| Generic `AGENTS.md` target | **Verified current state** | Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
+| Claude Code target and driver | **C3 — managed-adapter preview** | Reference integration. It remains an uncertified preview for protected delivery. |
+| Codex target and driver | **C2 — manual-gated compatibility** | The renderer emits `AGENTS.md`, `.codex/config.toml`, and prompt files. The driver is not live-tested against native event samples and does not have native-parity certification. |
+| Generic `AGENTS.md` target | **C2 — manual-gated compatibility** | Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
 | `tessctl run` conductor | **Verified current state** | Validates plans, gates, artifacts, retries, and escalation in a sequential execution model. Parallel execution and synthesis remain future work. |
 | MCP server | **Verified current state** | Provider-neutral stdio JSON-RPC with limited read/check tools. MCP connects tools and context; it is not a review or trust-enforcement mechanism. |
-| Perplexity adapter/driver | **Not supported** | Tess OS has no Perplexity repository adapter. A future read-only research-worker role is only a proposal. |
-| Gemini adapter/driver | **Not supported** | No registered render target or dispatch driver exists. |
+| Perplexity adapter/driver | **C0 — not supported** | Tess OS has no Perplexity repository adapter. A future read-only research-worker role is only a proposal. |
+| Gemini adapter/driver | **C0 — not supported** | No registered render target or dispatch driver exists. |
 | All frontier models | **Not supported as a claim** | A model name, OpenAI-compatible API, or MCP support is not adapter conformance. |
 | Advanced retrieval memory | **Planned** | Current `kb/` conventions and memory doctrine are not a proven retrieval, lifecycle, ACL, or privacy system. |
 | Tess Cloud | **Planned** | Optional cloud synchronization/coordination product, separate from the local core and not present here. |
@@ -65,3 +65,7 @@ versioned adapter passes a conformance suite covering capability mapping,
 artifact provenance, denied actions, version drift, isolation, and independent
 required-check enforcement. Until then, Tess OS will describe the exact adapter
 surface and its limits rather than advertise universal support.
+
+The current advisory records and the C0–C4 vocabulary are in
+[Adapter conformance](../adapters/CONFORMANCE.md). They are deliberately not
+gate, policy, approval, signing, key, verifier, or branch-protection inputs.
