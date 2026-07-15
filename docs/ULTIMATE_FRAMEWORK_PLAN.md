@@ -22,6 +22,17 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 > and the root [README](../README.md). In particular, do not use this plan to
 > bootstrap verifier/sign-off authority or to claim a platform is supported.
 
+> **Current-state qualifier (checked against `main` on 2026-07-16):** any
+> present-tense inventory, absence statement, or phase-status statement below
+> describes the plan's 2026-07-07 design snapshot unless it explicitly gives a
+> later date. It is not a current implementation inventory. The authoritative
+> current platform labels are [Support and status](STATUS.md) and [Adapter
+> conformance](../adapters/CONFORMANCE.md): Claude Code is a C3
+> managed-adapter preview; Codex and generic `AGENTS.md` hosts are C2
+> manual-gated compatibility previews; Perplexity is C0 (not supported); and
+> no platform is certified C4 or ready for protected delivery. Those labels do
+> not establish a trust root, required checks, or production readiness.
+
 > **⚠️ SUPERSESSION NOTICE (2026-07-08) — read this before anything below.**
 > This plan's central productivity claim — that mounting the doctrine
 > described below into an agent's context makes that agent produce
@@ -101,7 +112,7 @@ context produced zero improvement and a weak-tier regression at 1.7–2.7×
 cost. The framework's defensible value is the enforcement boundary (Part
 C8 / Part D7) — bad output can't ship — not output enhancement.
 
-**What must change to be "ultimate plug-and-play":** today the doctrine is (a) prose that only a strong model reliably self-enforces, (b) wired 100% to Claude Code (`CLAUDE.md`, `.claude/**` — the public repo contains **zero** references to Codex, Gemini, or AGENTS.md; verified by grep), and (c) enforced by exactly two bash hooks that only Claude Code can fire. The plan below converts the doctrine into **machine-checkable contracts** (schemas + a deterministic `tessctl gate` spine that works from git hooks and CI on *any* harness), splits the product into a **portable core + per-assistant adapters**, and adds the **proving ground** — which tested exactly that claim and disproved it (weak+framework: −11.1 pts vs strong+bare, fair run). The harness's standing jobs are now: (a) enforcement demonstration (the gate arena), (b) regression CI for any doctrine payload change.
+**What had to change in the 2026-07-07 planning snapshot to approach "ultimate plug-and-play":** the observed doctrine was (a) prose that only a strong model reliably self-enforces, (b) wired 100% to Claude Code (`CLAUDE.md`, `.claude/**` — that snapshot of the public repo contained **zero** references to Codex, Gemini, or AGENTS.md; verified by grep), and (c) enforced by exactly two bash hooks that only Claude Code could fire. This is historical gap analysis, not a current support statement; use [Support and status](STATUS.md) and [Adapter conformance](../adapters/CONFORMANCE.md) for the current labels and their limits. The plan below converts the doctrine into **machine-checkable contracts** (schemas + a deterministic `tessctl gate` spine that works from git hooks and CI on *any* harness), splits the product into a **portable core + per-assistant adapters**, and adds the **proving ground** — which tested exactly that claim and disproved it (weak+framework: −11.1 pts vs strong+bare, fair run). The harness's standing jobs are now: (a) enforcement demonstration (the gate arena), (b) regression CI for any doctrine payload change.
 
 **The eight key design decisions** (full rationale in the body):
 
@@ -402,9 +413,14 @@ are the product.
 
 ## 6. Part E — Gap Analysis + Roadmap
 
-### E.1 What Tess OS is today vs what "ultimate plug-and-play" requires
+### E.1 What Tess OS was at the planning snapshot (2026-07-07) vs what "ultimate plug-and-play" required
 
-| Dimension | Today (verified) | Required | Gap severity |
+> This table is a historical gap analysis. It is not a current feature or
+> provider-support matrix. For the repository's current C0–C4 labels and
+> evidence boundaries, read [Support and status](STATUS.md) and [Adapter
+> conformance](../adapters/CONFORMANCE.md).
+
+| Dimension | 2026-07-07 snapshot (verified then) | Required | Gap severity |
 |---|---|---|---|
 | Doctrine quality | Excellent, production-hardened, incident-annotated (`conductor/`) | Same, as compilable source | — (asset) |
 | Contracts | Prose + one warn-mode hook | JSON-schema'd brief/plan/verdict/return + CLI validation | **HIGH** — this is the weak-agent keystone |
@@ -422,7 +438,7 @@ are the product.
 
 **Phase 1 — Portable core + render targets (~2–3 wks).** Extract `core/doctrine/` (de-Claude-ify wording: "dispatch primitive" abstraction), add `tessctl render --target {claude-code,codex,gemini,generic}` producing CLAUDE.md / AGENTS.md+prompts / GEMINI.md+commands / AGENTS.md from one source; extend `tess.manifest.json` owned_globs + `tess.lock` to the new outputs so keystone upgrades all adapters atomically. Wizard axis 6 (harness multi-select). *Acceptance:* a fresh `npm create tess` on a machine with Codex-only produces a working AGENTS.md-driven install; `tessctl update` cleanly 3-way-merges a doctrine change into all rendered targets.
 
-> **Honest re-scope (MED-2 + LOW-1, Fable Phase-1 review, PR #36):** what actually shipped under this Phase 1 line item is a SUBSET of the paragraph above — the `RenderTarget` seam (registry, per-install enablement, and doctor/verify/update wired to consult it — the part that makes the seam load-bearing rather than decorative) plus exactly **one** target, `claude-code` (the Tier A reference implementation), plus the deferred Phase 0 item (`core/contracts/**` wired into the managed set). Still **not done**, and explicitly Phase 2+ scope: the `codex` / `gemini` / `generic` targets themselves; the `core/doctrine/` extraction and de-Claude-ified wording; wizard axis 6 (harness multi-select); and `core/contracts/policy.schema.json` (the fifth schema named in §B.2's `core/contracts/` tree — hard floors, whitelists, gate map — never built; `CONTRACT_SCHEMAS` in `.tess/bin/tessctl` only has brief/crew-plan/verdict/return-manifest). The Phase 1 acceptance criteria above ("a fresh `npm create tess` on a machine with Codex-only produces a working AGENTS.md-driven install") is **not yet met** — it is Phase 2's acceptance bar once a Codex target exists. This note exists so the roadmap table above isn't read as a completed-work claim; see `CHANGELOG.md` `[Unreleased]` for the itemized delivered-vs-deferred list.
+> **Historical re-scope (MED-2 + LOW-1, Fable Phase-1 review, PR #36):** at the time of this re-scope, what had shipped under this Phase 1 line item was a SUBSET of the paragraph above — the `RenderTarget` seam (registry, per-install enablement, and doctor/verify/update wired to consult it — the part that makes the seam load-bearing rather than decorative) plus exactly **one** target, `claude-code` (the Tier A reference implementation), plus the deferred Phase 0 item (`core/contracts/**` wired into the managed set). At that time, the `codex` / `gemini` / `generic` targets themselves; the `core/doctrine/` extraction and de-Claude-ified wording; wizard axis 6 (harness multi-select); and `core/contracts/policy.schema.json` (the fifth schema named in §B.2's `core/contracts/` tree — hard floors, whitelists, gate map — never built; `CONTRACT_SCHEMAS` in `.tess/bin/tessctl` only had brief/crew-plan/verdict/return-manifest) remained Phase 2+ scope. The Phase 1 acceptance criterion above ("a fresh `npm create tess` on a machine with Codex-only produces a working AGENTS.md-driven install") was not yet met at that time. This note preserves the historical delivery record; it is not a current support statement. See [Support and status](STATUS.md), [Adapter conformance](../adapters/CONFORMANCE.md), and `CHANGELOG.md` `[Unreleased]` for current, separately bounded information.
 
 **Phase 2 — Codex adapter + enforcement spine end-to-end (~3 wks).** `tessctl dispatch --driver codex` (brief file → `codex exec --json` child → return-manifest validation); `tessctl run <plan>` mechanical conductor loop; `tessctl gate install` (pre-commit/pre-push ship-check + CI action). *Acceptance:* one real mission (plan authored by a strong model in any harness) executes end-to-end with Codex-driven workers, verifier rejection triggers a typed retry, and a push without an APPROVE verdict on a prod-flagged path is refused by both git hook and CI.
 
