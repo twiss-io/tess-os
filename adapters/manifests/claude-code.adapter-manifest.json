@@ -1,0 +1,17 @@
+{
+  "schema_version": "tess.adapter-manifest.v1",
+  "adapter_id": "claude-code",
+  "provider": "Anthropic Claude Code",
+  "support_level": "C3",
+  "status": "preview",
+  "capabilities": ["instruction-rendering", "prompt-artifacts", "config-fragment", "local-process-driver"],
+  "evidence": [
+    {"kind": "repository-source", "path": "adapters/claude-code/README.md", "note": "Documents the rendered target and local process-driver surface; it explicitly says protected delivery remains uncertified."},
+    {"kind": "status-page", "path": "docs/STATUS.md", "note": "Records the repository-wide production prerequisites that remain unmet."}
+  ],
+  "limits": [
+    "C3 is an uncertified managed-adapter preview, not protected-workflow certification.",
+    "The adapter cannot mint approvals, verifier keys, verdicts, sign-offs, or branch-protection status.",
+    "Tess OS is not production admission control until external trust-root and required-check prerequisites are met."
+  ]
+}

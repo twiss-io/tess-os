@@ -15,6 +15,16 @@ Claude Code, Codex, and generic targets, plus the requirements a future target
 must meet without changing core loading, the lock schema, or the manifest
 write gate.
 
+## Advisory adapter manifests
+
+[`CONFORMANCE.md`](CONFORMANCE.md) defines the C0–C4 vocabulary and links the
+versioned local records in [`manifests/`](manifests/). Those JSON files are an
+honest status/evidence index, not a new adapter runtime: they are outside
+`core/contracts/`, are not accepted by `tessctl validate`, and cannot grant
+authority, access, approval, signing, key custody, verifier registration, or
+policy enforcement. The offline test harness validates their shape and local
+evidence-pointer containment/existence only.
+
 `adapters/**` is intentionally **not** wired into `tess.manifest.json`'s
 `owned_globs`/`tess.lock` (same fenced-off treatment as `docs/**`): there is
 no core → live split to track here — it is prose about the interface, not a
