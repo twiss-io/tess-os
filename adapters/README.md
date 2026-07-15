@@ -25,6 +25,21 @@ authority, access, approval, signing, key custody, verifier registration, or
 policy enforcement. The offline test harness validates their shape and local
 evidence-pointer containment/existence only.
 
+For a checkout-local, read-only advisory check, run:
+
+```sh
+python3 -m tools.validate_adapter_manifests --root . --json
+```
+
+The command reads only the four canonical records, their advisory schema,
+their in-tree evidence pointers, and literal engine registry dictionaries as
+Python AST. Its JSON always contains `"advisory": true`; a zero exit status
+says those local descriptions are structurally consistent, not that a provider
+is certified or that a change is allowed to merge. It has no network,
+credential, subprocess, write, provider-execution, gate, or `--fix` path.
+It proves literal-declaration parity and reports detected direct reflective
+access; it does not prove arbitrary runtime data flow or semantic behavior.
+
 `adapters/**` is intentionally **not** wired into `tess.manifest.json`'s
 `owned_globs`/`tess.lock` (same fenced-off treatment as `docs/**`): there is
 no core → live split to track here — it is prose about the interface, not a
