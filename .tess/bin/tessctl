@@ -9240,14 +9240,14 @@ def _gate_run_git(root: Path, *args: str) -> str:
 
 def _gate_changed_paths_staged(root: Path) -> list:
     """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMRT")
     return [line for line in out.splitlines() if line.strip()]
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
     when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMRT", base, head)
     return [line for line in out.splitlines() if line.strip()]
 
 
