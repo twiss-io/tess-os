@@ -1,4 +1,9 @@
-# Claude Code render target (Tier A — reference implementation)
+# Claude Code render target — reference integration
+
+> This is Tess OS's reference render target and driver. It is an uncertified
+> preview for protected delivery until the external trust-root and required
+> GitHub-check prerequisites are complete. See
+> [Support and status](../../docs/STATUS.md).
 
 Implementation: `ClaudeCodeRenderTarget` in `.tess/bin/tessctl`
 (`name = "claude-code"`, registered in `RENDER_TARGETS`).

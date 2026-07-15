@@ -31,6 +31,12 @@ confidence: high
 
 # Tess-OS Competitive Analysis — 2026-07-07
 
+> **Historical research snapshot:** the repository facts and external product
+> claims in this dated analysis may have changed. It is not the public support
+> matrix. Use [Support and status](STATUS.md) and the root
+> [README](../README.md) for current Tess OS claims; do not infer platform
+> support, production readiness, or a key-custody procedure from this file.
+
 > Prepared for the "ultimate plug-and-play framework for coding agents" mission.
 > Radical-honesty standard: every Tess-OS capability claim below was verified by
 > reading the code on `phase-2b-gate-hardening` (PRs #35–#38 stacked, 460 tests);

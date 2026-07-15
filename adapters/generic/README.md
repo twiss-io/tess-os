@@ -1,16 +1,13 @@
-# Generic render target (Tier C)
+# Generic render target — interoperability baseline
 
 Implementation: `GenericRenderTarget` in `.tess/bin/tessctl`
 (`name = "generic"`, registered in `RENDER_TARGETS`).
 
-This is the "plug-and-play for any AGENTS.md-reading agent" target: the
-[AGENTS.md](https://agents.md) convention — a README for agents, stewarded
-by the Agentic AI Foundation under the Linux Foundation — is read natively
-by Codex, Cursor, GitHub Copilot, Gemini CLI, Zed, Devin, and 60,000+ other
-repositories. `generic` assumes NONE of their harness-specific conventions
-(no `.claude/` frontmatter, no Codex config.toml, no bespoke prompt-loader
-path) — just the standard file, plus a plain mirror of this project's
-commands.
+This target emits the portable minimum: an `AGENTS.md` file plus a plain
+mirror of this project's commands. Hosts may choose to read `AGENTS.md`, but
+their discovery, tool permissions, command handling, and subagent behavior
+remain host-specific. `generic` is not proof of native integration or feature
+parity for every tool that recognizes the convention.
 
 ## What it renders
 
