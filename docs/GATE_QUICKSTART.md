@@ -33,12 +33,13 @@ substitute for required CI and branch protection.
 ## Safe diagnostics
 
 In an isolated, non-production clone, these commands inspect the existing
-state without creating trust material:
+state without creating trust material. For `gate ci`, use two existing
+immutable refs; replace the placeholders only with the refs you are reviewing.
 
 ```bash
 ./tessctl doctor
 ./tessctl verify
-./tessctl gate ci
+./tessctl gate ci --base <BASE_REF> --head <HEAD_REF>
 ```
 
 If an existing verdict file needs inspection, an authorized operator may verify

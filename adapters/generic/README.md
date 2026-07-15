@@ -52,6 +52,14 @@ orchestration/dispatch mechanics assumed. This is the floor every harness
 gets for free — `codex`/`claude-code` layer harness-specific mechanics
 (native prompts, subagent dispatch) on top of the same doctrine.
 
+## Governance boundary
+
+Generic rendering emits `AGENTS.md` and prompt mirrors only. It does not
+configure CI, branch protection, a verifier or sign-off trust root, or native
+gate enforcement for any host. Do not treat rendered files as approval or a
+bootstrap instruction; use the ref-bound diagnostics in
+[Gate operation and custody](../../docs/GATE_QUICKSTART.md) instead.
+
 ## Doctrine profile (G3, 2026-07-08)
 
 `GenericRenderTarget.doctrine_profile == "worker"` — same lean AGENTS.md

@@ -91,14 +91,15 @@ server, or local hook does not replace independent review or VCS enforcement.
 ### Safe evaluation
 
 You may inspect the reviewed source and run read-only diagnostics in an
-isolated, non-production repository:
+isolated, non-production repository. For `gate ci`, use two existing immutable
+refs; replace the placeholders only with the refs you are reviewing:
 
 ```bash
 git clone https://github.com/twiss-io/tess-os.git
 cd tess-os
 ./tessctl doctor
 ./tessctl verify
-./tessctl gate ci
+./tessctl gate ci --base <BASE_REF> --head <HEAD_REF>
 ```
 
 Do not use this sequence to activate a production branch. In particular, do

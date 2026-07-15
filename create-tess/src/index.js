@@ -133,35 +133,25 @@ function relTargetHint(targetDir) {
   return rel && !rel.startsWith('..') ? rel : targetDir;
 }
 
-// B1 (gap-loop R2) — the hooks are live, but a fresh instance ships with
-// `policy.verifier_keys: {}` (core/policy/policy.yaml — no verifier
-// onboarded yet). That makes the `tess-os-security-tier-doctrine` rule
-// UNSATISFIABLE by anyone: its `require_verdict` covers conductor/guardrails.md,
-// core/policy/**, .github/workflows/**, and friends — exactly the paths a
-// brand-new instance's first commit necessarily touches (they're baked/copied
-// by the scaffold itself). So the very FIRST `git push` that includes any of
-// those paths is fail-closed refused by the pre-push hook we just installed —
-// and, before this fix, nothing on the success path said so. This prints the
-// disclosure plus the three real ways out, honestly, right where the operator
-// will see it.
+// A fresh instance intentionally has no authorized verifier. Local hooks and
+// a rendered workflow are useful setup, but they do not establish the
+// external trust anchor or required GitHub enforcement a production gate
+// needs. Say that plainly at the point an operator would otherwise mistake a
+// successful scaffold for production readiness.
 function printFirstPushNotice() {
   const bang = plain ? '!' : c.yellow('!');
   process.stdout.write(
-    `\n  ${bang} Heads up: your first push touching doctrine paths will be BLOCKED.\n`,
+    `\n  ${bang} Local scaffold ready; protected production work remains blocked.\n`,
   );
   process.stdout.write(
     dim(
-      '    The ship-gate requires a signed APPROVE verdict for changes under\n' +
-        '    conductor/guardrails.md, core/policy/**, .github/workflows/**, and a\n' +
-        '    few other doctrine paths — and this fresh install ships with\n' +
-        '    policy.verifier_keys: {} (no verifier onboarded yet), so that\n' +
-        '    requirement cannot be met by anyone yet. This is fail-closed by\n' +
-        '    design (core/policy/policy.yaml), not a bug — but it was undisclosed\n' +
-        '    until now. Your options:\n' +
-        '      - git push --no-verify        bypass the hook for this push only\n' +
-        '      - --no-gate-hooks             (re-scaffold flag) skip installing the hooks at all\n' +
-        '      - onboard a real verifier      see conductor/verdict-signing.md\n' +
-        '                                     (`tessctl verdict keygen` is on the way)\n',
+      '    Fresh policy registries intentionally have no authorized verifier, so\n' +
+        '    a first governed push can fail closed with no covering APPROVE verdict\n' +
+        '    found. Do not bypass or disable the hook to represent a change as\n' +
+        '    protected, or create, register, or sign review authority from this\n' +
+        '    candidate repository. Record the\n' +
+        '    gate output and base/head references, then escalate to Xavier for an\n' +
+        '    external custody decision and required GitHub-check enforcement.\n',
     ),
   );
 }
@@ -319,7 +309,10 @@ export async function main(argv) {
   if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
   if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
   printGateStatus(gate, targetDir);
-  process.stdout.write('  ' + (plain ? '*' : accent('★')) + '  Your system is live.\n');
+  process.stdout.write(
+    '  ' + (plain ? '*' : accent('★')) +
+      '  Local scaffold complete; production protection requires external custody and required GitHub checks.\n',
+  );
 
   // Arrival — the conductor speaks the operator's name back (design doc §3.6).
   printArrival(vibe, choices, checks);
