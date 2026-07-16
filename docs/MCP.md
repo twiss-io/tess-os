@@ -141,20 +141,27 @@ Runs the **same decision engine** as `tessctl gate pre-push` / `tessctl gate
 ci` — it calls `_gate_run_ship_check()` directly, the exact shared function
 both of those CLI subcommands call. Given an explicit set of paths (the
 caller already knows what it touched — no git-diff derivation happens
-inside this tool) and a `head` ref/sha to resolve committed-verdict coverage
-against.
+inside this tool), an immutable `base` commit ID, and a `head` ref/sha to
+resolve committed-verdict coverage against.
+
+`base` is not optional. It must be a full 40- or 64-hex commit ID, never a
+branch, tag, or other mutable ref. The gate reads both verifier-registration
+metadata and public-key bytes from that BASE tree; it will not fall back to a
+candidate policy, candidate key file, or the current checkout. A missing or
+mutable base returns a normal blocked result containing `BASE_REQUIRED`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `paths` | string[] | yes | repo-relative paths to check |
+| `base` | string | yes | immutable full 40- or 64-hex base commit ID; mutable refs are rejected |
 | `head` | string | no | git ref/sha; defaults to current `HEAD` |
 | `verdict_dirs` | string[] | no | restrict covering-verdict discovery to these directories |
 
-Result: `{blocked, reasons[], changed_paths[], head}` — identical shape (plus
-the resolved `head`) to `tessctl gate pre-push --base X --head Y --json`'s
-`result` for the same `changed_paths`/`head`. See `tests/test_mcp_serve.py`
-for the equivalence proof against a real fixture repo (BLOCKED and ALLOWED
-cases).
+Result: `{blocked, reasons[], changed_paths[], base, head}` — identical shape
+(plus the resolved `base`/`head`) to `tessctl gate pre-push --base X --head
+Y --json`'s `result` for the same `changed_paths`/refs. See
+`tests/test_mcp_serve.py` for the equivalence proof against a real fixture
+repo (BLOCKED and ALLOWED cases), and the explicit no-base denial test.
 
 ### `mission_status`
 

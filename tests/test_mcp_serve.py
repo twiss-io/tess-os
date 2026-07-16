@@ -14,7 +14,7 @@ call), except where noted:
   * All four tools produce a `tools/call` result (validate_contract,
     gate_check_paths, mission_status, roster_list).
   * `gate_check_paths` returns the SAME verdict-coverage result as
-    `tessctl gate pre-push` for the same paths/head, in both the BLOCKED
+    `tessctl gate pre-push` for the same paths/base/head, in both the BLOCKED
     (no covering verdict) and ALLOWED (valid signed covering verdict)
     directions — proving it calls the identical `_gate_run_ship_check`
     code path, not a re-derivation.
@@ -553,7 +553,7 @@ def test_gate_check_paths_matches_gate_pre_push_when_blocked(gate_repo, run_cli)
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": cli_payload["changed_paths"], "head": head},
+            "arguments": {"paths": cli_payload["changed_paths"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
@@ -590,7 +590,7 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": cli_payload["changed_paths"], "head": head},
+            "arguments": {"paths": cli_payload["changed_paths"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
@@ -601,7 +601,7 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
     # byte-for-byte, since both paths call the identical
     # _gate_run_ship_check() function.
     cli_result_only = {k: v for k, v in cli_payload.items() if k != "phase"}
-    assert mcp_payload == {**cli_result_only, "head": head}
+    assert mcp_payload == {**cli_result_only, "base": base, "head": head}
 
 
 def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
@@ -619,10 +619,11 @@ def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["docs/notes.md"]},
+            "arguments": {"paths": ["docs/notes.md"], "base": real_head},
         })
         payload = resp["result"]["structuredContent"]
         assert payload["head"] == real_head
+        assert payload["base"] == real_head
         assert payload["blocked"] is False
     finally:
         client.close()
@@ -636,6 +637,39 @@ def test_gate_check_paths_missing_paths_argument(mcp_root):
         assert resp["error"]["code"] == -32602
     finally:
         client.close()
+
+
+def test_gate_check_paths_without_immutable_base_is_explicitly_denied(mcp_root):
+    """Reverse direction: MCP cannot silently fall back to candidate trust."""
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {"paths": ["docs/notes.md"]},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["blocked"] is True
+        assert payload["base"] is None
+        assert payload["reasons"] and payload["reasons"][0].startswith("BASE_REQUIRED:")
+    finally:
+        client.close()
+
+
+def test_gate_check_paths_no_base_denial_never_enters_git_or_gate(engine, tmp_path, monkeypatch):
+    """No BASE means no candidate fallback, even before a HEAD is resolved."""
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("BASE_REQUIRED must be returned before candidate evaluation")
+
+    monkeypatch.setattr(engine, "_gate_run_git", forbidden)
+    monkeypatch.setattr(engine, "_gate_run_ship_check", forbidden)
+
+    result = engine._mcp_tool_gate_check_paths(
+        tmp_path, {"paths": ["core/policy/policy.yaml"], "base": "main"},
+    )
+    assert result["blocked"] is True
+    assert result["base"] is None
+    assert result["reasons"][0].startswith("BASE_REQUIRED:")
 
 
 # ---------------------------------------------------------------------------
