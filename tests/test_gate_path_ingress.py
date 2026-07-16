@@ -559,15 +559,16 @@ def test_pre_push_stdin_validates_sha256_repository_width(tmp_path):
     assert len(base) == len(head) == 64
     _assert_reviewable_but_unapproved(_run_pre_push_stdin(root, head, base), path)
 
-    # A first push supplies an all-zero remote object ID. The gate must
-    # derive this repository format's empty-tree ID (never use the SHA-1
-    # constant) and still produce a real review decision over the full tree.
+    # A first push supplies an all-zero remote object ID. Without Git's remote
+    # name/event provenance the gate must refuse before renderer evaluation;
+    # an empty-tree object is never accepted as an authoritative commit BASE.
     first_push = _run_pre_push_stdin(root, head, "0" * 64)
     first_payload = _payload(first_push)
     assert first_push.returncode == 1, first_push.stdout + first_push.stderr
-    assert first_payload["changed_paths_count"] > 0
-    assert "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported" in first_payload["reasons"]
-    assert ".tess/bin/tessctl" not in json.dumps(first_payload)
+    assert first_payload["changed_paths_count"] == 0
+    assert first_payload["reasons"] == [
+        "REMOTE_BASE_REQUIRED: an immutable remote baseline is required",
+    ]
 
 
 def test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict(engine, tmp_path):
@@ -644,8 +645,11 @@ def test_mcp_gate_derives_raw_diff_and_rejects_claimed_subset(engine, tmp_path):
         root, {"paths": [path], "base": base, "head": head},
     )
     assert categorical["blocked"] is True
+    assert categorical["authoritative"] is False
+    assert categorical["diagnostic_would_block"] is True
     assert categorical["changed_paths_count"] == 1
     assert categorical["reasons"] == [
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
         "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported"
     ]
     assert path not in json.dumps(categorical)
@@ -654,9 +658,12 @@ def test_mcp_gate_derives_raw_diff_and_rejects_claimed_subset(engine, tmp_path):
         root, {"paths": ["docs/invented.md"], "base": base, "head": head},
     )
     assert mismatch["blocked"] is True
+    assert mismatch["authoritative"] is False
+    assert "diagnostic_would_block" not in mismatch
     assert mismatch["changed_paths_count"] == 1
     assert mismatch["reasons"] == [
-        "PATH_SET_MISMATCH: the supplied path set does not match the immutable Git diff"
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+        "PATH_SET_MISMATCH: the supplied path set does not match the immutable Git diff",
     ]
     assert path not in json.dumps(mismatch)
 

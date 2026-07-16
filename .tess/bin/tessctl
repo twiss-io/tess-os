@@ -12125,7 +12125,7 @@ def _gate_hook_scripts() -> dict:
         "# Pre-push hook: THE SHIP-GATE (Phase 2 gate spine, Design Decision #6).\n"
         "# Installed by `tessctl gate install-hooks`. Git feeds ref ranges on stdin;\n"
         "# `tessctl gate pre-push` reads them directly (stdin is inherited as-is).\n"
-        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand='pre-push --remote "$1"')
+        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand='pre-push --remote "${1:-}"')
     )
     return {"pre-commit": pre_commit, "pre-push": pre_push}
 
