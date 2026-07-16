@@ -7,11 +7,20 @@ anchor, not ordinary project configuration.
 
 For every pull request, the gate accepts only verifier and hard-floor signoff
 registrations that were already present in the base revision, and imports each
-registered public-key bytes from that same immutable Git tree. A candidate
+registered public key's bytes from that same immutable Git tree. Verifier
+registrations may point only below `.tess/keys/verifiers/`; operator sign-off
+registrations may point only below the separate `.tess/keys/signoffs/`
+namespace. A candidate
 cannot add, replace, delete, symlink, or roll back a key file and use it to
 authenticate a verdict or hard-floor clearance for that same revision. If the
 base registry is empty, no ordinary APPROVE verdict can clear a protected
 change. This is intentional fail-closed behavior.
+
+Both namespaces are governed by the security-tier policy rule. The policy and
+schema that enforce that rule are mirrored and security-pinned in
+`.tess/tess.lock`; public-key assets themselves are locked to their committed
+immutable BASE Git blobs rather than copied into the framework mirror. This
+distinction is deliberate: candidate checkout bytes are never trust input.
 
 Accordingly, `tessctl verdict keygen` is disabled. It exits with
 `TRUST_BOOTSTRAP_REQUIRED` before it invokes GPG or writes a key, policy
@@ -67,8 +76,9 @@ child. It must restart the review if the payload changes and must never hide an
 extra file in the attestation commit.
 
 The Trust Center must not claim that it has enabled protection until the
-repository host enforces the gate as a required status check. A green local
-command or an advisory GitHub Actions run is not enforcement.
+repository host enforces the gate as a source-bound required workflow and the
+merge settings match [the exact merge-wrapper contract](GITHUB_MERGE_TOPOLOGY.md).
+A green local command or an advisory GitHub Actions run is not enforcement.
 
 ## Deliberately undecided
 

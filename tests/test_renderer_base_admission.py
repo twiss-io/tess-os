@@ -1002,18 +1002,39 @@ def test_real_update_command_outcome_is_coherent_but_still_requires_verdict(
 
 
 def _github_event_env(history, event_name: str, payload: dict, head: str) -> dict:
+    payload.setdefault("repository", {"full_name": "twiss-io/tess-os"})
+    if event_name == "pull_request":
+        payload.setdefault("number", 7)
+        pr = payload.get("pull_request")
+        base = pr.get("base") if isinstance(pr, dict) else None
+        if isinstance(base, dict):
+            base.setdefault("ref", "main")
+        github_ref = f"refs/pull/{payload['number']}/merge"
+    else:
+        payload.setdefault("ref", "refs/heads/main")
+        github_ref = "refs/heads/main"
     event_path = history.root / ".github-event.json"
     event_path.write_text(json.dumps(payload), encoding="utf-8")
     return {
         "GITHUB_ACTIONS": "true",
         "GITHUB_JOB": "ship-gate",
-        "GITHUB_WORKFLOW_REF": (
-            "twiss-io/tess-os/.github/workflows/tess-gate.yml@refs/heads/main"
-        ),
+        "GITHUB_REPOSITORY": "twiss-io/tess-os",
+        "GITHUB_REF": github_ref,
+        "GITHUB_WORKFLOW_REF": f"twiss-io/tess-os/.github/workflows/tess-gate.yml@{github_ref}",
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_EVENT_PATH": str(event_path),
         "GITHUB_SHA": head,
     }
+
+
+def _merge_wrapper(root: Path, base: str, attestation: str, *, tree: str | None = None) -> str:
+    tree = tree or _git(root, "rev-parse", f"{attestation}^{{tree}}")
+    result = subprocess.run(
+        ["git", "-C", str(root), "commit-tree", tree, "-p", base, "-p", attestation],
+        input="Tess admission merge wrapper\n", capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
 
 
 def test_local_gate_ci_is_explicitly_non_authoritative(engine, tmp_path):
@@ -1037,20 +1058,21 @@ def test_local_gate_ci_is_explicitly_non_authoritative(engine, tmp_path):
 def test_protected_gate_ci_accepts_only_exact_event_range(engine, tmp_path, event_name):
     history = _new_history(tmp_path, engine)
     _write(history.root, "notes/event.txt", "event derived\n")
-    head = _commit(history.root, f"{event_name} event")
+    attestation = _commit(history.root, f"{event_name} event")
+    evaluation = _merge_wrapper(history.root, history.base, attestation)
     if event_name == "push":
-        event = {"before": history.base, "after": head}
+        event = {"before": history.base, "after": evaluation}
     else:
         event = {
             "pull_request": {
                 "base": {"sha": history.base},
-                "head": {"sha": head},
+                "head": {"sha": attestation},
             }
         }
 
     result = _run_history_cli(
-        history, "gate", "ci", "--base", history.base, "--head", head, "--json",
-        extra_env=_github_event_env(history, event_name, event, head),
+        history, "gate", "ci", "--base", history.base, "--head", evaluation, "--json",
+        extra_env=_github_event_env(history, event_name, event, evaluation),
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1064,11 +1086,12 @@ def test_protected_gate_ci_rejects_caller_selected_range(engine, tmp_path):
     history = _new_history(tmp_path, engine)
     _write(history.root, "notes/mismatch.txt", "mismatch\n")
     head = _commit(history.root, "event mismatch")
-    event = {"before": history.base, "after": "e" * len(head)}
+    evaluation = _merge_wrapper(history.root, history.base, head)
+    event = {"before": history.base, "after": evaluation}
 
     result = _run_history_cli(
         history, "gate", "ci", "--base", history.base, "--head", head, "--json",
-        extra_env=_github_event_env(history, "push", event, "e" * len(head)),
+        extra_env=_github_event_env(history, "push", event, evaluation),
     )
 
     assert result.returncode == 1

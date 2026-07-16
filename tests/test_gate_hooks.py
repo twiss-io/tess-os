@@ -137,11 +137,11 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v4" in text
+    assert "# tess-gate-ci v5" in text
     assert "tessctl gate ci" in text
     import yaml
     parsed = yaml.safe_load(text)
-    # v4: only immutable push + pull_request events may create the
+    # v5: only immutable push + pull_request merge-wrapper events may create the
     # authoritative required-check job. PyYAML's default (1.1) resolver reads the
     # bare `on:` key as boolean True, not the string 'on' — a well-known
     # YAML/GitHub-Actions quirk (GitHub's own parser treats `on` specially);
@@ -163,12 +163,15 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     assert ".tess/bin/tessctl gate ci" not in final_run
     resolve_run = next(
         step["run"] for step in parsed["jobs"]["ship-gate"]["steps"]
-        if step.get("name") == "Resolve base/head for this trigger"
+        if step.get("name") == "Resolve immutable admission objects for this trigger"
     )
     assert "github.event.pull_request.base.sha" in resolve_run
     assert "github.event.pull_request.head.sha" in resolve_run
     assert "github.event.before" in resolve_run
     assert "github.event.after" in resolve_run
+    assert "GITHUB_SHA" in resolve_run
+    assert "GITHUB_REF" in resolve_run
+    assert "refs/pull/${PR_NUMBER}/merge" in resolve_run
     assert "inputs.base" not in resolve_run
     assert "inputs.head" not in resolve_run
     assert "4b825dc642cb6eb9a060e54bf8d69288fbee4904" not in resolve_run
@@ -207,7 +210,7 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v4" in upgraded
+    assert "# tess-gate-ci v5" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
     assert "push:" in upgraded
     assert "pull_request:" in upgraded
@@ -215,7 +218,7 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
 
-def test_install_ci_workflow_upgrades_v2_to_v4(engine, tmp_path):
+def test_install_ci_workflow_upgrades_v2_to_v5(engine, tmp_path):
     """honesty-capstone-audit-2026-07-08 §3-c: an operator on the v2 template
     (CI auto-enforce, but still trusting the pushed tree's own engine) is
     actively upgraded to v3 (trusted base-ref engine extraction) on the next
@@ -243,7 +246,7 @@ def test_install_ci_workflow_upgrades_v2_to_v4(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v4" in upgraded
+    assert "# tess-gate-ci v5" in upgraded
     assert "# tess-gate-ci v2" not in upgraded
     assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
@@ -272,7 +275,7 @@ def test_install_ci_workflow_upgrades_v3_and_removes_manual_authority(engine, tm
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v4" in upgraded
+    assert "# tess-gate-ci v5" in upgraded
     assert "workflow_dispatch:" not in upgraded
     assert "inputs.base" not in upgraded
     assert "inputs.head" not in upgraded

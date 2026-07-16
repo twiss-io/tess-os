@@ -673,7 +673,12 @@ def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):
     instance = {
         "policy": {
             "version": 1, "rules": [], "hard_floor_rules": [],
-            "verifier_keys": {"NotARealVerifier": {"fingerprint": "A" * 40, "public_key_file": "x.asc"}},
+            "verifier_keys": {
+                "NotARealVerifier": {
+                    "fingerprint": "A" * 40,
+                    "public_key_file": ".tess/keys/verifiers/not-a-real-verifier.asc",
+                }
+            },
         }
     }
     errors = engine._lint_policy(instance)
@@ -684,7 +689,12 @@ def test_lint_policy_accepts_real_verifier_key_names(engine):
     instance = {
         "policy": {
             "version": 1, "rules": [], "hard_floor_rules": [],
-            "verifier_keys": {"Reid": {"fingerprint": "A" * 40, "public_key_file": "x.asc"}},
+            "verifier_keys": {
+                "Reid": {
+                    "fingerprint": "A" * 40,
+                    "public_key_file": ".tess/keys/verifiers/reid.asc",
+                }
+            },
         }
     }
     assert engine._lint_policy(instance) == []

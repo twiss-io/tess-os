@@ -47,8 +47,10 @@ Two production prerequisites remain unresolved:
 1. The first verifier/sign-off trust anchor needs an external, human-owned
    custody design. Candidate repository content must never establish the
    authority that approves itself.
-2. GitHub must make the real gate and CI results required checks before a gate
-   can protect a branch. That enforcement is not configured today.
+2. GitHub must make the real gate and CI results source-bound required checks,
+   allow merge commits only, require the branch to be current, and disable
+   incompatible squash/rebase/linear-history/merge-queue paths before the
+   gate can protect a branch. That enforcement is not configured today.
 
 Until both are complete, a passing local command or GitHub Action is useful
 engineering evidence, but not a production admission control. The historical
@@ -78,7 +80,8 @@ gate. Key custody is a designated human ceremony owned by Xavier. See
 ```text
 repository change
   -> policy identifies governed paths
-  -> review evidence is checked against the immutable base/head artifacts
+  -> review evidence is checked against immutable BASE + attestation HEAD
+  -> exact two-parent evaluation merge has the attestation HEAD's tree
   -> independent required CI check reports pass or block
   -> protected VCS rule admits or rejects delivery
 ```
@@ -110,13 +113,16 @@ Pre-push stdin also rejects ref deletions because blob/path review evidence does
 not bind ref-topology deletion. This does not adopt a multi-ref or multi-push
 policy: A14 remains an open Xavier-owned policy/topology decision.
 
-Hard-floor operator sign-offs use a stricter two-commit shape: a reviewed
-payload commit followed by one single-parent commit containing only the full
-required sign-off file set. Schema v2 binds immutable BASE repository identity,
-the payload parent, effective policy rule, exact governed path/blob manifest,
-and a short validity window before checking the BASE-held signing key. This
-prevents a valid signature from being replayed onto another repository,
-revision, rule, or artifact. See [Gate operation and custody](docs/GATE_QUICKSTART.md#hard-floor-sign-off-v2-exact-revision-binding).
+Hard-floor operator sign-offs use a reviewed payload followed by one
+single-parent attestation commit containing only the full required sign-off
+file set. Authoritative CI then evaluates a distinct two-parent merge wrapper
+whose tree equals that attestation head. Schema v2 binds immutable BASE
+repository identity, the payload parent, effective policy rule, exact governed
+path/blob manifest, and a short validity window before checking the BASE-held
+signing key. This prevents a valid signature from being replayed onto another
+repository, revision, rule, or artifact. See
+[Gate operation and custody](docs/GATE_QUICKSTART.md#hard-floor-sign-off-v2-exact-revision-binding)
+and [GitHub merge topology](docs/GITHUB_MERGE_TOPOLOGY.md).
 
 ### Safe evaluation
 

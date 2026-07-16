@@ -37,8 +37,8 @@
         },
         "signoff_keys": {
           "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
-          "description": "Hard-floor SIGN-OFF ALLOWED-KEY SET: operator identity -> public key. Sign-off schema v2 is revision-bound and short-lived: the immutable event HEAD must be a single-parent signoff-only attestation commit; its signed artifact binds repository_id from immutable BASE, the exact event base, exact reviewed payload parent, effective rule/category, and every matched path/blob hash. V1/unversioned artifacts are rejected. Signature verification still uses immutable BASE key bytes, isolated GNUPGHOME, exact fingerprint matching, and current expiry/revocation status. OPTIONAL at schema level but fail-closed by omission."
+          "additionalProperties": { "$ref": "#/$defs/SignoffKeyEntry" },
+          "description": "Hard-floor SIGN-OFF ALLOWED-KEY SET: operator identity -> public key. Sign-off schema v2 is revision-bound and short-lived: the immutable attestation HEAD must be a single-parent signoff-only commit; its signed artifact binds repository_id from immutable BASE, the exact event base, exact reviewed payload parent, effective rule/category, and every matched path/blob hash. Authoritative CI separately validates an exact two-parent evaluation merge whose second parent and tree are that attestation HEAD. V1/unversioned artifacts are rejected. Signature verification still uses immutable BASE key bytes, isolated GNUPGHOME, exact fingerprint matching, and current expiry/revocation status. OPTIONAL at schema level but fail-closed by omission."
         },
         "renderer_admission": {
           "$ref": "#/$defs/RendererAdmission",
@@ -63,7 +63,26 @@
         "public_key_file": {
           "type": "string",
           "minLength": 1,
+          "pattern": "^\\.tess/keys/verifiers/.+$",
           "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
+        }
+      },
+      "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
+    "SignoffKeyEntry": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{40}$",
+          "description": "The operator sign-off key's full 40-hex-character GPG fingerprint (uppercase, no spaces). Exact fingerprint equality is required; names and short key IDs never establish authority."
+        },
+        "public_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\.tess/keys/signoffs/.+$",
+          "description": "Repo-relative path below the dedicated `.tess/keys/signoffs/` namespace to this operator's ASCII-armored PUBLIC key. Ship admission reads only the exact regular blob from immutable BASE, never candidate checkout bytes, an ambient keyring, or the verifier-key namespace."
         }
       },
       "required": ["fingerprint", "public_key_file"],

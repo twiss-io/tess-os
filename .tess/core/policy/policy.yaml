@@ -40,11 +40,13 @@
 # verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
 # that verifies against the SAME-named entry in `verifier_keys` below — see
 # docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md for the fail-closed trust boundary.
-# `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
-# added to tess-os-security-tier-doctrine's globs below: tampering with the key
-# registry is exactly as consequential as tampering with policy.yaml itself,
-# and requires its own covering Reid/Cyra verdict — closing the "who guards the
-# key registry" loop.
+# `.tess/keys/verifiers/**` and `.tess/keys/signoffs/**` are separate,
+# non-interchangeable public-key namespaces. Both are added to
+# tess-os-security-tier-doctrine's globs below: tampering with either registry
+# is exactly as consequential as tampering with policy.yaml itself, and
+# requires its own covering Reid/Cyra verdict — closing the "who guards the
+# key registry" loop. Policy lint and signature verification also reject a
+# registration that redirects either role outside its dedicated namespace.
 #
 # MEDIUM-1 FIX (Fable Phase-2b follow-up review — the universal GitHub
 # self-gating trap): `.github/workflows/**` is now ALSO in
@@ -217,8 +219,10 @@ policy:
         and verification-routing machine-checkable (core/contracts/brief.schema.json,
         core/contracts/verdict.schema.json), and the gate's own policy surface
         (core/contracts/policy.schema.json, core/policy/**, the verifier
-        public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
-        immutable-BASE CI dependency lock at .tess/ci/**, plus the
+        public-key registry at .tess/keys/verifiers/** and the
+        distinct human sign-off public-key registry at
+        .tess/keys/signoffs/** — Phase 2b — plus the immutable-BASE CI
+        dependency lock at .tess/ci/**, and the
         gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
         self-gating trap where a PR could keep the required check name while
         neutering its step), PLUS — honesty-capstone-audit-2026-07-08 §3-c/
@@ -239,6 +243,7 @@ policy:
         - core/contracts/policy.schema.json
         - core/policy/**
         - .tess/keys/verifiers/**
+        - .tess/keys/signoffs/**
         - .tess/ci/**
         - .github/workflows/**
         - .tess/bin/**
@@ -342,9 +347,11 @@ policy:
   #   Schema v2 also closes cross-revision replay. A valid sign-off binds
   #   this repository_id from immutable BASE, the exact event BASE, the
   #   exact reviewed payload parent, the effective rule/category, and every
-  #   matched path's immutable Git blob id. The event HEAD must be a
+  #   matched path's immutable Git blob id. The attestation HEAD must be a
   #   single-parent commit changing exactly the complete required sign-off
-  #   path set and nothing else. V1/unversioned artifacts, merge/multi-head
+  #   path set and nothing else; authoritative CI separately requires an exact
+  #   two-parent evaluation merge whose second parent and tree are that
+  #   attestation HEAD. V1/unversioned artifacts, merge/multi-head
   #   events, later commits, extra paths, symlinks/type swaps, expired
   #   attestations, and TTLs over 24 hours all fail closed before GPG.
   #   After every BASE-derived required sign-off validates, only those exact

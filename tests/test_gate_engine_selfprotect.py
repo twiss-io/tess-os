@@ -134,7 +134,7 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
     """Parses and EXECUTES the real, COMMITTED `.github/workflows/
     tess-gate.yml`'s own "Extract trusted gate engine" + final "tessctl
     gate ci" run: blocks — substituting the two GH Actions expressions this
-    harness needs (steps.refs.outputs.{base,head}, steps.trusted_engine.
+    harness needs (steps.refs.outputs.{base,evaluation}, steps.trusted_engine.
     outputs.engine_path) with literal values / a real $GITHUB_OUTPUT file.
     This proves the ACTUAL committed workflow script (not a
     reimplementation) closes the gap — if the fix is ever reverted (the
@@ -170,7 +170,7 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
         ci_script
         .replace("${{ steps.trusted_engine.outputs.engine_path }}", engine_path)
         .replace("${{ steps.refs.outputs.base }}", base)
-        .replace("${{ steps.refs.outputs.head }}", head)
+        .replace("${{ steps.refs.outputs.evaluation }}", head)
     )
     env2 = {**os.environ, "TESS_ROOT": str(root)}
     r2 = subprocess.run(["bash", "-c", ci_script2], cwd=str(root), env=env2, capture_output=True, text=True)

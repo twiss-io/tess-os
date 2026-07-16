@@ -182,6 +182,8 @@ _GATE_ADMISSION_AUTHORITATIVE_SOURCES = (
 # live (guardrails.md Rule 18: credentials/money/destructive-prod-data/
 # client-external-claims are NEVER satisfiable by a verifier's verdict alone).
 GATE_SIGNOFF_DIR = ".tess/gate/signoffs"
+GATE_VERIFIER_KEY_DIR = ".tess/keys/verifiers"
+GATE_SIGNOFF_KEY_DIR = ".tess/keys/signoffs"
 
 # Hard-floor sign-off v2 is a short-lived, revision-bound attestation.  The
 # sign-off cannot contain the attestation HEAD commit id while also living inside
@@ -3557,6 +3559,19 @@ def _gate_validate_verifier_key_file_rel(
             f"absolute path or contains '..' traversal components — rejected "
             f"(C1 containment, fail-closed)"
         )
+    if "\\" in key_file or not key_file.startswith(f"{GATE_VERIFIER_KEY_DIR}/"):
+        return None, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is outside "
+            f"the dedicated verifier-key namespace {GATE_VERIFIER_KEY_DIR!r} — verifier "
+            "trust material cannot be redirected to policy, sign-off, release, or ordinary "
+            "repository files (fail-closed)"
+        )
+    suffix = key_file[len(GATE_VERIFIER_KEY_DIR) + 1:]
+    if not suffix or any(part in ("", ".", "..") for part in suffix.split("/")):
+        return None, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is not a "
+            f"canonical file below {GATE_VERIFIER_KEY_DIR!r} — fail-closed"
+        )
     return key_file, None
 
 
@@ -3769,6 +3784,19 @@ def _gate_validate_signoff_key_file_rel(
             f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is an "
             f"absolute path or contains '..' traversal components — rejected "
             f"(C1 containment, fail-closed)"
+        )
+    if "\\" in key_file or not key_file.startswith(f"{GATE_SIGNOFF_KEY_DIR}/"):
+        return None, (
+            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is outside "
+            f"the dedicated sign-off-key namespace {GATE_SIGNOFF_KEY_DIR!r} — sign-off "
+            "authority cannot be redirected to verifier, policy, release, or ordinary "
+            "repository files (fail-closed)"
+        )
+    suffix = key_file[len(GATE_SIGNOFF_KEY_DIR) + 1:]
+    if not suffix or any(part in ("", ".", "..") for part in suffix.split("/")):
+        return None, (
+            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is not a "
+            f"canonical file below {GATE_SIGNOFF_KEY_DIR!r} — fail-closed"
         )
     return key_file, None
 
@@ -8985,7 +9013,7 @@ def _lint_policy(instance) -> list:
 
     verifier_keys = policy.get("verifier_keys")
     if isinstance(verifier_keys, dict):
-        for name in verifier_keys:
+        for name, entry in verifier_keys.items():
             if name not in VERIFIER_NAMES:
                 errors.append(
                     f"$.policy.verifier_keys: {name!r} is not one of the six named verifiers "
@@ -8993,6 +9021,26 @@ def _lint_policy(instance) -> list:
                     f"never match any real verdict's `verifier` field (schema-constrained to the "
                     f"same six names)"
                 )
+            if isinstance(entry, dict):
+                _key_file, path_reason = _gate_validate_verifier_key_file_rel(
+                    str(name), entry.get("public_key_file"),
+                )
+                if path_reason:
+                    errors.append(
+                        f"$.policy.verifier_keys[{name!r}].public_key_file: {path_reason}"
+                    )
+
+    signoff_keys = policy.get("signoff_keys")
+    if isinstance(signoff_keys, dict):
+        for name, entry in signoff_keys.items():
+            if isinstance(entry, dict):
+                _key_file, path_reason = _gate_validate_signoff_key_file_rel(
+                    str(name), entry.get("public_key_file"),
+                )
+                if path_reason:
+                    errors.append(
+                        f"$.policy.signoff_keys[{name!r}].public_key_file: {path_reason}"
+                    )
     return errors
 
 
@@ -12544,16 +12592,125 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
 
 _GATE_CI_PROTECTED_JOB_ID = "ship-gate"
 _GATE_CI_WORKFLOW_REF_FRAGMENT = "/.github/workflows/tess-gate.yml@"
+_GATE_CI_MAIN_REF = "refs/heads/main"
+_GATE_CI_PR_MERGE_REF_RE = re.compile(r"^refs/pull/(?P<number>[1-9][0-9]*)/merge$")
 
 
-def _gate_ci_event_provenance(root: Path, base: str, head: str) -> tuple[bool, str | None]:
+def _gate_commit_parent_ids(root: Path, commit_sha: str) -> tuple[list[str] | None, str | None]:
+    """Return ordered parents for one immutable commit, never a rev expression."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-list", "--parents", "-n", "1", commit_sha],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None, f"cannot inspect commit parents for {commit_sha!r}"
+    fields = result.stdout.strip().split()
+    if not fields or fields[0].lower() != commit_sha.lower():
+        return None, f"Git did not return the exact requested commit {commit_sha!r}"
+    return fields[1:], None
+
+
+def _gate_commit_tree_id(root: Path, commit_sha: str) -> tuple[str | None, str | None]:
+    """Return the tree id recorded by an already-type-checked commit object."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", "-s", "--format=%T", commit_sha],
+        capture_output=True, text=True,
+    )
+    tree_id = result.stdout.strip()
+    if result.returncode != 0 or not _GATE_FULL_OBJECT_ID_RE.fullmatch(tree_id):
+        return None, f"cannot inspect immutable tree for commit {commit_sha!r}"
+    return tree_id.lower(), None
+
+
+def _gate_validate_evaluation_merge(
+    root: Path, base_sha: str, attestation_head_sha: str, evaluation_head_sha: str,
+) -> list[str]:
+    """Validate Tess OS's merge-commit-only authoritative admission wrapper.
+
+    The event BASE is the first parent. The reviewed PR/push head is the
+    second parent. The wrapper tree must be byte-identical to that second
+    parent, which proves strict up-to-date ancestry and prevents the merge
+    preview (or landed merge) from introducing conflict-resolution bytes that
+    were absent from the attested tree. Fast-forward, squash, rebase, octopus,
+    reordered, divergent, and arbitrary merge commits all fail closed.
+    """
+    reasons: list[str] = []
+    for label, oid in (
+        ("BASE", base_sha),
+        ("ATTESTATION_HEAD", attestation_head_sha),
+        ("EVALUATION_HEAD", evaluation_head_sha),
+    ):
+        if not isinstance(oid, str) or not _GATE_FULL_OBJECT_ID_RE.fullmatch(oid):
+            reasons.append(f"{label}_REQUIRED: expected a full immutable 40- or 64-hex commit ID")
+            continue
+        type_result = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-t", oid],
+            capture_output=True, text=True,
+        )
+        if type_result.returncode != 0:
+            reasons.append(f"{label}_REQUIRED: object {oid!r} does not exist")
+        elif type_result.stdout.strip() != "commit":
+            reasons.append(
+                f"{label}_REQUIRED: object {oid!r} is "
+                f"{type_result.stdout.strip() or 'unknown'}, not a commit"
+            )
+    if reasons:
+        return reasons
+    if len({base_sha.lower(), attestation_head_sha.lower(), evaluation_head_sha.lower()}) != 3:
+        return [
+            "CI_MERGE_TOPOLOGY_INVALID: BASE, attestation HEAD, and evaluation HEAD "
+            "must be three distinct commit objects; fast-forward/same-object admission is refused"
+        ]
+
+    range_reasons = _gate_validate_commit_range(root, base_sha, attestation_head_sha)
+    if range_reasons:
+        return [
+            "CI_MERGE_TOPOLOGY_INVALID: attestation HEAD must be strictly up to date with "
+            f"event BASE ({range_reasons[0]})"
+        ]
+    evaluation_range_reasons = _gate_validate_commit_range(root, base_sha, evaluation_head_sha)
+    if evaluation_range_reasons:
+        return [f"CI_MERGE_TOPOLOGY_INVALID: {evaluation_range_reasons[0]}"]
+
+    parents, parent_error = _gate_commit_parent_ids(root, evaluation_head_sha)
+    if parent_error:
+        return [f"CI_MERGE_TOPOLOGY_INVALID: {parent_error} — fail-closed"]
+    expected = [base_sha.lower(), attestation_head_sha.lower()]
+    actual = [parent.lower() for parent in (parents or [])]
+    if actual != expected:
+        return [
+            "CI_MERGE_TOPOLOGY_INVALID: evaluation HEAD must be an exact two-parent "
+            f"merge wrapper with ordered parents [BASE, attestation HEAD]; expected={expected}, "
+            f"actual={actual}. Squash, rebase, fast-forward, octopus, reordered, and arbitrary "
+            "merge commits are refused"
+        ]
+
+    evaluation_tree, tree_error = _gate_commit_tree_id(root, evaluation_head_sha)
+    if tree_error:
+        return [f"CI_MERGE_TOPOLOGY_INVALID: {tree_error} — fail-closed"]
+    attestation_tree, tree_error = _gate_commit_tree_id(root, attestation_head_sha)
+    if tree_error:
+        return [f"CI_MERGE_TOPOLOGY_INVALID: {tree_error} — fail-closed"]
+    if evaluation_tree != attestation_tree:
+        return [
+            "CI_MERGE_TOPOLOGY_INVALID: evaluation merge tree does not exactly equal the "
+            "attestation HEAD tree; conflict-resolution or post-attestation bytes are refused "
+            f"(evaluation={evaluation_tree}, attestation={attestation_tree})"
+        ]
+    return []
+
+
+def _gate_ci_event_provenance(
+    root: Path, base: str, head: str,
+) -> tuple[bool, str | None, dict | None]:
     """Bind authoritative CI admission to GitHub's protected event context.
 
     A local invocation is a useful diagnostic but cannot create an external
     required-check context.  Inside GitHub Actions, only the canonical job in
-    `.github/workflows/tess-gate.yml` may become authoritative, and its CLI
-    range must byte-match immutable push/pull_request fields in the event
-    payload.  A caller-selected workflow_dispatch range is always rejected.
+    `.github/workflows/tess-gate.yml` may become authoritative. Its CLI range
+    is event BASE -> evaluation merge, while hard-floor evidence is validated
+    on the separately proven attestation HEAD. A caller-selected range or
+    non-merge delivery topology is always rejected.
     """
     in_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
     job_id = os.environ.get("GITHUB_JOB", "")
@@ -12562,26 +12719,32 @@ def _gate_ci_event_provenance(root: Path, base: str, head: str) -> tuple[bool, s
     # Ordinary local calls — and other CI jobs — are explicitly diagnostic.
     # They cannot satisfy the required `tessctl gate ci` job name externally.
     if not in_actions or job_id != _GATE_CI_PROTECTED_JOB_ID:
-        return False, None
+        return False, None, None
     if _GATE_CI_WORKFLOW_REF_FRAGMENT not in workflow_ref:
         return False, (
             "CI_EVENT_SOURCE_REQUIRED: the protected ship-gate job must originate from "
             ".github/workflows/tess-gate.yml; caller-selected jobs are non-authoritative"
-        )
+        ), None
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name == "merge_group":
+        return False, (
+            "MERGE_GROUP_UNSUPPORTED: merge queue admission is intentionally disabled; "
+            "Tess OS currently authorizes only exact pull_request merge previews and "
+            "two-parent push merges on refs/heads/main"
+        ), None
     if event_name not in ("push", "pull_request"):
         return False, (
             "CI_EVENT_SOURCE_REQUIRED: authoritative tessctl gate ci accepts only immutable "
             "push or pull_request event ranges; workflow_dispatch/manual inputs are refused"
-        )
+        ), None
     event_path_raw = os.environ.get("GITHUB_EVENT_PATH", "")
     event_path = Path(event_path_raw) if event_path_raw else None
     if event_path is None or not event_path.is_file():
         return False, (
             "CI_EVENT_PAYLOAD_REQUIRED: protected ship-gate context has no readable "
             "GITHUB_EVENT_PATH payload"
-        )
+        ), None
     try:
         if event_path.stat().st_size > 10 * 1024 * 1024:
             raise ValueError("event payload exceeds 10 MiB")
@@ -12589,53 +12752,123 @@ def _gate_ci_event_provenance(root: Path, base: str, head: str) -> tuple[bool, s
             event_path.read_bytes(), "GITHUB_EVENT_PATH",
         )
     except (OSError, ValueError) as exc:
-        return False, f"CI_EVENT_PAYLOAD_REQUIRED: cannot read GitHub event payload ({exc})"
+        return False, f"CI_EVENT_PAYLOAD_REQUIRED: cannot read GitHub event payload ({exc})", None
     if parse_reason:
-        return False, f"CI_EVENT_PAYLOAD_REQUIRED: {parse_reason}"
+        return False, f"CI_EVENT_PAYLOAD_REQUIRED: {parse_reason}", None
+    if not isinstance(event, dict):
+        return False, "CI_EVENT_PAYLOAD_REQUIRED: GitHub event payload is not an object", None
+
+    github_repository = os.environ.get("GITHUB_REPOSITORY", "")
+    github_ref = os.environ.get("GITHUB_REF", "")
+    github_sha = os.environ.get("GITHUB_SHA", "")
+    repository_node = event.get("repository")
+    event_repository = (
+        repository_node.get("full_name") if isinstance(repository_node, dict) else None
+    )
+    if (
+        not github_repository
+        or event_repository != github_repository
+        or workflow_ref != (
+            f"{github_repository}/.github/workflows/tess-gate.yml@{github_ref}"
+        )
+    ):
+        return False, (
+            "CI_EVENT_SOURCE_REQUIRED: repository, workflow source, and protected event ref "
+            "must agree exactly; a same-named check from another workflow/repository/ref is "
+            "non-authoritative"
+        ), None
 
     if event_name == "pull_request":
-        pr = event.get("pull_request") if isinstance(event, dict) else None
+        pr = event.get("pull_request")
         base_node = pr.get("base") if isinstance(pr, dict) else None
         head_node = pr.get("head") if isinstance(pr, dict) else None
         expected_base = base_node.get("sha") if isinstance(base_node, dict) else None
-        expected_head = head_node.get("sha") if isinstance(head_node, dict) else None
+        attestation_head = head_node.get("sha") if isinstance(head_node, dict) else None
+        evaluation_head = github_sha
+        pr_number = event.get("number")
+        merge_ref_match = _GATE_CI_PR_MERGE_REF_RE.fullmatch(github_ref)
+        if (
+            not isinstance(pr_number, int)
+            or pr_number <= 0
+            or merge_ref_match is None
+            or int(merge_ref_match.group("number")) != pr_number
+            or not isinstance(base_node, dict)
+            or base_node.get("ref") != "main"
+        ):
+            return False, (
+                "CI_EVENT_REF_MISMATCH: pull_request admission requires the exact "
+                "refs/pull/<event-number>/merge evaluation ref targeting main"
+            ), None
     else:
-        expected_base = event.get("before") if isinstance(event, dict) else None
-        expected_head = event.get("after") if isinstance(event, dict) else None
+        expected_base = event.get("before")
+        evaluation_head = event.get("after")
+        if event.get("ref") != _GATE_CI_MAIN_REF or github_ref != _GATE_CI_MAIN_REF:
+            return False, (
+                "CI_EVENT_REF_MISMATCH: authoritative push admission accepts only the exact "
+                "refs/heads/main event and GITHUB_REF"
+            ), None
         if isinstance(expected_base, str) and expected_base and set(expected_base) == {"0"}:
             return False, (
                 "REMOTE_BASE_REQUIRED: GitHub push event has no pre-existing commit BASE; "
                 "the empty-tree object is never renderer authority"
-            )
-        github_sha = os.environ.get("GITHUB_SHA", "")
-        if github_sha and expected_head != github_sha:
+            ), None
+        if evaluation_head != github_sha:
             return False, (
                 "CI_EVENT_RANGE_MISMATCH: push event 'after' SHA does not match GITHUB_SHA"
-            )
+            ), None
+        if not isinstance(evaluation_head, str) or not _GATE_FULL_OBJECT_ID_RE.fullmatch(
+            evaluation_head
+        ):
+            return False, (
+                "CI_EVENT_PAYLOAD_REQUIRED: push event 'after' is not a full immutable "
+                "40- or 64-hex commit ID"
+            ), None
+        parents, parent_error = (
+            _gate_commit_parent_ids(root, evaluation_head)
+        )
+        if parent_error or len(parents or []) != 2:
+            return False, (
+                "CI_MERGE_TOPOLOGY_INVALID: main push 'after' must already be an exact "
+                "two-parent merge commit; squash, rebase, fast-forward, deletion, and octopus "
+                f"pushes are refused ({parent_error or f'parent_count={len(parents or [])}'})"
+            ), None
+        attestation_head = parents[1]
 
     if not all(
         isinstance(oid, str) and _GATE_FULL_OBJECT_ID_RE.fullmatch(oid)
-        for oid in (expected_base, expected_head)
+        for oid in (expected_base, attestation_head, evaluation_head)
     ):
         return False, (
-            "CI_EVENT_PAYLOAD_REQUIRED: GitHub event does not contain full immutable BASE/HEAD commit IDs"
-        )
-    if base.lower() != expected_base.lower() or head.lower() != expected_head.lower():
+            "CI_EVENT_PAYLOAD_REQUIRED: GitHub event/context does not contain full immutable "
+            "BASE, attestation HEAD, and evaluation HEAD commit IDs"
+        ), None
+    if (
+        not isinstance(base, str)
+        or not isinstance(head, str)
+        or base.lower() != expected_base.lower()
+        or head.lower() != evaluation_head.lower()
+    ):
         return False, (
             "CI_EVENT_RANGE_MISMATCH: --base/--head must exactly match immutable "
-            f"{event_name} event payload SHAs"
-        )
-    range_reasons = _gate_validate_commit_range(root, expected_base, expected_head)
-    if range_reasons:
-        return False, f"CI_EVENT_RANGE_INVALID: {range_reasons[0]}"
-    return True, None
+            f"{event_name} event BASE and evaluation-merge SHAs"
+        ), None
+    topology_reasons = _gate_validate_evaluation_merge(
+        root, expected_base, attestation_head, evaluation_head,
+    )
+    if topology_reasons:
+        return False, topology_reasons[0], None
+    return True, None, {
+        "base_sha": expected_base.lower(),
+        "attestation_head_sha": attestation_head.lower(),
+        "evaluation_head_sha": evaluation_head.lower(),
+    }
 
 
 def _cmd_gate_ci(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
     verdict_dirs = getattr(args, "verdict_dirs", None)
     _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
-    authoritative, provenance_error = _gate_ci_event_provenance(
+    authoritative, provenance_error, topology = _gate_ci_event_provenance(
         root, args.base, args.head,
     )
     if provenance_error:
@@ -12665,13 +12898,18 @@ def _cmd_gate_ci(args, root: Path) -> None:
 
     # An authoritative CI event/evaluation HEAD is not assumed to be the
     # single-parent signoff-only attestation commit. The merge-topology layer
-    # must derive and pass the immutable attestation HEAD explicitly. Manual
-    # diagnostic ranges may use their caller-supplied HEAD as the attestation.
-    attestation_head_shas = None if authoritative else [args.head]
+    # derives and validates that immutable attestation HEAD explicitly.
+    # Manual diagnostic ranges use their caller-supplied HEAD and remain
+    # non-authoritative.
+    attestation_head = (
+        topology["attestation_head_sha"]
+        if authoritative and isinstance(topology, dict)
+        else args.head
+    )
     result = _gate_run_ship_check(
         root, changed, verdict_dirs, [args.head], [args.base],
         _GATE_ADMISSION_SOURCE_CI_EVENT if authoritative else None,
-        attestation_head_shas,
+        [attestation_head],
     )
     result["authoritative"] = authoritative
     if not authoritative:
@@ -12821,7 +13059,7 @@ def _gate_install_git_hooks(root: Path) -> None:
         print(f"  installed git {hook_name} hook at {hook_path}")
 
 
-_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v4"
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v5"
 
 # Prior template version(s) this installer recognizes as "a tess-gate-ci file,
 # just outdated" — an install-hooks run UPGRADES these in place (overwrites
@@ -12829,6 +13067,7 @@ _GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v4"
 # forever or treating them as some unrelated operator-authored workflow.
 _GATE_CI_WORKFLOW_KNOWN_MARKERS = (
     "# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3", "# tess-gate-ci v4",
+    "# tess-gate-ci v5",
 )
 
 _GATE_CI_WORKFLOW = f"""\
@@ -12878,6 +13117,18 @@ _GATE_CI_WORKFLOW = f"""\
 # rejected. An all-zero push `before` SHA fails with REMOTE_BASE_REQUIRED —
 # Git's empty-tree object is not a commit and is never renderer authority.
 #
+# v5 MERGE-PREVIEW TOPOLOGY: authoritative admission always evaluates an
+# exact two-parent merge wrapper. For pull requests, BASE is
+# `pull_request.base.sha`, the attestation HEAD is `pull_request.head.sha`,
+# and evaluation HEAD is `GITHUB_SHA` on exactly `refs/pull/<n>/merge`. For a
+# main push, BASE is `before`, evaluation HEAD is `after`/`GITHUB_SHA`, and
+# the attestation HEAD is its second parent. Ordered parents must be exactly
+# [BASE, attestation HEAD], and both commits must have the same tree. Squash,
+# rebase, fast-forward, octopus, reordered/divergent merges, merge queues,
+# arbitrary refs/tags, and conflict-resolution bytes fail closed. This
+# requires merge-commit-only + strict-up-to-date repository settings; see
+# docs/GITHUB_MERGE_TOPOLOGY.md.
+#
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
 # covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
@@ -12915,16 +13166,28 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip pyyaml
 
-      - name: Resolve base/head for this trigger
+      - name: Resolve immutable admission objects for this trigger
         id: refs
         run: |
           set -euo pipefail
-          if [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             BASE="${{{{ github.event.pull_request.base.sha }}}}"
-            HEAD="${{{{ github.event.pull_request.head.sha }}}}"
-          elif [ "${{{{ github.event_name }}}}" = "push" ]; then
+            ATTESTATION="${{{{ github.event.pull_request.head.sha }}}}"
+            EVALUATION="$GITHUB_SHA"
+            PR_NUMBER="${{{{ github.event.number }}}}"
+            if [ "$GITHUB_REF" != "refs/pull/${{PR_NUMBER}}/merge" ]; then
+              echo "::error::CI_EVENT_REF_MISMATCH: pull_request gate must run on its exact refs/pull/<n>/merge ref."
+              exit 1
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
             BASE="${{{{ github.event.before }}}}"
-            HEAD="${{{{ github.event.after }}}}"
+            EVALUATION="${{{{ github.event.after }}}}"
+            ATTESTATION=""
+            PR_NUMBER=""
+            if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$EVALUATION" != "$GITHUB_SHA" ]; then
+              echo "::error::CI_EVENT_REF_MISMATCH: push gate accepts only exact refs/heads/main before/after context."
+              exit 1
+            fi
             if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
               echo "::error::REMOTE_BASE_REQUIRED: push event has no pre-existing commit BASE; the empty-tree object is never renderer authority."
               exit 1
@@ -12933,8 +13196,36 @@ jobs:
             echo "::error::CI_EVENT_SOURCE_REQUIRED: authoritative ship-gate accepts only push or pull_request events."
             exit 1
           fi
-          echo "base=$BASE" >> "$GITHUB_OUTPUT"
-          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          {{
+            echo "base=$BASE"
+            echo "attestation=$ATTESTATION"
+            echo "evaluation=$EVALUATION"
+            echo "pr_number=$PR_NUMBER"
+          }} >> "$GITHUB_OUTPUT"
+
+      - name: Fetch and pin exact event objects
+        id: objects
+        run: |
+          set -euo pipefail
+          BASE="${{{{ steps.refs.outputs.base }}}}"
+          ATTESTATION="${{{{ steps.refs.outputs.attestation }}}}"
+          EVALUATION="${{{{ steps.refs.outputs.evaluation }}}}"
+          PR_NUMBER="${{{{ steps.refs.outputs.pr_number }}}}"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --force origin \\
+              "$BASE" \\
+              "+refs/pull/${{PR_NUMBER}}/head:refs/tess/admission-head" \\
+              "+refs/pull/${{PR_NUMBER}}/merge:refs/tess/admission-merge"
+            test "$(git rev-parse refs/tess/admission-head)" = "$ATTESTATION"
+            test "$(git rev-parse refs/tess/admission-merge)" = "$EVALUATION"
+          else
+            git fetch --no-tags --force origin "$BASE" "$EVALUATION"
+            ATTESTATION="$(git rev-parse "${{EVALUATION}}^2")"
+          fi
+          git cat-file -e "${{BASE}}^{{commit}}"
+          git cat-file -e "${{ATTESTATION}}^{{commit}}"
+          git cat-file -e "${{EVALUATION}}^{{commit}}"
+          echo "attestation=$ATTESTATION" >> "$GITHUB_OUTPUT"
 
       - name: Extract trusted gate engine (base ref only — never the pushed tree)
         id: trusted_engine
@@ -12957,7 +13248,7 @@ jobs:
         run: |
           python3 "${{{{ steps.trusted_engine.outputs.engine_path }}}}" gate ci \\
             --base "${{{{ steps.refs.outputs.base }}}}" \\
-            --head "${{{{ steps.refs.outputs.head }}}}"
+            --head "${{{{ steps.refs.outputs.evaluation }}}}"
 """
 
 
@@ -12971,7 +13262,7 @@ def _gate_install_ci_workflow(root: Path) -> None:
         if any(marker in existing for marker in _GATE_CI_WORKFLOW_KNOWN_MARKERS):
             print(
                 f"  UPGRADING tess-gate-ci workflow at {workflow_path} to the current template "
-                f"(push/pull_request only; removes caller-selected authoritative ranges — v4)."
+                f"(push/pull_request only; exact merge-wrapper authority — v5)."
             )
             workflow_path.write_text(_GATE_CI_WORKFLOW, encoding="utf-8")
             return
@@ -17296,7 +17587,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="CI entrypoint — authoritative only when refs match the protected GitHub event; local calls are diagnostic",
     )
     p_gate_ci.add_argument("--base", metavar="REF", required=True, help="base ref to diff from")
-    p_gate_ci.add_argument("--head", metavar="REF", required=True, help="head ref to diff to")
+    p_gate_ci.add_argument(
+        "--head", metavar="REF", required=True,
+        help="evaluation head to diff to (protected GitHub CI requires the exact merge wrapper)",
+    )
     p_gate_ci.add_argument(
         "--verdict-dir", action="append", dest="verdict_dirs", metavar="DIR",
         help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",

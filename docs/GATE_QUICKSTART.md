@@ -40,6 +40,13 @@ GOVERNED_TRANSITION_UNSUPPORTED
 This prevents a blob-only verdict from being reused as authority for absence,
 mode, symlink-target, or submodule-commit semantics.
 
+The proposed production design binds every trust input to an immutable BASE,
+attestation HEAD, and exact two-parent evaluation merge. The topology and its
+required repository settings are documented in
+[GitHub merge topology](GITHUB_MERGE_TOPOLOGY.md). It remains a protected
+NO-MERGE proposal until the parent security stack and GitHub ruleset are
+independently completed.
+
 The intended delivery path is:
 
 ```text
@@ -80,9 +87,11 @@ signed `payload_head_sha`. Its complete diff must be exactly the canonical
 `.tess/gate/signoffs/<rule-id>.signoff.json` path set required by the payload;
 no code, policy, key, verdict, rename, deletion, symlink, type swap, or extra
 file may share the commit. If two hard-floor rules match, both sign-offs must
-be introduced or updated atomically in that same child. Merge commits,
-multi-head pushes, a later commit of any kind, or editing a sign-off in another
-child invalidates the attestation.
+be introduced or updated atomically in that same child. The authoritative CI
+evaluation commit is a separate exact two-parent merge wrapper whose second
+parent and tree are that attestation HEAD. A different tree, later candidate
+commit, multi-head push, or editing a sign-off in another child invalidates
+the attestation.
 
 The shipped ordinary security rule also covers `.tess/gate/signoffs/**`.
 Requiring a separate payload-committed verdict for the final v2 sign-off blob
@@ -108,8 +117,11 @@ Before GPG verification, each signed artifact must exactly match:
 command supplies a one-hour expiry when it is omitted; the gate permits no
 more than 24 hours, allows at most five minutes of future clock skew, and
 rejects expired attestations. Signature keys and their exact public bytes
-still come only from immutable BASE policy/tree state. Candidate key rollback
-cannot erase a BASE revocation.
+still come only from immutable BASE policy/tree state. Verifier keys are
+restricted to `.tess/keys/verifiers/`; human sign-off keys are restricted to
+the separate `.tess/keys/signoffs/` namespace. Candidate path redirection,
+key replacement, or rollback cannot substitute candidate bytes for BASE
+authority or erase a BASE revocation.
 
 This topology is intentionally strict and currently technical. A future Trust
 Center may make the user-present ceremony easier, or use a separately secured
