@@ -8,6 +8,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { sendJson, readJsonBody } from './util.js';
+import { getClaudeHealth } from './health.js';
 
 const MAX_CONCURRENT = 3;
 const MAX_BUFFER = 500;
@@ -117,6 +118,16 @@ export async function handleCreateMission(ctx, req, res) {
     return;
   }
   const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : prompt.slice(0, 80);
+
+  // Mission launch is a server-side authority boundary. Re-use the same
+  // probe that backs /api/health, but intentionally give callers no CLI
+  // detail: an unavailable, incompatible, failed, or unresolved probe must
+  // never be able to reach runMission().
+  const claude = await getClaudeHealth(ctx);
+  if (claude.probeFailed || !claude.resolved || !claude.compatible) {
+    sendJson(res, 503, { error: 'service unavailable' });
+    return;
+  }
 
   if (countRunning(ctx.missions) >= MAX_CONCURRENT) {
     sendJson(res, 409, { error: 'maximum concurrent missions reached' });

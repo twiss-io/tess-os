@@ -74,6 +74,7 @@ const state = {
   durations: [],
   flashCostOnce: false,
   flashActiveOnce: false,
+  launchEnabled: false,
 };
 
 let currentLiveHandle = null;
@@ -138,6 +139,11 @@ function attachLiveMission(mission) {
 }
 
 async function launchMission(prompt, label) {
+  // Browser state is deliberately only a conservative preflight. The server
+  // still owns admission, so a stale or bypassed client control cannot make
+  // a launch authoritative.
+  if (!state.launchEnabled) return;
+
   try {
     const { id } = await api.createMission(prompt, label);
     state.activeMissions += 1;
@@ -160,6 +166,7 @@ const savedHandlers = {
       await api.deleteSavedMission(id);
       state.savedMissions = state.savedMissions.filter((m) => m.id !== id);
       renderSavedMissions(refs.savedSection, refs.savedGrid, state.savedMissions, savedHandlers);
+      syncLaunchControls();
     } catch {
       addBanner('remove-saved-failed', 'Could not remove this saved mission.');
     }
@@ -167,8 +174,12 @@ const savedHandlers = {
 };
 
 const commandHandlers = {
-  onLaunchImmediate: (name) => launchMission(`/${name}`),
+  onLaunchImmediate: (name) => {
+    if (!state.launchEnabled) return;
+    launchMission(`/${name}`);
+  },
   onLaunchWithArg: async (name, argSpec) => {
+    if (!state.launchEnabled) return;
     const value = await openPrompt({ title: `/${name}`, label: argSpec.label, placeholder: argSpec.placeholder });
     if (value == null) return;
     await launchMission(`/${name} ${value}`);
@@ -176,6 +187,8 @@ const commandHandlers = {
 };
 
 refs.missionLaunchBtn.addEventListener('click', async () => {
+  if (!state.launchEnabled) return;
+
   const prompt = refs.missionInput.value.trim();
   if (!prompt) return;
   const shouldSave = refs.saveToggle.checked;
@@ -186,6 +199,7 @@ refs.missionLaunchBtn.addEventListener('click', async () => {
       const saved = await api.createSavedMission(label, prompt);
       state.savedMissions.push(saved);
       renderSavedMissions(refs.savedSection, refs.savedGrid, state.savedMissions, savedHandlers);
+      syncLaunchControls();
     } catch {
       addBanner('save-mission-failed', 'Could not save this mission as a tile.');
     }
@@ -212,26 +226,40 @@ const rosterDrawer = setupRosterDrawer({
 });
 void rosterDrawer;
 
+function syncLaunchControls() {
+  for (const control of document.querySelectorAll('[data-launch-control]')) {
+    control.disabled = !state.launchEnabled;
+  }
+}
+
 function applyHealth(result) {
-  if (result.ok) {
+  const launchEnabled = result?.ok === true && result.health?.claude?.compatible === true;
+  state.launchEnabled = launchEnabled;
+  syncLaunchControls();
+
+  if (launchEnabled) {
     refs.cliStatusDot.dataset.state = 'ok';
     refs.cliStatusDot.setAttribute('aria-label', 'CLI status: connected');
     removeBanner('disconnected');
-    const claude = result.health.claude || {};
-    if (claude.compatible === false) {
-      const found = claude.version ? `found ${claude.version}` : 'Claude Code CLI not detected';
-      addBanner(
-        'cli-incompatible',
-        `Claude Code CLI version ${claude.minVersion} required, ${found} — some features may not work.`,
-        { dismissable: false },
-      );
-    } else {
-      removeBanner('cli-incompatible');
-    }
+    removeBanner('cli-launch-unavailable');
+  } else if (result?.ok === true) {
+    refs.cliStatusDot.dataset.state = 'unknown';
+    refs.cliStatusDot.setAttribute('aria-label', 'CLI status: launch unavailable');
+    removeBanner('disconnected');
+    addBanner(
+      'cli-launch-unavailable',
+      'Launch controls are disabled until the local server reports a compatible Claude Code CLI. The server launch API is authoritative.',
+      { dismissable: false },
+    );
   } else {
     refs.cliStatusDot.dataset.state = 'disconnected';
     refs.cliStatusDot.setAttribute('aria-label', 'CLI status: disconnected');
-    addBanner('disconnected', 'Connection to the tess-gui server lost — retrying…', { type: 'error', dismissable: false });
+    removeBanner('cli-launch-unavailable');
+    addBanner(
+      'disconnected',
+      'Connection to the tess-gui server lost — retrying. Launch controls remain disabled; the server launch API is authoritative.',
+      { type: 'error', dismissable: false },
+    );
   }
 }
 
@@ -261,7 +289,7 @@ async function boot() {
       api.getSavedMissions(),
     ]);
   } catch {
-    addBanner('boot-failed', 'Could not reach the tess-gui server. Refresh to retry.', { type: 'error', dismissable: false });
+    applyHealth({ ok: false });
     return;
   }
 
@@ -281,6 +309,7 @@ async function boot() {
 
   renderCommandGroups(refs.commandGroups, refs.commandsSkippedBadge, commands, commandHandlers);
   renderSavedMissions(refs.savedSection, refs.savedGrid, state.savedMissions, savedHandlers);
+  syncLaunchControls();
   renderRosterGuilds(refs.rosterBody, roster.guilds || []);
   renderTimeline(refs.timelineList, timeline.entries || []);
   renderMetricsDetail(refs.metricsDetail, state.summary, state.metricsCommands);
@@ -296,3 +325,7 @@ async function boot() {
 }
 
 boot();
+
+// Exported only so the browser-level test can exercise the same health
+// transitions that polling delivers in production.
+export const __test__ = { applyHealth };

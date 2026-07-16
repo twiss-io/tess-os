@@ -6,6 +6,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -30,7 +31,9 @@ async function startServer(opts = {}) {
     runMission: () => {
       throw new Error('runMission should not be called unless a test injects its own');
     },
-    getClaudeVersion: async () => null,
+    // Most route tests exercise a mission lifecycle rather than missing-CLI
+    // admission, so the shared fixture represents a usable local CLI.
+    getClaudeVersion: async () => '2.3.0',
     aggregateSessions: async () => ({ days: [], totals: {} }),
     MIN_CLI_VERSION: '2.0.0',
     ...opts.deps,
@@ -45,6 +48,38 @@ function apiUrl(port, token, apiPath) {
   return `http://127.0.0.1:${port}${apiPath}${sep}token=${token}`;
 }
 
+// Use the raw Node client for the launch-admission tests. Besides exercising
+// the same HTTP boundary as a browser, it keeps the auth and Host headers
+// explicit instead of relying on fetch() defaults.
+function rawAuthenticatedMissionPost(port, token, body) {
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: `/api/missions?token=${encodeURIComponent(token)}`,
+        method: 'POST',
+        headers: {
+          Host: `127.0.0.1:${port}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let responseBody = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          responseBody += chunk;
+        });
+        res.on('end', () => resolve({ statusCode: res.statusCode, body: responseBody }));
+      },
+    );
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
 after(async () => {
   await Promise.all(servers.map((s) => s.close()));
 });
@@ -54,7 +89,7 @@ after(async () => {
 // ---------------------------------------------------------------------------
 
 test('GET /api/health reports incompatible when claude is missing', async () => {
-  const { port, token } = await startServer();
+  const { port, token } = await startServer({ deps: { getClaudeVersion: async () => null } });
   const res = await fetch(apiUrl(port, token, '/api/health'));
   assert.equal(res.status, 200);
   const body = await res.json();
@@ -361,6 +396,52 @@ test('POST /api/missions requires a non-empty prompt', async () => {
     body: JSON.stringify({}),
   });
   assert.equal(res.status, 400);
+});
+
+test('POST /api/missions blocks every unusable Claude health result before spawn', async (t) => {
+  const unusableHealth = [
+    { name: 'missing CLI', getClaudeVersion: async () => null },
+    { name: 'incompatible CLI', getClaudeVersion: async () => '1.9.9' },
+    { name: 'health probe error', getClaudeVersion: async () => { throw new Error('probe failed'); } },
+    { name: 'unresolved health', getClaudeVersion: async () => undefined },
+  ];
+
+  for (const scenario of unusableHealth) {
+    await t.test(scenario.name, async () => {
+      let runMissionCalls = 0;
+      const { port, token } = await startServer({
+        deps: {
+          getClaudeVersion: scenario.getClaudeVersion,
+          runMission: () => {
+            runMissionCalls += 1;
+            return { pid: 1, stop() {} };
+          },
+        },
+      });
+
+      const res = await rawAuthenticatedMissionPost(port, token, { prompt: 'do not spawn' });
+      assert.equal(res.statusCode, 503);
+      assert.deepEqual(JSON.parse(res.body), { error: 'service unavailable' });
+      assert.equal(runMissionCalls, 0);
+    });
+  }
+});
+
+test('POST /api/missions starts exactly once with compatible Claude health', async () => {
+  let runMissionCalls = 0;
+  const { port, token } = await startServer({
+    deps: {
+      getClaudeVersion: async () => '2.3.0',
+      runMission: () => {
+        runMissionCalls += 1;
+        return { pid: 1, stop() {} };
+      },
+    },
+  });
+
+  const res = await rawAuthenticatedMissionPost(port, token, { prompt: 'start once' });
+  assert.equal(res.statusCode, 201);
+  assert.equal(runMissionCalls, 1);
 });
 
 test('mission lifecycle: create -> running in list -> exit code 0 -> done, with ledger + SSE replay', async () => {

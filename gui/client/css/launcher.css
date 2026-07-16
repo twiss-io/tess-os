@@ -123,6 +123,18 @@
   background: var(--color-overlay);
 }
 
+.tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tile:disabled:hover,
+.tile:disabled:active {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-surface);
+}
+
 .tile__command {
   font-family: var(--font-mono);
   font-size: 11px;

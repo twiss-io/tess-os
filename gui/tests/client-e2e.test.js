@@ -34,7 +34,7 @@ globalThis.location = window.location;
 // app.js runs its boot() automatically at import time, exactly as a real
 // page load would — not re-invoked here, just awaited-for via DOM polling
 // since boot()'s promise isn't exported (matching how a real page works).
-await import(path.join(clientDir, 'app.js'));
+const appModule = await import(path.join(clientDir, 'app.js'));
 const mockModule = await import(path.join(clientDir, 'js/mock-data.js'));
 
 await waitFor(() => document.querySelectorAll('#command-groups .tile').length > 0);
@@ -47,7 +47,44 @@ test('boot: token is stripped from the address bar', () => {
 test('boot: CLI status dot reflects a compatible, connected mock health check', () => {
   const dot = document.getElementById('cli-status-dot');
   assert.equal(dot.dataset.state, 'ok');
-  assert.equal(document.querySelector('[data-banner-id="cli-incompatible"]'), null);
+  assert.equal(document.querySelector('[data-banner-id="cli-launch-unavailable"]'), null);
+  assert.ok(
+    Array.from(document.querySelectorAll('[data-launch-control]')).every((control) => !control.disabled),
+    'a compatible local health response enables every launch control',
+  );
+});
+
+test('health preflight disables every launch control on denied, missing, and failed health, then re-enables only on compatible health', async () => {
+  const controls = () => Array.from(document.querySelectorAll('[data-launch-control]'));
+  const wakeTile = Array.from(document.querySelectorAll('#command-groups .tile')).find(
+    (tile) => tile.querySelector('.tile__command')?.textContent === '/wake',
+  );
+  assert.ok(wakeTile, 'the /wake command tile must exist');
+
+  appModule.__test__.applyHealth({ ok: true, health: { claude: { compatible: false } } });
+  assert.ok(controls().every((control) => control.disabled), 'an incompatible CLI disables every launch control');
+  assert.match(document.querySelector('[data-banner-id="cli-launch-unavailable"]').textContent, /server launch API is authoritative/i);
+
+  // A programmatic click must not reach the mock launch transport either;
+  // disabled visuals alone are not an authorization check.
+  wakeTile.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert.equal((await import(path.join(clientDir, 'js/mock.js'))).__test__.missions().length, 0);
+
+  appModule.__test__.applyHealth({ ok: true, health: {} });
+  assert.ok(controls().every((control) => control.disabled), 'a missing health payload remains fail-closed');
+
+  appModule.__test__.applyHealth({ ok: false });
+  assert.ok(controls().every((control) => control.disabled), 'a health polling error remains fail-closed');
+  assert.match(document.querySelector('[data-banner-id="disconnected"]').textContent, /server launch API is authoritative/i);
+
+  appModule.__test__.applyHealth({ ok: true, health: mockModule.MOCK_HEALTH });
+  assert.ok(controls().every((control) => !control.disabled), 'only a compatible health response re-enables launch controls');
+
+  appModule.__test__.applyHealth({ ok: true, health: { claude: { compatible: false } } });
+  assert.ok(controls().every((control) => control.disabled), 'a later incompatible response disables controls again');
+
+  appModule.__test__.applyHealth({ ok: true, health: mockModule.MOCK_HEALTH });
+  assert.ok(controls().every((control) => !control.disabled), 'the recovered compatible response re-enables controls again');
 });
 
 test('boot: all 26 mock commands render, grouped, with the skipped-files badge visible', () => {
