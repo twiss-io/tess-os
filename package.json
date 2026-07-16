@@ -1,7 +1,7 @@
 {
   "name": "tess-os",
   "version": "0.1.0",
-  "description": "An orchestration-first agent operating system for Claude Code — a governed organization of specialist agents with an in-place framework upgrade engine.",
+  "description": "Signed, fail-closed review gate and model-neutral governance harness for coding-agent output.",
   "license": "Apache-2.0",
   "private": false,
   "repository": {
@@ -13,11 +13,13 @@
     "url": "https://github.com/twiss-io/tess-os/issues"
   },
   "keywords": [
+    "ai-governance",
+    "coding-agents",
+    "review-gate",
+    "policy-as-code",
     "claude-code",
-    "agents",
+    "codex",
     "agent-orchestration",
-    "ai",
-    "multi-agent",
     "tess",
     "tess-os"
   ],

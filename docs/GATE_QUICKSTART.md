@@ -9,6 +9,9 @@ explain how to generate a verifier key, add a key to policy, or sign an
 approval. Those actions are a human-owned Xavier key-custody ceremony, not an
 operator setup step.
 
+For the shorter explanation of why this ceremony exists, read
+[Trust setup, in plain English](TRUST_SETUP.md).
+
 ## What the gate checks
 
 For a policy-governed path, `tessctl gate ci` checks required review evidence

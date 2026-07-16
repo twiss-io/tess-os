@@ -3,6 +3,10 @@
 This page is the public claim boundary for Tess OS. It separates what is in the
 repository today from pilot work and product plans.
 
+For a shorter, nontechnical comparison, start with
+[Platform support](PLATFORM_SUPPORT.md). The matrix below remains the canonical
+evidence boundary.
+
 ## Claim labels
 
 | Label | Meaning |
