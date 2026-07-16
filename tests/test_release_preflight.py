@@ -161,6 +161,20 @@ def _copy_workflows(tmp_path: Path) -> Path:
     return workflow_dir
 
 
+def _replace_workflow_once(
+    tmp_path: Path,
+    filename: str,
+    old: str,
+    new: str,
+) -> Path:
+    workflow_dir = _copy_workflows(tmp_path)
+    path = workflow_dir / filename
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) >= 1
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return path
+
+
 def _inject_oidc_step(publish: Path, body: str) -> None:
     marker = "    steps:\n      # v4.3.0 commit resolved from the official actions/download-artifact tag."
     replacement = f"    steps:\n{body}\n      # v4.3.0 commit resolved from the official actions/download-artifact tag."
@@ -574,6 +588,276 @@ def test_workflow_audit_rejects_duplicate_top_level_jobs_mapping(tmp_path: Path)
     )
 
     with pytest.raises(preflight.PreflightError, match="exactly one top-level jobs"):
+        preflight.validate_workflows(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "    permissions: read-all",
+        "    permissions: write-all",
+        "    permissions: {actions: read, contents: read, id-token: write}",
+        "    'permissions':\n      actions: read\n      contents: read\n      id-token: write",
+        '    "permissions":\n      actions: read\n      contents: read\n      id-token: write',
+        "    permissions :\n      actions: read\n      contents: read\n      id-token: write",
+        "    permissions: &privileged\n      actions: read\n      contents: read\n      id-token: write",
+        "    permissions: *privileged",
+    ],
+)
+def test_permission_contract_rejects_shorthand_flow_quoted_anchor_and_alias_maps(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "    permissions:\n      actions: read\n      contents: read",
+        replacement,
+    )
+
+    with pytest.raises(preflight.PreflightError, match="permission|anchor|alias"):
+        preflight.validate_workflows(tmp_path)
+
+
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_permission_contract_rejects_quoted_id_token_key(
+    tmp_path: Path,
+    quote: str,
+) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "      id-token: write",
+        f"      {quote}id-token{quote}: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="canonical and unquoted"):
+        preflight.validate_workflows(tmp_path)
+
+
+@pytest.mark.parametrize("value", ["'write'", '"write"', "WRITE", "read", "none", "true"])
+def test_permission_contract_rejects_noncanonical_permission_values(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "      id-token: write",
+        f"      id-token: {value}",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="non-canonical|least-privilege"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_duplicate_permissions_mapping(tmp_path: Path) -> None:
+    original = "    permissions:\n      actions: read\n      contents: read"
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        original,
+        original + "\n    permissions:\n      id-token: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="exactly one explicit permissions"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_duplicate_global_permissions_after_jobs(
+    tmp_path: Path,
+) -> None:
+    workflow_dir = _copy_workflows(tmp_path)
+    publish = workflow_dir / "publish-npm.yml"
+    publish.write_text(
+        publish.read_text(encoding="utf-8") + "\npermissions: write-all\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="top-level permissions"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_duplicate_permission_key(tmp_path: Path) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "      actions: read\n      contents: read",
+        "      actions: read\n      contents: read\n      contents: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="duplicate permission key"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_merge_key_privilege_map(tmp_path: Path) -> None:
+    workflow_dir = _copy_workflows(tmp_path)
+    publish = workflow_dir / "publish-npm.yml"
+    text = publish.read_text(encoding="utf-8")
+    text = text.replace(
+        "permissions:\n  contents: read",
+        "permissions: &base_permissions\n  contents: read",
+        1,
+    )
+    text = text.replace(
+        "    permissions:\n      actions: read\n      contents: read",
+        "    permissions:\n      <<: *base_permissions\n      actions: read\n      id-token: write",
+        1,
+    )
+    publish.write_text(text, encoding="utf-8")
+
+    with pytest.raises(preflight.PreflightError, match="merge keys|anchors"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_anchor_attached_to_permission_key(
+    tmp_path: Path,
+) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "    permissions:\n      actions: read\n      contents: read",
+        "    &privileged permissions:\n      actions: read\n      contents: read\n      id-token: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="anchors"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_tagged_duplicate_permissions_key(
+    tmp_path: Path,
+) -> None:
+    original = "    permissions:\n      actions: read\n      contents: read"
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        original,
+        original + "\n    !!str permissions:\n      id-token: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="explicit tags"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_explicit_complex_permissions_key(
+    tmp_path: Path,
+) -> None:
+    original = "    permissions:\n      actions: read\n      contents: read"
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        original,
+        original + "\n    ? permissions\n    : write-all",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="complex mapping keys"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_unexpected_permission_key(tmp_path: Path) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "      actions: read\n      contents: read",
+        "      actions: read\n      contents: read\n      packages: write",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="least-privilege"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_valid_anchor_alias_map(tmp_path: Path) -> None:
+    workflow_dir = _copy_workflows(tmp_path)
+    publish = workflow_dir / "publish-npm.yml"
+    text = publish.read_text(encoding="utf-8")
+    text = text.replace(
+        "    permissions:\n      actions: read\n      contents: read",
+        "    permissions: &candidate_permissions\n      actions: read\n      contents: read",
+        1,
+    )
+    text = text.replace(
+        "    permissions:\n      contents: read",
+        "    permissions: *candidate_permissions",
+        1,
+    )
+    publish.write_text(text, encoding="utf-8")
+
+    with pytest.raises(preflight.PreflightError, match="anchors|aliases"):
+        preflight.validate_workflows(tmp_path)
+
+
+def test_permission_contract_rejects_inherited_job_permissions(tmp_path: Path) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "publish-npm.yml",
+        "    permissions:\n      actions: read\n      contents: read\n",
+        "",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="exactly one explicit permissions"):
+        preflight.validate_workflows(tmp_path)
+
+
+@pytest.mark.parametrize("shorthand", ["read-all", "write-all"])
+def test_permission_contract_rejects_global_permission_shorthand(
+    tmp_path: Path,
+    shorthand: str,
+) -> None:
+    _replace_workflow_once(
+        tmp_path,
+        "release.yml",
+        "permissions:\n  contents: read",
+        f"permissions: {shorthand}",
+    )
+
+    with pytest.raises(preflight.PreflightError, match="canonical block-map"):
+        preflight.validate_workflows(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("filename", "old", "new"),
+    [
+        (
+            "release.yml",
+            "    permissions:\n      contents: read",
+            "    permissions:\n      contents: read\n      id-token: write",
+        ),
+        (
+            "release.yml",
+            "      contents: read\n      checks: read",
+            "      contents: read\n      checks: write",
+        ),
+        (
+            "release.yml",
+            "    permissions:\n      contents: write",
+            "    permissions:\n      actions: write\n      contents: write",
+        ),
+        (
+            "publish-npm.yml",
+            "    permissions:\n      actions: read\n      contents: read",
+            "    permissions:\n      actions: read\n      contents: read\n      id-token: write",
+        ),
+        (
+            "publish-npm.yml",
+            "    permissions:\n      contents: read",
+            "    permissions:\n      contents: read\n      id-token: write",
+        ),
+        (
+            "publish-npm.yml",
+            "      actions: read\n      contents: read\n      id-token: write",
+            "      actions: write\n      contents: read\n      id-token: write",
+        ),
+    ],
+)
+def test_permission_contract_rejects_privilege_change_in_every_job_class(
+    tmp_path: Path,
+    filename: str,
+    old: str,
+    new: str,
+) -> None:
+    _replace_workflow_once(tmp_path, filename, old, new)
+
+    with pytest.raises(preflight.PreflightError, match="least-privilege"):
         preflight.validate_workflows(tmp_path)
 
 

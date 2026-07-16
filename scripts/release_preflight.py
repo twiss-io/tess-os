@@ -49,6 +49,25 @@ REQUIRED_ACTION_PINS = {
     "softprops/action-gh-release": "3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",  # v2.6.2
 }
 
+WORKFLOW_PERMISSION_CONTRACTS = {
+    "release.yml": {
+        "__global__": {"contents": "read"},
+        "rehearse": {"contents": "read"},
+        "release_preflight": {"checks": "read", "contents": "read"},
+        "publish_release": {"contents": "write"},
+    },
+    "publish-npm.yml": {
+        "__global__": {"contents": "read"},
+        "candidate_test": {"actions": "read", "contents": "read"},
+        "pack_artifact": {"contents": "read"},
+        "publish_oidc": {
+            "actions": "read",
+            "contents": "read",
+            "id-token": "write",
+        },
+    },
+}
+
 ROOT_PACK_FILES = {
     "CHANGELOG.md",
     "CLA.md",
@@ -707,6 +726,225 @@ def workflow_step_names(job_block: str) -> list[str]:
     return re.findall(r"^\s{6}- name:\s*(.+?)\s*$", job_block, re.MULTILINE)
 
 
+def _yaml_mapping_entry(line: str) -> tuple[int, str, str, str] | None:
+    """Parse one simple YAML mapping entry without interpreting YAML values.
+
+    The release validator deliberately accepts only canonical block mappings for
+    permission-bearing structure. This scanner tracks quotes while locating the
+    mapping colon, so quoted keys and whitespace-normalized lookalikes are
+    detected and rejected rather than disappearing from a regex search.
+    """
+
+    leading = len(line) - len(line.lstrip(" "))
+    if "\t" in line[: len(line) - len(line.lstrip())]:
+        raise PreflightError("workflow YAML indentation must not contain tabs")
+    text = line[leading:]
+    if not text or text.startswith(("#", "-")):
+        return None
+
+    quote: str | None = None
+    escaped = False
+    colon = -1
+    for index, char in enumerate(text):
+        if quote == '"' and escaped:
+            escaped = False
+            continue
+        if quote == '"' and char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char == ":":
+            colon = index
+            break
+    if colon < 0:
+        return None
+
+    raw_key = text[:colon]
+    stripped_key = raw_key.strip()
+    normalized_key = stripped_key
+    if (
+        len(stripped_key) >= 2
+        and stripped_key[0] == stripped_key[-1]
+        and stripped_key[0] in {"'", '"'}
+    ):
+        normalized_key = stripped_key[1:-1]
+    return leading, raw_key, normalized_key, text[colon + 1 :].strip()
+
+
+def _workflow_structure_entries(
+    text: str,
+) -> list[tuple[int, int, str, str, str, str]]:
+    """Return mapping entries outside comments and literal/folded scalars."""
+
+    entries: list[tuple[int, int, str, str, str, str]] = []
+    block_scalar_indent: int | None = None
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if block_scalar_indent is not None:
+            if indent > block_scalar_indent:
+                continue
+            block_scalar_indent = None
+        if line.lstrip().startswith("#"):
+            continue
+        stripped = line.strip()
+        if stripped in {"---", "..."} or stripped.startswith(("? ", ": ")):
+            raise PreflightError(
+                f"workflow YAML documents and complex mapping keys are forbidden at line {lineno}"
+            )
+        parsed = _yaml_mapping_entry(line)
+        if parsed is None:
+            if stripped.startswith(("- &", "- *", "- !")):
+                raise PreflightError(
+                    f"workflow YAML aliases, anchors, and explicit tags are forbidden at line {lineno}"
+                )
+            continue
+        indent, raw_key, key, value = parsed
+        if (
+            key == "<<"
+            or not raw_key.strip()
+            or raw_key.strip().startswith(("&", "*", "!"))
+            or value.startswith(("&", "*", "!"))
+        ):
+            raise PreflightError(
+                f"workflow YAML aliases, anchors, explicit tags, and merge keys are forbidden at line {lineno}"
+            )
+        entries.append((lineno, indent, raw_key, key, value, line.strip()))
+        if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block_scalar_indent = indent
+    return entries
+
+
+def _canonical_permission_map(
+    entries: Sequence[tuple[int, int, str, str, str, str]],
+    *,
+    scope: str,
+    scope_start: int,
+    scope_end: int,
+    permission_indent: int,
+    expected: dict[str, str],
+) -> None:
+    candidates = [
+        entry
+        for entry in entries
+        if scope_start < entry[0] < scope_end
+        and entry[1] == permission_indent
+        and entry[3] == "permissions"
+    ]
+    if len(candidates) != 1:
+        raise PreflightError(
+            f"{scope} must contain exactly one explicit permissions block; found {len(candidates)}"
+        )
+    permission = candidates[0]
+    if permission[2] != "permissions" or permission[4] != "":
+        raise PreflightError(
+            f"{scope} permissions must use canonical block-map syntax, not quotes, shorthand, flow, anchors, or aliases"
+        )
+
+    values: dict[str, str] = {}
+    for entry in entries:
+        if entry[0] <= permission[0] or entry[0] >= scope_end:
+            continue
+        if entry[1] <= permission_indent:
+            break
+        if entry[1] != permission_indent + 2:
+            raise PreflightError(f"{scope} permissions contain ambiguous nesting")
+        _, _, raw_key, key, value, _ = entry
+        if raw_key != key or not key:
+            raise PreflightError(f"{scope} permission keys must be canonical and unquoted")
+        if key in values:
+            raise PreflightError(f"{scope} contains duplicate permission key {key!r}")
+        if value not in {"read", "write", "none"}:
+            raise PreflightError(
+                f"{scope} permission {key!r} has non-canonical value {value!r}"
+            )
+        values[key] = value
+    if values != expected:
+        raise PreflightError(
+            f"{scope} permissions are {values!r}; expected exact least-privilege map {expected!r}"
+        )
+
+
+def validate_workflow_permissions(
+    text: str,
+    workflow_name: str,
+    expected_contract: dict[str, dict[str, str]],
+) -> None:
+    """Enforce exact global and per-job GitHub Actions permission maps."""
+
+    entries = _workflow_structure_entries(text)
+    jobs_entries = [entry for entry in entries if entry[1] == 0 and entry[3] == "jobs"]
+    if len(jobs_entries) != 1:
+        raise PreflightError(
+            f"{workflow_name} must contain exactly one canonical top-level jobs mapping"
+        )
+    jobs_entry = jobs_entries[0]
+    if jobs_entry[2] != "jobs" or jobs_entry[4] != "":
+        raise PreflightError(f"{workflow_name} jobs mapping must use canonical block syntax")
+
+    global_permissions = [
+        entry for entry in entries if entry[1] == 0 and entry[3] == "permissions"
+    ]
+    if len(global_permissions) != 1 or global_permissions[0][0] > jobs_entry[0]:
+        raise PreflightError(
+            f"{workflow_name} must contain exactly one explicit top-level permissions block before jobs"
+        )
+
+    end_line = len(text.splitlines()) + 1
+    top_level_after_jobs = [
+        entry[0]
+        for entry in entries
+        if entry[0] > jobs_entry[0] and entry[1] == 0
+    ]
+    jobs_end = min(top_level_after_jobs, default=end_line)
+    job_entries = [
+        entry
+        for entry in entries
+        if jobs_entry[0] < entry[0] < jobs_end and entry[1] == 2
+    ]
+    jobs: dict[str, tuple[int, int, str, str, str, str]] = {}
+    for entry in job_entries:
+        _, _, raw_key, key, value, _ = entry
+        if raw_key != key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key) or value:
+            raise PreflightError(f"{workflow_name} job ids must use canonical block syntax")
+        if key in jobs:
+            raise PreflightError(f"{workflow_name} contains duplicate job id {key!r}")
+        jobs[key] = entry
+
+    expected_jobs = set(expected_contract) - {"__global__"}
+    if set(jobs) != expected_jobs:
+        raise PreflightError(
+            f"{workflow_name} jobs are {sorted(jobs)!r}; expected exactly {sorted(expected_jobs)!r}"
+        )
+
+    _canonical_permission_map(
+        entries,
+        scope=f"{workflow_name} global scope",
+        scope_start=0,
+        scope_end=jobs_entry[0],
+        permission_indent=0,
+        expected=expected_contract["__global__"],
+    )
+    ordered_jobs = sorted(jobs.values(), key=lambda entry: entry[0])
+    for index, job in enumerate(ordered_jobs):
+        job_end = ordered_jobs[index + 1][0] if index + 1 < len(ordered_jobs) else jobs_end
+        _canonical_permission_map(
+            entries,
+            scope=f"{workflow_name} job {job[3]!r}",
+            scope_start=job[0],
+            scope_end=job_end,
+            permission_indent=4,
+            expected=expected_contract[job[3]],
+        )
+
+
 def validate_workflows(repo: Path) -> None:
     workflow_dir = repo / ".github" / "workflows"
     release_path = workflow_dir / "release.yml"
@@ -716,6 +954,15 @@ def validate_workflows(repo: Path) -> None:
     publish_text = publish_path.read_text(encoding="utf-8")
     ci_path = workflow_dir / "ci.yml"
     ci_text = ci_path.read_text(encoding="utf-8")
+    for path, text in ((release_path, release_text), (publish_path, publish_text)):
+        try:
+            validate_workflow_permissions(
+                text,
+                path.name,
+                WORKFLOW_PERMISSION_CONTRACTS[path.name],
+            )
+        except PreflightError as exc:
+            issues.append(str(exc))
     if any("pull_request_target" in text for text in (release_text, publish_text, ci_text)):
         issues.append("release-bearing workflows must never use pull_request_target")
     if not re.search(r"^\s*environment:\s*release\s*$", release_text, re.MULTILINE):
