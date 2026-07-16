@@ -30,10 +30,13 @@ By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Workflow
 
 1. Branch off `main` (never commit directly to `main`).
-2. Make the change. Keep files within the project's quality gates: no file > 300
+2. Set up a fresh local clone with the [local development quickstart](docs/LOCAL_DEV_QUICKSTART.md).
+   It documents the supported Python baseline, the one-time mutating
+   initialization step, and why Node commands stay scoped to `create-tess`.
+3. Make the change. Keep files within the project's quality gates: no file > 300
    lines where avoidable, no function > 50 lines, no swallowed errors.
-3. Keep all gates green (below). Add or adjust tests for any behavior change.
-4. Open a PR. Describe what changed and why; note any doctrine or NOTICE updates.
+4. Keep all gates green (below). Add or adjust tests for any behavior change.
+5. Open a PR. Describe what changed and why; note any doctrine or NOTICE updates.
 
 ## Quality gates (must pass before a PR is mergeable)
 

@@ -119,6 +119,8 @@ reproducible release rehearsal and the production prerequisites are complete.
 
 ## Where to start
 
+- [Local development quickstart](https://github.com/twiss-io/tess-os/blob/main/docs/LOCAL_DEV_QUICKSTART.md) — clone, Python
+  environment, scoped `create-tess` validation, and safe local checks.
 - [Support and status](docs/STATUS.md) — capability labels and current limits.
 - [Gate operation and custody](docs/GATE_QUICKSTART.md) — safe diagnostics and
   the boundary around the human-owned key ceremony.
