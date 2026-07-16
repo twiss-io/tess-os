@@ -42,8 +42,8 @@ non-templated `conductor/**` files, `core/contracts/**` — is a pure
 substitution where applicable) driven by the pre-existing, target-agnostic
 `tessctl restore` (`_do_restore`, iterating every `core-managed` entry in
 `tess.lock`). That loop predates the render-target abstraction and is not
-target-scoped today — there is only one target, so nothing is lost — but it
-means this target's `render()` does not duplicate it.
+target-scoped today. Only Claude Code uses this restore-driven copy phase, so
+this target's `render()` does not duplicate it.
 
 **Why this split, not a merge:** `restore` (full idempotent sync of every
 lock-tracked file) and `render` (the templated-compile subset) are two
@@ -53,9 +53,9 @@ correctly ordered — `cmd_update`'s "Step 7" runs the per-file resolution
 `tests/test_tracked_render_e2e.py` exist specifically to catch a
 render-before-core-advance regression. Folding `_do_restore`'s copy-phase
 into `ClaudeCodeRenderTarget.render()` would have been a rearchitecture of
-that ordering guarantee for no Phase 1 benefit (there is exactly one target
-to disambiguate against). This is a documented interpretive choice — flagged
-for Fable review — not an oversight.
+that ordering guarantee for no Phase 1 benefit. Only the Claude Code target
+uses that copy phase; Codex and generic implement their own. This is a
+documented interpretive choice — flagged for Fable review — not an oversight.
 
 ## Determinism and idempotency
 
