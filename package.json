@@ -1,7 +1,7 @@
 {
   "name": "tess-os",
   "version": "0.1.0",
-  "description": "Signed, fail-closed review gate and model-neutral governance harness for coding-agent output.",
+  "description": "Unpublished documentation/metadata package for the Tess OS signed, fail-closed governance harness; runtime not included.",
   "license": "Apache-2.0",
   "private": false,
   "repository": {
@@ -23,7 +23,7 @@
     "tess",
     "tess-os"
   ],
-  "//": "This npm package is intentionally LIGHT — metadata/docs only. The Tess OS runtime (doctrine, agents, commands, hooks, the tessctl engine, and the client template) is NOT shipped through npm; it is delivered via the git template repo and the `npm create tess` wizard (the create-tess package), which scaffolds an instance from a git clone. Do not re-add the runtime tree to `files`.",
+  "//": "UNPUBLISHED: this root manifest is intentionally documentation/metadata-only. The Tess OS runtime (doctrine, agents, commands, hooks, tessctl, and the client template) is not available through an npm package; it is delivered from reviewed repository source. Do not re-add the runtime tree to `files` or describe this manifest as a published package.",
   "files": [
     "README.md",
     "LICENSE",

@@ -8,9 +8,9 @@ files. That does **not** mean every model host has a native Tess OS adapter.
 
 | Platform or route | Status | What works | What is not claimed |
 |---|---|---|---|
-| Claude Code | **Tested/native preview (C3)** | Reference instruction renderer, prompt artifacts, configuration fragment, and local process driver. It is the only render target enabled by default in a new install. | Production certification, protected delivery, or perfect control of the host. |
-| OpenAI Codex | **Experimental primary integration (C2)** | Opt-in `AGENTS.md`, prompt, and project-configuration rendering plus a local `codex exec` process driver. | Live native-event conformance, native feature parity, or default enablement. |
-| Generic `AGENTS.md` hosts | **Repository-file compatibility (C2)** | Opt-in portable instructions and plain prompt files. | Native tools, permissions, commands, subagents, process control, or a driver. |
+| Claude Code | **C3 — Managed-adapter preview** | Reference instruction renderer, configuration, command/agent artifacts, and local process driver. It is the only render target enabled by default in a new install. | Production certification, protected delivery, or perfect control of the host. |
+| OpenAI Codex | **C2 — Manual-gated compatibility** | Opt-in `AGENTS.md`, trusted-project `.codex/config.toml`, and a local `codex exec` process driver. Legacy `.codex/prompts` mirrors are also generated for compatibility history. | Live native-event conformance, native feature parity, default enablement, or project-discovered custom prompts. |
+| Generic `AGENTS.md` hosts | **C2 — Manual-gated compatibility** | Opt-in portable instructions and plain prompt files. | Native tools, permissions, commands, subagents, process control, or a driver. |
 | Perplexity | **Git/CI route only; no adapter (C0)** | If a person or external workflow commits resulting files, the normal repository gate can evaluate those files. | A Perplexity renderer, driver, provenance proof, native workflow, or coding-agent integration. |
 | Cursor, Copilot, and other coding tools | **Git/CI route only unless separately evidenced** | Their committed repository changes can enter the same policy-and-review path. | Native adapter support or control of work that never reaches the governed repository. |
 | Gemini and future model hosts | **Planned only when named evidence exists** | No registered target or driver exists today. | Support based only on model popularity, MCP, or an API-compatible endpoint. |
@@ -34,6 +34,12 @@ their vocabulary is defined in
 These labels should never be collapsed into “supports all models.” A model can
 change while the governance contract stays stable, but each native host adapter
 still needs its own versioned implementation and evidence.
+
+For Codex specifically, durable repository guidance belongs in `AGENTS.md` and
+trusted-project settings belong in `.codex/config.toml`. The checked-in
+`.codex/prompts` mirrors are legacy/deprecated artifacts and are not discovered
+by Codex from the repository. Reusable workflow guidance should use Codex skills
+where available rather than claim those mirrors are native prompts.
 
 ## What remains host-specific
 

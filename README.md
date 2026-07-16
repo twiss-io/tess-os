@@ -47,10 +47,12 @@ not branch protection by itself.
   checks, mission records, traces, rendering, and a sequential conductor loop.
 - A signed-review gate that fails closed when a governed change lacks valid,
   covering approval evidence.
-- A tested Claude Code reference target and local process driver.
-- A Codex pilot that renders `AGENTS.md`, project configuration, and prompt
-  files, plus a local `codex exec` driver that still lacks live native-event
-  evidence.
+- A Claude Code reference target and local process driver at
+  **C3 — Managed-adapter preview**.
+- A Codex pilot at **C2 — Manual-gated compatibility**. Its durable repository
+  surfaces are `AGENTS.md` and trusted-project `.codex/config.toml`; its local
+  `codex exec` driver still lacks live native-event evidence. It also preserves
+  legacy `.codex/prompts` mirrors that Codex does not discover from a project.
 - A generic `AGENTS.md` target for tools that can consume repository
   instructions without claiming native feature parity.
 - File-backed mission, crew-plan, retry, and return-artifact contracts.
@@ -68,8 +70,8 @@ because every model or host has a native adapter.
 
 | Surface | Public status | Evidence-based meaning |
 |---|---|---|
-| Claude Code | **Tested/native preview** | Reference renderer and local driver; internal evidence level C3. Protected delivery is not certified. |
-| OpenAI Codex | **Experimental primary integration** | Renderer and local driver exist; internal evidence level C2. The driver has not been live-tested against native event samples. |
+| Claude Code | **C3 — Managed-adapter preview** | Reference renderer and local driver. Protected delivery is not certified. |
+| OpenAI Codex | **C2 — Manual-gated compatibility** | `AGENTS.md`, trusted-project `.codex/config.toml`, and a local `codex exec` driver exist. Project `.codex/prompts` mirrors are legacy artifacts, not native prompt integration. |
 | Generic `AGENTS.md` hosts | **Compatible through repository files** | Tess can render portable instructions and prompts. Tool discovery, permissions, commands, and subagents remain host-specific. |
 | Cursor, Copilot, Perplexity, and other tools | **Compatible through Git/CI only when output becomes a governed repository change** | The gate can evaluate committed files regardless of their author. This is not a native adapter, provider control, or proof of provenance. Perplexity's adapter level is currently C0. |
 | Gemini or a future frontier model | **Planned only when named evidence exists** | A compatible API or MCP connection is not adapter support. New hosts need a bounded adapter and conformance evidence. |
@@ -147,16 +149,19 @@ The design boundary is documented in the
 memory can inform work, but it can never approve a change, mint authority, or
 carry secret values.
 
-## npm packages
+## npm status
 
-- [`create-tess`](https://www.npmjs.com/package/create-tess) is a guided local
-  scaffolding wizard. Its current default remains Claude Code-oriented; Codex
-  and generic targets require explicit opt-in after setup.
-- [`tess-os`](https://www.npmjs.com/package/tess-os) is intentionally a light
-  metadata/documentation package. It does not contain the runtime tree.
+- [`create-tess`](https://www.npmjs.com/package/create-tess) exists, but the
+  registry's live `create-tess@0.1.0` is a legacy release that predates these
+  support and custody corrections. Repository source is newer and remains
+  unreleased until an owner-authorized publication.
+- `tess-os` is **not published on npm**. The root `package.json` is an
+  unpublished documentation/metadata-only manifest for release rehearsal; it
+  does not contain the runtime tree and there is no current npm install path
+  for Tess OS.
 
-The published packages may lag repository `main`. Neither package completes
-key custody, required checks, Cloud, Vault, or production onboarding.
+Neither the legacy `create-tess` release nor the unpublished root manifest
+completes key custody, required checks, Cloud, Vault, or production onboarding.
 
 ## Learn more
 
@@ -167,6 +172,7 @@ key custody, required checks, Cloud, Vault, or production onboarding.
 - [Mission and orchestration model](https://github.com/twiss-io/tess-os/blob/main/missions/README.md)
 - [Product family](https://github.com/twiss-io/tess-os/blob/main/docs/PRODUCT_FAMILY.md)
 - [Framing migration notes](https://github.com/twiss-io/tess-os/blob/main/docs/FRAMING_MIGRATION.md)
+- [Recommended GitHub description and topics](https://github.com/twiss-io/tess-os/blob/main/docs/GITHUB_METADATA_RECOMMENDATION.md)
 - [Security policy](https://github.com/twiss-io/tess-os/blob/main/SECURITY.md)
 
 ## Production-readiness boundary

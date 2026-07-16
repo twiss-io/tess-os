@@ -160,8 +160,10 @@ are enabled for this install — without rendering.
   `clients/_template/CLAUDE.md`. See `adapters/claude-code/README.md` for the
   full artifact map and the documented render/restore scope boundary.
 - **Codex** (Tier B, Phase 2) — `CodexRenderTarget` (`name = "codex"`)
-  renders `AGENTS.md`, `.codex/prompts/*.md` (mirroring the 26 command
-  bodies), and a `.codex/config.toml` fragment. See
+  renders durable `AGENTS.md` and trusted-project `.codex/config.toml`
+  surfaces. It also preserves `.codex/prompts/*.md` mirrors as
+  legacy/deprecated artifacts; Codex does not discover those from the
+  repository. The separate process driver uses `codex exec`. See
   `adapters/codex/README.md`.
 - **Generic** (Tier C, Phase 2) — `GenericRenderTarget` (`name = "generic"`)
   renders the SAME `AGENTS.md` (see "AGENTS.md ownership" in

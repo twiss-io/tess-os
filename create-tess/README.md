@@ -16,7 +16,9 @@ platform.
 
 > **Technology preview:** `create-tess` scaffolds a local instance. It does not
 > activate production trust, configure protected branches, or provision Tess
-> Cloud or Tess Vault. The published package may lag repository `main`.
+> Cloud or Tess Vault. The registry's live `create-tess@0.1.0` is a legacy
+> release. This repository contains newer `0.1.1` source, but it remains
+> unreleased until an owner-authorized publication.
 
 ## What you get
 
@@ -31,6 +33,51 @@ The current default is Claude Code-oriented. Codex and generic `AGENTS.md`
 targets exist in the repository but require explicit post-install opt-in. Read
 the [platform support guide](https://github.com/twiss-io/tess-os/blob/main/docs/PLATFORM_SUPPORT.md)
 before choosing a host.
+
+## Enable Codex or generic output after setup
+
+There is no `create-tess` platform-selection flag or `tessctl enable-target`
+command in this build. First inspect the registered targets, then preview
+Codex output once:
+
+```bash
+./tessctl render --list-targets
+./tessctl render --target codex
+./tessctl doctor
+./tessctl verify
+```
+
+The durable Codex output is `AGENTS.md` plus trusted-project
+`.codex/config.toml`. The renderer also preserves legacy/deprecated
+`.codex/prompts` mirrors, but Codex does not discover them from the project and
+they are not native prompt integration.
+
+For persistent Codex rendering, add `"codex"` to the existing
+`tess.manifest.json` list:
+
+```json
+"render_targets": {
+  "enabled": ["claude-code", "codex"]
+}
+```
+
+Then render and recheck the instance:
+
+```bash
+./tessctl render
+./tessctl doctor
+./tessctl verify
+```
+
+For a one-time generic `AGENTS.md` and plain-prompt render, use:
+
+```bash
+./tessctl render --target generic
+```
+
+To make generic rendering persistent, add `"generic"` to the same
+`render_targets.enabled` list. None of these steps configures a provider login,
+creates approval authority, or protects a branch.
 
 ## What setup asks
 
@@ -74,9 +121,11 @@ That is a fail-closed result, not a wizard error. Do not create, register, or
 self-sign a key or verdict merely to make the message disappear. Do not bypass
 or disable a hook and then present the change as approved.
 
-Production activation requires a designated human owner's external custody
-decision (Xavier for this repository) plus independently required Git checks.
-The wizard intentionally does not combine the proposer and reviewer roles.
+For a downstream project created by this wizard, that project's owner chooses
+and holds its external custody arrangement and configures independently
+required Git checks. Xavier is the designated custodian only for the upstream
+`twiss-io/tess-os` repository. The wizard intentionally does not combine the
+proposer and reviewer roles.
 
 For local experimentation, use an isolated, non-production repository. For a
 governed or production-bound change, read
@@ -137,7 +186,8 @@ node bin/create-tess.mjs ./out --yes --operator=Alex \
 
 ## What the wizard does not provide
 
-- native support or feature parity for every model host;
+- native support or feature parity for every model host, or a Codex custom-
+  prompt installation;
 - a verifier, sign-off authority, first trust anchor, or required Git check;
 - Tess Cloud, Tess Vault, or a hosted control plane;
 - advanced shared memory or a parallel subagent scheduler; or

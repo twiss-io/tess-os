@@ -21,9 +21,9 @@ evidence boundary.
 | Capability or surface | Label | Current boundary |
 |---|---|---|
 | Local policy and gate CLI | **Verified current state** | The engine can validate policy/evidence and fail closed. It is not a production admission control until first-key custody and GitHub required checks are fixed. |
-| Claude Code target and driver | **C3 — managed-adapter preview** | Reference integration. It remains an uncertified preview for protected delivery. |
-| Codex target and driver | **C2 — manual-gated compatibility** | The renderer emits `AGENTS.md`, `.codex/config.toml`, and prompt files. The driver is not live-tested against native event samples and does not have native-parity certification. |
-| Generic `AGENTS.md` target | **C2 — manual-gated compatibility** | Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
+| Claude Code target and driver | **C3 — Managed-adapter preview** | Reference integration. It remains an uncertified preview for protected delivery. |
+| Codex target and driver | **C2 — Manual-gated compatibility** | The durable repository surfaces are `AGENTS.md` and trusted-project `.codex/config.toml`; a local `codex exec` driver exists but is not live-tested against native event samples. Generated `.codex/prompts` mirrors are legacy/deprecated and are not project-discovered Codex prompts. |
+| Generic `AGENTS.md` target | **C2 — Manual-gated compatibility** | Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
 | `tessctl run` conductor | **Verified current state** | Validates plans, gates, artifacts, retries, and escalation in a sequential execution model. Parallel execution and synthesis remain future work. |
 | MCP server | **Verified current state** | Provider-neutral stdio JSON-RPC with limited read/check tools. MCP connects tools and context; it is not a review or trust-enforcement mechanism. |
 | Perplexity adapter/driver | **C0 — not supported** | Tess OS has no Perplexity repository adapter. A future read-only research-worker role is only a proposal. |

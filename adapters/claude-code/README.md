@@ -1,8 +1,8 @@
 # Claude Code render target — reference integration
 
-> This is Tess OS's reference render target and driver. It is an uncertified
-> preview for protected delivery until the external trust-root and required
-> GitHub-check prerequisites are complete. See
+> **C3 — Managed-adapter preview.** This is Tess OS's reference render target
+> and driver. It remains uncertified for protected delivery until the external
+> trust-root and required GitHub-check prerequisites are complete. See
 > [Support and status](../../docs/STATUS.md).
 
 Implementation: `ClaudeCodeRenderTarget` in `.tess/bin/tessctl`
@@ -83,10 +83,8 @@ either way for this profile.
 ## Adding a Phase 2/3 target
 
 See `adapters/README.md` "Adding Phase 2 / Phase 3 targets" for the general
-steps. A Codex target, for example, would NOT be a subclass of
-`ClaudeCodeRenderTarget` — it renders a different artifact set
-(`AGENTS.md`, `~/.codex/prompts/*.md`, a `config.toml` fragment) from a
-partially-different core source (the same `core/doctrine/`, `core/roster/`,
-`core/commands/` content, de-Claude-ified per the plan's §B.2, but its own
-copy-phase) — it is a sibling `RenderTarget` subclass, not a specialization
-of this one.
+steps. The Codex target is a sibling of `ClaudeCodeRenderTarget`, not a
+subclass. Its durable Codex surfaces are `AGENTS.md` and trusted-project
+`.codex/config.toml`; it also retains legacy/deprecated `.codex/prompts/*.md`
+mirrors that Codex does not discover from the repository. Its process driver
+uses `codex exec` separately from rendering.

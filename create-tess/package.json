@@ -1,7 +1,7 @@
 {
   "name": "create-tess",
   "version": "0.1.1",
-  "description": "Guided local setup wizard for the Tess OS governance harness, with a Claude Code default and opt-in Codex and generic targets.",
+  "description": "Guided local scaffolder for Tess OS; Claude Code is the default, with manual Codex and generic render-target opt-in.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {

@@ -151,9 +151,9 @@ def test_shipped_claims_match_checked_in_adapter_targets_and_drivers(engine):
 def test_status_page_retains_manifest_support_labels():
     status = (REPO_ROOT / "docs" / "STATUS.md").read_text(encoding="utf-8")
     for label in (
-        "Claude Code target and driver | **C3 — managed-adapter preview**",
-        "Codex target and driver | **C2 — manual-gated compatibility**",
-        "Generic `AGENTS.md` target | **C2 — manual-gated compatibility**",
+        "Claude Code target and driver | **C3 — Managed-adapter preview**",
+        "Codex target and driver | **C2 — Manual-gated compatibility**",
+        "Generic `AGENTS.md` target | **C2 — Manual-gated compatibility**",
         "Perplexity adapter/driver | **C0 — not supported**",
     ):
         assert label in status

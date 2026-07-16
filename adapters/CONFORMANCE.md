@@ -32,9 +32,9 @@ The advisory schema is
 [`contracts/adapter-manifest.schema.json`](contracts/adapter-manifest.schema.json).
 Records live in [`manifests/`](manifests/):
 
-- Claude Code — C3 managed-adapter preview
-- Codex — C2 manual-gated compatibility preview
-- Generic AGENTS.md host — C2 manual-gated compatibility preview
+- Claude Code — **C3 — Managed-adapter preview**
+- Codex — **C2 — Manual-gated compatibility**
+- Generic AGENTS.md host — **C2 — Manual-gated compatibility**
 - Perplexity — C0, no adapter or driver
 
 The schema is intentionally outside `core/contracts/`, is not accepted by

@@ -1,100 +1,117 @@
 # Codex render target — pilot
 
-> This is a shipped Tess OS render target, not certified native-parity support.
-> The driver has not been live-tested against Codex event samples. Treat the
-> files below as a project-level pilot and confirm current Codex behavior in
-> your environment before relying on them. See
+> **C2 — Manual-gated compatibility.** Tess OS has a registered Codex render
+> target and a local `codex exec` driver, but the driver has not been
+> live-tested against native event samples. This is not native-parity or
+> protected-delivery certification. See
 > [Support and status](../../docs/STATUS.md).
 
-Implementation: `CodexRenderTarget` in `.tess/bin/tessctl`
-(`name = "codex"`, registered in `RENDER_TARGETS`).
+Implementation: `CodexRenderTarget` and `CodexExecDriver` in
+`.tess/bin/tessctl` (`codex` in `RENDER_TARGETS` and `RUN_DRIVERS`).
 
-## What it renders
+## Evidence-backed surface
 
-| Live path | Compiled from |
+| Surface | Current behavior |
 |---|---|
-| `AGENTS.md` | `render_agents_md()` — SHARED with the `generic` target (see below) |
-| `.codex/prompts/*.md` | one per `.tess/core/commands/*.md` command body (the same 26 files the claude-code target restores to `.claude/commands/*.md`), mirrored verbatim through `apply_token_sub()` |
-| `.codex/config.toml` | `.tess/core/templates/agents-md/codex-config.toml.tpl` — `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"` |
+| `AGENTS.md` | Durable repository guidance rendered by `render_agents_md()`. The generic target renders the same bytes. |
+| `.codex/config.toml` | Project settings rendered from `.tess/core/templates/agents-md/codex-config.toml.tpl`. Codex considers project configuration only for a project the operator has marked trusted. |
+| `codex exec` driver | `tessctl run --driver codex` invokes a local `codex exec --experimental-json` process and can pass an output schema. The event parser remains provisional until live samples are tested. |
+| `.codex/prompts/*.md` | Legacy/deprecated compatibility mirrors of `.tess/core/commands/*.md`. Tess OS still renders and drift-checks them, but Codex does not discover them from the repository. |
 
-`CodexRenderTarget.expected_live_bytes()` and `render_generated_paths()`
-implement the interface's drift-checking hooks for all three; see
-`_check_untracked_render_generated()` in `.tess/bin/tessctl` for how
-`.codex/prompts/*.md` gets drift-checked without an individual `tess.lock`
-entry (the underlying `.tess/core/commands/*.md` source is already
-base_sha-pinned by the claude-code surface's own `.claude/commands/**`
-entries — see that function's docstring for the full reasoning).
+The target's `expected_live_bytes()` and `render_generated_paths()` methods
+keep all generated files deterministic and drift-checked. That implementation
+fact does not turn every generated file into a Codex-native surface.
+
+## Durable Codex surfaces today
+
+- **`AGENTS.md`** is the repository-scoped location for durable instructions,
+  commands to run, verification expectations, and project conventions.
+- **`.codex/config.toml`** is the repository-scoped configuration fragment.
+  It is considered only for a trusted project, and its `approval_policy` and
+  `sandbox_mode` values do not grant review authority or branch protection.
+- **`codex exec`** is the actual process boundary used by the Tess OS driver.
+  It fails clearly if the `codex` binary is absent. A clean process exit is
+  currently treated conservatively because native event samples have not yet
+  been added to the conformance evidence.
+- **Codex skills**, where available, are the preferred reusable-workflow
+  surface. This adapter does not currently render or install Codex skills.
+
+## Legacy custom-prompt artifacts
+
+Codex custom prompts are deprecated. Their loader is home-only and reads
+Markdown files placed directly at the top level of `$CODEX_HOME/prompts`
+(normally `~/.codex/prompts`). It does not discover this project's
+`.codex/prompts` directory.
+
+Therefore:
+
+- `.codex/prompts/*.md` is a legacy artifact-preservation surface, not native
+  prompt integration;
+- Tess OS does not write outside the project to install personal prompts;
+- a directory symlink into a nested home subdirectory is not a working
+  top-level prompt installation and is not recommended; and
+- new durable behavior belongs in `AGENTS.md`, trusted-project
+  `.codex/config.toml`, or a Codex skill where the workflow fits.
+
+See OpenAI's
+[Custom prompts](https://learn.chatgpt.com/docs/custom-prompts) documentation
+for the deprecated personal-prompt boundary. No prompt-installation recipe is
+provided here because the Tess OS adapter does not own a user's home directory.
 
 ## AGENTS.md ownership
 
-`render_agents_md(root)` takes **no harness argument** — it produces
-byte-identical output whether called from `CodexRenderTarget` or
-`GenericRenderTarget`. This is deliberate: AGENTS.md is a single,
-conventionally-named root file; if an install ever enables both `codex` and
-`generic` at once (unusual, not forbidden), there is no ordering hazard —
-both targets agree on the same bytes, so whichever renders "last" changes
-nothing. Each target's *companion* artifacts (`.codex/prompts/**` +
-`.codex/config.toml` for `codex`; `prompts/**` for `generic`) are where they
-actually differ.
-
-## Using the rendered output today
-
-- **AGENTS.md** — Codex CLI reads this natively at the project root; nothing
-  further required.
-- **`.codex/config.toml`** — Codex only loads a project-scoped
-  `.codex/config.toml` for a project you have explicitly marked *trusted*
-  ([Codex config reference](https://developers.openai.com/codex/config-reference)).
-  An untrusted project ignores it entirely, so the shipped
-  `approval_policy`/`sandbox_mode` defaults can only ever narrow behavior
-  below whatever your own `~/.codex/config.toml` already allows.
-- **`.codex/prompts/*.md`** — Codex's custom-prompt loader currently reads
-  only `$CODEX_HOME/prompts` (defaults to `~/.codex/prompts/`); project-scoped
-  prompt discovery (reading `.codex/prompts/` at the project root) is not yet
-  shipped upstream — tracked at
-  [openai/codex#9848](https://github.com/openai/codex/issues/9848). Until it
-  lands, symlink or copy this project's `.codex/prompts/` into
-  `~/.codex/prompts/` to use them as native `/name` prompts today:
-  ```sh
-  ln -s "$(pwd)/.codex/prompts" ~/.codex/prompts/tess-os
-  ```
-  This is exactly why `tessctl` renders into `.codex/prompts/` (project-root,
-  containment-respecting) rather than writing to `~/.codex/prompts/`
-  directly — `guarded_write`'s C1 containment check refuses any path that
-  resolves outside the project root, by design, regardless of target.
+`render_agents_md(root)` takes no harness argument. `CodexRenderTarget` and
+`GenericRenderTarget` intentionally produce byte-identical `AGENTS.md` output,
+so enabling both does not create an ordering conflict. Their companion
+artifacts differ: Codex renders trusted-project configuration and legacy
+prompt mirrors, while generic renders plain `prompts/*.md` files.
 
 ## Enabling this target
 
-Not enabled by default (see `tess.manifest.json`'s `render_targets._doc` —
-the future harness-select wizard axis is meant to make this choice
-per-install, not the engine). Preview it any time with
-`tessctl render --target codex`, or opt in permanently by adding `"codex"`
-to `tess.manifest.json`'s `render_targets.enabled` list.
+Codex is registered but not enabled by default. Inspect the registry and render
+a one-time preview with:
 
-## Determinism and idempotency
+```bash
+./tessctl render --list-targets
+./tessctl render --target codex
+./tessctl doctor
+./tessctl verify
+```
 
-Both hold for the same reason they hold for `claude-code`
-(`adapters/claude-code/README.md`): every artifact is a pure function of
-`.tess/core/**` bytes + operator state, with no absolute/per-machine path
-baked into rendered content. See `tests/test_render_targets_codex_generic.py`
-for the direct proof (two independent projects with identical core content
-render byte-identical `AGENTS.md` and `.codex/prompts/*.md`; two consecutive
-`render()` calls on one project produce identical bytes both times).
+That command produces the durable `AGENTS.md` and `.codex/config.toml` files
+plus the legacy prompt mirrors described above. It does not permanently enable
+the target.
 
-## Capability tier
+There is no `enable-target` CLI command in this build. To opt in for future
+unscoped `tessctl render` and update cycles, add `"codex"` to the existing
+`tess.manifest.json` list without removing another target unless that is your
+explicit intent:
 
-Tier B (adapters/README.md "Capability tiers"): Codex has no in-session
-subagent tool the way Claude Code / Gemini do — process fan-out via
-`codex exec` conducts a crew instead of native sub-agent dispatch. This
-target only renders doctrine + prompt artifacts; it does not (and cannot)
-change how Codex itself composes a crew from an orchestrator's plan.
+```json
+"render_targets": {
+  "enabled": ["claude-code", "codex"]
+}
+```
 
-## Doctrine profile (G3, 2026-07-08)
+Then run:
 
-`CodexRenderTarget.doctrine_profile == "worker"` (see `adapters/README.md`
-"Doctrine profile"). `AGENTS.md`'s payload is deliberately lean (~40-60
-rendered lines): environment/gate facts + the ~5-line hard floor, zero
-orchestration doctrine (no Rule Zero, no outcome-orchestrator routing, no
-26-row command table) — a 2026-07-07 proving-ground benchmark measured that
-exact payload as harmful when mounted into a single-agent harness like
-Codex. `_check_worker_profile_denylist()` (wired into `doctor`/`verify`/
-`lock --check`) fails loud if orchestration doctrine ever leaks back in.
+```bash
+./tessctl render
+./tessctl doctor
+./tessctl verify
+```
+
+These commands render files and check local integrity. They do not create a
+verifier, approval, required Git check, or protected workflow.
+
+## Determinism and doctrine profile
+
+The target is deterministic and idempotent: its artifacts are functions of
+`.tess/core/**` plus operator state, with no machine-specific absolute path
+embedded. Tests cover byte-identical independent renders, repeat renders, and
+drift detection.
+
+`CodexRenderTarget.doctrine_profile == "worker"`. The rendered `AGENTS.md`
+stays deliberately lean and does not claim Claude Code-style in-session
+subagent dispatch. Process fan-out, when used, happens through the separately
+bounded `codex exec` driver rather than a native Tess OS subagent API.
