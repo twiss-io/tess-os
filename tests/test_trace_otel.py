@@ -469,8 +469,12 @@ def test_gate_pre_push_stdin_protocol_appends_event(trace_repo, run_cli, engine)
     events = _fallback_events(trace_repo)
     gate_events = [e for e in events if e["action"] == "gate.pre-push"]
     assert len(gate_events) == 1
-    assert gate_events[0]["outcome"] == "block"
-    assert engine.schema_validate(gate_events[0], engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
+    event = gate_events[0]
+    assert event["outcome"] == "error"
+    assert event["exit_code"] == 1
+    assert any("REMOTE_BASE_REQUIRED" in reason for reason in event["reasons"])
+    assert "REMOTE_BASE_REQUIRED" in r.stdout + r.stderr
+    assert engine.schema_validate(event, engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
 
 
 def test_validate_valid_and_invalid_and_missing_file_outcomes(trace_repo, run_cli, engine):
