@@ -44,6 +44,29 @@ the harness performs no provider calls and writes no repository state. It
 checks schema shape plus repository-local evidence-pointer containment and
 existence; it does not certify a provider's live behavior.
 
+## Local advisory check
+
+From a source checkout, run:
+
+```sh
+python3 -m tools.validate_adapter_manifests --root . --json
+```
+
+The result is stable JSON with `"advisory": true`, `"valid"`, and a sorted
+`"findings"` list. Exit `0` means the local advisory records are structurally
+consistent; exit `1` means they are not. The checker accepts exactly the four
+canonical manifests, rejects duplicate JSON keys, symlink/non-regular inputs
+and evidence, and compares the fixed claims to literal registry keys parsed
+from `.tess/bin/tessctl` with Python AST—without importing or executing that
+source.
+
+It is strictly read-only and offline: no provider calls, credentials,
+subprocesses, writes, mutation flag, runtime integration, policy decision, or
+gate integration exists. A passing result is neither an approval nor C4
+certification. It proves literal-declaration parity and reports detected direct
+reflective access; it does not prove arbitrary runtime data flow or semantic
+behavior.
+
 ## Promotion rule
 
 Promotion changes documentation and evidence first; it does not change a
