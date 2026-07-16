@@ -57,6 +57,65 @@ stdin explicitly rejects ref deletions because path/blob evidence does not bind
 ref topology. Multi-ref and multi-push policy semantics are unchanged: A14
 remains an open Xavier-owned adoption decision.
 
+## Hard-floor sign-off v2: exact revision binding
+
+Credentials, money movement, destructive production-data operations, and
+client-external factual claims need a distinct operator sign-off in addition
+to any ordinary verifier verdict. The gate accepts only sign-off schema v2.
+Legacy v1 or unversioned JSON is replayable and is rejected.
+
+A sign-off file cannot contain the commit id of the same commit whose tree
+contains that file: Git computes the commit id from the tree, which would make
+the value self-referential. Tess OS resolves this with a two-commit invariant:
+
+```text
+event BASE
+  -> one or more reviewed payload commits
+  -> payload HEAD
+  -> exactly one signoff-only attestation commit (attestation HEAD)
+```
+
+The attestation HEAD must have exactly one parent, and that parent must equal the
+signed `payload_head_sha`. Its complete diff must be exactly the canonical
+`.tess/gate/signoffs/<rule-id>.signoff.json` path set required by the payload;
+no code, policy, key, verdict, rename, deletion, symlink, type swap, or extra
+file may share the commit. If two hard-floor rules match, both sign-offs must
+be introduced or updated atomically in that same child. Merge commits,
+multi-head pushes, a later commit of any kind, or editing a sign-off in another
+child invalidates the attestation.
+
+The shipped ordinary security rule also covers `.tess/gate/signoffs/**`.
+Requiring a separate payload-committed verdict for the final v2 sign-off blob
+would create another impossible cycle: the verdict must hash the future
+sign-off, while the sign-off must contain the commit id that includes the
+verdict. The engine therefore removes only the exact BASE-derived required
+sign-off paths from ordinary verdict coverage, and only after the complete
+child passes topology, schema, binding, time, immutable-key, and signature
+checks. This is atomic: one invalid sign-off yields no exemption. Candidate
+rules, keys, globs, directory prefixes, extra signoff-looking files, and
+caller input cannot add exempt paths. Governed payload files and every other
+security-tier path still require their ordinary covering verdicts.
+
+Before GPG verification, each signed artifact must exactly match:
+
+- `schema_version: 2`;
+- `repository_id` from immutable BASE policy;
+- the effective rule id, category, and canonical rule SHA-256;
+- the exact immutable `base_sha` and reviewed `payload_head_sha`; and
+- the complete matched path set and each regular file's Git blob id.
+
+`authorized_at` and `expires_at` use strict UTC RFC3339 timestamps. The signing
+command supplies a one-hour expiry when it is omitted; the gate permits no
+more than 24 hours, allows at most five minutes of future clock skew, and
+rejects expired attestations. Signature keys and their exact public bytes
+still come only from immutable BASE policy/tree state. Candidate key rollback
+cannot erase a BASE revocation.
+
+This topology is intentionally strict and currently technical. A future Trust
+Center may make the user-present ceremony easier, or use a separately secured
+external-attestation channel, but it must preserve these bindings. Git notes
+and candidate-controlled storage are not trusted by the current design.
+
 ## Safe diagnostics
 
 In an isolated, non-production clone, these commands inspect the existing

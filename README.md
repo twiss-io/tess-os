@@ -110,6 +110,14 @@ Pre-push stdin also rejects ref deletions because blob/path review evidence does
 not bind ref-topology deletion. This does not adopt a multi-ref or multi-push
 policy: A14 remains an open Xavier-owned policy/topology decision.
 
+Hard-floor operator sign-offs use a stricter two-commit shape: a reviewed
+payload commit followed by one single-parent commit containing only the full
+required sign-off file set. Schema v2 binds immutable BASE repository identity,
+the payload parent, effective policy rule, exact governed path/blob manifest,
+and a short validity window before checking the BASE-held signing key. This
+prevents a valid signature from being replayed onto another repository,
+revision, rule, or artifact. See [Gate operation and custody](docs/GATE_QUICKSTART.md#hard-floor-sign-off-v2-exact-revision-binding).
+
 ### Safe evaluation
 
 You may inspect the reviewed source and run read-only diagnostics in an

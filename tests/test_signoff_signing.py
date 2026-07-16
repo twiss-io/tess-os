@@ -39,6 +39,7 @@ import json
 import os
 import shutil
 import subprocess
+import datetime
 from pathlib import Path
 
 import pytest
@@ -91,12 +92,20 @@ def _commit_all(root, message):
 
 
 def _base_signoff(rule_id="money", category="money_movement", authorized_by="Xavier"):
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     return {
+        "schema_version": 2,
+        "repository_id": "test/tess-os",
         "rule_id": rule_id,
         "category": category,
+        "effective_rule_sha256": "a" * 64,
+        "base_sha": "1" * 40,
+        "payload_head_sha": "2" * 40,
+        "artifact_hashes": {"payments/charge.py": "3" * 40},
         "authorized_by": authorized_by,
         "rationale": "Reviewed out-of-band; approved.",
-        "authorized_at": "2026-07-08T00:00:00Z",
+        "authorized_at": now.isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -104,6 +113,7 @@ def _policy_dict(hard_floor_globs, signoff_keys):
     return {
         "policy": {
             "version": 1,
+            "repository_id": "test/tess-os",
             "rules": [],
             "hard_floor_rules": [{
                 "id": "money",

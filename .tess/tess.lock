@@ -6017,9 +6017,9 @@ files:
   .tess/core/contracts/policy.schema.json:
     status: core-managed
     tier: security
-    base_sha: sha256:6c8560295c952c3661c8f96b5f216957a5d15fbd69e5d203a591f8a504981324
+    base_sha: sha256:a7e731d4ec3c2b3a149bf8cf25331f80513abaf4646ef8b9d908f34b5149ae13
     live_path: core/contracts/policy.schema.json
-    last_updated: '2026-07-06T22:50:20.142367Z'
+    last_updated: '2026-07-16T00:00:00.000000Z'
   .tess/core/contracts/mission.schema.json:
     status: core-managed
     tier: normal
@@ -6035,6 +6035,6 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:9f055571572cda7b20b15a5e847d4191b4153e0e2b098d52ad8a61f413601fda
+    base_sha: sha256:737d7280b45cf1ab90cc052c23767bfcd2095d3dd7badd1c560e4fdd0fbd7b6a
     live_path: core/policy/policy.yaml
-    last_updated: '2026-07-06T22:50:20.142367Z'
+    last_updated: '2026-07-16T00:00:00.000000Z'

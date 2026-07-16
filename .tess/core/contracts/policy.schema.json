@@ -13,6 +13,13 @@
           "minimum": 1,
           "description": "Policy schema revision the instance targets."
         },
+        "repository_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "description": "Stable host-independent owner/repository identity (for example twiss-io/tess-os). Hard-floor sign-off v2 compares the artifact's repository_id only with this field from the immutable event BASE policy, before signature verification. Candidate policy cannot introduce or replace its own repository identity for the revision it is trying to authorize. Optional for policies with no active hard-floor clearance workflow; when absent at BASE, every hard-floor sign-off fails closed."
+        },
         "rules": {
           "type": "array",
           "items": { "$ref": "#/$defs/PathRule" },
@@ -31,7 +38,7 @@
         "signoff_keys": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
-          "description": "honesty-capstone-audit-2026-07-08 §3-d FIX — the hard-floor SIGN-OFF ALLOWED-KEY SET: a registered map of operator-identity -> public key the gate trusts to authenticate a `.tess/gate/signoffs/<rule-id>.signoff.json` artifact's `signature` block. Reuses the EXACT SAME entry shape as `verifier_keys` (`VerifierKeyEntry`: fingerprint + public_key_file) and the same isolated-GNUPGHOME/C3-exact-fingerprint/C1-containment trust model `_gate_verify_verdict_signature` already applies — but keyed by the sign-off's `authorized_by` field, NOT by one of the six named AI verifiers: a hard-floor sign-off is guardrails.md Rule 18's human-operator escape valve, so `authorized_by` names an arbitrary project-specific human identity (e.g. an operator's name), not a verifier persona, and this map's keys are DELIBERATELY UNCONSTRAINED to any fixed enum (unlike `verifier_keys`, whose keys `_lint_policy` restricts to the six named verifiers). OPTIONAL at the schema level, but — same 'fail-closed by omission, not fail-open' posture as `verifier_keys` — with NO entry for a given `authorized_by` name, no sign-off can ever authenticate as that name, so it can never clear a hard floor. Before this fix, `.tess/gate/signoffs/**` was validated by JSON SHAPE ALONE (five non-empty fields, no signature, no authentication) — any agent able to write a file could forge a hard-floor clearance; this closes that gap the same way Phase 2b closed the equivalent gap for verdicts."
+          "description": "Hard-floor SIGN-OFF ALLOWED-KEY SET: operator identity -> public key. Sign-off schema v2 is revision-bound and short-lived: the immutable event HEAD must be a single-parent signoff-only attestation commit; its signed artifact binds repository_id from immutable BASE, the exact event base, exact reviewed payload parent, effective rule/category, and every matched path/blob hash. V1/unversioned artifacts are rejected. Signature verification still uses immutable BASE key bytes, isolated GNUPGHOME, exact fingerprint matching, and current expiry/revocation status. OPTIONAL at schema level but fail-closed by omission."
         },
         "renderer_admission": {
           "$ref": "#/$defs/RendererAdmission",

@@ -95,6 +95,10 @@
 #       artifact AND signed by a registered operator key.
 policy:
   version: 1
+  # Stable sign-off scope identity. The ship gate trusts only this value from
+  # immutable BASE policy; a candidate cannot rename itself and replay a
+  # clearance issued for another repository.
+  repository_id: twiss-io/tess-os
 
   # Immutable renderer admission inventory. Bootstrap truth: this inventory
   # is NOT authority for the PR that first introduces it because that PR's
@@ -335,6 +339,20 @@ policy:
   #   .tess/gate/signoffs/ edit] as tamper and fails closed": writing a
   #   sign-off CLEARED the floor, it did not trip anything.
   #
+  #   Schema v2 also closes cross-revision replay. A valid sign-off binds
+  #   this repository_id from immutable BASE, the exact event BASE, the
+  #   exact reviewed payload parent, the effective rule/category, and every
+  #   matched path's immutable Git blob id. The event HEAD must be a
+  #   single-parent commit changing exactly the complete required sign-off
+  #   path set and nothing else. V1/unversioned artifacts, merge/multi-head
+  #   events, later commits, extra paths, symlinks/type swaps, expired
+  #   attestations, and TTLs over 24 hours all fail closed before GPG.
+  #   After every BASE-derived required sign-off validates, only those exact
+  #   canonical files are removed from ordinary verdict matching. This
+  #   narrowly breaks the payload-SHA/signoff-blob/verdict-hash cycle; it is
+  #   atomic and never extends to a glob, directory, candidate-added rule,
+  #   candidate key, or extra signoff-looking path.
+  #
   #   Until a real entry exists here for a given `authorized_by` name, NO
   #   signature can ever verify for that name (there is no key to check it
   #   against), so a sign-off claiming that name can NEVER clear a hard floor
@@ -367,11 +385,11 @@ policy:
         satisfiable by a verifier's verdict alone — `tessctl gate` requires an
         explicit human sign-off artifact at
         .tess/gate/signoffs/<id>.signoff.json regardless of any verdict.
-        honesty-capstone-audit-2026-07-08 §3-d FIX: that sign-off artifact
-        must now ALSO carry a signature that verifies against a registered
-        key in signoff_keys below — an unsigned/hand-authored/forged
-        sign-off can no longer clear this floor (see signoff_keys' own
-        custody-boundary comment).
+        The artifact must use schema v2, bind the exact immutable payload
+        parent and full matched path/blob set, remain within its short
+        validity window, and carry a signature verified against immutable
+        BASE signoff_keys bytes. Unsigned, v1, stale, replayed, expired, or
+        candidate-key-authenticated sign-offs cannot clear this floor.
       globs:
         - "**/*.env"
         - "**/*.env.*"

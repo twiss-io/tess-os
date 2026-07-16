@@ -17,6 +17,25 @@ Accordingly, `tessctl verdict keygen` is disabled. It exits with
 `TRUST_BOOTSTRAP_REQUIRED` before it invokes GPG or writes a key, policy
 file, or lockfile. It is not a normal onboarding path.
 
+Hard-floor sign-offs add a second independent constraint: schema v2 binds a
+short-lived operator signature to immutable BASE repository identity, the
+exact reviewed payload parent, the effective hard-floor rule, and every
+matched path/blob id. The attestation HEAD is a single-parent, signoff-only
+child of the reviewed payload. It is distinct from any CI event/evaluation
+merge commit, whose parent and tree topology must be validated separately.
+This avoids an impossible self-reference (a file inside a commit cannot also
+contain that same commit's hash) while ensuring any extra or subsequent commit
+invalidates the sign-off. Signature verification imports only the established
+public-key bytes from immutable BASE, including any revocation material.
+
+For the same reason, an ordinary verdict committed in the payload cannot hash
+the future sign-off blob without creating a second cycle. Only after all
+BASE-derived required v2 sign-offs validate does the gate exempt those exact
+regular-file paths from ordinary verdict matching. The exemption is never a
+glob or directory rule and is never derived from candidate policy or caller
+input. A partial, candidate-added, extra, renamed, symlinked, or invalid
+attestation publishes no exemption.
+
 ## Why this is necessary
 
 An automated candidate can otherwise generate a private key, add its public
@@ -40,6 +59,12 @@ wizard that silently creates authority.
 | Permitted local action | Read-only explanation and verification of an already-established public registration |
 | Forbidden action | Generate a verifier private key, register a public key, sign a verdict, edit policy, or re-pin a lockfile |
 | Candidate-gate result | Protected changes remain blocked until an independently anchored base revision contains the verifier registration |
+
+The Trust Center must also treat the payload/signoff split as one protected
+operation: present the exact repository, BASE, payload commit, rule, paths,
+blob hashes, and expiry to the human custodian; then create a signoff-only
+child. It must restart the review if the payload changes and must never hide an
+extra file in the attestation commit.
 
 The Trust Center must not claim that it has enabled protection until the
 repository host enforces the gate as a required status check. A green local
