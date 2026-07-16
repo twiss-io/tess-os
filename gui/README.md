@@ -54,7 +54,10 @@ node /path/to/instance/gui/bin/tess-gui.mjs --dir /path/to/instance
 
 ## Requirements
 
-- Node.js >= 18
+- A supported Node.js LTS release: Node.js 22.13.0 or newer on the 22.x line,
+  or Node.js 24.x. The GUI test dependency (`jsdom@29`) does not support the
+  older Node.js versions previously claimed here, and Node.js 18 and 20 are
+  end-of-life.
 - The Claude Code CLI installed and already logged in
   (`claude auth status` should show you as authenticated)
 - Minimum supported CLI version: **2.0.0**. `tess-gui` runs a startup

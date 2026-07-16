@@ -17,7 +17,7 @@
     "NOTICE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": "^22.13.0 || ^24.0.0"
   },
   "scripts": {
     "start": "node bin/tess-gui.mjs",
