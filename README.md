@@ -46,7 +46,9 @@ Two production prerequisites remain unresolved:
 
 1. The first verifier/sign-off trust anchor needs an external, human-owned
    custody design. Candidate repository content must never establish the
-   authority that approves itself.
+   authority that approves itself. Verifier review and human hard-floor
+   sign-off require two distinct primary keys even for a solo owner; owner
+   approval alone is not independent review.
 2. GitHub must make the real gate and CI results source-bound required checks,
    allow merge commits only, require the branch to be current, and disable
    incompatible squash/rebase/linear-history/merge-queue paths before the

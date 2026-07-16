@@ -22,6 +22,14 @@ schema that enforce that rule are mirrored and security-pinned in
 immutable BASE Git blobs rather than copied into the framework mirror. This
 distinction is deliberate: candidate checkout bytes are never trust input.
 
+Verifier-review and human hard-floor authority must use two distinct primary
+keys. Normalized fingerprints and immutable public-key bytes are unique within
+each registry and disjoint across both registries; aliases and cross-role key
+reuse fail closed. This remains true when one person is the only repository
+owner. A solo owner may perform both custody roles with two separately held
+primary keys, but that owner's own approval is not independent review and Tess
+OS must not label it as such.
+
 Accordingly, `tessctl verdict keygen` is disabled. It exits with
 `TRUST_BOOTSTRAP_REQUIRED` before it invokes GPG or writes a key, policy
 file, or lockfile. It is not a normal onboarding path.

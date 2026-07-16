@@ -3575,6 +3575,23 @@ def _gate_validate_verifier_key_file_rel(
     return key_file, None
 
 
+def _gate_normalize_primary_fingerprint(value: object) -> str | None:
+    """Canonical full primary-key fingerprint used by every gate registry.
+
+    Policy schema requires uppercase, unseparated 40-hex values.  Lint and
+    immutable-BASE admission additionally normalize case plus common
+    whitespace/colon display separators before checking uniqueness, so aliases
+    cannot evade the one-primary-key/one-authority rule through presentation
+    differences.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"[\s:]+", "", value).upper()
+    if not _FULL_FP_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
 def _gate_verify_verdict_signature(
     root: Path, policy_instance: dict, instance: dict,
     trusted_verifier_key_blobs: dict[str, bytes] | None = None,
@@ -3644,8 +3661,8 @@ def _gate_verify_verdict_signature(
             f"(fail-closed — an unregistered verifier's signature can never verify)"
         )
 
-    fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
-    if not _FULL_FP_RE.match(fingerprint):
+    fingerprint = _gate_normalize_primary_fingerprint(key_entry.get("fingerprint"))
+    if fingerprint is None:
         return False, (
             f"policy.verifier_keys[{verifier!r}].fingerprint is not a valid 40-hex-char "
             f"fingerprint"
@@ -3869,8 +3886,8 @@ def _gate_verify_signoff_signature(
             f"can never verify)"
         )
 
-    fingerprint = str(key_entry.get("fingerprint", "")).replace(" ", "").upper()
-    if not _FULL_FP_RE.match(fingerprint):
+    fingerprint = _gate_normalize_primary_fingerprint(key_entry.get("fingerprint"))
+    if fingerprint is None:
         return False, (
             f"policy.signoff_keys[{authorized_by!r}].fingerprint is not a valid 40-hex-char "
             f"fingerprint"
@@ -9011,9 +9028,13 @@ def _lint_policy(instance) -> list:
                     f"$.policy.renderer_admission.family_globs: {family!r} has no canonical mapping"
                 )
 
+    fingerprint_claims: dict[str, list[str]] = {}
+    key_path_claims: dict[str, list[str]] = {}
+
     verifier_keys = policy.get("verifier_keys")
     if isinstance(verifier_keys, dict):
         for name, entry in verifier_keys.items():
+            label = f"policy.verifier_keys[{name!r}]"
             if name not in VERIFIER_NAMES:
                 errors.append(
                     f"$.policy.verifier_keys: {name!r} is not one of the six named verifiers "
@@ -9022,25 +9043,66 @@ def _lint_policy(instance) -> list:
                     f"same six names)"
                 )
             if isinstance(entry, dict):
-                _key_file, path_reason = _gate_validate_verifier_key_file_rel(
+                fingerprint = _gate_normalize_primary_fingerprint(
+                    entry.get("fingerprint"),
+                )
+                if fingerprint is None:
+                    errors.append(
+                        f"$.policy.verifier_keys[{name!r}].fingerprint: expected one full "
+                        "40-hex primary fingerprint"
+                    )
+                else:
+                    fingerprint_claims.setdefault(fingerprint, []).append(label)
+                key_file, path_reason = _gate_validate_verifier_key_file_rel(
                     str(name), entry.get("public_key_file"),
                 )
                 if path_reason:
                     errors.append(
                         f"$.policy.verifier_keys[{name!r}].public_key_file: {path_reason}"
                     )
+                elif key_file is not None:
+                    key_path_claims.setdefault(key_file, []).append(label)
 
     signoff_keys = policy.get("signoff_keys")
     if isinstance(signoff_keys, dict):
         for name, entry in signoff_keys.items():
+            label = f"policy.signoff_keys[{name!r}]"
             if isinstance(entry, dict):
-                _key_file, path_reason = _gate_validate_signoff_key_file_rel(
+                fingerprint = _gate_normalize_primary_fingerprint(
+                    entry.get("fingerprint"),
+                )
+                if fingerprint is None:
+                    errors.append(
+                        f"$.policy.signoff_keys[{name!r}].fingerprint: expected one full "
+                        "40-hex primary fingerprint"
+                    )
+                else:
+                    fingerprint_claims.setdefault(fingerprint, []).append(label)
+                key_file, path_reason = _gate_validate_signoff_key_file_rel(
                     str(name), entry.get("public_key_file"),
                 )
                 if path_reason:
                     errors.append(
                         f"$.policy.signoff_keys[{name!r}].public_key_file: {path_reason}"
                     )
+                elif key_file is not None:
+                    key_path_claims.setdefault(key_file, []).append(label)
+
+    for fingerprint, claims in fingerprint_claims.items():
+        if len(claims) > 1:
+            errors.append(
+                "$.policy key registries: PRIMARY_FINGERPRINT_REUSE_FORBIDDEN — "
+                f"normalized primary fingerprint {fingerprint} is reused by "
+                f"{sorted(claims)}. Verifier review and human sign-off require distinct "
+                "primary keys, including in solo-owner mode"
+            )
+    for key_file, claims in key_path_claims.items():
+        if len(claims) > 1:
+            errors.append(
+                "$.policy key registries: PRIMARY_KEY_PATH_REUSE_FORBIDDEN — "
+                f"public_key_file {key_file!r} is reused by {sorted(claims)}; aliases "
+                "must not share key material"
+            )
     return errors
 
 
@@ -11461,89 +11523,146 @@ def _gate_renderer_admission_prepare(
     return sorted(changed), reasons
 
 
+def _gate_load_baseline_key_registry_state(
+    root: Path, baseline_instance: dict | None, baseline_ref: str | None,
+) -> dict[str, tuple[dict[str, bytes], dict[str, str]]]:
+    """Load both immutable-BASE key registries as one disjoint trust domain.
+
+    Verifier-review authority and human hard-floor authority are different
+    roles. A normalized primary fingerprint or the exact public-key bytes may
+    appear only once across both maps, and aliases inside either map are also
+    forbidden. This joint pass prevents two independent wrapper calls from
+    overlooking cross-role key reuse.
+    """
+    state: dict[str, dict[str, dict]] = {
+        "verifier": {"blobs": {}, "errors": {}},
+        "signoff": {"blobs": {}, "errors": {}},
+    }
+    if baseline_instance is None or not baseline_ref:
+        return {
+            role: (bucket["blobs"], bucket["errors"])
+            for role, bucket in state.items()
+        }
+    base_policy = baseline_instance.get("policy") or {}
+    if not isinstance(base_policy, dict):
+        return {
+            role: (bucket["blobs"], bucket["errors"])
+            for role, bucket in state.items()
+        }
+
+    fingerprint_claims: dict[str, list[tuple[str, str]]] = {}
+    byte_claims: dict[str, list[tuple[str, str]]] = {}
+
+    def append_error(role: str, name: str, reason: str) -> None:
+        errors = state[role]["errors"]
+        prior = errors.get(name)
+        errors[name] = f"{prior}; {reason}" if prior else reason
+
+    registries = (
+        (
+            "verifier", "verifier_keys",
+            _gate_validate_verifier_key_file_rel,
+        ),
+        (
+            "signoff", "signoff_keys",
+            _gate_validate_signoff_key_file_rel,
+        ),
+    )
+    for role, policy_key, path_validator in registries:
+        entries = base_policy.get(policy_key)
+        if not isinstance(entries, dict):
+            continue
+        for name, entry in entries.items():
+            if not isinstance(name, str):
+                continue
+            if not isinstance(entry, dict):
+                append_error(
+                    role, name,
+                    f"policy.{policy_key}[{name!r}] is not a mapping in immutable BASE "
+                    "policy — fail-closed",
+                )
+                continue
+
+            fingerprint = _gate_normalize_primary_fingerprint(entry.get("fingerprint"))
+            if fingerprint is None:
+                append_error(
+                    role, name,
+                    f"policy.{policy_key}[{name!r}].fingerprint is not a valid full "
+                    "40-hex primary fingerprint in immutable BASE — fail-closed",
+                )
+            else:
+                fingerprint_claims.setdefault(fingerprint, []).append((role, name))
+
+            key_file, path_reason = path_validator(name, entry.get("public_key_file"))
+            if path_reason:
+                append_error(role, name, path_reason)
+                continue
+            key_bytes, blob_reason = _gate_git_regular_blob_at_ref(
+                root, baseline_ref, key_file,
+            )
+            if blob_reason:
+                append_error(role, name, blob_reason)
+                continue
+            state[role]["blobs"][name] = key_bytes
+            byte_digest = hashlib.sha256(key_bytes).hexdigest()
+            byte_claims.setdefault(byte_digest, []).append((role, name))
+
+    def claim_labels(claims: list[tuple[str, str]]) -> list[str]:
+        return sorted(
+            f"policy.{'verifier_keys' if role == 'verifier' else 'signoff_keys'}[{name!r}]"
+            for role, name in claims
+        )
+
+    for fingerprint, claims in fingerprint_claims.items():
+        if len(claims) < 2:
+            continue
+        labels = claim_labels(claims)
+        reason = (
+            "PRIMARY_FINGERPRINT_REUSE_FORBIDDEN: normalized primary fingerprint "
+            f"{fingerprint} is registered to multiple authorities {labels}; verifier "
+            "review and human sign-off require distinct primary keys, including in "
+            "solo-owner mode — immutable BASE fails closed"
+        )
+        for role, name in claims:
+            append_error(role, name, reason)
+
+    for byte_digest, claims in byte_claims.items():
+        if len(claims) < 2:
+            continue
+        labels = claim_labels(claims)
+        reason = (
+            "PRIMARY_KEY_BYTES_REUSE_FORBIDDEN: identical immutable BASE public-key "
+            f"bytes (sha256:{byte_digest}) are registered to multiple authorities "
+            f"{labels}; role or alias reuse fails closed"
+        )
+        for role, name in claims:
+            append_error(role, name, reason)
+
+    for role, bucket in state.items():
+        for name in bucket["errors"]:
+            bucket["blobs"].pop(name, None)
+    return {
+        role: (bucket["blobs"], bucket["errors"])
+        for role, bucket in state.items()
+    }
+
+
 def _gate_load_baseline_verifier_key_blobs(
     root: Path, baseline_instance: dict | None, baseline_ref: str | None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Load each baseline verifier key's bytes from the same BASE tree.
-
-    The returned maps are passed to `_gate_verify_verdict_signature` for a
-    push/CI check. An invalid baseline registration is not silently skipped:
-    its verifier gets an explicit error and every verdict claiming it is
-    denied before GPG can accept any candidate-controlled public-key bytes.
-    """
-    if baseline_instance is None or not baseline_ref:
-        return {}, {}
-    base_policy = (baseline_instance.get("policy") or {})
-    baseline_keys = base_policy.get("verifier_keys") if isinstance(base_policy, dict) else None
-    if not isinstance(baseline_keys, dict):
-        return {}, {}
-
-    blobs: dict[str, bytes] = {}
-    errors: dict[str, str] = {}
-    for verifier, entry in baseline_keys.items():
-        if not isinstance(verifier, str):
-            continue
-        if not isinstance(entry, dict):
-            errors[verifier] = (
-                f"policy.verifier_keys[{verifier!r}] is not a mapping in immutable BASE "
-                f"policy — fail-closed"
-            )
-            continue
-        key_file, path_reason = _gate_validate_verifier_key_file_rel(
-            verifier, entry.get("public_key_file"),
-        )
-        if path_reason:
-            errors[verifier] = path_reason
-            continue
-        key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
-        if blob_reason:
-            errors[verifier] = blob_reason
-            continue
-        blobs[verifier] = key_bytes
-    return blobs, errors
+    """Load disjoint verifier-key authority from immutable BASE."""
+    return _gate_load_baseline_key_registry_state(
+        root, baseline_instance, baseline_ref,
+    )["verifier"]
 
 
 def _gate_load_baseline_signoff_key_blobs(
     root: Path, baseline_instance: dict | None, baseline_ref: str | None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Load hard-floor sign-off key bytes from the same immutable BASE tree.
-
-    This is intentionally symmetric with verifier-key loading. A hard-floor
-    clearance is itself an authorization boundary, so a candidate must not be
-    able to replace a pre-registered operator's key bytes (including by
-    deleting revocation material) while retaining the same policy identity or
-    fingerprint.
-    """
-    if baseline_instance is None or not baseline_ref:
-        return {}, {}
-    base_policy = (baseline_instance.get("policy") or {})
-    baseline_keys = base_policy.get("signoff_keys") if isinstance(base_policy, dict) else None
-    if not isinstance(baseline_keys, dict):
-        return {}, {}
-
-    blobs: dict[str, bytes] = {}
-    errors: dict[str, str] = {}
-    for authorized_by, entry in baseline_keys.items():
-        if not isinstance(authorized_by, str):
-            continue
-        if not isinstance(entry, dict):
-            errors[authorized_by] = (
-                f"policy.signoff_keys[{authorized_by!r}] is not a mapping in immutable "
-                f"BASE policy — fail-closed"
-            )
-            continue
-        key_file, path_reason = _gate_validate_signoff_key_file_rel(
-            authorized_by, entry.get("public_key_file"),
-        )
-        if path_reason:
-            errors[authorized_by] = path_reason
-            continue
-        key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
-        if blob_reason:
-            errors[authorized_by] = blob_reason
-            continue
-        blobs[authorized_by] = key_bytes
-    return blobs, errors
+    """Load disjoint human sign-off authority from immutable BASE."""
+    return _gate_load_baseline_key_registry_state(
+        root, baseline_instance, baseline_ref,
+    )["signoff"]
 
 
 def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
@@ -13154,17 +13273,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip pyyaml
+          python-version: "3.13.7"
 
       - name: Resolve immutable admission objects for this trigger
         id: refs
@@ -13226,6 +13343,32 @@ jobs:
           git cat-file -e "${{ATTESTATION}}^{{commit}}"
           git cat-file -e "${{EVALUATION}}^{{commit}}"
           echo "attestation=$ATTESTATION" >> "$GITHUB_OUTPUT"
+
+      - name: Extract trusted gate dependencies (base ref only)
+        id: trusted_dependencies
+        run: |
+          set -euo pipefail
+          BASE="${{{{ steps.refs.outputs.base }}}}"
+          REQUIREMENTS_REL=".tess/ci/ship-gate-requirements.txt"
+          TRUSTED_DIR="$(mktemp -d)"
+          TRUSTED_REQUIREMENTS="$TRUSTED_DIR/ship-gate-requirements.txt"
+          if git cat-file -e "${{BASE}}:${{REQUIREMENTS_REL}}" 2>/dev/null; then
+            git show "${{BASE}}:${{REQUIREMENTS_REL}}" > "$TRUSTED_REQUIREMENTS"
+            chmod 0444 "$TRUSTED_REQUIREMENTS"
+            echo "requirements_path=$TRUSTED_REQUIREMENTS" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::TRUST_BOOTSTRAP_REQUIRED: immutable BASE has no pinned ship-gate dependency requirements. Refusing candidate-derived or unhashed dependencies; adopt the reviewed bootstrap stack out of band first."
+            exit 1
+          fi
+
+      - name: Install exact trusted gate dependencies
+        run: |
+          python -m pip install \\
+            --disable-pip-version-check \\
+            --no-deps \\
+            --only-binary=:all: \\
+            --require-hashes \\
+            --requirement "${{{{ steps.trusted_dependencies.outputs.requirements_path }}}}"
 
       - name: Extract trusted gate engine (base ref only — never the pushed tree)
         id: trusted_engine

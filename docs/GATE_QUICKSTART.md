@@ -47,6 +47,12 @@ required repository settings are documented in
 NO-MERGE proposal until the parent security stack and GitHub ruleset are
 independently completed.
 
+Verifier verdicts and human hard-floor sign-offs require distinct primary key
+material. The gate rejects normalized fingerprint reuse, identical immutable
+BASE public-key bytes, and aliases within either registry. Even in solo-owner
+mode, use two separately held primary keys; owner approval by itself is not
+independent review and must never be presented as one.
+
 The intended delivery path is:
 
 ```text

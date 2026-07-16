@@ -60,6 +60,9 @@
 # `prod_touching` and needs its own covering, signed Reid/Cyra verdict —
 # closing the "who guards the gate's own trigger" loop the same way
 # `.tess/keys/verifiers/**` already closed "who guards the key registry."
+# The authoritative workflow's hashed runtime requirements below .tess/ci/
+# are governed by the same rule and read only from immutable event BASE.
+# Candidate dependency pins or hashes never evaluate their own revision.
 # See conductor/verdict-signing.md's "Defense-in-depth" section for the
 # complementary, repo-admin-side CODEOWNERS/ruleset recommendation this does
 # NOT replace (a signed verdict is a content control; CODEOWNERS/rulesets are

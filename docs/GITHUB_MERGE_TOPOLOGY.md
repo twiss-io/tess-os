@@ -52,6 +52,33 @@ A hard-floor sign-off must bind `base_sha` to event `before`. A later push,
 changed payload, changed sign-off, conflict-resolution tree, or different
 first parent invalidates the evidence.
 
+## Workflow supply-chain contract
+
+The authoritative workflow pins checkout and Python setup actions to exact
+reviewed commit SHAs and disables checkout credential persistence. It selects
+CPython 3.13.7 exactly. Its only Python runtime package is PyYAML 6.0.3 from a
+binary wheel whose SHA-256 is recorded in
+.tess/ci/ship-gate-requirements.txt. Installation requires hashes, refuses
+dependencies and source distributions, and does not upgrade pip.
+
+The workflow extracts that requirements file from immutable event BASE into a
+temporary path before installation. It never installs a requirements file
+from the candidate checkout. The policy security tier covers .tess/ci/** so a
+future dependency-pin change also needs ordinary review evidence before it can
+become trusted BASE state.
+
+## First-adoption bootstrap
+
+A repository whose BASE predates either the trusted engine or the pinned
+ship-gate requirements receives TRUST_BOOTSTRAP_REQUIRED. The workflow must
+not fall back to candidate engine or dependency bytes.
+
+The first adoption therefore needs an externally reviewed, owner-controlled
+bootstrap commit and matching repository ruleset. That out-of-band adoption
+must be disclosed as bootstrap; it cannot be described as having passed the
+gate it is introducing. Once the stack exists in BASE, every later
+authoritative run uses only that established engine and requirements file.
+
 ## Required GitHub repository settings
 
 The owner must apply all of these together. The workflow cannot safely or
