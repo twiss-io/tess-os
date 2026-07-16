@@ -387,7 +387,19 @@ def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
-    push0 = _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False)
+    # Seed the exact remote ref with an explicit test-only hook bypass so the
+    # normal push below has an immutable remote base to evaluate. First-push
+    # admission itself is covered separately and must fail closed with
+    # REMOTE_BASE_REQUIRED.
+    push0 = _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    )
     assert push0.returncode == 0, f"baseline push should succeed:\n{push0.stdout}\n{push0.stderr}"
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
@@ -404,11 +416,17 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
-    # Seed the same remote ref this test updates below.  Pushing the default
-    # local branch name here and then `HEAD:main` later would make the latter
-    # look like a brand-new ref (empty BASE), which correctly has no trusted
-    # verifier registration under the immutable-base contract.
-    assert _git(e2e_repo, "push", "-u", "origin", "HEAD:main", check=False).returncode == 0
+    # Bootstrap only the immutable remote base needed by this hook E2E. The
+    # tested push below still runs the hook normally.
+    assert _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    ).returncode == 0
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
@@ -447,7 +465,18 @@ def test_e2e_git_push_no_verify_bypasses_local_hook_but_ci_would_still_catch_it(
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     base = _git(e2e_repo, "rev-parse", "HEAD").stdout.strip()
-    assert _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False).returncode == 0
+    # Seed the exact destination ref outside the hook under test. This
+    # preserves fail-closed first-push behavior while giving the later
+    # --no-verify push a real remote base.
+    assert _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    ).returncode == 0
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")

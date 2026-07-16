@@ -723,7 +723,10 @@ def test_pre_push_stdin_protocol_blocks(gate_repo, run_cli):
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
     head = _commit_all(gate_repo, "prod change")
 
-    stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
+    # Exercise the content-policy path against a real immutable remote base.
+    # All-zero first-push rejection is covered independently and must stop at
+    # REMOTE_BASE_REQUIRED before content evaluation.
+    stdin = f"refs/heads/main {head} refs/heads/main {base}\n"
     r = run_cli(gate_repo, "gate", "pre-push", "--json", input_text=stdin)
     assert r.returncode == 1
     payload = json.loads(r.stdout)
