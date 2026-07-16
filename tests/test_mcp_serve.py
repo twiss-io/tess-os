@@ -413,6 +413,104 @@ def test_validate_contract_path_based(mcp_root):
         client.close()
 
 
+def test_validate_contract_path_schema_errors_redact_repository_values(mcp_root):
+    secret = "SENSITIVE-REPOSITORY-VALUE-MUST-NOT-ECHO"
+    brief = dict(_VALID_BRIEF, destructive=False, step=secret)
+    brief_path = mcp_root / "missions" / "m1" / "briefs" / "redact.brief.json"
+    brief_path.parent.mkdir(parents=True)
+    brief_path.write_text(json.dumps(brief), encoding="utf-8")
+
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {
+                "contract_type": "brief",
+                "path": "missions/m1/briefs/redact.brief.json",
+            },
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["valid"] is False
+        assert payload["violations"] == [
+            "contract schema violation 1 (repository value details redacted)"
+        ]
+        assert secret not in json.dumps(resp)
+    finally:
+        client.close()
+
+
+def test_validate_contract_rejects_absolute_path_outside_repository(mcp_root):
+    secret = "OUTSIDE-REPOSITORY-CONTENT-MUST-NOT-ECHO"
+    outside = mcp_root.parent / f"{mcp_root.name}-outside.brief.json"
+    outside.write_text(json.dumps(dict(_VALID_BRIEF, step=secret)), encoding="utf-8")
+
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {"contract_type": "brief", "path": str(outside)},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["valid"] is False
+        assert "inside the repository" in payload["violations"][0]
+        assert payload["file"] == "<repository path>"
+        assert secret not in json.dumps(resp)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("link_kind", ["file", "directory"])
+def test_validate_contract_rejects_symlink_traversal(mcp_root, tmp_path, link_kind):
+    secret = "SYMLINK-TARGET-CONTENT-MUST-NOT-ECHO"
+    outside_dir = tmp_path / f"outside-{link_kind}"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "target.brief.json"
+    outside_file.write_text(json.dumps(dict(_VALID_BRIEF, step=secret)), encoding="utf-8")
+    if link_kind == "file":
+        link = mcp_root / "linked.brief.json"
+        link.symlink_to(outside_file)
+        path_arg = "linked.brief.json"
+    else:
+        link = mcp_root / "linked-dir"
+        link.symlink_to(outside_dir, target_is_directory=True)
+        path_arg = "linked-dir/target.brief.json"
+
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {"contract_type": "brief", "path": path_arg},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["valid"] is False
+        assert "without symlink traversal" in payload["violations"][0]
+        assert secret not in json.dumps(resp)
+    finally:
+        client.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO fixture requires os.mkfifo")
+def test_validate_contract_rejects_special_file_without_blocking(mcp_root):
+    fifo = mcp_root / "contract.fifo"
+    os.mkfifo(fifo)
+
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {"contract_type": "brief", "path": "contract.fifo"},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["valid"] is False
+        assert "regular repository file" in payload["violations"][0]
+    finally:
+        client.close()
+
+
 def test_validate_contract_missing_file_is_infra_error_not_schema_miss(mcp_root):
     client = McpStdio(mcp_root)
     try:

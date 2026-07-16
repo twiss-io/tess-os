@@ -1,0 +1,9 @@
+# Authoritative ship-gate runtime dependency for the follow-on protected
+# workflow's exact CPython 3.13.7 Linux x86_64 runner.
+#
+# The hash is the PyYAML 6.0.3 CPython 3.13 manylinux x86_64 wheel digest
+# recorded in locally cached PyPI primary project metadata.  The workflow
+# follow-on must read this file only from immutable event BASE and install
+# with binary-only, no-dependency, hash-required pip flags.
+PyYAML==6.0.3 \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6

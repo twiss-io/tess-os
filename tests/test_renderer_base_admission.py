@@ -414,6 +414,35 @@ def test_candidate_added_family_input_cannot_escape_base_mapping(engine, tmp_pat
     assert any(added in reason and "matches 0 canonical BASE mappings" in reason for reason in reasons)
 
 
+@pytest.mark.parametrize(
+    "orphan",
+    [
+        ".tess/core/templates/agents-md/orphan.tpl",
+        ".tess/core/templates/agents-md/orphan.md",
+    ],
+)
+def test_candidate_orphan_renderer_lock_row_is_rejected(engine, tmp_path, orphan):
+    """A candidate lock row cannot invent a source that is absent from HEAD."""
+    history = _new_history(tmp_path, engine)
+    lock = _load_lock(history.root)
+    lock["files"][orphan] = {
+        "status": "core-managed",
+        "tier": "normal",
+        "render": None,
+        "base_sha": engine.sha256_bytes(b"invented source bytes\n"),
+        "live_path": OUTPUT,
+    }
+    _save_lock(history.root, lock)
+    head = _commit(history.root, "add orphan renderer lock row")
+
+    _changed, reasons = _admission(engine, history, head)
+
+    assert any(
+        orphan in reason and "orphaned" in reason and "source" in reason
+        for reason in reasons
+    )
+
+
 def test_positive_coherent_upgrade_passes_consistency_but_not_authorization(engine, tmp_path):
     history = _new_history(tmp_path, engine)
     source = b"reviewable coherent renderer upgrade\n"

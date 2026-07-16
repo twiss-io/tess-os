@@ -214,6 +214,7 @@ policy:
         core/contracts/verdict.schema.json), and the gate's own policy surface
         (core/contracts/policy.schema.json, core/policy/**, the verifier
         public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
+        immutable-BASE CI dependency lock at .tess/ci/**, plus the
         gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
         self-gating trap where a PR could keep the required check name while
         neutering its step), PLUS — honesty-capstone-audit-2026-07-08 §3-c/
@@ -234,6 +235,7 @@ policy:
         - core/contracts/policy.schema.json
         - core/policy/**
         - .tess/keys/verifiers/**
+        - .tess/ci/**
         - .github/workflows/**
         - .tess/bin/**
         - tessctl

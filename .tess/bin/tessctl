@@ -63,6 +63,7 @@ from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.
 import argparse
 import ast
 import datetime
+import errno
 import getpass
 import glob
 import hashlib
@@ -10947,6 +10948,22 @@ def _gate_renderer_validate_pair(
         path for path in head_entries if path_matches_globs(path, family_globs)
     }
 
+    # Candidate lock bytes are consistency evidence, never an inventory of
+    # renderer sources.  In particular, a candidate must not be able to add
+    # a plausible-looking lock row under a BASE-owned renderer family when
+    # no source blob with that path exists in the candidate tree.  Such an
+    # orphan was previously ignored because the main loop below is driven by
+    # actual BASE/HEAD source paths rather than lock keys.
+    candidate_family_rows = {
+        path for path in head_rows
+        if isinstance(path, str) and path_matches_globs(path, family_globs)
+    } if isinstance(head_rows, dict) else set()
+    for row_path in sorted(candidate_family_rows - head_sources):
+        reasons.append(
+            f"candidate renderer lock row {row_path!r} is orphaned: immutable BASE "
+            "family ownership requires a regular candidate source at the same path"
+        )
+
     for mapping in config.get("mappings") or []:
         if not isinstance(mapping, dict) or not isinstance(mapping.get("input_glob"), str):
             reasons.append("immutable BASE renderer inventory contains an invalid mapping")
@@ -15788,6 +15805,103 @@ class McpError(Exception):
 # JSON-RPC protocol error rather than a tool result.
 # ---------------------------------------------------------------------------
 
+def _mcp_read_repository_contract(root: Path, path_arg: str) -> tuple[object, str]:
+    """Read one contract through a descriptor-relative, no-follow path walk.
+
+    ``validate_contract`` is a diagnostic interface, not a general local-file
+    reader.  Every component is opened relative to the resolved repository
+    root with ``O_NOFOLLOW``; the final descriptor must be a regular file.
+    Parsing happens from the descriptor's bytes so a later pathname swap
+    cannot redirect a second open outside the repository.
+    """
+    candidate = Path(path_arg)
+    root_resolved = root.resolve()
+    if "\x00" in path_arg or ".." in candidate.parts:
+        raise ContractError(
+            "repository path denied: traversal and non-filesystem path data are not allowed"
+        )
+
+    if candidate.is_absolute():
+        try:
+            relative = candidate.relative_to(root_resolved)
+        except ValueError:
+            raise ContractError(
+                "repository path denied: contract files must be inside the repository"
+            )
+    else:
+        relative = candidate
+
+    parts = relative.parts
+    if not parts or relative == Path("."):
+        raise ContractError(
+            "repository path denied: contract path must name a regular repository file"
+        )
+    if not all(
+        hasattr(os, name)
+        for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC", "O_NONBLOCK")
+    ):
+        raise ContractError(
+            "repository path denied: this platform cannot enforce no-follow repository reads"
+        )
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    directory_fds: list[int] = []
+    file_fd = None
+    try:
+        directory_fds.append(os.open(str(root_resolved), directory_flags))
+        for part in parts[:-1]:
+            directory_fds.append(
+                os.open(part, directory_flags, dir_fd=directory_fds[-1])
+            )
+        file_fd = os.open(parts[-1], file_flags, dir_fd=directory_fds[-1])
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ContractError(
+                "repository path denied: contract path must name a regular repository file"
+            )
+        with os.fdopen(file_fd, "rb", closefd=True) as stream:
+            file_fd = None
+            blob = stream.read()
+    except FileNotFoundError:
+        raise ContractError("file not found: repository contract path")
+    except ContractError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            raise ContractError("file not found: repository contract path")
+        raise ContractError(
+            "repository path denied: contract path must be an accessible regular "
+            "repository file without symlink traversal"
+        )
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for descriptor in reversed(directory_fds):
+            os.close(descriptor)
+
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ContractError("repository contract is not valid UTF-8")
+    try:
+        instance = _parse_contract_instance_text(
+            text, relative.suffix, relative.name,
+        )
+    except ContractError:
+        # YAML parser diagnostics can include source excerpts.  This MCP path
+        # surface never reflects bytes it read from disk back to the caller.
+        raise ContractError("repository contract could not be parsed in its declared format")
+    return instance, relative.as_posix()
+
+
+def _mcp_redact_repository_violations(violations: list) -> list[str]:
+    """Preserve violation count without reflecting repository file values."""
+    return [
+        f"contract schema violation {index} (repository value details redacted)"
+        for index, _violation in enumerate(violations, start=1)
+    ]
+
+
 def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     """validate_contract — same schema+lint pass `tessctl validate` runs
     (cmd_validate, VALIDATE region above): load_contract_schema /
@@ -15814,10 +15928,7 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     if path_arg:
         if not isinstance(path_arg, str):
             raise McpError(JSONRPC_INVALID_PARAMS, "validate_contract: `path` must be a string")
-        file_path = Path(path_arg)
-        if not file_path.is_absolute():
-            file_path = root / file_path
-        label = str(file_path)
+        label = "<repository path>"
     else:
         if not isinstance(fmt_arg, str) or fmt_arg.lower().lstrip(".") not in ("json", "yaml", "yml", "md"):
             raise McpError(
@@ -15831,7 +15942,7 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     try:
         schema = load_contract_schema(root, contract_type)
         if path_arg:
-            instance = load_contract_instance(file_path)
+            instance, label = _mcp_read_repository_contract(root, path_arg)
         else:
             instance = _parse_contract_instance_text(content_arg, "." + fmt_arg.lower().lstrip("."), label)
     except ContractError as e:
@@ -15847,6 +15958,8 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
     violations += _lint_contract(contract_type, instance)
+    if path_arg and violations:
+        violations = _mcp_redact_repository_violations(violations)
     result = {"valid": not violations, "contract_type": contract_type, "file": label, "violations": violations}
     if violations:
         result["classification"] = classify_schema_miss(contract_type, violations)
