@@ -23,10 +23,10 @@ jobs:
         python-version: ['3.9', '3.12']
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -62,17 +62,17 @@ jobs:
         node-version: ['18', '24']
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Node ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: create-tess/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run test suite (node --test)
         run: npm test
@@ -82,22 +82,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      GITLEAKS_VERSION: '8.30.1'
+      # Official v8.30.1 release checksum for gitleaks_8.30.1_linux_x64.tar.gz.
+      # Source: gitleaks_8.30.1_checksums.txt and GitHub's release-asset digest.
+      GITLEAKS_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
       # Run the gitleaks CLI directly. The gitleaks-action@v2 wrapper now requires
       # a paid GITLEAKS_LICENSE secret for GitHub *organization*-owned repos (this
       # repo is org-owned), so the wrapper is not used. The CLI is free and applies
-      # the committed .gitleaks.toml allowlist to the full git history.
-      - name: Install gitleaks
+      # the committed .gitleaks.toml allowlist to the full git history. The
+      # release archive is downloaded first and extracted only after its official
+      # pinned SHA-256 has been verified.
+      - name: Install checksum-verified gitleaks
         run: |
-          GITLEAKS_VERSION=8.30.1
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
-          gitleaks version
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          bin_dir="$RUNNER_TEMP/gitleaks-bin"
+          mkdir -p "$bin_dir"
+          curl -fsSLo "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$bin_dir" gitleaks
+          echo "$bin_dir" >> "$GITHUB_PATH"
+          "$bin_dir/gitleaks" version
 
       - name: gitleaks (full history)
         run: gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1

@@ -1,8 +1,8 @@
 name: Publish create-tess to npm
 
-# npm publication is a separate, explicit owner action after a successful
-# signed framework release. It never publishes from a branch, an independent
-# create-tess tag, or an arbitrary checkout.
+# npm publication is a separate explicit action after a successful signed
+# framework release. Candidate tests and package construction run without OIDC.
+# The only OIDC-capable job has no checkout and executes no package code.
 on:
   workflow_dispatch:
     inputs:
@@ -10,6 +10,8 @@ on:
         description: 'Released stable version to publish (X.Y.Z)'
         required: true
         type: string
+
+run-name: Publish create-tess ${{ inputs.confirm_version }} from protected main
 
 concurrency:
   group: publish-npm-create-tess
@@ -19,18 +21,15 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    name: npm publish create-tess
+  candidate_test:
+    name: Validate npm candidate without publish authority
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: release
     permissions:
+      actions: read
       contents: read
-      checks: read
-      id-token: write
     steps:
-      # The workflow and validator come from protected main. The release
-      # environment must externally restrict deployments to protected main.
       - name: Checkout trusted publication control from main
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -38,7 +37,7 @@ jobs:
           path: control
           persist-credentials: false
 
-      - name: Checkout the confirmed release tag as candidate
+      - name: Checkout the confirmed release tag as unprivileged candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: v${{ inputs.confirm_version }}
@@ -51,7 +50,8 @@ jobs:
         working-directory: candidate
         run: git fetch --force origin +refs/heads/main:refs/remotes/origin/main
 
-      - name: Gate 1 — release tag equals dispatched and fetched protected main
+      - name: Gate 1 — tag source equals dispatched and fetched protected main
+        id: source
         env:
           EXPECTED_SHA: ${{ github.sha }}
           TAG: v${{ inputs.confirm_version }}
@@ -75,42 +75,231 @@ jobs:
           TAG: v${{ inputs.confirm_version }}
         run: python control/scripts/release_preflight.py metadata --repo candidate --tag "$TAG"
 
-      - name: Gate 4 — workflow and GUI non-publication boundaries
+      - name: Gate 4 — workflow, OIDC, and GUI non-publication boundaries
         run: python control/scripts/release_preflight.py workflows --repo candidate
 
-      - name: Gate 5 — successful framework release and secret scan on exact source
+      - name: Gate 5 — provenance-bound CI and GitHub Release evidence
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
           TAG: v${{ inputs.confirm_version }}
         run: |
           set -euo pipefail
-          SOURCE_SHA="$(git -C candidate rev-parse HEAD)"
-          checks_file="$RUNNER_TEMP/check-runs.json"
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?filter=latest&per_page=100" \
-            > "$checks_file"
-          python control/scripts/release_preflight.py checks \
-            --input "$checks_file" \
+          python control/scripts/release_preflight.py actions \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-path .github/workflows/ci.yml \
+            --workflow-name CI \
+            --event push \
+            --branch main \
             --sha "$SOURCE_SHA" \
-            --required 'Publish GitHub Release' \
-            --required 'secret scan (gitleaks)'
+            --job 'secret scan (gitleaks)'
+          python control/scripts/release_preflight.py actions \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-path .github/workflows/release.yml \
+            --workflow-name Release \
+            --event workflow_dispatch \
+            --branch main \
+            --sha "$SOURCE_SHA" \
+            --job 'Publish GitHub Release'
+          release_file="$RUNNER_TEMP/github-release.json"
           gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
-            > /dev/null
+            > "$release_file"
+          python - "$release_file" "$TAG" "$SOURCE_SHA" <<'PY'
+          import json
+          import sys
 
-      - name: Set up Node.js
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          if release.get("tag_name") != sys.argv[2]:
+              raise SystemExit("GitHub Release tag does not match requested release")
+          if release.get("target_commitish") != sys.argv[3]:
+              raise SystemExit("GitHub Release target does not match exact source")
+          if release.get("draft") is not False or release.get("prerelease") is not False:
+              raise SystemExit("GitHub Release is not a published stable release")
+          print("OK: published stable GitHub Release matches exact source")
+          PY
+
+      - name: Set up unprivileged Node.js test runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: candidate/create-tess/package-lock.json
+
+      - name: Install dependencies without lifecycle scripts
+        working-directory: candidate/create-tess
+        run: npm ci --ignore-scripts
+
+      # Candidate-controlled test code is intentionally confined to this
+      # read-only, OIDC-ineligible job.
+      - name: Run create-tess tests without publish authority
+        working-directory: candidate/create-tess
+        run: npm test
+
+  pack_artifact:
+    name: Build exact-tag npm artifact without lifecycle scripts
+    needs: candidate_test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact_name: ${{ steps.names.outputs.artifact_name }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      tag_object_sha: ${{ steps.source.outputs.tag_object_sha }}
+      tarball_name: ${{ steps.evidence.outputs.tarball_name }}
+      tarball_sha256: ${{ steps.evidence.outputs.tarball_sha256 }}
+    steps:
+      - name: Checkout trusted package control from main
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Fresh checkout of exact release tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: v${{ inputs.confirm_version }}
+          path: candidate
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Fetch protected main in package repository
+        working-directory: candidate
+        run: git fetch --force origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Gate 1 — re-establish exact tag source and object
+        id: source
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: v${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          python control/scripts/release_preflight.py source \
+            --repo candidate \
+            --tag "$TAG" \
+            --main-ref origin/main \
+            --expected-sha "$EXPECTED_SHA"
+          source_sha="$(git -C candidate rev-parse "$TAG^{commit}")"
+          tag_object_sha="$(git -C candidate rev-parse "$TAG^{tag}")"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "tag_object_sha=$tag_object_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Gate 2 — independently re-check protected signer
+        env:
+          TAG: v${{ inputs.confirm_version }}
+          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
+          TESS_RELEASE_SIGNER_FINGERPRINT: ${{ vars.TESS_RELEASE_SIGNER_FINGERPRINT }}
+        run: python control/scripts/release_preflight.py signer --repo candidate --tag "$TAG"
+
+      - name: Gate 3 — independently re-check version and workflow contracts
+        env:
+          TAG: v${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          python control/scripts/release_preflight.py metadata --repo candidate --tag "$TAG"
+          python control/scripts/release_preflight.py workflows --repo candidate
+
+      - name: Build exact create-tess tarball with lifecycle scripts disabled
+        env:
+          TAG: v${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          python control/scripts/release_preflight.py package \
+            --repo candidate \
+            --tag "$TAG" \
+            --output "$RUNNER_TEMP/npm-package" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Gate 4 — live annotated tag object is unchanged before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.source.outputs.release_tag }}
+          EXPECTED_TAG_OBJECT: ${{ steps.source.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          tag_file="$RUNNER_TEMP/live-tag-ref.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+            > "$tag_file"
+          python control/scripts/release_preflight.py tag-ref \
+            --input "$tag_file" \
+            --tag "$TAG" \
+            --expected-tag-object "$EXPECTED_TAG_OBJECT"
+
+      - name: Record fixed artifact and tarball identities
+        id: names
+        run: echo "artifact_name=create-tess-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Read trusted package evidence outputs
+        id: evidence
+        run: |
+          python - "$RUNNER_TEMP/npm-package/release-evidence.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          package = evidence["package"]
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"tarball_name={package['filename']}\n")
+              output.write(f"tarball_sha256={package['sha256']}\n")
+          PY
+
+      # v4.6.2 commit resolved from the official actions/upload-artifact tag.
+      - name: Upload immutable npm package evidence
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/npm-package/${{ steps.evidence.outputs.tarball_name }}
+            ${{ runner.temp }}/npm-package/release-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          include-hidden-files: false
+
+  publish_oidc:
+    name: Publish exact verified tarball through npm OIDC
+    needs: [candidate_test, pack_artifact]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      # v4.3.0 commit resolved from the official actions/download-artifact tag.
+      # The action also validates the artifact-service digest during download.
+      - name: Download exact package artifact by immutable artifact id
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.pack_artifact.outputs.artifact_id }}
+          path: ${{ runner.temp }}/verified-npm-package
+          merge-multiple: true
+
+      - name: Set up trusted npm OIDC client
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          cache: npm
-          cache-dependency-path: candidate/create-tess/package-lock.json
 
-      - name: Gate 6 — Trusted Publishing npm CLI floor
+      - name: Gate — Trusted Publishing runtime floor
         run: |
           set -euo pipefail
           npm_version="$(npm --version)"
@@ -119,26 +308,131 @@ jobs:
 
           parts = sys.argv[1].split('.')
           if len(parts) < 3 or not all(part.isdigit() for part in parts[:3]):
-              raise SystemExit(f'cannot parse npm version: {sys.argv[1]}')
+              raise SystemExit(f"cannot parse npm version: {sys.argv[1]}")
           if tuple(map(int, parts[:3])) < (11, 5, 1):
-              raise SystemExit(f'npm {sys.argv[1]} is below Trusted Publishing minimum 11.5.1')
-          print(f'OK: npm {sys.argv[1]} supports Trusted Publishing')
+              raise SystemExit(f"npm {sys.argv[1]} is below Trusted Publishing minimum 11.5.1")
+          print(f"OK: npm {sys.argv[1]} supports Trusted Publishing")
           PY
 
-      - name: Gate 7 — install create-tess dependencies without lifecycle scripts
-        working-directory: candidate/create-tess
-        run: npm ci --ignore-scripts
+      # Nothing after this gate may run before the exact publish command. The
+      # downloaded tarball is treated strictly as data and never extracted.
+      - name: Gate — live tag object and artifact digest immediately before publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.pack_artifact.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.pack_artifact.outputs.artifact_digest }}
+          EXPECTED_ARTIFACT_NAME: ${{ needs.pack_artifact.outputs.artifact_name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ needs.pack_artifact.outputs.release_tag }}
+          EXPECTED_TAG_OBJECT: ${{ needs.pack_artifact.outputs.tag_object_sha }}
+          EXPECTED_VERSION: ${{ inputs.confirm_version }}
+          EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/publish-npm.yml@refs/heads/main
+          EXPECTED_TARBALL_SHA256: ${{ needs.pack_artifact.outputs.tarball_sha256 }}
+          PACKAGE_TARBALL: ${{ runner.temp }}/verified-npm-package/${{ needs.pack_artifact.outputs.tarball_name }}
+        run: |
+          set -euo pipefail
+          artifact_metadata="$RUNNER_TEMP/npm-artifact-metadata.json"
+          tag_ref="$RUNNER_TEMP/npm-live-tag-ref.json"
+          evidence_file="$RUNNER_TEMP/verified-npm-package/release-evidence.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${EXPECTED_ARTIFACT_ID}" \
+            > "$artifact_metadata"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}" \
+            > "$tag_ref"
+          python - "$artifact_metadata" "$evidence_file" "$tag_ref" "$PACKAGE_TARBALL" <<'PY'
+          # BEGIN INLINE_PUBLISH_GUARD
+          import hashlib
+          import hmac
+          import json
+          import os
+          import sys
+          from pathlib import Path
 
-      - name: Gate 8 — create-tess tests
-        working-directory: candidate/create-tess
-        run: npm test
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
 
-      - name: Gate 9 — credential-free package manifest assertions
-        run: python control/scripts/release_preflight.py packs --repo candidate
+          artifact = json.load(open(sys.argv[1], encoding="utf-8"))
+          evidence = json.load(open(sys.argv[2], encoding="utf-8"))
+          tag_ref = json.load(open(sys.argv[3], encoding="utf-8"))
+          tarball = Path(sys.argv[4])
 
-      # Trusted Publishing requests the OIDC credential only here. Lifecycle
-      # scripts remain disabled, no NPM_TOKEN is configured or read, and every
-      # source/signature/version/release gate above must have succeeded first.
+          expected_artifact_id = int(os.environ["EXPECTED_ARTIFACT_ID"])
+          expected_run_id = int(os.environ["EXPECTED_RUN_ID"])
+          expected_run_attempt = int(os.environ["EXPECTED_RUN_ATTEMPT"])
+          expected_digest = os.environ["EXPECTED_ARTIFACT_DIGEST"]
+          expected_sha = os.environ["EXPECTED_HEAD_SHA"]
+          expected_tag = os.environ["EXPECTED_TAG"]
+          expected_tag_object = os.environ["EXPECTED_TAG_OBJECT"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+          expected_tarball = f"create-tess-{expected_version}.tgz"
+
+          require(artifact.get("id") == expected_artifact_id, "artifact id mismatch")
+          require(artifact.get("name") == os.environ["EXPECTED_ARTIFACT_NAME"], "artifact name mismatch")
+          require(artifact.get("expired") is False, "artifact is expired")
+          require(artifact.get("digest") == expected_digest, "artifact-service digest mismatch")
+          workflow_run = artifact.get("workflow_run")
+          require(isinstance(workflow_run, dict), "artifact workflow provenance is missing")
+          require(workflow_run.get("id") == expected_run_id, "artifact came from another run")
+          require(workflow_run.get("head_branch") == "main", "artifact did not originate on main")
+          require(workflow_run.get("head_sha") == expected_sha, "artifact source SHA mismatch")
+
+          expected_evidence_keys = {
+              "schema", "repository", "workflow_ref", "run_id", "run_attempt",
+              "release_tag", "source_sha", "tag_object_sha", "package",
+          }
+          require(set(evidence) == expected_evidence_keys, "artifact evidence schema mismatch")
+          require(evidence.get("schema") == 1, "artifact evidence version mismatch")
+          require(evidence.get("repository") == os.environ["EXPECTED_REPOSITORY"], "evidence repository mismatch")
+          require(evidence.get("workflow_ref") == os.environ["EXPECTED_WORKFLOW_REF"], "evidence workflow mismatch")
+          require(evidence.get("run_id") == expected_run_id, "evidence run id mismatch")
+          require(evidence.get("run_attempt") == expected_run_attempt, "evidence run attempt mismatch")
+          require(evidence.get("release_tag") == expected_tag, "evidence tag mismatch")
+          require(evidence.get("source_sha") == expected_sha, "evidence source SHA mismatch")
+          require(evidence.get("tag_object_sha") == expected_tag_object, "evidence tag object mismatch")
+
+          package = evidence.get("package")
+          require(isinstance(package, dict), "package evidence is missing")
+          require(set(package) == {"name", "version", "filename", "sha256", "files"}, "package evidence schema mismatch")
+          require(package.get("name") == "create-tess", "package name mismatch")
+          require(package.get("version") == expected_version, "package version mismatch")
+          require(package.get("filename") == expected_tarball, "package filename mismatch")
+          require(tarball.name == expected_tarball, "downloaded tarball name mismatch")
+          require(tarball.is_file() and not tarball.is_symlink(), "downloaded tarball is not a regular file")
+          require(
+              {path.name for path in tarball.parent.iterdir()} == {expected_tarball, "release-evidence.json"},
+              "artifact contains unexpected files",
+          )
+          actual_sha256 = hashlib.sha256(tarball.read_bytes()).hexdigest()
+          require(
+              hmac.compare_digest(actual_sha256, package.get("sha256", "")),
+              "tarball digest does not match package evidence",
+          )
+          require(
+              hmac.compare_digest(actual_sha256, os.environ["EXPECTED_TARBALL_SHA256"]),
+              "tarball digest does not match pack job output",
+          )
+
+          require(tag_ref.get("ref") == f"refs/tags/{expected_tag}", "live tag response mismatch")
+          tag_object = tag_ref.get("object")
+          require(isinstance(tag_object, dict), "live tag object is missing")
+          require(tag_object.get("type") == "tag", "live release ref is not annotated")
+          require(tag_object.get("sha") == expected_tag_object, "live release tag moved before npm publish")
+          print("OK: artifact, tarball, workflow, and live tag identities are exact")
+          # END INLINE_PUBLISH_GUARD
+          PY
+
+      # npmjs.com must bind create-tess to twiss-io/tess-os,
+      # publish-npm.yml, environment release, and allowed action npm publish.
       - name: Publish create-tess through npm Trusted Publishing
-        working-directory: candidate/create-tess
-        run: npm publish --ignore-scripts --access public
+        env:
+          PACKAGE_TARBALL: ${{ runner.temp }}/verified-npm-package/${{ needs.pack_artifact.outputs.tarball_name }}
+        run: npm publish "$PACKAGE_TARBALL" --ignore-scripts --provenance --access public
