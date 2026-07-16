@@ -16,10 +16,24 @@ against the candidate change and active policy. A valid artifact must be
 committed, content-bound, signed by an already-authorized verifier, and still
 valid for the policy rule.
 
-The intended production design binds every trust input to immutable base/head
-artifacts. Current `main` still has unresolved tree-consistency and type-swap
-hardening identified by the adversarial corpus, so it must not be treated as
-that completed design.
+The ship-gate derives changed paths from Git's byte-safe, NUL-delimited raw
+diff, retaining status, modes, and full object IDs through policy
+classification. It supports SHA-1 and SHA-256 repositories, disables rename
+detection so a rename-away is represented as deletion plus addition, and
+fails closed on malformed, non-UTF-8, or non-NFC path records.
+
+Review artifacts bind regular blobs, not pathname transitions. A governed
+regular addition (`100644` or `100755`) or same-mode regular content edit can
+continue to normal verdict/sign-off checks. A governed deletion, rename-away,
+executable-bit transition, type change, symlink, or gitlink/submodule state is
+categorically blocked before authorization artifacts are consulted:
+
+```text
+GOVERNED_TRANSITION_UNSUPPORTED
+```
+
+This prevents a blob-only verdict from being reused as authority for absence,
+mode, symlink-target, or submodule-commit semantics.
 
 The intended delivery path is:
 
@@ -94,7 +108,9 @@ and required GitHub enforcement are in place.
 
 - `verifier_keys` and `signoff_keys` are intentionally empty in the shipped
   policy.
-- The committed gate-arena scorecard on `main` is 12/12; A14, the multi-push
+- The historical GPG-backed gate-arena scorecard is 12/12. The separate
+  no-key A13 path-ingress scorecard is 48/48; neither score proves
+  unbypassability and they are not combined. A14, the multi-push
   policy-reduction case, remains open.
 - The key bootstrap and GitHub admission-control gaps mean Tess OS must not
   yet protect production merges.

@@ -139,10 +139,12 @@ schema-invalid contract is `valid: false`, not a protocol error).
 
 Runs the **same decision engine** as `tessctl gate pre-push` / `tessctl gate
 ci` — it calls `_gate_run_ship_check()` directly, the exact shared function
-both of those CLI subcommands call. Given an explicit set of paths (the
-caller already knows what it touched — no git-diff derivation happens
-inside this tool), an immutable `base` commit ID, and a `head` ref/sha to
-resolve committed-verdict coverage against.
+both of those CLI subcommands call. The caller provides its claimed path set,
+an immutable `base` commit ID, and a `head` ref/sha. The tool independently
+derives the authoritative NUL-delimited raw Git diff, including status, modes,
+and full object IDs. A duplicate, omitted, or invented caller path returns a
+blocked `PATH_SET_MISMATCH` result; path-only agent input is never admission
+authority.
 
 `base` is not optional. It must be a full 40- or 64-hex commit ID, never a
 branch, tag, or other mutable ref. The gate reads both verifier-registration
@@ -152,7 +154,7 @@ mutable base returns a normal blocked result containing `BASE_REQUIRED`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `paths` | string[] | yes | repo-relative paths to check |
+| `paths` | string[] | yes | claimed repo-relative paths; must exactly equal the immutable raw Git diff |
 | `base` | string | yes | immutable full 40- or 64-hex base commit ID; mutable refs are rejected |
 | `head` | string | no | git ref/sha; defaults to current `HEAD` |
 | `verdict_dirs` | string[] | no | restrict covering-verdict discovery to these directories |
@@ -161,7 +163,8 @@ Result: `{blocked, reasons[], changed_paths[], base, head}` — identical shape
 (plus the resolved `base`/`head`) to `tessctl gate pre-push --base X --head
 Y --json`'s `result` for the same `changed_paths`/refs. See
 `tests/test_mcp_serve.py` for the equivalence proof against a real fixture
-repo (BLOCKED and ALLOWED cases), and the explicit no-base denial test.
+repo (BLOCKED and ALLOWED cases), the path-set-substitution denial, and the
+explicit no-base denial test.
 
 ### `mission_status`
 

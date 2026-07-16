@@ -607,24 +607,53 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
 def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
     """Omitting `head` resolves to the current HEAD sha — same head_shas
     semantics `gate ci --head`/`gate pre-push --head` use explicitly."""
+    base = _base_sha(gate_repo)
     (gate_repo / "docs").mkdir(parents=True)
     (gate_repo / "docs" / "notes.md").write_text("nothing special\n")
+    expected_head = _commit_all(gate_repo, "add ungoverned docs note")
 
     real_head = subprocess.run(
         ["git", "-C", str(gate_repo), "rev-parse", "HEAD"], capture_output=True, text=True
     ).stdout.strip()
+    assert real_head == expected_head
 
     client = McpStdio(gate_repo)
     try:
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["docs/notes.md"], "base": real_head},
+            "arguments": {"paths": ["docs/notes.md"], "base": base},
         })
         payload = resp["result"]["structuredContent"]
         assert payload["blocked"] is False
         assert payload["changed_paths_count"] == 1
         assert "head" not in payload and "base" not in payload
+    finally:
+        client.close()
+
+
+def test_gate_check_paths_rejects_caller_path_set_mismatch(gate_repo):
+    """Reverse direction: an agent cannot omit a governed path and ask the
+    MCP surface to authorize a convenient path-only subset."""
+    base = _base_sha(gate_repo)
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    head = _commit_all(gate_repo, "governed change")
+
+    client = McpStdio(gate_repo)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {"paths": ["docs/invented.md"], "base": base, "head": head},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["blocked"] is True
+        assert payload["changed_paths_count"] == 1
+        assert payload["reasons"] == [
+            "PATH_SET_MISMATCH: the supplied path set does not match the immutable Git diff"
+        ]
+        assert "src/prod/app.py" not in json.dumps(payload)
     finally:
         client.close()
 

@@ -21,8 +21,7 @@ from conftest import ENGINE_SRC, REPO_ROOT
 
 
 HAS_GIT = shutil.which("git") is not None
-HAS_GPG = shutil.which("gpg") is not None
-pytestmark = pytest.mark.skipif(not (HAS_GIT and HAS_GPG), reason="git + gpg required")
+pytestmark = pytest.mark.skipif(not HAS_GIT, reason="git required")
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -107,7 +106,7 @@ def _run_gate(root: Path, phase: str, base: str, head: str) -> tuple[subprocess.
 
 
 @pytest.mark.parametrize("phase", ("ci", "pre-push"))
-def test_protected_guardrails_type_swap_is_classified_and_blocked_without_verdict(tmp_path, phase):
+def test_protected_guardrails_type_swap_is_categorically_blocked_before_verdict(tmp_path, phase):
     root, base = _type_swap_repo(tmp_path)
     _replace_with_symlink(root / "conductor" / "guardrails.md", "../docs/guardrails-baseline.md")
     head = _commit_all(root, "A13b: replace protected guardrails with a symlink")
@@ -119,11 +118,12 @@ def test_protected_guardrails_type_swap_is_classified_and_blocked_without_verdic
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert "conductor/guardrails.md" in payload["changed_paths"]
-    assert any(
-        "conductor/guardrails.md" in reason and "no covering APPROVE verdict" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["changed_paths_count"] == 1
+    assert payload["reasons"] == [
+        "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported"
+    ]
+    assert "conductor/guardrails.md" not in json.dumps(payload)
+    assert not any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
 
 
 @pytest.mark.parametrize("phase", ("ci", "pre-push"))
@@ -137,9 +137,13 @@ def test_combined_policy_and_guardrails_type_swaps_are_both_blocked_without_verd
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert {"conductor/guardrails.md", "core/policy/policy.yaml"} <= set(payload["changed_paths"])
-    assert any("conductor/guardrails.md" in reason for reason in payload["reasons"])
-    assert any("core/policy/policy.yaml" in reason for reason in payload["reasons"])
+    assert payload["changed_paths_count"] == 2
+    assert payload["reasons"] == [
+        "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported",
+        "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported",
+    ]
+    assert "conductor/guardrails.md" not in json.dumps(payload)
+    assert "core/policy/policy.yaml" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("phase", ("ci", "pre-push"))
@@ -152,8 +156,11 @@ def test_ordinary_protected_edit_remains_blocked_without_verdict(tmp_path, phase
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert "conductor/guardrails.md" in payload["changed_paths"]
-    assert any("no covering APPROVE verdict" in reason for reason in payload["reasons"])
+    assert payload["changed_paths_count"] == 1
+    assert payload["reasons"] == [
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ]
+    assert "conductor/guardrails.md" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("phase", ("ci", "pre-push"))

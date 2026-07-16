@@ -51,6 +51,28 @@ Full detail, mechanism-by-mechanism: `results/bypass-scorecard.md` /
 number that only lives in a PR description, not a committed artifact,
 doesn't count).
 
+### A13 path-ingress expansion (separate, no-key score)
+
+The complete raw-diff path-ingress regression is intentionally measured
+separately from the historical GPG-backed A1-A12 corpus:
+
+```bash
+python3 gate-arena/bypass/run_path_ingress_corpus.py
+```
+
+**Result: 48/48 tests passed; 0 failures, 0 errors, 0 skips.** It covers
+deletion, rename-away, mode/type changes, symlinks, gitlinks/submodules,
+newline/tab/Unicode/NFC path handling, NFD and non-UTF-8 denial, malformed raw
+records, SHA-1/SHA-256, and every authority-bearing ingress surface. It also
+contains the reverse controls proving regular `100644`/`100755` additions and
+same-mode regular edits still reach normal review rather than the categorical
+transition block.
+
+This run performs no key generation, registration, verdict signing, sign-off
+signing, or trust bootstrap. Its committed record is
+`results/path-ingress-scorecard.md` / `.json`. The score is **not** added to
+12/12 and is not a claim that the gate is unbypassable.
+
 Two boundaries this layer cannot test (disclosed, not new — the reckoning
 doc already names them): **key custody** (whoever holds a verifier's or
 sign-off-authorizer's private key can sign as them) and **repo-admin power**

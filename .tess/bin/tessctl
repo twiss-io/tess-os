@@ -74,6 +74,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -9076,6 +9077,8 @@ _DECISION_MESSAGES = {
     "HARD_FLOOR_UNSATISFIED": "a required hard-floor sign-off is not valid",
     "BASE_REQUIRED": "an immutable BASE commit is required",
     "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
+    "PATH_SET_MISMATCH": "the supplied path set does not match the immutable Git diff",
+    "GOVERNED_TRANSITION_UNSUPPORTED": "a governed Git path transition is unsupported",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
 }
 
@@ -9105,6 +9108,10 @@ def _decision_reason_code(raw_reason: object) -> str:
         return "BASE_REQUIRED"
     if text.startswith("CONTRACT_INVALID:"):
         return "CONTRACT_INVALID"
+    if text.startswith("PATH_SET_MISMATCH:"):
+        return "PATH_SET_MISMATCH"
+    if text.startswith("GOVERNED_TRANSITION_UNSUPPORTED:"):
+        return "GOVERNED_TRANSITION_UNSUPPORTED"
     if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
         return "ADMISSION_EVENT_SOURCE_REQUIRED"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
@@ -9146,6 +9153,57 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
 
 
 EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+_GATE_OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
+_GATE_TRACKED_MODES = {"000000", "100644", "100755", "120000", "160000"}
+_GATE_REGULAR_FILE_MODES = {"100644", "100755"}
+
+
+class GatePathDelta:
+    """One machine-parsed Git tree transition.
+
+    The ship-gate must retain status, modes, and full object IDs until after
+    policy classification.  A path-only list cannot distinguish a regular
+    edit from a deletion, chmod, symlink, or gitlink transition, and the
+    current verdict/sign-off artifact hashes authorize only surviving blobs.
+    """
+
+    __slots__ = ("status", "old_mode", "new_mode", "old_oid", "new_oid", "path")
+
+    def __init__(
+        self, status: str, old_mode: str, new_mode: str,
+        old_oid: str, new_oid: str, path: str,
+    ) -> None:
+        self.status = status
+        self.old_mode = old_mode
+        self.new_mode = new_mode
+        self.old_oid = old_oid
+        self.new_oid = new_oid
+        self.path = path
+
+    def __repr__(self) -> str:
+        return (
+            "GatePathDelta("
+            f"status={self.status!r}, old_mode={self.old_mode!r}, "
+            f"new_mode={self.new_mode!r}, old_oid={self.old_oid!r}, "
+            f"new_oid={self.new_oid!r}, path={self.path!r})"
+        )
+
+
+class GateChangedPaths(list):
+    """List-compatible changed paths carrying their immutable raw deltas.
+
+    Keeping list behavior preserves the public result/trace shape and the
+    established `_gate_run_ship_check` signature (including the A11 engine-
+    tamper fixture), while preventing authority-bearing callers from
+    discarding transition metadata before verdict/sign-off evaluation.
+    """
+
+    __slots__ = ("deltas",)
+
+    def __init__(self, paths=(), deltas=()) -> None:
+        super().__init__(paths)
+        self.deltas = tuple(deltas)
 
 # Directory names skipped entirely when the gate walks the working tree
 # looking for verdict-shaped files to check for ship-gate coverage — these
@@ -9193,7 +9251,11 @@ def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: s
     LOOKS like a contract is never silently skipped."""
     abs_path = root / rel_path
     if not abs_path.exists():
-        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+        # Deletions now remain in raw path ingress so policy can deny them as
+        # an unsupported governed transition.  There is no candidate contract
+        # instance to schema-validate here; transition enforcement happens in
+        # `_gate_governed_transition_gap_report` before authorization artifacts.
+        return []
     try:
         schema = load_contract_schema(root, contract_type)
         instance = load_contract_instance(abs_path)
@@ -9238,17 +9300,235 @@ def _gate_run_git(root: Path, *args: str) -> str:
     return r.stdout
 
 
+def _gate_run_git_bytes(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    """Run Git without text decoding.
+
+    Authority-bearing path output is NUL-delimited and repository path bytes
+    are not line-oriented text.  Decoding at subprocess level would recreate
+    the quoted/newline path ambiguity this helper exists to close.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True, input=input_bytes,
+    )
+    if r.returncode != 0:
+        stderr = r.stderr.decode("utf-8", errors="replace").strip() or "no stderr"
+        raise GateSpineError(
+            f"tessctl gate: `git {' '.join(args)}` failed ({stderr}) "
+            f"— fail-closed, refusing"
+        )
+    return r.stdout
+
+
+def _gate_object_id_length(root: Path) -> int:
+    """Return the repository storage object-ID width (SHA-1 or SHA-256)."""
+    object_format = _gate_run_git(
+        root, "rev-parse", "--show-object-format=storage",
+    ).strip()
+    oid_length = _GATE_OBJECT_FORMAT_LENGTHS.get(object_format)
+    if oid_length is None:
+        raise GateSpineError(
+            "tessctl gate: Git reported unsupported repository object format "
+            f"{object_format!r}; expected sha1 or sha256 — fail-closed, refusing"
+        )
+    return oid_length
+
+
+def _gate_path_display(path: str) -> str:
+    """Stable one-line representation for an attacker-controlled Git path."""
+    return json.dumps(path, ensure_ascii=True)
+
+
+def _gate_decode_raw_path(raw_path: bytes) -> str:
+    if not raw_path:
+        raise GateSpineError(
+            "tessctl gate: malformed raw Git diff contains an empty path "
+            "— fail-closed, refusing"
+        )
+    try:
+        path = raw_path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        sample = raw_path[:32].hex()
+        suffix = "..." if len(raw_path) > 32 else ""
+        raise GateSpineError(
+            "tessctl gate: Git path is not valid UTF-8 "
+            f"(hex={sample}{suffix}) — fail-closed, refusing"
+        )
+    if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
+        raise GateSpineError(
+            "tessctl gate: Git emitted a non-canonical repository-relative path "
+            f"{_gate_path_display(path)} — fail-closed, refusing"
+        )
+    if unicodedata.normalize("NFC", path) != path:
+        raise GateSpineError(
+            "tessctl gate: Git path is not Unicode NFC-normalized "
+            f"{_gate_path_display(path)} — fail-closed, refusing to admit an "
+            "ambiguous policy pathname"
+        )
+    return path
+
+
+def _gate_validate_raw_delta_shape(delta: GatePathDelta, oid_length: int) -> None:
+    zero_oid = "0" * oid_length
+    if (delta.old_mode == "000000") != (delta.old_oid == zero_oid):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff old mode/object absence markers disagree "
+            f"for {_gate_path_display(delta.path)} — fail-closed, refusing"
+        )
+    if (delta.new_mode == "000000") != (delta.new_oid == zero_oid):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff new mode/object absence markers disagree "
+            f"for {_gate_path_display(delta.path)} — fail-closed, refusing"
+        )
+    old_absent = delta.old_mode == "000000" and delta.old_oid == zero_oid
+    new_absent = delta.new_mode == "000000" and delta.new_oid == zero_oid
+
+    if delta.old_mode not in _GATE_TRACKED_MODES or delta.new_mode not in _GATE_TRACKED_MODES:
+        raise GateSpineError(
+            "tessctl gate: raw Git diff has unsupported mode transition "
+            f"{delta.old_mode}->{delta.new_mode} for {_gate_path_display(delta.path)} "
+            "— fail-closed, refusing"
+        )
+    if delta.status == "A":
+        valid = old_absent and not new_absent
+    elif delta.status == "D":
+        valid = not old_absent and new_absent
+    elif delta.status == "M":
+        valid = not old_absent and not new_absent and not (
+            delta.old_mode == delta.new_mode and delta.old_oid == delta.new_oid
+        )
+    elif delta.status == "T":
+        valid = not old_absent and not new_absent and delta.old_mode != delta.new_mode
+    else:
+        valid = False
+    if not valid:
+        raise GateSpineError(
+            "tessctl gate: raw Git diff status/mode/object tuple is inconsistent "
+            f"for {_gate_path_display(delta.path)} (status={delta.status}, "
+            f"modes={delta.old_mode}->{delta.new_mode}) — fail-closed, refusing"
+        )
+
+
+def _gate_parse_raw_diff(raw_output: bytes, oid_length: int) -> list:
+    """Strict parser for `git diff --raw -z --no-renames --no-abbrev`.
+
+    With rename detection disabled every record is exactly HEADER NUL PATH
+    NUL.  Renames therefore become deletion(source) + addition(destination),
+    so the governed source cannot disappear behind Git's similarity pairing.
+    """
+    if oid_length not in _GATE_OBJECT_FORMAT_LENGTHS.values():
+        raise GateSpineError(
+            f"tessctl gate: unsupported object-ID width {oid_length} "
+            "— fail-closed, refusing"
+        )
+    if not raw_output:
+        return []
+    if not raw_output.endswith(b"\0"):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff is not NUL-terminated "
+            "— fail-closed, refusing"
+        )
+
+    fields = raw_output.split(b"\0")
+    fields.pop()  # required trailing terminator
+    deltas = []
+    seen_paths = set()
+    index = 0
+    oid_pattern = rb"[0-9a-f]{" + str(oid_length).encode("ascii") + rb"}"
+    header_pattern = re.compile(
+        rb":"
+        rb"([0-7]{6}) ([0-7]{6}) "
+        b"(" + oid_pattern + rb") (" + oid_pattern + rb") "
+        rb"([A-Z](?:[0-9]{1,3})?)"
+    )
+
+    while index < len(fields):
+        header = fields[index]
+        index += 1
+        match = header_pattern.fullmatch(header)
+        if match is None:
+            sample = header[:96].decode("ascii", errors="backslashreplace")
+            raise GateSpineError(
+                "tessctl gate: malformed raw Git diff header "
+                f"{sample!r} — fail-closed, refusing"
+            )
+        status_token = match.group(5).decode("ascii")
+        if status_token not in ("A", "M", "D", "T"):
+            raise GateSpineError(
+                "tessctl gate: unexpected raw Git diff status "
+                f"{status_token!r}; rename/copy/unknown records are forbidden under "
+                "--no-renames — fail-closed, refusing"
+            )
+        if index >= len(fields):
+            raise GateSpineError(
+                "tessctl gate: truncated raw Git diff record has no path "
+                "— fail-closed, refusing"
+            )
+        path = _gate_decode_raw_path(fields[index])
+        index += 1
+        if path in seen_paths:
+            raise GateSpineError(
+                "tessctl gate: raw Git diff contains duplicate path record "
+                f"{_gate_path_display(path)} — fail-closed, refusing"
+            )
+        seen_paths.add(path)
+        delta = GatePathDelta(
+            status_token,
+            match.group(1).decode("ascii"),
+            match.group(2).decode("ascii"),
+            match.group(3).decode("ascii"),
+            match.group(4).decode("ascii"),
+            path,
+        )
+        _gate_validate_raw_delta_shape(delta, oid_length)
+        deltas.append(delta)
+    return deltas
+
+
+def _gate_raw_diff(root: Path, *range_args: str, cached: bool = False) -> list:
+    args = ["diff"]
+    if cached:
+        args.append("--cached")
+    args += [
+        "--raw", "-z", "--no-renames", "--no-abbrev", "--no-ext-diff",
+        "--ignore-submodules=none", "--diff-filter=ACMRTD",
+    ]
+    args += list(range_args)
+    args.append("--")
+    raw_output = _gate_run_git_bytes(root, *args)
+    return _gate_parse_raw_diff(raw_output, _gate_object_id_length(root))
+
+
+def _gate_paths_from_deltas(deltas: list) -> GateChangedPaths:
+    return GateChangedPaths(sorted({delta.path for delta in deltas}), deltas)
+
+
+def _gate_empty_tree_oid(root: Path) -> str:
+    oid_length = _gate_object_id_length(root)
+    raw_oid = _gate_run_git_bytes(
+        root, "hash-object", "-t", "tree", "--stdin", input_bytes=b"",
+    ).strip()
+    try:
+        oid = raw_oid.decode("ascii")
+    except UnicodeDecodeError:
+        oid = ""
+    if not re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", oid):
+        raise GateSpineError(
+            "tessctl gate: could not derive the repository-format empty-tree "
+            "object ID — fail-closed, refusing"
+        )
+    return oid
+
+
 def _gate_changed_paths_staged(root: Path) -> list:
-    """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMRT")
-    return [line for line in out.splitlines() if line.strip()]
+    """Pre-commit mode: byte-safe staged tree transitions."""
+    return _gate_paths_from_deltas(_gate_raw_diff(root, cached=True))
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
     when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMRT", base, head)
-    return [line for line in out.splitlines() if line.strip()]
+    return _gate_paths_from_deltas(_gate_raw_diff(root, base, head))
 
 
 def _gate_changed_paths_from_stdin(root: Path):
@@ -9270,22 +9550,40 @@ def _gate_changed_paths_from_stdin(root: Path):
     pre-push policy baseline for the policy-self-tamper check."""
     lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
     if not lines:
-        return [], [], []  # nothing being pushed (e.g. a ref deletion) — nothing to gate
-    changed = set()
+        return GateChangedPaths(), [], []  # no ref updates
+    oid_length = _gate_object_id_length(root)
+    zero_oid = "0" * oid_length
+    deltas = []
     head_shas = []
     base_shas = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
-            continue
+            raise GateSpineError(
+                "tessctl gate pre-push: malformed stdin ref-update record "
+                "— fail-closed, refusing"
+            )
         _local_ref, local_sha, _remote_ref, remote_sha = parts
-        if not local_sha or set(local_sha) == {"0"}:
+        if not re.fullmatch(rf"[0-9A-Fa-f]{{{oid_length}}}", local_sha or ""):
+            raise GateSpineError(
+                "tessctl gate pre-push: local object ID has the wrong repository "
+                "format/length — fail-closed, refusing"
+            )
+        if not re.fullmatch(rf"[0-9A-Fa-f]{{{oid_length}}}", remote_sha or ""):
+            raise GateSpineError(
+                "tessctl gate pre-push: remote object ID has the wrong repository "
+                "format/length — fail-closed, refusing"
+            )
+        local_sha = local_sha.lower()
+        remote_sha = remote_sha.lower()
+        if local_sha == zero_oid:
             continue  # deleting the ref — nothing pushed
-        base = EMPTY_TREE_SHA if set(remote_sha) == {"0"} else remote_sha
-        changed.update(_gate_diff_paths(root, base, local_sha))
+        base = _gate_empty_tree_oid(root) if remote_sha == zero_oid else remote_sha
+        ref_changes = _gate_diff_paths(root, base, local_sha)
+        deltas.extend(ref_changes.deltas)
         head_shas.append(local_sha)
         base_shas.append(base)
-    return sorted(changed), head_shas, base_shas
+    return _gate_paths_from_deltas(deltas), head_shas, base_shas
 
 
 # ---------------------------------------------------------------------------
@@ -9348,6 +9646,84 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
             if globs and path_matches_globs(rel_path, globs):
                 hard_floor_matches.setdefault(rel_path, []).append(hf_rule)
     return path_rule_matches, hard_floor_matches
+
+
+def _gate_governed_transition_gap_report(
+    root: Path, changed_paths: list, path_rule_matches: dict,
+    hard_floor_matches: dict, head_shas: list | None, base_shas: list | None,
+) -> list:
+    """Reject governed transitions that blob hashes cannot authorize.
+
+    A verdict's artifact hash can bind a surviving regular blob.  It cannot
+    bind the *absence* of a deleted path, a pathname move, an executable-bit
+    transition, a symlink target, or a gitlink/submodule commit.  Those
+    transitions therefore stop here, before hard-floor sign-offs or verdicts
+    are consulted.  Only a regular-file addition (100644/100755) or a
+    same-mode regular-file content modification reaches normal review.
+    """
+    governed_paths = set(path_rule_matches) | set(hard_floor_matches)
+    if not governed_paths:
+        return []
+
+    deltas = changed_paths.deltas if isinstance(changed_paths, GateChangedPaths) else None
+    if deltas is None and len(base_shas or []) == 1 and len(head_shas or []) == 1:
+        try:
+            derived = _gate_diff_paths(root, base_shas[0], head_shas[0])
+        except GateSpineError as e:
+            return [
+                "GOVERNED_TRANSITION_UNSUPPORTED: could not derive trusted raw "
+                f"PathDelta evidence ({e})"
+            ]
+        # A path-only caller must not choose a convenient subset/superset of
+        # the immutable Git range.  Ship-gate authority comes from Git, not
+        # from an agent-provided list.
+        if set(derived) != set(changed_paths):
+            return [
+                "GOVERNED_TRANSITION_UNSUPPORTED: caller-supplied changed paths "
+                "do not exactly match the immutable raw Git diff — fail-closed, "
+                "refusing path-only transition evidence"
+            ]
+        deltas = derived.deltas
+
+    if deltas is None:
+        return [
+            "GOVERNED_TRANSITION_UNSUPPORTED: governed paths have no trusted raw "
+            "PathDelta evidence (status, modes, and full object IDs are required)"
+        ]
+
+    by_path: dict[str, list] = {}
+    for delta in deltas:
+        by_path.setdefault(delta.path, []).append(delta)
+
+    reasons = []
+    for path in sorted(governed_paths):
+        path_deltas = by_path.get(path) or []
+        if not path_deltas:
+            reasons.append(
+                "GOVERNED_TRANSITION_UNSUPPORTED: "
+                f"{_gate_path_display(path)} has no trusted raw PathDelta evidence"
+            )
+            continue
+        for delta in path_deltas:
+            reviewable = (
+                delta.status == "A"
+                and delta.old_mode == "000000"
+                and delta.new_mode in _GATE_REGULAR_FILE_MODES
+            ) or (
+                delta.status == "M"
+                and delta.old_mode == delta.new_mode
+                and delta.new_mode in _GATE_REGULAR_FILE_MODES
+            )
+            if reviewable:
+                continue
+            reasons.append(
+                "GOVERNED_TRANSITION_UNSUPPORTED: "
+                f"{_gate_path_display(path)} status={delta.status} "
+                f"mode={delta.old_mode}->{delta.new_mode}; only regular-file "
+                "additions (100644/100755) and same-mode regular-file content "
+                "modifications can proceed to verdict/sign-off review"
+            )
+    return reasons
 
 
 # ---------------------------------------------------------------------------
@@ -10156,6 +10532,17 @@ def _gate_run_ship_check(
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
     if baseline_policy_instance is not None:
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
+
+    transition_reasons = _gate_governed_transition_gap_report(
+        root, changed_paths, path_rule_matches, hard_floor_matches,
+        head_shas, base_shas,
+    )
+    if transition_reasons:
+        # Categorical stop: a blob-only verdict/sign-off cannot authorize a
+        # path's deletion, type/mode transition, symlink, or gitlink state.
+        # Do not even consult those downstream artifacts for this request.
+        reasons += transition_reasons
+        return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
 
     if hard_floor_matches:
         # honesty-capstone-audit-2026-07-08 §3-d (chained-variant closure,
@@ -14094,14 +14481,12 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     `tessctl gate pre-push` / `tessctl gate ci`: calls _gate_run_ship_check()
     directly (GATE region above) rather than re-deriving its logic, so the
     verdict returned here is provably identical to what a push/CI run of
-    those paths at `head` would get. Given an explicit set of paths (the
-    caller — e.g. an in-session agent — already knows which paths it
-    touched, so no git-diff derivation happens here), an immutable `base`
-    commit ID, and a `head` ref/sha to resolve committed-verdict coverage
-    against. `base` is mandatory: the gate must never silently evaluate a
-    candidate policy/key registry without the prior trusted tree that binds
-    verifier registrations and public-key bytes. `head` defaults to current
-    HEAD when omitted."""
+    those paths at `head` would get. The caller supplies a claimed path set,
+    but authority comes from the same byte-safe raw Git diff used by CLI/CI;
+    an incomplete or invented list is denied. `base` is mandatory: the gate
+    must never silently evaluate a candidate policy/key registry without the
+    prior trusted tree that binds verifier registrations and public-key
+    bytes. `head` defaults to current HEAD when omitted."""
     paths = arguments.get("paths")
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `paths` (non-empty array of strings) is required")
@@ -14134,9 +14519,28 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
             return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
 
     try:
-        result = _gate_run_ship_check(root, paths, verdict_dirs, [head], [base])
+        authoritative_paths = _gate_diff_paths(root, base, head)
     except GateSpineError as e:
         return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+    if len(paths) != len(set(paths)) or set(paths) != set(authoritative_paths):
+        return _safe_gate_result({
+            "blocked": True,
+            "reasons": [
+                "PATH_SET_MISMATCH: gate_check_paths caller-supplied paths do not "
+                "exactly match the immutable byte-safe raw Git diff; Git is the "
+                "authority for ship-gate path ingress"
+            ],
+            "changed_paths": authoritative_paths,
+        })
+    try:
+        result = _gate_run_ship_check(
+            root, authoritative_paths, verdict_dirs, [head], [base],
+        )
+    except GateSpineError as e:
+        return _safe_gate_result({
+            "blocked": True, "reasons": [str(e)],
+            "changed_paths": authoritative_paths,
+        })
     return _safe_gate_result(result)
 
 
