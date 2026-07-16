@@ -1,0 +1,47 @@
+{
+  "crew_plan": {
+    "mission_id": "portable-crew-plan-demo",
+    "outcome_owner": "tess",
+    "outcome_type": "design",
+    "notes": "Planning-only reference data. Validation checks its contract; it does not dispatch this plan.",
+    "stages": [
+      {
+        "stage": 1,
+        "gate_in": "intake-before-anything",
+        "parallel": false,
+        "tasks": [
+          {
+            "id": "scope-map",
+            "agent": "general-purpose",
+            "role": "Core Contributor",
+            "depends_on": [],
+            "brief": {
+              "objective": "Map the supplied project constraints into a concise planning note.",
+              "output_contract": "A planning note with sections [Constraints, Assumptions, Open questions].",
+              "tools_sources_constraints": "Use only material supplied with the task and label assumptions; this reference does not select or invoke a provider.",
+              "not_responsible_for": "Executing work, choosing a provider, approving a change, or making an external claim.",
+              "milestones": [],
+              "escalation_trigger": "Missing or contradictory constraints require the task to stop and surface the gap to the conductor."
+            },
+            "verifier": {
+              "agent": null,
+              "required": false,
+              "primary_artifacts": []
+            },
+            "flag_for_tess": "Use an available contributor only after the conductor has supplied its own host-specific dispatch controls."
+          }
+        ]
+      }
+    ],
+    "synthesis": {
+      "owner": "tess",
+      "format": "output-framework.md/10-section",
+      "inputs": [
+        "scope-map"
+      ]
+    },
+    "escalations": [
+      "If the planning note exposes an irreversible, external, or production-facing decision, stop and create a separately verified task."
+    ]
+  }
+}
