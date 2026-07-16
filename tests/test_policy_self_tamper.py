@@ -297,12 +297,12 @@ def test_policy_widened_allowed_verifiers_same_push_is_blocked(tamper_repo, run_
     # The policy.yaml edit itself is legitimately covered — it must NOT
     # appear as a violation (proves isolation of the mechanism).
     assert not any("core/policy/policy.yaml" in reason for reason in payload["reasons"]), payload["reasons"]
-    # The prod-src change, "approved" only by the newly-widened Quinn, is
-    # still blocked — the effective allowed_verifiers for this push is the
-    # baseline∩new intersection ({Reid}), so Quinn's signature (however
-    # genuinely valid) does not count.
+    # The prod-src change, "approved" only by the candidate-added Quinn key,
+    # is still blocked.  Immutable-base verification rejects Quinn before
+    # allowed_verifiers is considered: a same-push registration is not an
+    # established trust anchor and its candidate public-key bytes are ignored.
     assert any(
-        "src/prod/app.py" in reason and "allowed verifier" in reason
+        "src/prod/app.py" in reason and "no registered public key for verifier 'Quinn'" in reason
         for reason in payload["reasons"]
     ), payload["reasons"]
 

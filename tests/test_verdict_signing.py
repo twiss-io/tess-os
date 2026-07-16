@@ -519,12 +519,13 @@ def test_verify_containment_check_does_not_reject_normal_in_tree_path(engine, tm
 
 
 def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
-    """LOW-1's second containment layer: a `public_key_file` value with NO
-    literal '..' component (so it passes the first, string-level check) can
-    still resolve outside `root` if it is — or passes through — a symlink
-    planted inside the repo pointing OUTSIDE it. `.resolve()` follows
-    symlinks, so the `relative_to(root_resolved)` check catches this case
-    too, surfacing the separate 'resolves outside the Tess root' message."""
+    """Standalone diagnostics reject a checkout symlink explicitly.
+
+    Ship-gate verification never reads this path at all: it accepts only a
+    regular public-key blob from the immutable BASE tree.  The standalone
+    diagnostic path has no BASE, so it must still fail closed before a
+    symlink can redirect it outside the repository.
+    """
     if os.name == "nt":
         pytest.skip("symlinks require elevated privileges on Windows")
     root = tmp_path / "repo"
@@ -549,7 +550,7 @@ def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
     }
     ok, reason = engine._gate_verify_verdict_signature(root, policy_instance, instance)
     assert ok is False
-    assert "resolves outside the Tess root" in reason
+    assert "is a symlink" in reason
     assert "C1 containment" in reason
 
 
@@ -731,12 +732,12 @@ def test_cli_sign_produces_schema_valid_signature_block(project, run_cli, verifi
 # ---------------------------------------------------------------------------
 # A10c (Gate Arena finding, disclosed 2026-07-07): "`_gate_verify_verdict_
 # signature` verifies cryptographic validity + fingerprint match, but does
-# NOT check whether the signing GPG key is EXPIRED or REVOKED — a verdict
-# signed with an already-expired/revoked key still verifies." Both proofs
-# below use a REAL, independently-generated GPG identity (never the
-# session-scoped `verifier_gpg_keys`, which are deliberately non-expiring)
-# so the key's expiry/revocation is genuinely exercised through real `gpg`,
-# not mocked.
+# NOT check whether the signing GPG key is EXPIRED or REVOKED." The expiry
+# proof below uses a REAL, independently-generated GPG identity (never the
+# session-scoped `verifier_gpg_keys`, which are deliberately non-expiring),
+# so expiration is exercised through real `gpg`, not mocked. The companion
+# candidate-side-revocation regression proves that ship-gate trust is bound to
+# the BASE blob; the symbolic immutable-blob suite covers BASE revocation.
 # ---------------------------------------------------------------------------
 
 def _gen_a10c_test_key(name: str, expire: str = "0"):
@@ -788,10 +789,9 @@ def _revoke_a10c_test_key(key) -> str:
     by `gpg --gen-key`, stashed under `openpgp-revocs.d/`) into its own
     homedir keyring, then returns the freshly re-exported (now genuinely
     revoked) ASCII-armored public key. The caller MUST overwrite whatever
-    bundled `.asc` file the gate reads with this new export — the gate
-    imports that bundled file fresh into its OWN isolated GNUPGHOME per
-    check (never `key.home`'s keyring), so the revocation is only visible
-    to the gate once the bundled export reflects it."""
+    returned export can represent a candidate-side replacement in the
+    regression below. The ship gate must not read that replacement: it
+    imports only the key blob from its immutable BASE tree."""
     env = {**os.environ, "GNUPGHOME": str(key.home)}
     rev_files = list((key.home / "openpgp-revocs.d").glob("*.rev"))
     assert rev_files, f"no revocation certificate found under {key.home}"
@@ -864,10 +864,15 @@ def test_verdict_signed_by_expired_key_is_rejected(project, run_cli, engine):
         _teardown_a10c_test_key(key)
 
 
-def test_verdict_signed_by_revoked_key_is_rejected(project, run_cli, engine):
-    """A10c: a verdict signed by a key that has since been REVOKED (a real
-    self-revocation certificate imported into the verifying export) must
-    never clear the gate."""
+def test_candidate_side_revocation_is_ignored_by_base_bound_gate(project, run_cli, engine):
+    """A candidate checkout cannot replace the BASE public-key bytes.
+
+    The verdict was signed while the BASE key was valid.  A revocation added
+    only after the candidate head is committed is deliberately ignored by the
+    ship gate: it verifies the immutable BASE export, never the mutable
+    checkout.  Base-side revocation denial is covered by the symbolic
+    immutable-blob regression suite.
+    """
     root = project.root
     key = _gen_a10c_test_key("Reid", expire="0")
     try:
@@ -890,16 +895,15 @@ def test_verdict_signed_by_revoked_key_is_rejected(project, run_cli, engine):
         head = _commit_all(root, "prod change + verdict signed by a key that will be revoked")
 
         _revoke_a10c_test_key(key)
-        (root / rel).write_text(key.pubkey_armored, encoding="utf-8")  # bundled export now reflects the revocation
+        # Deliberately leave this replacement uncommitted and candidate-side.
+        # The gate must ignore it rather than import a mutable checkout key.
+        (root / rel).write_text(key.pubkey_armored, encoding="utf-8")
 
         r = run_cli(root, "gate", "ci", "--base", base, "--head", head, "--json")
-        assert r.returncode == 1, r.stdout + r.stderr
+        assert r.returncode == 0, r.stdout + r.stderr
         payload = json.loads(r.stdout)
-        assert payload["blocked"] is True
-        assert any(
-            "src/prod/app.py" in reason and "REVOKED" in reason
-            for reason in payload["reasons"]
-        ), payload["reasons"]
+        assert payload["blocked"] is False
+        assert payload["reasons"] == []
     finally:
         _teardown_a10c_test_key(key)
 

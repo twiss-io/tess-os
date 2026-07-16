@@ -434,6 +434,11 @@ def test_verify_rejects_traversal_public_key_file(engine, tmp_path):
 
 
 def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
+    """Standalone sign-off diagnostics reject a checkout symlink explicitly.
+
+    Ship-gate verification instead requires a regular public-key blob from
+    the immutable BASE tree and never follows this candidate path.
+    """
     if os.name == "nt":
         pytest.skip("symlinks require elevated privileges on Windows")
     root = tmp_path / "repo"
@@ -455,5 +460,5 @@ def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
     }
     ok, reason = engine._gate_verify_signoff_signature(root, policy_instance, data)
     assert ok is False
-    assert "resolves outside the Tess root" in reason
+    assert "is a symlink" in reason
     assert "C1 containment" in reason

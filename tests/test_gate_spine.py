@@ -738,6 +738,7 @@ def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli
     verdict check exactly like explicit --base/--head does — proven
     independently since _gate_changed_paths_from_stdin's return shape
     changed (HIGH-1(c)) to also surface the pushed head sha(s)."""
+    base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
     blob = _blob_sha(gate_repo, "src/prod/app.py")
@@ -750,7 +751,10 @@ def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli
     )
     head = _commit_all(gate_repo, "prod change + covering verdict")
 
-    stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
+    # The allow path must name the actual remote/base commit.  An all-zero
+    # remote SHA is a first-push boundary: it deliberately has no established
+    # verifier registration or public-key bytes and therefore fails closed.
+    stdin = f"refs/heads/main {head} refs/heads/main {base}\n"
     r = run_cli(gate_repo, "gate", "pre-push", "--json", input_text=stdin)
     assert r.returncode == 0, r.stdout + r.stderr
     payload = json.loads(r.stdout)
