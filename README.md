@@ -124,6 +124,8 @@ reproducible release rehearsal and the production prerequisites are complete.
 - [Support and status](docs/STATUS.md) — capability labels and current limits.
 - [Gate operation and custody](docs/GATE_QUICKSTART.md) — safe diagnostics and
   the boundary around the human-owned key ceremony.
+- [Release safety contract](docs/RELEASE_SAFETY.md) — signed-source, protected
+  environment, package, rehearsal, and publication invariants.
 - [Adapters](adapters/README.md) — render targets and their limits.
 - [Mission and orchestration model](missions/README.md) — current conductor
   contracts and evidence model.

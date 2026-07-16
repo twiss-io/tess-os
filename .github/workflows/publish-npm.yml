@@ -1,47 +1,16 @@
 name: Publish create-tess to npm
 
-# Publishes the create-tess wizard package to npm.
-#
-# Deliberately a SEPARATE workflow from Release (.github/workflows/release.yml):
-# release.yml fires on the whole-framework `v*` tags and cuts a GitHub Release
-# for Tess OS itself. create-tess versions independently of the framework (it
-# is a thin wizard shipped alongside it), so it is keyed on its OWN tag
-# namespace (`create-tess-v*`), never the framework's `v*` tags — a
-# `create-tess-v0.1.1` tag can never collide with, or be mistaken for, a
-# framework release tag.
-#
-# WIRED, NOT FIRED (2026-07 hardening — the secret-leak fix in #30 landed
-# 2026-06-29, but create-tess@0.1.0 on npm predates it at 2026-06-28, and the
-# stale published version blocked a same-version re-publish). This workflow
-# makes the publish path exist and pass its own gates; it does NOT publish
-# anything on its own:
-#   - fires only on a `create-tess-v*` tag, OR an explicit workflow_dispatch
-#     where the operator types the exact version they intend to publish
-#     (a deliberate manual confirmation step, not just a click-to-run button)
-#   - the version gate below refuses to publish if the tag/input doesn't
-#     match create-tess/package.json's version — protects against a stale tag
-#     or a fat-fingered manual dispatch shipping the wrong version
-#   - uses npm Trusted Publishing (OIDC, id-token: write) — no NPM_TOKEN
-#     secret exists or is read by this workflow
-#
-# Until npm's Trusted Publisher is configured for this exact repo + this exact
-# workflow file (npmjs.com package settings — Xavier's action, not code), the
-# final `npm publish` step will fail closed with an auth error if it is ever
-# actually triggered. That is the intended state until the npm-side setup is
-# done and a real run is authorized — this workflow is deliberately inert
-# until then.
-
+# npm publication is a separate, explicit owner action after a successful
+# signed framework release. It never publishes from a branch, an independent
+# create-tess tag, or an arbitrary checkout.
 on:
-  push:
-    tags:
-      - 'create-tess-v*'
   workflow_dispatch:
     inputs:
       confirm_version:
-        description: 'Exact version to publish (must match create-tess/package.json), e.g. 0.1.1'
+        description: 'Released stable version to publish (X.Y.Z)'
         required: true
+        type: string
 
-# Publishes are serialized; never cancel an in-flight publish.
 concurrency:
   group: publish-npm-create-tess
   cancel-in-progress: false
@@ -52,77 +21,124 @@ permissions:
 jobs:
   publish:
     name: npm publish create-tess
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
-      id-token: write   # required for npm Trusted Publishing (OIDC) — no token
-    defaults:
-      run:
-        working-directory: create-tess
+      checks: read
+      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # The workflow and validator come from protected main. The release
+      # environment must externally restrict deployments to protected main.
+      - name: Checkout trusted publication control from main
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
 
-      # Trusted Publishing requires npm CLI >= 11.5.1 and Node.js >= 22.14.0.
+      - name: Checkout the confirmed release tag as candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: v${{ inputs.confirm_version }}
+          path: candidate
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Fetch protected main in candidate repository
+        working-directory: candidate
+        run: git fetch --force origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Gate 1 — release tag equals dispatched and fetched protected main
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: v${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          python control/scripts/release_preflight.py source \
+            --repo candidate \
+            --tag "$TAG" \
+            --main-ref origin/main \
+            --expected-sha "$EXPECTED_SHA"
+
+      - name: Gate 2 — exact protected signer identity
+        env:
+          TAG: v${{ inputs.confirm_version }}
+          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
+          TESS_RELEASE_SIGNER_FINGERPRINT: ${{ vars.TESS_RELEASE_SIGNER_FINGERPRINT }}
+        run: python control/scripts/release_preflight.py signer --repo candidate --tag "$TAG"
+
+      - name: Gate 3 — unified release version contract
+        env:
+          TAG: v${{ inputs.confirm_version }}
+        run: python control/scripts/release_preflight.py metadata --repo candidate --tag "$TAG"
+
+      - name: Gate 4 — workflow and GUI non-publication boundaries
+        run: python control/scripts/release_preflight.py workflows --repo candidate
+
+      - name: Gate 5 — successful framework release and secret scan on exact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ inputs.confirm_version }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git -C candidate rev-parse HEAD)"
+          checks_file="$RUNNER_TEMP/check-runs.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?filter=latest&per_page=100" \
+            > "$checks_file"
+          python control/scripts/release_preflight.py checks \
+            --input "$checks_file" \
+            --sha "$SOURCE_SHA" \
+            --required 'Publish GitHub Release' \
+            --required 'secret scan (gitleaks)'
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            > /dev/null
+
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          package-manager-cache: false
+          cache: npm
+          cache-dependency-path: candidate/create-tess/package-lock.json
 
-      - name: Ensure npm >= 11.5.1 (required for Trusted Publishing / OIDC)
-        run: npm install -g npm@latest
-
-      # ----------------------------------------------------------------------
-      # Gate — the tag (or the manual-dispatch confirmation input) MUST match
-      # create-tess/package.json's version exactly. Fail closed on mismatch so
-      # a stale tag or a fat-fingered dispatch can never publish the wrong
-      # version, or silently no-op into publishing whatever HEAD happens to be.
-      # ----------------------------------------------------------------------
-      # Expression values are passed through `env:` and read as quoted shell
-      # variables below — never interpolated directly into the script — so a
-      # crafted workflow_dispatch input can't inject shell commands.
-      - name: Resolve expected version
-        id: version
-        env:
-          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+      - name: Gate 6 — Trusted Publishing npm CLI floor
         run: |
           set -euo pipefail
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            WANT="$CONFIRM_VERSION"
-          else
-            WANT="${GITHUB_REF_NAME#create-tess-v}"
-          fi
-          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
-          echo "want_version=$WANT" >> "$GITHUB_OUTPUT"
-          echo "create-tess/package.json version: $PKG_VERSION"
-          echo "Requested/tagged version:         $WANT"
+          npm_version="$(npm --version)"
+          python - "$npm_version" <<'PY'
+          import sys
 
-      - name: Gate — tag/input version must match create-tess/package.json
-        env:
-          PKG_VERSION: ${{ steps.version.outputs.pkg_version }}
-          WANT_VERSION: ${{ steps.version.outputs.want_version }}
-        run: |
-          set -euo pipefail
-          if [ "$PKG_VERSION" != "$WANT_VERSION" ]; then
-            echo "::error::version mismatch — create-tess/package.json is $PKG_VERSION but the trigger asked for $WANT_VERSION. Refusing to publish (fail closed)."
-            exit 1
-          fi
-          echo "OK: version gate passed ($PKG_VERSION)."
+          parts = sys.argv[1].split('.')
+          if len(parts) < 3 or not all(part.isdigit() for part in parts[:3]):
+              raise SystemExit(f'cannot parse npm version: {sys.argv[1]}')
+          if tuple(map(int, parts[:3])) < (11, 5, 1):
+              raise SystemExit(f'npm {sys.argv[1]} is below Trusted Publishing minimum 11.5.1')
+          print(f'OK: npm {sys.argv[1]} supports Trusted Publishing')
+          PY
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Gate 7 — install create-tess dependencies without lifecycle scripts
+        working-directory: candidate/create-tess
+        run: npm ci --ignore-scripts
 
-      # Smoke gate — the same suite exercised locally (scaffold → gate
-      # activation → doctor/verify). Must pass before anything is published.
-      - name: create-tess smoke test (node --test)
+      - name: Gate 8 — create-tess tests
+        working-directory: candidate/create-tess
         run: npm test
 
-      # All gates passed. Trusted Publishing auto-detects the OIDC token from
-      # `id-token: write` — no NODE_AUTH_TOKEN / NPM_TOKEN is configured or
-      # needed. Provenance attestations are generated automatically by npm
-      # when publishing via Trusted Publishing (no --provenance flag needed).
-      - name: npm publish (Trusted Publishing / OIDC)
-        run: npm publish --access public
+      - name: Gate 9 — credential-free package manifest assertions
+        run: python control/scripts/release_preflight.py packs --repo candidate
+
+      # Trusted Publishing requests the OIDC credential only here. Lifecycle
+      # scripts remain disabled, no NPM_TOKEN is configured or read, and every
+      # source/signature/version/release gate above must have succeeded first.
+      - name: Publish create-tess through npm Trusted Publishing
+        working-directory: candidate/create-tess
+        run: npm publish --ignore-scripts --access public

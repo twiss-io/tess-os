@@ -1,116 +1,255 @@
 name: Release
 
-# Fires only on version tags (e.g. v1.0.0, v0.2.1-rc1).
+# Pull requests and blank manual runs rehearse without release credentials.
+# A production release is an explicit dispatch from protected main with a
+# stable, already-created signed tag. Tag pushes never execute release code.
 on:
-  push:
-    tags:
-      - 'v*'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/publish-npm.yml'
+      - 'scripts/release_preflight.py'
+      - 'tests/test_release_preflight.py'
+      - 'package.json'
+      - 'create-tess/**'
+      - 'gui/**'
+      - '.tess/tess.lock'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Signed stable tag to release (vX.Y.Z); leave blank to rehearse'
+        required: false
+        type: string
 
-# Releases are serialized; never cancel an in-flight release.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  release:
-    name: Gated release
+  rehearse:
+    name: Credential-free release rehearsal
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.release_tag == '')
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # required to publish the GitHub Release
-      pull-requests: write  # gitleaks-action summary
+      contents: read
     steps:
-      - name: Checkout (full history + tags)
-        uses: actions/checkout@v4
+      - name: Checkout candidate without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      # ----------------------------------------------------------------------
-      # Gate 1 — the tag MUST be a signed, annotated tag verified by the
-      # provisioned signer public key.  TESS_SIGNING_PUBKEY is MANDATORY:
-      # the job fails immediately if it is not set so that git verify-tag
-      # always runs.  The grep-only 'signature block present' fallback has
-      # been removed — cryptographic verification is the only gate (D4).
-      # ----------------------------------------------------------------------
-      - name: Gate 1 — verify the tag is signed
-        env:
-          TAG: ${{ github.ref_name }}
-          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
-        run: |
-          set -euo pipefail
-          echo "Inspecting tag: $TAG"
-
-          obj_type="$(git cat-file -t "$TAG" 2>/dev/null || echo missing)"
-          if [ "$obj_type" != "tag" ]; then
-            echo "::error::'$TAG' is a '${obj_type}', not an annotated tag." \
-                 "A signed annotated tag is required (git tag -s $TAG)."
-            exit 1
-          fi
-
-          if [ -z "${TESS_SIGNING_PUBKEY:-}" ]; then
-            echo "::error::TESS_SIGNING_PUBKEY secret is not set. Full cryptographic"
-            echo "         verification is mandatory — add the signer's public key as"
-            echo "         the TESS_SIGNING_PUBKEY repository secret and retry."
-            exit 1
-          fi
-
-          echo "Signer public key provisioned — running full cryptographic verification."
-          printf '%s\n' "$TESS_SIGNING_PUBKEY" | gpg --import
-          git verify-tag "$TAG"
-          echo "OK: '$TAG' signature cryptographically verified against the provisioned key."
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
-      - name: Install dev dependencies
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            create-tess/package-lock.json
+            gui/package-lock.json
+
+      - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt
 
-      # Gate 2 — the full test suite must pass.
-      - name: Gate 2 — full test suite (pytest)
+      # Current main is intentionally expected to report NOT READY until the
+      # 0.1.0/0.1.1 metadata debt is reconciled in a separately reviewed release
+      # preparation change. Advisory mode reports that debt without hiding it or
+      # turning this hardening PR red.
+      - name: Report release metadata readiness
+        run: python scripts/release_preflight.py metadata --advisory
+
+      - name: Verify workflow trust boundaries
+        run: python scripts/release_preflight.py workflows
+
+      - name: Credential-free pack manifest rehearsal
+        run: python scripts/release_preflight.py packs
+
+      - name: Full Python test suite
         run: python -m pytest
 
-      # Gate 3 — no secret content anywhere in the history.
-      #
-      # Run the gitleaks CLI directly. The gitleaks-action@v2 wrapper now requires
-      # a paid GITLEAKS_LICENSE secret for GitHub *organization*-owned repos (this
-      # repo is org-owned), so the wrapper is not used. The CLI is free and applies
-      # the committed .gitleaks.toml allowlist to the full git history.
-      - name: Install gitleaks
+      - name: tessctl doctor
+        env:
+          TESS_ROOT: ${{ github.workspace }}
+        run: python .tess/bin/tessctl doctor
+
+      - name: tessctl verify
+        env:
+          TESS_ROOT: ${{ github.workspace }}
+        run: python .tess/bin/tessctl verify
+
+      - name: Install and test create-tess
+        working-directory: create-tess
         run: |
-          GITLEAKS_VERSION=8.30.1
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
-          gitleaks version
+          npm ci --ignore-scripts
+          npm test
 
-      - name: Gate 3 — secret scan (gitleaks, full history)
-        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1
+      - name: Install and test private GUI
+        working-directory: gui
+        run: |
+          npm ci --ignore-scripts
+          npm test
 
-      # ----------------------------------------------------------------------
-      # Gate 4 — secret-scrub assertion: no vault/secret PATHS may be tracked.
-      # Complements gitleaks (which scans content) by forbidding the path
-      # shapes that hold credentials per .gitignore. Allows .env.example and
-      # the two safe vault scaffold files (.gitkeep + vault.registry.json).
-      #
-      # Re-anchored from cmd_publish (local, no remote push) to release CI —
-      # Cyra finding (a), HIGH: the REAL public-release scrub gate must be here.
-      # cmd_publish (tessctl) does NOT run a secondary scan — this is the
-      # sole path-scrub gate. (Design: conductor/vault.md; §6 Layer 5.)
-      # ----------------------------------------------------------------------
-      - name: Gate 4 — secret-scrub assertion (no vault/secret paths)
+  release_preflight:
+    name: Signed protected release preflight
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      tag_object_sha: ${{ steps.source.outputs.tag_object_sha }}
+    steps:
+      # This checkout is the trusted control plane. The release environment's
+      # deployment-branch policy must restrict this job to protected main.
+      - name: Checkout trusted release control from main
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      # Candidate contents are separate. All identity gates are executed by
+      # control/scripts/release_preflight.py, never by candidate code.
+      - name: Checkout candidate tag with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          path: candidate
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Fetch protected main in candidate repository
+        working-directory: candidate
+        run: git fetch --force origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Gate 1 — tag source equals dispatched and fetched protected main
+        id: source
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Scanning tracked files for forbidden vault/secret paths..."
+          python control/scripts/release_preflight.py source \
+            --repo candidate \
+            --tag "$TAG" \
+            --main-ref origin/main \
+            --expected-sha "$EXPECTED_SHA"
+          source_sha="$(git -C candidate rev-parse "$TAG^{commit}")"
+          tag_object_sha="$(git -C candidate rev-parse "$TAG^{tag}")"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "tag_object_sha=$tag_object_sha" >> "$GITHUB_OUTPUT"
+
+      # Both values are configured outside candidate repository files on the
+      # protected GitHub `release` environment. The lock fingerprint serves the
+      # runtime updater and is deliberately not a release signer allowlist.
+      - name: Gate 2 — exact protected signer identity
+        env:
+          TAG: ${{ inputs.release_tag }}
+          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
+          TESS_RELEASE_SIGNER_FINGERPRINT: ${{ vars.TESS_RELEASE_SIGNER_FINGERPRINT }}
+        run: python control/scripts/release_preflight.py signer --repo candidate --tag "$TAG"
+
+      - name: Gate 3 — unified stable release version contract
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: python control/scripts/release_preflight.py metadata --repo candidate --tag "$TAG"
+
+      - name: Gate 4 — workflow and npm publish boundaries
+        run: python control/scripts/release_preflight.py workflows --repo candidate
+
+      # No unchecked scanner is downloaded here. The existing CI secret-scan
+      # job must already have succeeded on this exact protected-main commit.
+      - name: Gate 5 — required upstream secret scan on exact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          checks_file="$RUNNER_TEMP/check-runs.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?filter=latest&per_page=100" \
+            > "$checks_file"
+          python control/scripts/release_preflight.py checks \
+            --input "$checks_file" \
+            --sha "$SOURCE_SHA" \
+            --required 'secret scan (gitleaks)'
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: candidate/requirements-dev.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            candidate/create-tess/package-lock.json
+            candidate/gui/package-lock.json
+
+      - name: Install Python test dependencies
+        working-directory: candidate
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Gate 6 — full Python test suite
+        working-directory: candidate
+        run: python -m pytest
+
+      - name: Gate 7 — tessctl doctor
+        working-directory: candidate
+        env:
+          TESS_ROOT: ${{ github.workspace }}/candidate
+        run: python .tess/bin/tessctl doctor
+
+      - name: Gate 8 — tessctl verify
+        working-directory: candidate
+        env:
+          TESS_ROOT: ${{ github.workspace }}/candidate
+        run: python .tess/bin/tessctl verify
+
+      - name: Gate 9 — create-tess tests
+        working-directory: candidate/create-tess
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
+      - name: Gate 10 — private GUI tests
+        working-directory: candidate/gui
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
+      - name: Gate 11 — credential-free pack manifest assertions
+        run: python control/scripts/release_preflight.py packs --repo candidate
+
+      - name: Gate 12 — secret-bearing path scrub
+        run: |
+          set -euo pipefail
           hits="$(
-            git ls-files \
+            git -C candidate ls-files \
               | grep -E '(^|/)(vault|tess-secrets|secrets)/|(^|/)\.env($|\.)|\.(key|pem|age|env\.json)$' \
               | grep -vE '(^|/)\.env\.example$' \
               | grep -vE '(^|/)vault\.registry\.json$' \
@@ -118,51 +257,69 @@ jobs:
               || true
           )"
           if [ -n "$hits" ]; then
-            echo "::error::secret-scrub FAILED — forbidden vault/secret paths are tracked:"
+            echo '::error::forbidden vault or secret paths are tracked'
             printf '%s\n' "$hits"
             exit 1
           fi
-          echo "OK: no vault/secret paths are tracked."
 
-      # ----------------------------------------------------------------------
-      # Gate 5 — vault registry integrity: vault.registry.json must be valid
-      # JSON and must NOT contain actual secret values (--strict schema check).
-      # This is the M5 scrub gate anchored to the real public-release path.
-      # Cyra finding (a), §6 Layer 5: doctor --strict as release CI assertion.
-      # ----------------------------------------------------------------------
-      - name: Gate 5 — vault registry integrity (doctor --strict)
+      - name: Gate 13 — vault registry contains no value-shaped secrets
+        working-directory: candidate
         run: |
-          set -euo pipefail
-          echo "Checking vault.registry.json for value-shaped fields..."
-          REGISTRY=".claude/vault/vault.registry.json"
-          if [ ! -f "$REGISTRY" ]; then
-            echo "::warning::vault.registry.json not found — skipping registry check."
-            exit 0
-          fi
-          python3 -c "
-          import json, re, sys
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
 
-          with open('$REGISTRY') as f:
-              data = json.load(f)
-
-          # Reject any field named 'value', 'secret', 'password', 'api_key', 'token'
-          # with a non-empty string value of >= 8 chars (actual credential shape)
-          registry_str = json.dumps(data)
+          registry = Path('.claude/vault/vault.registry.json')
+          if not registry.is_file():
+              raise SystemExit('vault.registry.json is required for release')
+          data = json.loads(registry.read_text(encoding='utf-8'))
           suspicious = re.findall(
-              r'\"(?:value|secret|password|api_key|token)\"\s*:\s*\"([^\"]{8,})\"',
-              registry_str
+              r'"(?:value|secret|password|api_key|token)"\s*:\s*"([^"]{8,})"',
+              json.dumps(data),
           )
           if suspicious:
-              print(f'FAIL: vault.registry.json contains {len(suspicious)} value-shaped field(s).')
-              print('The registry MUST be a catalog only — no actual secret values.')
-              sys.exit(1)
-          print(f'OK: vault.registry.json passes --strict schema check.')
-          "
+              raise SystemExit('vault registry contains value-shaped secret fields')
+          print('OK: vault registry is catalog-only')
+          PY
 
-      # All gates passed — publish the release. This step only runs because
-      # every preceding gate succeeded (steps fail fast), so the release is gated.
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+  publish_release:
+    name: Publish GitHub Release
+    needs: release_preflight
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      # Re-check the exact annotated tag object immediately before release.
+      # Repository rules must additionally forbid v* tag updates/deletions so
+      # this identity cannot race between the check and the API creation.
+      - name: Verify release tag ref did not move after preflight
+        env:
+          EXPECTED_TAG_OBJECT: ${{ needs.release_preflight.outputs.tag_object_sha }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release_preflight.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          actual_tag_object="$(
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              --jq '.object.sha' \
+              "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}"
+          )"
+          if [ "$actual_tag_object" != "$EXPECTED_TAG_OBJECT" ]; then
+            echo '::error::release tag moved after signed preflight'
+            exit 1
+          fi
+
+      # This is the only publication step. No candidate code runs in this job,
+      # and it is unreachable until the read-only preflight succeeds.
+      - name: Publish verified GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ needs.release_preflight.outputs.release_tag }}
+          target_commitish: ${{ needs.release_preflight.outputs.source_sha }}
           generate_release_notes: true
           fail_on_unmatched_files: false
