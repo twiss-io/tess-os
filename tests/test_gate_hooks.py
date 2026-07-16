@@ -137,18 +137,18 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v3" in text
-    assert "workflow_dispatch" in text
+    assert "# tess-gate-ci v4" in text
     assert "tessctl gate ci" in text
     import yaml
     parsed = yaml.safe_load(text)
-    # Phase 2b (CI auto-enforce): push + pull_request triggers now ship
-    # alongside workflow_dispatch. PyYAML's default (1.1) resolver reads the
+    # v4: only immutable push + pull_request events may create the
+    # authoritative required-check job. PyYAML's default (1.1) resolver reads the
     # bare `on:` key as boolean True, not the string 'on' — a well-known
     # YAML/GitHub-Actions quirk (GitHub's own parser treats `on` specially);
     # this is how every GH Actions workflow round-trips through PyYAML.
     triggers = parsed[True]
-    assert set(triggers) == {"workflow_dispatch", "push", "pull_request"}
+    assert set(triggers) == {"push", "pull_request"}
+    assert "workflow_dispatch" not in triggers
     assert triggers["push"]["branches"] == ["main"]
     assert triggers["pull_request"]["branches"] == ["main"]
     assert parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
@@ -161,6 +161,18 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     final_run = parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
     assert "steps.trusted_engine.outputs.engine_path" in final_run
     assert ".tess/bin/tessctl gate ci" not in final_run
+    resolve_run = next(
+        step["run"] for step in parsed["jobs"]["ship-gate"]["steps"]
+        if step.get("name") == "Resolve base/head for this trigger"
+    )
+    assert "github.event.pull_request.base.sha" in resolve_run
+    assert "github.event.pull_request.head.sha" in resolve_run
+    assert "github.event.before" in resolve_run
+    assert "github.event.after" in resolve_run
+    assert "inputs.base" not in resolve_run
+    assert "inputs.head" not in resolve_run
+    assert "4b825dc642cb6eb9a060e54bf8d69288fbee4904" not in resolve_run
+    assert "REMOTE_BASE_REQUIRED" in resolve_run
 
 
 def test_install_ci_workflow_idempotent(engine, tmp_path):
@@ -195,14 +207,15 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v4" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
     assert "push:" in upgraded
     assert "pull_request:" in upgraded
+    assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
 
-def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
+def test_install_ci_workflow_upgrades_v2_to_v4(engine, tmp_path):
     """honesty-capstone-audit-2026-07-08 §3-c: an operator on the v2 template
     (CI auto-enforce, but still trusting the pushed tree's own engine) is
     actively upgraded to v3 (trusted base-ref engine extraction) on the next
@@ -230,9 +243,50 @@ def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v4" in upgraded
     assert "# tess-gate-ci v2" not in upgraded
+    assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
+
+
+def test_install_ci_workflow_upgrades_v3_and_removes_manual_authority(engine, tmp_path):
+    """A previously-current v3 install must not retain workflow_dispatch."""
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "tess-gate.yml").write_text(
+        "# tess-gate-ci v3\n"
+        "name: Tess OS ship-gate\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      base: {required: true}\n"
+        "      head: {required: true}\n"
+        "jobs:\n"
+        "  ship-gate:\n"
+        "    name: tessctl gate ci\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n",
+        encoding="utf-8",
+    )
+
+    engine._gate_install_ci_workflow(tmp_path)
+
+    upgraded = (wf_dir / "tess-gate.yml").read_text()
+    assert "# tess-gate-ci v4" in upgraded
+    assert "workflow_dispatch:" not in upgraded
+    assert "inputs.base" not in upgraded
+    assert "inputs.head" not in upgraded
+    parsed = yaml.safe_load(upgraded)
+    assert set(parsed[True]) == {"push", "pull_request"}
+
+
+def test_committed_authoritative_workflow_matches_secure_template(engine):
+    """Reverse proof: checked-in workflow cannot drift back to manual refs."""
+    committed = (REPO_ROOT / ".github" / "workflows" / "tess-gate.yml").read_text()
+    assert committed == engine._GATE_CI_WORKFLOW
+    assert "workflow_dispatch:" not in committed
+    assert "inputs.base" not in committed
+    assert "inputs.head" not in committed
 
 
 def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine, tmp_path):

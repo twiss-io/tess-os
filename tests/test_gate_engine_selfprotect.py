@@ -63,6 +63,7 @@ _NEUTER_MARKER = "def _gate_run_ship_check("
 _NEUTER_INJECTION = (
     "def _gate_run_ship_check(\n"
     "    root, changed_paths, verdict_dirs=None, head_shas=None, base_shas=None,\n"
+    "    admission_source=None,\n"
     "):\n"
     "    # SAME-PUSH ENGINE TAMPER (honesty-capstone-audit-2026-07-08 §3-c fixture):\n"
     "    # an attacker-inserted early return that self-attests clean, unconditionally.\n"

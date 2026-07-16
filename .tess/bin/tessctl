@@ -29,8 +29,8 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               `verify` a signed verdict against core/policy/policy.yaml's verifier_keys
   gate        Phase 2 (+2b): deterministic enforcement spine — pre-commit/pre-push/ci
               contract + covering-verdict + signature checks; install-hooks scaffolds the
-              git hooks and the CI workflow (now push/pull_request-triggered, not just
-              workflow_dispatch); `clear` (Goal #5) clears a mission gate — refuses
+              git hooks and the CI workflow (authoritative only for immutable
+              push/pull_request events; never workflow_dispatch); `clear` (Goal #5) refuses
               without a real, on-disk --evidence artifact
   trace       Goal #8: local-first mission trace log — every `gate`/`validate`
               invocation appends a schema-valid JSONL event to
@@ -61,10 +61,12 @@ Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.9 compat (int|None, X|Y unions)
 
 import argparse
+import ast
 import datetime
 import getpass
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -72,6 +74,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unicodedata
@@ -139,6 +142,40 @@ CONTRACT_SCHEMAS = {
 # Distinct from CONTRACTS_DIR (which holds the schema, policy.schema.json).
 POLICY_DIR = "core/policy"
 POLICY_INSTANCE_CANDIDATES = ("policy.yaml", "policy.yml", "policy.json")
+
+# Bootstrap-only fail-closed detector for the first renderer-admission
+# inventory. It is deliberately broader than a lock-selected row set: before
+# a trusted BASE inventory exists, a candidate must not make these surfaces
+# disappear by deleting or rewriting its own lock. Once a BASE inventory is
+# present, its policy globs and canonical mappings are the sole authority.
+RENDERER_ADMISSION_BOOTSTRAP_GLOBS = (
+    ".tess/tess.lock",
+    ".tess/bin/**",
+    "tess.manifest.json",
+    ".tess/core/templates/**",
+    ".tess/core/commands/**",
+    ".tess/core/conductor/**",
+    ".tess/core/settings-core.json",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".claude/settings.json",
+    ".claude/commands/**",
+    ".codex/config.toml",
+    ".codex/prompts/**",
+    "prompts/**",
+    "conductor/identity.md",
+    "conductor/personality.md",
+    "clients/_template/CLAUDE.md",
+)
+_GATE_FULL_OBJECT_ID_RE = re.compile(r"^[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?$")
+# Unforgeable in-process provenance sentinels. They are set only by trusted
+# CLI entrypoints; no JSON/MCP argument can manufacture object identity.
+_GATE_ADMISSION_SOURCE_CI_EVENT = object()
+_GATE_ADMISSION_SOURCE_PRE_PUSH_REMOTE = object()
+_GATE_ADMISSION_AUTHORITATIVE_SOURCES = (
+    _GATE_ADMISSION_SOURCE_CI_EVENT,
+    _GATE_ADMISSION_SOURCE_PRE_PUSH_REMOTE,
+)
 
 # Phase 2 — where a human operator's explicit hard-floor sign-off artifacts
 # live (guardrails.md Rule 18: credentials/money/destructive-prod-data/
@@ -8718,6 +8755,137 @@ def _lint_policy(instance) -> list:
                 f"changed path, so it can never actually gate anything"
             )
 
+    renderer_admission = policy.get("renderer_admission")
+    if isinstance(renderer_admission, dict):
+        def _safe_inventory_value(value, *, glob_value=False):
+            if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value:
+                return False
+            parts = value.split("/")
+            if any(part in ("", ".", "..") for part in parts):
+                return False
+            if glob_value:
+                for part in parts:
+                    if any(token in part for token in ("?", "[", "]")):
+                        return False
+                    if "**" in part and part != "**":
+                        return False
+                    if part.count("*") > 1 and part != "**":
+                        return False
+            return True
+
+        def _glob_witness(pattern):
+            return "/".join(
+                "owned" if part == "**" else part.replace("*", "owned")
+                for part in pattern.split("/")
+            )
+
+        rule_id = renderer_admission.get("rule_id")
+        matching_rules = [
+            rule for rule in (policy.get("rules") or [])
+            if isinstance(rule, dict) and rule.get("id") == rule_id
+        ]
+        if len(matching_rules) != 1:
+            errors.append(
+                "$.policy.renderer_admission.rule_id: must name exactly one "
+                "policy.rules[] entry"
+            )
+        else:
+            admission_rule = matching_rules[0]
+            if admission_rule.get("require_verdict") is not True:
+                errors.append(
+                    "$.policy.renderer_admission.rule_id: admission rule must set "
+                    "require_verdict: true"
+                )
+            required_globs = {
+                renderer_admission.get("lock_file"),
+                renderer_admission.get("registry_file"),
+                *(renderer_admission.get("target_config_files") or []),
+                *(renderer_admission.get("family_globs") or []),
+            }
+            for mapping in renderer_admission.get("mappings") or []:
+                if isinstance(mapping, dict):
+                    required_globs.update(
+                        projection.get("output_glob")
+                        for projection in (mapping.get("projections") or [])
+                        if isinstance(projection, dict)
+                    )
+            required_globs.discard(None)
+            declared_globs = set(admission_rule.get("globs") or [])
+            missing_globs = sorted(required_globs - declared_globs)
+            if missing_globs:
+                errors.append(
+                    "$.policy.renderer_admission: admission rule is missing immutable "
+                    f"inventory coverage for {missing_globs}"
+                )
+
+        control_paths = [renderer_admission.get("lock_file"), renderer_admission.get("registry_file")]
+        control_paths.extend(renderer_admission.get("target_config_files") or [])
+        for value in control_paths:
+            if not _safe_inventory_value(value):
+                errors.append(
+                    "$.policy.renderer_admission: control paths must be safe, non-empty, "
+                    f"repo-relative POSIX paths; got {value!r}"
+                )
+
+        family_globs = renderer_admission.get("family_globs") or []
+        for value in family_globs:
+            if not _safe_inventory_value(value, glob_value=True):
+                errors.append(
+                    "$.policy.renderer_admission.family_globs: unsafe or unsupported glob "
+                    f"{value!r}"
+                )
+
+        mappings = [m for m in (renderer_admission.get("mappings") or []) if isinstance(m, dict)]
+        input_globs = [m.get("input_glob") for m in mappings]
+        if len(input_globs) != len(set(input_globs)):
+            errors.append("$.policy.renderer_admission.mappings: duplicate input_glob values are forbidden")
+        for i, mapping in enumerate(mappings):
+            input_glob = mapping.get("input_glob")
+            if not _safe_inventory_value(input_glob, glob_value=True):
+                errors.append(f"$.policy.renderer_admission.mappings[{i}].input_glob: unsafe glob")
+                continue
+            witness = _glob_witness(input_glob)
+            if not any(path_matches_globs(witness, [family]) for family in family_globs):
+                errors.append(
+                    f"$.policy.renderer_admission.mappings[{i}]: input_glob {input_glob!r} "
+                    "is not owned by any family_glob"
+                )
+            projections = [p for p in (mapping.get("projections") or []) if isinstance(p, dict)]
+            projection_globs = [p.get("output_glob") for p in projections]
+            if len(projection_globs) != len(set(projection_globs)):
+                errors.append(
+                    f"$.policy.renderer_admission.mappings[{i}]: duplicate output projections are forbidden"
+                )
+            for output_glob in projection_globs:
+                if not _safe_inventory_value(output_glob, glob_value=True) or "**" in output_glob:
+                    errors.append(
+                        f"$.policy.renderer_admission.mappings[{i}]: output projection "
+                        f"{output_glob!r} must be a safe exact-or-single-star repo glob"
+                    )
+        for i, left in enumerate(input_globs):
+            if not isinstance(left, str):
+                continue
+            for right in input_globs[i + 1:]:
+                if not isinstance(right, str):
+                    continue
+                if path_matches_globs(_glob_witness(left), [right]) or path_matches_globs(
+                    _glob_witness(right), [left]
+                ):
+                    errors.append(
+                        "$.policy.renderer_admission.mappings: overlapping input ownership "
+                        f"between {left!r} and {right!r} is forbidden"
+                    )
+        for family in family_globs:
+            if not isinstance(family, str):
+                continue
+            if not any(
+                isinstance(pattern, str) and path_matches_globs(_glob_witness(pattern), [family])
+                for pattern in input_globs
+            ):
+                errors.append(
+                    f"$.policy.renderer_admission.family_globs: {family!r} has no canonical mapping"
+                )
+
     verifier_keys = policy.get("verifier_keys")
     if isinstance(verifier_keys, dict):
         for name in verifier_keys:
@@ -9081,8 +9249,11 @@ _DECISION_MESSAGES = {
     "GOVERNED_TRANSITION_UNSUPPORTED": "a governed Git path transition is unsupported",
     "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
     "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
-    "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
-    "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
+    "MCP_DIAGNOSTIC_ONLY": "MCP gate checks cannot authorize shipping",
+    "HEAD_REQUIRED": "an immutable HEAD commit is required",
+    "COMMIT_RANGE_INVALID": "the supplied Git commit range is invalid",
+    "CI_EVENT_SOURCE_REQUIRED": "an authoritative CI event source is required",
+    "REMOTE_BASE_REQUIRED": "an immutable remote baseline is required",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
 }
 
@@ -9122,6 +9293,21 @@ def _decision_reason_code(raw_reason: object) -> str:
         return "NONREGULAR_ADDITION_UNSUPPORTED"
     if text.startswith("REF_DELETION_UNSUPPORTED:"):
         return "REF_DELETION_UNSUPPORTED"
+    if text.startswith("MCP_DIAGNOSTIC_ONLY:"):
+        return "MCP_DIAGNOSTIC_ONLY"
+    if text.startswith("HEAD_REQUIRED:"):
+        return "HEAD_REQUIRED"
+    if any(token in text for token in (
+        "RANGE_INVALID:", "INVALID_COMMIT_RANGE:", "BASE_NOT_ANCESTOR:", "BASE_EQUALS_HEAD:",
+        "BASE_OBJECT_INVALID:", "HEAD_OBJECT_INVALID:",
+    )):
+        return "COMMIT_RANGE_INVALID"
+    if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
+        return "ADMISSION_EVENT_SOURCE_REQUIRED"
+    if text.startswith("CI_EVENT_SOURCE_REQUIRED:"):
+        return "CI_EVENT_SOURCE_REQUIRED"
+    if text.startswith("REMOTE_BASE_REQUIRED:"):
+        return "REMOTE_BASE_REQUIRED"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
         return "POLICY_INVALID"
     if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
@@ -9161,6 +9347,15 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
     }
     if phase is not None:
         safe = {"phase": phase, **safe}
+    # These fields are control-plane booleans, never attacker-controlled
+    # values. Preserve them without exporting internal paths, refs, or raw
+    # evaluator diagnostics.
+    if "authoritative" in result:
+        safe["authoritative"] = bool(result["authoritative"])
+    if "diagnostic_would_block" in result:
+        safe["diagnostic_would_block"] = bool(result["diagnostic_would_block"])
+    if "diagnostic_only" in result:
+        safe["diagnostic_only"] = bool(result["diagnostic_only"])
     return safe
 
 
@@ -9534,6 +9729,56 @@ def _gate_empty_tree_oid(root: Path) -> str:
     return oid
 
 
+def _gate_validate_commit_range(root: Path, base: str, head: str) -> list[str]:
+    """Validate an immutable forward commit range, never an arbitrary object.
+
+    A full hex token is not enough: Git tree/blob IDs are equally hex-shaped.
+    Admission requires two distinct commit objects and BASE must be the exact
+    merge-base/ancestor of HEAD. Reversed, unrelated, nonexistent, tree, blob,
+    and same-object ranges are all refused before candidate evaluation.
+    """
+    reasons = []
+    for label, oid in (("BASE", base), ("HEAD", head)):
+        if not isinstance(oid, str) or not _GATE_FULL_OBJECT_ID_RE.fullmatch(oid):
+            reasons.append(f"{label}_REQUIRED: expected a full immutable 40- or 64-hex commit ID")
+            continue
+        result = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-t", oid],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            reasons.append(f"{label}_REQUIRED: object {oid!r} does not exist")
+        elif result.stdout.strip() != "commit":
+            reasons.append(
+                f"{label}_REQUIRED: object {oid!r} is {result.stdout.strip() or 'unknown'}, "
+                "not a commit (tree/blob/tag objects are rejected)"
+            )
+    if reasons:
+        return reasons
+    if base == head:
+        return ["INVALID_COMMIT_RANGE: BASE and HEAD must be distinct commit objects"]
+
+    ancestor = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", base, head],
+        capture_output=True, text=True,
+    )
+    if ancestor.returncode != 0:
+        return [
+            "INVALID_COMMIT_RANGE: BASE must be an ancestor of HEAD; reversed, descendant, "
+            "and unrelated ranges are rejected"
+        ]
+    merge_base = subprocess.run(
+        ["git", "-C", str(root), "merge-base", base, head],
+        capture_output=True, text=True,
+    )
+    if merge_base.returncode != 0 or merge_base.stdout.strip() != base:
+        return [
+            "INVALID_COMMIT_RANGE: BASE must be the exact merge-base of HEAD for this "
+            "event-derived admission range"
+        ]
+    return []
+
+
 def _gate_changed_paths_staged(root: Path) -> list:
     """Pre-commit mode: byte-safe staged tree transitions."""
     return _gate_paths_from_deltas(_gate_raw_diff(root, cached=True))
@@ -9545,31 +9790,72 @@ def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     return _gate_paths_from_deltas(_gate_raw_diff(root, base, head))
 
 
-def _gate_changed_paths_from_stdin(root: Path):
-    """git's pre-push protocol: stdin carries one line per updated ref —
-    `<local-ref> <local-sha> <remote-ref> <remote-sha>`. Accumulates the
-    union of changed files across every pushed ref. A brand-new ref (all-zero
-    remote sha) is diffed against git's empty-tree object so its very first
-    commit's files are included, not silently skipped.
+def _gate_first_push_remote_baseline(root: Path, remote_name: str | None, local_sha: str) -> str:
+    """Derive a non-authoritative commit baseline for a new remote ref.
 
-    Returns (changed_paths, head_shas, base_shas) — `head_shas` is every
-    pushed `local_sha` (the actual commits being pushed), used by
-    HIGH-1(c)'s committed-verdicts-only fix to resolve covering-verdict
-    discovery and current-content lookups against exactly what's being
-    pushed, never the on-disk working tree (which may hold uncommitted or
-    even untracked verdict-shaped files that were never part of this push
-    at all). `base_shas` (A3 fix) is the parallel list of each ref's
-    resolved base (`remote_sha`, or git's empty-tree object for a
-    brand-new ref) — used by `_gate_load_policy_at_base` to recover the
-    pre-push policy baseline for the policy-self-tamper check."""
+    Git represents a first push with an all-zero remote SHA. The empty-tree
+    object is not a commit and must never be passed to immutable renderer
+    admission as BASE. Instead, resolve the named remote's locally tracked
+    default-branch HEAD and derive its merge-base with the pushed commit.
+    This baseline is useful for ordinary diff/policy diagnostics, but it is
+    not authoritative renderer provenance because it is locally selected.
+    """
+    if not isinstance(remote_name, str) or not remote_name.strip():
+        raise GateSpineError(
+            "REMOTE_BASE_REQUIRED: first push has an all-zero remote SHA and no "
+            "remote name from the pre-push hook; refusing before renderer evaluation"
+        )
+    remote_name = remote_name.strip()
+    if remote_name.startswith("-") or any(ch in remote_name for ch in "\r\n\0"):
+        raise GateSpineError(
+            "REMOTE_BASE_REQUIRED: invalid pre-push remote name; refusing before "
+            "renderer evaluation"
+        )
+
+    remote_head_ref = f"refs/remotes/{remote_name}/HEAD"
+    tracked = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", f"{remote_head_ref}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    remote_head = tracked.stdout.strip()
+    if tracked.returncode != 0 or not _GATE_FULL_OBJECT_ID_RE.fullmatch(remote_head):
+        raise GateSpineError(
+            f"REMOTE_BASE_REQUIRED: first push has no immutable remote SHA and "
+            f"{remote_head_ref} is unavailable as a local tracking commit; fetch/set the "
+            "remote default-branch HEAD and retry"
+        )
+
+    merged = subprocess.run(
+        ["git", "-C", str(root), "merge-base", remote_head, local_sha],
+        capture_output=True, text=True,
+    )
+    baseline = merged.stdout.strip()
+    if merged.returncode != 0 or not _GATE_FULL_OBJECT_ID_RE.fullmatch(baseline):
+        raise GateSpineError(
+            "REMOTE_BASE_REQUIRED: first-push commit has no merge-base with the locally "
+            "tracked remote default branch; unrelated history cannot establish a baseline"
+        )
+    return baseline
+
+
+def _gate_changed_paths_from_stdin(root: Path, remote_name: str | None = None):
+    """Parse git's pre-push stdin protocol without trusting an empty tree.
+
+    Returns ``(changed_paths, head_shas, base_shas, renderer_authoritative)``.
+    Existing remote refs use their remote-provided commit as BASE. A new ref
+    uses `_gate_first_push_remote_baseline`; if no baseline exists the helper
+    fails with REMOTE_BASE_REQUIRED before renderer evaluation. Any such
+    locally derived pair makes renderer admission non-authoritative.
+    """
     lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
     if not lines:
-        return GateChangedPaths(), [], []  # no ref updates
+        return GateChangedPaths(), [], [], True  # no ref updates
     oid_length = _gate_object_id_length(root)
     zero_oid = "0" * oid_length
     deltas = []
     head_shas = []
     base_shas = []
+    renderer_authoritative = True
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
@@ -9597,12 +9883,20 @@ def _gate_changed_paths_from_stdin(root: Path):
                 "review evidence does not bind ref-topology deletion — fail-closed, "
                 "refusing"
             )
-        base = _gate_empty_tree_oid(root) if remote_sha == zero_oid else remote_sha
+        if remote_sha == zero_oid:
+            base = _gate_first_push_remote_baseline(root, remote_name, local_sha)
+            renderer_authoritative = False
+        else:
+            base = remote_sha
         ref_changes = _gate_diff_paths(root, base, local_sha)
+        # A new branch at exactly the tracked default-branch commit has no
+        # content delta and therefore needs no artificial BASE==HEAD pair.
+        if base == local_sha and not ref_changes:
+            continue
         deltas.extend(ref_changes.deltas)
         head_shas.append(local_sha)
         base_shas.append(base)
-    return _gate_paths_from_deltas(deltas), head_shas, base_shas
+    return _gate_paths_from_deltas(deltas), head_shas, base_shas, renderer_authoritative
 
 
 # ---------------------------------------------------------------------------
@@ -10183,6 +10477,758 @@ def _gate_git_regular_blob_at_ref(
     return blob.stdout, None
 
 
+def _gate_git_tree_entries_at_ref(root: Path, ref: str) -> tuple[dict, str | None]:
+    """Return every committed tree entry without following links.
+
+    Unlike `_gate_git_ls_tree`, this intentionally retains symlink and
+    submodule modes so renderer admission can reject them explicitly rather
+    than silently treating them as absent regular files.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", ref],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return {}, f"cannot read immutable Git tree {ref!r} — fail-closed"
+    entries = {}
+    for record in (item for item in result.stdout.split(b"\0") if item):
+        meta, separator, raw_path = record.partition(b"\t")
+        fields = meta.split()
+        if not separator or len(fields) != 3:
+            return {}, f"invalid immutable Git tree entry at {ref!r} — fail-closed"
+        mode, object_type, object_id = fields
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        if path in entries:
+            return {}, f"ambiguous immutable Git tree path {path!r} at {ref!r} — fail-closed"
+        entries[path] = {
+            "mode": mode.decode("ascii", errors="replace"),
+            "type": object_type.decode("ascii", errors="replace"),
+            "object_id": object_id.decode("ascii", errors="replace"),
+        }
+    return entries, None
+
+
+def _gate_regular_blob_from_tree(
+    root: Path, ref: str, entries: dict, rel_path: str, purpose: str,
+) -> tuple[bytes | None, str | None]:
+    entry = entries.get(rel_path)
+    if not isinstance(entry, dict):
+        return None, f"{purpose} {rel_path!r} is missing from immutable tree {ref!r}"
+    if entry.get("type") != "blob" or entry.get("mode") == "120000":
+        return None, (
+            f"{purpose} {rel_path!r} is not a regular blob in immutable tree {ref!r} "
+            "(symlinks, directories, and submodules are rejected)"
+        )
+    result = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "blob", entry.get("object_id", "")],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None, f"cannot read {purpose} blob {rel_path!r} at {ref!r}"
+    return result.stdout, None
+
+
+def _gate_renderer_admission_config(policy_instance: dict | None) -> dict | None:
+    policy = (policy_instance or {}).get("policy") or {}
+    config = policy.get("renderer_admission") if isinstance(policy, dict) else None
+    return config if isinstance(config, dict) else None
+
+
+def _gate_renderer_inventory_globs(config: dict) -> list[str]:
+    globs = [config.get("lock_file"), config.get("registry_file")]
+    globs.extend(config.get("target_config_files") or [])
+    globs.extend(config.get("family_globs") or [])
+    for mapping in config.get("mappings") or []:
+        if isinstance(mapping, dict):
+            globs.extend(_gate_renderer_projection_globs(mapping))
+    return [glob for glob in globs if isinstance(glob, str) and glob]
+
+
+def _gate_renderer_projection_globs(mapping: dict) -> list[str]:
+    return [
+        projection.get("output_glob")
+        for projection in (mapping.get("projections") or [])
+        if isinstance(projection, dict)
+        and isinstance(projection.get("output_glob"), str)
+    ]
+
+
+def _gate_renderer_mapping_for(config: dict, source_path: str) -> tuple[dict | None, str | None]:
+    matches = [
+        mapping for mapping in (config.get("mappings") or [])
+        if isinstance(mapping, dict)
+        and isinstance(mapping.get("input_glob"), str)
+        and path_matches_globs(source_path, [mapping["input_glob"]])
+    ]
+    if len(matches) != 1:
+        return None, (
+            f"renderer input {source_path!r} matches {len(matches)} canonical BASE mappings; "
+            "exactly one is required"
+        )
+    return matches[0], None
+
+
+class _GateNoDuplicateSafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that refuses duplicate keys at every mapping level."""
+
+
+def _gate_no_duplicate_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                f"found unhashable key ({exc})", key_node.start_mark,
+            )
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                f"found duplicate key {key!r}", key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_GateNoDuplicateSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _gate_no_duplicate_mapping,
+)
+
+
+def _gate_renderer_parse_lock(blob: bytes, ref: str) -> tuple[dict | None, str | None]:
+    try:
+        parsed = yaml.load(blob.decode("utf-8"), Loader=_GateNoDuplicateSafeLoader)
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        return None, f"renderer lock at {ref!r} is not valid UTF-8 YAML ({exc})"
+    files = parsed.get("files") if isinstance(parsed, dict) else None
+    if not isinstance(files, dict):
+        return None, f"renderer lock at {ref!r} has no files mapping"
+    return files, None
+
+
+def _gate_renderer_row_mapping_reason(
+    source_path: str, row: dict, mapping: dict, ref_label: str,
+) -> str | None:
+    if not isinstance(row, dict):
+        return f"renderer input {source_path!r} has no mapping row in {ref_label} lock"
+    live_path = row.get("live_path")
+    expected_live = mapping.get("lock_live_glob")
+    if expected_live is None:
+        if live_path is not None:
+            return (
+                f"renderer input {source_path!r} must be core-only in {ref_label} lock; "
+                f"candidate live_path {live_path!r} cannot redefine ownership"
+            )
+    elif not isinstance(live_path, str) or not path_matches_globs(live_path, [expected_live]):
+        return (
+            f"renderer input {source_path!r} maps to {live_path!r} in {ref_label} lock, "
+            f"outside canonical BASE mapping {expected_live!r}"
+        )
+    if mapping.get("lock_name_binding") is True and isinstance(live_path, str):
+        if Path(source_path).name != Path(live_path).name:
+            return (
+                f"renderer input {source_path!r} and lock live_path {live_path!r} do not "
+                "preserve the canonical basename binding"
+            )
+    canonical_fields = {
+        "status": mapping.get("canonical_status"),
+        "tier": mapping.get("canonical_tier"),
+        "render": mapping.get("canonical_render"),
+    }
+    for field, expected in canonical_fields.items():
+        if row.get(field) != expected:
+            return (
+                f"renderer input {source_path!r} has {ref_label} lock {field} "
+                f"{row.get(field)!r}, but immutable BASE mapping requires {expected!r}"
+            )
+    return None
+
+
+def _gate_renderer_blob_hash_reason(source_path: str, row: dict, blob: bytes, ref_label: str) -> str | None:
+    expected = row.get("base_sha") if isinstance(row, dict) else None
+    actual = sha256_bytes(blob)
+    if expected != actual:
+        return (
+            f"renderer input {source_path!r} has {ref_label} lock base_sha {expected!r}, "
+            f"but committed source bytes hash to {actual!r}"
+        )
+    return None
+
+
+class _GateDuplicateJsonKey(ValueError):
+    pass
+
+
+def _gate_json_object_no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _GateDuplicateJsonKey(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _gate_parse_json_strict(blob: bytes, label: str) -> tuple[dict | None, str | None]:
+    try:
+        parsed = json.loads(
+            blob.decode("utf-8"), object_pairs_hook=_gate_json_object_no_duplicates,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, _GateDuplicateJsonKey) as exc:
+        return None, f"{label} is invalid strict JSON ({exc})"
+    if not isinstance(parsed, dict):
+        return None, f"{label} must be a JSON object"
+    return parsed, None
+
+
+def _gate_renderer_registry_targets(blob: bytes, label: str) -> tuple[set[str] | None, str | None]:
+    try:
+        module = ast.parse(blob.decode("utf-8"), filename=label)
+    except (UnicodeDecodeError, SyntaxError) as exc:
+        return None, f"{label} is not valid UTF-8 Python ({exc})"
+    registry_values = []
+    for node in module.body:
+        value = None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "RENDER_TARGETS"
+            for target in node.targets
+        ):
+            value = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "RENDER_TARGETS"
+        ):
+            value = node.value
+        if value is not None:
+            registry_values.append(value)
+    if len(registry_values) != 1 or not isinstance(registry_values[0], ast.Dict):
+        return None, f"{label} must define exactly one literal RENDER_TARGETS dictionary"
+    names = []
+    for key in registry_values[0].keys:
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str) or not key.value:
+            return None, f"{label} RENDER_TARGETS keys must be non-empty string literals"
+        names.append(key.value)
+    if not names or len(names) != len(set(names)):
+        return None, f"{label} RENDER_TARGETS must be non-empty and contain no duplicate names"
+    return set(names), None
+
+
+def _gate_renderer_validate_target_config(
+    parsed: dict, label: str, known_targets: set[str],
+) -> list[str]:
+    reasons = []
+    render_targets = parsed.get("render_targets")
+    if not isinstance(render_targets, dict):
+        return [f"{label} render_targets must be an object"]
+    unknown = sorted(set(render_targets) - {"_doc", "enabled"})
+    if unknown:
+        reasons.append(f"{label} render_targets has unknown keys {unknown}")
+    if "_doc" in render_targets and (
+        not isinstance(render_targets["_doc"], str) or not render_targets["_doc"].strip()
+    ):
+        reasons.append(f"{label} render_targets._doc must be a non-empty string when present")
+    enabled = render_targets.get("enabled")
+    if not isinstance(enabled, list) or not enabled:
+        reasons.append(f"{label} render_targets.enabled must be a non-empty array")
+        return reasons
+    if not all(isinstance(name, str) and name.strip() for name in enabled):
+        reasons.append(f"{label} render_targets.enabled entries must be non-empty strings")
+        return reasons
+    if len(enabled) != len(set(enabled)):
+        reasons.append(f"{label} render_targets.enabled contains duplicate target names")
+    unknown_targets = sorted(set(enabled) - known_targets)
+    if unknown_targets:
+        reasons.append(
+            f"{label} enables targets absent from immutable BASE registry: {unknown_targets}"
+        )
+    return reasons
+
+
+def _gate_renderer_projection_path(
+    source_path: str, output_glob: str,
+) -> tuple[str | None, str | None]:
+    if not isinstance(output_glob, str) or not output_glob:
+        return None, f"invalid immutable BASE renderer output projection {output_glob!r}"
+    if "*" not in output_glob:
+        return output_glob, None
+    if output_glob.count("*") != 1:
+        return None, f"unsupported renderer output projection {output_glob!r}"
+    parts = output_glob.split("/")
+    if not parts[-1].count("*") == 1 or any("*" in part for part in parts[:-1]):
+        return None, f"renderer output projection wildcard must occur once in basename: {output_glob!r}"
+    prefix, suffix = parts[-1].split("*", 1)
+    source_name = Path(source_path).name
+    if not source_name.startswith(prefix) or (suffix and not source_name.endswith(suffix)):
+        return None, (
+            f"renderer source basename {source_name!r} cannot bind projection {output_glob!r}"
+        )
+    wildcard = source_name[len(prefix):len(source_name) - len(suffix) if suffix else None]
+    if not wildcard:
+        return None, f"renderer output projection {output_glob!r} produced an empty binding"
+    parts[-1] = f"{prefix}{wildcard}{suffix}"
+    return "/".join(parts), None
+
+
+def _gate_materialize_commit(root: Path, ref: str) -> tuple[Path | None, tempfile.TemporaryDirectory | None, str | None]:
+    archive = subprocess.run(
+        ["git", "-C", str(root), "archive", "--format=tar", ref],
+        capture_output=True,
+    )
+    if archive.returncode != 0:
+        return None, None, f"cannot materialize immutable renderer tree {ref!r}"
+    temp = tempfile.TemporaryDirectory(prefix="tess-renderer-head-")
+    materialized = Path(temp.name)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as stream:
+            for member in stream.getmembers():
+                rel = member.name.rstrip("/")
+                if not rel:
+                    continue
+                path = Path(rel)
+                if path.is_absolute() or ".." in path.parts or "\\" in rel:
+                    raise ValueError(f"unsafe archive path {rel!r}")
+                destination = materialized / path
+                resolved_parent = destination.parent.resolve()
+                if materialized.resolve() not in (resolved_parent, *resolved_parent.parents):
+                    raise ValueError(f"archive path escapes materialized root: {rel!r}")
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    continue
+                source = stream.extractfile(member)
+                if source is None:
+                    raise ValueError(f"cannot read archive member {rel!r}")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(source.read())
+    except (tarfile.TarError, OSError, ValueError) as exc:
+        temp.cleanup()
+        return None, None, f"cannot safely materialize immutable renderer tree {ref!r} ({exc})"
+    return materialized, temp, None
+
+
+def _gate_renderer_expected_projection(
+    materialized: Path, source_path: str, output_path: str, mode: str,
+) -> tuple[bytes | None, str | None]:
+    source = materialized / source_path
+    output = materialized / output_path
+    try:
+        if mode == "source-copy":
+            return source.read_bytes(), None
+        if mode == "core-render":
+            return render_core_to_live(source, output, materialized), None
+        if mode == "engine-render":
+            candidates = []
+            for target in RENDER_TARGETS.values():
+                expected = target.expected_live_bytes(materialized, output_path)
+                if expected is not None:
+                    candidates.append(expected)
+            unique = {hashlib.sha256(candidate).digest(): candidate for candidate in candidates}
+            if not unique:
+                return None, f"immutable BASE engine has no renderer for projection {output_path!r}"
+            if len(unique) != 1:
+                return None, f"immutable BASE engine gives conflicting projections for {output_path!r}"
+            return next(iter(unique.values())), None
+        return None, f"unknown immutable BASE projection mode {mode!r}"
+    except (OSError, UnicodeError, ValueError, GateError, SystemExit) as exc:
+        return None, f"cannot compute immutable BASE projection {output_path!r} ({exc})"
+
+
+def _gate_renderer_validate_pair(
+    root: Path, base: str, head: str, baseline_policy: dict, config: dict,
+    sensitive_paths: list[str],
+) -> list[str]:
+    """Validate candidate coherence against one immutable BASE inventory.
+
+    Candidate data may demonstrate that a source upgrade and its hash agree;
+    it never chooses which sources, rows, mappings, or outputs are required.
+    """
+    reasons: list[str] = []
+    base_entries, error = _gate_git_tree_entries_at_ref(root, base)
+    if error:
+        return [error]
+    head_entries, error = _gate_git_tree_entries_at_ref(root, head)
+    if error:
+        return [error]
+
+    policy = (baseline_policy.get("policy") or {}) if isinstance(baseline_policy, dict) else {}
+    rule_id = config.get("rule_id")
+    rules = [
+        rule for rule in (policy.get("rules") or [])
+        if isinstance(rule, dict) and rule.get("id") == rule_id
+    ]
+    inventory_globs = set(_gate_renderer_inventory_globs(config))
+    if len(rules) != 1 or rules[0].get("require_verdict") is not True:
+        reasons.append("immutable BASE renderer inventory has no unique require-verdict rule")
+    else:
+        missing = sorted(inventory_globs - set(rules[0].get("globs") or []))
+        if missing:
+            reasons.append(f"immutable BASE renderer rule omits inventory globs {missing}")
+
+    control_paths = [config.get("lock_file"), config.get("registry_file")]
+    control_paths.extend(config.get("target_config_files") or [])
+    control_blobs: dict[tuple[str, str], bytes] = {}
+    for control_path in control_paths:
+        if not isinstance(control_path, str) or not control_path:
+            reasons.append("immutable BASE renderer inventory contains an invalid control path")
+            continue
+        for ref, entries, label in ((base, base_entries, "BASE"), (head, head_entries, "HEAD")):
+            blob, blob_error = _gate_regular_blob_from_tree(
+                root, ref, entries, control_path, f"renderer {label} control",
+            )
+            if blob_error:
+                reasons.append(blob_error)
+            else:
+                control_blobs[(label, control_path)] = blob
+
+    lock_path = config.get("lock_file")
+    base_lock_blob = control_blobs.get(("BASE", lock_path))
+    head_lock_blob = control_blobs.get(("HEAD", lock_path))
+    base_rows = head_rows = None
+    if base_lock_blob is not None:
+        base_rows, parse_error = _gate_renderer_parse_lock(base_lock_blob, base)
+        if parse_error:
+            reasons.append(parse_error)
+    if head_lock_blob is not None:
+        head_rows, parse_error = _gate_renderer_parse_lock(head_lock_blob, head)
+        if parse_error:
+            reasons.append(parse_error)
+
+    registry_path = config.get("registry_file")
+    known_targets = None
+    for label in ("BASE", "HEAD"):
+        registry_blob = control_blobs.get((label, registry_path))
+        if registry_blob is None:
+            continue
+        targets, registry_error = _gate_renderer_registry_targets(
+            registry_blob, f"renderer {label} registry {registry_path!r}",
+        )
+        if registry_error:
+            reasons.append(registry_error)
+        elif label == "BASE":
+            known_targets = targets
+    if known_targets is not None and known_targets != set(RENDER_TARGETS):
+        reasons.append(
+            "immutable BASE registry target names do not match the executing BASE engine "
+            f"registry: committed={sorted(known_targets)}, executing={sorted(RENDER_TARGETS)}"
+        )
+
+    for config_path in config.get("target_config_files") or []:
+        for label in ("BASE", "HEAD"):
+            blob = control_blobs.get((label, config_path))
+            if blob is None:
+                continue
+            parsed, parse_error = _gate_parse_json_strict(
+                blob, f"renderer {label} target config {config_path!r}",
+            )
+            if parse_error:
+                reasons.append(parse_error)
+                continue
+            if known_targets is None:
+                reasons.append(
+                    f"renderer {label} target config cannot be validated without BASE registry targets"
+                )
+                continue
+            reasons.extend(
+                _gate_renderer_validate_target_config(
+                    parsed, f"renderer {label} target config {config_path!r}", known_targets,
+                )
+            )
+
+    family_globs = [glob for glob in (config.get("family_globs") or []) if isinstance(glob, str)]
+    base_sources = {
+        path for path in base_entries if path_matches_globs(path, family_globs)
+    }
+    head_sources = {
+        path for path in head_entries if path_matches_globs(path, family_globs)
+    }
+
+    for mapping in config.get("mappings") or []:
+        if not isinstance(mapping, dict) or not isinstance(mapping.get("input_glob"), str):
+            reasons.append("immutable BASE renderer inventory contains an invalid mapping")
+            continue
+        pattern = mapping["input_glob"]
+        minimum = mapping.get("min_matches", 1)
+        if sum(path_matches_globs(path, [pattern]) for path in base_sources) < minimum:
+            reasons.append(f"immutable BASE renderer mapping {pattern!r} has fewer than {minimum} inputs")
+        if sum(path_matches_globs(path, [pattern]) for path in head_sources) < minimum:
+            reasons.append(f"candidate renderer mapping {pattern!r} has fewer than {minimum} inputs")
+
+    if not isinstance(base_rows, dict) or not isinstance(head_rows, dict):
+        return reasons
+
+    for source_path in sorted(base_sources | head_sources):
+        mapping, mapping_error = _gate_renderer_mapping_for(config, source_path)
+        if mapping_error:
+            reasons.append(mapping_error)
+            continue
+
+        base_blob = head_blob = None
+        if source_path in base_entries:
+            base_blob, blob_error = _gate_regular_blob_from_tree(
+                root, base, base_entries, source_path, "renderer BASE input",
+            )
+            if blob_error:
+                reasons.append(blob_error)
+        if source_path in head_entries:
+            head_blob, blob_error = _gate_regular_blob_from_tree(
+                root, head, head_entries, source_path, "renderer candidate input",
+            )
+            if blob_error:
+                reasons.append(blob_error)
+        else:
+            reasons.append(f"candidate deleted required BASE renderer input {source_path!r}")
+
+        base_row = base_rows.get(source_path)
+        head_row = head_rows.get(source_path)
+        if source_path in base_sources:
+            reason = _gate_renderer_row_mapping_reason(source_path, base_row, mapping, "BASE")
+            if reason:
+                reasons.append(reason)
+            if base_blob is not None and isinstance(base_row, dict):
+                reason = _gate_renderer_blob_hash_reason(source_path, base_row, base_blob, "BASE")
+                if reason:
+                    reasons.append(reason)
+        reason = _gate_renderer_row_mapping_reason(source_path, head_row, mapping, "candidate")
+        if reason:
+            reasons.append(reason)
+        if source_path not in base_sources and isinstance(head_row, dict):
+            for field in ("status", "tier", "render"):
+                if field not in head_row:
+                    reasons.append(
+                        f"candidate-added renderer input {source_path!r} must explicitly declare "
+                        f"canonical lock metadata field {field!r}"
+                    )
+        if head_blob is not None and isinstance(head_row, dict):
+            reason = _gate_renderer_blob_hash_reason(source_path, head_row, head_blob, "candidate")
+            if reason:
+                reasons.append(reason)
+
+        if isinstance(base_row, dict) and isinstance(head_row, dict):
+            for field in ("status", "tier", "live_path", "render"):
+                if base_row.get(field) != head_row.get(field):
+                    reasons.append(
+                        f"candidate rewrote immutable BASE renderer ownership field {field!r} "
+                        f"for {source_path!r}: {base_row.get(field)!r} -> {head_row.get(field)!r}"
+                    )
+
+    output_globs = sorted({
+        glob
+        for mapping in (config.get("mappings") or []) if isinstance(mapping, dict)
+        for glob in _gate_renderer_projection_globs(mapping)
+    })
+
+    def _entry_changed(path):
+        base_entry = base_entries.get(path)
+        head_entry = head_entries.get(path)
+        if base_entry is None or head_entry is None:
+            return base_entry != head_entry
+        return any(
+            base_entry.get(field) != head_entry.get(field)
+            for field in ("mode", "type", "object_id")
+        )
+
+    head_source_mappings = {}
+    for source_path in sorted(head_sources):
+        mapping, mapping_error = _gate_renderer_mapping_for(config, source_path)
+        if mapping_error:
+            continue
+        head_source_mappings[source_path] = mapping
+
+    required_projections: dict[str, list[tuple[str, str]]] = {}
+    changed_sources = {
+        source_path for source_path in head_sources
+        if _entry_changed(source_path)
+    }
+    for source_path in sorted(changed_sources):
+        mapping = head_source_mappings.get(source_path)
+        if mapping is None:
+            continue
+        for projection in mapping.get("projections") or []:
+            if not isinstance(projection, dict):
+                continue
+            output_path, projection_error = _gate_renderer_projection_path(
+                source_path, projection.get("output_glob"),
+            )
+            if projection_error:
+                reasons.append(projection_error)
+                continue
+            required_projections.setdefault(output_path, []).append(
+                (source_path, projection.get("mode")),
+            )
+            if not _entry_changed(output_path):
+                reasons.append(
+                    f"changed renderer input {source_path!r} is missing required projection "
+                    f"change {output_path!r}"
+                )
+
+    changed_outputs = {
+        path for path in sensitive_paths
+        if path_matches_globs(path, output_globs)
+    }
+    for output_path in sorted(changed_outputs):
+        matched = False
+        for source_path, mapping in head_source_mappings.items():
+            for projection in mapping.get("projections") or []:
+                if not isinstance(projection, dict):
+                    continue
+                projected, projection_error = _gate_renderer_projection_path(
+                    source_path, projection.get("output_glob"),
+                )
+                if projection_error:
+                    continue
+                if projected == output_path:
+                    matched = True
+                    pair = (source_path, projection.get("mode"))
+                    if pair not in required_projections.setdefault(output_path, []):
+                        required_projections[output_path].append(pair)
+        if not matched:
+            reasons.append(
+                f"changed renderer output {output_path!r} has no exact immutable BASE source projection"
+            )
+
+    outputs_to_check = set(changed_outputs) | set(required_projections)
+    regular_outputs = set()
+    for output_path in sorted(outputs_to_check):
+        if output_path in base_entries and output_path not in head_entries:
+            reasons.append(f"candidate deleted BASE renderer output {output_path!r}")
+        if output_path not in head_entries:
+            reasons.append(f"candidate is missing required renderer output {output_path!r}")
+            continue
+        entry = head_entries[output_path]
+        if entry.get("type") != "blob" or entry.get("mode") == "120000":
+            reasons.append(
+                f"candidate renderer output {output_path!r} is not a regular blob "
+                "(symlinks and submodules are rejected)"
+            )
+            continue
+        regular_outputs.add(output_path)
+
+    projections_to_check = {
+        output_path: pairs
+        for output_path, pairs in required_projections.items()
+        if output_path in regular_outputs and pairs
+    }
+    if projections_to_check:
+        materialized, temp, materialize_error = _gate_materialize_commit(root, head)
+        if materialize_error:
+            reasons.append(materialize_error)
+        else:
+            try:
+                for output_path, source_modes in sorted(projections_to_check.items()):
+                    expected_candidates = {}
+                    for source_path, mode in source_modes:
+                        expected, projection_error = _gate_renderer_expected_projection(
+                            materialized, source_path, output_path, mode,
+                        )
+                        if projection_error:
+                            reasons.append(projection_error)
+                            continue
+                        expected_candidates[hashlib.sha256(expected).digest()] = expected
+                    if len(expected_candidates) != 1:
+                        if expected_candidates:
+                            reasons.append(
+                                f"immutable BASE mappings produce conflicting expected bytes for "
+                                f"{output_path!r}"
+                            )
+                        continue
+                    actual, blob_error = _gate_regular_blob_from_tree(
+                        root, head, head_entries, output_path, "renderer candidate output",
+                    )
+                    if blob_error:
+                        reasons.append(blob_error)
+                        continue
+                    expected = next(iter(expected_candidates.values()))
+                    if actual != expected:
+                        reasons.append(
+                            f"candidate renderer output {output_path!r} is stale or incoherent: "
+                            f"expected {sha256_bytes(expected)}, committed {sha256_bytes(actual)}"
+                        )
+            finally:
+                temp.cleanup()
+    return reasons
+
+
+def _gate_renderer_admission_prepare(
+    root: Path, changed_paths: list, head_shas: list | None, base_shas: list | None,
+    admission_source=None,
+) -> tuple[list, list]:
+    """Augment renderer-sensitive paths and validate them against BASE.
+
+    The authoritative raw gate diff retains deletions and type transitions:
+    deleting or replacing a required source/row/output is itself the bypass.
+    This function filters that same byte-safe event-derived diff to renderer
+    inventory paths and returns explicit failures.
+    """
+    changed = set(changed_paths or [])
+    reasons: list[str] = []
+    heads = list(head_shas or [])
+    bases = list(base_shas or [])
+
+    if not heads or not bases:
+        if any(path_matches_globs(path, list(RENDERER_ADMISSION_BOOTSTRAP_GLOBS)) for path in changed):
+            reasons.append(
+                "BASE_REQUIRED: renderer admission needs an event-derived immutable BASE/HEAD pair; "
+                "candidate lock or policy cannot substitute"
+            )
+        return sorted(changed), reasons
+    if len(heads) != len(bases):
+        reasons.append("renderer admission received mismatched BASE/HEAD event pairs")
+        return sorted(changed), reasons
+
+    for base, head in zip(bases, heads):
+        range_reasons = _gate_validate_commit_range(root, base, head)
+        if range_reasons:
+            reasons.extend(range_reasons)
+            continue
+        baseline_policy, baseline_ref = _gate_load_policy_at_base_with_ref(root, [base])
+        config = _gate_renderer_admission_config(baseline_policy)
+        inventory_globs = (
+            _gate_renderer_inventory_globs(config)
+            if config is not None else list(RENDERER_ADMISSION_BOOTSTRAP_GLOBS)
+        )
+        try:
+            pair_diff = _gate_diff_paths(root, base, head)
+        except GateSpineError as exc:
+            reasons.append(str(exc))
+            continue
+        pair_paths = {
+            path for path in pair_diff
+            if path and path_matches_globs(path, inventory_globs)
+        }
+        pair_paths.update(
+            path for path in changed
+            if path_matches_globs(path, inventory_globs)
+        )
+        pair_paths = sorted(pair_paths)
+        changed.update(pair_paths)
+        if not pair_paths:
+            continue
+        if not any(admission_source is source for source in _GATE_ADMISSION_AUTHORITATIVE_SOURCES):
+            reasons.append(
+                "ADMISSION_EVENT_SOURCE_REQUIRED: renderer admission is authoritative only for "
+                "an internally-labeled CI event or Git pre-push remote range; explicit/MCP/candidate "
+                "labels cannot authorize it"
+            )
+            continue
+        if config is None or baseline_ref != base:
+            reasons.append(
+                "TRUST_BOOTSTRAP_REQUIRED: immutable BASE has no renderer-admission inventory; "
+                "the first inventory PR is owner-controlled and cannot self-protect"
+            )
+            continue
+        reasons.extend(
+            _gate_renderer_validate_pair(
+                root, base, head, baseline_policy, config, pair_paths,
+            )
+        )
+    return sorted(changed), reasons
+
+
 def _gate_load_baseline_verifier_key_blobs(
     root: Path, baseline_instance: dict | None, baseline_ref: str | None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
@@ -10699,11 +11745,20 @@ def _gate_hard_floor_gap_report(
 def _gate_run_ship_check(
     root: Path, changed_paths: list, verdict_dirs: list = None,
     head_shas: list = None, base_shas: list = None,
+    admission_source=None,
 ) -> dict:
-    if not changed_paths:
+    # Renderer admission is intentionally evaluated before the ordinary
+    # empty-diff fast path.  The generic gate diff omits deletions; a deleted
+    # renderer input/lock row/output is itself a security-relevant change and
+    # must not disappear from the admission inventory.
+    changed_paths, renderer_reasons = _gate_renderer_admission_prepare(
+        root, changed_paths, head_shas, base_shas, admission_source,
+    )
+    if not changed_paths and not renderer_reasons:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
-    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
+    reasons = [f"[renderer-base] {reason}" for reason in renderer_reasons]
+    reasons += [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
 
     policy_instance, policy_errors = _gate_load_policy(root)
     if policy_errors:
@@ -10795,7 +11850,10 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
         print(json.dumps(safe, indent=2))
         return
     status = "BLOCKED" if safe["blocked"] else "PASS"
-    print(f"tessctl gate {phase} — {status}")
+    if safe.get("authoritative") is False:
+        print(f"tessctl gate {phase} — DIAGNOSTIC-ONLY {status} (not external admission)")
+    else:
+        print(f"tessctl gate {phase} — {status}")
     print(f"  changed paths: {safe['changed_paths_count']}")
     for reason in safe["reasons"]:
         print(f"    - {reason}")
@@ -10856,8 +11914,15 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
             changed = _gate_diff_paths(root, base, head)
             head_shas = [head]
             base_shas = [base]
+            admission_source = None  # explicit CLI ranges are diagnostic, not remote-derived
         else:
-            changed, head_shas, base_shas = _gate_changed_paths_from_stdin(root)
+            changed, head_shas, base_shas, renderer_authoritative = (
+                _gate_changed_paths_from_stdin(root, getattr(args, "remote", None))
+            )
+            admission_source = (
+                _GATE_ADMISSION_SOURCE_PRE_PUSH_REMOTE
+                if renderer_authoritative else None
+            )
     except GateSpineError as e:
         result = {"blocked": True, "reasons": [str(e)], "changed_paths": []}
         _trace_record(  # Goal #8: mission trace log
@@ -10867,7 +11932,9 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         _gate_print_result("pre-push", result, as_json)
         sys.exit(1)
 
-    result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas, base_shas)
+    result = _gate_run_ship_check(
+        root, changed, verdict_dirs, head_shas, base_shas, admission_source,
+    )
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-push",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
@@ -10877,10 +11944,116 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
     sys.exit(1 if result["blocked"] else 0)
 
 
+_GATE_CI_PROTECTED_JOB_ID = "ship-gate"
+_GATE_CI_WORKFLOW_REF_FRAGMENT = "/.github/workflows/tess-gate.yml@"
+
+
+def _gate_ci_event_provenance(root: Path, base: str, head: str) -> tuple[bool, str | None]:
+    """Bind authoritative CI admission to GitHub's protected event context.
+
+    A local invocation is a useful diagnostic but cannot create an external
+    required-check context.  Inside GitHub Actions, only the canonical job in
+    `.github/workflows/tess-gate.yml` may become authoritative, and its CLI
+    range must byte-match immutable push/pull_request fields in the event
+    payload.  A caller-selected workflow_dispatch range is always rejected.
+    """
+    in_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    job_id = os.environ.get("GITHUB_JOB", "")
+    workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
+
+    # Ordinary local calls — and other CI jobs — are explicitly diagnostic.
+    # They cannot satisfy the required `tessctl gate ci` job name externally.
+    if not in_actions or job_id != _GATE_CI_PROTECTED_JOB_ID:
+        return False, None
+    if _GATE_CI_WORKFLOW_REF_FRAGMENT not in workflow_ref:
+        return False, (
+            "CI_EVENT_SOURCE_REQUIRED: the protected ship-gate job must originate from "
+            ".github/workflows/tess-gate.yml; caller-selected jobs are non-authoritative"
+        )
+
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name not in ("push", "pull_request"):
+        return False, (
+            "CI_EVENT_SOURCE_REQUIRED: authoritative tessctl gate ci accepts only immutable "
+            "push or pull_request event ranges; workflow_dispatch/manual inputs are refused"
+        )
+    event_path_raw = os.environ.get("GITHUB_EVENT_PATH", "")
+    event_path = Path(event_path_raw) if event_path_raw else None
+    if event_path is None or not event_path.is_file():
+        return False, (
+            "CI_EVENT_PAYLOAD_REQUIRED: protected ship-gate context has no readable "
+            "GITHUB_EVENT_PATH payload"
+        )
+    try:
+        if event_path.stat().st_size > 10 * 1024 * 1024:
+            raise ValueError("event payload exceeds 10 MiB")
+        event, parse_reason = _gate_parse_json_strict(
+            event_path.read_bytes(), "GITHUB_EVENT_PATH",
+        )
+    except (OSError, ValueError) as exc:
+        return False, f"CI_EVENT_PAYLOAD_REQUIRED: cannot read GitHub event payload ({exc})"
+    if parse_reason:
+        return False, f"CI_EVENT_PAYLOAD_REQUIRED: {parse_reason}"
+
+    if event_name == "pull_request":
+        pr = event.get("pull_request") if isinstance(event, dict) else None
+        base_node = pr.get("base") if isinstance(pr, dict) else None
+        head_node = pr.get("head") if isinstance(pr, dict) else None
+        expected_base = base_node.get("sha") if isinstance(base_node, dict) else None
+        expected_head = head_node.get("sha") if isinstance(head_node, dict) else None
+    else:
+        expected_base = event.get("before") if isinstance(event, dict) else None
+        expected_head = event.get("after") if isinstance(event, dict) else None
+        if isinstance(expected_base, str) and expected_base and set(expected_base) == {"0"}:
+            return False, (
+                "REMOTE_BASE_REQUIRED: GitHub push event has no pre-existing commit BASE; "
+                "the empty-tree object is never renderer authority"
+            )
+        github_sha = os.environ.get("GITHUB_SHA", "")
+        if github_sha and expected_head != github_sha:
+            return False, (
+                "CI_EVENT_RANGE_MISMATCH: push event 'after' SHA does not match GITHUB_SHA"
+            )
+
+    if not all(
+        isinstance(oid, str) and _GATE_FULL_OBJECT_ID_RE.fullmatch(oid)
+        for oid in (expected_base, expected_head)
+    ):
+        return False, (
+            "CI_EVENT_PAYLOAD_REQUIRED: GitHub event does not contain full immutable BASE/HEAD commit IDs"
+        )
+    if base.lower() != expected_base.lower() or head.lower() != expected_head.lower():
+        return False, (
+            "CI_EVENT_RANGE_MISMATCH: --base/--head must exactly match immutable "
+            f"{event_name} event payload SHAs"
+        )
+    range_reasons = _gate_validate_commit_range(root, expected_base, expected_head)
+    if range_reasons:
+        return False, f"CI_EVENT_RANGE_INVALID: {range_reasons[0]}"
+    return True, None
+
+
 def _cmd_gate_ci(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
     verdict_dirs = getattr(args, "verdict_dirs", None)
     _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
+    authoritative, provenance_error = _gate_ci_event_provenance(
+        root, args.base, args.head,
+    )
+    if provenance_error:
+        result = {
+            "authoritative": False,
+            "blocked": True,
+            "reasons": [provenance_error],
+            "changed_paths": [],
+        }
+        _trace_record(
+            root, phase="gate", action="gate.ci", outcome="error", exit_code=1,
+            duration_s=time.perf_counter() - _trace_t0,
+            changed_paths=[], reasons=result["reasons"],
+        )
+        _gate_print_result("ci", result, as_json)
+        sys.exit(1)
     try:
         changed = _gate_diff_paths(root, args.base, args.head)
     except GateSpineError as e:
@@ -10892,7 +12065,13 @@ def _cmd_gate_ci(args, root: Path) -> None:
         _gate_print_result("ci", result, as_json)
         sys.exit(1)
 
-    result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head], [args.base])
+    result = _gate_run_ship_check(
+        root, changed, verdict_dirs, [args.head], [args.base],
+        _GATE_ADMISSION_SOURCE_CI_EVENT if authoritative else None,
+    )
+    result["authoritative"] = authoritative
+    if not authoritative:
+        result["diagnostic_only"] = True
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.ci",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
@@ -10946,7 +12125,7 @@ def _gate_hook_scripts() -> dict:
         "# Pre-push hook: THE SHIP-GATE (Phase 2 gate spine, Design Decision #6).\n"
         "# Installed by `tessctl gate install-hooks`. Git feeds ref ranges on stdin;\n"
         "# `tessctl gate pre-push` reads them directly (stdin is inherited as-is).\n"
-        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand="pre-push")
+        + _GATE_HOOK_BODY_TEMPLATE.format(subcommand='pre-push --remote "$1"')
     )
     return {"pre-commit": pre_commit, "pre-push": pre_push}
 
@@ -11038,13 +12217,15 @@ def _gate_install_git_hooks(root: Path) -> None:
         print(f"  installed git {hook_name} hook at {hook_path}")
 
 
-_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v3"
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v4"
 
 # Prior template version(s) this installer recognizes as "a tess-gate-ci file,
 # just outdated" — an install-hooks run UPGRADES these in place (overwrites
 # with the current template) rather than either silently skipping them
 # forever or treating them as some unrelated operator-authored workflow.
-_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3")
+_GATE_CI_WORKFLOW_KNOWN_MARKERS = (
+    "# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3", "# tess-gate-ci v4",
+)
 
 _GATE_CI_WORKFLOW = f"""\
 {_GATE_CI_WORKFLOW_MARKER}
@@ -11055,8 +12236,9 @@ _GATE_CI_WORKFLOW = f"""\
 # Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
 # workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
 # triggers automatically on `push` to protected branches and on
-# `pull_request`, IN ADDITION TO `workflow_dispatch` (kept for ad hoc/manual
-# re-checks of an arbitrary ref range). This makes the ship-gate BLOCK a
+# `pull_request`. The authoritative workflow deliberately has NO
+# `workflow_dispatch`: caller-selected refs must never create the required
+# `tessctl gate ci` check context. This makes the ship-gate BLOCK a
 # failing PR/merge automatically rather than requiring someone to remember
 # to run it. A CI check alone is only ADVISORY until it is also configured
 # as a required status check in branch protection — see
@@ -11085,28 +12267,24 @@ _GATE_CI_WORKFLOW = f"""\
 # FAILS CLOSED (refuses) rather than falling back to trusting the pushed
 # tree's own engine — see the "Extract trusted gate engine" step below.
 #
+# v4 EVENT-PROVENANCE FIX: BASE/HEAD come only from immutable
+# `github.event` fields. The trusted BASE engine independently compares its
+# CLI range with GITHUB_EVENT_PATH before granting authoritative renderer
+# admission. Manual/local calls are diagnostic-only; workflow_dispatch is
+# rejected. An all-zero push `before` SHA fails with REMOTE_BASE_REQUIRED —
+# Git's empty-tree object is not a commit and is never renderer authority.
+#
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
 # covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
 # match, your FIRST push/PR touching those paths WILL be blocked — this is
 # the gate working as designed (fail-closed), not a bug. If you need a
 # grace period while you write your project's initial covering verdicts,
-# temporarily remove the `push`/`pull_request` triggers below (leave
-# `workflow_dispatch`) and re-add them once you have at least one real,
-# signed covering verdict per rule.
+# do so before installing this required check; never add caller-selected
+# inputs to the authoritative job.
 name: Tess OS ship-gate
 
 on:
-  workflow_dispatch:
-    inputs:
-      base:
-        description: "Base ref to diff from"
-        required: true
-        default: "origin/main"
-      head:
-        description: "Head ref to diff to"
-        required: true
-        default: "HEAD"
   push:
     branches: ["main"]
   pull_request:
@@ -11136,19 +12314,20 @@ jobs:
       - name: Resolve base/head for this trigger
         id: refs
         run: |
-          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-          if [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
-            BASE="${{{{ inputs.base }}}}"
-            HEAD="${{{{ inputs.head }}}}"
-          elif [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
+          set -euo pipefail
+          if [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
             BASE="${{{{ github.event.pull_request.base.sha }}}}"
             HEAD="${{{{ github.event.pull_request.head.sha }}}}"
-          else
+          elif [ "${{{{ github.event_name }}}}" = "push" ]; then
             BASE="${{{{ github.event.before }}}}"
             HEAD="${{{{ github.event.after }}}}"
             if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-              BASE="$EMPTY_TREE"
+              echo "::error::REMOTE_BASE_REQUIRED: push event has no pre-existing commit BASE; the empty-tree object is never renderer authority."
+              exit 1
             fi
+          else
+            echo "::error::CI_EVENT_SOURCE_REQUIRED: authoritative ship-gate accepts only push or pull_request events."
+            exit 1
           fi
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
@@ -11188,7 +12367,7 @@ def _gate_install_ci_workflow(root: Path) -> None:
         if any(marker in existing for marker in _GATE_CI_WORKFLOW_KNOWN_MARKERS):
             print(
                 f"  UPGRADING tess-gate-ci workflow at {workflow_path} to the current template "
-                f"(adds push/pull_request auto-trigger alongside workflow_dispatch — Phase 2b)."
+                f"(push/pull_request only; removes caller-selected authoritative ranges — v4)."
             )
             workflow_path.write_text(_GATE_CI_WORKFLOW, encoding="utf-8")
             return
@@ -11199,7 +12378,7 @@ def _gate_install_ci_workflow(root: Path) -> None:
         return
     workflow_path.parent.mkdir(parents=True, exist_ok=True)
     workflow_path.write_text(_GATE_CI_WORKFLOW, encoding="utf-8")
-    print(f"  installed CI workflow at {workflow_path} (workflow_dispatch + push + pull_request)")
+    print(f"  installed CI workflow at {workflow_path} (push + pull_request; no manual authority)")
 
 
 def _cmd_gate_install_hooks(args, root: Path) -> None:
@@ -14566,9 +15745,9 @@ def cmd_run(args, root: Path) -> None:
 #                          schema_validate / _lint_contract / classify_* —
 #                          the exact primitives cmd_validate (VALIDATE
 #                          region) calls, just returned instead of printed.
-#   gate_check_paths   -> _gate_run_ship_check() directly — the SAME shared
-#                          ship-check function _cmd_gate_pre_push and
-#                          _cmd_gate_ci both call (GATE region above).
+#   gate_check_paths   -> diagnostic preview through _gate_run_ship_check();
+#                          always authoritative:false and blocked because an
+#                          MCP caller cannot establish event/remote provenance.
 #   mission_status     -> _read_mission_record() — the same read
 #                          _cmd_mission_status uses (MISSION LEDGER region).
 #   roster_list        -> load_lock() + _agent_keys_by_name() — the same
@@ -14675,16 +15854,26 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
 
 
 def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
-    """gate_check_paths — the SAME verdict-coverage decision engine as
-    `tessctl gate pre-push` / `tessctl gate ci`: calls _gate_run_ship_check()
-    directly (GATE region above) rather than re-deriving its logic, so the
-    verdict returned here is provably identical to what a push/CI run of
-    those paths at `head` would get. The caller supplies a claimed path set,
-    but authority comes from the same byte-safe raw Git diff used by CLI/CI;
-    an incomplete or invented list is denied. `base` is mandatory: the gate
-    must never silently evaluate a candidate policy/key registry without the
-    prior trusted tree that binds verifier registrations and public-key
-    bytes. `head` defaults to current HEAD when omitted."""
+    """Diagnostic preview only; never a ship authorization result.
+
+    MCP callers choose their own claimed path list and refs, so they cannot
+    supply the event/remote provenance required by the authoritative ship
+    gate. The claimed list must still exactly match the same byte-safe raw Git
+    diff used by CLI/CI, and a valid forward commit range is required before
+    the shared evaluator runs. The top-level answer is always blocked and
+    authoritative:false.
+    """
+    def _diagnostic(result: dict) -> dict:
+        """Project an MCP decision without publishing raw paths or refs."""
+        projected = dict(result)
+        projected["authoritative"] = False
+        projected["blocked"] = True
+        projected["reasons"] = [
+            "MCP_DIAGNOSTIC_ONLY: MCP gate checks can never authorize shipping",
+            *list(projected.get("reasons", [])),
+        ]
+        return _safe_gate_result(projected)
+
     paths = arguments.get("paths")
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `paths` (non-empty array of strings) is required")
@@ -14694,7 +15883,7 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     # raw ref ingress only; the current verdict artifact_hashes schema remains
     # SHA-1-only and therefore cannot approve a governed SHA-256 blob.
     if not isinstance(base, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?", base):
-        return _safe_gate_result({
+        return _diagnostic({
             "blocked": True,
             "reasons": [
                 "BASE_REQUIRED: gate_check_paths requires an explicit immutable base "
@@ -14704,8 +15893,16 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
             "changed_paths": [],
         })
     head = arguments.get("head")
-    if head is not None and not isinstance(head, str):
-        raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `head`, if given, must be a string ref/sha")
+    if head is not None and (
+        not isinstance(head, str) or not _GATE_FULL_OBJECT_ID_RE.fullmatch(head)
+    ):
+        return _diagnostic({
+            "blocked": True,
+            "reasons": [
+                "HEAD_REQUIRED: gate_check_paths head must be a full 40- or 64-hex commit ID",
+            ],
+            "changed_paths": [],
+        })
     verdict_dirs = arguments.get("verdict_dirs")
     if verdict_dirs is not None and not (
         isinstance(verdict_dirs, list) and all(isinstance(d, str) for d in verdict_dirs)
@@ -14716,14 +15913,22 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
         try:
             head = _gate_run_git(root, "rev-parse", "HEAD").strip()
         except GateSpineError as e:
-            return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+            return _diagnostic({"blocked": True, "reasons": [str(e)], "changed_paths": []})
+
+    range_reasons = _gate_validate_commit_range(root, base, head)
+    if range_reasons:
+        return _diagnostic({
+            "blocked": True,
+            "reasons": range_reasons,
+            "changed_paths": [],
+        })
 
     try:
         authoritative_paths = _gate_diff_paths(root, base, head)
     except GateSpineError as e:
-        return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+        return _diagnostic({"blocked": True, "reasons": [str(e)], "changed_paths": []})
     if len(paths) != len(set(paths)) or set(paths) != set(authoritative_paths):
-        return _safe_gate_result({
+        return _diagnostic({
             "blocked": True,
             "reasons": [
                 "PATH_SET_MISMATCH: gate_check_paths caller-supplied paths do not "
@@ -14737,11 +15942,12 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
             root, authoritative_paths, verdict_dirs, [head], [base],
         )
     except GateSpineError as e:
-        return _safe_gate_result({
+        return _diagnostic({
             "blocked": True, "reasons": [str(e)],
             "changed_paths": authoritative_paths,
         })
-    return _safe_gate_result(result)
+    result["diagnostic_would_block"] = bool(result["blocked"])
+    return _diagnostic(result)
 
 
 def _mcp_tool_mission_status(root: Path, arguments: dict) -> dict:
@@ -14827,12 +16033,10 @@ MCP_TOOLS = {
     },
     "gate_check_paths": {
         "description": (
-            "Run the gate's verdict-coverage ship-check for an explicit set of paths — the "
-            "SAME decision engine `tessctl gate pre-push` / `tessctl gate ci` use "
-            "(_gate_run_ship_check), so the result is identical to what a push of those paths "
-            "at `head` against an immutable `base` commit would get. `base` is mandatory: "
-            "the tool refuses candidate-trust fallback. Moves gate enforcement IN-SESSION: "
-            "check before you ever commit or push."
+            "Diagnostic-only preview for an explicit path set and immutable forward commit "
+            "range. It always returns authoritative:false and blocked with "
+            "MCP_DIAGNOSTIC_ONLY; only CI-event or Git pre-push remote entrypoints can make "
+            "an authoritative admission decision."
         ),
         "inputSchema": {
             "type": "object",
@@ -14848,7 +16052,7 @@ MCP_TOOLS = {
                 },
                 "head": {
                     "type": "string",
-                    "description": "Git ref/sha to resolve committed-verdict coverage against. Defaults to the current HEAD.",
+                    "description": "Immutable full 40- or 64-hex HEAD commit ID. Defaults to the resolved current HEAD.",
                 },
                 "verdict_dirs": {
                     "type": "array",
@@ -15440,6 +16644,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_gate_prepush.add_argument("--base", metavar="REF", help="explicit base ref (default: read git's pre-push stdin protocol)")
     p_gate_prepush.add_argument("--head", metavar="REF", help="explicit head ref (must be given together with --base)")
     p_gate_prepush.add_argument(
+        "--remote", metavar="NAME",
+        help="remote name supplied by git's pre-push hook (used only to derive a first-push baseline)",
+    )
+    p_gate_prepush.add_argument(
         "--verdict-dir", action="append", dest="verdict_dirs", metavar="DIR",
         help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",
     )
@@ -15447,7 +16655,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_gate_ci = gate_sub.add_parser(
         "ci",
-        help="CI entrypoint — identical ship-gate logic over an explicit ref range",
+        help="CI entrypoint — authoritative only when refs match the protected GitHub event; local calls are diagnostic",
     )
     p_gate_ci.add_argument("--base", metavar="REF", required=True, help="base ref to diff from")
     p_gate_ci.add_argument("--head", metavar="REF", required=True, help="head ref to diff to")

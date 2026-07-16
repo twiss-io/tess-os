@@ -126,7 +126,10 @@ cd tess-os
 
 Do not use this sequence to activate a production branch. In particular, do
 not run key-generation, key-registration, or verdict-signing commands as a
-bootstrap shortcut.
+bootstrap shortcut. A local `gate ci` invocation is explicitly reported as
+diagnostic-only and cannot claim the authoritative GitHub required-check
+context. Only the installed push/pull-request workflow derives its range from
+the protected event payload; it has no caller-selected `workflow_dispatch`.
 
 ## npm and source status
 

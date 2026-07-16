@@ -96,6 +96,113 @@
 policy:
   version: 1
 
+  # Immutable renderer admission inventory. Bootstrap truth: this inventory
+  # is NOT authority for the PR that first introduces it because that PR's
+  # BASE does not contain it. The first adoption remains owner-controlled and
+  # NO-MERGE. Once committed, only this BASE copy — never candidate policy or
+  # candidate lock rows — defines renderer families, canonical lock mappings,
+  # and generated outputs for the next admission decision.
+  renderer_admission:
+    version: 1
+    rule_id: tess-os-renderer-base-admission
+    lock_file: .tess/tess.lock
+    registry_file: .tess/bin/tessctl
+    target_config_files:
+      - tess.manifest.json
+    family_globs:
+      - .tess/core/templates/CLAUDE.md.tpl
+      - .tess/core/templates/claude-md/**
+      - .tess/core/settings-core.json
+      - .tess/core/conductor/identity.md
+      - .tess/core/conductor/personality.md
+      - .tess/core/templates/client/_template/CLAUDE.md
+      - .tess/core/templates/agents-md/**
+      - .tess/core/commands/**
+    mappings:
+      - input_glob: .tess/core/templates/CLAUDE.md.tpl
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: template
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/claude-md/*.md
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: fragment
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/settings-core.json
+        lock_live_glob: .claude/settings.json
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: rendered
+        projections:
+          - {output_glob: .claude/settings.json, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/identity.md
+        lock_live_glob: conductor/identity.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/identity.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/personality.md
+        lock_live_glob: conductor/personality.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/personality.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/client/_template/CLAUDE.md
+        lock_live_glob: clients/_template/CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: clients/_template/CLAUDE.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/AGENTS.md.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/*.md
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 3
+      - input_glob: .tess/core/templates/agents-md/codex-config.toml.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .codex/config.toml, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/commands/*.md
+        lock_live_glob: .claude/commands/*.md
+        lock_name_binding: true
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .claude/commands/*.md, mode: source-copy}
+          - {output_glob: .codex/prompts/*.md, mode: engine-render}
+          - {output_glob: prompts/*.md, mode: engine-render}
+        min_matches: 1
+
   rules:
     - id: tess-os-security-tier-doctrine
       description: >-
@@ -131,6 +238,39 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+      classification: [prod_touching]
+      require_verdict: true
+      allowed_verifiers: [Reid, Cyra]
+
+    - id: tess-os-renderer-base-admission
+      description: >-
+        Immutable-BASE renderer admission surface. The committed BASE policy
+        inventory, BASE lock rows, BASE engine registry, and BASE source blobs
+        define required renderer ownership. Candidate policy/lock bytes may
+        prove a coherent upgrade but cannot delete, remap, downgrade, or
+        re-hash that authority to approve their own generated doctrine.
+      globs:
+        - .tess/tess.lock
+        - .tess/bin/tessctl
+        - tess.manifest.json
+        - .tess/core/templates/CLAUDE.md.tpl
+        - .tess/core/templates/claude-md/**
+        - .tess/core/settings-core.json
+        - .tess/core/conductor/identity.md
+        - .tess/core/conductor/personality.md
+        - .tess/core/templates/client/_template/CLAUDE.md
+        - .tess/core/templates/agents-md/**
+        - .tess/core/commands/**
+        - CLAUDE.md
+        - .claude/settings.json
+        - conductor/identity.md
+        - conductor/personality.md
+        - clients/_template/CLAUDE.md
+        - AGENTS.md
+        - .codex/config.toml
+        - .claude/commands/*.md
+        - .codex/prompts/*.md
+        - prompts/*.md
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

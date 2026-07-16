@@ -1,4 +1,4 @@
-# tess-gate-ci v3
+# tess-gate-ci v4
 # Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
 # gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
 # harness-independent backstop that still catches `git push --no-verify`.
@@ -6,8 +6,9 @@
 # Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
 # workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
 # triggers automatically on `push` to protected branches and on
-# `pull_request`, IN ADDITION TO `workflow_dispatch` (kept for ad hoc/manual
-# re-checks of an arbitrary ref range). This makes the ship-gate BLOCK a
+# `pull_request`. The authoritative workflow deliberately has NO
+# `workflow_dispatch`: caller-selected refs must never create the required
+# `tessctl gate ci` check context. This makes the ship-gate BLOCK a
 # failing PR/merge automatically rather than requiring someone to remember
 # to run it. A CI check alone is only ADVISORY until it is also configured
 # as a required status check in branch protection — see
@@ -36,28 +37,24 @@
 # FAILS CLOSED (refuses) rather than falling back to trusting the pushed
 # tree's own engine — see the "Extract trusted gate engine" step below.
 #
+# v4 EVENT-PROVENANCE FIX: BASE/HEAD come only from immutable
+# `github.event` fields. The trusted BASE engine independently compares its
+# CLI range with GITHUB_EVENT_PATH before granting authoritative renderer
+# admission. Manual/local calls are diagnostic-only; workflow_dispatch is
+# rejected. An all-zero push `before` SHA fails with REMOTE_BASE_REQUIRED —
+# Git's empty-tree object is not a commit and is never renderer authority.
+#
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
 # covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
 # match, your FIRST push/PR touching those paths WILL be blocked — this is
 # the gate working as designed (fail-closed), not a bug. If you need a
 # grace period while you write your project's initial covering verdicts,
-# temporarily remove the `push`/`pull_request` triggers below (leave
-# `workflow_dispatch`) and re-add them once you have at least one real,
-# signed covering verdict per rule.
+# do so before installing this required check; never add caller-selected
+# inputs to the authoritative job.
 name: Tess OS ship-gate
 
 on:
-  workflow_dispatch:
-    inputs:
-      base:
-        description: "Base ref to diff from"
-        required: true
-        default: "origin/main"
-      head:
-        description: "Head ref to diff to"
-        required: true
-        default: "HEAD"
   push:
     branches: ["main"]
   pull_request:
@@ -87,19 +84,20 @@ jobs:
       - name: Resolve base/head for this trigger
         id: refs
         run: |
-          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BASE="${{ inputs.base }}"
-            HEAD="${{ inputs.head }}"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"
-          else
+          elif [ "${{ github.event_name }}" = "push" ]; then
             BASE="${{ github.event.before }}"
             HEAD="${{ github.event.after }}"
             if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-              BASE="$EMPTY_TREE"
+              echo "::error::REMOTE_BASE_REQUIRED: push event has no pre-existing commit BASE; the empty-tree object is never renderer authority."
+              exit 1
             fi
+          else
+            echo "::error::CI_EVENT_SOURCE_REQUIRED: authoritative ship-gate accepts only push or pull_request events."
+            exit 1
           fi
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"

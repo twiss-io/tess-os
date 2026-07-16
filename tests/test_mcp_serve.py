@@ -13,11 +13,10 @@ call), except where noted:
     `tools/call` round trips, exactly the MCP lifecycle.
   * All four tools produce a `tools/call` result (validate_contract,
     gate_check_paths, mission_status, roster_list).
-  * `gate_check_paths` returns the SAME verdict-coverage result as
-    `tessctl gate pre-push` for the same paths/base/head, in both the BLOCKED
-    (no covering verdict) and ALLOWED (valid signed covering verdict)
-    directions — proving it calls the identical `_gate_run_ship_check`
-    code path, not a re-derivation.
+  * `gate_check_paths` is diagnostic-only: it always returns
+    `authoritative: false`, `blocked: true`, and `MCP_DIAGNOSTIC_ONLY` even
+    when the shared evaluator would allow the supplied paths. Invalid,
+    same, reversed, and non-commit ranges are rejected before evaluation.
   * Error handling: bad JSON-RPC method, bad `tools/call` params (unknown
     tool name, missing required argument), and a malformed JSON line all
     return proper JSON-RPC protocol errors (-32601/-32602/-32700) — never
@@ -54,25 +53,13 @@ from conftest import REPO_ROOT, ENGINE_SRC  # noqa: F401  (ENGINE_SRC used indir
 # test_tracked_render_e2e.py).
 from test_mission_ledger import mroot, _run as _mission_run, _mission_dir
 
-# Reuse the gate-spine fixture + verdict-signing helpers verbatim, so the
-# equivalence proof below is built from EXACTLY the same scenario machinery
-# test_gate_spine.py's own reference tests already use — not a parallel
-# reimplementation that could silently drift out of sync.
-from test_gate_spine import (
-    gate_repo,  # noqa: F401  (pytest fixture, made available via import)
-    _base_sha, _commit_all, _blob_sha, _valid_verdict, _write_verdict,
-)
+# Reuse only the gate-spine's ordinary git helpers. The MCP boundary tests
+# deliberately do not provision verifier keys or produce signed verdicts:
+# an MCP caller can never establish authoritative event/remote provenance.
+from test_gate_spine import _base_sha, _commit_all
 
 CONTRACTS_SRC = REPO_ROOT / "core" / "contracts"
 WRAPPER_SRC = REPO_ROOT / "tessctl"
-
-# NOTE: gate_check_paths equivalence tests use the imported `gate_repo`
-# fixture, which depends on conftest.py's `verifier_gpg_keys` fixture —
-# that fixture itself calls pytest.skip() when git/gpg are unavailable, so
-# no separate module-level skipif is needed here (test_gate_spine.py's own
-# skip lives in ITS module scope only, not carried over by importing its
-# fixture).
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -96,6 +83,23 @@ def wrapper_root(mcp_root):
     dst = mcp_root / "tessctl"
     shutil.copy2(WRAPPER_SRC, dst)
     os.chmod(dst, 0o755)
+    return mcp_root
+
+
+@pytest.fixture
+def mcp_git_root(mcp_root):
+    """A real git repo with the shipped policy and no verifier key setup.
+
+    This fixture proves the MCP trust boundary without GPG: a valid ungated
+    diff lets the shared evaluator report ``diagnostic_would_block: false``,
+    while the MCP result itself must remain non-authoritative and blocked.
+    """
+    shutil.copytree(REPO_ROOT / "core" / "policy", mcp_root / "core" / "policy")
+    subprocess.run(["git", "init", "-q", str(mcp_root)], check=True)
+    subprocess.run(["git", "-C", str(mcp_root), "config", "user.email", "mcp@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(mcp_root), "config", "user.name", "MCP Test"], check=True)
+    subprocess.run(["git", "-C", str(mcp_root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(mcp_root), "commit", "-q", "-m", "baseline"], check=True)
     return mcp_root
 
 
@@ -533,121 +537,112 @@ def test_roster_list_matches_lock_state(project):
 
 
 # ---------------------------------------------------------------------------
-# 6) gate_check_paths — proven identical to `tessctl gate pre-push` /
-#    `tessctl gate ci`, driven over real stdio pipes, in both directions.
+# 6) gate_check_paths — diagnostic-only over real stdio pipes. It may expose
+#    the shared evaluator's would-block signal, but can never authorize ship.
 # ---------------------------------------------------------------------------
 
-def test_gate_check_paths_matches_gate_pre_push_when_blocked(gate_repo, run_cli):
-    base = _base_sha(gate_repo)
-    (gate_repo / "src" / "prod").mkdir(parents=True)
-    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
-    head = _commit_all(gate_repo, "add prod change, no verdict")
+def test_gate_check_paths_diagnostic_when_shared_evaluator_would_block(mcp_git_root, run_cli):
+    base = _base_sha(mcp_git_root)
+    (mcp_git_root / ".tess" / "bin" / "attack.py").write_text("print('tamper')\n")
+    head = _commit_all(mcp_git_root, "add protected change, no verdict")
 
-    cli = run_cli(gate_repo, "gate", "pre-push", "--base", base, "--head", head, "--json")
+    cli = run_cli(mcp_git_root, "gate", "pre-push", "--base", base, "--head", head, "--json")
     assert cli.returncode == 1, cli.stdout + cli.stderr
     cli_payload = json.loads(cli.stdout)
     assert cli_payload["blocked"] is True
 
-    client = McpStdio(gate_repo)
+    client = McpStdio(mcp_git_root)
     try:
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["src/prod/app.py"], "base": base, "head": head},
+            "arguments": {"paths": [".tess/bin/attack.py"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
         client.close()
 
-    assert mcp_payload["blocked"] == cli_payload["blocked"] is True
-    assert mcp_payload["reasons"] == cli_payload["reasons"]
-    assert mcp_payload["changed_paths_count"] == cli_payload["changed_paths_count"] == 1
-    assert mcp_payload["reasons"] == ["COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"]
+    assert mcp_payload["authoritative"] is False
+    assert mcp_payload["blocked"] is True
+    assert mcp_payload["diagnostic_would_block"] is True
+    assert mcp_payload["changed_paths_count"] == 1
+    assert mcp_payload["reasons"] == [
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+    ]
+    assert ".tess/bin/attack.py" not in json.dumps(mcp_payload)
 
 
-def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli, engine, verifier_gpg_keys):
-    base = _base_sha(gate_repo)
-    (gate_repo / "src" / "prod").mkdir(parents=True)
-    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
-    blob = _blob_sha(gate_repo, "src/prod/app.py")
-    _write_verdict(
-        gate_repo, "missions/m1/verdicts/prod-src.verdict.md",
-        _valid_verdict(
-            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
-            engine=engine, keys=verifier_gpg_keys,
-        ),
-    )
-    head = _commit_all(gate_repo, "prod change + covering verdict")
+def test_gate_check_paths_cannot_authorize_when_shared_evaluator_would_allow(mcp_git_root, run_cli):
+    base = _base_sha(mcp_git_root)
+    (mcp_git_root / "scratch").mkdir()
+    (mcp_git_root / "scratch" / "ungated.txt").write_text("diagnostic only\n")
+    head = _commit_all(mcp_git_root, "add ungated diagnostic fixture")
 
-    cli = run_cli(gate_repo, "gate", "pre-push", "--base", base, "--head", head, "--json")
+    cli = run_cli(mcp_git_root, "gate", "pre-push", "--base", base, "--head", head, "--json")
     assert cli.returncode == 0, cli.stdout + cli.stderr
     cli_payload = json.loads(cli.stdout)
     assert cli_payload["blocked"] is False
     assert cli_payload["reasons"] == []
 
-    client = McpStdio(gate_repo)
+    client = McpStdio(mcp_git_root)
     try:
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {
-                "paths": [
-                    "src/prod/app.py",
-                    "missions/m1/verdicts/prod-src.verdict.md",
-                ],
-                "base": base,
-                "head": head,
-            },
+            "arguments": {"paths": ["scratch/ungated.txt"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
         client.close()
 
-    # The same engine permits both calls. MCP must claim the full immutable
-    # diff, including the committed verdict; it intentionally echoes neither
-    # paths nor refs, reporting only the path count.
-    assert mcp_payload["blocked"] == cli_payload["blocked"] is False
-    assert mcp_payload["reasons"] == cli_payload["reasons"] == []
-    assert mcp_payload["changed_paths_count"] == 2
+    assert mcp_payload["authoritative"] is False
+    assert mcp_payload["blocked"] is True
+    assert mcp_payload["diagnostic_would_block"] is False
+    assert mcp_payload["reasons"] == [
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks can never authorize shipping",
+    ]
+    assert mcp_payload["changed_paths_count"] == 1
+    assert "scratch/ungated.txt" not in json.dumps(mcp_payload)
 
 
-def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
-    """Omitting `head` resolves to the current HEAD sha — same head_shas
-    semantics `gate ci --head`/`gate pre-push --head` use explicitly."""
-    base = _base_sha(gate_repo)
-    (gate_repo / "docs").mkdir(parents=True)
-    (gate_repo / "docs" / "notes.md").write_text("nothing special\n")
-    expected_head = _commit_all(gate_repo, "add ungoverned docs note")
+def test_gate_check_paths_defaults_head_to_current_head(mcp_git_root):
+    """Omitting `head` resolves HEAD, but still cannot authorize shipping."""
+    base = _base_sha(mcp_git_root)
+    (mcp_git_root / "scratch").mkdir()
+    (mcp_git_root / "scratch" / "notes.md").write_text("nothing special\n")
+    real_head = _commit_all(mcp_git_root, "add current-head fixture")
 
-    real_head = subprocess.run(
-        ["git", "-C", str(gate_repo), "rev-parse", "HEAD"], capture_output=True, text=True
-    ).stdout.strip()
-    assert real_head == expected_head
-
-    client = McpStdio(gate_repo)
+    client = McpStdio(mcp_git_root)
     try:
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["docs/notes.md"], "base": base},
+            "arguments": {"paths": ["scratch/notes.md"], "base": base},
         })
         payload = resp["result"]["structuredContent"]
-        assert payload["blocked"] is False
+        assert payload["authoritative"] is False
+        assert payload["blocked"] is True
+        assert payload["diagnostic_would_block"] is False
         assert payload["changed_paths_count"] == 1
-        assert "head" not in payload and "base" not in payload
+        assert payload["reasons"] == [
+            "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+        ]
+        assert real_head not in json.dumps(payload)
+        assert base not in json.dumps(payload)
     finally:
         client.close()
 
 
-def test_gate_check_paths_rejects_caller_path_set_mismatch(gate_repo):
+def test_gate_check_paths_rejects_caller_path_set_mismatch(mcp_git_root):
     """Reverse direction: an agent cannot omit a governed path and ask the
     MCP surface to authorize a convenient path-only subset."""
-    base = _base_sha(gate_repo)
-    (gate_repo / "src" / "prod").mkdir(parents=True)
-    (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
-    head = _commit_all(gate_repo, "governed change")
+    base = _base_sha(mcp_git_root)
+    (mcp_git_root / "src" / "prod").mkdir(parents=True)
+    (mcp_git_root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    head = _commit_all(mcp_git_root, "governed change")
 
-    client = McpStdio(gate_repo)
+    client = McpStdio(mcp_git_root)
     try:
         _initialize(client)
         resp = client.request("tools/call", {
@@ -655,15 +650,69 @@ def test_gate_check_paths_rejects_caller_path_set_mismatch(gate_repo):
             "arguments": {"paths": ["docs/invented.md"], "base": base, "head": head},
         })
         payload = resp["result"]["structuredContent"]
-        assert payload["blocked"] is True
-        assert payload["changed_paths_count"] == 1
-        assert payload["reasons"] == [
-            "PATH_SET_MISMATCH: the supplied path set does not match the immutable Git diff"
-        ]
-        assert "src/prod/app.py" not in json.dumps(payload)
     finally:
         client.close()
 
+    assert payload["authoritative"] is False
+    assert payload["blocked"] is True
+    assert "diagnostic_would_block" not in payload
+    assert payload["changed_paths_count"] == 1
+    assert payload["reasons"] == [
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+        "PATH_SET_MISMATCH: the supplied path set does not match the immutable Git diff",
+    ]
+    assert "src/prod/app.py" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("bad_ref_kind", ["same", "tree", "blob", "reversed", "missing"])
+def test_gate_check_paths_rejects_invalid_commit_ranges_before_evaluation(mcp_git_root, bad_ref_kind):
+    base = _base_sha(mcp_git_root)
+    (mcp_git_root / "scratch").mkdir()
+    (mcp_git_root / "scratch" / "range.txt").write_text("range fixture\n")
+    head = _commit_all(mcp_git_root, "add range fixture")
+
+    if bad_ref_kind == "same":
+        bad_base, bad_head = base, base
+    elif bad_ref_kind == "tree":
+        tree = subprocess.run(
+            ["git", "-C", str(mcp_git_root), "rev-parse", f"{base}^{{tree}}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        bad_base, bad_head = tree, head
+    elif bad_ref_kind == "blob":
+        blob = subprocess.run(
+            ["git", "-C", str(mcp_git_root), "rev-parse", f"{head}:scratch/range.txt"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        bad_base, bad_head = base, blob
+    elif bad_ref_kind == "reversed":
+        bad_base, bad_head = head, base
+    else:
+        bad_base, bad_head = "f" * len(base), head
+
+    client = McpStdio(mcp_git_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {
+                "paths": ["scratch/range.txt"],
+                "base": bad_base,
+                "head": bad_head,
+            },
+        })
+        payload = resp["result"]["structuredContent"]
+    finally:
+        client.close()
+
+    assert payload["authoritative"] is False
+    assert payload["blocked"] is True
+    assert "diagnostic_would_block" not in payload
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"][0] == "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping"
+    assert payload["reasons"][1].split(":", 1)[0] in {
+        "COMMIT_RANGE_INVALID", "BASE_REQUIRED", "HEAD_REQUIRED",
+    }
 
 def test_gate_check_paths_missing_paths_argument(mcp_root):
     client = McpStdio(mcp_root)
@@ -685,9 +734,13 @@ def test_gate_check_paths_without_immutable_base_is_explicitly_denied(mcp_root):
             "arguments": {"paths": ["docs/notes.md"]},
         })
         payload = resp["result"]["structuredContent"]
+        assert payload["authoritative"] is False
         assert payload["blocked"] is True
-        assert "base" not in payload
-        assert payload["reasons"] == ["BASE_REQUIRED: an immutable BASE commit is required"]
+        assert payload["changed_paths_count"] == 0
+        assert payload["reasons"] == [
+            "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+            "BASE_REQUIRED: an immutable BASE commit is required",
+        ]
     finally:
         client.close()
 
@@ -703,9 +756,13 @@ def test_gate_check_paths_no_base_denial_never_enters_git_or_gate(engine, tmp_pa
     result = engine._mcp_tool_gate_check_paths(
         tmp_path, {"paths": ["core/policy/policy.yaml"], "base": "main"},
     )
+    assert result["authoritative"] is False
     assert result["blocked"] is True
-    assert "base" not in result
-    assert result["reasons"] == ["BASE_REQUIRED: an immutable BASE commit is required"]
+    assert result["changed_paths_count"] == 0
+    assert result["reasons"] == [
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
+        "BASE_REQUIRED: an immutable BASE commit is required",
+    ]
 
 
 def test_gate_decision_redacts_attacker_sentinel_across_cli_trace_otlp_and_mcp(
