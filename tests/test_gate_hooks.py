@@ -226,6 +226,10 @@ def test_external_required_workflow_boundary_is_explicit():
     )
     assert "A candidate branch cannot make its own check authoritative" in topology
     assert "ruleset-required workflow" in topology
+    assert "repository_id" in topology
+    assert "exact reviewed commit SHA" in topology
+    assert "Tess-specific GitHub App" in topology
+    assert "generic GitHub Actions expected-source check is not" in topology
     assert "Do not grant routine bypass" in topology
     assert "Production remains **BLOCKED**" in topology
 

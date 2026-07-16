@@ -89,7 +89,9 @@ source-bound ruleset. Repository code can reject a spoofed workflow context
 once the trusted engine runs, but it cannot prevent a candidate workflow from
 being replaced with a same-named no-op that never launches the engine. The
 ruleset-required workflow and no-bypass controls below close that external
-enforcement boundary; a green same-named status alone is insufficient.
+enforcement boundary; a green same-named status alone is insufficient, and
+binding a generic required status to the GitHub Actions application is still
+spoofable by a different workflow from that same application.
 
 1. Allow **merge commits only**. Disable squash merge and rebase merge.
 2. Require branches to be up to date before merging (strict mode).
@@ -98,16 +100,24 @@ enforcement boundary; a green same-named status alone is insufficient.
    queue topology. The current engine returns `MERGE_GROUP_UNSUPPORTED`.
 5. Disable auto-merge. Admission must observe the final current merge preview,
    not an asynchronously replaced preview.
-6. Require the `tessctl gate ci` job from
-   `.github/workflows/tess-gate.yml`. Prefer a ruleset-required workflow,
-   which binds the workflow source. If a named status check is used, bind it
-   to the expected GitHub Actions source application rather than accepting an
-   arbitrary check with the same name.
-7. Require the other release/CI checks defined by the release runbook.
-8. Do not grant routine bypass. Repository administrators and automation must
+6. On GitHub Enterprise or an organization with required-workflow rulesets,
+   configure an active `workflows` ruleset entry with **zero bypass actors**.
+   Bind the source by the Tess OS repository numeric `repository_id`, the exact
+   `.github/workflows/tess-gate.yml` path, and a trusted immutable source `ref`
+   at an exact reviewed commit SHA. Do not use a mutable candidate branch as
+   that source. The required job remains `tessctl gate ci`, but its name is not
+   the identity boundary.
+7. If that source-bound `workflows` control is unavailable, production remains
+   blocked until a Tess-specific GitHub App emits a separately required check
+   only after it verifies the workflow run identity, source repository ID,
+   workflow path, immutable source ref/SHA, protected event ref, and evaluated
+   head SHA. A generic GitHub Actions expected-source check is not an adequate
+   fallback because another Actions workflow can emit the same check name.
+8. Require the other release/CI checks defined by the release runbook.
+9. Do not grant routine bypass. Repository administrators and automation must
    be subject to the ruleset; emergency bypass must be exceptional,
    user-present, time-bounded, and auditable.
-9. Keep force pushes and branch deletion disabled on `main`.
+10. Keep force pushes and branch deletion disabled on `main`.
 
 After configuration, test the reverse direction in a disposable branch:
 squash, rebase, fast-forward, stale-base, reordered-parent, octopus,
