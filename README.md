@@ -57,7 +57,7 @@ Two production prerequisites remain unresolved:
 Until both are complete, a passing local command or GitHub Action is useful
 engineering evidence, but not a production admission control. The historical
 GPG-backed `gate-arena` scorecard is **12/12**. A separate no-key A13
-path-ingress scorecard records **48/48** regression tests; the two numbers are
+path-ingress scorecard records **49/49** regression tests; the two numbers are
 not added together. The multi-push policy-reduction case A14 remains open.
 These scores are disclosed evidence, not a production-readiness certificate.
 

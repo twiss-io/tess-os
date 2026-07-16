@@ -16,7 +16,7 @@ locally invoked CI phase, and MCP entrypoints. It accepts SHA-256 only at raw
 Git ingress; the current SHA-1-only approval schema is tested to fail closed for
 a governed SHA-256 blob.
 
-**Result: 48/48 tests passed; 0 failures, 0 errors, 0 skips.** Full artifacts:
+**Result: 49/49 tests passed; 0 failures, 0 errors, 0 skips.** Full artifacts:
 `results/path-ingress-scorecard.md` / `.json`. This run performed no key
 generation, registration, verdict/sign-off signing, or trust bootstrap.
 

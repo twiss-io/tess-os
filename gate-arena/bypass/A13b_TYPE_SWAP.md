@@ -44,6 +44,6 @@ registered key, or signed verdict is used to make a test pass.
 
 `gate-arena/results/bypass-scorecard.*` remains the historical A1-A12 12/12
 run. A13's separate no-key record is
-`gate-arena/results/path-ingress-scorecard.*`: **48/48 passed, with 0
+`gate-arena/results/path-ingress-scorecard.*`: **49/49 passed, with 0
 failures/errors/skips**. The scores are deliberately not combined and must not
 be represented as 60/60 or as proof of unbypassability.

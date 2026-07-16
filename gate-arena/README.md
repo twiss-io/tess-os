@@ -60,11 +60,12 @@ separately from the historical GPG-backed A1-A12 corpus:
 python3 gate-arena/bypass/run_path_ingress_corpus.py
 ```
 
-**Result: 48/48 tests passed; 0 failures, 0 errors, 0 skips.** It covers
+**Result: 49/49 tests passed; 0 failures, 0 errors, 0 skips.** It covers
 deletion, rename-away, mode/type changes, symlinks, gitlinks/submodules,
 newline/tab/Unicode/NFC path handling, NFD and non-UTF-8 denial, malformed raw
-records (including captured U/X/B states), and full SHA-1/SHA-256 IDs at raw
-Git ingress. It exercises the local staged diagnostic, explicit-ref ship-check,
+records (including captured U/X/B states), full SHA-1/SHA-256 IDs, and denial
+of unsupported repository object formats at raw Git ingress. It exercises the
+local staged diagnostic, explicit-ref ship-check,
 pre-push stdin, installed local hook, locally invoked CI phase, and MCP surface.
 It also contains reverse controls proving `100644` additions and same-mode
 regular edits still reach normal review, while new governed `100755` files are

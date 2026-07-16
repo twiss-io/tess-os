@@ -199,7 +199,7 @@ and required GitHub enforcement are in place.
 - `verifier_keys` and `signoff_keys` are intentionally empty in the shipped
   policy.
 - The historical GPG-backed gate-arena scorecard is 12/12. The separate
-  no-key A13 path-ingress scorecard is 48/48; neither score proves
+  no-key A13 path-ingress scorecard is 49/49; neither score proves
   unbypassability and they are not combined. A14, the multi-push
   policy-reduction case, remains open.
 - The key bootstrap and GitHub admission-control gaps mean Tess OS must not

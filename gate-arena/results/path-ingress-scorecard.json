@@ -10,8 +10,8 @@
     "verdict_signing": false,
     "signoff_signing": false
   },
-  "total": 48,
-  "passed": 48,
+  "total": 49,
+  "passed": 49,
   "failed": 0,
   "errors": 0,
   "skipped": 0,
@@ -23,6 +23,11 @@
     },
     {
       "id": "tests.test_gate_path_ingress::test_raw_parser_accepts_full_sha1_and_sha256_object_ids[64]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_repository_object_format_outside_sha1_sha256_fails_closed",
       "status": "passed",
       "detail": null
     },
