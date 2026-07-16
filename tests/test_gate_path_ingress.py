@@ -225,6 +225,16 @@ def test_raw_parser_accepts_full_sha1_and_sha256_object_ids(engine, width):
     assert delta.new_mode == "100644"
 
 
+def test_repository_object_format_outside_sha1_sha256_fails_closed(
+    engine, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(
+        engine, "_gate_run_git", lambda *_args, **_kwargs: "sha512\n",
+    )
+    with pytest.raises(engine.GateSpineError, match="unsupported repository object format"):
+        engine._gate_object_id_length(tmp_path)
+
+
 @pytest.mark.parametrize(
     "raw,width,needle",
     [

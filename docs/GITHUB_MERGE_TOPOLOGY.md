@@ -84,6 +84,13 @@ authoritative run uses only that established engine and requirements file.
 The owner must apply all of these together. The workflow cannot safely or
 honestly claim that it applied them itself.
 
+Production remains **BLOCKED** until the owner applies and reverse-tests this
+source-bound ruleset. Repository code can reject a spoofed workflow context
+once the trusted engine runs, but it cannot prevent a candidate workflow from
+being replaced with a same-named no-op that never launches the engine. The
+ruleset-required workflow and no-bypass controls below close that external
+enforcement boundary; a green same-named status alone is insufficient.
+
 1. Allow **merge commits only**. Disable squash merge and rebase merge.
 2. Require branches to be up to date before merging (strict mode).
 3. Do not require linear history; it conflicts with the required merge commit.

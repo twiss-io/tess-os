@@ -152,6 +152,85 @@ def test_base_loaders_reject_cross_namespace_even_when_redirect_blob_exists(engi
     assert "dedicated sign-off-key namespace" in signoff_errors["Xavier"]
 
 
+def _key_registry_base(
+    root: Path,
+    *,
+    verifier_bytes: bytes,
+    signoff_bytes: bytes,
+) -> tuple[dict, str]:
+    verifier_path = ".tess/keys/verifiers/reid.asc"
+    signoff_path = ".tess/keys/signoffs/xavier.asc"
+    verifier = root / verifier_path
+    signoff = root / signoff_path
+    verifier.parent.mkdir(parents=True)
+    signoff.parent.mkdir(parents=True)
+    verifier.write_bytes(verifier_bytes)
+    signoff.write_bytes(signoff_bytes)
+    policy = _policy(verifier_path=verifier_path, signoff_path=signoff_path)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "immutable BASE key registries")
+    return policy, _git(root, "rev-parse", "HEAD")
+
+
+def test_policy_lint_rejects_primary_fingerprint_reuse_across_roles(engine):
+    instance = _policy(
+        verifier_path=".tess/keys/verifiers/reid.asc",
+        signoff_path=".tess/keys/signoffs/xavier.asc",
+    )
+    instance["policy"]["signoff_keys"]["Xavier"]["fingerprint"] = "A" * 40
+
+    errors = engine._lint_contract("policy", instance)
+
+    assert any("PRIMARY_FINGERPRINT_REUSE_FORBIDDEN" in error for error in errors)
+    assert any("distinct primary keys" in error for error in errors)
+
+
+def test_immutable_base_rejects_normalized_fingerprint_alias_across_roles(
+    engine, tmp_path,
+):
+    root = tmp_path / "fingerprint-alias"
+    root.mkdir()
+    policy, base = _key_registry_base(
+        root,
+        verifier_bytes=b"test verifier public bytes\n",
+        signoff_bytes=b"different signoff public bytes\n",
+    )
+    policy["policy"]["verifier_keys"]["Reid"]["fingerprint"] = "A" * 40
+    policy["policy"]["signoff_keys"]["Xavier"]["fingerprint"] = ":".join(
+        ["aa"] * 20
+    )
+
+    state = engine._gate_load_baseline_key_registry_state(root, policy, base)
+
+    for role, name in (("verifier", "Reid"), ("signoff", "Xavier")):
+        blobs, errors = state[role]
+        assert blobs == {}
+        assert "PRIMARY_FINGERPRINT_REUSE_FORBIDDEN" in errors[name]
+        assert "distinct primary keys" in errors[name]
+
+
+def test_immutable_base_rejects_identical_public_key_bytes_across_roles(
+    engine, tmp_path,
+):
+    root = tmp_path / "identical-key-bytes"
+    root.mkdir()
+    shared = b"test-only identical OpenPGP public export bytes\n"
+    policy, base = _key_registry_base(
+        root,
+        verifier_bytes=shared,
+        signoff_bytes=shared,
+    )
+
+    state = engine._gate_load_baseline_key_registry_state(root, policy, base)
+
+    for role, name in (("verifier", "Reid"), ("signoff", "Xavier")):
+        blobs, errors = state[role]
+        assert blobs == {}
+        assert "PRIMARY_KEY_BYTES_REUSE_FORBIDDEN" in errors[name]
+        assert "role or alias reuse fails closed" in errors[name]
+
+
 def _namespace_gate_repo(root: Path, *, existing_path: str | None = None) -> str:
     engine_dest = root / ".tess" / "bin" / "tessctl"
     engine_dest.parent.mkdir(parents=True)

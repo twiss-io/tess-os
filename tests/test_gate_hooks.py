@@ -178,6 +178,58 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     assert "REMOTE_BASE_REQUIRED" in resolve_run
 
 
+def test_authoritative_workflow_pins_actions_and_uses_only_base_owned_dependencies(engine):
+    """Reverse proof: mutable actions or candidate requirements cannot run the gate."""
+    parsed = yaml.safe_load(engine._GATE_CI_WORKFLOW)
+    steps = parsed["jobs"]["ship-gate"]["steps"]
+    checkout = next(step for step in steps if step.get("name") == "Checkout (full history)")
+    setup_python = next(step for step in steps if step.get("name") == "Set up Python")
+    extract = next(
+        step for step in steps
+        if step.get("name") == "Extract trusted gate dependencies (base ref only)"
+    )
+    install = next(
+        step for step in steps
+        if step.get("name") == "Install exact trusted gate dependencies"
+    )
+
+    assert checkout["uses"] == (
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+    )
+    assert setup_python["uses"] == (
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert setup_python["with"]["python-version"] == "3.13.7"
+    assert not any(
+        isinstance(step.get("uses"), str) and "@v" in step["uses"]
+        for step in steps
+    )
+
+    extract_run = extract["run"]
+    install_run = install["run"]
+    assert 'BASE="${{ steps.refs.outputs.base }}"' in extract_run
+    assert 'git show "${BASE}:${REQUIREMENTS_REL}" > "$TRUSTED_REQUIREMENTS"' in extract_run
+    assert "candidate-derived or unhashed dependencies" in extract_run
+    assert "--require-hashes" in install_run
+    assert "--only-binary=:all:" in install_run
+    assert "--no-deps" in install_run
+    assert "steps.trusted_dependencies.outputs.requirements_path" in install_run
+    assert ".tess/ci/ship-gate-requirements.txt" not in install_run
+    assert steps.index(extract) < steps.index(install)
+
+
+def test_external_required_workflow_boundary_is_explicit():
+    """Repo code cannot authorize a workflow that an attacker prevents from running."""
+    topology = (REPO_ROOT / "docs" / "GITHUB_MERGE_TOPOLOGY.md").read_text(
+        encoding="utf-8",
+    )
+    assert "A candidate branch cannot make its own check authoritative" in topology
+    assert "ruleset-required workflow" in topology
+    assert "Do not grant routine bypass" in topology
+    assert "Production remains **BLOCKED**" in topology
+
+
 def test_install_ci_workflow_idempotent(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
     first = (tmp_path / ".github" / "workflows" / "tess-gate.yml").read_text()

@@ -141,14 +141,17 @@ def test_exact_two_parent_wrapper_is_authoritative(engine, graph, monkeypatch, e
     }
 
 
-@pytest.mark.parametrize("shape", ["fast_forward", "squash", "octopus", "reordered", "tree_mismatch"])
+@pytest.mark.parametrize(
+    "shape",
+    ["fast_forward", "squash", "rebase", "octopus", "reordered", "tree_mismatch"],
+)
 def test_noncanonical_merge_shapes_fail_closed(engine, graph, monkeypatch, shape):
     root = graph["root"]
     if shape == "fast_forward":
         evaluation = graph["attestation"]
-    elif shape == "squash":
-        (root / "docs" / "note.md").write_text("squashed\n", encoding="utf-8")
-        evaluation = _commit_all(root, "one-parent squash-like commit")
+    elif shape in ("squash", "rebase"):
+        (root / "docs" / "note.md").write_text(f"{shape}\n", encoding="utf-8")
+        evaluation = _commit_all(root, f"one-parent {shape}-like commit")
     elif shape == "octopus":
         other = _commit_tree(root, graph["base_tree"], graph["base"], message="other")
         evaluation = _commit_tree(
@@ -273,6 +276,29 @@ def test_candidate_event_source_mismatch_is_rejected(
     )
 
     assert authoritative is False
+    assert reason.startswith("CI_EVENT_SOURCE_REQUIRED:")
+
+
+def test_same_protected_job_id_from_another_workflow_is_not_authoritative(
+    engine, graph, monkeypatch,
+):
+    """A same-named job does not become authority without the bound workflow path."""
+    event = _pr_event(graph)
+    _set_event(
+        monkeypatch, graph, event_name="pull_request", event=event,
+        github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
+        workflow_ref=(
+            "twiss-io/tess-os/.github/workflows/spoofed.yml@refs/pull/17/merge"
+        ),
+    )
+    assert os.environ["GITHUB_JOB"] == "ship-gate"
+
+    authoritative, reason, topology = engine._gate_ci_event_provenance(
+        graph["root"], graph["base"], graph["evaluation"],
+    )
+
+    assert authoritative is False
+    assert topology is None
     assert reason.startswith("CI_EVENT_SOURCE_REQUIRED:")
 
 
