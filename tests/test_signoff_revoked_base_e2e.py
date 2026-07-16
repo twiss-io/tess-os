@@ -4,8 +4,8 @@ The verdict and schema-v2 sign-off are both signed while the throwaway key is
 still valid.  The key is then revoked, the revoked public export is committed
 at BASE, and candidate bytes roll the files back to the earlier unrevoked
 export.  Both verifiers must import the revoked BASE bytes and reject the old
-signatures as REVOKED.  Every GPG operation uses a fresh /private/tmp home;
-the user's keyring is never read or modified.
+signatures as REVOKED. Every GPG operation uses a fresh OS-managed temporary
+home; the user's keyring is never read or modified.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _new_ephemeral_identity() -> SimpleNamespace:
         if IS_CI:
             pytest.fail("CI must provide gpg + gpgconf for mandatory revocation E2E")
         pytest.skip("local environment has no gpg/gpgconf")
-    home = Path(tempfile.mkdtemp(prefix="tess-signoff-v2-gpg-", dir="/private/tmp"))
+    home = Path(tempfile.mkdtemp(prefix="tess-signoff-v2-gpg-"))
     home.chmod(0o700)
     uid = "Tess Signoff V2 Ephemeral <signoff-v2@tess.invalid>"
     result = None
@@ -66,7 +66,7 @@ def _new_ephemeral_identity() -> SimpleNamespace:
     if result is None or result.returncode != 0:
         if not IS_CI and result is not None and _agent_unavailable(result):
             shutil.rmtree(home, ignore_errors=True)
-            pytest.skip("LOCAL_ENV_GPG_AGENT_UNAVAILABLE: isolated /private/tmp agent could not start")
+            pytest.skip("LOCAL_ENV_GPG_AGENT_UNAVAILABLE: isolated temporary agent could not start")
         detail = result.stderr.decode("utf-8", errors="replace") if result is not None else "no result"
         shutil.rmtree(home, ignore_errors=True)
         pytest.fail(f"ephemeral GPG key generation failed: {detail}")
