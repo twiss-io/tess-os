@@ -63,15 +63,22 @@ python3 gate-arena/bypass/run_path_ingress_corpus.py
 **Result: 48/48 tests passed; 0 failures, 0 errors, 0 skips.** It covers
 deletion, rename-away, mode/type changes, symlinks, gitlinks/submodules,
 newline/tab/Unicode/NFC path handling, NFD and non-UTF-8 denial, malformed raw
-records, SHA-1/SHA-256, and every authority-bearing ingress surface. It also
-contains the reverse controls proving regular `100644`/`100755` additions and
-same-mode regular edits still reach normal review rather than the categorical
-transition block.
+records (including captured U/X/B states), and full SHA-1/SHA-256 IDs at raw
+Git ingress. It exercises the local staged diagnostic, explicit-ref ship-check,
+pre-push stdin, installed local hook, locally invoked CI phase, and MCP surface.
+It also contains reverse controls proving `100644` additions and same-mode
+regular edits still reach normal review, while new governed `100755` files are
+unavailable without mode-bound signed evidence. SHA-256 approval is not claimed:
+the current blob-verdict schema is SHA-1-only and the governed SHA-256 fixture
+must fail closed.
 
 This run performs no key generation, registration, verdict signing, sign-off
 signing, or trust bootstrap. Its committed record is
 `results/path-ingress-scorecard.md` / `.json`. The score is **not** added to
 12/12 and is not a claim that the gate is unbypassable.
+
+Ref deletion is denied at pre-push, but A14's multi-ref/multi-push policy is not
+adopted by this corpus and remains Xavier's open topology decision.
 
 Two boundaries this layer cannot test (disclosed, not new — the reckoning
 doc already names them): **key custody** (whoever holds a verifier's or

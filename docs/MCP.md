@@ -146,6 +146,11 @@ and full object IDs. A duplicate, omitted, or invented caller path returns a
 blocked `PATH_SET_MISMATCH` result; path-only agent input is never admission
 authority.
 
+Full 40- or 64-hex IDs are accepted here only as immutable raw Git ingress.
+The current `verdict.artifact_hashes` contract remains SHA-1-only (40 hex), so
+this tool cannot turn a governed SHA-256 blob into an approvable change; it
+fails closed until a future schema migration explicitly defines that support.
+
 `base` is not optional. It must be a full 40- or 64-hex commit ID, never a
 branch, tag, or other mutable ref. The gate reads both verifier-registration
 metadata and public-key bytes from that BASE tree; it will not fall back to a

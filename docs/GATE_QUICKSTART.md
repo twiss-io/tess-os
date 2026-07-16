@@ -18,15 +18,20 @@ valid for the policy rule.
 
 The ship-gate derives changed paths from Git's byte-safe, NUL-delimited raw
 diff, retaining status, modes, and full object IDs through policy
-classification. It supports SHA-1 and SHA-256 repositories, disables rename
-detection so a rename-away is represented as deletion plus addition, and
-fails closed on malformed, non-UTF-8, or non-NFC path records.
+classification. Raw ingress accepts full SHA-1 and SHA-256 object IDs, but the
+current blob-verdict approval schema remains SHA-1-only: `artifact_hashes`
+requires a 40-hex blob ID. A governed SHA-256 blob therefore cannot receive a
+covering approval and fails closed. The gate disables rename detection so a
+rename-away is represented as deletion plus addition, and fails closed on
+malformed, unmerged/unknown, non-UTF-8, or non-NFC path records.
 
 Review artifacts bind regular blobs, not pathname transitions. A governed
-regular addition (`100644` or `100755`) or same-mode regular content edit can
-continue to normal verdict/sign-off checks. A governed deletion, rename-away,
-executable-bit transition, type change, symlink, or gitlink/submodule state is
-categorically blocked before authorization artifacts are consulted:
+non-executable regular addition (`100644`) or same-mode regular content edit can
+continue to normal verdict/sign-off checks. A new governed executable
+(`100755`) is unavailable because current signed evidence does not bind Git
+status/mode. A governed deletion, rename-away, executable-bit transition, type
+change, symlink, or gitlink/submodule state is categorically blocked before
+authorization artifacts are consulted:
 
 ```text
 GOVERNED_TRANSITION_UNSUPPORTED
@@ -43,6 +48,14 @@ change -> policy match -> independent review evidence -> required CI -> protecte
 
 All five links matter. A local hook is useful feedback, but it is not a
 substitute for required CI and branch protection.
+
+The local pre-commit diagnostic classifies staged transitions with policy read
+from immutable `HEAD`, not the staged/working candidate, and universally denies
+new symlink/gitlink additions. Regular additions and same-mode modifications
+remain advisory there; pre-push/CI performs the actual verdict check. Pre-push
+stdin explicitly rejects ref deletions because path/blob evidence does not bind
+ref topology. Multi-ref and multi-push policy semantics are unchanged: A14
+remains an open Xavier-owned adoption decision.
 
 ## Safe diagnostics
 

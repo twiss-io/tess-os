@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "corpus": "A13-path-ingress-no-key",
-  "measured_at": "2026-07-16T20:27:27.970677Z",
+  "measured_at": "2026-07-16T21:08:52.975603Z",
   "command": "python3 -m pytest -q tests/test_gate_path_ingress.py tests/test_gate_type_swaps.py",
-  "engine_sha256": "f682eb3d63268e92b77210bdf17155a5379e01d1c76f14df5b515023f7161b32",
+  "engine_sha256": "27a7edf0146b69a277803b047e82ec319b0521c5542e58d960c213c9e496d034",
   "trust_operations": {
     "key_generation": false,
     "key_registration": false,
@@ -62,7 +62,7 @@
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_duplicate_path_records",
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_duplicate_and_uxb_records_and_filter_captures_them",
       "status": "passed",
       "detail": null
     },
@@ -97,12 +97,12 @@
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_governed_regular_additions_reach_normal_review[420]",
+      "id": "tests.test_gate_path_ingress::test_governed_nonexecutable_addition_reaches_normal_review",
       "status": "passed",
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_governed_regular_additions_reach_normal_review[493]",
+      "id": "tests.test_gate_path_ingress::test_governed_executable_addition_is_unavailable_without_mode_bound_evidence",
       "status": "passed",
       "detail": null
     },
@@ -122,7 +122,7 @@
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_governed_executable_bit_change_is_categorical",
+      "id": "tests.test_gate_path_ingress::test_governed_0644_to_0755_after_review_is_categorical",
       "status": "passed",
       "detail": null
     },
@@ -172,7 +172,7 @@
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_real_sha256_repo_uses_full_object_ids",
+      "id": "tests.test_gate_path_ingress::test_real_sha256_repo_ingress_is_full_width_but_approval_schema_fails_closed",
       "status": "passed",
       "detail": null
     },
@@ -192,7 +192,7 @@
       "detail": null
     },
     {
-      "id": "tests.test_gate_path_ingress::test_staged_ingress_retains_deletion_status_modes_and_full_oids",
+      "id": "tests.test_gate_path_ingress::test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict",
       "status": "passed",
       "detail": null
     },

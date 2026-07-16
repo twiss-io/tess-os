@@ -46,6 +46,11 @@ def _commit_all(root: Path, message: str) -> str:
     return _git(root, "rev-parse", "HEAD").stdout.strip()
 
 
+def _commit_index(root: Path, message: str) -> str:
+    _git(root, "commit", "-q", "-m", message)
+    return _git(root, "rev-parse", "HEAD").stdout.strip()
+
+
 def _type_swap_repo(tmp_path: Path) -> tuple[Path, str]:
     """Build a disposable repo with an unmodified copy of shipped policy.
 
@@ -95,6 +100,23 @@ def _run_gate(root: Path, phase: str, base: str, head: str) -> tuple[subprocess.
             base,
             "--head",
             head,
+            "--json",
+        ],
+        cwd=str(root),
+        env={**os.environ, "TESS_ROOT": str(root)},
+        capture_output=True,
+        text=True,
+    )
+    return result, json.loads(result.stdout)
+
+
+def _run_pre_commit(root: Path) -> tuple[subprocess.CompletedProcess, dict]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / ".tess" / "bin" / "tessctl"),
+            "gate",
+            "pre-commit",
             "--json",
         ],
         cwd=str(root),
@@ -167,7 +189,12 @@ def test_ordinary_protected_edit_remains_blocked_without_verdict(tmp_path, phase
 def test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict(tmp_path, phase):
     root, base = _type_swap_repo(tmp_path)
     _replace_with_symlink(root / "docs" / "ungoverned.md", "ungoverned-target.md")
-    head = _commit_all(root, "control: ungoverned document type swap")
+    _git(root, "add", "-A")
+    staged_result, staged_payload = _run_pre_commit(root)
+    assert staged_result.returncode == 0, staged_result.stdout + staged_result.stderr
+    assert staged_payload["blocked"] is False
+    assert staged_payload["reasons"] == []
+    head = _commit_index(root, "control: ungoverned document type swap")
 
     result, payload = _run_gate(root, phase, base, head)
 
@@ -176,6 +203,19 @@ def test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict(tmp_pat
     assert payload["changed_paths"] == ["docs/ungoverned.md"]
     assert payload["reasons"] == []
 
+    # A new non-regular entry is different: pre-commit denies every new
+    # symlink/gitlink even when no policy glob covers it.
+    (root / "docs" / "new-ungoverned-link").symlink_to("ungoverned-target.md")
+    _git(root, "add", "-A")
+    addition_result, addition_payload = _run_pre_commit(root)
+    assert addition_result.returncode == 1
+    assert addition_payload["blocked"] is True
+    assert any(
+        reason.startswith("NONREGULAR_ADDITION_UNSUPPORTED:")
+        and "docs/new-ungoverned-link" in reason
+        for reason in addition_payload["reasons"]
+    )
+
 
 def test_staged_protected_type_swap_is_discovered_by_the_staged_diff_ingress(engine, tmp_path):
     root, _base = _type_swap_repo(tmp_path)
@@ -183,3 +223,11 @@ def test_staged_protected_type_swap_is_discovered_by_the_staged_diff_ingress(eng
     _git(root, "add", "-A")
 
     assert engine._gate_changed_paths_staged(root) == ["conductor/guardrails.md"]
+    result, payload = _run_pre_commit(root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert payload["blocked"] is True
+    assert any(
+        reason.startswith("GOVERNED_TRANSITION_UNSUPPORTED:")
+        and "conductor/guardrails.md" in reason
+        for reason in payload["reasons"]
+    )

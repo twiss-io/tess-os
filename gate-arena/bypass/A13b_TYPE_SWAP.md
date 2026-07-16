@@ -19,11 +19,21 @@ must fail closed before verdict/sign-off evaluation for:
 - governed deletion or rename-away (`D` on the old pathname);
 - governed type or executable-bit transitions;
 - governed symlink or gitlink/submodule additions/modifications; and
-- malformed, ambiguous, non-UTF-8, or non-NFC raw path records.
+- unmerged/unknown/broken-pairing (`U`/`X`/`B`), malformed, ambiguous,
+  non-UTF-8, or non-NFC raw path records.
 
-Only governed regular additions (`100644`/`100755`) and same-mode regular
-content modifications proceed to normal review. An ungoverned transition is
-still reported but does not gain a new policy requirement.
+Only governed non-executable regular additions (`100644`) and same-mode regular
+content modifications proceed to normal review. A new governed executable
+(`100755`) is unavailable until signed evidence binds Git status/mode. An
+ungoverned existing transition is still reported but does not gain a new policy
+requirement; the local pre-commit diagnostic nevertheless denies every new
+symlink/gitlink and reads old governance only from immutable `HEAD` policy.
+
+Full SHA-1/SHA-256 object IDs are retained at raw Git ingress. This is not a
+claim of SHA-256 verdict support: `verdict.artifact_hashes` remains SHA-1-only,
+and a governed SHA-256 approval-shaped fixture is required to fail closed.
+Pre-push ref deletion is also denied, without adopting A14's still-open
+multi-ref/multi-push policy.
 
 The executable, no-key regressions are `tests/test_gate_path_ingress.py` and
 `tests/test_gate_type_swaps.py`. They use disposable copies of the shipped

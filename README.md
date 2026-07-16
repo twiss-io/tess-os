@@ -89,16 +89,26 @@ enforcement.
 
 For ship-gate authority, Tess reads Git's NUL-delimited raw diff directly. It
 keeps each path's status, old/new mode, and full SHA-1 or SHA-256 object IDs
-through policy classification; rename detection is disabled so a rename-away
-cannot hide the governed source deletion. Malformed, non-UTF-8, or non-NFC
-path records fail closed.
+through policy classification; that SHA-256 statement is about raw Git ingress,
+not approval support. The current `verdict.artifact_hashes` schema accepts only
+40-hex SHA-1 blob IDs, so a governed SHA-256 blob cannot receive covering
+approval and fails closed. Rename detection is disabled so a rename-away cannot
+hide the governed source deletion. Malformed, unmerged/unknown, non-UTF-8, or
+non-NFC path records fail closed.
 
 A signed blob hash can authorize only a surviving regular-file blob. For a
-governed path, regular additions (`100644`/`100755`) and same-mode regular
-content modifications may proceed to normal review. Deletions, renames-away,
-mode/type transitions, symlinks, and gitlinks/submodules stop first with
-`GOVERNED_TRANSITION_UNSUPPORTED`; a verdict or sign-off is not consulted as
-a workaround for those transitions.
+governed path, a non-executable regular addition (`100644`) and same-mode regular
+content modifications may proceed to normal review. A new executable (`100755`)
+is unavailable until signed evidence binds Git status/mode. Deletions,
+renames-away, mode/type transitions, symlinks, and gitlinks/submodules stop first
+with `GOVERNED_TRANSITION_UNSUPPORTED`; a verdict or sign-off is not consulted
+as a workaround for those transitions. The local pre-commit diagnostic reads
+classification from immutable `HEAD`, never a staged candidate policy, and
+universally rejects new symlinks/gitlinks; pre-push/CI remains the ship-gate.
+
+Pre-push stdin also rejects ref deletions because blob/path review evidence does
+not bind ref-topology deletion. This does not adopt a multi-ref or multi-push
+policy: A14 remains an open Xavier-owned policy/topology decision.
 
 ### Safe evaluation
 

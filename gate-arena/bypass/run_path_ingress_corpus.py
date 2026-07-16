@@ -66,12 +66,14 @@ def _markdown(scorecard: dict) -> str:
         "",
         "## Scope",
         "",
-        "The no-key corpus covers strict NUL-delimited raw-diff parsing; SHA-1 "
-        "and SHA-256 object IDs; malformed status/mode/OID tuples; deletion and "
-        "rename-away; executable-bit and type transitions; symlink and gitlink "
-        "states; newline, tab, NFC, NFD, and non-UTF-8 paths; staged, explicit-ref, "
-        "pre-push stdin, installed-hook, CI, and MCP ingress; and the regular-file "
-        "A/M controls that must still proceed to normal review.",
+        "The no-key corpus covers strict NUL-delimited raw-diff parsing; full "
+        "SHA-1/SHA-256 IDs at raw Git ingress; SHA-1-only verdict-schema denial "
+        "for governed SHA-256 blobs; malformed and U/X/B status/mode/OID states; "
+        "deletion and rename-away; executable-bit and type transitions; symlink "
+        "and gitlink states; newline, tab, NFC, NFD, and non-UTF-8 paths; the local "
+        "staged diagnostic, explicit-ref ship-check, pre-push stdin, installed "
+        "local hook, locally invoked CI phase, and MCP ingress; and the 100644 "
+        "addition/same-mode M controls that must still proceed to normal review.",
         "",
         "## Trust-boundary disclosure",
         "",

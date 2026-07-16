@@ -9157,6 +9157,7 @@ EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _GATE_OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
 _GATE_TRACKED_MODES = {"000000", "100644", "100755", "120000", "160000"}
 _GATE_REGULAR_FILE_MODES = {"100644", "100755"}
+_GATE_REVIEWABLE_ADDITION_MODE = "100644"
 
 
 class GatePathDelta:
@@ -9456,8 +9457,9 @@ def _gate_parse_raw_diff(raw_output: bytes, oid_length: int) -> list:
         if status_token not in ("A", "M", "D", "T"):
             raise GateSpineError(
                 "tessctl gate: unexpected raw Git diff status "
-                f"{status_token!r}; rename/copy/unknown records are forbidden under "
-                "--no-renames — fail-closed, refusing"
+                f"{status_token!r}; only A/M/D/T records are reviewable. "
+                "Rename/copy records and unmerged/unknown/broken-pairing states "
+                "are forbidden — fail-closed, refusing"
             )
         if index >= len(fields):
             raise GateSpineError(
@@ -9491,7 +9493,7 @@ def _gate_raw_diff(root: Path, *range_args: str, cached: bool = False) -> list:
         args.append("--cached")
     args += [
         "--raw", "-z", "--no-renames", "--no-abbrev", "--no-ext-diff",
-        "--ignore-submodules=none", "--diff-filter=ACMRTD",
+        "--ignore-submodules=none", "--diff-filter=ACMRTDUXB",
     ]
     args += list(range_args)
     args.append("--")
@@ -9577,7 +9579,12 @@ def _gate_changed_paths_from_stdin(root: Path):
         local_sha = local_sha.lower()
         remote_sha = remote_sha.lower()
         if local_sha == zero_oid:
-            continue  # deleting the ref — nothing pushed
+            raise GateSpineError(
+                "REF_DELETION_UNSUPPORTED: tessctl gate pre-push cannot authorize "
+                f"deletion of {_gate_path_display(_remote_ref)} because blob/path "
+                "review evidence does not bind ref-topology deletion — fail-closed, "
+                "refusing"
+            )
         base = _gate_empty_tree_oid(root) if remote_sha == zero_oid else remote_sha
         ref_changes = _gate_diff_paths(root, base, local_sha)
         deltas.extend(ref_changes.deltas)
@@ -9658,8 +9665,10 @@ def _gate_governed_transition_gap_report(
     bind the *absence* of a deleted path, a pathname move, an executable-bit
     transition, a symlink target, or a gitlink/submodule commit.  Those
     transitions therefore stop here, before hard-floor sign-offs or verdicts
-    are consulted.  Only a regular-file addition (100644/100755) or a
-    same-mode regular-file content modification reaches normal review.
+    are consulted.  Only a non-executable regular-file addition (100644) or a
+    same-mode regular-file content modification reaches normal review.  A new
+    100755 path is not reviewable until signed evidence binds Git status/mode,
+    rather than blob content alone.
     """
     governed_paths = set(path_rule_matches) | set(hard_floor_matches)
     if not governed_paths:
@@ -9708,7 +9717,7 @@ def _gate_governed_transition_gap_report(
             reviewable = (
                 delta.status == "A"
                 and delta.old_mode == "000000"
-                and delta.new_mode in _GATE_REGULAR_FILE_MODES
+                and delta.new_mode == _GATE_REVIEWABLE_ADDITION_MODE
             ) or (
                 delta.status == "M"
                 and delta.old_mode == delta.new_mode
@@ -9716,13 +9725,74 @@ def _gate_governed_transition_gap_report(
             )
             if reviewable:
                 continue
+            if (
+                delta.status == "A"
+                and delta.old_mode == "000000"
+                and delta.new_mode == "100755"
+            ):
+                reasons.append(
+                    "GOVERNED_TRANSITION_UNSUPPORTED: "
+                    f"{_gate_path_display(path)} status=A mode=000000->100755; "
+                    "governed executable-file additions are unavailable because "
+                    "the current signed verdict schema binds blob content but not "
+                    "Git status/mode"
+                )
+                continue
             reasons.append(
                 "GOVERNED_TRANSITION_UNSUPPORTED: "
                 f"{_gate_path_display(path)} status={delta.status} "
-                f"mode={delta.old_mode}->{delta.new_mode}; only regular-file "
-                "additions (100644/100755) and same-mode regular-file content "
-                "modifications can proceed to verdict/sign-off review"
+                f"mode={delta.old_mode}->{delta.new_mode}; current signed "
+                "evidence binds blob content but cannot bind this Git status/mode "
+                "transition. Only non-executable regular-file additions (100644) "
+                "and same-mode regular-file content modifications can proceed to "
+                "verdict/sign-off review"
             )
+    return reasons
+
+
+def _gate_pre_commit_transition_gap_report(root: Path, changed_paths: list) -> list:
+    """Early local transition checks over the staged index.
+
+    The ship-gate remains pre-push/CI.  Pre-commit provides faster feedback
+    for two cases that should never look locally admissible: every new
+    symlink/gitlink (even outside policy) and every categorical transition of
+    a path governed by the immutable policy already committed at HEAD.  It
+    never trusts a staged/working candidate policy for that classification.
+    Regular additions/modifications remain advisory here and reach the real
+    verdict check only at pre-push/CI.
+    """
+    deltas = changed_paths.deltas if isinstance(changed_paths, GateChangedPaths) else None
+    if deltas is None:
+        return [
+            "PRE_COMMIT_TRANSITION_EVIDENCE_MISSING: staged paths have no trusted "
+            "raw PathDelta evidence — fail-closed"
+        ]
+
+    reasons = []
+    for delta in deltas:
+        if delta.status == "A" and delta.new_mode not in _GATE_REGULAR_FILE_MODES:
+            reasons.append(
+                "NONREGULAR_ADDITION_UNSUPPORTED: "
+                f"{_gate_path_display(delta.path)} status=A "
+                f"mode={delta.old_mode}->{delta.new_mode}; local pre-commit never "
+                "admits a new symlink or gitlink because blob review evidence does "
+                "not bind those semantics"
+            )
+
+    head_policy, policy_errors = _gate_load_policy_at_head_for_pre_commit(root)
+    if policy_errors:
+        reasons += [f"[head-policy] {error}" for error in policy_errors]
+        return reasons
+    if head_policy is None:
+        return reasons
+
+    path_rule_matches, hard_floor_matches = _gate_classify_paths(
+        head_policy, changed_paths,
+    )
+    reasons += _gate_governed_transition_gap_report(
+        root, changed_paths, path_rule_matches, hard_floor_matches,
+        head_shas=None, base_shas=None,
+    )
     return reasons
 
 
@@ -9837,6 +9907,113 @@ def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
     """
     instance, _base_sha = _gate_load_policy_at_base_with_ref(root, base_shas)
     return instance
+
+
+def _gate_load_policy_at_head_for_pre_commit(
+    root: Path,
+) -> tuple[dict | None, list]:
+    """Load classification policy from immutable ``HEAD`` for pre-commit.
+
+    Pre-commit is an early local diagnostic, not the delivery authority, but
+    it must still refuse an obvious staged policy-then-transition bypass.  A
+    candidate can stage a weakened policy beside a protected chmod/deletion;
+    classification therefore comes only from the already-committed HEAD tree.
+    An unborn repository has no old governed paths and returns ``(None, [])``;
+    universal non-regular-addition denial still applies separately.
+
+    This parser intentionally validates the classification shape directly
+    instead of loading the candidate checkout's schema.  A staged schema edit
+    must not decide whether the immutable HEAD policy is usable.
+    """
+    head_lookup = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+        capture_output=True, text=True,
+    )
+    if head_lookup.returncode != 0:
+        return None, []  # unborn repository: no previously governed paths
+    head = head_lookup.stdout.strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head):
+        return None, [
+            "immutable HEAD did not resolve to a full SHA-1/SHA-256 commit ID "
+            "— fail-closed"
+        ]
+
+    for name in POLICY_INSTANCE_CANDIDATES:
+        rel_path = f"{POLICY_DIR}/{name}"
+        tree_lookup = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-z", "--full-tree", head, "--", rel_path],
+            capture_output=True,
+        )
+        if tree_lookup.returncode != 0:
+            return None, [
+                f"could not inspect {rel_path} in immutable HEAD {head} — fail-closed"
+            ]
+        records = [record for record in tree_lookup.stdout.split(b"\0") if record]
+        if not records:
+            continue
+        if len(records) != 1:
+            return None, [
+                f"{rel_path} is ambiguous in immutable HEAD {head} — fail-closed"
+            ]
+        meta, separator, recorded_path = records[0].partition(b"\t")
+        fields = meta.split()
+        if (
+            not separator
+            or len(fields) != 3
+            or recorded_path.decode("utf-8", errors="surrogateescape") != rel_path
+            or fields[0] not in (b"100644", b"100755")
+            or fields[1] != b"blob"
+        ):
+            return None, [
+                f"{rel_path} is not a regular policy blob in immutable HEAD {head} "
+                "— fail-closed"
+            ]
+        blob = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", fields[2].decode("ascii")],
+            capture_output=True,
+        )
+        if blob.returncode != 0:
+            return None, [
+                f"could not read {rel_path} from immutable HEAD {head} — fail-closed"
+            ]
+        try:
+            text = blob.stdout.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return None, [
+                f"{rel_path} in immutable HEAD {head} is not valid UTF-8 — fail-closed"
+            ]
+        try:
+            instance = _parse_contract_instance_text(text, Path(name).suffix, rel_path)
+        except ContractError as e:
+            return None, [
+                f"{rel_path} in immutable HEAD {head} cannot be parsed ({e}) — fail-closed"
+            ]
+        policy = instance.get("policy") if isinstance(instance, dict) else None
+        if not isinstance(policy, dict):
+            return None, [
+                f"{rel_path} in immutable HEAD {head} has no policy mapping — fail-closed"
+            ]
+        for field in ("rules", "hard_floor_rules"):
+            rules = policy.get(field)
+            if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+                return None, [
+                    f"{rel_path} in immutable HEAD {head} has invalid policy.{field} "
+                    "classification data — fail-closed"
+                ]
+            for rule in rules:
+                globs = rule.get("globs")
+                if not isinstance(globs, list) or not all(isinstance(glob, str) for glob in globs):
+                    return None, [
+                        f"{rel_path} in immutable HEAD {head} has invalid policy.{field} "
+                        "glob data — fail-closed"
+                    ]
+                if field == "rules" and not isinstance(rule.get("require_verdict"), bool):
+                    return None, [
+                        f"{rel_path} in immutable HEAD {head} has invalid require_verdict "
+                        "classification data — fail-closed"
+                    ]
+        return instance, []
+    return None, []
 
 
 def _gate_merge_rule_restrictive(new_rule: dict, base_rule: dict) -> dict:
@@ -10138,7 +10315,7 @@ def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instanc
 # ---------------------------------------------------------------------------
 
 def _gate_git_ls_tree(root: Path, ref: str) -> dict:
-    """rel_path -> git blob SHA-1 for every tracked, non-symlink blob at
+    """rel_path -> storage-format object ID for each tracked regular blob at
     `ref` (via `git ls-tree -r --full-tree`). Symlink entries (git mode
     120000) are EXCLUDED on purpose (LOW-1): the gate must never resolve a
     symlink to decide ship-gate coverage — a symlink's name says nothing
@@ -10147,7 +10324,14 @@ def _gate_git_ls_tree(root: Path, ref: str) -> dict:
     GateSpineError on any non-zero exit (the caller has typically already
     proven `ref` resolvable via `_gate_diff_paths`, so a failure here means
     something changed underneath the run — refuse rather than silently
-    return an empty/partial index)."""
+    return an empty/partial index).
+
+    Raw path/tree ingress retains full SHA-1 (40 hex) or SHA-256 (64 hex)
+    IDs. That does not broaden the current verdict contract: its
+    `artifact_hashes` entries remain SHA-1-only, so a governed SHA-256 blob
+    cannot receive covering approval and fails closed until a future schema
+    revision defines that migration.
+    """
     out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", ref)
     result: dict = {}
     for line in out.splitlines():
@@ -10629,16 +10813,18 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
         sys.exit(1)
 
     violations = _gate_validate_contracts(root, changed)
+    transition_reasons = _gate_pre_commit_transition_gap_report(root, changed)
+    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in violations] + transition_reasons
     result = {
-        "blocked": bool(violations),
-        "reasons": [f"[contract] CONTRACT_INVALID: {v}" for v in violations],
+        "blocked": bool(reasons),
+        "reasons": reasons,
         "changed_paths": changed,
     }
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-commit",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
         duration_s=time.perf_counter() - _trace_t0, changed_paths=changed,
-        violations_count=len(violations), reasons=result["reasons"],
+        violations_count=len(reasons), reasons=result["reasons"],
     )
     _gate_print_result("pre-commit", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
@@ -14492,7 +14678,9 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `paths` (non-empty array of strings) is required")
     base = arguments.get("base")
     # A branch/tag/ref is mutable and cannot be the immutable trust boundary
-    # for a ship-gate answer. Accept both SHA-1 and SHA-256 full object IDs.
+    # for a ship-gate answer. Accept both SHA-1 and SHA-256 full object IDs as
+    # raw ref ingress only; the current verdict artifact_hashes schema remains
+    # SHA-1-only and therefore cannot approve a governed SHA-256 blob.
     if not isinstance(base, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?", base):
         return _safe_gate_result({
             "blocked": True,

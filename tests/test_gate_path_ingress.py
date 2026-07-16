@@ -142,6 +142,22 @@ def _run_pre_push_stdin(
     )
 
 
+def _run_pre_commit(root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(root / ".tess" / "bin" / "tessctl"),
+            "gate",
+            "pre-commit",
+            "--json",
+        ],
+        cwd=str(root),
+        env={**os.environ, "TESS_ROOT": str(root)},
+        capture_output=True,
+        text=True,
+    )
+
+
 def _payload(result: subprocess.CompletedProcess) -> dict:
     return json.loads(result.stdout)
 
@@ -223,10 +239,26 @@ def test_raw_parser_rejects_malformed_status_mode_and_oid_tuples(engine, raw, wi
         engine._gate_parse_raw_diff(raw, width)
 
 
-def test_raw_parser_rejects_duplicate_path_records(engine):
+def test_raw_parser_rejects_duplicate_and_uxb_records_and_filter_captures_them(
+    engine, monkeypatch, tmp_path,
+):
     record = _raw_record(40)
     with pytest.raises(engine.GateSpineError, match="duplicate path"):
         engine._gate_parse_raw_diff(record + record, 40)
+    for status in ("U", "X", "B"):
+        with pytest.raises(engine.GateSpineError, match="unexpected raw Git diff status"):
+            engine._gate_parse_raw_diff(_raw_record(40, status=status), 40)
+
+    captured = {}
+
+    def fake_git(_root, *args, **_kwargs):
+        captured["args"] = args
+        return b""
+
+    monkeypatch.setattr(engine, "_gate_run_git_bytes", fake_git)
+    monkeypatch.setattr(engine, "_gate_object_id_length", lambda _root: 40)
+    assert engine._gate_raw_diff(tmp_path, cached=True) == []
+    assert "--diff-filter=ACMRTDUXB" in captured["args"]
 
 
 @pytest.mark.parametrize("path", (b"/absolute", b"a/../b", b"a//b", b"./a"))
@@ -255,22 +287,49 @@ def test_raw_parser_rejects_nfd_and_non_utf8_paths(engine):
         engine._gate_parse_raw_diff(_raw_record(40, path=b"core/policy/fixtures/\xff"), 40)
 
 
-@pytest.mark.parametrize("mode", (0o644, 0o755))
-def test_governed_regular_additions_reach_normal_review(mode, tmp_path):
+def test_governed_nonexecutable_addition_reaches_normal_review(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/new-regular.txt"
     file_path = root / path
     file_path.write_text("new\n", encoding="utf-8")
-    os.chmod(file_path, mode)
-    head = _commit_all(root, "regular addition")
+    os.chmod(file_path, 0o644)
+    _git(root, "add", "-A")
+    pre_commit = _run_pre_commit(root)
+    assert pre_commit.returncode == 0, pre_commit.stdout + pre_commit.stderr
+    assert _payload(pre_commit)["reasons"] == []
+    head = _commit_index(root, "regular addition")
     _assert_reviewable_but_unapproved(_run_gate(root, base, head), path)
+
+
+def test_governed_executable_addition_is_unavailable_without_mode_bound_evidence(tmp_path):
+    root, base = _repo(tmp_path)
+    path = "core/policy/fixtures/new-executable"
+    file_path = root / path
+    file_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(file_path, 0o755)
+    _git(root, "add", "-A")
+
+    staged = _assert_categorical(_run_pre_commit(root), path)
+    assert any(
+        "executable-file additions are unavailable" in reason
+        and "binds blob content but not Git status/mode" in reason
+        for reason in staged["reasons"]
+    )
+
+    head = _commit_index(root, "executable addition")
+    shipped = _assert_categorical(_run_gate(root, base, head), path)
+    assert any("executable-file additions are unavailable" in reason for reason in shipped["reasons"])
 
 
 def test_governed_same_mode_regular_modification_reaches_normal_review(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/existing.txt"
     (root / path).write_text("modified\n", encoding="utf-8")
-    head = _commit_all(root, "same-mode regular edit")
+    _git(root, "add", "-A")
+    pre_commit = _run_pre_commit(root)
+    assert pre_commit.returncode == 0, pre_commit.stdout + pre_commit.stderr
+    assert _payload(pre_commit)["reasons"] == []
+    head = _commit_index(root, "same-mode regular edit")
     _assert_reviewable_but_unapproved(_run_gate(root, base, head), path)
 
 
@@ -278,7 +337,10 @@ def test_governed_deletion_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/existing.txt"
     (root / path).unlink()
-    head = _commit_all(root, "delete governed path")
+    _git(root, "add", "-A")
+    staged = _assert_categorical(_run_pre_commit(root), path)
+    assert any("status=D" in r for r in staged["reasons"])
+    head = _commit_index(root, "delete governed path")
     payload = _assert_categorical(_run_gate(root, base, head), path)
     assert any("status=D" in r for r in payload["reasons"])
 
@@ -294,13 +356,37 @@ def test_governed_rename_away_is_deletion_plus_addition_and_categorical(tmp_path
     assert any("status=D" in r and old in r for r in payload["reasons"])
 
 
-def test_governed_executable_bit_change_is_categorical(tmp_path):
+def test_governed_0644_to_0755_after_review_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/existing.txt"
+    # The committed 0644 baseline stands for the already-admitted/reviewed
+    # state. A later chmod cannot reuse that blob review as mode authority.
     os.chmod(root / path, 0o755)
-    head = _commit_all(root, "chmod governed path")
+    # Stage a valid but fully weakened candidate policy beside the chmod.
+    # Pre-commit must classify from immutable HEAD, never this candidate.
+    (root / "core" / "policy" / "policy.yaml").write_text(
+        "policy:\n"
+        "  version: 1\n"
+        "  rules: []\n"
+        "  hard_floor_rules: []\n"
+        "  verifier_keys: {}\n"
+        "  signoff_keys: {}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-A")
+    staged = _assert_categorical(_run_pre_commit(root), path)
+    assert any(
+        "100644->100755" in r
+        and "signed evidence binds blob content" in r
+        for r in staged["reasons"]
+    )
+    head = _commit_index(root, "chmod governed path beside candidate policy weakening")
     payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("100644->100755" in r for r in payload["reasons"])
+    assert any(
+        "100644->100755" in r
+        and "signed evidence binds blob content" in r
+        for r in payload["reasons"]
+    )
 
 
 def test_governed_regular_to_symlink_type_change_is_categorical(tmp_path):
@@ -308,7 +394,9 @@ def test_governed_regular_to_symlink_type_change_is_categorical(tmp_path):
     path = "core/policy/fixtures/existing.txt"
     (root / path).unlink()
     (root / path).symlink_to("../../../docs/target.txt")
-    head = _commit_all(root, "replace governed regular file with symlink")
+    _git(root, "add", "-A")
+    _assert_categorical(_run_pre_commit(root), path)
+    head = _commit_index(root, "replace governed regular file with symlink")
     payload = _assert_categorical(_run_gate(root, base, head), path)
     assert any("status=T" in r and "100644->120000" in r for r in payload["reasons"])
 
@@ -317,7 +405,10 @@ def test_governed_new_symlink_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/new-link"
     (root / path).symlink_to("../../../docs/target.txt")
-    head = _commit_all(root, "add governed symlink")
+    _git(root, "add", "-A")
+    staged = _assert_categorical(_run_pre_commit(root), path)
+    assert any(r.startswith("NONREGULAR_ADDITION_UNSUPPORTED:") for r in staged["reasons"])
+    head = _commit_index(root, "add governed symlink")
     payload = _assert_categorical(_run_gate(root, base, head), path)
     assert any("status=A" in r and "000000->120000" in r for r in payload["reasons"])
 
@@ -326,6 +417,8 @@ def test_governed_new_gitlink_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/vendor"
     _git(root, "update-index", "--add", "--cacheinfo", "160000", base, path)
+    staged = _assert_categorical(_run_pre_commit(root), path)
+    assert any(r.startswith("NONREGULAR_ADDITION_UNSUPPORTED:") for r in staged["reasons"])
     head = _commit_index(root, "add governed gitlink")
     payload = _assert_categorical(_run_gate(root, base, head), path)
     assert any("status=A" in r and "000000->160000" in r for r in payload["reasons"])
@@ -335,6 +428,7 @@ def test_governed_regular_to_gitlink_type_change_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/existing.txt"
     _git(root, "update-index", "--add", "--cacheinfo", "160000", base, path)
+    _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "replace governed regular file with gitlink")
     payload = _assert_categorical(_run_gate(root, base, head), path)
     assert any("status=T" in r and "100644->160000" in r for r in payload["reasons"])
@@ -403,7 +497,7 @@ def test_real_git_non_utf8_path_fails_closed_before_policy_matching(tmp_path):
     assert any("not valid UTF-8" in r for r in payload["reasons"])
 
 
-def test_real_sha256_repo_uses_full_object_ids(tmp_path):
+def test_real_sha256_repo_ingress_is_full_width_but_approval_schema_fails_closed(tmp_path):
     root, base = _repo(tmp_path, object_format="sha256")
     assert len(base) == 64
     path = "core/policy/fixtures/sha256.txt"
@@ -411,6 +505,38 @@ def test_real_sha256_repo_uses_full_object_ids(tmp_path):
     head = _commit_all(root, "sha256 governed regular add")
     assert len(head) == 64
     _assert_reviewable_but_unapproved(_run_gate(root, base, head), path)
+
+    blob = _git_text(root, "rev-parse", f"{head}:{path}")
+    assert len(blob) == 64
+    verdict = {
+        "verifier": "Reid",
+        "output_domain": "Code diff / PR",
+        "primary_artifacts_read": [path],
+        "findings": [],
+        "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "summary_line": (
+            "Reviewed. Found 0 CRITICAL, 0 HIGH, 0 MEDIUM, 0 LOW. "
+            "Top priority: none."
+        ),
+        "disposition": "APPROVE",
+        "covers_paths": [path],
+        "artifact_hashes": {path: blob},
+    }
+    verdict_path = root / "missions" / "m1" / "verdicts" / "sha256.verdict.json"
+    verdict_path.parent.mkdir(parents=True)
+    verdict_path.write_text(json.dumps(verdict, indent=2) + "\n", encoding="utf-8")
+    approval_head = _commit_all(root, "add SHA-256 approval-shaped verdict")
+    result = _run_gate(root, base, approval_head)
+    payload = _payload(result)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert payload["blocked"] is True
+    assert any(
+        "[contract]" in reason
+        and "artifact_hashes" in reason
+        and "^[0-9a-f]{40}$" in reason
+        for reason in payload["reasons"]
+    )
+    assert any(path in reason and "no covering APPROVE verdict" in reason for reason in payload["reasons"])
 
 
 def test_pre_push_stdin_uses_raw_delta_and_blocks_deletion(tmp_path):
@@ -429,6 +555,21 @@ def test_pre_push_stdin_rejects_malformed_ref_update_record(tmp_path):
     assert payload["changed_paths"] == []
     assert any("malformed stdin ref-update record" in r for r in payload["reasons"])
 
+    deletion = _run_pre_push_stdin(
+        root,
+        base,
+        base,
+        record=f"refs/heads/main {'0' * 40} refs/heads/main {base}\n",
+    )
+    deletion_payload = _payload(deletion)
+    assert deletion.returncode == 1
+    assert deletion_payload["changed_paths"] == []
+    assert any(
+        reason.startswith("REF_DELETION_UNSUPPORTED:")
+        and "ref-topology deletion" in reason
+        for reason in deletion_payload["reasons"]
+    )
+
 
 def test_pre_push_stdin_validates_sha256_repository_width(tmp_path):
     root, base = _repo(tmp_path, object_format="sha256")
@@ -445,11 +586,15 @@ def test_pre_push_stdin_validates_sha256_repository_width(tmp_path):
     first_payload = _payload(first_push)
     assert first_push.returncode == 1, first_push.stdout + first_push.stderr
     assert ".tess/bin/tessctl" in first_payload["changed_paths"]
-    assert any("no covering APPROVE verdict" in r for r in first_payload["reasons"])
+    assert any(
+        ".tess/bin/tessctl" in r
+        and "executable-file additions are unavailable" in r
+        for r in first_payload["reasons"]
+    )
     assert not any("wrong repository format/length" in r for r in first_payload["reasons"])
 
 
-def test_staged_ingress_retains_deletion_status_modes_and_full_oids(engine, tmp_path):
+def test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict(engine, tmp_path):
     root, _base = _repo(tmp_path)
     path = "core/policy/fixtures/existing.txt"
     (root / path).unlink()
@@ -463,6 +608,28 @@ def test_staged_ingress_retains_deletion_status_modes_and_full_oids(engine, tmp_
     assert delta.new_mode == "000000"
     assert len(delta.old_oid) == 40
     assert delta.new_oid == "0" * 40
+
+    conflict_parent = tmp_path / "conflict"
+    conflict_parent.mkdir()
+    conflict_root, _conflict_base = _repo(conflict_parent)
+    conflict_path = conflict_root / "core" / "policy" / "fixtures" / "existing.txt"
+    _git(conflict_root, "checkout", "-q", "-b", "side")
+    conflict_path.write_text("side\n", encoding="utf-8")
+    _commit_all(conflict_root, "side conflict")
+    _git(conflict_root, "checkout", "-q", "main")
+    conflict_path.write_text("main\n", encoding="utf-8")
+    _commit_all(conflict_root, "main conflict")
+    merge = _git(conflict_root, "merge", "--no-edit", "side", check=False)
+    assert merge.returncode != 0, "fixture must retain an unresolved index conflict"
+
+    conflict_result = _run_pre_commit(conflict_root)
+    conflict_payload = _payload(conflict_result)
+    assert conflict_result.returncode == 1, conflict_result.stdout + conflict_result.stderr
+    assert conflict_payload["changed_paths"] == []
+    assert any(
+        "unexpected raw Git diff status 'U'" in reason
+        for reason in conflict_payload["reasons"]
+    )
 
 
 def test_installed_pre_push_hook_uses_same_raw_transition_denial(tmp_path):
