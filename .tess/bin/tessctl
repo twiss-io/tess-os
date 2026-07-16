@@ -8511,7 +8511,7 @@ def _lint_contract(contract_type: str, instance, root: Path = None) -> list:
     if contract_type == "verdict":
         return _lint_verdict(instance)
     if contract_type == "return-manifest":
-        return _lint_return_manifest(instance)
+        return _lint_return_manifest(instance, root)
     if contract_type == "policy":
         return _lint_policy(instance)
     if contract_type == "mission":
@@ -8671,16 +8671,90 @@ def _lint_verdict(instance) -> list:
     return errors
 
 
-def _lint_return_manifest(instance) -> list:
-    """H4 FIX (Fable adversarial review, BLOCK finding — 'fabricated
-    artifacts / shape-only guarantee'): plain JSON Schema can only check
-    that `artifacts[].path` is a non-empty string — it has no notion of the
-    filesystem. This is the model-independent check ULTIMATE_FRAMEWORK_
-    PLAN.md §A.2/D3 calls the plan's flagship mechanism: 'a file that must
-    exist at a contracted path either exists or doesn't.' Every declared
-    artifact path is checked against the real filesystem; a path that does
-    not exist fails the return outright, regardless of what the agent
-    claims about it."""
+def _open_repo_relative_regular_file(root: Path | None, path_value: str) -> tuple[int | None, str | None]:
+    """Open one repository-relative regular file without following symlinks.
+
+    Evidence paths are authority-bearing input.  Pathname pre-checks followed
+    by a second open are insufficient because an attacker can swap a checked
+    directory for a symlink between those operations.  This primitive opens
+    every component relative to the already-open repository descriptor, uses
+    no-follow and non-blocking flags, and returns the exact descriptor that
+    passed the regular-file check.  Callers own successful descriptors.
+
+    A repository root is mandatory.  Absolute paths, traversal, symlink
+    components or targets, non-regular files, missing roots, and platforms
+    without the required descriptor flags all fail closed.
+    """
+    if root is None:
+        return None, "cannot validate artifact path without a Tess root"
+    if not isinstance(path_value, str) or "\x00" in path_value:
+        return None, "must be a repository-relative filesystem path"
+
+    declared = Path(path_value)
+    if declared.is_absolute():
+        return None, (
+            "must be repository-relative and inside the repository; "
+            "absolute paths are not allowed"
+        )
+    if any(part == ".." for part in declared.parts):
+        return None, "must not contain '..' traversal"
+    parts = [part for part in declared.parts if part not in ("", ".")]
+    if not parts:
+        return None, "must name an existing regular file inside the Tess root"
+
+    required_flags = ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC", "O_NONBLOCK")
+    if not all(hasattr(os, name) for name in required_flags):
+        return None, (
+            "platform cannot enforce no-follow, non-blocking repository "
+            "containment (fail-closed)"
+        )
+
+    try:
+        resolved_root = root.resolve(strict=True)
+    except (OSError, ValueError) as exc:
+        return None, f"cannot resolve Tess root: {exc}"
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    parent_fd = None
+    artifact_fd = None
+    try:
+        parent_fd = os.open(str(resolved_root), directory_flags)
+        for part in parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+
+        artifact_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(artifact_fd).st_mode):
+            return None, "must name an existing regular file inside the Tess root"
+
+        result_fd = artifact_fd
+        artifact_fd = None
+        return result_fd, None
+    except FileNotFoundError:
+        return None, "does not exist inside the Tess root"
+    except NotADirectoryError:
+        return None, "must not contain a symbolic-link or non-directory component"
+    except (OSError, ValueError, NotImplementedError) as exc:
+        if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+            return None, "must not contain a symbolic-link component or target"
+        return None, f"cannot inspect inside the Tess root: {exc}"
+    finally:
+        if artifact_fd is not None:
+            os.close(artifact_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def _lint_return_manifest(instance, root: Path | None) -> list:
+    """Require every declared evidence artifact to pass one shared boundary.
+
+    JSON Schema can only validate the path string's shape.  This filesystem
+    check is shared by CLI validation, changed-contract gate validation, MCP,
+    and the conductor run loop so those entry points cannot disagree about
+    repository containment.
+    """
     errors = []
     if not isinstance(instance, dict):
         return errors
@@ -8688,10 +8762,14 @@ def _lint_return_manifest(instance) -> list:
         if not isinstance(artifact, dict):
             continue
         path = artifact.get("path")
-        if isinstance(path, str) and path and not Path(path).exists():
+        if isinstance(path, str) and path:
+            artifact_fd, reason = _open_repo_relative_regular_file(root, path)
+            if reason is None and artifact_fd is not None:
+                os.close(artifact_fd)
+                continue
             errors.append(
-                f"$.artifacts[{i}].path: '{path}' does not exist on disk — a fabricated or "
-                f"stale artifact path is a schema-miss, not a valid return "
+                f"$.artifacts[{i}].path: '{path}' {reason} — a fabricated, external, or "
+                f"unsafe artifact path is a schema-miss, not a valid return "
                 f"(ULTIMATE_FRAMEWORK_PLAN.md §A.2: 'existence and shape are model-independent checks')"
             )
     return errors
@@ -9472,7 +9550,7 @@ def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: s
         return [f"{rel_path}: {e}"]
     base_dir = root / CONTRACTS_DIR
     errors = schema_validate(instance, schema, schema, base_dir)
-    errors += _lint_contract(contract_type, instance)
+    errors += _lint_contract(contract_type, instance, root)
     return [f"{rel_path} {e}" for e in errors]
 
 
@@ -14840,45 +14918,6 @@ def _run_build_verifier_brief(task_id: str, verifier_agent, primary_artifacts: l
 # valid.
 # ---------------------------------------------------------------------------
 
-def _run_check_return_manifest_artifacts_exist_under_root(root: Path, contract_type: str, instance) -> list:
-    """MEDIUM-2 FIX (Fable adversarial review): `_lint_return_manifest`'s own
-    existence check (`Path(path).exists()`, ~core region above this one)
-    resolves every declared `artifacts[].path` relative to the tessctl
-    PROCESS's CURRENT WORKING DIRECTORY — not `root`, the repo root `run`
-    itself always reads/writes every contracted path against
-    (`_run_artifact_path`: 'root/path_rel'). If `tessctl run` is ever
-    invoked from a CWD that is not exactly `root`, that mismatch means H4's
-    own 'a fabricated or stale artifact path is a schema-miss' guarantee
-    can silently accept a return-manifest whose claimed artifact does not
-    exist under `root` at all (it happened to resolve to some unrelated
-    file relative to CWD instead).
-
-    Rather than changing `_lint_return_manifest`'s signature — shared by
-    `tessctl validate` and several other lint call sites well outside this
-    run region, which would widen this fix's diff far beyond it — `run`'s
-    OWN artifact check re-verifies every declared artifact path against
-    ROOT directly here, as an independent, additive check scoped to this
-    region only. This closes the security-relevant direction (a claimed
-    artifact that does not exist under root must never be treated as
-    real) for the one code path this fix is scoped to; `tessctl validate`
-    invoked directly from a non-root CWD retains the pre-existing
-    CWD-relative behavior, an explicitly out-of-scope residual for a
-    separately-scoped follow-up."""
-    violations = []
-    if contract_type != "return-manifest" or not isinstance(instance, dict):
-        return violations
-    for i, artifact in enumerate(instance.get("artifacts", []) or []):
-        if not isinstance(artifact, dict):
-            continue
-        artifact_path = artifact.get("path")
-        if isinstance(artifact_path, str) and artifact_path and not (root / artifact_path).exists():
-            violations.append(
-                f"$.artifacts[{i}].path: '{artifact_path}' does not exist under the Tess root "
-                f"{root} (MEDIUM-2, checked ROOT-relative — not CWD-relative)"
-            )
-    return violations
-
-
 def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
     """HIGH-1(b) FIX (Fable adversarial review, BLOCK finding — 'pre-planted
     verdict FORGES verification'): applies the same local signed-verdict
@@ -14913,45 +14952,47 @@ def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
 
 
 def _run_artifact_current_blob_hash(root: Path, path_rel: str) -> str | None:
-    """LOW FIX (Fable re-verification — gate-parity residual): computes the
-    CURRENT git blob SHA-1 of the on-disk file at `root/path_rel`, via `git
-    hash-object` — the SAME content-addressed hash format `tessctl gate`'s
-    own `artifact_hashes` binding already consumes (`_gate_git_ls_tree`'s
-    `blob_sha`; see `docs/GATE_QUICKSTART.md`'s own `git hash-object <path>`
-    recipe for how a genuine verifier populates `artifact_hashes` in the
-    first place — verdict.schema.json's own field description says the same:
-    'git hash-object <path> before commit, or git rev-parse <ref>:<path> /
-    git ls-tree <ref> -- <path> after').
+    """Hash the exact descriptor that passed repository containment.
 
-    Deliberately NOT `_gate_git_ls_tree`/`_gate_git_cat_file` (which read a
-    COMMITTED blob at a specific ref via `git ls-tree`): a task's real
-    artifacts are typically still UNCOMMITTED working-tree files at the
-    moment `run`'s own per-task verifier check fires (the task just
-    finished; nothing has been pushed, and may never be — `run` and `gate`
-    operate at different points in the lifecycle). `git hash-object`
-    computes the IDENTICAL blob SHA git would assign this exact content were
-    it committed right now, without requiring a commit, a ref, or even a
-    `.git` directory to exist (verified: `git hash-object` works outside any
-    git repository at all) — the correct working-tree-safe counterpart of
-    the same content-addressing primitive `tessctl gate` uses against
-    committed refs, not a reimplementation of it.
+    The result is Git's SHA-1 blob object id, matching the committed-object
+    format consumed by ``artifact_hashes``.  Reading the descriptor returned
+    by ``_open_repo_relative_regular_file`` avoids a pathname reopen after
+    validation, so a directory swap cannot redirect binding outside the
+    repository.  Any read or consistency failure returns ``None``.
+    """
+    artifact_fd, reason = _open_repo_relative_regular_file(root, path_rel)
+    if reason is not None or artifact_fd is None:
+        return None
 
-    Fails CLOSED — returns None, never raises — on any containment failure,
-    a missing/non-file target, or a subprocess error; a path that cannot be
-    hashed can never satisfy the binding check below, the same fail-closed
-    posture `_gate_git_cat_file` already established for an unreadable
-    candidate verdict blob."""
     try:
-        target = (root / path_rel).resolve()
-        target.relative_to(root.resolve())
-    except (ValueError, OSError):
+        before = os.fstat(artifact_fd)
+        if not stat.S_ISREG(before.st_mode):
+            return None
+        digest = hashlib.sha1()
+        digest.update(f"blob {before.st_size}\0".encode("ascii"))
+        bytes_read = 0
+        while True:
+            chunk = os.read(artifact_fd, 1024 * 1024)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            digest.update(chunk)
+        after = os.fstat(artifact_fd)
+        identity_before = (
+            before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns,
+        )
+        identity_after = (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns,
+        )
+        if bytes_read != before.st_size or identity_after != identity_before:
+            return None
+        return digest.hexdigest()
+    except OSError:
         return None
-    if not target.is_file():
-        return None
-    r = subprocess.run(["git", "hash-object", str(target)], capture_output=True, text=True)
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip()
+    finally:
+        os.close(artifact_fd)
 
 
 def _run_check_verdict_artifact_binding(root: Path, instance: dict, task_artifact_paths: list) -> tuple:
@@ -15086,8 +15127,7 @@ def _run_check_artifact(root: Path, path_rel: str, contract_type: str, raw_resul
     schema = load_contract_schema(root, contract_type)
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
-    violations += _lint_contract(contract_type, instance)
-    violations += _run_check_return_manifest_artifacts_exist_under_root(root, contract_type, instance)
+    violations += _lint_contract(contract_type, instance, root)
     if violations:
         classification = classify_schema_miss(contract_type, violations)
         return False, violations, classification["failure_state"], classification["cause_class"], instance
@@ -15806,78 +15846,27 @@ class McpError(Exception):
 # ---------------------------------------------------------------------------
 
 def _mcp_read_repository_contract(root: Path, path_arg: str) -> tuple[object, str]:
-    """Read one contract through a descriptor-relative, no-follow path walk.
-
-    ``validate_contract`` is a diagnostic interface, not a general local-file
-    reader.  Every component is opened relative to the resolved repository
-    root with ``O_NOFOLLOW``; the final descriptor must be a regular file.
-    Parsing happens from the descriptor's bytes so a later pathname swap
-    cannot redirect a second open outside the repository.
-    """
-    candidate = Path(path_arg)
-    root_resolved = root.resolve()
-    if "\x00" in path_arg or ".." in candidate.parts:
-        raise ContractError(
-            "repository path denied: traversal and non-filesystem path data are not allowed"
-        )
-
-    if candidate.is_absolute():
-        try:
-            relative = candidate.relative_to(root_resolved)
-        except ValueError:
-            raise ContractError(
-                "repository path denied: contract files must be inside the repository"
-            )
-    else:
-        relative = candidate
-
-    parts = relative.parts
-    if not parts or relative == Path("."):
-        raise ContractError(
-            "repository path denied: contract path must name a regular repository file"
-        )
-    if not all(
-        hasattr(os, name)
-        for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC", "O_NONBLOCK")
-    ):
-        raise ContractError(
-            "repository path denied: this platform cannot enforce no-follow repository reads"
-        )
-
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-    directory_fds: list[int] = []
-    file_fd = None
-    try:
-        directory_fds.append(os.open(str(root_resolved), directory_flags))
-        for part in parts[:-1]:
-            directory_fds.append(
-                os.open(part, directory_flags, dir_fd=directory_fds[-1])
-            )
-        file_fd = os.open(parts[-1], file_flags, dir_fd=directory_fds[-1])
-        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-            raise ContractError(
-                "repository path denied: contract path must name a regular repository file"
-            )
-        with os.fdopen(file_fd, "rb", closefd=True) as stream:
-            file_fd = None
-            blob = stream.read()
-    except FileNotFoundError:
-        raise ContractError("file not found: repository contract path")
-    except ContractError:
-        raise
-    except OSError as exc:
-        if exc.errno == errno.ENOENT:
+    """Read one contract through the shared contained-file descriptor."""
+    file_fd, reason = _open_repo_relative_regular_file(root, path_arg)
+    if reason is not None or file_fd is None:
+        if reason and reason.startswith("does not exist"):
             raise ContractError("file not found: repository contract path")
         raise ContractError(
             "repository path denied: contract path must be an accessible regular "
-            "repository file without symlink traversal"
+            f"repository file without symlink traversal ({reason})"
         )
+
+    try:
+        with os.fdopen(file_fd, "rb", closefd=True) as stream:
+            file_fd = None
+            blob = stream.read()
+    except OSError:
+        raise ContractError("repository path denied: contract file could not be read")
     finally:
         if file_fd is not None:
             os.close(file_fd)
-        for descriptor in reversed(directory_fds):
-            os.close(descriptor)
+
+    relative = Path(path_arg)
 
     try:
         text = blob.decode("utf-8")
@@ -15957,7 +15946,7 @@ def _mcp_tool_validate_contract(root: Path, arguments: dict) -> dict:
 
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
-    violations += _lint_contract(contract_type, instance)
+    violations += _lint_contract(contract_type, instance, root)
     if path_arg and violations:
         violations = _mcp_redact_repository_violations(violations)
     result = {"valid": not violations, "contract_type": contract_type, "file": label, "violations": violations}

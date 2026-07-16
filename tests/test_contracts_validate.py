@@ -457,23 +457,73 @@ def test_h4_return_manifest_complete_status_requires_nonempty_claims(engine):
 # ---------------------------------------------------------------------------
 
 def test_h4_return_manifest_artifact_path_must_exist_on_disk(engine, tmp_path):
-    real_artifact = tmp_path / "offer-read.md"
+    root = tmp_path / "os"
+    real_artifact = root / "artifacts" / "offer-read.md"
+    real_artifact.parent.mkdir(parents=True)
     real_artifact.write_text("# Claims + Evidence\n")
 
     bad = _valid_return_manifest()
-    bad["artifacts"] = [{"path": str(tmp_path / "does-not-exist.md"), "description": "fabricated"}]
-    violations = engine._lint_contract("return-manifest", bad)
+    bad["artifacts"] = [{"path": "artifacts/does-not-exist.md", "description": "fabricated"}]
+    violations = engine._lint_contract("return-manifest", bad, root)
     assert violations != [], "a return-manifest pointing at a non-existent artifact path must FAIL"
     assert any("does-not-exist.md" in v for v in violations)
 
     ok = _valid_return_manifest()
-    ok["artifacts"] = [{"path": str(real_artifact), "description": "claims + evidence table"}]
-    assert engine._lint_contract("return-manifest", ok) == []
+    ok["artifacts"] = [{"path": "artifacts/offer-read.md", "description": "claims + evidence table"}]
+    assert engine._lint_contract("return-manifest", ok, root) == []
+
+
+def test_return_manifest_artifact_path_rejects_external_escape_symlink_and_nonregular_file(
+    engine, tmp_path
+):
+    root = tmp_path / "os"
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside root\n", encoding="utf-8")
+    (artifacts / "escape-link.md").symlink_to(outside)
+    (artifacts / "not-a-file").mkdir()
+
+    cases = (
+        ("/etc/hosts", "absolute"),
+        ("../outside.md", "traversal"),
+        ("artifacts/escape-link.md", "symbolic-link"),
+        ("artifacts/not-a-file", "regular file"),
+    )
+    for artifact_path, expected in cases:
+        manifest = _valid_return_manifest()
+        manifest["artifacts"] = [{"path": artifact_path, "description": "unsafe"}]
+        violations = engine._lint_contract("return-manifest", manifest, root)
+        assert any(expected in violation for violation in violations), (artifact_path, violations)
+
+
+def test_return_manifest_lint_without_root_fails_closed(engine, tmp_path):
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("evidence\n", encoding="utf-8")
+    manifest = _valid_return_manifest()
+    manifest["artifacts"] = [{"path": "artifact.md", "description": "unbound"}]
+
+    violations = engine._lint_contract("return-manifest", manifest)
+
+    assert any("without a Tess root" in violation for violation in violations)
+
+
+def test_return_manifest_containment_requires_all_descriptor_safety_flags(engine, tmp_path, monkeypatch):
+    root = tmp_path / "os"
+    root.mkdir()
+    (root / "artifact.md").write_text("evidence\n", encoding="utf-8")
+    manifest = _valid_return_manifest()
+    manifest["artifacts"] = [{"path": "artifact.md", "description": "evidence"}]
+    monkeypatch.delattr(engine.os, "O_NONBLOCK")
+
+    violations = engine._lint_contract("return-manifest", manifest, root)
+
+    assert any("fail-closed" in violation for violation in violations)
 
 
 def test_h4_cli_validate_return_manifest_fabricated_artifact_path_fails(cli_root, run_cli, tmp_path):
     bad = _valid_return_manifest()
-    bad["artifacts"] = [{"path": str(tmp_path / "never-written.md"), "description": "claimed but absent"}]
+    bad["artifacts"] = [{"path": "never-written.md", "description": "claimed but absent"}]
     f = tmp_path / "bad_return.json"
     f.write_text(json.dumps(bad))
     r = run_cli(cli_root, "validate", "return-manifest", str(f), "--json")
@@ -481,6 +531,35 @@ def test_h4_cli_validate_return_manifest_fabricated_artifact_path_fails(cli_root
     payload = json.loads(r.stdout)
     assert payload["valid"] is False
     assert any("never-written.md" in v for v in payload["violations"])
+
+
+def test_cli_validate_return_manifest_accepts_contained_regular_file_and_rejects_escape_paths(
+    cli_root, run_cli, tmp_path
+):
+    artifacts = cli_root / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "real.md").write_text("evidence\n", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside root\n", encoding="utf-8")
+    (artifacts / "escape-link.md").symlink_to(outside)
+    (artifacts / "not-a-file").mkdir()
+
+    manifest_path = tmp_path / "return.json"
+    cases = (
+        ("artifacts/real.md", 0, ""),
+        ("/etc/hosts", 1, "absolute"),
+        ("../outside.md", 1, "traversal"),
+        ("artifacts/escape-link.md", 1, "symbolic-link"),
+        ("artifacts/not-a-file", 1, "regular file"),
+    )
+    for artifact_path, expected_returncode, expected_text in cases:
+        manifest = _valid_return_manifest()
+        manifest["artifacts"] = [{"path": artifact_path, "description": "test artifact"}]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        result = run_cli(cli_root, "validate", "return-manifest", str(manifest_path), "--json")
+        assert result.returncode == expected_returncode, result.stdout + result.stderr
+        if expected_text:
+            assert expected_text in result.stdout
 
 
 # ---------------------------------------------------------------------------
