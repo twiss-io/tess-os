@@ -573,8 +573,71 @@ def test_post_merge_audit_output_never_claims_merge_prevention(
         "authoritative": False,
         "prevented_merge": False,
         "reasons": [],
-        "changed_paths": ["docs/note.md"],
+        "changed_paths_count": 1,
     }
+
+
+def test_post_merge_audit_projects_reasons_and_trace_without_raw_detail(
+    engine, graph, capsys,
+):
+    secret = "POST_MERGE_AUDIT_SECRET_7c5c5b9f"
+    raw_path = f"private/{secret}/key.asc"
+    result = {
+        "audit_passed": False,
+        "authoritative": False,
+        "prevented_merge": False,
+        "reasons": [
+            f"no covering APPROVE verdict found for {raw_path}",
+            f"UNRECOGNIZED_INTERNAL_DETAIL: {secret}",
+        ],
+        "changed_paths": [raw_path],
+    }
+
+    engine._gate_print_post_merge_audit(result, True)
+    json_output = capsys.readouterr().out
+    payload = json.loads(json_output)
+    assert payload == {
+        "phase": "post-merge-audit",
+        "audit_passed": False,
+        "authoritative": False,
+        "prevented_merge": False,
+        "reasons": [
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+            "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
+        ],
+        "changed_paths_count": 1,
+    }
+
+    engine._gate_print_post_merge_audit(result, False)
+    text_output = capsys.readouterr().out
+    engine._trace_record(
+        graph["root"],
+        phase="gate-audit",
+        action="gate.post-merge-audit",
+        outcome="fail",
+        exit_code=1,
+        duration_s=0.001,
+        changed_paths=result["changed_paths"],
+        reasons=result["reasons"],
+    )
+    trace_files = sorted((graph["root"] / ".tess" / "trace" / "runs").glob("*.jsonl"))
+    assert trace_files
+    trace_text = "".join(path.read_text(encoding="utf-8") for path in trace_files)
+    trace_events = [
+        json.loads(line)
+        for path in trace_files
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    otlp_output = json.dumps(
+        engine._trace_events_to_otlp_json(trace_events), sort_keys=True,
+    )
+
+    for surface in (json_output, text_output, trace_text, otlp_output):
+        assert secret not in surface
+        assert raw_path not in surface
+        assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in surface
+        assert "INTERNAL_ERROR_REDACTED: an internal failure was redacted" in surface
 
 
 def test_hard_floor_receives_attestation_head_not_evaluation_merge(

@@ -13574,20 +13574,40 @@ def _cmd_gate_ci(args, root: Path) -> None:
     sys.exit(1 if result["blocked"] else 0)
 
 
+def _safe_post_merge_audit_result(result: dict) -> dict:
+    """Project landed-audit evidence without exporting evaluator detail.
+
+    A post-merge audit is evidence only, but its reasons still originate from
+    policy, Git, signatures, and event metadata.  Treat its stdout exactly
+    like the ship-gate public boundary: retain only stable decision codes and
+    control-plane booleans, never raw diagnostics or changed path names.
+    """
+    return {
+        "audit_passed": bool(result.get("audit_passed")),
+        "authoritative": False,
+        "prevented_merge": False,
+        "reasons": [
+            _safe_decision_reason(reason)
+            for reason in result.get("reasons", [])
+        ],
+        "changed_paths_count": len(result.get("changed_paths", []) or []),
+    }
+
+
 def _gate_print_post_merge_audit(result: dict, as_json: bool) -> None:
     """Report landed evidence without reusing ship-block terminology."""
+    safe = {"phase": "post-merge-audit", **_safe_post_merge_audit_result(result)}
     if as_json:
-        print(json.dumps({"phase": "post-merge-audit", **result}, indent=2))
+        print(json.dumps(safe, indent=2))
         return
-    status = "PASS" if result["audit_passed"] else "FAIL"
+    status = "PASS" if safe["audit_passed"] else "FAIL"
     print(
         f"tessctl gate post-merge-audit — EVIDENCE-ONLY {status} "
         "(merge already landed; authoritative:false; prevented_merge:false)"
     )
-    print(f"  changed paths: {len(result['changed_paths'])}")
-    for reason in result["reasons"]:
-        escaped_reason = json.dumps(str(reason), ensure_ascii=True)[1:-1]
-        print(f"    - {escaped_reason}")
+    print(f"  changed paths: {safe['changed_paths_count']}")
+    for reason in safe["reasons"]:
+        print(f"    - {reason}")
 
 
 def _cmd_gate_post_merge_audit(args, root: Path) -> None:
@@ -14403,9 +14423,13 @@ TRACE_EVENT_SCHEMA = {
         },
         "run_id": {"type": "string", "minLength": 1},
         "mission_id": {"type": ["string", "null"]},
-        "phase": {"type": "string", "enum": ["gate", "validate"]},
+        # ``gate-audit`` is the existing evidence-only post-merge command;
+        # it is intentionally distinct from ship-admission ``gate`` events.
+        "phase": {"type": "string", "enum": ["gate", "gate-audit", "validate"]},
         "action": {"type": "string", "minLength": 1},
-        "outcome": {"type": "string", "enum": ["pass", "block", "error"]},
+        # A landed audit reports ``fail`` rather than ``block`` because it
+        # never prevented an already-completed merge.
+        "outcome": {"type": "string", "enum": ["pass", "block", "error", "fail"]},
         "exit_code": {"type": "integer"},
         "duration_ms": {"type": ["number", "null"]},
         "subject": {"type": "object"},
