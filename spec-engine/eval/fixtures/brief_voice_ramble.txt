@@ -1,0 +1,7 @@
+okay so, um, the idea is basically a shared grocery list for me and my roommates. right now we just text each other and it's a mess, someone buys milk twice and then nobody buys it at all the next week. so I think — I'm not totally sure yet — but I think everyone should be able to add an item from their phone and check it off when they buy it, and maybe see who added what? Not sure if we need that last part honestly.
+
+For how it should look, I guess something simple, like a clean list, maybe with categories like produce and dairy and stuff, TBD on the exact categories. I haven't decided if there should be a dark mode or not, that would be nice but not sure it matters.
+
+I think when someone checks off an item it should just disappear from the list, or maybe move to a "recently bought" section? Kind of undecided on that. There's four of us in the house right now but that could change if someone moves out or a new roommate moves in, not sure how that should work either.
+
+Oh and it would be cool if it could remind us to buy milk again after like a week, sort of a "you probably need this again" nudge, but I haven't figured out how that would actually work or if it's even worth building for v1.
