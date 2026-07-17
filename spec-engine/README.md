@@ -1,15 +1,20 @@
 # Spec Engine — the idea -> spec -> app core
 
-> Spec: `TESS-VISION-AND-BUILD-SPEC.html`, Phase 1, Epic E2 — "Spec Engine
-> v1: Idea -> Complete Spec." Product pillar: **Idea -> Spec -> App** —
-> "Rough edges and open questions are treated as inputs, not blockers...
-> after approval, the spec is written and becomes the source of truth —
-> code is generated from the spec, never the reverse."
+> Spec: `TESS-VISION-AND-BUILD-SPEC.html`, Phase 1 Epic E2 — "Spec Engine
+> v1: Idea -> Complete Spec" — continued into the codegen slice of Phase 2
+> Epic E4 ("Spec-to-App Pipeline v1... scaffolds the repo from SPEC.md").
+> Product pillar: **Idea -> Spec -> App** — "Rough edges and open
+> questions are treated as inputs, not blockers... after approval, the
+> spec is written and becomes the source of truth — code is generated
+> from the spec, never the reverse."
 >
-> **Status: Buildable-Now, first slice.** This component ships the
-> deterministic idea -> plan -> (approval gate) -> spec pipeline end to
-> end, plus a spec -> scaffold DIRECTION stub (no real codegen yet — see
-> "Integration status" below for exactly what a follow-up PR needs to do).
+> **Status: Buildable-Now.** This component ships the deterministic idea
+> -> plan -> (approval gate) -> spec pipeline end to end, PLUS real
+> codegen: `codegen.generate_app()` turns an approved spec into an
+> actually-runnable app (default target stack: plain Node core, zero npm
+> dependencies) — see "The spec -> scaffold plan, and REAL codegen"
+> below for exactly what's genuinely generated vs. still a labeled stub,
+> and "Integration status" for what a follow-up PR still needs to wire.
 
 ## What this is
 
@@ -29,11 +34,16 @@ fragment, a single terse paragraph — it:
    code path around this;
 4. **renders `SPEC.md`** — the canonical markdown projection of the
    approved spec, meant to be committed as a generated app's root
-   artifact; and
-5. **stubs the scaffold direction** — a `ScaffoldPlan` derived
-   deterministically from the spec's own content, plus the "code is
-   generated from spec" rule written into the target repo's own
-   `CLAUDE.md`/`AGENTS.md`.
+   artifact;
+5. **plans the scaffold** — a `ScaffoldPlan` derived deterministically
+   from the spec's own content, plus the "code is generated from spec"
+   rule written into the target repo's own `CLAUDE.md`/`AGENTS.md`; and
+6. **generates a real, runnable app** — `codegen.generate_app()` turns
+   that plan into actual files (entity CRUD stores, rendered pages, flow
+   handlers, integration stubs, a real test suite, and the app's own
+   server) for a default zero-dependency Node target stack — proven by
+   actually booting a generated app as a subprocess, not just asserting
+   files exist.
 
 ## Architecture
 
@@ -62,9 +72,16 @@ spec_engine.spec_builder.build_spec()      -> SpecDocument (REFUSES to run
      │
      ├──► spec_engine.render.render_markdown()   -> SPEC.md text
      ├──► spec_engine.spec_lint.lint()            -> advisory findings
-     └──► spec_engine.scaffold.write_scaffold_stub()
-              -> SPEC.md, spec.json, .spec-engine/scaffold-plan.json,
-                 CLAUDE.md/AGENTS.md spec-is-authoritative directive
+     ├──► spec_engine.scaffold.plan_scaffold_from_spec()
+     │        -> ScaffoldPlan (codegen_status="not_started", pure, no I/O)
+     │
+     └──► spec_engine.codegen.generate_app(spec, target_dir)
+              -> REAL, runnable files (target_stack: node-http-minimal):
+                 src/models, src/pages, src/flows, src/integrations,
+                 tests/acceptance.test.js, src/server.js + package.json,
+                 PLUS (via scaffold.write_scaffold_stub(), called at the
+                 end with codegen_status="generated") SPEC.md, spec.json,
+                 .spec-engine/scaffold-plan.json, CLAUDE.md/AGENTS.md
 ```
 
 `spec_engine.pipeline` glues the stages: `run_intake_and_plan()` gets you
@@ -137,18 +154,15 @@ Code session — fill gaps and add richness the deterministic heuristics
 miss, without making the deterministic path any less independently
 testable.
 
-## The spec -> scaffold DIRECTION (stub, not codegen)
+## The spec -> scaffold plan, and REAL codegen
 
 `scaffold.plan_scaffold_from_spec()` deterministically derives a
 `ScaffoldPlan` from a spec's own content (one module per data-model
 entity, one per key screen, one per key flow, one per integration, plus a
 test-suite module derived from acceptance criteria) — every module traces
 back to a named `source_section`, so "the spec is authoritative" is
-provable, not just asserted. `codegen_status` is pinned to the single
-enum value `"not_started"`: this is a **plan for a future real codegen
-step, never code itself** — honest labeling discipline, matching the
-parent build spec's "these labels are load-bearing... do not silently
-upgrade a label."
+provable, not just asserted. This function stays pure (no filesystem
+access) and always returns `codegen_status == "not_started"`.
 
 `scaffold.write_scaffold_stub()` writes the concrete artifacts a
 generated app's repo needs: `SPEC.md`, `spec.json`, `.spec-engine/
@@ -156,6 +170,42 @@ scaffold-plan.json`, and the spec-is-authoritative rule appended (or, for
 a fresh repo, written fresh) into that repo's own `CLAUDE.md` **and**
 `AGENTS.md` — both harness idioms, per the epic's own deliverable (4)
 wording.
+
+**`codegen.generate_app(spec, target_dir)`** is where "code is generated
+FROM the spec" stops being a stub and becomes real: it takes a `spec` (+
+optionally an existing `ScaffoldPlan`) and writes an actual, runnable
+app — default target stack `node-http-minimal` (plain Node core, **zero
+npm dependencies**, no build step; see `codegen.py`'s module docstring
+for why). Deterministic, traceable mapping from `ScaffoldModule.kind` to
+real files:
+
+| `kind` | Generated file(s) | `generation_status` (in `.spec-engine/codegen-manifest.json`) |
+|---|---|---|
+| `backend-model` | `src/models/<entity-slug>.js` — real in-memory CRUD store | `generated` |
+| `frontend-page` | `src/pages/<screen-slug>.js` — real server-rendered HTML, live entity data if the screen name matches an entity | `generated` |
+| `service` (flow) | `src/flows/<flow-slug>.js` — real, executable step sequence wired to a live route; each step's business-logic body is a `// TODO` (flow steps are free text — codegen can't compile prose into working logic) | `generated-stub-logic` |
+| `integration` | `src/integrations/<slug>.js` — a labeled connector STUB (codegen can't produce a working third-party connector without real credentials/API contract); wired to a route that returns HTTP 501 | `stub` |
+| `test-suite` | `tests/acceptance.test.js` — real `node:test` tests: a baseline boot/health check, one CRUD round-trip per entity, and one test per `acceptance_criteria` entry | `generated` |
+
+`ScaffoldPlan.codegen_status` becomes `"generated"` once `generate_app()`
+has run (`scaffold.py`'s `CODEGEN_STATUSES` now has two values, not one).
+That single top-level status **cannot** express the per-module mix above
+on its own — `.spec-engine/codegen-manifest.json` (schema:
+`schema/codegen-manifest.schema.json`) is the honest, machine-checkable
+ledger of exactly which files are fully real vs. labeled stubs, matching
+the parent build spec's "these labels are load-bearing... do not
+silently upgrade a label" discipline down to the file level. `README.md`
+and `CLAUDE.md`/`AGENTS.md` in every generated app point back to it.
+
+The proof this actually runs — not just "files exist" — lives in
+[`tests/spec_engine/test_codegen_app_boots.py`](../tests/spec_engine/test_codegen_app_boots.py):
+it generates a real app from a real (pipeline-produced) spec into
+pytest's throwaway `tmp_path`, spawns `node src/server.js` as a genuine
+subprocess, and asserts it boots and serves real HTTP traffic across
+every route kind (entity CRUD, a rendered page, a flow execution, an
+honest integration 501) — plus runs the GENERATED `tests/acceptance.test.js`
+with the real `node --test` runner and asserts it passes. Skips cleanly
+(does not fail) if no `node` binary is on PATH.
 
 ## How this composes with the front door (intent-router)
 
@@ -212,12 +262,17 @@ rather than silently guessing.
 ## Integration status — what this PR does and does not wire up
 
 **Built, tested, working standalone:** the harvest -> plan -> (approval
-gate) -> spec -> render/lint/scaffold pipeline, callable from Python
-(`spec_engine.pipeline.run_intake_and_plan` / `finalize_spec` /
-`run_spec_engine`) or from the CLI (`python -m spec_engine.cli`).
+gate) -> spec -> render/lint/scaffold/codegen pipeline, callable from
+Python (`spec_engine.pipeline.run_intake_and_plan` / `finalize_spec` /
+`run_spec_engine`, then `spec_engine.codegen.generate_app()`) or from the
+CLI (`python -m spec_engine.cli`) for the pre-codegen stages. Real code
+generation to a real target stack, proven by actually booting a generated
+app as a subprocess (see "The spec -> scaffold plan, and REAL codegen"
+above).
 
 **Deliberately NOT touched by this PR** (same reasoning
-`intent-router/README.md` gives for its own scope):
+`intent-router/README.md` gives for its own scope, and the same scope
+boundary the original spec-engine PR (#79) drew for itself):
 
 - `CLAUDE.md` — keystone-rendered from `.tess/core/templates/claude-md/`,
   not hand-edited in the live repo.
@@ -226,18 +281,29 @@ gate) -> spec -> render/lint/scaffold pipeline, callable from Python
   `core/contracts/**`, `.tess/bin/tessctl` — all keystone/policy-owned or
   gate-critical paths.
 - Wiring `intent_router`'s output directly into a live slash command or
-  orchestrator flow that then calls `spec_engine` — that's the natural
-  next PR (it would touch `.tess/**` template sources and possibly
-  `conductor/*.md`, so it needs its own scope and likely a signed
-  ship-gate verdict).
+  orchestrator flow that then calls `spec_engine.codegen` — that's the
+  natural next PR (it would touch `.tess/**` template sources and
+  possibly `conductor/*.md`, so it needs its own scope and likely a
+  signed ship-gate verdict).
+- Provisioning a real, persistent database for generated apps, deploying
+  them, or producing the roadmap/deck bundle — the rest of Phase 2 Epic
+  E4's own deliverable list, explicitly out of scope for this codegen
+  slice (see `codegen.py`'s module docstring on the in-memory-persistence
+  boundary).
+- A second target stack — `codegen.py`'s `SUPPORTED_TARGET_STACKS` has
+  exactly one entry (`node-http-minimal`); adding a second is an additive
+  change (a new name + a matching generator function), not a rewrite, but
+  it isn't built here.
 
 A follow-up integration PR is the natural place to: (a) wire a real
 `/add-mission`-equivalent flow to call `run_intake_and_plan()` after
-`intent_router` routes to a build-shaped outcome; (b) point `log_path`
-at a real deployment's own `state/`-equivalent registry instead of this
-component's local `spec-engine/specs/` default sink; and (c) decide how a
-real human approval (Telegram button, CLI prompt, etc.) calls
-`finalize_spec()`.
+`intent_router` routes to a build-shaped outcome, then `codegen.generate_app()`
+after approval; (b) point `log_path` at a real deployment's own
+`state/`-equivalent registry instead of this component's local
+`spec-engine/specs/` default sink; (c) decide how a real human approval
+(Telegram button, CLI prompt, etc.) calls `finalize_spec()`; and (d)
+provision a real database and a deploy target for generated apps
+(Phase 2 Epic E4's remaining deliverables).
 
 ## Running the tests
 
@@ -246,6 +312,12 @@ python -m pytest tests/spec_engine        # this component's suite only
 python -m pytest                          # full repo suite (includes the above)
 python3 spec-engine/eval/spec_engine_eval.py   # the 3-brief eval as a standalone report
 ```
+
+`tests/spec_engine/test_codegen_app_boots.py` — the real boot-proof suite
+— additionally requires a `node` binary (>=18) on PATH; it skips cleanly
+(does not fail the run) if `node` is unavailable. Everything it spawns
+(the generated app, the `node` subprocess) lives under pytest's own
+`tmp_path` and is torn down at the end of each test.
 
 The test suite lives under the repo's existing `tests/` directory (not a
 separate `spec-engine/tests/`) for the same reason `intent-router/`'s
@@ -266,4 +338,5 @@ renamed for the same reason against pre-existing `test_pipeline.py` /
 See [`spec_engine/content.py`](spec_engine/content.py) and
 [`spec_engine/types.py`](spec_engine/types.py) for the full dataclass set,
 and [`schema/`](schema/) for the machine-checkable shapes
-(`spec.schema.json`, `plan.schema.json`, `scaffold-plan.schema.json`).
+(`spec.schema.json`, `plan.schema.json`, `scaffold-plan.schema.json`,
+`codegen-manifest.schema.json`).
