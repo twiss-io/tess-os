@@ -200,7 +200,8 @@ def test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict(tmp_pat
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert payload["blocked"] is False
-    assert payload["changed_paths"] == ["docs/ungoverned.md"]
+    assert payload["changed_paths_count"] == 1
+    assert "changed_paths" not in payload
     assert payload["reasons"] == []
 
     # A new non-regular entry is different: pre-commit denies every new
@@ -210,11 +211,11 @@ def test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict(tmp_pat
     addition_result, addition_payload = _run_pre_commit(root)
     assert addition_result.returncode == 1
     assert addition_payload["blocked"] is True
-    assert any(
-        reason.startswith("NONREGULAR_ADDITION_UNSUPPORTED:")
-        and "docs/new-ungoverned-link" in reason
-        for reason in addition_payload["reasons"]
-    )
+    assert addition_payload["changed_paths_count"] > 0
+    assert addition_payload["reasons"] == [
+        "NONREGULAR_ADDITION_UNSUPPORTED: a non-regular Git path addition is unsupported"
+    ]
+    assert "docs/new-ungoverned-link" not in json.dumps(addition_payload)
 
 
 def test_staged_protected_type_swap_is_discovered_by_the_staged_diff_ingress(engine, tmp_path):
@@ -226,8 +227,8 @@ def test_staged_protected_type_swap_is_discovered_by_the_staged_diff_ingress(eng
     result, payload = _run_pre_commit(root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert any(
-        reason.startswith("GOVERNED_TRANSITION_UNSUPPORTED:")
-        and "conductor/guardrails.md" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["changed_paths_count"] == 1
+    assert payload["reasons"] == [
+        "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported"
+    ]
+    assert "conductor/guardrails.md" not in json.dumps(payload)

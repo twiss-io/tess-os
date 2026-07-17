@@ -590,18 +590,25 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["src/prod/app.py"], "base": base, "head": head},
+            "arguments": {
+                "paths": [
+                    "src/prod/app.py",
+                    "missions/m1/verdicts/prod-src.verdict.md",
+                ],
+                "base": base,
+                "head": head,
+            },
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
         client.close()
 
-    # The same engine permits both calls. The CLI diff includes the committed
-    # verdict as well as the requested governed path; MCP intentionally does
-    # not echo raw paths and reports only the caller-supplied path count.
+    # The same engine permits both calls. MCP must claim the full immutable
+    # diff, including the committed verdict; it intentionally echoes neither
+    # paths nor refs, reporting only the path count.
     assert mcp_payload["blocked"] == cli_payload["blocked"] is False
     assert mcp_payload["reasons"] == cli_payload["reasons"] == []
-    assert mcp_payload["changed_paths_count"] == 1
+    assert mcp_payload["changed_paths_count"] == 2
 
 
 def test_gate_check_paths_defaults_head_to_current_head(gate_repo):

@@ -9079,6 +9079,10 @@ _DECISION_MESSAGES = {
     "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
     "PATH_SET_MISMATCH": "the supplied path set does not match the immutable Git diff",
     "GOVERNED_TRANSITION_UNSUPPORTED": "a governed Git path transition is unsupported",
+    "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
+    "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
+    "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
+    "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
 }
 
@@ -9114,11 +9118,19 @@ def _decision_reason_code(raw_reason: object) -> str:
         return "GOVERNED_TRANSITION_UNSUPPORTED"
     if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
         return "ADMISSION_EVENT_SOURCE_REQUIRED"
+    if text.startswith("NONREGULAR_ADDITION_UNSUPPORTED:"):
+        return "NONREGULAR_ADDITION_UNSUPPORTED"
+    if text.startswith("REF_DELETION_UNSUPPORTED:"):
+        return "REF_DELETION_UNSUPPORTED"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
         return "POLICY_INVALID"
     if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
         return "GIT_OPERATION_FAILED"
-    if "--base and --head must both be given" in lower or "stdin protocol" in lower:
+    if (
+        "--base and --head must both be given" in lower
+        or "stdin protocol" in lower
+        or "malformed stdin ref-update" in lower
+    ):
         return "GATE_INPUT_INVALID"
     if "hard floor" in lower or "sign-off" in lower:
         return "HARD_FLOOR_UNSATISFIED"

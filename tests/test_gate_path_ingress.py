@@ -162,15 +162,18 @@ def _payload(result: subprocess.CompletedProcess) -> dict:
     return json.loads(result.stdout)
 
 
-def _assert_categorical(result: subprocess.CompletedProcess, path: str) -> dict:
+def _assert_categorical(
+    result: subprocess.CompletedProcess, path: str, *, changed_paths_count: int = 1,
+) -> dict:
     payload = _payload(result)
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert payload["changed_paths_count"] == 1
+    assert payload["changed_paths_count"] == changed_paths_count
     assert "changed_paths" not in payload
-    assert payload["reasons"] == [
-        "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported"
-    ]
+    assert any(
+        reason == "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported"
+        for reason in payload["reasons"]
+    )
     assert path not in json.dumps(payload)
     assert not any("no covering APPROVE verdict" in r for r in payload["reasons"])
     return payload
@@ -309,16 +312,10 @@ def test_governed_executable_addition_is_unavailable_without_mode_bound_evidence
     os.chmod(file_path, 0o755)
     _git(root, "add", "-A")
 
-    staged = _assert_categorical(_run_pre_commit(root), path)
-    assert any(
-        "executable-file additions are unavailable" in reason
-        and "binds blob content but not Git status/mode" in reason
-        for reason in staged["reasons"]
-    )
+    _assert_categorical(_run_pre_commit(root), path)
 
     head = _commit_index(root, "executable addition")
-    shipped = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("executable-file additions are unavailable" in reason for reason in shipped["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 def test_governed_same_mode_regular_modification_reaches_normal_review(tmp_path):
@@ -338,11 +335,9 @@ def test_governed_deletion_is_categorical(tmp_path):
     path = "core/policy/fixtures/existing.txt"
     (root / path).unlink()
     _git(root, "add", "-A")
-    staged = _assert_categorical(_run_pre_commit(root), path)
-    assert any("status=D" in r for r in staged["reasons"])
+    _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "delete governed path")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("status=D" in r for r in payload["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 def test_governed_rename_away_is_deletion_plus_addition_and_categorical(tmp_path):
@@ -351,9 +346,12 @@ def test_governed_rename_away_is_deletion_plus_addition_and_categorical(tmp_path
     new = "docs/renamed.txt"
     _git(root, "mv", old, new)
     head = _commit_all(root, "rename governed path away")
-    payload = _assert_categorical(_run_gate(root, base, head), old)
-    assert {old, new} <= set(payload["changed_paths"])
-    assert any("status=D" in r and old in r for r in payload["reasons"])
+    payload = _assert_categorical(
+        _run_gate(root, base, head), old, changed_paths_count=2,
+    )
+    assert payload["changed_paths_count"] == 2
+    assert old not in json.dumps(payload)
+    assert new not in json.dumps(payload)
 
 
 def test_governed_0644_to_0755_after_review_is_categorical(tmp_path):
@@ -374,19 +372,9 @@ def test_governed_0644_to_0755_after_review_is_categorical(tmp_path):
         encoding="utf-8",
     )
     _git(root, "add", "-A")
-    staged = _assert_categorical(_run_pre_commit(root), path)
-    assert any(
-        "100644->100755" in r
-        and "signed evidence binds blob content" in r
-        for r in staged["reasons"]
-    )
+    _assert_categorical(_run_pre_commit(root), path, changed_paths_count=2)
     head = _commit_index(root, "chmod governed path beside candidate policy weakening")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any(
-        "100644->100755" in r
-        and "signed evidence binds blob content" in r
-        for r in payload["reasons"]
-    )
+    _assert_categorical(_run_gate(root, base, head), path, changed_paths_count=2)
 
 
 def test_governed_regular_to_symlink_type_change_is_categorical(tmp_path):
@@ -397,8 +385,7 @@ def test_governed_regular_to_symlink_type_change_is_categorical(tmp_path):
     _git(root, "add", "-A")
     _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "replace governed regular file with symlink")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("status=T" in r and "100644->120000" in r for r in payload["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 def test_governed_new_symlink_is_categorical(tmp_path):
@@ -406,22 +393,18 @@ def test_governed_new_symlink_is_categorical(tmp_path):
     path = "core/policy/fixtures/new-link"
     (root / path).symlink_to("../../../docs/target.txt")
     _git(root, "add", "-A")
-    staged = _assert_categorical(_run_pre_commit(root), path)
-    assert any(r.startswith("NONREGULAR_ADDITION_UNSUPPORTED:") for r in staged["reasons"])
+    _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "add governed symlink")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("status=A" in r and "000000->120000" in r for r in payload["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 def test_governed_new_gitlink_is_categorical(tmp_path):
     root, base = _repo(tmp_path)
     path = "core/policy/fixtures/vendor"
     _git(root, "update-index", "--add", "--cacheinfo", "160000", base, path)
-    staged = _assert_categorical(_run_pre_commit(root), path)
-    assert any(r.startswith("NONREGULAR_ADDITION_UNSUPPORTED:") for r in staged["reasons"])
+    _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "add governed gitlink")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("status=A" in r and "000000->160000" in r for r in payload["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 def test_governed_regular_to_gitlink_type_change_is_categorical(tmp_path):
@@ -430,8 +413,7 @@ def test_governed_regular_to_gitlink_type_change_is_categorical(tmp_path):
     _git(root, "update-index", "--add", "--cacheinfo", "160000", base, path)
     _assert_categorical(_run_pre_commit(root), path)
     head = _commit_index(root, "replace governed regular file with gitlink")
-    payload = _assert_categorical(_run_gate(root, base, head), path)
-    assert any("status=T" in r and "100644->160000" in r for r in payload["reasons"])
+    _assert_categorical(_run_gate(root, base, head), path)
 
 
 @pytest.mark.parametrize(
@@ -448,15 +430,13 @@ def test_real_git_hostile_but_valid_paths_are_unambiguous_and_json_safe(tmp_path
     head = _commit_index(root, "add hostile but valid path")
     result = _run_gate(root, base, head)
     payload = _assert_reviewable_but_unapproved(result, path)
-    assert payload["changed_paths"] == [path]
-    # json.loads above proves machine output remains a valid single JSON value.
+    assert path not in json.dumps(payload)
+    # json.loads above proves machine output remains a valid single JSON value
+    # without exporting attacker-controlled pathnames.
 
     plain = _run_gate(root, base, head, as_json=False)
     assert plain.returncode == 1
-    assert "\\n" in plain.stdout if "\n" in path else True
-    assert "\\t" in plain.stdout if "\t" in path else True
-    if "\n" in path or "\t" in path:
-        assert path not in plain.stdout  # attacker path never becomes raw log framing
+    assert path not in plain.stdout
 
 
 def test_real_git_nfd_path_fails_closed_before_policy_matching(tmp_path):
@@ -478,8 +458,10 @@ def test_real_git_nfd_path_fails_closed_before_policy_matching(tmp_path):
     payload = _payload(result)
     assert result.returncode == 1
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert any("not Unicode NFC-normalized" in r for r in payload["reasons"])
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "INTERNAL_ERROR_REDACTED: an internal failure was redacted"
+    ]
 
 
 def test_real_git_non_utf8_path_fails_closed_before_policy_matching(tmp_path):
@@ -493,8 +475,10 @@ def test_real_git_non_utf8_path_fails_closed_before_policy_matching(tmp_path):
     payload = _payload(result)
     assert result.returncode == 1
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert any("not valid UTF-8" in r for r in payload["reasons"])
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "INTERNAL_ERROR_REDACTED: an internal failure was redacted"
+    ]
 
 
 def test_real_sha256_repo_ingress_is_full_width_but_approval_schema_fails_closed(tmp_path):
@@ -530,13 +514,9 @@ def test_real_sha256_repo_ingress_is_full_width_but_approval_schema_fails_closed
     payload = _payload(result)
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload["blocked"] is True
-    assert any(
-        "[contract]" in reason
-        and "artifact_hashes" in reason
-        and "^[0-9a-f]{40}$" in reason
-        for reason in payload["reasons"]
-    )
-    assert any(path in reason and "no covering APPROVE verdict" in reason for reason in payload["reasons"])
+    assert "CONTRACT_INVALID: a governed contract is invalid" in payload["reasons"]
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in payload["reasons"]
+    assert path not in json.dumps(payload)
 
 
 def test_pre_push_stdin_uses_raw_delta_and_blocks_deletion(tmp_path):
@@ -552,8 +532,10 @@ def test_pre_push_stdin_rejects_malformed_ref_update_record(tmp_path):
     result = _run_pre_push_stdin(root, base, base, record="only three fields\n")
     payload = _payload(result)
     assert result.returncode == 1
-    assert payload["changed_paths"] == []
-    assert any("malformed stdin ref-update record" in r for r in payload["reasons"])
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "GATE_INPUT_INVALID: gate invocation input is invalid"
+    ]
 
     deletion = _run_pre_push_stdin(
         root,
@@ -563,12 +545,10 @@ def test_pre_push_stdin_rejects_malformed_ref_update_record(tmp_path):
     )
     deletion_payload = _payload(deletion)
     assert deletion.returncode == 1
-    assert deletion_payload["changed_paths"] == []
-    assert any(
-        reason.startswith("REF_DELETION_UNSUPPORTED:")
-        and "ref-topology deletion" in reason
-        for reason in deletion_payload["reasons"]
-    )
+    assert deletion_payload["changed_paths_count"] == 0
+    assert deletion_payload["reasons"] == [
+        "REF_DELETION_UNSUPPORTED: a Git ref deletion is unsupported"
+    ]
 
 
 def test_pre_push_stdin_validates_sha256_repository_width(tmp_path):
@@ -585,13 +565,9 @@ def test_pre_push_stdin_validates_sha256_repository_width(tmp_path):
     first_push = _run_pre_push_stdin(root, head, "0" * 64)
     first_payload = _payload(first_push)
     assert first_push.returncode == 1, first_push.stdout + first_push.stderr
-    assert ".tess/bin/tessctl" in first_payload["changed_paths"]
-    assert any(
-        ".tess/bin/tessctl" in r
-        and "executable-file additions are unavailable" in r
-        for r in first_payload["reasons"]
-    )
-    assert not any("wrong repository format/length" in r for r in first_payload["reasons"])
+    assert first_payload["changed_paths_count"] > 0
+    assert "GOVERNED_TRANSITION_UNSUPPORTED: a governed Git path transition is unsupported" in first_payload["reasons"]
+    assert ".tess/bin/tessctl" not in json.dumps(first_payload)
 
 
 def test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict(engine, tmp_path):
@@ -625,11 +601,10 @@ def test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict(engi
     conflict_result = _run_pre_commit(conflict_root)
     conflict_payload = _payload(conflict_result)
     assert conflict_result.returncode == 1, conflict_result.stdout + conflict_result.stderr
-    assert conflict_payload["changed_paths"] == []
-    assert any(
-        "unexpected raw Git diff status 'U'" in reason
-        for reason in conflict_payload["reasons"]
-    )
+    assert conflict_payload["changed_paths_count"] == 0
+    assert conflict_payload["reasons"] == [
+        "INTERNAL_ERROR_REDACTED: an internal failure was redacted"
+    ]
 
 
 def test_installed_pre_push_hook_uses_same_raw_transition_denial(tmp_path):

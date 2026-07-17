@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "corpus": "A13-path-ingress-no-key",
-  "measured_at": "2026-07-16T21:08:52.975603Z",
+  "measured_at": "2026-07-17T05:02:32.197136Z",
   "command": "python3 -m pytest -q tests/test_gate_path_ingress.py tests/test_gate_type_swaps.py",
-  "engine_sha256": "27a7edf0146b69a277803b047e82ec319b0521c5542e58d960c213c9e496d034",
+  "engine_sha256": "e26c246d1e0b92b7e35e42cb3eaed8146adcd80166dd9d9ff21d4cd99269714f",
   "trust_operations": {
     "key_generation": false,
     "key_registration": false,
