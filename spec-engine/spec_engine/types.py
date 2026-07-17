@@ -25,7 +25,17 @@ from .content import (
 SOURCE_TYPES = ("voice_transcript", "pasted_doc", "fragment", "structured_brief")
 SPEC_STATUSES = ("active", "superseded")
 MODULE_KINDS = ("backend-model", "frontend-page", "service", "integration", "test-suite")
-CODEGEN_STATUSES = ("not_started",)  # v1 is a stub — see scaffold.py module docstring
+# "not_started" — plan_scaffold_from_spec() output, before any codegen has
+# run (still the ONLY value that function itself ever produces — it stays
+# a pure, filesystem-free planning step, see scaffold.py). "generated" —
+# codegen.generate_app() has actually written real files for this plan;
+# see codegen.py's module docstring and .spec-engine/codegen-manifest.json
+# (written alongside scaffold-plan.json) for the per-MODULE honesty this
+# single top-level status can't carry: some modules (backend-model,
+# frontend-page, test-suite) are fully generated, "service" (flow) modules
+# are generated-with-stub-business-logic, and "integration" modules are
+# labeled stubs — never silently rolled up into one overclaiming status.
+CODEGEN_STATUSES = ("not_started", "generated")
 
 # Verbatim copy of core/contracts/crew-plan.schema.json's `outcome_type`
 # enum, same as intent_router.types.OUTCOME_TYPES — one vocabulary, not
@@ -216,12 +226,15 @@ class ScaffoldModule:
 
 @dataclass
 class ScaffoldPlan:
-    """Deliverable (3): the spec->scaffold DIRECTION, as a stub. This is a
-    PLAN for what a future real codegen step would produce, not code
-    itself — `codegen_status` is always `"not_started"` in v1 (see
-    scaffold.py module docstring for the honest-labeling rationale, same
+    """Deliverable (3): the spec->scaffold DIRECTION. `plan_scaffold_from_spec()`
+    (scaffold.py) always returns one with `codegen_status == "not_started"`
+    — it stays a pure, filesystem-free planning step. `codegen.generate_app()`
+    (codegen.py) is what actually turns a `not_started` plan into real,
+    runnable files and returns a NEW `ScaffoldPlan` with `codegen_status ==
+    "generated"` — see codegen.py's module docstring for the honest,
+    per-module labeling underneath that single top-level status, same
     discipline the parent build spec applies everywhere else: 'these
-    labels are load-bearing... do not silently upgrade a label')."""
+    labels are load-bearing... do not silently upgrade a label'."""
 
     spec_id: str
     spec_version: int

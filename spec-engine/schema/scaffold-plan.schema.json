@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tess-os.dev/spec-engine/contracts/scaffold-plan.schema.json",
-  "title": "Spec Engine — ScaffoldPlan Contract (spec->scaffold stub)",
-  "description": "Machine-checkable form of the spec->scaffold DIRECTION stub (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2, deliverable (3): 'Establish the spec->code DIRECTION... a first minimal spec->scaffold step is enough; the point is nailing the direction + the contract, not full codegen yet'). `codegen_status` is pinned to the single enum value `not_started` in v1 — this is a PLAN for a future real codegen step, never code itself. This is the exact shape `spec_engine.types.ScaffoldPlan.to_log_record()` emits and the literal content of `.spec-engine/scaffold-plan.json` that `spec_engine.scaffold.write_scaffold_stub()` writes into a generated app's repo.",
+  "title": "Spec Engine — ScaffoldPlan Contract (spec->scaffold plan, now with real codegen)",
+  "description": "Machine-checkable form of the spec->scaffold plan (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2 deliverable (3), continued into the codegen slice of Phase 2 Epic E4's 'scaffolds the repo from SPEC.md'). `codegen_status` is `not_started` immediately after `spec_engine.scaffold.plan_scaffold_from_spec()` (a PLAN only, no filesystem access) and becomes `generated` once `spec_engine.codegen.generate_app()` has actually written real files for it — see that module's docstring, and `.spec-engine/codegen-manifest.json` (schema: `codegen-manifest.schema.json`), for the honest PER-MODULE generation status this single top-level enum cannot carry on its own (some modules are fully generated, others are labeled stubs). This is the exact shape `spec_engine.types.ScaffoldPlan.to_log_record()` emits and the literal content of `.spec-engine/scaffold-plan.json` that `spec_engine.scaffold.write_scaffold_stub()` writes into a generated app's repo.",
   "type": "object",
   "properties": {
     "spec_id": { "type": "string", "minLength": 1 },
@@ -24,7 +24,7 @@
       }
     },
     "target_stack": { "type": "string", "minLength": 1 },
-    "codegen_status": { "type": "string", "enum": ["not_started"] },
+    "codegen_status": { "type": "string", "enum": ["not_started", "generated"] },
     "notes": { "type": "string" }
   },
   "required": ["spec_id", "spec_version", "generated_at", "modules", "target_stack", "codegen_status", "notes"],

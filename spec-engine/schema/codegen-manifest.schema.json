@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/spec-engine/contracts/codegen-manifest.schema.json",
+  "title": "Spec Engine — Codegen Manifest Contract",
+  "description": "Machine-checkable form of the PER-MODULE honesty ledger `spec_engine.codegen.generate_app()` writes to `.spec-engine/codegen-manifest.json` in a generated app's repo, alongside `.spec-engine/scaffold-plan.json`. The parent `ScaffoldPlan.codegen_status` is one top-level enum (`not_started` | `generated`) and cannot express that a 'generated' plan mixes fully-real modules with labeled stubs — THIS file is where that mix is recorded, per module, machine-checkably: 'generated' (real, working code — e.g. backend-model CRUD stores, frontend-page renderers, the acceptance test suite), 'generated-stub-logic' (the module's wiring/entry-point is real and executes, but its business-logic body is a documented placeholder — e.g. a flow's step sequence), or 'stub' (a labeled placeholder only — e.g. a third-party integration connector codegen cannot wire without real credentials/API contract). Same load-bearing-labels discipline TESS-VISION-AND-BUILD-SPEC.html applies everywhere: 'do not silently upgrade a label.'",
+  "type": "object",
+  "properties": {
+    "spec_id": { "type": "string", "minLength": 1 },
+    "spec_version": { "type": "integer", "minimum": 1 },
+    "target_stack": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "codegen_status": { "type": "string", "enum": ["generated"], "description": "Always 'generated' — this manifest only exists once codegen.generate_app() has actually run; a 'not_started' plan has no manifest file." },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module_id": { "type": "string", "minLength": 1, "description": "Matches the module_id in the sibling scaffold-plan.json — traceability between the plan and what was actually written." },
+          "kind": { "type": "string", "enum": ["backend-model", "frontend-page", "service", "integration", "test-suite"] },
+          "source_section": { "type": "string", "minLength": 1 },
+          "generation_status": { "type": "string", "enum": ["generated", "generated-stub-logic", "stub"] },
+          "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "notes": { "type": "string" }
+        },
+        "required": ["module_id", "kind", "source_section", "generation_status", "files", "notes"],
+        "additionalProperties": false
+      }
+    },
+    "infrastructure_files": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Files written by codegen that are required scaffolding for the target stack but are NOT derived from any single spec section (e.g. src/server.js, src/http-util.js, package.json) — kept separate from `modules` so traceability back to the spec stays honest: only `modules[].files` claim a `source_section`."
+    },
+    "notes": { "type": "string" }
+  },
+  "required": ["spec_id", "spec_version", "target_stack", "generated_at", "codegen_status", "modules", "infrastructure_files", "notes"],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by spec_engine.spec_check: type, enum, properties, required, additionalProperties, items."
+}
