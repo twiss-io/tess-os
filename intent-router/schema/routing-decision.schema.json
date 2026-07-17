@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/intent-router/contracts/routing-decision.schema.json",
+  "title": "Intent Router — Routing Decision Contract",
+  "description": "Machine-checkable form of one intent-router decision (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E1, 'Routing decision logged to state/ with rationale', generalized here to a component-local decision log since this component ships independent of any one deployment's state/ conventions). Deliberately NOT placed under core/contracts/ — this is this component's OWN local contract, validated by intent_router.schema_check (a minimal, dependency-free validator), never by tessctl. Every field intent_router.types.RoutingDecision.to_log_record() emits is described below; additionalProperties:false means a code change that adds an undocumented field fails validation loudly rather than silently drifting from this contract.",
+  "type": "object",
+  "properties": {
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque unique id for this decision (intent_router.types.new_decision_id() — a uuid4 hex string)."
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp with a 'Z' suffix, same convention core/contracts/mission.schema.json uses for created_at."
+    },
+    "input_excerpt": {
+      "type": "string",
+      "description": "The first 280 characters of the freeform input that was routed. A rationale excerpt, not a durable transcript store."
+    },
+    "ambiguous": {
+      "type": "boolean",
+      "description": "True if this record represents a still-ambiguous decision awaiting one clarifying answer; false for a confident (or forced) final decision."
+    },
+    "route_id": {
+      "type": ["string", "null"],
+      "description": "The chosen (or, if ambiguous, the leading candidate) route id from the routing table."
+    },
+    "entry_command": {
+      "type": ["string", "null"],
+      "description": "The internal command string the route names (e.g. '/founder-mode') — deployment-specific, not an enum."
+    },
+    "orchestrator": {
+      "type": ["string", "null"],
+      "description": "The orchestrator name the route names, or null for a non-orchestrator command."
+    },
+    "outcome_type": {
+      "type": ["string", "null"],
+      "enum": ["decide", "design", "build", "convert", "recover", "govern", "review", "communicate", "scale", null],
+      "description": "Verbatim copy of core/contracts/crew-plan.schema.json's outcome_type enum."
+    },
+    "confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "The leading candidate's normalized confidence score, 0..1."
+    },
+    "matched_signals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Keywords, shared-example evidence, or external-signal markers that drove the score — the 'why' half of the narration."
+    },
+    "runner_up_route_id": {
+      "type": ["string", "null"],
+      "description": "The second-ranked candidate's route id, if any — present so an ambiguous record's rationale is fully reconstructible from the log alone."
+    },
+    "clarifying_question": {
+      "type": ["string", "null"],
+      "description": "Set only when ambiguous:true. The ONE clarifying question asked (epic: 'one clarifying question max')."
+    },
+    "assumption_stated": {
+      "type": ["string", "null"],
+      "description": "Set only when a decision was forced past what would otherwise have been ambiguous (epic: '...then route with stated assumption')."
+    },
+    "crew_plan_sketch": {
+      "type": ["object", "null"],
+      "description": "The first-cut crew-plan sketch (intent_router.crew_plan_sketch.build_sketch output) for a confident/forced decision; null while ambiguous."
+    },
+    "narration": {
+      "type": "string",
+      "description": "The human-readable 'here's what I'm doing and why' text (intent_router.narrate.narrate output)."
+    },
+    "mission_id": {
+      "type": ["string", "null"],
+      "description": "A mission id, either caller-supplied (e.g. from a real mission ledger) or the component's own fallback slug."
+    }
+  },
+  "required": [
+    "decision_id",
+    "timestamp",
+    "input_excerpt",
+    "ambiguous",
+    "matched_signals",
+    "narration"
+  ],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by intent_router.schema_check: type, enum, properties, required, additionalProperties, items. Mirrors (in spirit, not in code) the same 'minimal-validator keyword subset' convention core/contracts/*.schema.json's own trailing $comment documents, without importing that engine."
+}
