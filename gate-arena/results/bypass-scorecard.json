@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-17T08:45:26.866418+00:00",
+  "generated_at": "2026-07-17T09:45:32.863463+00:00",
   "total_attacks": 12,
   "blocked": 12,
   "slipped_through": 0,
@@ -9,7 +9,7 @@
       "name": "--no-verify local hook bypass",
       "description": "Push an unreviewed prod-src change with --no-verify, then check whether the CI gate independently catches it.",
       "blocked": true,
-      "mechanism": "local pre-push hook bypassed via --no-verify (push rc=0, local_bypass_succeeded=True); CI-equivalent `tessctl gate ci` over the same base..head range BLOCKED it independently \u2014 ['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']",
+      "mechanism": "local pre-push hook bypassed via --no-verify (push rc=0, local_bypass_succeeded=True); CI-equivalent `tessctl gate ci` over the same base..head range BLOCKED it independently \u2014 ['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']",
       "evidence": {
         "local_bypass_succeeded": true,
         "ci_gate_result": {
@@ -17,9 +17,10 @@
           "blocked": true,
           "reasons": [
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 2,
+          "changed_paths_count": 3,
           "authoritative": false,
           "diagnostic_only": true
         }
@@ -225,12 +226,21 @@
       "name": "same-push engine tamper (honesty-capstone-audit-2026-07-08 \u00a73-c)",
       "description": "Edit the gate engine's own decision logic (_gate_run_ship_check) to self-attest 'not blocked', in the same push as an unreviewed payload \u2014 does the REAL CI workflow's trusted-engine defense still catch it?",
       "blocked": true,
-      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): BLOCKED (None). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED ( external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
+      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): NOT BLOCKED \u2014 slips past naively ({'phase': 'ci', 'blocked': False, 'reasons': [], 'changed_paths_count': 2, 'authoritative': False, 'diagnostic_only': True}). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED ( external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
       "evidence": {
-        "naive_blocked": true,
-        "naive_payload": null,
+        "naive_blocked": false,
+        "naive_payload": {
+          "phase": "ci",
+          "blocked": false,
+          "reasons": [],
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
+        },
         "trusted_returncode": 1,
-        "trusted_output": "tessctl gate ci \u2014 DIAGNOSTIC-ONLY BLOCKED (not external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n"
+        "trusted_output": "tessctl gate ci \u2014 DIAGNOSTIC-ONLY BLOCKED (not external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n",
+        "trusted_expected_denial": "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+        "trusted_execution_proved": true
       }
     },
     {

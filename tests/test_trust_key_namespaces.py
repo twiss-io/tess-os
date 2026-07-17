@@ -519,8 +519,13 @@ def test_ordinary_add_and_modify_key_transitions_are_policy_blocked(
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert rel in payload["changed_paths"]
-    assert any(rel in reason and "no covering APPROVE" in reason for reason in payload["reasons"])
+    assert payload["changed_paths_count"] == 1
+    assert "changed_paths" not in payload
+    assert any(
+        reason.startswith("COVERING_APPROVAL_MISSING:")
+        for reason in payload["reasons"]
+    )
+    assert rel not in result.stdout
 
 
 def test_policy_schema_mirrors_remain_valid_json():

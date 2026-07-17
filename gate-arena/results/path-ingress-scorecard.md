@@ -1,6 +1,6 @@
 # Gate Arena — A13 path-ingress scorecard
 
-Measured: `2026-07-17T08:45:57.038731Z`
+Measured: `2026-07-17T10:00:00.719987Z`
 
 **Result: 49/49 tests passed.** Failures: 0; errors: 0; skips: 0.
 
@@ -20,7 +20,7 @@ This score is separate from the historical A1-A12 `12/12` GPG-backed bypass scor
 python3 gate-arena/bypass/run_path_ingress_corpus.py
 ```
 
-Engine SHA-256: `b434d8d905931ce96d816c899ccfd9497e2032b57b3817ea3db3a97153537cb7`
+Engine SHA-256: `bc9579292439b815abe483922d6d307ee6ddd7a851d17ffa6e25da73928a7296`
 
 ## Non-passing cases
 

@@ -417,6 +417,28 @@ def _extract_workflow_step_run(workflow_text: str, step_name: str) -> str:
     raise KeyError(step_name)
 
 
+def _render_trusted_ci_gate_command(
+    ci_script: str, engine_path: str, base: str, evaluation: str,
+) -> str:
+    """Materialize the exact expressions used by A11's extracted CI step.
+
+    The arena executes the committed workflow shell directly rather than
+    GitHub Actions itself.  It must therefore substitute every expression
+    that belongs in that command before invoking ``bash``.  An unresolved
+    expression is a fixture failure, never evidence that the gate blocked an
+    attack: ``bash`` would reject it before the trusted engine runs.
+    """
+    rendered = (
+        ci_script
+        .replace("${{ steps.trusted_engine.outputs.engine_path }}", engine_path)
+        .replace("${{ steps.refs.outputs.base }}", base)
+        .replace("${{ steps.refs.outputs.evaluation }}", evaluation)
+    )
+    if "${{" in rendered:
+        raise ValueError("unexpanded GitHub Actions expression in trusted gate command")
+    return rendered
+
+
 def run_ci_workflow_trusted_engine(root: Path, base: str, head: str):
     """Runs the REAL, committed `.github/workflows/tess-gate.yml`'s own
     "Extract trusted gate engine" + final "tessctl gate ci" run: blocks
@@ -451,12 +473,12 @@ def run_ci_workflow_trusted_engine(root: Path, base: str, head: str):
     if not engine_path:
         return 1, f"extract step did not emit engine_path — stdout/stderr: {r1.stdout}{r1.stderr}"
 
-    ci_script2 = (
-        ci_script
-        .replace("${{ steps.trusted_engine.outputs.engine_path }}", engine_path)
-        .replace("${{ steps.refs.outputs.base }}", base)
-        .replace("${{ steps.refs.outputs.head }}", head)
-    )
+    try:
+        ci_script2 = _render_trusted_ci_gate_command(
+            ci_script, engine_path, base, head,
+        )
+    except ValueError as exc:
+        return 1, str(exc)
     env2 = {**os.environ, "TESS_ROOT": str(root)}
     r2 = subprocess.run(["bash", "-c", ci_script2], cwd=str(root), env=env2, capture_output=True, text=True)
     return r2.returncode, r2.stdout + r2.stderr

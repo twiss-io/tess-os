@@ -172,6 +172,10 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
         .replace("${{ steps.refs.outputs.base }}", base)
         .replace("${{ steps.refs.outputs.evaluation }}", head)
     )
+    assert "${{" not in ci_script2, (
+        "the trusted gate command must substitute every GitHub Actions "
+        "expression before its shell is executed"
+    )
     env2 = {**os.environ, "TESS_ROOT": str(root)}
     r2 = subprocess.run(["bash", "-c", ci_script2], cwd=str(root), env=env2, capture_output=True, text=True)
     return r2.returncode, r2.stdout + r2.stderr
@@ -216,6 +220,8 @@ def test_same_push_engine_tamper_slips_past_naive_execution_but_not_the_real_wor
     # still blocks its candidate-tree replacement, but does not disclose the
     # protected path through the CI log.
     assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in trusted_out
+    assert "bad substitution" not in trusted_out
+    assert "${{" not in trusted_out
     assert ".tess/bin/tessctl" not in trusted_out
 
 

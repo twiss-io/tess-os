@@ -602,6 +602,7 @@ _NEUTER_MARKER = "def _gate_run_ship_check("
 _NEUTER_INJECTION = (
     "def _gate_run_ship_check(\n"
     "    root, changed_paths, verdict_dirs=None, head_shas=None, base_shas=None,\n"
+    "    admission_source=None, attestation_head_shas=None,\n"
     "):\n"
     "    # A11 fixture: an attacker-inserted early return that self-attests\n"
     "    # clean, unconditionally — the exact §3-c attack.\n"
@@ -632,12 +633,24 @@ def attack_A11_same_push_engine_tamper(base_dir: Path, engine) -> dict:
 
         trusted_rc, trusted_out = fx.gate_ci_via_real_ci_workflow(base, head)
         trusted_blocked = trusted_rc != 0
+        trusted_expected_denial = (
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+        )
+        trusted_execution_proved = (
+            trusted_blocked
+            and trusted_expected_denial in trusted_out
+            and "${{" not in trusted_out
+            and "bad substitution" not in trusted_out
+        )
 
         # The attack is BLOCKED (i.e. the security control holds) only if
         # the REAL CI defense (trusted base-ref engine) catches it — the
         # naive path slipping is the DISCLOSED pre-fix behavior this attack
-        # exists to characterize, not itself a pass/fail signal.
-        blocked = trusted_blocked
+        # exists to characterize, not itself a pass/fail signal. A shell
+        # parser error is not evidence: this fixture passes only after the
+        # untrusted engine actually slips and the trusted BASE engine reaches
+        # its expected safe denial.
+        blocked = naive_blocked is False and trusted_execution_proved
         mechanism = (
             f"`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally "
             f"return not-blocked, in the SAME commit as an unreviewed src/prod/app.py "
@@ -646,7 +659,7 @@ def attack_A11_same_push_engine_tamper(base_dir: Path, engine) -> dict:
             f"({naive_payload}). The REAL, committed .github/workflows/tess-gate.yml's "
             f"own trusted-engine steps (v3 — extracts and runs the engine as it existed "
             f"at the push's BASE ref, never the pushed tree's copy): "
-            f"{'BLOCKED' if trusted_blocked else 'NOT BLOCKED — SLIPPED THROUGH'} ({trusted_out.strip()[-400:]})"
+            f"{'BLOCKED' if trusted_execution_proved else 'NOT PROVEN'} ({trusted_out.strip()[-400:]})"
         )
         return {
             "id": "A11", "name": "same-push engine tamper (honesty-capstone-audit-2026-07-08 §3-c)",
@@ -659,6 +672,8 @@ def attack_A11_same_push_engine_tamper(base_dir: Path, engine) -> dict:
             "evidence": {
                 "naive_blocked": naive_blocked, "naive_payload": naive_payload,
                 "trusted_returncode": trusted_rc, "trusted_output": trusted_out,
+                "trusted_expected_denial": trusted_expected_denial,
+                "trusted_execution_proved": trusted_execution_proved,
             },
         }
     finally:

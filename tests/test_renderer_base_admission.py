@@ -1148,8 +1148,11 @@ def test_workflow_dispatch_cannot_create_authoritative_gate_context(engine, tmp_
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert payload["reasons"][0].startswith("CI_PR_EVENT_REQUIRED:")
+    assert payload["changed_paths_count"] == 0
+    assert "changed_paths" not in payload
+    assert payload["reasons"] == [
+        "CI_PR_EVENT_REQUIRED: an authoritative pull request event is required",
+    ]
 
 
 def test_push_event_never_becomes_authoritative_gate_ci(engine, tmp_path):
@@ -1167,8 +1170,11 @@ def test_push_event_never_becomes_authoritative_gate_ci(engine, tmp_path):
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert payload["reasons"][0].startswith("CI_PR_EVENT_REQUIRED:")
+    assert payload["changed_paths_count"] == 0
+    assert "changed_paths" not in payload
+    assert payload["reasons"] == [
+        "CI_PR_EVENT_REQUIRED: an authoritative pull request event is required",
+    ]
 
 
 def _install_remote_head(history) -> None:
