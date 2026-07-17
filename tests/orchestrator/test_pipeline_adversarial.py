@@ -16,8 +16,13 @@ test_pipeline.py for the positive path). Tests both:
      call sees it.
 
 In every case: run_pipeline() raises ApprovalAuthenticationError,
-spec_engine.pipeline.finalize_spec() is never called, spec_engine.codegen.
-generate_app() is never called, and target_dir is never created.
+spec_engine.pipeline.finalize_spec_with_approval() is never called,
+spec_engine.codegen.generate_app() is never called, and target_dir is
+never created. (This is the orchestrator SEAM's own proof; see
+tests/spec_engine/test_spec_builder.py and test_gate_approval.py for the
+SAME proof one layer down, at spec_engine.spec_builder.build_spec() --
+the actual codegen boundary -- which does not depend on any particular
+ApprovalGate having caught the forgery first.)
 """
 
 from __future__ import annotations
@@ -56,8 +61,8 @@ class _ForgedApprovalGate(ApprovalGate):
     def request_approval(self, plan: Plan):
         return record_approval(plan, approved_by="Xavier", approved=True)
 
-    def verify(self, approval) -> bool:
-        return self._real_gate.verify(approval)
+    def verify(self, approval, plan) -> bool:
+        return self._real_gate.verify(approval, plan)
 
 
 class _TamperedInTransitGate(ApprovalGate):
@@ -77,8 +82,8 @@ class _TamperedInTransitGate(ApprovalGate):
         genuine = self._real_gate.request_approval(plan)
         return dataclasses.replace(genuine, approved_by="Xavier")
 
-    def verify(self, approval) -> bool:
-        return self._real_gate.verify(approval)
+    def verify(self, approval, plan) -> bool:
+        return self._real_gate.verify(approval, plan)
 
 
 @pytest.mark.parametrize("gate_cls", [_ForgedApprovalGate, _TamperedInTransitGate])
@@ -94,7 +99,7 @@ def test_forged_approval_is_rejected_and_codegen_never_runs(tmp_path, monkeypatc
         finalize_spec_calls.append((args, kwargs))
 
     monkeypatch.setattr(pipeline_module, "generate_app", _spy_generate_app)
-    monkeypatch.setattr(pipeline_module, "finalize_spec", _spy_finalize_spec)
+    monkeypatch.setattr(pipeline_module, "finalize_spec_with_approval", _spy_finalize_spec)
 
     gate = gate_cls(tmp_path)
     with pytest.raises(ApprovalAuthenticationError):
@@ -155,8 +160,8 @@ def test_a_genuinely_authenticated_approval_from_a_different_local_identity_scop
         def request_approval(self, plan: Plan):
             return self._signer.request_approval(plan)
 
-        def verify(self, approval) -> bool:
-            return self._verifier.verify(approval)
+        def verify(self, approval, plan) -> bool:
+            return self._verifier.verify(approval, plan)
 
     target_dir = tmp_path / "generated-app"
     with pytest.raises(ApprovalAuthenticationError):

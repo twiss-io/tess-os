@@ -1,6 +1,10 @@
 """Tests for orchestrator.adapters.local_identity.LocalIdentityApprovalGate
--- including the REQUIRED adversarial proof that a forged/tampered
-Approval is rejected by verify(), not just that a genuine one passes."""
+-- including the REQUIRED adversarial proof that a forged/tampered/
+spec-substituted Approval is rejected by verify(approval, plan), not just
+that a genuine one passes. `verify()` now takes `plan` as a second,
+required argument ([Cyra MEDIUM-2]) — it binds to `plan`'s actual
+content (via spec_engine.content.plan_content_hash()), not merely the
+approval's own claimed plan_id."""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import pytest
 import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
 
 from spec_engine.approval import record_approval
+from spec_engine.content import plan_content_hash
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.types import Approval
@@ -20,8 +25,8 @@ from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
 from orchestrator.approval_gate import ApprovalAuthenticationError
 
 
-def _plan():
-    return build_plan(harvest_intake("An app that tracks invoices.", "fragment"))
+def _plan(text="An app that tracks invoices."):
+    return build_plan(harvest_intake(text, "fragment"))
 
 
 def _approving_gate(tmp_path, notes=""):
@@ -49,7 +54,7 @@ def test_request_approval_returns_an_approval_this_gate_verifies(tmp_path):
     approval = gate.request_approval(plan)
     assert approval.approved is True
     assert approval.plan_id == plan.plan_id
-    assert gate.verify(approval) is True
+    assert gate.verify(approval, plan) is True
 
 
 def test_approved_by_is_bound_to_the_local_os_identity_not_a_caller_string(tmp_path):
@@ -65,7 +70,7 @@ def test_rejection_is_also_authenticated(tmp_path):
     plan = _plan()
     approval = gate.request_approval(plan)
     assert approval.approved is False
-    assert gate.verify(approval) is True
+    assert gate.verify(approval, plan) is True
 
 
 def test_interactive_confirm_aborts_on_an_unrecognized_answer(tmp_path):
@@ -90,8 +95,9 @@ def test_interactive_confirm_approves_on_the_exact_token(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Adversarial path -- REQUIRED: forged/unauthenticated approvals are
-# rejected. verify() must return False, never raise, on all of these.
+# Adversarial path -- REQUIRED: forged/unauthenticated/spec-substituted
+# approvals are rejected. verify() must return False, never raise, on all
+# of these.
 # --------------------------------------------------------------------------
 
 
@@ -103,7 +109,7 @@ def test_verify_rejects_an_approval_never_produced_by_any_gate(tmp_path):
     plan = _plan()
     forged = record_approval(plan, approved_by="Xavier", approved=True)
     assert forged.notes == ""
-    assert gate.verify(forged) is False
+    assert gate.verify(forged, plan) is False
 
 
 def test_verify_rejects_a_hand_constructed_approval_with_fake_auth_json(tmp_path):
@@ -114,6 +120,7 @@ def test_verify_rejects_a_hand_constructed_approval_with_fake_auth_json(tmp_path
         "auth": {
             "mechanism": "local-hmac-sha256-v1",
             "identity_fingerprint": gate.identity.fingerprint,
+            "content_hash": plan_content_hash(plan),
             "nonce": "attacker-chosen-nonce",
             "signature": "0" * 64,  # not a real HMAC -- attacker cannot compute one
         },
@@ -126,28 +133,47 @@ def test_verify_rejects_a_hand_constructed_approval_with_fake_auth_json(tmp_path
         approved_at="2026-01-01T00:00:00.000Z",
         notes=fake_notes,
     )
-    assert gate.verify(forged) is False
+    assert gate.verify(forged, plan) is False
 
 
 def test_verify_rejects_a_genuine_approval_with_approved_by_tampered_after_signing(tmp_path):
     gate = _approving_gate(tmp_path)
-    real = gate.request_approval(_plan())
+    plan = _plan()
+    real = gate.request_approval(plan)
     tampered = dataclasses.replace(real, approved_by="Xavier")
-    assert gate.verify(tampered) is False
+    assert gate.verify(tampered, plan) is False
 
 
 def test_verify_rejects_a_genuine_approval_with_approved_flag_flipped_after_signing(tmp_path):
     gate = _approving_gate(tmp_path)
-    real = gate.request_approval(_plan())
+    plan = _plan()
+    real = gate.request_approval(plan)
     tampered = dataclasses.replace(real, approved=not real.approved)
-    assert gate.verify(tampered) is False
+    assert gate.verify(tampered, plan) is False
 
 
-def test_verify_rejects_a_genuine_approval_replayed_onto_a_different_plan(tmp_path):
+def test_verify_rejects_a_genuine_approval_with_plan_id_tampered_to_a_different_string(tmp_path):
     gate = _approving_gate(tmp_path)
-    real = gate.request_approval(_plan())
+    plan = _plan()
+    real = gate.request_approval(plan)
     tampered = dataclasses.replace(real, plan_id="plan-different000")
-    assert gate.verify(tampered) is False
+    assert gate.verify(tampered, plan) is False
+
+
+def test_verify_rejects_a_genuine_approval_replayed_onto_a_genuinely_different_plan(tmp_path):
+    """[Cyra MEDIUM-2] -- the real spec-substitution case: an approval
+    genuinely signed for plan_a's content must not verify against a
+    DIFFERENT, real plan_b -- even one built through the exact same
+    intake pipeline. This is what makes `verify(approval, plan)` bind to
+    the plan's own content, not merely trust whatever plan_id the
+    approval itself claims."""
+    gate = _approving_gate(tmp_path)
+    plan_a = _plan("An app that tracks invoices.")
+    plan_b = _plan("A completely different, unrelated app idea.")
+    approval_a = gate.request_approval(plan_a)
+
+    assert gate.verify(approval_a, plan_a) is True  # sanity: genuine pair verifies
+    assert gate.verify(approval_a, plan_b) is False  # cross-plan replay rejected
 
 
 def test_verify_rejects_a_signature_from_a_different_identity(tmp_path):
@@ -158,7 +184,7 @@ def test_verify_rejects_a_signature_from_a_different_identity(tmp_path):
     victim_gate = LocalIdentityApprovalGate(identity_dir=tmp_path / "victim-scope")
     # The attacker's approval carries the attacker's own identity
     # fingerprint -- the victim gate must not vouch for it.
-    assert victim_gate.verify(attacker_approval) is False
+    assert victim_gate.verify(attacker_approval, plan) is False
 
 
 @pytest.mark.parametrize("bad_notes", [
@@ -185,7 +211,7 @@ def test_verify_never_raises_on_arbitrary_notes(tmp_path, bad_notes):
     )
     # Must not raise -- a forged/malformed approval is expected
     # adversarial input, not a programming error.
-    assert gate.verify(forged) is False
+    assert gate.verify(forged, plan) is False
 
 
 def test_request_approval_self_verifies_before_returning(tmp_path, monkeypatch):
@@ -194,9 +220,9 @@ def test_request_approval_self_verifies_before_returning(tmp_path, monkeypatch):
     than hand back a bad Approval -- proven here by forcing sign_payload()
     to return a wrong signature and asserting the gate refuses to return
     the result instead of silently handing back an unverifiable approval."""
-    import orchestrator.adapters.local_identity as local_identity_module
+    import spec_engine.gate_approval as gate_approval_module
 
-    monkeypatch.setattr(local_identity_module, "sign_payload", lambda key, payload: "0" * 64)
+    monkeypatch.setattr(gate_approval_module, "sign_payload", lambda key, payload: "0" * 64)
     gate = _approving_gate(tmp_path)
     with pytest.raises(ApprovalAuthenticationError):
         gate.request_approval(_plan())

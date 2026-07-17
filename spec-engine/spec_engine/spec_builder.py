@@ -1,12 +1,28 @@
 """Promote an approved `Plan` into a `SpecDocument` — the source of truth.
 Deliverable (3), final step: "... -> complete spec generation."
 
-This is the one place the approval gate is actually enforced as a real
-control, not a formality: `build_spec()` refuses to run — raises
-`SpecEngineError`, fails loud — unless it is handed an `Approval` whose
-`plan_id` matches the plan being built AND whose `approved` is `True`.
+This is THE codegen boundary — the sole gateway to a `SpecDocument`,
+which is the sole input `spec_engine.codegen.generate_app()` accepts.
+`build_spec()` refuses to run — raises `SpecEngineError`, fails loud —
+unless it is handed an `Approval` that is BOTH:
+
+  1. structurally valid (its `plan_id` matches the plan being built and
+     `approved` is `True` — the original, pre-existing check); AND
+  2. a GATE-VERIFIABLE approval — independently re-verified via
+     `gate_approval.verify_gate_approval()` against `plan`'s CURRENT
+     content, using the same HMAC mechanism `orchestrator.adapters.
+     local_identity.LocalIdentityApprovalGate` signs with. A bare
+     `approval.record_approval(approved_by="Xavier")` call (no signature,
+     no gate involvement at all) fails step 2 and is rejected here —
+     closing [Cyra MEDIUM-1]: before this hardening,
+     `record_approval(...) -> build_spec(...) -> generate_app(...)`
+     produced a real, running app with zero authentication.
+
 There is no code path in this package that reaches a `SpecDocument`
-without both of those being true.
+without both of those being true, and without that approval's
+content-hash matching `plan`'s CURRENT content (closing [Cyra MEDIUM-2]:
+a `plan_id` match alone is not proof the content an approver reviewed is
+the content actually being built — see `content.plan_content_hash()`).
 """
 
 from __future__ import annotations
@@ -14,15 +30,40 @@ from __future__ import annotations
 from typing import Optional
 
 from .content import SpecEngineError, new_id, utc_now_iso
+from .gate_approval import consume_approval_nonce, verify_gate_approval
 from .types import Plan, Approval, Provenance, SpecDocument
 
 
-def build_spec(plan: Plan, approval: Approval, *, spec_id: Optional[str] = None, spec_version: int = 1) -> SpecDocument:
+def build_spec(
+    plan: Plan,
+    approval: Approval,
+    *,
+    spec_id: Optional[str] = None,
+    spec_version: int = 1,
+    identity_dir: Optional[str] = None,
+) -> SpecDocument:
     """Build a `SpecDocument` from `plan`, gated on `approval`.
 
-    Raises `SpecEngineError` if:
-      - `approval.plan_id != plan.plan_id` (approval for a different plan)
-      - `approval.approved is not True` (rejected or not yet decided)
+    Raises `SpecEngineError` (or the more specific `gate_approval.
+    ApprovalVerificationError` / `ApprovalReplayError`, both subclasses)
+    if:
+      - `approval.plan_id != plan.plan_id` (approval for a different plan);
+      - `approval.approved is not True` (rejected or not yet decided);
+      - `approval` does not independently re-verify against `plan`'s
+        current content via `gate_approval.verify_gate_approval()` — a
+        bare/forged/tampered approval, or one signed for DIFFERENT
+        content than `plan` currently carries (spec-substitution);
+      - `approval`'s nonce has already been consumed by a prior
+        `build_spec()` call (replay — see `gate_approval.
+        consume_approval_nonce()`'s disclosed, in-process-only scope).
+
+    `identity_dir` is forwarded to `gate_approval.verify_gate_approval()`
+    — only meaningful for the shipped local-HMAC mechanism; pass it when
+    the approval being verified was signed under a non-default identity
+    directory (tests scope this to `tmp_path`; a caller integrating a
+    non-default `LocalIdentityApprovalGate` should thread its own
+    `identity_dir` through here the same way `orchestrator.pipeline.
+    run_pipeline()` does).
 
     The spec's content is copied verbatim from the plan's draft content —
     approval is a gate on WHETHER to proceed, never a silent rewrite of
@@ -40,6 +81,9 @@ def build_spec(plan: Plan, approval: Approval, *, spec_id: Optional[str] = None,
             f"Plan {plan.plan_id!r} was not approved (approval {approval.approval_id!r}, "
             f"approved_by={approval.approved_by!r}) — no spec can be built from an unapproved plan"
         )
+
+    verified = verify_gate_approval(approval, plan, identity_dir=identity_dir)
+    consume_approval_nonce(verified)
 
     title = (plan.what_it_does.summary or plan.input_excerpt or "Untitled").strip()
     title = (title[:97] + "...") if len(title) > 100 else title

@@ -1,10 +1,10 @@
-"""Tests for orchestrator.identity — a backward-compatible re-export shim
-over spec_engine.gate_identity, the local, non-forgeable signing
-primitives `LocalIdentityApprovalGate` (and spec_engine.spec_builder.
-build_spec()'s own codegen-boundary re-verification) are built on. These
-tests exercise the primitives through `orchestrator.identity`'s import
-path specifically, proving the re-export shim genuinely works, not just
-that spec_engine.gate_identity itself does."""
+"""Tests for spec_engine.gate_identity -- the local, non-forgeable signing
+primitives spec_engine.gate_approval (the codegen boundary's own
+re-verification) and orchestrator.adapters.local_identity.
+LocalIdentityApprovalGate are both built on. Mirrors
+tests/orchestrator/test_identity.py's own coverage of the SAME primitives
+via the orchestrator.identity re-export shim -- this file exercises them
+at their real, canonical import path."""
 
 from __future__ import annotations
 
@@ -13,11 +13,12 @@ import stat
 
 import pytest
 
-import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
+import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
-from orchestrator.identity import (
+from spec_engine.gate_identity import (
     IdentityError,
     canonical_payload,
+    default_identity_dir,
     load_or_create_local_identity,
     read_current_key,
     sign_payload,
@@ -37,6 +38,17 @@ def _payload(**overrides):
     )
     base.update(overrides)
     return canonical_payload(**base)
+
+
+def test_default_identity_dir_honors_the_env_var_override(monkeypatch, tmp_path):
+    override = tmp_path / "custom-identity-dir"
+    monkeypatch.setenv("TESS_OS_APPROVAL_IDENTITY_DIR", str(override))
+    assert default_identity_dir() == override
+
+
+def test_default_identity_dir_falls_back_to_home_when_unset(monkeypatch):
+    monkeypatch.delenv("TESS_OS_APPROVAL_IDENTITY_DIR", raising=False)
+    assert str(default_identity_dir()).endswith(str(os.path.join(".tess-os", "approval-identity")))
 
 
 def test_load_or_create_local_identity_creates_a_key_on_first_use(tmp_path):
@@ -98,30 +110,16 @@ def test_verify_fails_if_any_signed_field_changes(tmp_path):
     payload = _payload()
     signature = sign_payload(key, payload)
 
-    tampered = dict(payload)
-    tampered["approved_by"] = "Xavier"
-    assert verify_signature(key, tampered, signature) is False
-
-    tampered_approved = dict(payload)
-    tampered_approved["approved"] = not payload["approved"]
-    assert verify_signature(key, tampered_approved, signature) is False
-
-
-def test_verify_fails_if_content_hash_changes(tmp_path):
-    """[Cyra MEDIUM-2] canonical_payload()'s content_hash field is signed
-    like every other field — swapping in a DIFFERENT content_hash after
-    signing (simulating a spec-substitution attempt: the same approval_id/
-    plan_id/nonce, but for different underlying plan content) must fail
-    verification exactly the same way tampering with approved_by/approved
-    does."""
-    identity = load_or_create_local_identity(tmp_path / "identity")
-    key = read_current_key(identity.key_path)
-    payload = _payload()
-    signature = sign_payload(key, payload)
-
-    tampered = dict(payload)
-    tampered["content_hash"] = "b" * 64
-    assert verify_signature(key, tampered, signature) is False
+    for field, new_value in (
+        ("approved_by", "Xavier"),
+        ("approved", not payload["approved"]),
+        ("plan_id", "plan-different000"),
+        ("content_hash", "b" * 64),
+        ("nonce", "nonce-attacker-chosen"),
+    ):
+        tampered = dict(payload)
+        tampered[field] = new_value
+        assert verify_signature(key, tampered, signature) is False, field
 
 
 def test_verify_fails_with_wrong_key(tmp_path):

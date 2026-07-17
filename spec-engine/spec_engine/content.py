@@ -13,11 +13,16 @@ itself; approval is a gate on WHETHER to proceed, not an editing pass.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from .types import Plan
 
 # Pillar 02: "rough edges and open questions are treated as INPUTS, not
 # blockers... intake explicitly harvests ambiguities into an
@@ -55,6 +60,48 @@ def utc_now_iso() -> str:
     dependency on intent-router — see integrations/from_intent_router.py
     for the one place the two components actually meet."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def plan_content_hash(plan: "Plan") -> str:
+    """SHA-256 hex digest of `plan`'s APPROVAL-RELEVANT content — the
+    exact dimensions an approver actually reviewed via `plan.
+    summary_for_approval` and that end up copied verbatim into a
+    `SpecDocument` by `spec_builder.build_spec()`. Deliberately excludes
+    `plan_id`, `created_at`, and `summary_for_approval` itself (the first
+    two are identifiers/timestamps, not content; the third is a rendered
+    PROJECTION of the fields already hashed here, not an independent
+    fact) — including them would make the hash change on every
+    id/timestamp/rendering tweak, defeating its purpose.
+
+    This is the codegen-boundary hardening's fix for the "mutable
+    plan_id slug" gap: `Plan` is a plain (non-frozen) dataclass, so
+    `plan.plan_id` alone is not proof the CONTENT a human approved is the
+    content that ends up in a generated app — nothing stops a caller from
+    mutating `plan.what_it_does`/`plan.data_model`/etc. in place after
+    approval while leaving `plan_id` untouched, or hand-constructing a
+    SECOND `Plan` object that reuses a first plan's `plan_id` with
+    different content. `gate_identity.canonical_payload()` binds a
+    signed approval to THIS hash (see `gate_approval.py`), so either
+    attack changes the hash and fails re-verification at the codegen
+    boundary — see `gate_approval.verify_gate_approval()`.
+
+    Deterministic and pure: same content in, same hex digest out, every
+    time, on every platform (canonical JSON — sorted keys, no
+    whitespace — same discipline `gate_identity.sign_payload()` already
+    applies to the signed payload itself)."""
+    payload = {
+        "source_type": plan.source_type,
+        "input_excerpt": plan.input_excerpt,
+        "what_it_does": asdict(plan.what_it_does),
+        "how_it_looks": asdict(plan.how_it_looks),
+        "how_it_works": asdict(plan.how_it_works),
+        "data_model": asdict(plan.data_model),
+        "non_goals": list(plan.non_goals),
+        "acceptance_criteria": list(plan.acceptance_criteria),
+        "open_questions": [asdict(q) for q in plan.open_questions],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class SpecEngineError(ValueError):

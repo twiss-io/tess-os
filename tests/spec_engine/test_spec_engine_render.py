@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
-from spec_engine.approval import record_approval
+from spec_engine.gate_approval import sign_local_approval
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.render import render_markdown
@@ -24,7 +24,7 @@ REQUIRED_HEADERS = [
 
 def _spec(text="An app that tracks invoices, approved by design.", source="fragment"):
     plan = build_plan(harvest_intake(text, source))
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
 
 

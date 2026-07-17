@@ -123,14 +123,68 @@ import edges between top-level tess-os components).
 ## Human-in-the-loop is a real gate, not a formality
 
 `spec_builder.build_spec()` raises `SpecEngineError` — fails loud — unless
-handed an `Approval` whose `plan_id` matches the plan being built AND
-whose `approved` is `True`. `Approval.approved_by` is required even on a
-rejection (no anonymous decisions). This is a deliberate design choice:
-"Human-in-the-loop is a design decision — not every step should be
-automated; know when to defer." Nothing downstream of the gate — the
-rendered `SPEC.md`, the scaffold plan, the directive written into a
-generated repo — is reachable without a real, attributed approval having
+handed an `Approval` whose `plan_id` matches the plan being built,
+whose `approved` is `True`, **AND which independently re-verifies as a
+genuinely gate-signed approval, content-hash-bound to the plan's current
+content** (`gate_approval.verify_gate_approval()` — see below).
+`Approval.approved_by` is required even on a rejection (no anonymous
+decisions). This is a deliberate design choice: "Human-in-the-loop is a
+design decision — not every step should be automated; know when to
+defer." Nothing downstream of the gate — the rendered `SPEC.md`, the
+scaffold plan, the directive written into a generated repo, or a
+generated app (`codegen.generate_app()`, which only ever accepts a
+`SpecDocument` — the sole output of `build_spec()`) — is reachable
+without a real, attributed, cryptographically-verified approval having
 happened first.
+
+### The codegen boundary is hardened, not just gated on a matching id
+
+A bare `approval.record_approval(plan, approved_by="Xavier")` call — no
+signature, no `ApprovalGate` involvement at all — is REJECTED by
+`build_spec()`. Before this hardening, it was not: `plan_id` match +
+`approved=True` was the entire check, so any in-process caller could
+forge an `Approval` claiming to be anyone. Two new modules close this:
+
+- **`gate_identity.py`** — the local, HMAC-SHA256 signing/verification
+  primitives (a random 256-bit key per OS account at
+  `~/.tess-os/approval-identity/<username>.key`, `chmod 600` enforced).
+  Moved here (from `orchestrator/identity.py`, which is now a
+  backward-compatible re-export shim) because the codegen boundary that
+  must independently re-verify a signature lives HERE, in `spec_engine`
+  — and `orchestrator` already depends on `spec_engine`, never the
+  reverse.
+- **`gate_approval.py`** — `sign_local_approval()` (mints a genuinely
+  gate-verifiable `Approval`, content-hash-bound to the plan via
+  `content.plan_content_hash()`) and `verify_gate_approval()` (the
+  independent re-check `build_spec()` calls internally). `content.
+  plan_content_hash()` closes a second, related gap: `Plan.plan_id` is a
+  mutable, caller-settable field on a plain (non-frozen) dataclass — a
+  slug, not a cryptographic commitment — so an approval genuinely signed
+  for one plan's content can no longer authorize building a
+  `SpecDocument` from a DIFFERENT plan, even one sharing the same
+  `plan_id` (a substituted or in-place-mutated `Plan` object).
+  `build_spec()` also consumes the approval's nonce on success
+  (`consume_approval_nonce()`), rejecting a replayed approval on a
+  second use — disclosed as in-process/in-memory only (does not survive
+  a fresh process) in that function's own docstring.
+
+`pipeline.finalize_spec()` keeps its EXACT existing call signature
+(`approved_by`/`approved`/`notes` strings — one new optional
+`identity_dir` kwarg) but now mints a genuine signed approval under the
+hood via `gate_approval.sign_local_approval()` instead of a bare one —
+every existing caller (this component's own tests, the eval harness,
+`spec_engine.cli`'s `finalize` subcommand) keeps working unchanged.
+A caller that already has a real, independently-produced `Approval`
+object (the shipped `orchestrator.pipeline.run_pipeline()` does, after
+its `ApprovalGate` round-trip) should call the new
+`pipeline.finalize_spec_with_approval()` instead, so it is not silently
+re-signed under a possibly-different identity scope — see that
+function's own docstring.
+
+See `tests/spec_engine/test_spec_builder.py` and `test_gate_approval.py`
+for the required adversarial proof (a bare approval rejected, a
+spec-substitution attempt rejected, a tampered signature rejected — all
+at this exact boundary, with no target directory ever created).
 
 ## Harvesting ambiguity — exactly what the epic asks for
 

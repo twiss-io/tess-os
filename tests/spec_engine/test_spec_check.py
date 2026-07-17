@@ -13,7 +13,7 @@ import pytest
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 from _spec_engine_paths import SCHEMA_DIR
 
-from spec_engine.approval import record_approval
+from spec_engine.gate_approval import sign_local_approval
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.scaffold import plan_scaffold_from_spec
@@ -28,7 +28,7 @@ def _load_schema(name):
 
 def _built_spec():
     plan = build_plan(harvest_intake("An app that tracks invoices.", "fragment"))
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return plan, build_spec(plan, approval)
 
 

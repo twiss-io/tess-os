@@ -32,7 +32,7 @@ import pytest
 
 import _spec_engine_paths  # sys.path bootstrap; EVAL_FIXTURES_DIR used below
 
-from spec_engine.approval import record_approval
+from spec_engine.gate_approval import sign_local_approval
 from spec_engine.codegen import generate_app
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
@@ -53,7 +53,7 @@ def _spec_from_fixture(filename: str):
     codegen-only unit test."""
     text = (_spec_engine_paths.EVAL_FIXTURES_DIR / filename).read_text(encoding="utf-8")
     plan = build_plan(harvest_intake(text, "structured_brief"))
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
 
 
@@ -268,7 +268,7 @@ def test_generated_app_all_route_kinds_respond_over_real_http(tmp_path, node_ser
         acceptance_criteria=["Invoice dashboard lists all invoices"],
         summary_for_approval="summary",
     )
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     spec = build_spec(plan, approval)
 
     generate_app(spec, tmp_path)

@@ -1,5 +1,5 @@
 """`LocalIdentityApprovalGate` — the DEFAULT `ApprovalGate` adapter shipped
-by this PR. See `orchestrator/identity.py`'s module docstring for exactly
+by this PR. See `spec_engine.gate_identity`'s module docstring for exactly
 what it proves and its honest limitation (a single-OS-account trust
 boundary, not a production IdP), and `orchestrator/approval_gate.py`'s
 `ApprovalGate` docstring for the interface contract this implements.
@@ -8,47 +8,50 @@ boundary, not a production IdP), and `orchestrator/approval_gate.py`'s
 
     gate = LocalIdentityApprovalGate()
     approval = gate.request_approval(plan)   # blocks on a real terminal prompt
-    assert gate.verify(approval)             # independently re-checked
+    assert gate.verify(approval, plan)       # independently re-checked
+
+## Signing/verification now delegates to `spec_engine.gate_approval`
+
+Before the codegen-boundary hardening epic, this class implemented its
+own HMAC-signing and verification logic directly. It now delegates BOTH
+to `spec_engine.gate_approval.sign_local_approval()` /
+`verify_gate_approval()` — the SAME functions `spec_engine.spec_builder.
+build_spec()` itself calls to independently re-verify an approval at the
+codegen boundary. This is deliberate, not incidental: it means there is
+exactly ONE implementation of "what does a genuinely gate-verified
+approval look like" in this repo, not two that could silently drift
+apart (a real risk when two components sign/verify against the same
+canonical payload shape — any field-order or field-set divergence would
+silently break cross-verification). This class's own job, unchanged, is
+purely the INTERACTIVE UX layer: get a real human's decision at a real
+terminal, then hand it to `sign_local_approval()`.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 from typing import Callable, Optional, Tuple
 
-from spec_engine.content import new_id, utc_now_iso
+from spec_engine.gate_approval import sign_local_approval, verify_gate_approval
 from spec_engine.types import Approval, Plan
 
 from ..approval_gate import ApprovalAuthenticationError, ApprovalGate
-from ..identity import (
-    AUTH_MECHANISM,
-    LocalIdentity,
-    canonical_payload,
-    load_or_create_local_identity,
-    read_current_key,
-    sign_payload,
-    verify_signature,
-)
+from ..identity import LocalIdentity, load_or_create_local_identity
 
-# The marker embedded in Approval.notes carrying the signed evidence. A
-# future adapter following this same "evidence lives in notes" pattern
-# (see approval_gate.py's ApprovalGate docstring) would use its own
-# distinct marker so the two never collide inside one JSONL audit log.
-_NOTES_AUTH_KEY = "auth"
-_NOTES_HUMAN_KEY = "human_notes"
+_LOG = logging.getLogger(__name__)
 
 ConfirmFn = Callable[[Plan, LocalIdentity], Tuple[bool, str]]
 
 
 class LocalIdentityApprovalGate(ApprovalGate):
     """Binds `Approval.approved_by` to this OS account's local,
-    HMAC-signed approval identity (see `identity.py`) instead of trusting
-    a caller-supplied string. `request_approval()` blocks on a real
-    terminal confirmation by default; pass `confirm_fn` to inject a
-    different (still-human-driven) confirmation surface, or a test
-    double — the identity/signing logic underneath is identical either
-    way, so a test exercising a fake confirm still exercises the real
-    authentication mechanism."""
+    HMAC-signed approval identity (see `spec_engine.gate_identity`)
+    instead of trusting a caller-supplied string. `request_approval()`
+    blocks on a real terminal confirmation by default; pass `confirm_fn`
+    to inject a different (still-human-driven) confirmation surface, or a
+    test double — the identity/signing logic underneath is identical
+    either way, so a test exercising a fake confirm still exercises the
+    real authentication mechanism."""
 
     def __init__(
         self,
@@ -58,6 +61,7 @@ class LocalIdentityApprovalGate(ApprovalGate):
         input_fn: Optional[Callable[[str], str]] = None,
         print_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
+        self._identity_dir = identity_dir
         self._identity = load_or_create_local_identity(identity_dir)
         # `input`/`print` are resolved HERE, at call time (via the normal
         # LEGB/builtins lookup), rather than bound as function-signature
@@ -97,8 +101,12 @@ class LocalIdentityApprovalGate(ApprovalGate):
 
     def request_approval(self, plan: Plan) -> Approval:
         approved, human_notes = self._confirm_fn(plan, self._identity)
-        approval = self._sign_new_approval(plan, approved=approved, human_notes=human_notes)
-        if not self.verify(approval):
+        approved_by = f"local:{self._identity.username}#{self._identity.fingerprint}"
+        approval = sign_local_approval(
+            plan, approved_by=approved_by, approved=approved, notes=human_notes,
+            identity_dir=self._identity_dir,
+        )
+        if not self.verify(approval, plan):
             # Should be unreachable if signing above is correct — fail
             # loud rather than ever hand back an approval this gate
             # itself could not re-verify.
@@ -108,68 +116,27 @@ class LocalIdentityApprovalGate(ApprovalGate):
             )
         return approval
 
-    def _sign_new_approval(self, plan: Plan, *, approved: bool, human_notes: str) -> Approval:
-        key = read_current_key(self._identity.key_path)
-        approved_by = f"local:{self._identity.username}#{self._identity.fingerprint}"
-        payload = canonical_payload(
-            approval_id=new_id("appr"),
-            plan_id=plan.plan_id,
-            approved=approved,
-            approved_by=approved_by,
-            approved_at=utc_now_iso(),
-            nonce=new_id("nonce"),
-        )
-        signature = sign_payload(key, payload)
-        notes = json.dumps({
-            _NOTES_HUMAN_KEY: human_notes,
-            _NOTES_AUTH_KEY: {
-                "mechanism": AUTH_MECHANISM,
-                "identity_fingerprint": self._identity.fingerprint,
-                "nonce": payload["nonce"],
-                "signature": signature,
-            },
-        })
-        # Built directly (not via spec_engine.approval.record_approval())
-        # so THIS approval_id is the one signed above — record_approval()
-        # generates its own internally, which would desync payload from
-        # object. Approval.__post_init__ still enforces the same
-        # invariants record_approval() relies on (non-empty approved_by,
-        # a safe-slug plan_id).
-        return Approval(
-            approval_id=payload["approval_id"],
-            plan_id=plan.plan_id,
-            approved=approved,
-            approved_by=approved_by,
-            approved_at=payload["approved_at"],
-            notes=notes,
-        )
-
-    def verify(self, approval: Approval) -> bool:
+    def verify(self, approval: Approval, plan: Plan) -> bool:
         try:
-            parsed = json.loads(approval.notes)
-            auth = parsed[_NOTES_AUTH_KEY]
-            if auth["mechanism"] != AUTH_MECHANISM:
-                return False
-            if auth["identity_fingerprint"] != self._identity.fingerprint:
-                return False
-            payload = canonical_payload(
-                approval_id=approval.approval_id,
-                plan_id=approval.plan_id,
-                approved=approval.approved,
-                approved_by=approval.approved_by,
-                approved_at=approval.approved_at,
-                nonce=auth["nonce"],
-            )
-            key = read_current_key(self._identity.key_path)
-            return verify_signature(key, payload, auth["signature"])
-        except Exception:
-            # A forged/malformed/tampered approval is an EXPECTED
-            # adversarial input, not a bug — every parse/lookup failure
-            # (bad JSON, missing key, wrong type, missing key file...)
-            # collapses to "not verified", never an exception escaping
-            # to the caller. See test_local_identity_gate.py's
+            verify_gate_approval(approval, plan, identity_dir=self._identity_dir)
+            return True
+        except Exception as exc:
+            # A forged/malformed/tampered/spec-substituted approval is an
+            # EXPECTED adversarial input, not a bug — every failure mode
+            # (bad JSON, missing key, wrong signature, content-hash
+            # mismatch, missing key file...) collapses to "not verified",
+            # never an exception escaping to the caller. See
+            # test_local_identity_gate.py's
             # test_verify_never_raises_on_arbitrary_notes for the
             # fuzz-style proof of this.
+            #
+            # [Reid MEDIUM] Log a WARNING before returning False — a
+            # forged-approval attempt reaching this point is exactly the
+            # kind of event that should leave a trace an operator can
+            # find later, not vanish silently into a bare `False`. The
+            # never-raise contract above is unchanged; this only adds an
+            # audit-trail breadcrumb.
+            _LOG.warning("approval verification failed: %s", type(exc).__name__)
             return False
 
 

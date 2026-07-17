@@ -28,7 +28,8 @@ from typing import List, Optional
 
 from .adapters.local_identity import LocalIdentityApprovalGate
 from .approval_gate import ApprovalAuthenticationError
-from .pipeline import PipelineResult, run_pipeline
+from .identity import IdentityError
+from .pipeline import PipelineError, PipelineResult, run_pipeline
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -94,6 +95,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         except ApprovalAuthenticationError as exc:
             print(f"Approval authentication failed — no spec or app was generated: {exc}", file=sys.stderr)
             return 3
+        except (IdentityError, PipelineError) as exc:
+            # [Reid LOW] A local approval-identity failure (corrupt/missing/
+            # over-permissive key file — see spec_engine.gate_identity) or a
+            # wiring-level pipeline error must not dump a raw Python
+            # traceback at a CLI user — report it cleanly on stderr with a
+            # distinct exit code, mirroring the ApprovalAuthenticationError
+            # handling immediately above.
+            print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            return 4
         return _report(result, args.target_dir)
 
     return 1
