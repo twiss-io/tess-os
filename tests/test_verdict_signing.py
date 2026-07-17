@@ -190,6 +190,66 @@ def test_validly_signed_verdict_from_allowed_verifier_clears(signing_repo, run_c
     assert payload["reasons"] == []
 
 
+def test_immutable_base_verifier_import_uses_stdin_without_certificate_tempfile(
+    engine, verifier_gpg_keys, tmp_path, monkeypatch,
+):
+    """Real GPG reverse proof: an immutable BASE key verifies successfully
+    while any attempt to materialize the historical trusted `.asc` filename
+    is fatal to the test."""
+    key = verifier_gpg_keys["Reid"]
+    verdict = _base_verdict(["src/prod/**"], {"src/prod/app.py": "a" * 40})
+    verdict["signature"] = sign_verdict_for_test(engine, verdict, key)
+    policy = _policy_dict(["Reid"], {
+        "Reid": {"fingerprint": key.fpr, "public_key_file": ".tess/keys/verifiers/reid.asc"},
+    })
+    original_write_bytes = Path.write_bytes
+
+    def deny_trusted_certificate_tempfile(path, data):
+        if path.name == "trusted-verifier-key.asc":
+            raise AssertionError("immutable BASE verifier certificate must never be written to disk")
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", deny_trusted_certificate_tempfile)
+    ok, reason = engine._gate_verify_verdict_signature(
+        tmp_path, policy, verdict,
+        trusted_verifier_key_blobs={"Reid": key.pubkey_armored.encode("utf-8")},
+    )
+    assert ok is True, reason
+
+
+def test_verdict_verify_redacts_attacker_path_and_signature_text(project, run_cli, verifier_gpg_keys):
+    sentinel = "P73_VERDICT_SENTINEL_never_export"
+    root = project.root
+    shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
+    (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+    key = verifier_gpg_keys["Reid"]
+    verifier_keys = {
+        "Reid": {
+            "fingerprint": key.fpr,
+            "public_key_file": _bundle_key(root, "Reid", key),
+        }
+    }
+    (root / "core" / "policy" / "policy.yaml").write_text(
+        yaml.safe_dump(_policy_dict(["Reid"], verifier_keys)), encoding="utf-8",
+    )
+    verdict_path = root / "missions" / "m1" / "verdicts" / f"{sentinel}.verdict.json"
+    verdict_path.parent.mkdir(parents=True)
+    verdict = _base_verdict(["src/prod/**"], {})
+    verdict["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": "0" * 64,
+        "signature_armored": sentinel,
+    }
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+    json_result = run_cli(root, "verdict", "verify", str(verdict_path), "--json")
+    text_result = run_cli(root, "verdict", "verify", str(verdict_path))
+    assert json_result.returncode == text_result.returncode == 1
+    assert sentinel not in (json_result.stdout + json_result.stderr + text_result.stdout + text_result.stderr)
+    assert json.loads(json_result.stdout)["reason"] == (
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2) An UNSIGNED verdict — otherwise perfect — is BLOCKED (fail-closed)
 # ---------------------------------------------------------------------------
@@ -209,10 +269,9 @@ def test_unsigned_verdict_is_blocked_even_though_otherwise_perfect(signing_repo,
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and "no signature block present" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +304,9 @@ def test_hand_faked_signature_is_blocked(signing_repo, run_cli, engine):
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("src/prod/app.py" in reason for reason in payload["reasons"])
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -270,10 +331,9 @@ def test_wrong_key_signature_is_blocked(signing_repo, run_cli, engine, verifier_
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and ("does NOT match" in reason or "verification failed" in reason)
-        for reason in payload["reasons"]
-    )
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 def test_unregistered_verifier_signature_is_blocked(project, verifier_gpg_keys, run_cli, engine):
@@ -303,7 +363,9 @@ def test_unregistered_verifier_signature_is_blocked(project, verifier_gpg_keys, 
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("no registered public key" in reason for reason in payload["reasons"])
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -332,10 +394,9 @@ def test_tampered_verdict_after_signing_is_blocked(signing_repo, run_cli, engine
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and "tampered" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +422,9 @@ def test_validly_signed_but_disallowed_verifier_does_not_clear(signing_repo, run
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and "allowed verifier" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["reasons"] == [
+        "VERIFIER_NOT_ALLOWED: no covering verdict is from an allowed verifier"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -604,12 +664,9 @@ def test_public_key_file_escaping_root_is_rejected_end_to_end(project, verifier_
     # separate "resolves outside the Tess root" message is reserved for a
     # relative path with no literal '..' that still escapes root via a
     # symlink (see test_verify_rejects_symlink_escape_public_key_file below).
-    assert any(
-        "src/prod/app.py" in reason
-        and "traversal components" in reason
-        and "C1 containment" in reason
-        for reason in payload["reasons"]
-    )
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
 
 
 def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):
@@ -686,7 +743,7 @@ def test_cli_verify_fails_on_unsigned_verdict(project, run_cli, verifier_gpg_key
     assert r_verify.returncode == 1
     payload = json.loads(r_verify.stdout)
     assert payload["valid"] is False
-    assert "no signature block present" in payload["reason"]
+    assert payload["reason"] == "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
 
 
 def test_cli_sign_rejects_verifier_mismatch(project, run_cli, verifier_gpg_keys):
@@ -856,10 +913,9 @@ def test_verdict_signed_by_expired_key_is_rejected(project, run_cli, engine):
         assert r.returncode == 1, r.stdout + r.stderr
         payload = json.loads(r.stdout)
         assert payload["blocked"] is True
-        assert any(
-            "src/prod/app.py" in reason and "EXPIRED" in reason
-            for reason in payload["reasons"]
-        ), payload["reasons"]
+        assert payload["reasons"] == [
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+        ], payload["reasons"]
     finally:
         _teardown_a10c_test_key(key)
 

@@ -212,12 +212,17 @@ def test_policy_tamper_deletes_self_gate_rule_same_push_is_blocked(tamper_repo, 
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    # Both the policy file's own change AND the hidden payload must be
-    # caught — the BASELINE's rules still require verdicts for both paths,
-    # regardless of what the newly-pushed (tampered) policy now says.
-    assert any("core/policy/policy.yaml" in reason for reason in payload["reasons"]), payload["reasons"]
-    assert any("src/prod/app.py" in reason for reason in payload["reasons"]), payload["reasons"]
-    assert any("A3 fail-closed" in reason for reason in payload["reasons"]), payload["reasons"]
+    # Both the policy file's own change AND the hidden payload are still
+    # caught from BASE rules. Public gate output deliberately exposes only
+    # stable decision codes and an aggregate count, never attacker-controlled
+    # path values or internal A-series diagnostics.
+    assert payload["changed_paths_count"] == 2
+    assert payload["reasons"] == [
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+    ]
+    assert "core/policy/policy.yaml" not in json.dumps(payload)
+    assert "src/prod/app.py" not in json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +250,13 @@ def test_policy_tamper_narrows_globs_same_push_is_blocked(tamper_repo, run_cli):
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("src/prod/app.py" in reason for reason in payload["reasons"]), payload["reasons"]
-    assert any("core/policy/policy.yaml" in reason for reason in payload["reasons"]), payload["reasons"]
+    assert payload["changed_paths_count"] == 2
+    assert payload["reasons"] == [
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+    ]
+    assert "src/prod/app.py" not in json.dumps(payload)
+    assert "core/policy/policy.yaml" not in json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -294,17 +304,16 @@ def test_policy_widened_allowed_verifiers_same_push_is_blocked(tamper_repo, run_
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    # The policy.yaml edit itself is legitimately covered — it must NOT
-    # appear as a violation (proves isolation of the mechanism).
-    assert not any("core/policy/policy.yaml" in reason for reason in payload["reasons"]), payload["reasons"]
-    # The prod-src change, "approved" only by the candidate-added Quinn key,
-    # is still blocked.  Immutable-base verification rejects Quinn before
-    # allowed_verifiers is considered: a same-push registration is not an
-    # established trust anchor and its candidate public-key bytes are ignored.
-    assert any(
-        "src/prod/app.py" in reason and "no registered public key for verifier 'Quinn'" in reason
-        for reason in payload["reasons"]
-    ), payload["reasons"]
+    # The policy edit is genuinely covered, while the prod change is blocked:
+    # immutable-BASE verification rejects the candidate-only Quinn anchor.
+    # The public result preserves only that stable decision code, not paths,
+    # verifier names, or key diagnostics.
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
+    assert "core/policy/policy.yaml" not in json.dumps(payload)
+    assert "src/prod/app.py" not in json.dumps(payload)
+    assert "Quinn" not in json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -337,11 +346,11 @@ def test_policy_verifier_key_swap_same_push_is_blocked(tamper_repo, run_cli, eng
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "core/policy/policy.yaml" in reason
-        and ("does NOT match" in reason or "verification failed" in reason)
-        for reason in payload["reasons"]
-    ), payload["reasons"]
+    assert payload["reasons"] == [
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+    ]
+    assert "core/policy/policy.yaml" not in json.dumps(payload)
+    assert "Cyra" not in json.dumps(payload)
 
 
 # ---------------------------------------------------------------------------

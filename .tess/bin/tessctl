@@ -33,7 +33,8 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               workflow_dispatch); `clear` (Goal #5) clears a mission gate — refuses
               without a real, on-disk --evidence artifact
   trace       Goal #8: local-first mission trace log — every `gate`/`validate`
-              invocation appends a schema-valid JSONL event to missions/<id>/trace.jsonl
+              invocation appends a schema-valid JSONL event to
+              missions/mission-<opaque-id>/trace.jsonl
               (or a per-run fallback under .tess/trace/runs/ when no mission id is
               inferable). `trace export --format otlp-json` maps the JSONL to OTel GenAI
               semantic-convention agent spans (OTLP/JSON) for ingestion by any APM that
@@ -3449,6 +3450,38 @@ def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Pa
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
+def _gpg_public_certificate_from_bytes_is_safe(key_bytes: bytes, homedir: Path) -> bool:
+    """Validate immutable BASE key bytes before importing them from stdin.
+
+    ``--import-options show-only --dry-run`` parses the same OpenPGP packet
+    stream without creating a keyring entry.  Only a non-empty public-only
+    certificate is admitted; a secret-key packet, malformed stream, or GPG
+    execution failure is a fail-closed false.  The caller imports the exact
+    same bytes via stdin afterwards, never through a temporary ``.asc`` path.
+    """
+    if not isinstance(key_bytes, bytes) or not key_bytes or len(key_bytes) > 1024 * 1024:
+        return False
+    try:
+        inspected = subprocess.run(
+            [
+                "gpg", "--batch", "--no-options", "--homedir", str(homedir),
+                "--with-colons", "--fixed-list-mode", "--import-options", "show-only",
+                "--dry-run", "--import",
+            ],
+            input=key_bytes, capture_output=True,
+        )
+    except OSError:
+        return False
+    if inspected.returncode != 0:
+        return False
+    record_types = {
+        line.split(":", 1)[0]
+        for line in inspected.stdout.decode("utf-8", errors="replace").splitlines()
+        if line
+    }
+    return "pub" in record_types and not bool(record_types & {"sec", "ssb"})
+
+
 def _gate_validate_verifier_key_file_rel(
     verifier: str, key_file: object,
 ) -> tuple[str | None, str | None]:
@@ -3595,17 +3628,13 @@ def _gate_verify_verdict_signature(
             isolated_gpg.chmod(0o700)
         except OSError:
             pass
+        import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
         if trusted_key_bytes is not None:
-            key_path = isolated_gpg / "trusted-verifier-key.asc"
-            key_path.write_bytes(trusted_key_bytes)
-            try:
-                key_path.chmod(0o600)
-            except OSError:
-                pass
-        import_r = subprocess.run(
-            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
-            capture_output=True,
-        )
+            if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
+                return False, "immutable BASE verifier certificate is not a public-only OpenPGP key"
+            import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
+        else:
+            import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
         if import_r.returncode != 0:
             return False, (
                 f"could not import registered public key {key_file!r} for verifier "
@@ -3807,17 +3836,13 @@ def _gate_verify_signoff_signature(
             isolated_gpg.chmod(0o700)
         except OSError:
             pass
+        import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
         if trusted_key_bytes is not None:
-            key_path = isolated_gpg / "trusted-signoff-key.asc"
-            key_path.write_bytes(trusted_key_bytes)
-            try:
-                key_path.chmod(0o600)
-            except OSError:
-                pass
-        import_r = subprocess.run(
-            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
-            capture_output=True,
-        )
+            if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
+                return False, "immutable BASE sign-off certificate is not a public-only OpenPGP key"
+            import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
+        else:
+            import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
         if import_r.returncode != 0:
             return False, (
                 f"could not import registered public key {key_file!r} for sign-off "
@@ -8939,7 +8964,7 @@ def _cmd_verdict_verify(args, root: Path) -> None:
     try:
         instance = load_contract_instance(file_path)
     except ContractError as e:
-        result = {"valid": False, "file": str(file_path), "reason": str(e)}
+        result = {"valid": False, "reason": str(e)}
         _print_verdict_verify_result(result, as_json)
         sys.exit(2)
 
@@ -8953,19 +8978,21 @@ def _cmd_verdict_verify(args, root: Path) -> None:
         sys.exit(1)
 
     ok, reason = _gate_verify_verdict_signature(root, policy_instance, instance)
-    result = {"valid": ok, "file": str(file_path), "reason": reason}
+    result = {"valid": ok, "reason": reason}
     _print_verdict_verify_result(result, as_json)
     sys.exit(0 if ok else 1)
 
 
 def _print_verdict_verify_result(result: dict, as_json: bool) -> None:
+    safe_reason = _safe_decision_reason(result.get("reason")) if result.get("reason") else None
+    safe = {"valid": bool(result.get("valid")), "subject": "VERDICT_ARTIFACT_REDACTED", "reason": safe_reason}
     if as_json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(safe, indent=2))
         return
-    status = "VALID" if result["valid"] else "INVALID"
-    print(f"tessctl verdict verify — {result['file']} — {status}")
-    if result.get("reason"):
-        print(f"  {result['reason']}")
+    status = "VALID" if safe["valid"] else "INVALID"
+    print(f"tessctl verdict verify — {safe['subject']} — {status}")
+    if safe_reason:
+        print(f"  {safe_reason}")
 
 
 
@@ -9030,6 +9057,72 @@ class GateSpineError(Exception):
     main()-level catch (which always maps to a bare sys.exit(str) — this
     module wants the same fail-closed OUTCOME but its own printed report
     shape, so it is caught locally in each cmd_gate_* entrypoint instead)."""
+
+
+# Decision outputs cross trust boundaries (CLI JSON, trace export, and MCP).
+# Keep detailed values only inside the engine long enough to make its
+# fail-closed decision; every external projection uses this allowlist.  Do not
+# replace this with a sink-only regex scrubber: unknown failures must be
+# visibly redacted rather than guessed safe.
+_DECISION_MESSAGES = {
+    "CONTRACT_INVALID": "a governed contract is invalid",
+    "POLICY_INVALID": "the effective policy is invalid",
+    "GIT_OPERATION_FAILED": "a required Git operation failed",
+    "GATE_INPUT_INVALID": "gate invocation input is invalid",
+    "COVERING_APPROVAL_MISSING": "no covering APPROVE verdict found",
+    "VERDICT_SIGNATURE_INVALID": "a covering verdict signature is invalid",
+    "VERIFIER_NOT_ALLOWED": "no covering verdict is from an allowed verifier",
+    "VERDICT_CONTENT_STALE": "a covering verdict is not bound to current content",
+    "HARD_FLOOR_UNSATISFIED": "a required hard-floor sign-off is not valid",
+    "BASE_REQUIRED": "an immutable BASE commit is required",
+    "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
+}
+
+
+def _decision_reason_code(raw_reason: object) -> str:
+    """Classify an internal reason without ever returning its value."""
+    text = str(raw_reason or "")
+    lower = text.lower()
+    if text.startswith("BASE_REQUIRED:"):
+        return "BASE_REQUIRED"
+    if text.startswith("[contract]"):
+        return "CONTRACT_INVALID"
+    if text.startswith("[policy]") or lower.startswith("cannot load policy"):
+        return "POLICY_INVALID"
+    if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
+        return "GIT_OPERATION_FAILED"
+    if "--base and --head must both be given" in lower or "stdin protocol" in lower:
+        return "GATE_INPUT_INVALID"
+    if "hard floor" in lower or "sign-off" in lower:
+        return "HARD_FLOOR_UNSATISFIED"
+    if "no covering approve verdict" in lower or "no-glob-match" in lower:
+        return "COVERING_APPROVAL_MISSING"
+    if "artifact_hashes" in lower or "stale-content" in lower:
+        return "VERDICT_CONTENT_STALE"
+    if "allowed verifier" in lower or "wrong-verifier" in lower:
+        return "VERIFIER_NOT_ALLOWED"
+    if any(token in lower for token in (
+        "signature", "gpg", "fingerprint", "public key", "verifier_keys", "signoff_keys",
+    )):
+        return "VERDICT_SIGNATURE_INVALID"
+    return "INTERNAL_ERROR_REDACTED"
+
+
+def _safe_decision_reason(raw_reason: object) -> str:
+    code = _decision_reason_code(raw_reason)
+    return f"{code}: {_DECISION_MESSAGES[code]}"
+
+
+def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
+    """Public gate decision projection; raw paths and refs stay local."""
+    safe = {
+        "blocked": bool(result.get("blocked")),
+        "reasons": [_safe_decision_reason(r) for r in result.get("reasons", [])],
+        "changed_paths_count": len(result.get("changed_paths", []) or []),
+    }
+    if phase is not None:
+        safe = {"phase": phase, **safe}
+    return safe
 
 
 EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -9121,10 +9214,7 @@ def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
 def _gate_run_git(root: Path, *args: str) -> str:
     r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
     if r.returncode != 0:
-        raise GateSpineError(
-            f"tessctl gate: `git {' '.join(args)}` failed ({r.stderr.strip() or 'no stderr'}) "
-            f"— fail-closed, refusing"
-        )
+        raise GateSpineError("GIT_OPERATION_FAILED")
     return r.stdout
 
 
@@ -10097,15 +10187,16 @@ def _gate_run_ship_check(
 
 
 def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
+    safe = _safe_gate_result(result, phase=phase)
     if as_json:
-        print(json.dumps({"phase": phase, **result}, indent=2))
+        print(json.dumps(safe, indent=2))
         return
-    status = "BLOCKED" if result["blocked"] else "PASS"
+    status = "BLOCKED" if safe["blocked"] else "PASS"
     print(f"tessctl gate {phase} — {status}")
-    print(f"  changed paths: {len(result['changed_paths'])}")
-    for reason in result["reasons"]:
+    print(f"  changed paths: {safe['changed_paths_count']}")
+    for reason in safe["reasons"]:
         print(f"    - {reason}")
-    if result["blocked"]:
+    if safe["blocked"]:
         print(
             "  refusing (fail-closed) — see README.md 'tessctl gate', "
             "conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6"
@@ -10696,10 +10787,10 @@ def cmd_gate(args, root: Path) -> None:
 # `TRACE_EVENT_SCHEMA` below (validated with the SAME generic `schema_validate()`
 # engine core/contracts/*.schema.json already use — no new contract-type file
 # added to core/contracts/**, since a trace event is engine telemetry, not a
-# fifth mission contract). Location: `missions/<id>/trace.jsonl` when a
-# mission id can be inferred from the paths the gate/validate call actually
-# touched (the same `missions/<id>/...` convention `core/contracts/README.md`
-# and `GATE_CONTRACT_PATH_PATTERNS` already use); otherwise a per-run
+# fifth mission contract). Location: `missions/mission-<opaque-id>/trace.jsonl`
+# when a mission id can be inferred from paths the gate/validate call actually
+# touched; the opaque id preserves grouping without retaining the authored
+# mission name. Otherwise a per-run
 # fallback at `.tess/trace/runs/<run_id>.jsonl` (local runtime state, same
 # bucket as `.tess/snapshots/**` / `.tess/staging/**` — gitignored, never
 # core-managed, never touched by the manifest write-gate).
@@ -10803,7 +10894,9 @@ def _trace_rel_or_str(root: Path, path: Path) -> str:
 
 
 def _trace_capped_reasons(reasons) -> list:
-    reasons = [str(r) for r in (reasons or [])]
+    # Trace storage/export is an external decision boundary.  Store only the
+    # stable projections, never raw Git/GPG/schema/path diagnostics.
+    reasons = [_safe_decision_reason(r) for r in (reasons or [])]
     if len(reasons) > TRACE_MAX_REASONS:
         overflow = len(reasons) - TRACE_MAX_REASONS
         return reasons[:TRACE_MAX_REASONS] + [f"...and {overflow} more (truncated for the trace log)"]
@@ -10837,9 +10930,48 @@ def _trace_build_event(*, phase: str, action: str, outcome: str, exit_code: int,
     }
 
 
+def _trace_safe_mission_id(mission_id: str | None) -> str | None:
+    """Stable opaque trace grouping key; mission ids are authored input."""
+    if not mission_id:
+        return None
+    if isinstance(mission_id, str) and re.fullmatch(r"mission-[0-9a-f]{16}", mission_id):
+        return mission_id
+    return "mission-" + hashlib.sha256(mission_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _trace_safe_subject(subject: object) -> dict:
+    """Projection for both new and legacy trace events before persistence/export."""
+    source = subject if isinstance(subject, dict) else {}
+    safe: dict = {}
+    if source.get("file") is not None:
+        safe["file_kind"] = "out-of-tree-file" if str(source["file"]).startswith("<out-of-tree>") else "repository-file"
+    contract_type = source.get("contract_type")
+    if contract_type in CONTRACT_SCHEMAS:
+        safe["contract_type"] = contract_type
+    count = source.get("changed_paths_count")
+    if isinstance(count, int) and count >= 0:
+        safe["changed_paths_count"] = count
+    return safe
+
+
+def _trace_safe_event(event: dict) -> dict:
+    """Apply the confidential trace schema projection to an event copy."""
+    safe = dict(event)
+    safe["mission_id"] = _trace_safe_mission_id(event.get("mission_id"))
+    safe["subject"] = _trace_safe_subject(event.get("subject"))
+    safe["reasons"] = _trace_capped_reasons(event.get("reasons"))
+    safe_counts = {}
+    for key, value in (event.get("counts") or {}).items():
+        if isinstance(key, str) and isinstance(value, int) and value >= 0:
+            safe_counts[key] = value
+    safe["counts"] = safe_counts
+    return safe
+
+
 def _trace_append_event(root: Path, event: dict) -> Path:
     """Schema-validate (fail loud on OUR OWN bug — see TraceError) then
     append one JSONL line, local file only. Returns the path written."""
+    event = _trace_safe_event(event)
     violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
     if violations:
         raise TraceError(f"tessctl trace: refusing to write a schema-invalid trace event: {violations}")
@@ -10881,10 +11013,10 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
     call-graph shape a purely-Exception-rooted guard signal used to miss."""
     try:
         mission_paths = list(changed_paths) if changed_paths is not None else ([file_path] if file_path else [])
-        mission_id = _trace_infer_mission_id(mission_paths)
+        mission_id = _trace_safe_mission_id(_trace_infer_mission_id(mission_paths))
         subject: dict = {}
         if file_path is not None:
-            subject["file"] = file_path
+            subject["file"] = _trace_rel_or_str(root, Path(file_path))
         if contract_type is not None:
             subject["contract_type"] = contract_type
         if changed_paths is not None:
@@ -10900,11 +11032,11 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
             subject=subject, counts=counts, reasons=reasons,
         )
         _trace_append_event(root, event)
-    except Exception as e:  # best-effort observability, scoped to Exception —
+    except Exception:  # best-effort observability, scoped to Exception —
                              # NOT BaseException — on purpose; see the
                              # "Guard-defeat hardening" note in this
                              # function's docstring before touching this line.
-        print(f"tessctl trace: WARNING — could not record trace event ({e}); continuing (non-fatal)", file=sys.stderr)
+        print("tessctl trace: WARNING — TRACE_RECORDING_FAILED; continuing (non-fatal)", file=sys.stderr)
 
 
 def _trace_discover_jsonl_files(root: Path, mission_id: str | None = None) -> list:
@@ -10913,7 +11045,7 @@ def _trace_discover_jsonl_files(root: Path, mission_id: str | None = None) -> li
     `missions/*/trace.jsonl` PLUS every per-run fallback file under
     `.tess/trace/runs/` — sorted for deterministic export ordering."""
     if mission_id:
-        p = root / "missions" / mission_id / "trace.jsonl"
+        p = root / "missions" / _trace_safe_mission_id(mission_id) / "trace.jsonl"
         return [p] if p.exists() else []
     found = []
     missions_dir = root / "missions"
@@ -11008,6 +11140,9 @@ def _otlp_attr(key: str, value) -> dict:
 
 
 def _trace_event_to_otlp_span(event: dict) -> dict:
+    # Existing v1 JSONL can predate the confidential projection.  Re-project
+    # on export so legacy on-disk diagnostics cannot cross an OTLP boundary.
+    event = _trace_safe_event(event)
     run_id = event.get("run_id", "")
     event_id = event.get("event_id", "")
     trace_id = _trace_hex_id(f"tess-trace:{run_id}", 16)
@@ -11110,17 +11245,17 @@ def _cmd_trace_export(args, root: Path) -> None:
     events, skipped = [], []
     for jp in jsonl_paths:
         if not jp.exists():
-            skipped.append(f"{jp}: file not found")
+            skipped.append("TRACE_INPUT_SKIPPED")
             continue
         for lineno, line in _trace_iter_jsonl_lines(jp):
             try:
                 event = json.loads(line)
-            except json.JSONDecodeError as e:
-                skipped.append(f"{jp}:{lineno}: unparsable JSON ({e})")
+            except json.JSONDecodeError:
+                skipped.append("TRACE_INPUT_SKIPPED")
                 continue
             violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
             if violations:
-                skipped.append(f"{jp}:{lineno}: schema-invalid ({'; '.join(violations)})")
+                skipped.append("TRACE_INPUT_SKIPPED")
                 continue
             events.append(event)
 
@@ -11134,7 +11269,7 @@ def _cmd_trace_export(args, root: Path) -> None:
             out_path = Path.cwd() / out_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output + "\n", encoding="utf-8")
-        print(f"tessctl trace export: wrote {len(events)} span(s) ({len(skipped)} skipped) to {out_path}")
+        print(f"tessctl trace export: wrote {len(events)} span(s) ({len(skipped)} skipped)")
     else:
         print(output)
 
@@ -11818,6 +11953,30 @@ def _normalize_brief_for_compare(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _brief_commitment(brief_text: str) -> tuple[str, int]:
+    """Value-free commitment used by retry-ledger v2.
+
+    The comparison semantics remain exactly the pre-v2 whitespace-normalized
+    comparison.  Only the normalized UTF-8 bytes are committed; neither the
+    supplied dispatch brief nor a free-text summary is persisted.
+    """
+    normalized_bytes = _normalize_brief_for_compare(brief_text).encode("utf-8")
+    return hashlib.sha256(normalized_bytes).hexdigest(), len(normalized_bytes)
+
+
+def _retry_record_commitment(record: dict) -> tuple[tuple[str, int] | None, str | None]:
+    """Return a v2 commitment or a stable fail-closed ledger condition."""
+    if "brief_text" in record:
+        return None, "RETRY_LEDGER_MIGRATION_REQUIRED"
+    digest = record.get("brief_digest_sha256")
+    length = record.get("brief_length")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None, "RETRY_LEDGER_INVALID"
+    if not isinstance(length, int) or length < 0:
+        return None, "RETRY_LEDGER_INVALID"
+    return (digest, length), None
+
+
 def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_text):
     """Returns (allowed: bool, next_attempt: int, reason: str). Pure/
     read-only — shared by BOTH `retry check` (report-only) and `retry log`
@@ -11850,16 +12009,25 @@ def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_te
             f"(subagent-failure-protocol.md 'Attempt Cap — 3')."
         )
 
-    if brief_text is not None and cause != "transient" and attempts:
-        normalized_new = _normalize_brief_for_compare(brief_text)
+    if attempts:
+        prior_commitments = []
         for prior_n in attempts:
             prior_path = _retry_attempt_path(root, mission_id, task, prior_n)
             try:
                 prior_record = load_contract_instance(prior_path)
-            except ContractError as e:
-                return False, next_attempt, f"could not read prior attempt {prior_path}: {e}"
-            prior_brief = _normalize_brief_for_compare(str(prior_record.get("brief_text", "")))
-            if prior_brief == normalized_new:
+            except ContractError:
+                return False, next_attempt, "RETRY_LEDGER_INVALID"
+            commitment, ledger_error = _retry_record_commitment(prior_record)
+            if ledger_error:
+                return False, next_attempt, ledger_error
+            prior_commitments.append((prior_n, commitment))
+    else:
+        prior_commitments = []
+
+    if brief_text is not None and cause != "transient" and prior_commitments:
+        new_commitment = _brief_commitment(brief_text)
+        for prior_n, prior_commitment in prior_commitments:
+            if prior_commitment == new_commitment:
                 return False, next_attempt, (
                     f"same-brief retry forbidden for cause {cause!r} — attempt "
                     f"{next_attempt}'s brief (after whitespace normalization) is a literal "
@@ -11870,6 +12038,105 @@ def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_te
                 )
 
     return True, next_attempt, "allowed"
+
+
+def _retry_fsync_directory(directory: Path) -> None:
+    """Persist an in-place retry-record replacement before advancing."""
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _retry_migrate_legacy(root: Path, mission_id: str, *, apply: bool) -> tuple[int, bool]:
+    """Opt-in, resumable migration from plaintext retry records to v2.
+
+    Every candidate is parsed and its v2 replacement schema/lint-validated
+    before the first write.  Application then upgrades one record at a time:
+    a v2-only sibling temp file is fsynced, atomically replaced over its
+    source record, and the retry directory is fsynced.  A crash can therefore
+    leave a v1/v2 mixture, never a moved plaintext backup; normal retry checks
+    fail closed on the remaining v1 record and re-running migration safely
+    upgrades only those records.
+    """
+    source = _retry_dir(root, mission_id)
+    if not source.exists():
+        return 0, False
+    source_entries = sorted(source.iterdir())
+    # Do not silently delete or copy unexpected data.  The empty mission
+    # scaffold marker is the one documented non-record entry.
+    if any(
+        not p.is_file()
+        or (p.suffix != ".md" and (p.name != ".gitkeep" or p.read_bytes() != b""))
+        for p in source_entries
+    ):
+        raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+
+    schema = load_contract_schema(root, "retry")
+    replacements: list[tuple[Path, dict, int]] = []
+    legacy_count = 0
+    for path in (p for p in source_entries if p.suffix == ".md"):
+        try:
+            record = load_contract_instance(path)
+            source_mode = path.stat().st_mode & 0o777
+        except ContractError as e:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+        except OSError as e:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+        if "brief_text" in record:
+            if not isinstance(record.get("brief_text"), str):
+                raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+            digest, length = _brief_commitment(record["brief_text"])
+            candidate = {
+                key: value for key, value in record.items()
+                if key not in {"brief_text", "brief_change_note"}
+            }
+            candidate.update({
+                "brief_digest_sha256": digest,
+                "brief_length": length,
+                "brief_change_code": "migrated-legacy",
+            })
+            legacy_count += 1
+            replacements.append((path, candidate, source_mode))
+        else:
+            _commitment, ledger_error = _retry_record_commitment(record)
+            candidate = record
+            if ledger_error:
+                raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+        violations = schema_validate(candidate, schema, schema, root / CONTRACTS_DIR)
+        violations += _lint_contract("retry", candidate)
+        if violations:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+
+    if not apply or legacy_count == 0:
+        return legacy_count, False
+
+    for path, candidate, source_mode in replacements:
+        temp = path.parent / f".{path.name}.v2-{uuid.uuid4().hex}.tmp"
+        _assert_under_missions(root, temp)
+        try:
+            with open(temp, "x", encoding="utf-8") as replacement:
+                replacement.write(
+                    "---\n" + yaml.safe_dump(candidate, sort_keys=False)
+                    + "---\n\n# Retry attempt (v2)\n"
+                )
+                replacement.flush()
+                # Keep the source record's permission boundary through the
+                # atomic replacement.  The process umask must never widen a
+                # previously restrictive retry record (for example 0600).
+                os.fchmod(replacement.fileno(), source_mode)
+                os.fsync(replacement.fileno())
+            os.replace(temp, path)
+            _retry_fsync_directory(path.parent)
+        except Exception as e:
+            try:
+                if temp.exists():
+                    temp.unlink()
+            except OSError:
+                pass
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+    return legacy_count, True
 
 
 def _read_brief_text(path_str: str) -> str:
@@ -11888,8 +12155,10 @@ def cmd_retry(args, root: Path) -> None:
             _cmd_retry_log(args, root)
         elif sub == "check":
             _cmd_retry_check(args, root)
+        elif sub == "migrate":
+            _cmd_retry_migrate(args, root)
         else:
-            sys.exit("tessctl retry: choose a subcommand — log | check")
+            sys.exit("tessctl retry: choose a subcommand — log | check | migrate")
     except MissionError as e:
         sys.exit(str(e))
 
@@ -11926,6 +12195,8 @@ def _cmd_retry_log(args, root: Path) -> None:
     cause = args.cause
 
     _read_mission_record(root, mission_id)  # confirms the mission exists; raises MissionError otherwise
+    if getattr(args, "note", None):
+        sys.exit("tessctl retry log: RETRY_NOTE_NOT_PERSISTED")
     brief_text = _read_brief_text(args.brief)
 
     allowed, next_attempt, reason = _retry_precheck(root, mission_id, task, cause, brief_text)
@@ -11938,13 +12209,12 @@ def _cmd_retry_log(args, root: Path) -> None:
         "attempt": next_attempt,
         "failure_state": args.failure_state,
         "cause_class": cause,
-        "brief_text": brief_text,
+        "brief_digest_sha256": _brief_commitment(brief_text)[0],
+        "brief_length": _brief_commitment(brief_text)[1],
+        "brief_change_code": "initial" if next_attempt == 1 else "changed-brief",
         "logged_at": _utc_now_iso(),
         "logged_by": getattr(args, "by", None) or getpass.getuser(),
     }
-    if getattr(args, "note", None):
-        attempt_record["brief_change_note"] = args.note
-
     path = _retry_attempt_path(root, mission_id, task, next_attempt)
     _assert_under_missions(root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -11971,6 +12241,15 @@ def _cmd_retry_log(args, root: Path) -> None:
             f"  ** this was the final permitted attempt ({RETRY_ATTEMPT_CAP}) — a 4th will be "
             f"BLOCKED. If it fails again, escalate to the operator with the full per-attempt log."
         )
+
+
+def _cmd_retry_migrate(args, root: Path) -> None:
+    _read_mission_record(root, args.mission)
+    legacy_count, applied = _retry_migrate_legacy(root, args.mission, apply=bool(args.apply))
+    if applied:
+        print(f"tessctl retry migrate: migrated {legacy_count} legacy record(s) to v2")
+    else:
+        print(f"tessctl retry migrate: dry-run — {legacy_count} legacy record(s) would migrate; pass --apply")
 
 
 # ===========================================================================
@@ -13079,7 +13358,7 @@ def _run_attempt_summaries(root: Path, mission_id: str, task_id: str) -> list:
             continue
         out.append({
             "attempt": rec.get("attempt"), "failure_state": rec.get("failure_state"),
-            "cause_class": rec.get("cause_class"), "brief_change_note": rec.get("brief_change_note"),
+            "cause_class": rec.get("cause_class"), "brief_change_code": rec.get("brief_change_code"),
         })
     return sorted(out, key=lambda r: r.get("attempt") or 0)
 
@@ -13112,11 +13391,12 @@ def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, f
     attempt_record = {
         "mission_id": mission_id, "task": task, "attempt": next_attempt,
         "failure_state": failure_state, "cause_class": cause,
-        "brief_text": brief_text, "logged_at": _utc_now_iso(),
+        "brief_digest_sha256": _brief_commitment(brief_text)[0],
+        "brief_length": _brief_commitment(brief_text)[1],
+        "brief_change_code": "initial" if next_attempt == 1 else "changed-brief",
+        "logged_at": _utc_now_iso(),
         "logged_by": by or getpass.getuser(),
     }
-    if note:
-        attempt_record["brief_change_note"] = note
 
     path = _retry_attempt_path(root, mission_id, task, next_attempt)
     _run_assert_contained(root, path, what=f"write retry attempt for task {task!r}")  # HIGH-3
@@ -13136,11 +13416,85 @@ def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, f
     return True, path
 
 
+def _run_opaque_label(value: object, prefix: str) -> str:
+    """Return a stable label without persisting the supplied value.
+
+    Escalation records are durable, operator-readable audit artifacts.  A
+    driver, Git, or GPG error must not turn them into an archival channel for
+    artifact paths, hashes, identities, or command output.  The label lets an
+    operator correlate two values without retaining either value itself.
+    """
+    try:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        canonical = repr(type(value))
+    digest = hashlib.sha256(canonical.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"{prefix}-{digest}"
+
+
+def _run_safe_escalation_details(details: object) -> dict:
+    """Project untrusted run diagnostics to codes, counts, and opaque labels.
+
+    ``details`` may contain raw validator violations, a full verdict object,
+    tool diagnostics, or artifact metadata.  This function is deliberately
+    allowlist-only: unknown keys disappear rather than becoming a new
+    persistence sink.  It is the sole path from retry/verifier runtime
+    details into escalation front matter or Markdown.
+    """
+    if not isinstance(details, dict):
+        return {}
+
+    safe: dict[str, object] = {}
+    attempts = details.get("attempts")
+    if isinstance(attempts, list):
+        safe_attempts = []
+        for item in attempts:
+            if not isinstance(item, dict):
+                continue
+            safe_attempts.append({
+                "attempt": item.get("attempt") if isinstance(item.get("attempt"), int) else 0,
+                "failure_state_code": _run_safe_retry_code(item.get("failure_state")),
+                "cause_class_code": _run_safe_retry_code(item.get("cause_class")),
+                "brief_change_code": _run_safe_retry_code(item.get("brief_change_code")),
+            })
+        safe["attempt_count"] = len(safe_attempts)
+        safe["attempts"] = safe_attempts
+
+    violations = details.get("last_violations")
+    if isinstance(violations, list):
+        safe["last_violation_count"] = len(violations)
+        safe["last_violation_codes"] = sorted({_decision_reason_code(v) for v in violations})
+
+    verdict = details.get("verdict")
+    if isinstance(verdict, dict):
+        disposition = verdict.get("disposition")
+        safe["verdict_code"] = "VERDICT_BLOCK" if disposition == "BLOCK" else "VERDICT_ARTIFACT_REDACTED"
+        if verdict.get("verifier") is not None:
+            safe["verdict_verifier_label"] = _run_opaque_label(verdict.get("verifier"), "verifier")
+
+    for source_key, safe_key in (
+        ("expected_verifier", "expected_verifier_label"),
+        ("actual_verifier", "actual_verifier_label"),
+    ):
+        if details.get(source_key) is not None:
+            safe[safe_key] = _run_opaque_label(details[source_key], "verifier")
+
+    return safe
+
+
+def _run_safe_retry_code(value: object) -> str:
+    """Keep retry enums useful while refusing arbitrary persisted strings."""
+    text = str(value or "")
+    allowed = {
+        "degraded", "empty", "failed", "blocked", "transient", "context-gap",
+        "initial", "changed-brief",
+    }
+    return text if text in allowed else "RETRY_VALUE_REDACTED"
+
+
 def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str, details: dict, *, by=None) -> Path:
-    """Writes missions/<id>/escalations/<task_id>.<reason>[-N].md — the
-    full per-attempt analysis subagent-failure-protocol.md's Attempt Cap
-    section requires ("Escalate to the operator with the full per-attempt
-    analysis log") — and flips the mission record's own `state` to
+    """Writes missions/<id>/escalations/<task_id>.<reason>[-N].md with a
+    projected per-attempt analysis and flips the mission record's own `state` to
     'code-red' (mission-states.md's EXISTING FSM state for exactly this
     situation; NO mission.schema.json change needed — 'code-red' is already
     one of the eleven values mission.schema.json's `state` enum accepts).
@@ -13165,34 +13519,52 @@ def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str
         path = d / f"{task_id}.{reason}-{n}.md"
         _run_assert_contained(root, path, what=f"write escalation for task {task_id!r}")  # HIGH-3
 
+    safe_details = _run_safe_escalation_details(details)
     record = {
-        "mission_id": mission_id, "task": task_id, "reason": reason,
-        "halted_at": _utc_now_iso(), "halted_by": by,
+        "mission_label": _run_opaque_label(mission_id, "mission"),
+        "task_label": _run_opaque_label(task_id, "task"),
+        "reason_code": reason,
+        "halted_at": _utc_now_iso(),
+        "halted_by_label": _run_opaque_label(by, "actor"),
+        **safe_details,
     }
-    record.update(details)
     fm_text = yaml.safe_dump(record, sort_keys=False, default_flow_style=False)
 
     lines = [
-        f"# Escalation — task `{task_id}` — mission `{mission_id}`", "",
-        f"**Reason:** {reason}", "",
+        f"# Escalation — {record['task_label']} — {record['mission_label']}", "",
+        f"**Reason code:** {reason}", "",
         "Per conductor/subagent-failure-protocol.md's Attempt Cap section: STOP; do not "
         "dispatch again without the operator's direction.", "",
     ]
-    attempts = details.get("attempts")
+    attempts = safe_details.get("attempts")
     if attempts:
         lines.append("## Per-attempt analysis")
         for a in attempts:
             lines.append(
-                f"- attempt {a.get('attempt')}: failure_state={a.get('failure_state')}, "
-                f"cause_class={a.get('cause_class')}"
-                + (f" — {a.get('brief_change_note')}" if a.get("brief_change_note") else "")
+                f"- attempt {a.get('attempt')}: failure_state_code={a.get('failure_state_code')}, "
+                f"cause_class_code={a.get('cause_class_code')}, "
+                f"brief_change_code={a.get('brief_change_code')}"
             )
         lines.append("")
-    verdict = details.get("verdict")
-    if verdict:
+    if safe_details.get("last_violation_codes"):
+        lines.append("## Last validation result")
+        lines.append(
+            f"- violations: {safe_details.get('last_violation_count', 0)} "
+            f"({', '.join(safe_details.get('last_violation_codes', []))})"
+        )
+        lines.append("")
+    if safe_details.get("verdict_code"):
         lines.append("## Blocking verdict")
-        lines.append(f"- verifier: {verdict.get('verifier')}  ·  disposition: {verdict.get('disposition')}")
-        lines.append(f"- summary: {verdict.get('summary_line')}")
+        lines.append(f"- verdict_code: {safe_details['verdict_code']}")
+        if safe_details.get("verdict_verifier_label"):
+            lines.append(f"- verifier_label: {safe_details['verdict_verifier_label']}")
+        lines.append("")
+    if safe_details.get("expected_verifier_label") or safe_details.get("actual_verifier_label"):
+        lines.append("## Verifier routing")
+        if safe_details.get("expected_verifier_label"):
+            lines.append(f"- expected_verifier_label: {safe_details['expected_verifier_label']}")
+        if safe_details.get("actual_verifier_label"):
+            lines.append(f"- actual_verifier_label: {safe_details['actual_verifier_label']}")
         lines.append("")
     body = "\n".join(lines)
     path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
@@ -13316,6 +13688,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
         if not logged_ok:
             esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
                 "attempts": _run_attempt_summaries(root, mission_id, task_id),
+                "last_violations": violations,
             }, by=by)
             return {
                 "status": "halted", "instance": None, "attempts": attempt_num,
@@ -13328,6 +13701,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
         if not allowed2:
             esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
                 "attempts": _run_attempt_summaries(root, mission_id, task_id),
+                "last_violations": violations,
             }, by=by)
             return {
                 "status": "halted", "instance": None, "attempts": attempt_num,
@@ -13393,6 +13767,7 @@ def _run_execute_task(root: Path, mission_id: str, task: dict, driver: DispatchD
             esc = _run_write_escalation(root, mission_id, verify_task_id, "verifier_identity_mismatch", {
                 "verdict": v_outcome["instance"],
                 "expected_verifier": verifier.get("agent"),
+                "actual_verifier": verdict_verifier,
             }, by=by)
             return {
                 "task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
@@ -13710,16 +14085,15 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     # A branch/tag/ref is mutable and cannot be the immutable trust boundary
     # for a ship-gate answer. Accept both SHA-1 and SHA-256 full object IDs.
     if not isinstance(base, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?", base):
-        return {
+        return _safe_gate_result({
             "blocked": True,
             "reasons": [
                 "BASE_REQUIRED: gate_check_paths requires an explicit immutable base "
                 "commit ID (a full 40- or 64-hex SHA); it never falls back to "
                 "candidate policy, verifier registrations, or public-key files"
             ],
-            "changed_paths": paths,
-            "base": None,
-        }
+            "changed_paths": [],
+        })
     head = arguments.get("head")
     if head is not None and not isinstance(head, str):
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `head`, if given, must be a string ref/sha")
@@ -13733,18 +14107,13 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
         try:
             head = _gate_run_git(root, "rev-parse", "HEAD").strip()
         except GateSpineError as e:
-            return {"blocked": True, "reasons": [str(e)], "changed_paths": paths, "head": None}
+            return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
 
     try:
         result = _gate_run_ship_check(root, paths, verdict_dirs, [head], [base])
     except GateSpineError as e:
-        return {
-            "blocked": True, "reasons": [str(e)], "changed_paths": paths,
-            "head": head, "base": base,
-        }
-    result["head"] = head
-    result["base"] = base
-    return result
+        return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+    return _safe_gate_result(result)
 
 
 def _mcp_tool_mission_status(root: Path, arguments: dict) -> dict:
@@ -13955,11 +14324,11 @@ def _mcp_handle_request(root: Path, req: dict):
                 result = _mcp_call_tool(root, tool_name, arguments)
             except McpError as e:
                 return err(e.code, str(e), e.data)
-            except Exception as e:  # noqa: BLE001 — deliberate boundary: an exception raised
+            except Exception:  # noqa: BLE001 — deliberate boundary: an exception raised
                 # INSIDE a tool's own execution is a business-logic/runtime failure, which the
                 # MCP spec's "Tool Execution Errors" require be reported as `isError: true` in
                 # the tools/call RESULT, never as a JSON-RPC protocol error.
-                return ok({"content": [{"type": "text", "text": f"{tool_name}: {e}"}], "isError": True})
+                return ok({"content": [{"type": "text", "text": "TOOL_EXECUTION_FAILED"}], "isError": True})
             return ok({
                 "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
                 "structuredContent": result,
@@ -13983,12 +14352,12 @@ def _mcp_handle_message(root: Path, req) -> dict | None:
         }
     try:
         return _mcp_handle_request(root, req)
-    except Exception as e:  # noqa: BLE001 — see docstring: this is the last-resort catch-all.
+    except Exception:  # noqa: BLE001 — see docstring: this is the last-resort catch-all.
         if "id" not in req:
             return None  # was a notification — still no response, even on our own bug
         return {
             "jsonrpc": "2.0", "id": req.get("id"),
-            "error": {"code": JSONRPC_INTERNAL_ERROR, "message": f"Internal error: {e}"},
+            "error": {"code": JSONRPC_INTERNAL_ERROR, "message": "INTERNAL_ERROR_REDACTED"},
         }
 
 
@@ -14028,10 +14397,10 @@ def _mcp_serve(root: Path, in_stream=None, out_stream=None) -> None:
 
         try:
             req = json.loads(line)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             resp = {
                 "jsonrpc": "2.0", "id": None,
-                "error": {"code": JSONRPC_PARSE_ERROR, "message": f"Parse error: {e}"},
+                "error": {"code": JSONRPC_PARSE_ERROR, "message": "PARSE_ERROR"},
             }
             out_stream.write(json.dumps(resp) + "\n")
             out_stream.flush()
@@ -14600,7 +14969,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to a text file holding this attempt's dispatch-brief content "
              "(compared LITERALLY against the prior attempt's brief)",
     )
-    p_retry_log.add_argument("--note", help="free-text note on what the brief changed (optional)")
+    p_retry_log.add_argument("--note", help="deprecated and refused: retry records never persist free-text notes")
     p_retry_log.add_argument("--by", help="override the recorded logger (default: current OS user)")
 
     p_retry_check = retry_sub.add_parser(
@@ -14618,6 +14987,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="proposed brief file for the next attempt (required together with --cause)",
     )
     p_retry_check.add_argument("--json", action="store_true", dest="json_out")
+
+    p_retry_migrate = retry_sub.add_parser(
+        "migrate",
+        help="dry-run or explicitly migrate legacy plaintext retry records to commitment-only v2",
+    )
+    p_retry_migrate.add_argument("--mission", required=True, metavar="ID", help="mission id")
+    p_retry_migrate.add_argument(
+        "--apply", action="store_true",
+        help="perform resumable v2 migration with atomic per-record replacement; omitted means dry-run",
+    )
 
     # run — Goal #6: the mechanical conductor loop
     p_run = sub.add_parser(

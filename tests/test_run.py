@@ -395,7 +395,7 @@ def test_run_schema_missing_return_retries_to_cap_then_escalates(engine, rroot, 
     attempt_files = sorted(retries_dir.glob("flaky.attempt-*.md"))
     assert len(attempt_files) == 3, attempt_files
 
-    prior_brief = None
+    prior_commitment = None
     for i, p in enumerate(attempt_files, start=1):
         v = _run_cli(rroot, "validate", "retry", str(p))
         assert v.returncode == 0, f"{p} failed validate:\n{v.stdout}{v.stderr}"
@@ -403,25 +403,115 @@ def test_run_schema_missing_return_retries_to_cap_then_escalates(engine, rroot, 
         assert rec["attempt"] == i
         assert rec["failure_state"] == "degraded"
         assert rec["cause_class"] == "context-gap"
-        if prior_brief is not None:
-            assert rec["brief_text"] != prior_brief, "consecutive attempts must have DIFFERENT briefs"
-        prior_brief = rec["brief_text"]
+        commitment = (rec["brief_digest_sha256"], rec["brief_length"])
+        assert "brief_text" not in rec
+        if prior_commitment is not None:
+            assert commitment != prior_commitment, "consecutive attempts must have DIFFERENT commitments"
+        prior_commitment = commitment
 
-    # Escalation record: reason, per-attempt analysis, and the mission
-    # record's state flipped to code-red (subagent-failure-protocol.md:
-    # "STOP; escalate to the operator with the full per-attempt analysis").
+    # Escalation record: projected reason/attempt codes only, and the mission
+    # record's state flipped to code-red.  Runtime identifiers stay out of
+    # durable front matter; correlation uses opaque labels.
     esc_path = Path(result["escalation_path"])
     assert esc_path.exists()
     esc_fm = yaml.safe_load(_frontmatter_text(esc_path.read_text(encoding="utf-8")))
-    assert esc_fm["reason"] == "retry_cap_exhausted"
-    assert esc_fm["mission_id"] == mission_id
-    assert esc_fm["task"] == "flaky"
+    assert esc_fm["reason_code"] == "retry_cap_exhausted"
+    assert esc_fm["mission_label"].startswith("mission-")
+    assert esc_fm["task_label"].startswith("task-")
+    assert "mission_id" not in esc_fm and "task" not in esc_fm
     esc_body = esc_path.read_text(encoding="utf-8")
     assert "Per-attempt analysis" in esc_body
     assert "attempt 1" in esc_body and "attempt 2" in esc_body and "attempt 3" in esc_body
 
     mission = engine._read_mission_record(rroot, mission_id)
     assert mission["state"] == "code-red"
+
+
+def test_run_escalation_persists_only_projected_diagnostics(engine, rroot, monkeypatch):
+    """Untrusted validator/tool/verdict values must never become YAML history."""
+    monkeypatch.chdir(rroot)
+    mission_id = _new_mission(engine, rroot)
+    raw = "P73_ESCALATION_SENTINEL_GPG_GIT_ARTIFACT_HASH"
+
+    path = engine._run_write_escalation(
+        rroot,
+        mission_id,
+        "safe-task",
+        "retry_cap_exhausted",
+        {
+            "attempts": [{
+                "attempt": 1,
+                "failure_state": "degraded",
+                "cause_class": "context-gap",
+                "brief_change_code": "changed-brief",
+                "driver_diagnostic": raw,
+            }],
+            "last_violations": [
+                f"gpg and git failed for artifact /private/{raw}; sha256={raw}",
+            ],
+            "verdict": {
+                "verifier": raw,
+                "disposition": "BLOCK",
+                "summary_line": raw,
+                "covers_paths": [f"artifacts/{raw}.json"],
+                "artifact_hashes": {f"artifacts/{raw}.json": raw},
+                "signature": {"signature_armored": raw},
+            },
+            "expected_verifier": raw,
+            "actual_verifier": raw,
+            "unrecognized_raw_detail": raw,
+        },
+        by=raw,
+    )
+
+    persisted = path.read_text(encoding="utf-8")
+    fm = yaml.safe_load(_frontmatter_text(persisted))
+    assert raw not in persisted
+    assert "artifact_hashes" not in persisted and "covers_paths" not in persisted
+    assert "last_violations" not in fm and "verdict" not in fm
+    assert fm["last_violation_count"] == 1
+    assert fm["last_violation_codes"] == ["VERDICT_SIGNATURE_INVALID"]
+    assert fm["verdict_code"] == "VERDICT_BLOCK"
+    assert fm["verdict_verifier_label"].startswith("verifier-")
+    assert fm["expected_verifier_label"].startswith("verifier-")
+    assert fm["actual_verifier_label"].startswith("verifier-")
+    assert fm["halted_by_label"].startswith("actor-")
+
+
+def test_run_retry_escalation_projects_raw_last_violations(engine, rroot, monkeypatch):
+    """The retry path passes raw violations only to the projection boundary."""
+    monkeypatch.chdir(rroot)
+    mission_id = _new_mission(engine, rroot)
+    evidence = rroot / "evidence.md"
+    evidence.write_text("proof\n", encoding="utf-8")
+    _clear_all_five_gates(engine, rroot, mission_id, evidence)
+    raw = "P73_RETRY_ESCALATION_RAW_GPG_GIT_PATH_HASH"
+
+    def raw_failure(*_args, **_kwargs):
+        return (
+            False,
+            [f"gpg and git failure at artifacts/{raw}.json sha256={raw}"],
+            "degraded",
+            "context-gap",
+            None,
+        )
+
+    monkeypatch.setattr(engine, "_run_check_artifact", raw_failure)
+    plan = _crew_plan(mission_id, [{
+        "stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+        "tasks": [_task("raw-diagnostic")],
+    }])
+    result = engine._do_run(
+        rroot, _write_plan(rroot, "raw-diagnostic-plan.json", plan),
+        engine.FakeDriver(default_mode="good"), by="tester",
+    )
+
+    assert result["status"] == "halted"
+    persisted = Path(result["escalation_path"]).read_text(encoding="utf-8")
+    fm = yaml.safe_load(_frontmatter_text(persisted))
+    assert raw not in persisted
+    assert fm["last_violation_count"] == 1
+    assert fm["last_violation_codes"] == ["VERDICT_SIGNATURE_INVALID"]
 
 
 def test_run_missing_file_return_classified_transient_and_permits_same_brief(engine, rroot, monkeypatch):
@@ -452,13 +542,14 @@ def test_run_missing_file_return_classified_transient_and_permits_same_brief(eng
     retries_dir = _mission_dir(rroot, mission_id) / "retries"
     attempt_files = sorted(retries_dir.glob("ghost.attempt-*.md"))
     assert len(attempt_files) == 3
-    briefs = []
+    commitments = []
     for p in attempt_files:
         rec = yaml.safe_load(_frontmatter_text(p.read_text(encoding="utf-8")))
         assert rec["failure_state"] == "empty"
         assert rec["cause_class"] == "transient"
-        briefs.append(rec["brief_text"])
-    assert len(set(briefs)) == 1, "transient cause should NOT force a brief change"
+        commitments.append((rec["brief_digest_sha256"], rec["brief_length"]))
+        assert "brief_text" not in rec
+    assert len(set(commitments)) == 1, "transient cause should NOT force a brief change"
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +594,10 @@ def test_run_verifier_block_halts_before_next_stage(engine, rroot, verifier_gpg_
 
     esc_path = Path(result["escalation_path"])
     esc_fm = yaml.safe_load(_frontmatter_text(esc_path.read_text(encoding="utf-8")))
-    assert esc_fm["reason"] == "verifier_block"
-    assert esc_fm["verdict"]["disposition"] == "BLOCK"
+    assert esc_fm["reason_code"] == "verifier_block"
+    assert esc_fm["verdict_code"] == "VERDICT_BLOCK"
+    assert esc_fm["verdict_verifier_label"].startswith("verifier-")
+    assert "verdict" not in esc_fm
 
     mission = engine._read_mission_record(rroot, mission_id)
     assert mission["state"] == "code-red"
@@ -1008,7 +1101,9 @@ def test_run_verifier_identity_mismatch_treated_as_failed_verification(
     assert "verifier" in result["halt_reason"].lower()
     assert result["escalation_path"]
     esc_fm = yaml.safe_load(_frontmatter_text(Path(result["escalation_path"]).read_text(encoding="utf-8")))
-    assert esc_fm["reason"] == "verifier_identity_mismatch"
+    assert esc_fm["reason_code"] == "verifier_identity_mismatch"
+    assert esc_fm["expected_verifier_label"].startswith("verifier-")
+    assert esc_fm["actual_verifier_label"].startswith("verifier-")
 
 
 # ---------------------------------------------------------------------------
@@ -1267,8 +1362,10 @@ def test_run_verdict_artifact_binding_rejects_cross_task_replay(
     )
     assert result["escalation_path"]
 
-    # Confirm the SPECIFIC rejection reason is the binding check, not some
-    # unrelated failure — every logged retry attempt names the mismatch.
+    # The retry ledger deliberately does NOT persist the rejection detail:
+    # it stores only a brief commitment, so a verifier/driver-controlled
+    # failure cannot be retained as plaintext in mission records.  The halt
+    # above proves the replay still cannot clear verification.
     # Filename note: the retry ledger's on-disk key is `_retry_task_slug`'s
     # kebab-slug of the task id (MEDIUM-1, Fable integrity review, part of
     # goal-mission-ledger's own history) — "build.verify" slugifies to
@@ -1278,7 +1375,8 @@ def test_run_verdict_artifact_binding_rejects_cross_task_replay(
     attempt_files = sorted(retries_dir.glob("build-verify.attempt-*.md"))
     assert attempt_files, "expected at least one logged retry attempt for build.verify"
     combined = "\n".join(p.read_text(encoding="utf-8") for p in attempt_files)
-    assert "artifact-hash binding" in combined or "does not cover" in combined, combined
+    assert "brief_text" not in combined
+    assert "artifact-hash binding" not in combined
 
 
 def test_run_verdict_artifact_binding_accepts_genuine_covering_verdict(
@@ -1371,4 +1469,4 @@ def test_run_verdict_artifact_binding_skipped_for_block_disposition(
     assert result["status"] == "halted"
     assert "BLOCKED" in result["halt_reason"], result["halt_reason"]
     esc_fm = yaml.safe_load(_frontmatter_text(Path(result["escalation_path"]).read_text(encoding="utf-8")))
-    assert esc_fm["reason"] == "verifier_block"
+    assert esc_fm["reason_code"] == "verifier_block"

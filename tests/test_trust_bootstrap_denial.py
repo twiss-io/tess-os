@@ -111,6 +111,80 @@ def test_candidate_key_and_symbolic_verdict_are_denied_when_baseline_is_empty(en
     assert "no registered public key for verifier 'Quinn'" in reason
 
 
+@pytest.mark.parametrize(
+    "colon_output",
+    (
+        b"pub:::::::::\nsec:::::::::\n",
+        b"pub:::::::::\nssb:::::::::\n",
+        b"uid:::::::::\n",
+        b"gpg: malformed OpenPGP packet\n",
+    ),
+)
+def test_base_certificate_helper_rejects_secret_or_nonpublic_gpg_output(
+    engine, tmp_path, monkeypatch, colon_output
+):
+    """BASE bytes must be public-only before either caller can import them."""
+    calls = []
+
+    def fake_subprocess_run(command, *_args, **_kwargs):
+        calls.append((command, _kwargs))
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=colon_output)
+
+    monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
+
+    assert engine._gpg_public_certificate_from_bytes_is_safe(b"candidate", tmp_path) is False
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert "--import-options" in command and "show-only" in command
+    assert "--dry-run" in command and "--import" in command
+    assert kwargs["input"] == b"candidate"
+
+
+def test_rejected_base_certificate_never_reaches_verifier_or_signoff_import(
+    engine, tmp_path, monkeypatch
+):
+    """Reverse direction: a rejected BASE blob stops before every real import."""
+    verifier_policy = _policy({
+        "Reid": {
+            "fingerprint": "A" * 40,
+            "public_key_file": ".tess/keys/verifiers/reid.asc",
+        }
+    })
+    signoff_policy = _signoff_policy({
+        "Xavier": {
+            "fingerprint": "A" * 40,
+            "public_key_file": ".tess/keys/signoffs/xavier.asc",
+        }
+    })
+
+    monkeypatch.setattr(engine, "_gpg_public_certificate_from_bytes_is_safe", lambda *_args: False)
+
+    def import_must_not_run(*_args, **_kwargs):
+        raise AssertionError("a rejected BASE certificate must never reach gpg import")
+
+    monkeypatch.setattr(engine.subprocess, "run", import_must_not_run)
+
+    verdict_ok, verdict_reason = engine._gate_verify_verdict_signature(
+        tmp_path,
+        verifier_policy,
+        _symbolic_verdict(engine, "Reid"),
+        trusted_verifier_key_blobs={"Reid": b"rejected-base-certificate"},
+        trusted_verifier_key_errors={},
+    )
+    signoff_ok, signoff_reason = engine._gate_verify_signoff_signature(
+        tmp_path,
+        signoff_policy,
+        _symbolic_signoff(engine, "Xavier"),
+        trusted_signoff_key_blobs={"Xavier": b"rejected-base-certificate"},
+        trusted_signoff_key_errors={},
+    )
+
+    assert verdict_ok is False
+    assert "immutable BASE verifier certificate" in verdict_reason
+    assert signoff_ok is False
+    assert "immutable BASE sign-off certificate" in signoff_reason
+
+
 def test_missing_baseline_also_denies_candidate_verifier(engine):
     candidate = _policy(
         {
@@ -155,8 +229,8 @@ def test_existing_baseline_verifier_remains_usable_symbolically(engine, tmp_path
 
     def fake_subprocess_run(command, *_args, **_kwargs):
         if "--import" in command:
-            imported["bytes"] = Path(command[-1]).read_bytes()
-        return SimpleNamespace(returncode=0, stderr=b"")
+            imported["bytes"] = _kwargs["input"]
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
@@ -220,8 +294,8 @@ def test_candidate_key_rollback_cannot_bypass_base_key_bytes_or_revocation(engin
 
     def fake_subprocess_run(command, *_args, **_kwargs):
         if "--import" in command:
-            imported["bytes"] = Path(command[-1]).read_bytes()
-        return SimpleNamespace(returncode=0, stderr=b"")
+            imported["bytes"] = _kwargs["input"]
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
@@ -295,8 +369,8 @@ def test_existing_baseline_signoff_key_remains_usable_symbolically(engine, tmp_p
 
     def fake_subprocess_run(command, *_args, **_kwargs):
         if "--import" in command:
-            imported["bytes"] = Path(command[-1]).read_bytes()
-        return SimpleNamespace(returncode=0, stderr=b"")
+            imported["bytes"] = _kwargs["input"]
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
@@ -355,8 +429,8 @@ def test_candidate_signoff_key_rollback_cannot_bypass_base_bytes_or_revocation(e
 
     def fake_subprocess_run(command, *_args, **_kwargs):
         if "--import" in command:
-            imported["bytes"] = Path(command[-1]).read_bytes()
-        return SimpleNamespace(returncode=0, stderr=b"")
+            imported["bytes"] = _kwargs["input"]
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
