@@ -185,6 +185,171 @@ def _ship(engine, history, head: str, base: str | None = None):
     )
 
 
+def _new_dynamic_claude_history(tmp_path: Path, engine):
+    """Seed a BASE whose CLAUDE.md projection has user-space inputs.
+
+    These inputs are deliberately outside the policy's immutable renderer
+    family.  The regression below proves that a candidate must not use one of
+    them to manufacture a byte-coherent, but unattested, protected output.
+    """
+    history = _new_history(tmp_path, engine, admission=False)
+    source = ".tess/core/templates/CLAUDE.md.tpl"
+    output = "CLAUDE.md"
+    template = (
+        "# {{ASSISTANT_NAME}}\n\n"
+        "{{OPERATOR_IDENTITY}}\n"
+        "{{OPERATOR_PROFILE}}\n"
+        "{{OPERATOR_CHANNELS}}\n"
+    )
+    _write(history.root, source, template)
+    _write(history.root, output, engine.render_claude_md(history.root))
+
+    inventory = {
+        "version": 1,
+        "rule_id": RULE_ID,
+        "lock_file": LOCK,
+        "registry_file": REGISTRY,
+        "target_config_files": [TARGET_CONFIG],
+        "family_globs": [source],
+        "mappings": [
+            {
+                "input_glob": source,
+                "lock_live_glob": output,
+                "canonical_status": "core-managed",
+                "canonical_tier": "normal",
+                "canonical_render": "template",
+                "projections": [{"output_glob": output, "mode": "engine-render"}],
+                "min_matches": 1,
+            }
+        ],
+    }
+    policy = _policy_document(admission=False)
+    policy["policy"]["renderer_admission"] = inventory
+    policy["policy"]["rules"] = [{
+        "id": RULE_ID,
+        "description": "Test-only immutable renderer admission surface.",
+        "globs": [LOCK, REGISTRY, TARGET_CONFIG, source, output],
+        "classification": ["prod_touching"],
+        "require_verdict": True,
+        "allowed_verifiers": ["Reid", "Cyra"],
+    }]
+    _write(history.root, POLICY, yaml.safe_dump(policy, sort_keys=False))
+    _write(history.root, LOCK, yaml.safe_dump({"schema": 1, "files": {
+        source: {
+            "status": "core-managed",
+            "tier": "normal",
+            "base_sha": engine.sha256_bytes(template.encode("utf-8")),
+            "live_path": output,
+            "render": "template",
+        }
+    }}, sort_keys=False))
+    history.base = _commit(history.root, "BASE renderer with dynamic inputs")
+    return history
+
+
+def _new_profile_projection_history(tmp_path: Path, engine):
+    """Seed three renderer families that read the shared operator profile."""
+    history = _new_history(tmp_path, engine, admission=False)
+    sources = {
+        ".tess/core/templates/agents-md/AGENTS.md.tpl": "AGENTS {{ASSISTANT_NAME}}\n",
+        ".tess/core/commands/status.md": "COMMAND {{ASSISTANT_NAME}}\n",
+        ".tess/core/conductor/personality.md": "PERSONA {{PATHWAY}} {{OPERATOR_NAME}}\n",
+        ".tess/core/personas/chief-of-staff.md": "BASE PERSONA\n",
+    }
+    for rel, content in sources.items():
+        _write(history.root, rel, content)
+    _write(
+        history.root,
+        "operator/profile.json",
+        json.dumps({"assistant_name": "Base", "operator_name": "Operator", "pathway": "chief-of-staff"}) + "\n",
+    )
+    _write(history.root, "AGENTS.md", engine.render_agents_md(history.root))
+    _write(
+        history.root, ".codex/prompts/status.md",
+        engine._render_command_prompt_bytes(history.root, "status"),
+    )
+    personality_source = history.root / ".tess/core/conductor/personality.md"
+    _write(
+        history.root, "conductor/personality.md",
+        engine.render_core_to_live(personality_source, history.root / "conductor/personality.md", history.root),
+    )
+
+    agents_source = ".tess/core/templates/agents-md/AGENTS.md.tpl"
+    command_source = ".tess/core/commands/status.md"
+    personality_source_rel = ".tess/core/conductor/personality.md"
+    inventory = {
+        "version": 1,
+        "rule_id": RULE_ID,
+        "lock_file": LOCK,
+        "registry_file": REGISTRY,
+        "target_config_files": [TARGET_CONFIG],
+        "family_globs": [agents_source, ".tess/core/commands/*.md", personality_source_rel],
+        "mappings": [
+            {
+                "input_glob": agents_source,
+                "lock_live_glob": None,
+                "canonical_status": "core-managed",
+                "canonical_tier": "normal",
+                "canonical_render": None,
+                "projections": [{"output_glob": "AGENTS.md", "mode": "engine-render"}],
+                "min_matches": 1,
+            },
+            {
+                "input_glob": ".tess/core/commands/*.md",
+                "lock_live_glob": ".claude/commands/*.md",
+                "lock_name_binding": True,
+                "canonical_status": "core-managed",
+                "canonical_tier": "normal",
+                "canonical_render": None,
+                "projections": [{"output_glob": ".codex/prompts/*.md", "mode": "engine-render"}],
+                "min_matches": 1,
+            },
+            {
+                "input_glob": personality_source_rel,
+                "lock_live_glob": "conductor/personality.md",
+                "canonical_status": "core-managed",
+                "canonical_tier": "normal",
+                "canonical_render": None,
+                "projections": [{"output_glob": "conductor/personality.md", "mode": "core-render"}],
+                "min_matches": 1,
+            },
+        ],
+    }
+    policy = _policy_document(admission=False)
+    policy["policy"]["renderer_admission"] = inventory
+    policy["policy"]["rules"] = [{
+        "id": RULE_ID,
+        "description": "Test-only immutable renderer admission surface.",
+        "globs": [
+            LOCK, REGISTRY, TARGET_CONFIG, agents_source, ".tess/core/commands/*.md",
+            personality_source_rel, "AGENTS.md", ".codex/prompts/*.md", "conductor/personality.md",
+        ],
+        "classification": ["prod_touching"],
+        "require_verdict": True,
+        "allowed_verifiers": ["Reid", "Cyra"],
+    }]
+    _write(history.root, POLICY, yaml.safe_dump(policy, sort_keys=False))
+    _write(history.root, LOCK, yaml.safe_dump({"schema": 1, "files": {
+        agents_source: {
+            "status": "core-managed", "tier": "normal",
+            "base_sha": engine.sha256_bytes(sources[agents_source].encode("utf-8")),
+            "live_path": None, "render": None,
+        },
+        command_source: {
+            "status": "core-managed", "tier": "normal",
+            "base_sha": engine.sha256_bytes(sources[command_source].encode("utf-8")),
+            "live_path": ".claude/commands/status.md", "render": None,
+        },
+        personality_source_rel: {
+            "status": "core-managed", "tier": "normal",
+            "base_sha": engine.sha256_bytes(sources[personality_source_rel].encode("utf-8")),
+            "live_path": "conductor/personality.md", "render": None,
+        },
+    }}, sort_keys=False))
+    history.base = _commit(history.root, "BASE profile-driven renderer projections")
+    return history
+
+
 def _assert_requires_verdict(result: dict) -> None:
     assert result["blocked"] is True
     assert any("no covering APPROVE verdict" in reason for reason in result["reasons"])
@@ -248,6 +413,99 @@ def test_source_hash_and_output_laundering_still_need_base_policy_verdict(engine
     assert any("stale or incoherent" in reason for reason in consistency_reasons)
     _assert_requires_verdict(result)
     assert {SOURCE, LOCK, OUTPUT}.issubset(set(result["changed_paths"]))
+
+
+@pytest.mark.parametrize(
+    ("dynamic_path", "content"),
+    [
+        ("operator/user-profile.md", "---\ninject: true\n---\n\nINJECTED PROFILE\n"),
+        ("operator/profile.json", json.dumps({"assistant_name": "Injected", "operator_name": "Operator", "pathway": "chief-of-staff"}) + "\n"),
+        ("CLAUDE.md.local.md", "INJECTED LOCAL SHADOW\n"),
+    ],
+)
+def test_dynamic_claude_inputs_cannot_launder_a_protected_projection(
+    engine, tmp_path, dynamic_path, content,
+):
+    """Only declared renderer-family HEAD blobs may influence a projection.
+
+    Operator state and append-first local shadows are intentionally outside
+    the immutable renderer inventory.  A candidate that makes a generated
+    CLAUDE.md agree with such a HEAD-side input must therefore be rejected,
+    rather than treating the candidate's ambient filesystem as authority.
+    """
+    history = _new_dynamic_claude_history(tmp_path, engine)
+    _write(history.root, dynamic_path, content)
+    _write(history.root, "CLAUDE.md", engine.render_claude_md(history.root))
+    head = _commit(history.root, f"candidate dynamic input {dynamic_path}")
+
+    _changed, reasons = _admission(engine, history, head)
+
+    assert any(
+        "stale or incoherent" in reason and "CLAUDE.md" in reason
+        for reason in reasons
+    )
+
+
+def test_candidate_profile_cannot_launder_agents_command_or_conductor_outputs(engine, tmp_path):
+    """The profile is ambient for every renderer family, not just CLAUDE.md."""
+    history = _new_profile_projection_history(tmp_path, engine)
+    _write(
+        history.root,
+        "operator/profile.json",
+        json.dumps({"assistant_name": "Candidate", "operator_name": "Candidate", "pathway": "chief-of-staff"}) + "\n",
+    )
+    _write(history.root, "AGENTS.md", engine.render_agents_md(history.root))
+    _write(
+        history.root, ".codex/prompts/status.md",
+        engine._render_command_prompt_bytes(history.root, "status"),
+    )
+    personality_source = history.root / ".tess/core/conductor/personality.md"
+    _write(
+        history.root, "conductor/personality.md",
+        engine.render_core_to_live(personality_source, history.root / "conductor/personality.md", history.root),
+    )
+    head = _commit(history.root, "candidate profile-driven outputs")
+
+    _changed, reasons = _admission(engine, history, head)
+
+    for output in ("AGENTS.md", ".codex/prompts/status.md", "conductor/personality.md"):
+        assert any("stale or incoherent" in reason and output in reason for reason in reasons)
+
+
+def test_candidate_persona_cannot_launder_conductor_projection(engine, tmp_path):
+    """A persona remains BASE-pinned unless a future immutable inventory admits it."""
+    history = _new_profile_projection_history(tmp_path, engine)
+    _write(history.root, ".tess/core/personas/chief-of-staff.md", "CANDIDATE PERSONA\n")
+    personality_source = history.root / ".tess/core/conductor/personality.md"
+    _write(
+        history.root, "conductor/personality.md",
+        engine.render_core_to_live(personality_source, history.root / "conductor/personality.md", history.root),
+    )
+    head = _commit(history.root, "candidate persona-driven output")
+
+    _changed, reasons = _admission(engine, history, head)
+
+    assert any(
+        "stale or incoherent" in reason and "conductor/personality.md" in reason
+        for reason in reasons
+    )
+
+
+def test_validated_canonical_source_still_updates_its_projection(engine, tmp_path):
+    """The BASE overlay deliberately includes a coherent admitted source upgrade."""
+    history = _new_profile_projection_history(tmp_path, engine)
+    source = ".tess/core/templates/agents-md/AGENTS.md.tpl"
+    upgraded = "UPGRADED AGENTS {{ASSISTANT_NAME}}\n"
+    _write(history.root, source, upgraded)
+    lock = _load_lock(history.root)
+    lock["files"][source]["base_sha"] = engine.sha256_bytes(upgraded.encode("utf-8"))
+    _save_lock(history.root, lock)
+    _write(history.root, "AGENTS.md", engine.render_agents_md(history.root))
+    head = _commit(history.root, "coherent canonical source upgrade")
+
+    _changed, reasons = _admission(engine, history, head)
+
+    assert reasons == []
 
 
 def test_candidate_cannot_delete_base_lock_row(engine, tmp_path):

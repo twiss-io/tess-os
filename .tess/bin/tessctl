@@ -10898,6 +10898,54 @@ def _gate_materialize_commit(root: Path, ref: str) -> tuple[Path | None, tempfil
     return materialized, temp, None
 
 
+def _gate_materialize_renderer_projection_base(
+    root: Path, base: str, head: str, head_entries: dict, validated_head_sources: set[str],
+) -> tuple[Path | None, tempfile.TemporaryDirectory | None, str | None]:
+    """Materialize immutable BASE, overlaying only validated renderer sources.
+
+    A generated artifact must be compared with the output of the immutable
+    BASE engine fed by the immutable BASE environment.  The candidate can
+    contribute only source blobs that match the BASE renderer-admission
+    family and have already passed its canonical lock/mapping checks.  In
+    particular, operator state, append-first local shadows, persona choices,
+    and renderer control/configuration files remain BASE-pinned: allowing a
+    candidate filesystem to supply any of those ambient inputs would let it
+    manufacture a byte-coherent protected output without an admitted source
+    upgrade.
+    """
+    materialized, temp, materialize_error = _gate_materialize_commit(root, base)
+    if materialize_error or materialized is None or temp is None:
+        return materialized, temp, materialize_error
+
+    materialized_root = materialized.resolve()
+    try:
+        for source_path in sorted(validated_head_sources):
+            path = Path(source_path)
+            if path.is_absolute() or ".." in path.parts or "\\" in source_path:
+                raise ValueError(f"unsafe admitted renderer source path {source_path!r}")
+            blob, blob_error = _gate_regular_blob_from_tree(
+                root, head, head_entries, source_path, "validated renderer candidate input",
+            )
+            if blob_error:
+                raise ValueError(blob_error)
+            destination = materialized / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            resolved_parent = destination.parent.resolve()
+            if materialized_root not in (resolved_parent, *resolved_parent.parents):
+                raise ValueError(
+                    f"admitted renderer source path escapes materialized BASE root: {source_path!r}"
+                )
+            if destination.is_symlink() or destination.is_dir():
+                raise ValueError(
+                    f"admitted renderer source destination is not a regular file: {source_path!r}"
+                )
+            destination.write_bytes(blob)
+    except (OSError, ValueError) as exc:
+        temp.cleanup()
+        return None, None, f"cannot prepare immutable BASE renderer projection ({exc})"
+    return materialized, temp, None
+
+
 def _gate_renderer_expected_projection(
     materialized: Path, source_path: str, output_path: str, mode: str,
 ) -> tuple[bytes | None, str | None]:
@@ -11064,12 +11112,18 @@ def _gate_renderer_validate_pair(
     if not isinstance(base_rows, dict) or not isinstance(head_rows, dict):
         return reasons
 
+    # These are the only candidate bytes allowed to enter the BASE-pinned
+    # projection environment below.  Keeping the set explicit makes the
+    # ambient-input boundary auditable: a HEAD blob enters only after its
+    # canonical mapping, lock metadata, and content hash have all checked.
+    validated_head_sources: set[str] = set()
     for source_path in sorted(base_sources | head_sources):
         mapping, mapping_error = _gate_renderer_mapping_for(config, source_path)
         if mapping_error:
             reasons.append(mapping_error)
             continue
 
+        candidate_source_valid = source_path in head_sources
         base_blob = head_blob = None
         if source_path in base_entries:
             base_blob, blob_error = _gate_regular_blob_from_tree(
@@ -11083,8 +11137,10 @@ def _gate_renderer_validate_pair(
             )
             if blob_error:
                 reasons.append(blob_error)
+                candidate_source_valid = False
         else:
             reasons.append(f"candidate deleted required BASE renderer input {source_path!r}")
+            candidate_source_valid = False
 
         base_row = base_rows.get(source_path)
         head_row = head_rows.get(source_path)
@@ -11099,6 +11155,7 @@ def _gate_renderer_validate_pair(
         reason = _gate_renderer_row_mapping_reason(source_path, head_row, mapping, "candidate")
         if reason:
             reasons.append(reason)
+            candidate_source_valid = False
         if source_path not in base_sources and isinstance(head_row, dict):
             for field in ("status", "tier", "render"):
                 if field not in head_row:
@@ -11106,10 +11163,12 @@ def _gate_renderer_validate_pair(
                         f"candidate-added renderer input {source_path!r} must explicitly declare "
                         f"canonical lock metadata field {field!r}"
                     )
+                    candidate_source_valid = False
         if head_blob is not None and isinstance(head_row, dict):
             reason = _gate_renderer_blob_hash_reason(source_path, head_row, head_blob, "candidate")
             if reason:
                 reasons.append(reason)
+                candidate_source_valid = False
 
         if isinstance(base_row, dict) and isinstance(head_row, dict):
             for field in ("status", "tier", "live_path", "render"):
@@ -11118,6 +11177,10 @@ def _gate_renderer_validate_pair(
                         f"candidate rewrote immutable BASE renderer ownership field {field!r} "
                         f"for {source_path!r}: {base_row.get(field)!r} -> {head_row.get(field)!r}"
                     )
+                    candidate_source_valid = False
+
+        if candidate_source_valid and head_blob is not None:
+            validated_head_sources.add(source_path)
 
     output_globs = sorted({
         glob
@@ -11217,7 +11280,9 @@ def _gate_renderer_validate_pair(
         if output_path in regular_outputs and pairs
     }
     if projections_to_check:
-        materialized, temp, materialize_error = _gate_materialize_commit(root, head)
+        materialized, temp, materialize_error = _gate_materialize_renderer_projection_base(
+            root, base, head, head_entries, validated_head_sources,
+        )
         if materialize_error:
             reasons.append(materialize_error)
         else:
