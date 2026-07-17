@@ -200,12 +200,23 @@ def test_generated_app_own_test_suite_passes_when_run_for_real(tmp_path, node_se
     --test` runner (a separate subprocess, not the boot-check server
     above) — proves the "acceptance_criteria -> generated tests"
     deliverable produces a suite that actually passes, not just files
-    that merely exist on disk."""
+    that merely exist on disk.
+
+    Invokes `node --test` with the EXPLICIT file path (matching
+    `spec_engine.codegen.ACCEPTANCE_TEST_REL_PATH`, and exactly what the
+    generated `package.json`'s own "test" script runs), never a bare
+    `tests/` directory: `node --test <directory>`'s built-in
+    test-discovery is not stable across Node versions — verified
+    empirically to pass on Node 20 and fail with MODULE_NOT_FOUND on Node
+    22.23.1 for the identical generated tree. An explicit file path
+    sidesteps that version-dependent discovery logic."""
+    from spec_engine.codegen import ACCEPTANCE_TEST_REL_PATH
+
     spec = _spec_from_fixture("brief_voice_ramble.txt")
     generate_app(spec, tmp_path)
 
     result = subprocess.run(
-        ["node", "--test", "tests/"],
+        ["node", "--test", ACCEPTANCE_TEST_REL_PATH],
         cwd=str(tmp_path),
         capture_output=True,
         text=True,

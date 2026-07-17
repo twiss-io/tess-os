@@ -90,6 +90,16 @@ SUPPORTED_TARGET_STACKS = (DEFAULT_TARGET_STACK,)
 
 GENERATION_STATUSES = ("generated", "generated-stub-logic", "stub")
 
+# The one test file this codegen slice ever writes. Referenced by exact
+# path (never a bare directory or glob) in package.json's "test" script
+# and in every generated doc comment — `node --test <directory>`'s
+# positional-argument test-discovery behavior is NOT stable across Node
+# versions (empirically: passes on Node 20, fails with MODULE_NOT_FOUND
+# on Node 22.23.1 for the exact same generated tree — reproduced locally
+# and in CI). An explicit file path sidesteps that version-dependent
+# discovery logic entirely and works identically on every Node >=18.
+ACCEPTANCE_TEST_REL_PATH = "tests/acceptance.test.js"
+
 _INFRA_NOTE = (
     "Infrastructure file — required scaffolding for this target stack, "
     "not derived from any single spec section."
@@ -369,7 +379,7 @@ def generate_app(
     # -> generated tests"), plus a baseline boot check and a per-entity
     # CRUD round-trip test that runs regardless of acceptance_criteria
     # content.
-    test_rel_path = "tests/acceptance.test.js"
+    test_rel_path = ACCEPTANCE_TEST_REL_PATH
     _write_file(
         root,
         test_rel_path,
@@ -788,7 +798,7 @@ def _render_server_js(
  * Zero npm dependencies: Node core `http` only.
  *
  * Run:  node src/server.js   (or `npm start`)
- * Test: node --test tests/   (or `npm test`)
+ * Test: node --test {ACCEPTANCE_TEST_REL_PATH}   (or `npm test`)
  *
  * Listens on process.env.PORT || 3000. See ../SPEC.md for what this app
  * does, and ../.spec-engine/codegen-manifest.json for exactly which parts
@@ -968,7 +978,7 @@ def _render_package_json(spec: SpecDocument) -> str:
         "main": "src/server.js",
         "scripts": {
             "start": "node src/server.js",
-            "test": "node --test tests/",
+            "test": f"node --test {ACCEPTANCE_TEST_REL_PATH}",
         },
         "engines": {"node": ">=18"},
     }
@@ -1000,8 +1010,14 @@ server is up.
 ## Test it
 
 ```bash
-node --test tests/       # or: npm test
+node --test {ACCEPTANCE_TEST_REL_PATH}       # or: npm test
 ```
+
+(Always an explicit file path, never a bare `tests/` directory —
+`node --test <directory>`'s built-in test-discovery behavior is not
+stable across Node versions; see `ACCEPTANCE_TEST_REL_PATH`'s comment in
+`spec_engine/codegen.py` for the empirical Node 20 vs. 22 difference
+that motivated this.)
 
 Zero npm dependencies — this whole app runs on Node core only (`node:http`,
 `node:crypto`, `node:test`, `node:assert/strict`, plus the built-in global
@@ -1097,9 +1113,9 @@ test({_js_string(test_name)}, withServer(async (base) => {{
  * acceptance_criteria content). generation_status: "generated" (see
  * ../.spec-engine/codegen-manifest.json).
  *
- * Run: node --test tests/   (or `npm test`). Zero test-framework
- * dependencies — Node core `node:test` + `node:assert/strict` + the
- * built-in global `fetch()`.
+ * Run (from the repo root): node --test {ACCEPTANCE_TEST_REL_PATH}   (or
+ * `npm test`). Zero test-framework dependencies — Node core `node:test`
+ * + `node:assert/strict` + the built-in global `fetch()`.
  */
 
 const test = require("node:test");
