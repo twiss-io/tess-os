@@ -9387,8 +9387,6 @@ def _decision_reason_code(raw_reason: object) -> str:
         "BASE_OBJECT_INVALID:", "HEAD_OBJECT_INVALID:",
     )):
         return "COMMIT_RANGE_INVALID"
-    if "ADMISSION_EVENT_SOURCE_REQUIRED:" in text:
-        return "ADMISSION_EVENT_SOURCE_REQUIRED"
     if "TRUST_BOOTSTRAP_REQUIRED:" in text:
         return "TRUST_BOOTSTRAP_REQUIRED"
     if text.startswith("CI_EVENT_SOURCE_REQUIRED:"):

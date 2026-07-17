@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-17T07:57:41.477094+00:00",
+  "generated_at": "2026-07-17T08:24:35.441101+00:00",
   "total_attacks": 12,
   "blocked": 12,
   "slipped_through": 0,
@@ -19,7 +19,9 @@
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -36,13 +38,17 @@
           "reasons": [
             "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         },
         "with_human_signoff": {
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 5
+          "changed_paths_count": 5,
+          "authoritative": false,
+          "diagnostic_only": true
         },
         "clears_with_real_signoff": true
       }
@@ -61,7 +67,9 @@
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -78,7 +86,9 @@
           "reasons": [
             "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -95,7 +105,9 @@
           "reasons": [
             "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -112,7 +124,9 @@
           "reasons": [
             "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -129,7 +143,9 @@
           "reasons": [
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 1
+          "changed_paths_count": 1,
+          "authoritative": false,
+          "diagnostic_only": true
         },
         "git_status": "?? verdicts/\n"
       }
@@ -148,7 +164,9 @@
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -165,7 +183,9 @@
           "reasons": [
             "VERDICT_CONTENT_STALE: a covering verdict is not bound to current content"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     },
@@ -205,17 +225,12 @@
       "name": "same-push engine tamper (honesty-capstone-audit-2026-07-08 \u00a73-c)",
       "description": "Edit the gate engine's own decision logic (_gate_run_ship_check) to self-attest 'not blocked', in the same push as an unreviewed payload \u2014 does the REAL CI workflow's trusted-engine defense still catch it?",
       "blocked": true,
-      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): NOT BLOCKED \u2014 slips past naively ({'phase': 'ci', 'blocked': False, 'reasons': [], 'changed_paths_count': 2}). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED (tessctl gate ci \u2014 BLOCKED\n  changed paths: 2\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
+      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): BLOCKED (None). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED ( external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
       "evidence": {
-        "naive_blocked": false,
-        "naive_payload": {
-          "phase": "ci",
-          "blocked": false,
-          "reasons": [],
-          "changed_paths_count": 2
-        },
+        "naive_blocked": true,
+        "naive_payload": null,
         "trusted_returncode": 1,
-        "trusted_output": "tessctl gate ci \u2014 BLOCKED\n  changed paths: 2\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n"
+        "trusted_output": "tessctl gate ci \u2014 DIAGNOSTIC-ONLY BLOCKED (not external admission)\n  changed paths: 2\n    - ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n"
       }
     },
     {
@@ -232,13 +247,17 @@
             "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths_count": 2
+          "changed_paths_count": 2,
+          "authoritative": false,
+          "diagnostic_only": true
         },
         "signed": {
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 4
+          "changed_paths_count": 4,
+          "authoritative": false,
+          "diagnostic_only": true
         }
       }
     }
