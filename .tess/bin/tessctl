@@ -9075,18 +9075,38 @@ _DECISION_MESSAGES = {
     "VERDICT_CONTENT_STALE": "a covering verdict is not bound to current content",
     "HARD_FLOOR_UNSATISFIED": "a required hard-floor sign-off is not valid",
     "BASE_REQUIRED": "an immutable BASE commit is required",
+    "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
 }
+
+
+_DECISION_REASON_WRAPPERS = (
+    "[renderer-base] ",
+    "[contract] ",
+    "[gate] ",
+)
 
 
 def _decision_reason_code(raw_reason: object) -> str:
     """Classify an internal reason without ever returning its value."""
     text = str(raw_reason or "")
+    # `_gate_run_ship_check` owns three static, internal grouping labels.  Do
+    # not treat those labels as public diagnostics: unwrap exactly one known
+    # label, then classify the underlying reason through the same allowlist
+    # used everywhere else.  In particular, do not strip arbitrary brackets,
+    # whitespace, or a second wrapper: an unknown reason must remain
+    # INTERNAL_ERROR_REDACTED rather than becoming accidentally reportable.
+    for wrapper in _DECISION_REASON_WRAPPERS:
+        if text.startswith(wrapper):
+            text = text[len(wrapper):]
+            break
     lower = text.lower()
     if text.startswith("BASE_REQUIRED:"):
         return "BASE_REQUIRED"
-    if text.startswith("[contract]"):
+    if text.startswith("CONTRACT_INVALID:"):
         return "CONTRACT_INVALID"
+    if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
+        return "ADMISSION_EVENT_SOURCE_REQUIRED"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
         return "POLICY_INVALID"
     if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
@@ -10111,7 +10131,7 @@ def _gate_run_ship_check(
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
-    reasons = [f"[contract] {v}" for v in _gate_validate_contracts(root, changed_paths)]
+    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
 
     policy_instance, policy_errors = _gate_load_policy(root)
     if policy_errors:
@@ -10222,7 +10242,11 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
         sys.exit(1)
 
     violations = _gate_validate_contracts(root, changed)
-    result = {"blocked": bool(violations), "reasons": [f"[contract] {v}" for v in violations], "changed_paths": changed}
+    result = {
+        "blocked": bool(violations),
+        "reasons": [f"[contract] CONTRACT_INVALID: {v}" for v in violations],
+        "changed_paths": changed,
+    }
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-commit",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
