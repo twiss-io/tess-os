@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/spec-engine/contracts/scaffold-plan.schema.json",
+  "title": "Spec Engine — ScaffoldPlan Contract (spec->scaffold stub)",
+  "description": "Machine-checkable form of the spec->scaffold DIRECTION stub (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2, deliverable (3): 'Establish the spec->code DIRECTION... a first minimal spec->scaffold step is enough; the point is nailing the direction + the contract, not full codegen yet'). `codegen_status` is pinned to the single enum value `not_started` in v1 — this is a PLAN for a future real codegen step, never code itself. This is the exact shape `spec_engine.types.ScaffoldPlan.to_log_record()` emits and the literal content of `.spec-engine/scaffold-plan.json` that `spec_engine.scaffold.write_scaffold_stub()` writes into a generated app's repo.",
+  "type": "object",
+  "properties": {
+    "spec_id": { "type": "string", "minLength": 1 },
+    "spec_version": { "type": "integer", "minimum": 1 },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module_id": { "type": "string", "minLength": 1 },
+          "source_section": { "type": "string", "minLength": 1, "description": "Which part of the spec this module was derived from, e.g. 'data_model.entities[0]' or 'how_it_looks.key_screens[1]' — traceability back to the source of truth." },
+          "kind": { "type": "string", "enum": ["backend-model", "frontend-page", "service", "integration", "test-suite"] },
+          "description": { "type": "string" },
+          "depends_on": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["module_id", "source_section", "kind", "description", "depends_on"],
+        "additionalProperties": false
+      }
+    },
+    "target_stack": { "type": "string", "minLength": 1 },
+    "codegen_status": { "type": "string", "enum": ["not_started"] },
+    "notes": { "type": "string" }
+  },
+  "required": ["spec_id", "spec_version", "generated_at", "modules", "target_stack", "codegen_status", "notes"],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by spec_engine.spec_check: type, enum, properties, required, additionalProperties, items."
+}
