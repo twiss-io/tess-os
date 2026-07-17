@@ -222,6 +222,7 @@ def test_editing_the_engine_with_no_verdict_is_blocked_on_real_shipped_policy(si
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
     assert payload["reasons"] == [
+        "ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required",
         "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
     ]
 

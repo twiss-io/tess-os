@@ -1311,7 +1311,12 @@ def test_run_fake_no_verifier_halts_for_external_return_manifest_artifact(engine
     assert "attempt cap" in result["halt_reason"]
     retries = sorted((_mission_dir(rroot, mission_id) / "retries").glob("external-artifact.attempt-*.md"))
     assert len(retries) == 3
-    assert "absolute paths" in retries[-1].read_text(encoding="utf-8")
+    # Retry records are deliberately privacy-safe projections: they prove the
+    # failed task was retried and halted without persisting the attacker-supplied
+    # external path in mission state.
+    retry_text = retries[-1].read_text(encoding="utf-8")
+    assert "/etc/hosts" not in retry_text
+    assert "failure_state: degraded" in retry_text
     assert len([call for call in driver.calls if call["task_id"] == "external-artifact"]) == 3
     assert all(not call["task_id"].endswith(".verify") for call in driver.calls)
 

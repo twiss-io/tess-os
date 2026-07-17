@@ -817,8 +817,10 @@ def test_protected_gate_ci_rejects_caller_selected_range(engine, tmp_path):
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert payload["reasons"][0].startswith("CI_EVENT_RANGE_MISMATCH:")
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "CI_EVENT_RANGE_MISMATCH: the supplied range does not match the immutable CI event",
+    ]
 
 
 def test_workflow_dispatch_cannot_create_authoritative_gate_context(engine, tmp_path):
@@ -836,8 +838,10 @@ def test_workflow_dispatch_cannot_create_authoritative_gate_context(engine, tmp_
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert payload["reasons"][0].startswith("CI_EVENT_SOURCE_REQUIRED:")
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "CI_EVENT_SOURCE_REQUIRED: an authoritative CI event source is required",
+    ]
 
 
 def test_all_zero_push_event_never_uses_empty_tree_as_base(engine, tmp_path):
@@ -855,8 +859,10 @@ def test_all_zero_push_event_never_uses_empty_tree_as_base(engine, tmp_path):
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
-    assert payload["reasons"][0].startswith("REMOTE_BASE_REQUIRED:")
+    assert payload["changed_paths_count"] == 0
+    assert payload["reasons"] == [
+        "REMOTE_BASE_REQUIRED: an immutable remote baseline is required",
+    ]
 
 
 def _install_remote_head(history) -> None:
@@ -886,7 +892,7 @@ def test_pre_push_stdin_new_branch_uses_remote_head_merge_base(engine, tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["blocked"] is False
-    assert payload["changed_paths"] == ["notes/new-branch.txt"]
+    assert payload["changed_paths_count"] == 1
     assert "REMOTE_BASE_REQUIRED" not in result.stdout
 
 
@@ -904,7 +910,10 @@ def test_pre_push_stdin_new_branch_renderer_change_is_non_authoritative(engine, 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["blocked"] is True
-    assert any("ADMISSION_EVENT_SOURCE_REQUIRED" in reason for reason in payload["reasons"])
+    assert payload["reasons"] == [
+        "ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required",
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+    ]
 
 
 def test_pre_push_stdin_new_branch_without_remote_head_fails_before_renderer(engine, tmp_path):
@@ -920,7 +929,8 @@ def test_pre_push_stdin_new_branch_without_remote_head_fails_before_renderer(eng
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["blocked"] is True
-    assert payload["changed_paths"] == []
+    assert payload["changed_paths_count"] == 0
     assert len(payload["reasons"]) == 1
-    assert payload["reasons"][0].startswith("REMOTE_BASE_REQUIRED:")
-    assert "renderer-base" not in payload["reasons"][0]
+    assert payload["reasons"] == [
+        "REMOTE_BASE_REQUIRED: an immutable remote baseline is required",
+    ]

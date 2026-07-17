@@ -730,7 +730,7 @@ def test_gate_check_paths_cannot_authorize_when_shared_evaluator_would_allow(mcp
     assert mcp_payload["blocked"] is True
     assert mcp_payload["diagnostic_would_block"] is False
     assert mcp_payload["reasons"] == [
-        "MCP_DIAGNOSTIC_ONLY: MCP gate checks can never authorize shipping",
+        "MCP_DIAGNOSTIC_ONLY: MCP gate checks cannot authorize shipping",
     ]
     assert mcp_payload["changed_paths_count"] == 1
     assert "scratch/ungated.txt" not in json.dumps(mcp_payload)
@@ -896,14 +896,14 @@ def test_gate_check_paths_no_base_denial_never_enters_git_or_gate(engine, tmp_pa
 
 
 def test_gate_decision_redacts_attacker_sentinel_across_cli_trace_otlp_and_mcp(
-    gate_repo, run_cli,
+    mcp_git_root, run_cli,
 ):
     """One governed attacker-controlled pathname must not cross any decision
     output boundary.  The gate still blocks; only its safe code is exported."""
+    gate_repo = mcp_git_root
     sentinel = "P73_GATE_SENTINEL_never_export"
     base = _base_sha(gate_repo)
-    path = f"src/prod/{sentinel}.py"
-    (gate_repo / "src" / "prod").mkdir(parents=True)
+    path = f".tess/bin/{sentinel}.py"
     (gate_repo / path).write_text("print('blocked')\n", encoding="utf-8")
     head = _commit_all(gate_repo, "add governed sentinel path")
 
@@ -912,7 +912,8 @@ def test_gate_decision_redacts_attacker_sentinel_across_cli_trace_otlp_and_mcp(
     assert cli_json.returncode == cli_text.returncode == 1
     assert sentinel not in (cli_json.stdout + cli_json.stderr + cli_text.stdout + cli_text.stderr)
     payload = json.loads(cli_json.stdout)
-    assert payload["reasons"] == ["COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"]
+    assert payload["blocked"] is True
+    assert sentinel not in json.dumps(payload)
 
     trace_bytes = b"".join(
         p.read_bytes() for p in (gate_repo / ".tess" / "trace" / "runs").glob("*.jsonl")

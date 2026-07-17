@@ -9331,7 +9331,9 @@ _DECISION_MESSAGES = {
     "MCP_DIAGNOSTIC_ONLY": "MCP gate checks cannot authorize shipping",
     "HEAD_REQUIRED": "an immutable HEAD commit is required",
     "COMMIT_RANGE_INVALID": "the supplied Git commit range is invalid",
+    "TRUST_BOOTSTRAP_REQUIRED": "immutable renderer admission needs owner-controlled bootstrap",
     "CI_EVENT_SOURCE_REQUIRED": "an authoritative CI event source is required",
+    "CI_EVENT_RANGE_MISMATCH": "the supplied range does not match the immutable CI event",
     "REMOTE_BASE_REQUIRED": "an immutable remote baseline is required",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
 }
@@ -9358,7 +9360,11 @@ def _decision_reason_code(raw_reason: object) -> str:
             text = text[len(wrapper):]
             break
     lower = text.lower()
-    if text.startswith("BASE_REQUIRED:"):
+    # Check the more specific REMOTE_BASE_REQUIRED token first; it contains
+    # the BASE_REQUIRED suffix but conveys a distinct fail-closed boundary.
+    if text.startswith("REMOTE_BASE_REQUIRED:"):
+        return "REMOTE_BASE_REQUIRED"
+    if "BASE_REQUIRED:" in text:
         return "BASE_REQUIRED"
     if text.startswith("CONTRACT_INVALID:"):
         return "CONTRACT_INVALID"
@@ -9381,12 +9387,14 @@ def _decision_reason_code(raw_reason: object) -> str:
         "BASE_OBJECT_INVALID:", "HEAD_OBJECT_INVALID:",
     )):
         return "COMMIT_RANGE_INVALID"
-    if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
+    if "ADMISSION_EVENT_SOURCE_REQUIRED:" in text:
         return "ADMISSION_EVENT_SOURCE_REQUIRED"
+    if "TRUST_BOOTSTRAP_REQUIRED:" in text:
+        return "TRUST_BOOTSTRAP_REQUIRED"
     if text.startswith("CI_EVENT_SOURCE_REQUIRED:"):
         return "CI_EVENT_SOURCE_REQUIRED"
-    if text.startswith("REMOTE_BASE_REQUIRED:"):
-        return "REMOTE_BASE_REQUIRED"
+    if text.startswith("CI_EVENT_RANGE_MISMATCH:"):
+        return "CI_EVENT_RANGE_MISMATCH"
     if text.startswith("[policy]") or lower.startswith("cannot load policy"):
         return "POLICY_INVALID"
     if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
