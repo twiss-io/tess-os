@@ -30,6 +30,10 @@ SCHEMA = "core/contracts/policy.schema.json"
 VERDICT_SCHEMA = "core/contracts/verdict.schema.json"
 FAMILY_GLOB = ".tess/core/templates/agents-md/**"
 RULE_ID = "renderer-admission-test"
+EVENT_REPOSITORY = "twiss-io/tess-os"
+WORKFLOW_SOURCE_REPOSITORY = "twiss-io/tess-gate-workflows"
+WORKFLOW_SOURCE_REF = "refs/tags/gate-v1"
+WORKFLOW_SOURCE_SHA = "a" * 40
 
 
 def _git(root: Path, *args: str) -> str:
@@ -53,6 +57,14 @@ def _write(root: Path, rel: str, content: str | bytes) -> Path:
 def _policy_document(*, admission: bool) -> dict:
     policy: dict = {
         "version": 1,
+        "repository_id": EVENT_REPOSITORY,
+        "ci_admission": {
+            "version": 1,
+            "workflow_source_repository": WORKFLOW_SOURCE_REPOSITORY,
+            "workflow_source_path": ".github/workflows/tess-gate.yml",
+            "workflow_source_ref": WORKFLOW_SOURCE_REF,
+            "workflow_source_sha": WORKFLOW_SOURCE_SHA,
+        },
         "rules": [],
         "hard_floor_rules": [],
         "verifier_keys": {},
@@ -1002,13 +1014,14 @@ def test_real_update_command_outcome_is_coherent_but_still_requires_verdict(
 
 
 def _github_event_env(history, event_name: str, payload: dict, head: str) -> dict:
-    payload.setdefault("repository", {"full_name": "twiss-io/tess-os"})
+    payload.setdefault("repository", {"full_name": EVENT_REPOSITORY})
     if event_name == "pull_request":
         payload.setdefault("number", 7)
         pr = payload.get("pull_request")
         base = pr.get("base") if isinstance(pr, dict) else None
         if isinstance(base, dict):
             base.setdefault("ref", "main")
+            base.setdefault("repo", {"full_name": EVENT_REPOSITORY})
         github_ref = f"refs/pull/{payload['number']}/merge"
     else:
         payload.setdefault("ref", "refs/heads/main")
@@ -1018,9 +1031,13 @@ def _github_event_env(history, event_name: str, payload: dict, head: str) -> dic
     return {
         "GITHUB_ACTIONS": "true",
         "GITHUB_JOB": "ship-gate",
-        "GITHUB_REPOSITORY": "twiss-io/tess-os",
+        "GITHUB_REPOSITORY": EVENT_REPOSITORY,
         "GITHUB_REF": github_ref,
-        "GITHUB_WORKFLOW_REF": f"twiss-io/tess-os/.github/workflows/tess-gate.yml@{github_ref}",
+        "GITHUB_WORKFLOW_REF": (
+            f"{WORKFLOW_SOURCE_REPOSITORY}/.github/workflows/tess-gate.yml@"
+            f"{WORKFLOW_SOURCE_REF}"
+        ),
+        "GITHUB_WORKFLOW_SHA": WORKFLOW_SOURCE_SHA,
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_EVENT_PATH": str(event_path),
         "GITHUB_SHA": head,

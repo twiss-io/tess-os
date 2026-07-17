@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,97 @@ def _key_registry_base(
     return policy, _git(root, "rev-parse", "HEAD")
 
 
+def _same_primary_filtered_exports() -> tuple[str, str, bytes, bytes, bytes]:
+    """Create one test-only primary with two signing subkeys and filter it.
+
+    The two public exports have different bytes and expose different signing
+    subkeys, but both certificates retain the same primary identity. This is
+    the exact alias shape registry separation must derive rather than trust
+    policy declarations or export-byte hashes to detect.
+    """
+    home = Path(tempfile.mkdtemp(prefix="tess-primary-alias-", dir="/tmp"))
+    home.chmod(0o700)
+    env = {**os.environ, "GNUPGHOME": str(home)}
+
+    def gpg(*args: str):
+        return subprocess.run(
+            [
+                "gpg", "--homedir", str(home), "--batch", "--yes",
+                "--pinentry-mode", "loopback", "--passphrase", "", *args,
+            ],
+            capture_output=True, env=env,
+        )
+
+    def generate_with_agent_retry(*args: str):
+        result = gpg(*args)
+        error = result.stderr.decode(errors="replace").lower()
+        if result.returncode != 0 and any(token in error for token in (
+            "no agent running", "can't connect to the gpg-agent", "ipc connect",
+        )):
+            subprocess.run(
+                ["gpgconf", "--homedir", str(home), "--launch", "gpg-agent"],
+                capture_output=True, env=env,
+            )
+            result = gpg(*args)
+            error = result.stderr.decode(errors="replace").lower()
+        if result.returncode != 0 and not (
+            os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+            or os.environ.get("CI")
+        ) and any(token in error for token in (
+            "no agent running", "can't connect to the gpg-agent", "ipc connect",
+        )):
+            pytest.skip(
+                "LOCAL_ENV_GPG_AGENT_UNAVAILABLE: isolated temporary agent could not start"
+            )
+        return result
+
+    try:
+        uid = "Tess Primary Alias <primary-alias@tess.invalid>"
+        generated = generate_with_agent_retry(
+            "--quick-generate-key", uid, "ed25519", "cert", "0",
+        )
+        assert generated.returncode == 0, generated.stderr.decode(errors="replace")
+        listed = gpg("--with-colons", "--list-keys", uid)
+        records = listed.stdout.decode(errors="replace").splitlines()
+        primary = next(line.split(":")[9] for line in records if line.startswith("fpr:"))
+        for _ in range(2):
+            added = generate_with_agent_retry(
+                "--quick-add-key", primary, "ed25519", "sign", "0",
+            )
+            assert added.returncode == 0, added.stderr.decode(errors="replace")
+        listed = gpg("--with-colons", "--list-keys", primary)
+        subkeys: list[str] = []
+        awaiting_subkey = False
+        for line in listed.stdout.decode(errors="replace").splitlines():
+            fields = line.split(":")
+            if fields[0] == "sub":
+                awaiting_subkey = True
+            elif fields[0] == "fpr" and awaiting_subkey:
+                subkeys.append(fields[9])
+                awaiting_subkey = False
+        assert len(subkeys) == 2
+
+        exports = []
+        for selected in subkeys:
+            exported = gpg(
+                "--armor", "--export-filter",
+                f"drop-subkey=fpr <> {selected}", "--export", primary,
+            )
+            assert exported.returncode == 0, exported.stderr.decode(errors="replace")
+            assert exported.stdout
+            exports.append(exported.stdout)
+        assert exports[0] != exports[1]
+        secret = gpg("--armor", "--export-secret-keys", primary)
+        assert secret.returncode == 0 and secret.stdout
+        return primary, subkeys[1], exports[0], exports[1], secret.stdout
+    finally:
+        subprocess.run(
+            ["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"],
+            capture_output=True, env=env,
+        )
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_policy_lint_rejects_primary_fingerprint_reuse_across_roles(engine):
     instance = _policy(
         verifier_path=".tess/keys/verifiers/reid.asc",
@@ -229,6 +321,46 @@ def test_immutable_base_rejects_identical_public_key_bytes_across_roles(
         assert blobs == {}
         assert "PRIMARY_KEY_BYTES_REUSE_FORBIDDEN" in errors[name]
         assert "role or alias reuse fails closed" in errors[name]
+
+
+def test_immutable_base_derives_same_primary_across_filtered_subkey_exports(
+    engine, tmp_path,
+):
+    primary, second_subkey, verifier_export, signoff_export, _ = (
+        _same_primary_filtered_exports()
+    )
+    root = tmp_path / "filtered-primary-alias"
+    root.mkdir()
+    policy, base = _key_registry_base(
+        root,
+        verifier_bytes=verifier_export,
+        signoff_bytes=signoff_export,
+    )
+    # The attacker declares a distinct signing subkey for the sign-off role.
+    # An implementation comparing only declarations or export bytes misses
+    # this; certificate-derived primary identity must still reject both.
+    policy["policy"]["verifier_keys"]["Reid"]["fingerprint"] = primary
+    policy["policy"]["signoff_keys"]["Xavier"]["fingerprint"] = second_subkey
+
+    state = engine._gate_load_baseline_key_registry_state(root, policy, base)
+
+    for role, name in (("verifier", "Reid"), ("signoff", "Xavier")):
+        blobs, errors = state[role]
+        assert blobs == {}
+        assert "PRIMARY_FINGERPRINT_REUSE_FORBIDDEN" in errors[name]
+        assert "certificate-derived" in errors[name]
+    assert "PRIMARY_FINGERPRINT_MISMATCH" in state["signoff"][1]["Xavier"]
+
+
+def test_primary_fingerprint_inspection_rejects_secret_key_material(engine):
+    _, _, _, _, secret_export = _same_primary_filtered_exports()
+
+    fingerprint, reason = engine._gate_primary_fingerprint_from_public_key_blob(
+        secret_export,
+    )
+
+    assert fingerprint is None
+    assert "secret-key material" in reason
 
 
 def _namespace_gate_repo(root: Path, *, existing_path: str | None = None) -> str:

@@ -43,6 +43,10 @@
         "renderer_admission": {
           "$ref": "#/$defs/RendererAdmission",
           "description": "Optional immutable-BASE renderer admission inventory. Candidate policy and lock bytes are consistency evidence only; they never replace the inventory already committed at the event-derived BASE."
+        },
+        "ci_admission": {
+          "$ref": "#/$defs/CiAdmission",
+          "description": "Optional owner-configured authoritative-CI identity. When absent or malformed at immutable event BASE, GitHub Actions admission fails closed with CI_TRUST_BOOTSTRAP_REQUIRED. Workflow source repository/path/ref/SHA are intentionally separate from the event target repository_id and must match the external source-bound ruleset."
         }
       },
       "required": ["version", "rules", "hard_floor_rules"],
@@ -58,7 +62,7 @@
         "fingerprint": {
           "type": "string",
           "pattern": "^[0-9A-F]{40}$",
-          "description": "The verifier's full 40-hex-char GPG key fingerprint (uppercase, no spaces) — the SAME 'C3 exact equality, no short-ID matching' discipline `framework.trusted_key_fingerprint` already applies to release-key pinning (`.tess/bin/tessctl`'s `_FULL_FP_RE`). A signature made by any OTHER key — including a same-named but different key, or a key whose armored export was swapped in `public_key_file` without updating this fingerprint — is rejected, not silently accepted by proximity."
+          "description": "The verifier certificate's full 40-hex-char PRIMARY GPG fingerprint (uppercase, no spaces). The gate derives the actual primary from the immutable BASE public certificate and requires exact equality. A signature may use a signing subkey only when GPG's VALIDSIG binds it to this exact primary. A same-named different primary, declared signing-subkey fingerprint, filtered-export alias, or swapped armored export is rejected."
         },
         "public_key_file": {
           "type": "string",
@@ -76,7 +80,7 @@
         "fingerprint": {
           "type": "string",
           "pattern": "^[0-9A-F]{40}$",
-          "description": "The operator sign-off key's full 40-hex-character GPG fingerprint (uppercase, no spaces). Exact fingerprint equality is required; names and short key IDs never establish authority."
+          "description": "The operator sign-off certificate's full 40-hex-character PRIMARY GPG fingerprint (uppercase, no spaces). The immutable certificate must derive this exact primary; a signing subkey is accepted only when VALIDSIG binds it to that primary. Names, short key IDs, filtered exports, and verifier-role aliases never establish authority."
         },
         "public_key_file": {
           "type": "string",
@@ -98,6 +102,34 @@
         { "$ref": "#/$defs/RepoRelativePath" },
         { "not": { "pattern": "[?\\[]" } }
       ]
+    },
+    "CiAdmission": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "workflow_source_repository": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        },
+        "workflow_source_path": {
+          "type": "string",
+          "const": ".github/workflows/tess-gate.yml"
+        },
+        "workflow_source_ref": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 255,
+          "pattern": "^refs/(heads|tags)/(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)(?!.*@$)[A-Za-z0-9._/-]+$"
+        },
+        "workflow_source_sha": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$"
+        }
+      },
+      "required": ["version", "workflow_source_repository", "workflow_source_path", "workflow_source_ref", "workflow_source_sha"],
+      "additionalProperties": false
     },
     "RendererAdmission": {
       "type": "object",

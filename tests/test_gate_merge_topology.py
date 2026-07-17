@@ -15,6 +15,13 @@ from pathlib import Path
 import pytest
 
 
+EVENT_REPOSITORY = "twiss-io/tess-os"
+WORKFLOW_SOURCE_REPOSITORY = "twiss-io/tess-gate-workflows"
+WORKFLOW_SOURCE_PATH = ".github/workflows/tess-gate.yml"
+WORKFLOW_SOURCE_REF = "refs/tags/gate-v1"
+WORKFLOW_SOURCE_SHA = "a" * 40
+
+
 GIT_ENV = {
     **os.environ,
     "GIT_AUTHOR_NAME": "Tess topology test",
@@ -53,6 +60,28 @@ def graph(tmp_path):
     _git(root, "init", "-q")
     _git(root, "config", "user.name", "Tess topology test")
     _git(root, "config", "user.email", "topology@tess.test")
+    policy_path = root / "core" / "policy" / "policy.yaml"
+    policy_path.parent.mkdir(parents=True)
+    unconfigured_policy = {
+        "policy": {
+            "version": 1,
+            "repository_id": EVENT_REPOSITORY,
+            "rules": [],
+            "hard_floor_rules": [],
+        },
+    }
+    policy_path.write_text(json.dumps(unconfigured_policy), encoding="utf-8")
+    (root / "README.md").write_text("bootstrap\n", encoding="utf-8")
+    unconfigured_base = _commit_all(root, "unconfigured BASE")
+    configured_policy = json.loads(json.dumps(unconfigured_policy))
+    configured_policy["policy"]["ci_admission"] = {
+        "version": 1,
+        "workflow_source_repository": WORKFLOW_SOURCE_REPOSITORY,
+        "workflow_source_path": WORKFLOW_SOURCE_PATH,
+        "workflow_source_ref": WORKFLOW_SOURCE_REF,
+        "workflow_source_sha": WORKFLOW_SOURCE_SHA,
+    }
+    policy_path.write_text(json.dumps(configured_policy), encoding="utf-8")
     (root / "README.md").write_text("base\n", encoding="utf-8")
     base = _commit_all(root, "base")
     (root / "docs").mkdir()
@@ -62,6 +91,7 @@ def graph(tmp_path):
     evaluation = _commit_tree(root, attestation_tree, base, attestation)
     return {
         "root": root,
+        "unconfigured_base": unconfigured_base,
         "base": base,
         "attestation": attestation,
         "evaluation": evaluation,
@@ -70,23 +100,28 @@ def graph(tmp_path):
     }
 
 
-def _set_event(monkeypatch, graph, *, event_name: str, event: dict,
-               github_sha: str, github_ref: str, workflow_ref: str | None = None):
+def _set_event(
+    monkeypatch, graph, *, event_name: str, event: dict,
+    github_sha: str, github_ref: str, workflow_ref: str | None = None,
+    workflow_sha: str = WORKFLOW_SOURCE_SHA,
+    github_repository: str = EVENT_REPOSITORY,
+):
     root = graph["root"]
     event_path = root / "event.json"
     event_path.write_text(json.dumps(event), encoding="utf-8")
-    repository = "twiss-io/tess-os"
     values = {
         "GITHUB_ACTIONS": "true",
         "GITHUB_JOB": "ship-gate",
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_EVENT_PATH": str(event_path),
-        "GITHUB_REPOSITORY": repository,
+        "GITHUB_REPOSITORY": github_repository,
         "GITHUB_REF": github_ref,
         "GITHUB_SHA": github_sha,
         "GITHUB_WORKFLOW_REF": workflow_ref or (
-            f"{repository}/.github/workflows/tess-gate.yml@{github_ref}"
+            f"{WORKFLOW_SOURCE_REPOSITORY}/{WORKFLOW_SOURCE_PATH}@"
+            f"{WORKFLOW_SOURCE_REF}"
         ),
+        "GITHUB_WORKFLOW_SHA": workflow_sha,
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -97,9 +132,13 @@ def _pr_event(graph, *, number: int = 17, base: str | None = None,
               attestation: str | None = None) -> dict:
     return {
         "number": number,
-        "repository": {"full_name": "twiss-io/tess-os"},
+        "repository": {"full_name": EVENT_REPOSITORY},
         "pull_request": {
-            "base": {"ref": "main", "sha": base or graph["base"]},
+            "base": {
+                "ref": "main",
+                "sha": base or graph["base"],
+                "repo": {"full_name": EVENT_REPOSITORY},
+            },
             "head": {"sha": attestation or graph["attestation"]},
         },
     }
@@ -111,12 +150,13 @@ def _push_event(graph, *, base: str | None = None,
         "ref": ref,
         "before": base or graph["base"],
         "after": evaluation or graph["evaluation"],
-        "repository": {"full_name": "twiss-io/tess-os"},
+        "repository": {"full_name": EVENT_REPOSITORY},
     }
 
 
 @pytest.mark.parametrize("event_name", ["pull_request", "push"])
 def test_exact_two_parent_wrapper_is_authoritative(engine, graph, monkeypatch, event_name):
+    assert WORKFLOW_SOURCE_REPOSITORY != EVENT_REPOSITORY
     if event_name == "pull_request":
         event = _pr_event(graph)
         github_ref = "refs/pull/17/merge"
@@ -255,20 +295,20 @@ def test_base_head_event_and_context_races_are_rejected(engine, graph, monkeypat
     assert reason.startswith(("CI_EVENT_RANGE_MISMATCH:", "CI_MERGE_TOPOLOGY_INVALID:"))
 
 
-@pytest.mark.parametrize("source_mismatch", ["repository", "workflow"])
-def test_candidate_event_source_mismatch_is_rejected(
-    engine, graph, monkeypatch, source_mismatch,
-):
+@pytest.mark.parametrize("target_mismatch", ["event_repository", "github_repository", "base_repository"])
+def test_event_target_mismatch_is_rejected(engine, graph, monkeypatch, target_mismatch):
     event = _pr_event(graph)
-    workflow_ref = None
-    if source_mismatch == "repository":
+    github_repository = EVENT_REPOSITORY
+    if target_mismatch == "event_repository":
         event["repository"]["full_name"] = "attacker/tess-os"
+    elif target_mismatch == "github_repository":
+        github_repository = "attacker/tess-os"
     else:
-        workflow_ref = "twiss-io/tess-os/.github/workflows/other.yml@refs/pull/17/merge"
+        event["pull_request"]["base"]["repo"]["full_name"] = "attacker/tess-os"
     _set_event(
         monkeypatch, graph, event_name="pull_request", event=event,
         github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
-        workflow_ref=workflow_ref,
+        github_repository=github_repository,
     )
 
     authoritative, reason, _ = engine._gate_ci_event_provenance(
@@ -276,7 +316,40 @@ def test_candidate_event_source_mismatch_is_rejected(
     )
 
     assert authoritative is False
-    assert reason.startswith("CI_EVENT_SOURCE_REQUIRED:")
+    assert reason.startswith(("CI_EVENT_TARGET_MISMATCH:", "CI_EVENT_REF_MISMATCH:"))
+
+
+@pytest.mark.parametrize("source_mismatch", ["repository", "path", "ref", "sha"])
+def test_ruleset_workflow_source_mismatch_is_rejected(
+    engine, graph, monkeypatch, source_mismatch,
+):
+    source_repository = WORKFLOW_SOURCE_REPOSITORY
+    source_path = WORKFLOW_SOURCE_PATH
+    source_ref = WORKFLOW_SOURCE_REF
+    source_sha = WORKFLOW_SOURCE_SHA
+    if source_mismatch == "repository":
+        source_repository = "attacker/workflows"
+    elif source_mismatch == "path":
+        source_path = ".github/workflows/spoofed.yml"
+    elif source_mismatch == "ref":
+        source_ref = "refs/heads/candidate"
+    else:
+        source_sha = "b" * 40
+    workflow_ref = f"{source_repository}/{source_path}@{source_ref}"
+    event = _pr_event(graph)
+    _set_event(
+        monkeypatch, graph, event_name="pull_request", event=event,
+        github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
+        workflow_ref=workflow_ref, workflow_sha=source_sha,
+    )
+
+    authoritative, reason, topology = engine._gate_ci_event_provenance(
+        graph["root"], graph["base"], graph["evaluation"],
+    )
+
+    assert authoritative is False
+    assert topology is None
+    assert reason.startswith("CI_WORKFLOW_SOURCE_MISMATCH:")
 
 
 def test_same_protected_job_id_from_another_workflow_is_not_authoritative(
@@ -288,7 +361,8 @@ def test_same_protected_job_id_from_another_workflow_is_not_authoritative(
         monkeypatch, graph, event_name="pull_request", event=event,
         github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
         workflow_ref=(
-            "twiss-io/tess-os/.github/workflows/spoofed.yml@refs/pull/17/merge"
+            f"{WORKFLOW_SOURCE_REPOSITORY}/.github/workflows/spoofed.yml@"
+            f"{WORKFLOW_SOURCE_REF}"
         ),
     )
     assert os.environ["GITHUB_JOB"] == "ship-gate"
@@ -299,7 +373,23 @@ def test_same_protected_job_id_from_another_workflow_is_not_authoritative(
 
     assert authoritative is False
     assert topology is None
-    assert reason.startswith("CI_EVENT_SOURCE_REQUIRED:")
+    assert reason.startswith("CI_WORKFLOW_SOURCE_MISMATCH:")
+
+
+def test_unconfigured_immutable_base_never_authorizes(engine, graph, monkeypatch):
+    event = _pr_event(graph, base=graph["unconfigured_base"])
+    _set_event(
+        monkeypatch, graph, event_name="pull_request", event=event,
+        github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
+    )
+
+    authoritative, reason, topology = engine._gate_ci_event_provenance(
+        graph["root"], graph["unconfigured_base"], graph["evaluation"],
+    )
+
+    assert authoritative is False
+    assert topology is None
+    assert reason.startswith("CI_TRUST_BOOTSTRAP_REQUIRED:")
 
 
 @pytest.mark.parametrize(

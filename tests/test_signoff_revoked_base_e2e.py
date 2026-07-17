@@ -143,8 +143,12 @@ def _commit(root: Path, message: str) -> str:
 def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
     engine, tmp_path,
 ):
-    identity = _new_ephemeral_identity()
+    identities = []
     try:
+        verifier_identity = _new_ephemeral_identity()
+        identities.append(verifier_identity)
+        signoff_identity = _new_ephemeral_identity()
+        identities.append(signoff_identity)
         verdict = {
             "verifier": "Reid",
             "output_domain": "Code diff / PR",
@@ -156,7 +160,9 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
             "covers_paths": ["payments/charge.py"],
             "artifact_hashes": {"payments/charge.py": "1" * 40},
         }
-        verdict["signature"] = _sign(engine, verdict, identity, signoff=False)
+        verdict["signature"] = _sign(
+            engine, verdict, verifier_identity, signoff=False,
+        )
 
         now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
         signoff = {
@@ -173,11 +179,16 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
             "authorized_at": now.isoformat().replace("+00:00", "Z"),
             "expires_at": (now + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
         }
-        signoff["signature"] = _sign(engine, signoff, identity, signoff=True)
+        signoff["signature"] = _sign(
+            engine, signoff, signoff_identity, signoff=True,
+        )
 
-        # Revocation is applied only after both detached signatures exist.
-        revoked_public = _revoke_after_signing(identity)
-        assert revoked_public != identity.unrevoked_public
+        # Each trust role has a distinct primary. Revocations are applied only
+        # after both detached signatures exist.
+        revoked_verifier_public = _revoke_after_signing(verifier_identity)
+        revoked_signoff_public = _revoke_after_signing(signoff_identity)
+        assert revoked_verifier_public != verifier_identity.unrevoked_public
+        assert revoked_signoff_public != signoff_identity.unrevoked_public
 
         root = tmp_path / "repo"
         root.mkdir()
@@ -188,21 +199,21 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
         signoff_path = root / ".tess/keys/signoffs/xavier.asc"
         verifier_path.parent.mkdir(parents=True)
         signoff_path.parent.mkdir(parents=True)
-        verifier_path.write_bytes(revoked_public)
-        signoff_path.write_bytes(revoked_public)
-        base = _commit(root, "BASE publishes revoked public key bytes")
+        verifier_path.write_bytes(revoked_verifier_public)
+        signoff_path.write_bytes(revoked_signoff_public)
+        base = _commit(root, "BASE publishes distinct revoked public key bytes")
 
         policy = {
             "policy": {
                 "verifier_keys": {
                     "Reid": {
-                        "fingerprint": identity.fingerprint,
+                        "fingerprint": verifier_identity.fingerprint,
                         "public_key_file": ".tess/keys/verifiers/reid.asc",
                     },
                 },
                 "signoff_keys": {
                     "Xavier": {
-                        "fingerprint": identity.fingerprint,
+                        "fingerprint": signoff_identity.fingerprint,
                         "public_key_file": ".tess/keys/signoffs/xavier.asc",
                     },
                 },
@@ -211,8 +222,8 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
 
         # Candidate rollback: both committed candidate paths now omit the
         # revocation, but the loaders below must still return BASE bytes.
-        verifier_path.write_bytes(identity.unrevoked_public)
-        signoff_path.write_bytes(identity.unrevoked_public)
+        verifier_path.write_bytes(verifier_identity.unrevoked_public)
+        signoff_path.write_bytes(signoff_identity.unrevoked_public)
         _commit(root, "candidate rolls public key bytes back before revocation")
 
         verifier_blobs, verifier_errors = engine._gate_load_baseline_verifier_key_blobs(
@@ -222,8 +233,8 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
             root, policy, base,
         )
         assert verifier_errors == signoff_errors == {}
-        assert verifier_blobs["Reid"] == revoked_public
-        assert signoff_blobs["Xavier"] == revoked_public
+        assert verifier_blobs["Reid"] == revoked_verifier_public
+        assert signoff_blobs["Xavier"] == revoked_signoff_public
         assert verifier_blobs["Reid"] != verifier_path.read_bytes()
         assert signoff_blobs["Xavier"] != signoff_path.read_bytes()
 
@@ -240,8 +251,10 @@ def test_pre_revocation_verdict_and_signoff_fail_against_revoked_base_bytes(
         assert verdict_ok is False and "REVOKED" in verdict_reason
         assert signoff_ok is False and "REVOKED" in signoff_reason
     finally:
-        subprocess.run(
-            ["gpgconf", "--homedir", str(identity.home), "--kill", "gpg-agent"],
-            capture_output=True, env={**os.environ, "GNUPGHOME": str(identity.home)},
-        )
-        shutil.rmtree(identity.home, ignore_errors=True)
+        for identity in identities:
+            subprocess.run(
+                ["gpgconf", "--homedir", str(identity.home), "--kill", "gpg-agent"],
+                capture_output=True,
+                env={**os.environ, "GNUPGHOME": str(identity.home)},
+            )
+            shutil.rmtree(identity.home, ignore_errors=True)

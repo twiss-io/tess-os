@@ -1008,3 +1008,18 @@ def test_gpg_signing_key_validity_reason_none_for_goodsig(engine):
         "ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
     )
     assert engine._gpg_signing_key_validity_reason(raw) is None
+
+
+def test_validsig_primary_parser_does_not_treat_signing_subkey_as_authority(engine):
+    signing_subkey = "1" * 40
+    certificate_primary = "2" * 40
+    raw = (
+        f"[GNUPG:] VALIDSIG {signing_subkey} 2026-01-01 1700000000 0 "
+        f"4 0 22 10 00 {certificate_primary}\n"
+    )
+
+    assert engine._parse_gpg_fingerprint(raw) == signing_subkey
+    assert (
+        engine._parse_gpg_signature_primary_fingerprint(raw)
+        == certificate_primary
+    )

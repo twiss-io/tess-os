@@ -322,6 +322,25 @@ def verifier_gpg_keys():
         shutil.rmtree(str(key.home), ignore_errors=True)
 
 
+@pytest.fixture(scope="session")
+def signoff_gpg_key():
+    """One real, isolated operator key distinct from every verifier primary.
+
+    Human hard-floor authority and AI review authority are separate trust
+    domains even for a solo operator. Tests therefore model Xavier with a
+    seventh ephemeral primary instead of aliasing Reid's certificate.
+    """
+    if not (HAS_GPG and HAS_GIT):
+        pytest.skip("gpg + git required for signoff-signature tests")
+    key = _gen_verifier_gpg_identity("Xavier")
+    yield key
+    subprocess.run(
+        ["gpgconf", "--homedir", str(key.home), "--kill", "gpg-agent"],
+        capture_output=True, env={**os.environ, "GNUPGHOME": str(key.home)},
+    )
+    shutil.rmtree(str(key.home), ignore_errors=True)
+
+
 def sign_verdict_for_test(engine, verdict: dict, key) -> dict:
     """Produce a `signature` block for `verdict`, signed by GPG identity
     `key` (a SimpleNamespace from `verifier_gpg_keys` / `gpg_key`) — using

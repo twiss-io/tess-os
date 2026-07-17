@@ -3467,17 +3467,44 @@ def _gpg_signing_key_validity_reason(raw_status_output: str) -> str | None:
     return None
 
 
-def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Path) -> tuple[bool, str, str | None]:
+def _parse_gpg_signature_primary_fingerprint(raw_status_output: str) -> str:
+    """Return the certificate primary behind a valid signing key/subkey.
+
+    GPG's VALIDSIG first fingerprint identifies the packet key that made the
+    signature. When that is a subkey, the final field identifies its primary
+    certificate. Registry authority is pinned to that primary; accepting or
+    comparing only the signing-subkey fingerprint would make role separation
+    depend on which filtered export/subkey happened to sign.
+    """
+    for line in raw_status_output.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 3 or parts[0] != "[GNUPG:]" or parts[1] != "VALIDSIG":
+            continue
+        signing_fingerprint = parts[2].upper()
+        if not _FULL_FP_RE.fullmatch(signing_fingerprint):
+            return ""
+        if len(parts) >= 12:
+            primary_fingerprint = parts[11].upper()
+            if _FULL_FP_RE.fullmatch(primary_fingerprint):
+                return primary_fingerprint
+        return signing_fingerprint
+    return ""
+
+
+def _gpg_verify_detached_signature(
+    payload: bytes, sig_armored: str, homedir: Path,
+) -> tuple[bool, str, str, str | None]:
     """Verify `sig_armored` (an ASCII-armored detached signature) against
     `payload` bytes using gpg homed at `homedir` — an ISOLATED GNUPGHOME the
     caller has already seeded with exactly the key(s) it wants to trust for
-    this check. Returns (verified_ok, signing_fingerprint, key_validity_reason):
-      - verified_ok / signing_fingerprint — UNCHANGED cryptographic-validity
-        contract from before the A10c fix: verified_ok is True iff gpg's
-        exit code is 0 AND a VALIDSIG line could be parsed; the fingerprint
-        is '' when verification failed or no VALIDSIG line was present
-        (reuses `_parse_gpg_fingerprint`, the same parser `_verify_tag_secure`
-        uses for `git verify-tag --raw`).
+    this check. Returns (verified_ok, signing_fingerprint,
+    primary_fingerprint, key_validity_reason):
+      - verified_ok / signing_fingerprint / primary_fingerprint —
+        cryptographic validity plus the VALIDSIG packet-key and certificate
+        primary identities. verified_ok is True iff gpg's exit code is 0 and
+        both identities can be parsed. A primary-key signature reports the
+        same value for both; a signing subkey reports its owning primary in
+        the final VALIDSIG field.
       - key_validity_reason (A10c, new) — 'expired' | 'revoked' | None, from
         `_gpg_signing_key_validity_reason`. Deliberately a SEPARATE return
         value rather than folded into `verified_ok`: gpg still reports a
@@ -3503,8 +3530,12 @@ def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Pa
             + vr.stderr.decode("utf-8", errors="replace")
         )
         fp = _parse_gpg_fingerprint(raw)
+        primary_fp = _parse_gpg_signature_primary_fingerprint(raw)
         key_validity_reason = _gpg_signing_key_validity_reason(raw)
-        return (vr.returncode == 0 and bool(fp)), fp, key_validity_reason
+        return (
+            vr.returncode == 0 and bool(fp) and bool(primary_fp),
+            fp, primary_fp, key_validity_reason,
+        )
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
@@ -3590,6 +3621,100 @@ def _gate_normalize_primary_fingerprint(value: object) -> str | None:
     if not _FULL_FP_RE.fullmatch(normalized):
         return None
     return normalized
+
+
+def _gate_primary_fingerprint_from_public_key_blob(
+    key_bytes: bytes,
+) -> tuple[str | None, str | None]:
+    """Derive the one primary fingerprint from an OpenPGP public certificate.
+
+    Registry identity is a property of the certificate committed at immutable
+    BASE, not a policy claim, armored-export digest, or detached-signature
+    subkey.  GPG parses the untrusted blob from stdin in ``show-only`` mode;
+    no key packet is written to disk or imported into an ambient keyring.
+    Secret-key packets, malformed/multi-certificate blobs, and anything other
+    than one full v4 primary fingerprint fail closed.
+    """
+    if not isinstance(key_bytes, bytes) or not key_bytes:
+        return None, "immutable BASE OpenPGP public certificate is empty — fail-closed"
+    if len(key_bytes) > 1024 * 1024:
+        return None, (
+            "immutable BASE OpenPGP public certificate exceeds 1 MiB inspection "
+            "limit — fail-closed"
+        )
+
+    isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_key_identity_gpg_"))
+    try:
+        try:
+            isolated_gpg.chmod(0o700)
+        except OSError:
+            pass
+        try:
+            inspected = subprocess.run(
+                [
+                    "gpg", "--batch", "--no-options", "--homedir", str(isolated_gpg),
+                    "--with-colons", "--fixed-list-mode",
+                    "--import-options", "show-only", "--dry-run", "--import",
+                ],
+                input=key_bytes, capture_output=True,
+            )
+        except OSError:
+            return None, (
+                "cannot execute GPG to inspect immutable BASE OpenPGP public "
+                "certificate — fail-closed"
+            )
+        if inspected.returncode != 0:
+            return None, (
+                "immutable BASE key blob is not a valid OpenPGP public certificate "
+                "— fail-closed"
+            )
+
+        records = []
+        for raw_line in inspected.stdout.decode("utf-8", errors="replace").splitlines():
+            fields = raw_line.split(":")
+            if fields and fields[0]:
+                records.append(fields)
+        if any(fields[0] in ("sec", "ssb") for fields in records):
+            return None, (
+                "immutable BASE trust registry contains secret-key material; only "
+                "public certificates are accepted — fail-closed"
+            )
+
+        primary_fingerprints: list[str] = []
+        awaiting_primary_fingerprint = False
+        for fields in records:
+            record_type = fields[0]
+            if record_type == "pub":
+                if awaiting_primary_fingerprint:
+                    return None, (
+                        "immutable BASE OpenPGP certificate has a primary key without "
+                        "a fingerprint — fail-closed"
+                    )
+                awaiting_primary_fingerprint = True
+                continue
+            if record_type == "fpr" and awaiting_primary_fingerprint:
+                fingerprint = fields[9].upper() if len(fields) > 9 else ""
+                if not _FULL_FP_RE.fullmatch(fingerprint):
+                    return None, (
+                        "immutable BASE OpenPGP certificate primary fingerprint is not "
+                        "one full 40-hex value — fail-closed"
+                    )
+                primary_fingerprints.append(fingerprint)
+                awaiting_primary_fingerprint = False
+                continue
+            if record_type in ("sub", "pub") and awaiting_primary_fingerprint:
+                return None, (
+                    "immutable BASE OpenPGP certificate has an ambiguous primary "
+                    "fingerprint — fail-closed"
+                )
+        if awaiting_primary_fingerprint or len(primary_fingerprints) != 1:
+            return None, (
+                "immutable BASE key blob must contain exactly one OpenPGP public "
+                "certificate with one primary fingerprint — fail-closed"
+            )
+        return primary_fingerprints[0], None
+    finally:
+        shutil.rmtree(str(isolated_gpg), ignore_errors=True)
 
 
 def _gate_verify_verdict_signature(
@@ -3721,6 +3846,9 @@ def _gate_verify_verdict_signature(
         if trusted_key_bytes is not None:
             if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
                 return False, "immutable BASE verifier certificate is not a public-only OpenPGP key"
+            # Immutable BASE public material is imported directly from memory;
+            # never materialize attacker-influenced certificate bytes as a
+            # temporary pathname.
             import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
         else:
             import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
@@ -3735,8 +3863,10 @@ def _gate_verify_verdict_signature(
             ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
             input=f"{fingerprint}:6:\n".encode(), capture_output=True,
         )
-        verified, signing_fp, key_validity_reason = _gpg_verify_detached_signature(
-            canonical, sig_armored, isolated_gpg,
+        verified, signing_fp, signing_primary_fp, key_validity_reason = (
+            _gpg_verify_detached_signature(
+                canonical, sig_armored, isolated_gpg,
+            )
         )
     finally:
         shutil.rmtree(str(isolated_gpg), ignore_errors=True)
@@ -3746,11 +3876,12 @@ def _gate_verify_verdict_signature(
             f"gpg signature verification failed for verifier {verifier!r} "
             f"(bad signature, or the signature does not match this content)"
         )
-    if signing_fp.upper() != fingerprint:
+    if signing_primary_fp.upper() != fingerprint:
         return False, (
-            f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
-            f"the registered fingerprint {fingerprint} for verifier {verifier!r} — wrong "
-            f"key, fail-closed (C3 exact match, no short-ID/proximity matching)"
+            f"signature was made by signing key {signing_fp or 'unknown'} under primary "
+            f"{signing_primary_fp or 'unknown'}, which does NOT match the registered "
+            f"primary fingerprint {fingerprint} for verifier {verifier!r} — wrong key, "
+            f"fail-closed (C3 exact match, no short-ID/proximity matching)"
         )
     # A10c FIX (Gate Arena finding, disclosed 2026-07-07: "a verdict signed
     # with an already-expired/revoked key still verifies"). Checked LAST,
@@ -3942,6 +4073,7 @@ def _gate_verify_signoff_signature(
         if trusted_key_bytes is not None:
             if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
                 return False, "immutable BASE sign-off certificate is not a public-only OpenPGP key"
+            # Same in-memory BASE-only import discipline as verifier keys.
             import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
         else:
             import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
@@ -3955,8 +4087,10 @@ def _gate_verify_signoff_signature(
             ["gpg", "--homedir", str(isolated_gpg), "--import-ownertrust"],
             input=f"{fingerprint}:6:\n".encode(), capture_output=True,
         )
-        verified, signing_fp, key_validity_reason = _gpg_verify_detached_signature(
-            canonical, sig_armored, isolated_gpg,
+        verified, signing_fp, signing_primary_fp, key_validity_reason = (
+            _gpg_verify_detached_signature(
+                canonical, sig_armored, isolated_gpg,
+            )
         )
     finally:
         shutil.rmtree(str(isolated_gpg), ignore_errors=True)
@@ -3966,10 +4100,11 @@ def _gate_verify_signoff_signature(
             f"gpg signature verification failed for sign-off authorizer {authorized_by!r} "
             f"(bad signature, or the signature does not match this content)"
         )
-    if signing_fp.upper() != fingerprint:
+    if signing_primary_fp.upper() != fingerprint:
         return False, (
-            f"signature was made by key {signing_fp or 'unknown'}, which does NOT match "
-            f"the registered fingerprint {fingerprint} for sign-off authorizer "
+            f"signature was made by signing key {signing_fp or 'unknown'} under primary "
+            f"{signing_primary_fp or 'unknown'}, which does NOT match the registered "
+            f"primary fingerprint {fingerprint} for sign-off authorizer "
             f"{authorized_by!r} — wrong key, fail-closed (C3 exact match, no short-ID/"
             f"proximity matching)"
         )
@@ -11550,7 +11685,8 @@ def _gate_load_baseline_key_registry_state(
             for role, bucket in state.items()
         }
 
-    fingerprint_claims: dict[str, list[tuple[str, str]]] = {}
+    declared_fingerprint_claims: dict[str, list[tuple[str, str]]] = {}
+    derived_fingerprint_claims: dict[str, list[tuple[str, str]]] = {}
     byte_claims: dict[str, list[tuple[str, str]]] = {}
 
     def append_error(role: str, name: str, reason: str) -> None:
@@ -11591,7 +11727,7 @@ def _gate_load_baseline_key_registry_state(
                     "40-hex primary fingerprint in immutable BASE — fail-closed",
                 )
             else:
-                fingerprint_claims.setdefault(fingerprint, []).append((role, name))
+                declared_fingerprint_claims.setdefault(fingerprint, []).append((role, name))
 
             key_file, path_reason = path_validator(name, entry.get("public_key_file"))
             if path_reason:
@@ -11603,9 +11739,33 @@ def _gate_load_baseline_key_registry_state(
             if blob_reason:
                 append_error(role, name, blob_reason)
                 continue
-            state[role]["blobs"][name] = key_bytes
             byte_digest = hashlib.sha256(key_bytes).hexdigest()
             byte_claims.setdefault(byte_digest, []).append((role, name))
+
+            derived_fingerprint, identity_reason = (
+                _gate_primary_fingerprint_from_public_key_blob(key_bytes)
+            )
+            if identity_reason:
+                append_error(
+                    role, name,
+                    f"policy.{policy_key}[{name!r}].public_key_file {key_file!r}: "
+                    f"{identity_reason}",
+                )
+                continue
+            derived_fingerprint_claims.setdefault(
+                derived_fingerprint, [],
+            ).append((role, name))
+            if fingerprint != derived_fingerprint:
+                append_error(
+                    role, name,
+                    "PRIMARY_FINGERPRINT_MISMATCH: immutable BASE policy declares "
+                    f"{fingerprint or 'an invalid fingerprint'} but its committed "
+                    f"OpenPGP certificate derives primary fingerprint "
+                    f"{derived_fingerprint}; signing subkeys, names, and export bytes "
+                    "cannot replace primary-key identity — fail-closed",
+                )
+                continue
+            state[role]["blobs"][name] = key_bytes
 
     def claim_labels(claims: list[tuple[str, str]]) -> list[str]:
         return sorted(
@@ -11613,18 +11773,31 @@ def _gate_load_baseline_key_registry_state(
             for role, name in claims
         )
 
-    for fingerprint, claims in fingerprint_claims.items():
+    def reject_reused_fingerprint(
+        fingerprint: str, claims: list[tuple[str, str]], *, source: str,
+    ) -> None:
         if len(claims) < 2:
-            continue
+            return
         labels = claim_labels(claims)
         reason = (
-            "PRIMARY_FINGERPRINT_REUSE_FORBIDDEN: normalized primary fingerprint "
-            f"{fingerprint} is registered to multiple authorities {labels}; verifier "
+            "PRIMARY_FINGERPRINT_REUSE_FORBIDDEN: "
+            f"{source} primary fingerprint {fingerprint} is registered to multiple "
+            f"authorities {labels}; verifier "
             "review and human sign-off require distinct primary keys, including in "
             "solo-owner mode — immutable BASE fails closed"
         )
         for role, name in claims:
             append_error(role, name, reason)
+
+    for fingerprint, claims in declared_fingerprint_claims.items():
+        reject_reused_fingerprint(
+            fingerprint, claims, source="normalized declared",
+        )
+
+    for fingerprint, claims in derived_fingerprint_claims.items():
+        reject_reused_fingerprint(
+            fingerprint, claims, source="certificate-derived",
+        )
 
     for byte_digest, claims in byte_claims.items():
         if len(claims) < 2:
@@ -12710,9 +12883,104 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
 
 
 _GATE_CI_PROTECTED_JOB_ID = "ship-gate"
-_GATE_CI_WORKFLOW_REF_FRAGMENT = "/.github/workflows/tess-gate.yml@"
+_GATE_CI_WORKFLOW_PATH = ".github/workflows/tess-gate.yml"
 _GATE_CI_MAIN_REF = "refs/heads/main"
 _GATE_CI_PR_MERGE_REF_RE = re.compile(r"^refs/pull/(?P<number>[1-9][0-9]*)/merge$")
+_GATE_CI_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+_GATE_CI_SOURCE_REF_RE = re.compile(r"^refs/(?:heads|tags)/[A-Za-z0-9._/-]+$")
+
+
+def _gate_ci_admission_config_at_base(
+    root: Path, base_sha: str,
+) -> tuple[dict | None, str | None]:
+    """Load exact workflow-source and event-target identity from BASE policy.
+
+    A candidate workflow and candidate policy cannot make their own check
+    authoritative.  The event target is the BASE policy's ``repository_id``;
+    workflow source is a separate, explicit repository/path/ref/SHA tuple so
+    a source-bound ruleset may use a dedicated trusted workflow repository.
+    Missing or malformed configuration is an owner-controlled bootstrap gap,
+    never a permissive default.
+    """
+    baseline_instance, baseline_ref = _gate_load_policy_at_base_with_ref(
+        root, [base_sha],
+    )
+    if (
+        baseline_instance is None
+        or not isinstance(baseline_ref, str)
+        or baseline_ref.lower() != str(base_sha).lower()
+    ):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: authoritative admission needs a readable "
+            "policy from the exact immutable event BASE"
+        )
+    policy = baseline_instance.get("policy")
+    if not isinstance(policy, dict):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: immutable BASE policy is not a mapping"
+        )
+    event_repository = policy.get("repository_id")
+    config = policy.get("ci_admission")
+    if not isinstance(config, dict):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: immutable BASE policy has no configured "
+            "ci_admission workflow-source trust anchor; production remains blocked "
+            "until owner configuration and the external source-bound ruleset match"
+        )
+    source_repository = config.get("workflow_source_repository")
+    source_path = config.get("workflow_source_path")
+    source_ref = config.get("workflow_source_ref")
+    source_sha = config.get("workflow_source_sha")
+    if config.get("version") != 1:
+        return None, "CI_TRUST_BOOTSTRAP_REQUIRED: ci_admission.version must equal 1"
+    if (
+        not isinstance(event_repository, str)
+        or _GATE_CI_REPOSITORY_RE.fullmatch(event_repository) is None
+    ):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: immutable BASE policy.repository_id is "
+            "missing or non-canonical"
+        )
+    if (
+        not isinstance(source_repository, str)
+        or _GATE_CI_REPOSITORY_RE.fullmatch(source_repository) is None
+    ):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: ci_admission.workflow_source_repository "
+            "is missing or non-canonical"
+        )
+    if source_path != _GATE_CI_WORKFLOW_PATH:
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: ci_admission.workflow_source_path must be "
+            f"exactly {_GATE_CI_WORKFLOW_PATH!r}"
+        )
+    if (
+        not isinstance(source_ref, str)
+        or _GATE_CI_SOURCE_REF_RE.fullmatch(source_ref) is None
+        or ".." in source_ref.split("/")
+        or "//" in source_ref
+        or source_ref.endswith("/")
+        or "@" in source_ref
+    ):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: ci_admission.workflow_source_ref must be "
+            "one canonical refs/heads/* or refs/tags/* value"
+        )
+    if (
+        not isinstance(source_sha, str)
+        or _GATE_FULL_OBJECT_ID_RE.fullmatch(source_sha) is None
+    ):
+        return None, (
+            "CI_TRUST_BOOTSTRAP_REQUIRED: ci_admission.workflow_source_sha must be "
+            "one full immutable 40- or 64-hex commit ID"
+        )
+    return {
+        "event_repository": event_repository,
+        "workflow_source_repository": source_repository,
+        "workflow_source_path": source_path,
+        "workflow_source_ref": source_ref,
+        "workflow_source_sha": source_sha.lower(),
+    }, None
 
 
 def _gate_commit_parent_ids(root: Path, commit_sha: str) -> tuple[list[str] | None, str | None]:
@@ -12834,15 +13102,32 @@ def _gate_ci_event_provenance(
     in_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
     job_id = os.environ.get("GITHUB_JOB", "")
     workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
+    workflow_sha = os.environ.get("GITHUB_WORKFLOW_SHA", "")
 
     # Ordinary local calls — and other CI jobs — are explicitly diagnostic.
     # They cannot satisfy the required `tessctl gate ci` job name externally.
     if not in_actions or job_id != _GATE_CI_PROTECTED_JOB_ID:
         return False, None, None
-    if _GATE_CI_WORKFLOW_REF_FRAGMENT not in workflow_ref:
+    admission_config, config_reason = _gate_ci_admission_config_at_base(
+        root, base,
+    )
+    if config_reason:
+        return False, config_reason, None
+    expected_workflow_ref = (
+        f"{admission_config['workflow_source_repository']}/"
+        f"{admission_config['workflow_source_path']}@"
+        f"{admission_config['workflow_source_ref']}"
+    )
+    if (
+        workflow_ref != expected_workflow_ref
+        or not isinstance(workflow_sha, str)
+        or workflow_sha.lower() != admission_config["workflow_source_sha"]
+    ):
         return False, (
-            "CI_EVENT_SOURCE_REQUIRED: the protected ship-gate job must originate from "
-            ".github/workflows/tess-gate.yml; caller-selected jobs are non-authoritative"
+            "CI_WORKFLOW_SOURCE_MISMATCH: GITHUB_WORKFLOW_REF and "
+            "GITHUB_WORKFLOW_SHA must exactly match immutable BASE ci_admission "
+            "source repository/path/ref/SHA; a same-named job or candidate workflow "
+            "is non-authoritative"
         ), None
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -12884,17 +13169,16 @@ def _gate_ci_event_provenance(
     event_repository = (
         repository_node.get("full_name") if isinstance(repository_node, dict) else None
     )
+    expected_event_repository = admission_config["event_repository"]
     if (
         not github_repository
-        or event_repository != github_repository
-        or workflow_ref != (
-            f"{github_repository}/.github/workflows/tess-gate.yml@{github_ref}"
-        )
+        or github_repository != expected_event_repository
+        or event_repository != expected_event_repository
     ):
         return False, (
-            "CI_EVENT_SOURCE_REQUIRED: repository, workflow source, and protected event ref "
-            "must agree exactly; a same-named check from another workflow/repository/ref is "
-            "non-authoritative"
+            "CI_EVENT_TARGET_MISMATCH: GITHUB_REPOSITORY and event repository must "
+            "exactly match immutable BASE policy.repository_id; workflow-source identity "
+            "is validated separately"
         ), None
 
     if event_name == "pull_request":
@@ -12906,6 +13190,9 @@ def _gate_ci_event_provenance(
         evaluation_head = github_sha
         pr_number = event.get("number")
         merge_ref_match = _GATE_CI_PR_MERGE_REF_RE.fullmatch(github_ref)
+        base_repository_node = (
+            base_node.get("repo") if isinstance(base_node, dict) else None
+        )
         if (
             not isinstance(pr_number, int)
             or pr_number <= 0
@@ -12913,10 +13200,13 @@ def _gate_ci_event_provenance(
             or int(merge_ref_match.group("number")) != pr_number
             or not isinstance(base_node, dict)
             or base_node.get("ref") != "main"
+            or not isinstance(base_repository_node, dict)
+            or base_repository_node.get("full_name") != expected_event_repository
         ):
             return False, (
                 "CI_EVENT_REF_MISMATCH: pull_request admission requires the exact "
-                "refs/pull/<event-number>/merge evaluation ref targeting main"
+                "refs/pull/<event-number>/merge evaluation ref targeting the immutable "
+                "BASE repository's main branch"
             ), None
     else:
         expected_base = event.get("before")

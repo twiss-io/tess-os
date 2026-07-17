@@ -48,8 +48,12 @@ NO-MERGE proposal until the parent security stack and GitHub ruleset are
 independently completed.
 
 Verifier verdicts and human hard-floor sign-offs require distinct primary key
-material. The gate rejects normalized fingerprint reuse, identical immutable
-BASE public-key bytes, and aliases within either registry. Even in solo-owner
+material. The gate derives the actual primary fingerprint from each immutable
+BASE OpenPGP public certificate using public-only, stdin inspection; it does
+not trust a declared fingerprint, signing-subkey `VALIDSIG`, filtered export,
+or export-byte hash as key identity. It rejects declaration/certificate
+mismatch, certificate-derived primary reuse, identical immutable BASE bytes,
+secret-key material, and aliases within either registry. Even in solo-owner
 mode, use two separately held primary keys; owner approval by itself is not
 independent review and must never be presented as one.
 
@@ -198,6 +202,9 @@ and required GitHub enforcement are in place.
 
 - `verifier_keys` and `signoff_keys` are intentionally empty in the shipped
   policy.
+- `ci_admission` is intentionally absent in shipped policy. An Actions check
+  remains non-authoritative until Xavier pins a reviewed workflow source and
+  applies a matching source-bound, no-bypass ruleset.
 - The historical GPG-backed gate-arena scorecard is 12/12. The separate
   no-key A13 path-ingress scorecard is 49/49; neither score proves
   unbypassability and they are not combined. A14, the multi-push

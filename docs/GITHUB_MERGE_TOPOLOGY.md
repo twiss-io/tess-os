@@ -54,6 +54,33 @@ first parent invalidates the evidence.
 
 ## Workflow supply-chain contract
 
+Authoritative CI identity is split into two trust domains. The event target is
+`policy.repository_id` from immutable event BASE. The workflow source is the
+separate immutable-BASE `policy.ci_admission` tuple:
+
+```yaml
+ci_admission:
+  version: 1
+  workflow_source_repository: owner/trusted-workflows
+  workflow_source_path: .github/workflows/tess-gate.yml
+  workflow_source_ref: refs/tags/immutable-reviewed-release
+  workflow_source_sha: <full-40-or-64-hex-source-commit>
+```
+
+Tess compares the actual `GITHUB_WORKFLOW_REF` to the exact configured source
+repository/path/ref and `GITHUB_WORKFLOW_SHA` to the exact configured source
+commit. It separately compares `GITHUB_REPOSITORY`, event repository, PR base
+repository/ref/SHA (or push repository/ref/before/after), and the CLI range to
+the event-target contract. The source may deliberately be a different trusted
+repository from the target; equating source ref with `GITHUB_REF` is incorrect
+for a source-bound required workflow.
+
+The shipped policy omits `ci_admission`. That is deliberate: until Xavier pins
+real reviewed values and applies an external ruleset with the same source
+repository/path/ref/SHA, every otherwise authoritative Actions invocation fails
+with `CI_TRUST_BOOTSTRAP_REQUIRED`. Candidate policy cannot configure itself
+into authority.
+
 The authoritative workflow pins checkout and Python setup actions to exact
 reviewed commit SHAs and disables checkout credential persistence. It selects
 CPython 3.13.7 exactly. Its only Python runtime package is PyYAML 6.0.3 from a
@@ -102,11 +129,14 @@ spoofable by a different workflow from that same application.
    not an asynchronously replaced preview.
 6. On GitHub Enterprise or an organization with required-workflow rulesets,
    configure an active `workflows` ruleset entry with **zero bypass actors**.
-   Bind the source by the Tess OS repository numeric `repository_id`, the exact
-   `.github/workflows/tess-gate.yml` path, and a trusted immutable source `ref`
-   at an exact reviewed commit SHA. Do not use a mutable candidate branch as
-   that source. The required job remains `tessctl gate ci`, but its name is not
-   the identity boundary.
+   Bind the source by the workflow-source repository's numeric `repository_id`,
+   the exact `.github/workflows/tess-gate.yml` path, and a trusted immutable
+   source `ref` at an exact reviewed commit SHA. The resolved source repository
+   slug plus path/ref/SHA must exactly equal immutable BASE
+   `policy.ci_admission`, and the platform must supply matching
+   `GITHUB_WORKFLOW_REF`/`GITHUB_WORKFLOW_SHA`. Do not use a mutable candidate
+   branch as that source. The required job remains `tessctl gate ci`, but its
+   name is not the identity boundary.
 7. If that source-bound `workflows` control is unavailable, production remains
    blocked until a Tess-specific GitHub App emits a separately required check
    only after it verifies the workflow run identity, source repository ID,

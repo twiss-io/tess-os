@@ -98,7 +98,7 @@ def _init_repo(root):
     _git(root, "config", "commit.gpgsign", "false")
 
 
-def _policy_with_verifier_keys(root, keys):
+def _policy_with_verifier_keys(root, keys, signoff_key):
     """A deep copy of _TEST_POLICY plus a `verifier_keys` map registering
     every generated test identity's REAL fingerprint + bundled public-key
     file (written under .tess/keys/verifiers/<name>.asc, mirroring
@@ -106,14 +106,9 @@ def _policy_with_verifier_keys(root, keys):
     this, no verdict signed by any of these throwaway test keys could ever
     verify, since `tessctl gate` only trusts fingerprints registered here.
 
-    honesty-capstone-audit-2026-07-08 §3-d: also registers a `signoff_keys`
-    entry ("Xavier") reusing Reid's generated test keypair (a sign-off
-    authorizer is an arbitrary human-operator identity, NOT one of the six
-    named AI verifiers — reusing an existing test identity's real keypair
-    under a distinct registered name is a legitimate, deliberate choice, not
-    a shortcut: the crypto material is real either way, only the policy-map
-    NAME differs) — so tests can sign a real, clearing hard-floor sign-off
-    without generating a seventh throwaway GPG identity."""
+    Also registers a `signoff_keys` entry ("Xavier") backed by a seventh,
+    separately generated primary key. Human hard-floor authority must not
+    alias an AI verifier primary, even when one person operates both roles."""
     keys_dir = root / ".tess" / "keys" / "verifiers"
     keys_dir.mkdir(parents=True, exist_ok=True)
     verifier_keys = {}
@@ -126,10 +121,10 @@ def _policy_with_verifier_keys(root, keys):
         }
     signoff_keys_dir = root / ".tess" / "keys" / "signoffs"
     signoff_keys_dir.mkdir(parents=True, exist_ok=True)
-    (signoff_keys_dir / "xavier.asc").write_text(keys["Reid"].pubkey_armored, encoding="utf-8")
+    (signoff_keys_dir / "xavier.asc").write_text(signoff_key.pubkey_armored, encoding="utf-8")
     signoff_keys = {
         "Xavier": {
-            "fingerprint": keys["Reid"].fpr,
+            "fingerprint": signoff_key.fpr,
             "public_key_file": ".tess/keys/signoffs/xavier.asc",
         },
     }
@@ -140,7 +135,7 @@ def _policy_with_verifier_keys(root, keys):
 
 
 @pytest.fixture
-def gate_repo(project, verifier_gpg_keys):
+def gate_repo(project, verifier_gpg_keys, signoff_gpg_key):
     """A real git repo with the real core/contracts/*.schema.json + a
     test-scoped core/policy/policy.yaml (Phase 2b: registering every
     generated test verifier identity's key, so signed test verdicts can
@@ -150,7 +145,7 @@ def gate_repo(project, verifier_gpg_keys):
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
-    policy = _policy_with_verifier_keys(root, verifier_gpg_keys)
+    policy = _policy_with_verifier_keys(root, verifier_gpg_keys, signoff_gpg_key)
     (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
 
     _init_repo(root)
@@ -553,7 +548,9 @@ def test_ci_blocks_hard_floor_match_even_with_covering_signed_approve_verdict(
     assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
-def test_ci_allows_hard_floor_match_with_valid_signed_signoff_artifact(gate_repo, run_cli, engine, verifier_gpg_keys):
+def test_ci_allows_hard_floor_match_with_valid_signed_signoff_artifact(
+    gate_repo, run_cli, engine, signoff_gpg_key,
+):
     """honesty-capstone-audit-2026-07-08 §3-d: a hard-floor sign-off DOES
     clear the floor once it is cryptographically signed by a registered
     operator key in policy.signoff_keys — the mechanism is a real,
@@ -561,7 +558,7 @@ def test_ci_allows_hard_floor_match_with_valid_signed_signoff_artifact(gate_repo
     base = _base_sha(gate_repo)
     payload_head, artifact_hashes = _commit_money_payload(gate_repo)
     signoff = _signed_signoff(
-        engine, verifier_gpg_keys["Reid"], base_sha=base,
+        engine, signoff_gpg_key, base_sha=base,
         payload_head_sha=payload_head, artifact_hashes=artifact_hashes,
     )
     head = _commit_signoff_attestation(gate_repo, signoff)
@@ -628,7 +625,7 @@ def test_ci_blocks_hard_floor_match_with_hand_faked_signature_signoff(gate_repo,
 def test_ci_blocks_hard_floor_match_with_wrong_key_signoff_signature(gate_repo, run_cli, engine, verifier_gpg_keys):
     """A sign-off genuinely, validly signed — but by a key NOT registered
     for the claimed `authorized_by` identity (Cyra's key, while claiming to
-    be "Xavier", which gate_repo registers as Reid's key)."""
+    be "Xavier", which gate_repo registers under a separate operator key)."""
     base = _base_sha(gate_repo)
     payload_head, artifact_hashes = _commit_money_payload(gate_repo)
     signoff = _unsigned_signoff(
@@ -645,14 +642,16 @@ def test_ci_blocks_hard_floor_match_with_wrong_key_signoff_signature(gate_repo, 
     assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
-def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(gate_repo, run_cli, engine, verifier_gpg_keys):
+def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(
+    gate_repo, run_cli, engine, signoff_gpg_key,
+):
     """A validly-signed sign-off is edited (rationale changed) after
     signing, without re-signing — the recorded signed_content_sha256 no
     longer matches, caught deterministically."""
     base = _base_sha(gate_repo)
     payload_head, artifact_hashes = _commit_money_payload(gate_repo)
     signoff = _signed_signoff(
-        engine, verifier_gpg_keys["Reid"], base_sha=base,
+        engine, signoff_gpg_key, base_sha=base,
         payload_head_sha=payload_head, artifact_hashes=artifact_hashes,
     )
     signoff["rationale"] = "TAMPERED — widened scope after signing."
@@ -665,14 +664,16 @@ def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(gate_rep
     assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
-def test_ci_blocks_hard_floor_match_with_unregistered_signoff_authorizer(gate_repo, run_cli, engine, verifier_gpg_keys):
+def test_ci_blocks_hard_floor_match_with_unregistered_signoff_authorizer(
+    gate_repo, run_cli, engine, signoff_gpg_key,
+):
     """A sign-off honestly, validly signed with a REAL key — but under an
     `authorized_by` name that was never registered in policy.signoff_keys
     at all. There is no key to check the signature against."""
     base = _base_sha(gate_repo)
     payload_head, artifact_hashes = _commit_money_payload(gate_repo)
     signoff = _signed_signoff(
-        engine, verifier_gpg_keys["Reid"], base_sha=base,
+        engine, signoff_gpg_key, base_sha=base,
         payload_head_sha=payload_head, artifact_hashes=artifact_hashes,
         authorized_by="SomeoneNotRegistered",
     )

@@ -105,6 +105,19 @@ policy:
   # clearance issued for another repository.
   repository_id: twiss-io/tess-os
 
+  # Authoritative GitHub CI is intentionally UNCONFIGURED in the shipped
+  # policy. Production admission therefore returns CI_TRUST_BOOTSTRAP_REQUIRED
+  # even if a same-named check is green. Xavier must first pin a separately
+  # reviewed workflow source and apply a matching no-bypass required-workflow
+  # ruleset; the candidate change introducing that trust anchor cannot approve
+  # itself. Required shape (values deliberately not fabricated here):
+  # ci_admission:
+  #   version: 1
+  #   workflow_source_repository: owner/trusted-workflows
+  #   workflow_source_path: .github/workflows/tess-gate.yml
+  #   workflow_source_ref: refs/tags/immutable-reviewed-release
+  #   workflow_source_sha: <full-40-or-64-hex-source-commit>
+
   # Immutable renderer admission inventory. Bootstrap truth: this inventory
   # is NOT authority for the PR that first introduces it because that PR's
   # BASE does not contain it. The first adoption remains owner-controlled and
