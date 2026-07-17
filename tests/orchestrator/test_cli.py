@@ -13,6 +13,8 @@ import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
 from _orchestrator_paths import EXAMPLE_ROUTING_TABLE, INTENT_ROUTER_ROOT, SPEC_ENGINE_ROOT
 
 import orchestrator.cli as cli_module
+from orchestrator.identity import IdentityError
+from orchestrator.pipeline import PipelineError
 
 CONFIDENT_INPUT = (
     "I'm seriously considering opening up in a completely new country next year, "
@@ -99,3 +101,43 @@ def test_cli_no_log_flag_writes_nothing_to_the_shared_sinks(monkeypatch, tmp_pat
 
     after = {p: (p.read_bytes() if p.is_file() else None) for p in [decisions_log, *spec_sinks]}
     assert after == before
+
+
+# --------------------------------------------------------------------------
+# [Reid LOW] IdentityError / PipelineError CLI robustness -- a corrupt/
+# missing/over-permissive local approval-identity key, or a wiring-level
+# pipeline error, must report a clean stderr message + distinct exit code
+# (4), never dump a raw Python traceback at a CLI user.
+# --------------------------------------------------------------------------
+
+
+def test_cli_reports_identity_error_cleanly_and_exits_4(monkeypatch, tmp_path, capsys):
+    def _raise_identity_error(*args, **kwargs):
+        raise IdentityError("approval identity key is corrupt (wrong length)")
+
+    monkeypatch.setattr(cli_module, "run_pipeline", _raise_identity_error)
+    exit_code = _run_cli(monkeypatch, tmp_path, [
+        "run", CONFIDENT_INPUT,
+        "--table", str(EXAMPLE_ROUTING_TABLE),
+        "--target-dir", str(tmp_path / "generated-app"),
+    ])
+    assert exit_code == 4
+    err = capsys.readouterr().err
+    assert "IdentityError" in err
+    assert "approval identity key is corrupt" in err
+
+
+def test_cli_reports_pipeline_error_cleanly_and_exits_4(monkeypatch, tmp_path, capsys):
+    def _raise_pipeline_error(*args, **kwargs):
+        raise PipelineError("wiring-level failure")
+
+    monkeypatch.setattr(cli_module, "run_pipeline", _raise_pipeline_error)
+    exit_code = _run_cli(monkeypatch, tmp_path, [
+        "run", CONFIDENT_INPUT,
+        "--table", str(EXAMPLE_ROUTING_TABLE),
+        "--target-dir", str(tmp_path / "generated-app"),
+    ])
+    assert exit_code == 4
+    err = capsys.readouterr().err
+    assert "PipelineError" in err
+    assert "wiring-level failure" in err

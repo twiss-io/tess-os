@@ -27,9 +27,17 @@ from .content import (
     OpenQuestion,
     SpecEngineError,
     WhatItDoes,
+    plan_content_hash,
+)
+from .gate_approval import (
+    ApprovalReplayError,
+    ApprovalVerificationError,
+    GateVerifiedApproval,
+    sign_local_approval,
+    verify_gate_approval,
 )
 from .intake import IntakeHarvest, ModelAssistedHarvest, harvest_intake
-from .pipeline import finalize_spec, run_intake_and_plan, run_spec_engine
+from .pipeline import finalize_spec, finalize_spec_with_approval, run_intake_and_plan, run_spec_engine
 from .plan_builder import build_plan
 from .render import render_markdown
 from .scaffold import plan_scaffold_from_spec, write_scaffold_stub
@@ -59,10 +67,17 @@ __all__ = [
     "OpenQuestion",
     "SpecEngineError",
     "WhatItDoes",
+    "plan_content_hash",
+    "ApprovalReplayError",
+    "ApprovalVerificationError",
+    "GateVerifiedApproval",
+    "sign_local_approval",
+    "verify_gate_approval",
     "IntakeHarvest",
     "ModelAssistedHarvest",
     "harvest_intake",
     "finalize_spec",
+    "finalize_spec_with_approval",
     "run_intake_and_plan",
     "run_spec_engine",
     "build_plan",

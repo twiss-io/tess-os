@@ -16,7 +16,7 @@ import json
 
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
-from spec_engine.approval import record_approval
+from spec_engine.gate_approval import sign_local_approval
 from spec_engine.codegen import (
     DEFAULT_TARGET_STACK,
     GENERATION_STATUSES,
@@ -46,7 +46,7 @@ from spec_engine.types import Plan, SpecDocument
 
 def _spec(text):
     plan = build_plan(harvest_intake(text, "structured_brief"))
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
 
 
@@ -110,7 +110,7 @@ def _rich_spec() -> SpecDocument:
         routing_context=None,
         summary_for_approval="summary",
     )
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
 
 

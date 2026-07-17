@@ -22,6 +22,7 @@ that isn't already in the ledger."
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 COMPONENT_ROOT = Path(__file__).resolve().parent.parent
@@ -82,37 +83,48 @@ def run() -> int:
     all_ok = True
     print(f"Spec engine eval — {len(CASES)} cases\n")
 
-    for name, filename, source_type in CASES:
-        text = (FIXTURES_DIR / filename).read_text(encoding="utf-8")
-        spec = run_spec_engine(text, source_type, approved_by="eval-harness")
+    # Scoped to a throwaway directory for the duration of this run —
+    # finalize_spec() (called by run_spec_engine()) now mints a genuine,
+    # gate-verifiable, HMAC-signed approval under the hood (see
+    # spec_engine.gate_approval), which by default would create/touch a
+    # real key at ~/.tess-os/approval-identity/<user>.key. A standalone
+    # eval script run manually or in CI should never touch the invoking
+    # user's real machine state for this — same discipline
+    # tests/spec_engine/conftest.py applies to the pytest-driven suite.
+    with tempfile.TemporaryDirectory(prefix="spec-engine-eval-identity-") as identity_dir:
+        for name, filename, source_type in CASES:
+            text = (FIXTURES_DIR / filename).read_text(encoding="utf-8")
+            spec = run_spec_engine(
+                text, source_type, approved_by="eval-harness", identity_dir=identity_dir,
+            )
 
-        problems = []
-        try:
-            validate(spec.to_log_record(), schema)
-        except Exception as e:  # noqa: BLE001 -- report, don't crash the eval loop
-            problems.append(f"schema validation failed: {e}")
+            problems = []
+            try:
+                validate(spec.to_log_record(), schema)
+            except Exception as e:  # noqa: BLE001 -- report, don't crash the eval loop
+                problems.append(f"schema validation failed: {e}")
 
-        gaps = _unaccounted_gaps(spec)
-        if gaps:
-            problems.append(f"unaccounted-for gaps: {gaps}")
+            gaps = _unaccounted_gaps(spec)
+            if gaps:
+                problems.append(f"unaccounted-for gaps: {gaps}")
 
-        md = render_markdown(spec)
-        missing_headers = [h for h in REQUIRED_MD_HEADERS if h not in md]
-        if missing_headers:
-            problems.append(f"missing markdown headers: {missing_headers}")
+            md = render_markdown(spec)
+            missing_headers = [h for h in REQUIRED_MD_HEADERS if h not in md]
+            if missing_headers:
+                problems.append(f"missing markdown headers: {missing_headers}")
 
-        findings = lint(spec)
-        error_findings = [f for f in findings if f.severity == "error"]
+            findings = lint(spec)
+            error_findings = [f for f in findings if f.severity == "error"]
 
-        ok = not problems
-        all_ok = all_ok and ok
-        mark = "PASS" if ok else "FAIL"
-        print(
-            f"[{mark}] {name}: {len(spec.open_questions)} open question(s), "
-            f"{len(error_findings)} lint error(s)"
-        )
-        for p in problems:
-            print(f"        {p}")
+            ok = not problems
+            all_ok = all_ok and ok
+            mark = "PASS" if ok else "FAIL"
+            print(
+                f"[{mark}] {name}: {len(spec.open_questions)} open question(s), "
+                f"{len(error_findings)} lint error(s)"
+            )
+            for p in problems:
+                print(f"        {p}")
 
     print(f"\nOverall: {'PASS' if all_ok else 'FAIL'}")
     return 0 if all_ok else 1

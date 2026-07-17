@@ -6,7 +6,7 @@ import json
 
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
-from spec_engine.approval import record_approval
+from spec_engine.gate_approval import sign_local_approval
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.scaffold import SPEC_DIRECTIVE_MARKER, plan_scaffold_from_spec, write_scaffold_stub
@@ -15,7 +15,7 @@ from spec_engine.spec_builder import build_spec
 
 def _spec(text):
     plan = build_plan(harvest_intake(text, "structured_brief"))
-    approval = record_approval(plan, approved_by="Xavier")
+    approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
 
 

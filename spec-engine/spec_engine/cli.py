@@ -64,6 +64,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     fin_p.add_argument("--reject", action="store_true")
     fin_p.add_argument("--notes", default="")
     fin_p.add_argument("--markdown", action="store_true", help="Print rendered SPEC.md instead of JSON")
+    fin_p.add_argument(
+        "--identity-dir", default=None, dest="identity_dir",
+        help="Override where the local approval-signing key is stored "
+             "(default: ~/.tess-os/approval-identity) — mainly for tests/CI sandboxing. "
+             "finalize_spec() now mints a genuine, gate-verifiable signature under the hood "
+             "(see spec_engine.gate_approval); this only affects where that key lives.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -80,6 +87,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         plan = _plan_from_dict(data)
         spec = finalize_spec(
             plan, approved_by=args.approved_by, approved=not args.reject, notes=args.notes, log_path=False,
+            identity_dir=args.identity_dir,
         )
         if spec is None:
             print(f"Plan {plan.plan_id!r} was rejected — no spec generated.")

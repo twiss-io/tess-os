@@ -20,7 +20,11 @@ side-effecting import) before importing `orchestrator`.
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -31,3 +35,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 EXAMPLE_ROUTING_TABLE = INTENT_ROUTER_ROOT / "routing_table.example.yaml"
+
+# Defense-in-depth isolation, mirroring tests/spec_engine/_spec_engine_paths.py's
+# own (see its docstring for the full rationale, including why this is a
+# side-effecting import rather than a conftest.py autouse fixture). Every
+# test in THIS directory already scopes LocalIdentityApprovalGate
+# explicitly (identity_dir=tmp_path/"identity" on every construction) —
+# this is a safety net for any test (this PR's new ones, or a future one)
+# that forgets to, so a missed explicit identity_dir= still cannot touch
+# the real machine's own ~/.tess-os/approval-identity/ by accident. An
+# explicit identity_dir= argument always takes precedence.
+if "TESS_OS_APPROVAL_IDENTITY_DIR" not in os.environ:
+    _identity_tmp_dir = tempfile.mkdtemp(prefix="orchestrator-tests-approval-identity-")
+    os.environ["TESS_OS_APPROVAL_IDENTITY_DIR"] = _identity_tmp_dir
+    atexit.register(shutil.rmtree, _identity_tmp_dir, ignore_errors=True)

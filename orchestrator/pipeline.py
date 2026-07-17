@@ -37,7 +37,7 @@ from intent_router.types import RoutingDecision
 
 from spec_engine.codegen import DEFAULT_TARGET_STACK, CodegenResult, generate_app
 from spec_engine.integrations.from_intent_router import routing_context_from_decision
-from spec_engine.pipeline import finalize_spec, run_intake_and_plan
+from spec_engine.pipeline import finalize_spec_with_approval, run_intake_and_plan
 from spec_engine.types import Approval, Plan, SpecDocument
 
 from .approval_gate import ApprovalAuthenticationError, ApprovalGate
@@ -74,6 +74,31 @@ class PipelineResult:
     spec: Optional[SpecDocument] = None
     codegen: Optional[CodegenResult] = None
     clarifying_question: Optional[str] = None
+
+
+def _identity_dir_hint(approval_gate: ApprovalGate) -> Optional[Path]:
+    """Best-effort, DUCK-TYPED extraction of the local identity directory
+    an approval was actually signed under, IF `approval_gate` exposes one
+    (the shipped `LocalIdentityApprovalGate` does, via its `.identity`
+    property). This is threaded into `finalize_spec_with_approval()`'s
+    `identity_dir` so `build_spec()`'s own codegen-boundary
+    re-verification (`spec_engine.gate_approval.verify_gate_approval()`)
+    resolves the SAME key the approval was signed with — not silently
+    falling back to this process's DEFAULT `~/.tess-os/approval-identity`
+    (wrong for any gate scoped to a non-default `identity_dir`, e.g.
+    every test in this suite, or a real deployment intentionally isolating
+    key material outside the default location).
+
+    Returns `None` for any adapter that doesn't expose this (a future
+    non-local-HMAC mechanism — Telegram/web/SSO — has no such concept);
+    `build_spec()`'s own re-verification falls back to ITS OWN default in
+    that case, exactly as it does for any direct `spec_engine` caller
+    that doesn't pass `identity_dir` either. Not an `isinstance` check —
+    mirrors this repo's existing duck-typed-adapter discipline (see
+    `spec_engine.integrations.from_intent_router`'s module docstring)."""
+    identity = getattr(approval_gate, "identity", None)
+    key_path = getattr(identity, "key_path", None)
+    return key_path.parent if key_path is not None else None
 
 
 def _route(
@@ -120,14 +145,23 @@ def run_pipeline(
 
     Hop 3 (REAL, the second debt this epic closes): `approval_gate.
     request_approval(plan)` blocks for a real, authenticated human
-    decision; `approval_gate.verify()` independently re-checks the result
-    BEFORE anything downstream runs. This is an ADDITIONAL control in
-    front of `finalize_spec()` — it does not touch or weaken
-    `spec_builder.build_spec()`'s own existing structural gate (an
-    `Approval` matching `plan_id` with `approved=True` is still required).
+    decision; `approval_gate.verify(approval, plan)` independently
+    re-checks the result — bound to `plan`'s actual content, not just its
+    `plan_id` ([Cyra MEDIUM-2]) — BEFORE anything downstream runs. This
+    is an ADDITIONAL control in front of `finalize_spec_with_approval()`
+    — it does not replace `spec_builder.build_spec()`'s OWN
+    codegen-boundary re-verification (an `Approval` matching `plan_id`,
+    `approved=True`, AND independently gate-verified via `spec_engine.
+    gate_approval.verify_gate_approval()` is required — see that
+    module's docstring for [Cyra MEDIUM-1]). The SAME real, verified
+    `approval` object is routed straight into
+    `finalize_spec_with_approval()` below — never re-derived from its
+    individual fields — so its original signature/content-hash survives
+    intact to the codegen boundary's own re-check.
 
-    Hop 4 (REAL): `spec_engine.pipeline.finalize_spec()` builds the
-    `SpecDocument` — only reachable past a verified Hop 3.
+    Hop 4 (REAL): `spec_engine.pipeline.finalize_spec_with_approval()`
+    builds the `SpecDocument` — only reachable past BOTH a verified Hop 3
+    AND `build_spec()`'s own independent re-verification.
 
     Hop 5 (REAL codegen — with per-module honesty already labeled by
     `spec_engine.codegen` itself, see its manifest): `generate_app()`
@@ -151,16 +185,15 @@ def run_pipeline(
     )
 
     approval = approval_gate.request_approval(plan)
-    if not approval_gate.verify(approval):
+    if not approval_gate.verify(approval, plan):
         raise ApprovalAuthenticationError(
             f"approval {getattr(approval, 'approval_id', '?')!r} for plan "
             f"{plan.plan_id!r} failed authentication — refusing to build a spec "
             "or generate code from it"
         )
 
-    spec = finalize_spec(
-        plan, approved_by=approval.approved_by, approved=approval.approved,
-        notes=approval.notes, log_path=spec_log_path,
+    spec = finalize_spec_with_approval(
+        plan, approval, log_path=spec_log_path, identity_dir=_identity_dir_hint(approval_gate),
     )
     if spec is None:
         return PipelineResult(status="rejected", decision=decision, plan=plan, approval=approval)
