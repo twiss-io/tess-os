@@ -63,6 +63,19 @@ def test_ci_dependency_change_without_verdict_is_denied(engine):
     )
 
 
+def test_both_github_gate_workflows_install_dependencies_from_base_only(engine):
+    for workflow in (
+        engine._GATE_CI_WORKFLOW,
+        engine._GATE_POST_MERGE_WORKFLOW,
+    ):
+        assert 'REQUIREMENTS_REL=".tess/ci/ship-gate-requirements.txt"' in workflow
+        assert 'git show "${BASE}:${REQUIREMENTS_REL}" > "$TRUSTED_REQUIREMENTS"' in workflow
+        assert "--require-hashes" in workflow
+        assert "--only-binary=:all:" in workflow
+        assert "--no-deps" in workflow
+        assert "steps.trusted_dependencies.outputs.requirements_path" in workflow
+
+
 def test_policy_mirror_lock_hash_is_current(engine):
     lock = engine.load_lock(REPO_ROOT)
     row = lock["files"][".tess/core/policy/policy.yaml"]

@@ -46,7 +46,7 @@
         },
         "ci_admission": {
           "$ref": "#/$defs/CiAdmission",
-          "description": "Optional owner-configured authoritative-CI identity. When absent or malformed at immutable event BASE, GitHub Actions admission fails closed with CI_TRUST_BOOTSTRAP_REQUIRED. Workflow source repository/path/ref/SHA are intentionally separate from the event target repository_id and must match the external source-bound ruleset."
+          "description": "Optional owner-configured authoritative-CI identity. When absent or malformed at immutable event BASE, GitHub Actions admission fails closed with CI_TRUST_BOOTSTRAP_REQUIRED. Only event=pull_request is admissible. Workflow source repository/path/ref/SHA are intentionally separate from the event target repository_id and must match both the external source-bound ruleset and GitHub plus job.workflow_* runtime identity."
         }
       },
       "required": ["version", "rules", "hard_floor_rules"],
@@ -107,6 +107,11 @@
       "type": "object",
       "properties": {
         "version": { "type": "integer", "const": 1 },
+        "event": {
+          "type": "string",
+          "const": "pull_request",
+          "description": "The only authoritative admission event. Push, pull_request_target, merge_group, workflow_dispatch, and manual contexts fail closed; landed pushes are handled separately by the non-authoritative post-merge audit."
+        },
         "workflow_source_repository": {
           "type": "string",
           "minLength": 3,
@@ -128,7 +133,7 @@
           "pattern": "^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$"
         }
       },
-      "required": ["version", "workflow_source_repository", "workflow_source_path", "workflow_source_ref", "workflow_source_sha"],
+      "required": ["version", "event", "workflow_source_repository", "workflow_source_path", "workflow_source_ref", "workflow_source_sha"],
       "additionalProperties": false
     },
     "RendererAdmission": {

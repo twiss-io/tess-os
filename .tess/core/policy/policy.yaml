@@ -113,6 +113,7 @@ policy:
   # itself. Required shape (values deliberately not fabricated here):
   # ci_admission:
   #   version: 1
+  #   event: pull_request
   #   workflow_source_repository: owner/trusted-workflows
   #   workflow_source_path: .github/workflows/tess-gate.yml
   #   workflow_source_ref: refs/tags/immutable-reviewed-release

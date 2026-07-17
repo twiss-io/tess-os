@@ -265,6 +265,81 @@ def _same_primary_filtered_exports() -> tuple[str, str, bytes, bytes, bytes]:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def _multiple_primary_public_export() -> bytes:
+    """Create one test-only public export containing two primary certs.
+
+    CI must exercise this with the real GPG parser.  A local machine whose
+    isolated gpg-agent cannot start may skip; CI never converts that tooling
+    failure into a passing security test.
+    """
+    home = Path(tempfile.mkdtemp(prefix="tess-multi-primary-", dir="/tmp"))
+    home.chmod(0o700)
+    env = {**os.environ, "GNUPGHOME": str(home)}
+
+    def gpg(*args: str):
+        return subprocess.run(
+            [
+                "gpg", "--homedir", str(home), "--batch", "--yes",
+                "--pinentry-mode", "loopback", "--passphrase", "", *args,
+            ],
+            capture_output=True, env=env,
+        )
+
+    def generate(uid: str):
+        result = gpg("--quick-generate-key", uid, "ed25519", "cert", "0")
+        error = result.stderr.decode(errors="replace").lower()
+        if result.returncode != 0 and any(token in error for token in (
+            "no agent running", "can't connect to the gpg-agent", "ipc connect",
+        )):
+            subprocess.run(
+                ["gpgconf", "--homedir", str(home), "--launch", "gpg-agent"],
+                capture_output=True, env=env,
+            )
+            result = gpg("--quick-generate-key", uid, "ed25519", "cert", "0")
+            error = result.stderr.decode(errors="replace").lower()
+        if result.returncode != 0 and not (
+            os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+            or os.environ.get("CI")
+        ) and any(token in error for token in (
+            "no agent running", "can't connect to the gpg-agent", "ipc connect",
+        )):
+            pytest.skip(
+                "LOCAL_ENV_GPG_AGENT_UNAVAILABLE: isolated temporary agent could not start"
+            )
+        return result
+
+    try:
+        uids = (
+            "Tess Multi Primary One <multi-primary-one@tess.invalid>",
+            "Tess Multi Primary Two <multi-primary-two@tess.invalid>",
+        )
+        for uid in uids:
+            generated = generate(uid)
+            assert generated.returncode == 0, generated.stderr.decode(errors="replace")
+        listed = gpg("--with-colons", "--list-keys")
+        assert listed.returncode == 0, listed.stderr.decode(errors="replace")
+        primary_fingerprints: list[str] = []
+        awaiting_primary = False
+        for line in listed.stdout.decode(errors="replace").splitlines():
+            fields = line.split(":")
+            if fields[0] == "pub":
+                awaiting_primary = True
+            elif fields[0] == "fpr" and awaiting_primary:
+                primary_fingerprints.append(fields[9])
+                awaiting_primary = False
+        assert len(primary_fingerprints) == 2
+        exported = gpg("--armor", "--export", *primary_fingerprints)
+        assert exported.returncode == 0, exported.stderr.decode(errors="replace")
+        assert exported.stdout
+        return exported.stdout
+    finally:
+        subprocess.run(
+            ["gpgconf", "--homedir", str(home), "--kill", "gpg-agent"],
+            capture_output=True, env=env,
+        )
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def test_policy_lint_rejects_primary_fingerprint_reuse_across_roles(engine):
     instance = _policy(
         verifier_path=".tess/keys/verifiers/reid.asc",
@@ -361,6 +436,17 @@ def test_primary_fingerprint_inspection_rejects_secret_key_material(engine):
 
     assert fingerprint is None
     assert "secret-key material" in reason
+
+
+def test_primary_fingerprint_inspection_rejects_multiple_primary_certificates(engine):
+    public_bundle = _multiple_primary_public_export()
+
+    fingerprint, reason = engine._gate_primary_fingerprint_from_public_key_blob(
+        public_bundle,
+    )
+
+    assert fingerprint is None
+    assert "exactly one OpenPGP public certificate" in reason
 
 
 def _namespace_gate_repo(root: Path, *, existing_path: str | None = None) -> str:

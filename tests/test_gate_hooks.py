@@ -137,19 +137,18 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v5" in text
+    assert "# tess-gate-ci v6" in text
     assert "tessctl gate ci" in text
     import yaml
     parsed = yaml.safe_load(text)
-    # v5: only immutable push + pull_request merge-wrapper events may create the
+    # v6: only immutable pull_request merge-wrapper events may create the
     # authoritative required-check job. PyYAML's default (1.1) resolver reads the
     # bare `on:` key as boolean True, not the string 'on' — a well-known
     # YAML/GitHub-Actions quirk (GitHub's own parser treats `on` specially);
     # this is how every GH Actions workflow round-trips through PyYAML.
     triggers = parsed[True]
-    assert set(triggers) == {"push", "pull_request"}
+    assert set(triggers) == {"pull_request"}
     assert "workflow_dispatch" not in triggers
-    assert triggers["push"]["branches"] == ["main"]
     assert triggers["pull_request"]["branches"] == ["main"]
     assert parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
     # v3 (honesty-capstone-audit-2026-07-08 §3-c): a dedicated step extracts
@@ -167,15 +166,20 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     )
     assert "github.event.pull_request.base.sha" in resolve_run
     assert "github.event.pull_request.head.sha" in resolve_run
-    assert "github.event.before" in resolve_run
-    assert "github.event.after" in resolve_run
+    assert "github.event.before" not in resolve_run
+    assert "github.event.after" not in resolve_run
     assert "GITHUB_SHA" in resolve_run
     assert "GITHUB_REF" in resolve_run
     assert "refs/pull/${PR_NUMBER}/merge" in resolve_run
     assert "inputs.base" not in resolve_run
     assert "inputs.head" not in resolve_run
     assert "4b825dc642cb6eb9a060e54bf8d69288fbee4904" not in resolve_run
-    assert "REMOTE_BASE_REQUIRED" in resolve_run
+    final_env = parsed["jobs"]["ship-gate"]["steps"][-1]["env"]
+    assert set(final_env) == {
+        "TESS_ROOT",
+        "TESS_JOB_CONTEXT_JSON",
+    }
+    assert final_env["TESS_JOB_CONTEXT_JSON"] == "${{ toJSON(job) }}"
 
 
 def test_authoritative_workflow_pins_actions_and_uses_only_base_owned_dependencies(engine):
@@ -245,7 +249,7 @@ def test_install_ci_workflow_idempotent(engine, tmp_path):
 def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     """Phase 2b: an operator who already installed the v1 (workflow_dispatch-
     only) template gets actively UPGRADED to the current template
-    (push/pull_request added, v3's trusted-engine step included) on the next
+    (pull_request-only, v3's trusted-engine step included) on the next
     `install-hooks` run — not silently skipped forever, and not mistaken for
     an unrelated operator-authored workflow."""
     wf_dir = tmp_path / ".github" / "workflows"
@@ -266,15 +270,15 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v5" in upgraded
+    assert "# tess-gate-ci v6" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
-    assert "push:" in upgraded
+    assert "push:" not in upgraded
     assert "pull_request:" in upgraded
     assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
 
-def test_install_ci_workflow_upgrades_v2_to_v5(engine, tmp_path):
+def test_install_ci_workflow_upgrades_v2_to_v6(engine, tmp_path):
     """honesty-capstone-audit-2026-07-08 §3-c: an operator on the v2 template
     (CI auto-enforce, but still trusting the pushed tree's own engine) is
     actively upgraded to v3 (trusted base-ref engine extraction) on the next
@@ -302,7 +306,7 @@ def test_install_ci_workflow_upgrades_v2_to_v5(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v5" in upgraded
+    assert "# tess-gate-ci v6" in upgraded
     assert "# tess-gate-ci v2" not in upgraded
     assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
@@ -331,12 +335,12 @@ def test_install_ci_workflow_upgrades_v3_and_removes_manual_authority(engine, tm
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v5" in upgraded
+    assert "# tess-gate-ci v6" in upgraded
     assert "workflow_dispatch:" not in upgraded
     assert "inputs.base" not in upgraded
     assert "inputs.head" not in upgraded
     parsed = yaml.safe_load(upgraded)
-    assert set(parsed[True]) == {"push", "pull_request"}
+    assert set(parsed[True]) == {"pull_request"}
 
 
 def test_committed_authoritative_workflow_matches_secure_template(engine):
@@ -346,6 +350,29 @@ def test_committed_authoritative_workflow_matches_secure_template(engine):
     assert "workflow_dispatch:" not in committed
     assert "inputs.base" not in committed
     assert "inputs.head" not in committed
+
+
+def test_post_merge_audit_workflow_is_distinct_and_evidence_only(engine, tmp_path):
+    engine._gate_install_post_merge_workflow(tmp_path)
+    installed = (
+        tmp_path / ".github" / "workflows" / "tess-post-merge-audit.yml"
+    ).read_text()
+    committed = (
+        REPO_ROOT / ".github" / "workflows" / "tess-post-merge-audit.yml"
+    ).read_text()
+
+    assert installed == engine._GATE_POST_MERGE_WORKFLOW == committed
+    parsed = yaml.safe_load(installed)
+    assert set(parsed[True]) == {"push"}
+    assert parsed[True]["push"]["branches"] == ["main"]
+    assert set(parsed["jobs"]) == {"post-merge-audit"}
+    assert "evidence only" in parsed["jobs"]["post-merge-audit"]["name"]
+    final = parsed["jobs"]["post-merge-audit"]["steps"][-1]
+    assert "gate post-merge-audit" in final["run"]
+    assert "--json" in final["run"]
+    assert "gate ci" not in final["run"]
+    assert "steps.trusted_engine.outputs.engine_path" in final["run"]
+    assert "steps.trusted_dependencies.outputs.requirements_path" in installed
 
 
 def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine, tmp_path):

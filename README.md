@@ -144,8 +144,11 @@ Do not use this sequence to activate a production branch. In particular, do
 not run key-generation, key-registration, or verdict-signing commands as a
 bootstrap shortcut. A local `gate ci` invocation is explicitly reported as
 diagnostic-only and cannot claim the authoritative GitHub required-check
-context. Only the installed push/pull-request workflow derives its range from
-the protected event payload; it has no caller-selected `workflow_dispatch`.
+context. Only the source-bound pull-request required workflow can create
+authoritative admission, and it has no push, `pull_request_target`,
+`merge_group`, or caller-selected `workflow_dispatch` trigger. A separate
+main-push workflow runs `gate post-merge-audit` after landing and always reports
+`authoritative: false` and `prevented_merge: false`.
 
 ## npm and source status
 

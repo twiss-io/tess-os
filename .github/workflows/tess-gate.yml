@@ -1,12 +1,13 @@
-# tess-gate-ci v5
+# tess-gate-ci v6
 # Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
 # gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
 # harness-independent backstop that still catches `git push --no-verify`.
 #
 # Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
 # workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
-# triggers automatically on `push` to protected branches and on
-# `pull_request`. The authoritative workflow deliberately has NO
+# triggers automatically on `pull_request` to the protected branch. The
+# authoritative workflow deliberately has NO push, pull_request_target,
+# merge_group, or
 # `workflow_dispatch`: caller-selected refs must never create the required
 # `tessctl gate ci` check context. This makes the ship-gate BLOCK a
 # failing PR/merge automatically rather than requiring someone to remember
@@ -41,20 +42,26 @@
 # `github.event` fields. The trusted BASE engine independently compares its
 # CLI range with GITHUB_EVENT_PATH before granting authoritative renderer
 # admission. Manual/local calls are diagnostic-only; workflow_dispatch is
-# rejected. An all-zero push `before` SHA fails with REMOTE_BASE_REQUIRED —
-# Git's empty-tree object is not a commit and is never renderer authority.
+# rejected. Push and every other non-pull_request event fail closed before
+# event-range evaluation; landed push inspection belongs to the audit job.
 #
 # v5 MERGE-PREVIEW TOPOLOGY: authoritative admission always evaluates an
 # exact two-parent merge wrapper. For pull requests, BASE is
 # `pull_request.base.sha`, the attestation HEAD is `pull_request.head.sha`,
-# and evaluation HEAD is `GITHUB_SHA` on exactly `refs/pull/<n>/merge`. For a
-# main push, BASE is `before`, evaluation HEAD is `after`/`GITHUB_SHA`, and
-# the attestation HEAD is its second parent. Ordered parents must be exactly
+# and evaluation HEAD is `GITHUB_SHA` on exactly `refs/pull/<n>/merge`.
+# Ordered parents must be exactly
 # [BASE, attestation HEAD], and both commits must have the same tree. Squash,
 # rebase, fast-forward, octopus, reordered/divergent merges, merge queues,
 # arbitrary refs/tags, and conflict-resolution bytes fail closed. This
 # requires merge-commit-only + strict-up-to-date repository settings; see
 # docs/GITHUB_MERGE_TOPOLOGY.md.
+#
+# v6 PR-ONLY ADMISSION: only a source-bound pull_request required workflow
+# can authorize. The engine validates both GITHUB_WORKFLOW_REF/SHA and the
+# protected job.workflow_ref/SHA/repository/file_path contexts forwarded
+# below. A separate tess-post-merge-audit workflow inspects landed main
+# pushes as evidence only and always reports authoritative:false and
+# prevented_merge:false.
 #
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
@@ -67,8 +74,6 @@
 name: Tess OS ship-gate
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -95,30 +100,16 @@ jobs:
         id: refs
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            ATTESTATION="${{ github.event.pull_request.head.sha }}"
-            EVALUATION="$GITHUB_SHA"
-            PR_NUMBER="${{ github.event.number }}"
-            if [ "$GITHUB_REF" != "refs/pull/${PR_NUMBER}/merge" ]; then
-              echo "::error::CI_EVENT_REF_MISMATCH: pull_request gate must run on its exact refs/pull/<n>/merge ref."
-              exit 1
-            fi
-          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            BASE="${{ github.event.before }}"
-            EVALUATION="${{ github.event.after }}"
-            ATTESTATION=""
-            PR_NUMBER=""
-            if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$EVALUATION" != "$GITHUB_SHA" ]; then
-              echo "::error::CI_EVENT_REF_MISMATCH: push gate accepts only exact refs/heads/main before/after context."
-              exit 1
-            fi
-            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-              echo "::error::REMOTE_BASE_REQUIRED: push event has no pre-existing commit BASE; the empty-tree object is never renderer authority."
-              exit 1
-            fi
-          else
-            echo "::error::CI_EVENT_SOURCE_REQUIRED: authoritative ship-gate accepts only push or pull_request events."
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "::error::CI_PR_EVENT_REQUIRED: authoritative ship-gate accepts only pull_request events."
+            exit 1
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          ATTESTATION="${{ github.event.pull_request.head.sha }}"
+          EVALUATION="$GITHUB_SHA"
+          PR_NUMBER="${{ github.event.number }}"
+          if [ "$GITHUB_REF" != "refs/pull/${PR_NUMBER}/merge" ]; then
+            echo "::error::CI_EVENT_REF_MISMATCH: pull_request gate must run on its exact refs/pull/<n>/merge ref."
             exit 1
           fi
           {
@@ -136,17 +127,12 @@ jobs:
           ATTESTATION="${{ steps.refs.outputs.attestation }}"
           EVALUATION="${{ steps.refs.outputs.evaluation }}"
           PR_NUMBER="${{ steps.refs.outputs.pr_number }}"
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            git fetch --no-tags --force origin \
-              "$BASE" \
-              "+refs/pull/${PR_NUMBER}/head:refs/tess/admission-head" \
-              "+refs/pull/${PR_NUMBER}/merge:refs/tess/admission-merge"
-            test "$(git rev-parse refs/tess/admission-head)" = "$ATTESTATION"
-            test "$(git rev-parse refs/tess/admission-merge)" = "$EVALUATION"
-          else
-            git fetch --no-tags --force origin "$BASE" "$EVALUATION"
-            ATTESTATION="$(git rev-parse "${EVALUATION}^2")"
-          fi
+          git fetch --no-tags --force origin \
+            "$BASE" \
+            "+refs/pull/${PR_NUMBER}/head:refs/tess/admission-head" \
+            "+refs/pull/${PR_NUMBER}/merge:refs/tess/admission-merge"
+          test "$(git rev-parse refs/tess/admission-head)" = "$ATTESTATION"
+          test "$(git rev-parse refs/tess/admission-merge)" = "$EVALUATION"
           git cat-file -e "${BASE}^{commit}"
           git cat-file -e "${ATTESTATION}^{commit}"
           git cat-file -e "${EVALUATION}^{commit}"
@@ -196,6 +182,7 @@ jobs:
       - name: tessctl gate ci (trusted base-ref engine; untrusted pushed tree)
         env:
           TESS_ROOT: ${{ github.workspace }}
+          TESS_JOB_CONTEXT_JSON: ${{ toJSON(job) }}
         run: |
           python3 "${{ steps.trusted_engine.outputs.engine_path }}" gate ci \
             --base "${{ steps.refs.outputs.base }}" \

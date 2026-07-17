@@ -364,7 +364,8 @@ def test_baseline_key_loader_rejects_traversal_and_symlink_entries(engine, tmp_p
     })
     blobs, errors = engine._gate_load_baseline_verifier_key_blobs(repo, traversal_policy, base)
     assert blobs == {}
-    assert "contains '..' traversal" in errors["Reid"]
+    assert engine.GATE_KEY_PATH_CONTAINMENT_CODE in errors["Reid"]
+    assert "../outside.asc" not in errors["Reid"]
 
 
 def test_existing_baseline_signoff_key_remains_usable_symbolically(engine, tmp_path, monkeypatch):

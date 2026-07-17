@@ -659,14 +659,14 @@ def test_public_key_file_escaping_root_is_rejected_end_to_end(project, verifier_
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    # The literal '../' in the registered path is caught by the FIRST
-    # containment check (absolute-or-'..'-component rejection) — the
-    # separate "resolves outside the Tess root" message is reserved for a
-    # relative path with no literal '..' that still escapes root via a
-    # symlink (see test_verify_rejects_symlink_escape_public_key_file below).
-    assert payload["reasons"] == [
-        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
-    ]
+    # The unauthorized path remains denied, but externally consumed gate
+    # output exposes only a stable engine-selected category.  It must never
+    # reflect the attacker-controlled path (which can contain host details).
+    assert any(
+        engine.GATE_KEY_PATH_CONTAINMENT_CODE in reason
+        for reason in payload["reasons"]
+    )
+    assert all(rel_escape not in reason for reason in payload["reasons"])
 
 
 def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):

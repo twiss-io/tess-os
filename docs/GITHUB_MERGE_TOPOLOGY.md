@@ -5,9 +5,10 @@
 > independently reviewed, and the repository owner applies the matching
 > GitHub ruleset. A candidate branch cannot make its own check authoritative.
 
-Tess OS production admission uses one deliberately narrow topology: an exact
-two-parent merge commit whose tree is identical to the reviewed branch head.
-This gives the gate three distinct immutable objects:
+Tess OS production admission uses one deliberately narrow source-bound
+`pull_request` topology: an exact two-parent merge preview whose tree is
+identical to the reviewed branch head. This gives the gate three distinct
+immutable objects:
 
 ```text
 event BASE -----------\
@@ -36,9 +37,17 @@ evaluation merge. If a hard-floor rule matches, sign-off topology is evaluated
 on the attestation HEAD, whose parent is the signed `payload_head_sha`. The
 merge wrapper never substitutes for the signoff-only attestation commit.
 
-## Main-push check contract
+## Landed-main post-merge audit (evidence only)
 
-For `push`:
+`push` is never authoritative input to `tessctl gate ci`. The separate
+`tessctl gate post-merge-audit` workflow runs only after GitHub has already
+landed a commit on `main`. Its output always includes:
+
+```json
+{"authoritative": false, "prevented_merge": false}
+```
+
+For that evidence-only audit:
 
 - both the event ref and `GITHUB_REF` are exactly `refs/heads/main`;
 - BASE is exactly event `before` and is not all-zero;
@@ -50,7 +59,9 @@ For `push`:
 
 A hard-floor sign-off must bind `base_sha` to event `before`. A later push,
 changed payload, changed sign-off, conflict-resolution tree, or different
-first parent invalidates the evidence.
+first parent invalidates the evidence. A passing audit is useful forensic
+evidence; it cannot retroactively authorize or claim to have prevented the
+merge.
 
 ## Workflow supply-chain contract
 
@@ -61,19 +72,23 @@ separate immutable-BASE `policy.ci_admission` tuple:
 ```yaml
 ci_admission:
   version: 1
+  event: pull_request
   workflow_source_repository: owner/trusted-workflows
   workflow_source_path: .github/workflows/tess-gate.yml
   workflow_source_ref: refs/tags/immutable-reviewed-release
   workflow_source_sha: <full-40-or-64-hex-source-commit>
 ```
 
-Tess compares the actual `GITHUB_WORKFLOW_REF` to the exact configured source
-repository/path/ref and `GITHUB_WORKFLOW_SHA` to the exact configured source
-commit. It separately compares `GITHUB_REPOSITORY`, event repository, PR base
-repository/ref/SHA (or push repository/ref/before/after), and the CLI range to
-the event-target contract. The source may deliberately be a different trusted
-repository from the target; equating source ref with `GITHUB_REF` is incorrect
-for a source-bound required workflow.
+Tess compares `GITHUB_WORKFLOW_REF`/`GITHUB_WORKFLOW_SHA` and the protected
+job's `job.workflow_ref`, `job.workflow_sha`, `job.workflow_repository`, and
+`job.workflow_file_path` to the exact configured source tuple. The workflow
+forwards the complete platform job context through `TESS_JOB_CONTEXT_JSON`;
+the BASE engine parses it strictly and requires all four fields. Omission or
+malformed JSON fails closed.
+It separately compares `GITHUB_REPOSITORY`, event repository, PR base
+repository/ref/SHA, and the CLI range to the event-target contract. The source
+may deliberately be a different trusted repository from the target; equating
+source ref with `GITHUB_REF` is incorrect for a source-bound required workflow.
 
 The shipped policy omits `ci_admission`. That is deliberate: until Xavier pins
 real reviewed values and applies an external ruleset with the same source
@@ -124,7 +139,8 @@ spoofable by a different workflow from that same application.
 2. Require branches to be up to date before merging (strict mode).
 3. Do not require linear history; it conflicts with the required merge commit.
 4. Disable merge queue/`merge_group` until Tess OS ships and tests an explicit
-   queue topology. The current engine returns `MERGE_GROUP_UNSUPPORTED`.
+   queue topology. `gate ci` returns `CI_PR_EVENT_REQUIRED` for merge-group,
+   push, `pull_request_target`, and manual events.
 5. Disable auto-merge. Admission must observe the final current merge preview,
    not an asynchronously replaced preview.
 6. On GitHub Enterprise or an organization with required-workflow rulesets,
@@ -133,10 +149,10 @@ spoofable by a different workflow from that same application.
    the exact `.github/workflows/tess-gate.yml` path, and a trusted immutable
    source `ref` at an exact reviewed commit SHA. The resolved source repository
    slug plus path/ref/SHA must exactly equal immutable BASE
-   `policy.ci_admission`, and the platform must supply matching
-   `GITHUB_WORKFLOW_REF`/`GITHUB_WORKFLOW_SHA`. Do not use a mutable candidate
-   branch as that source. The required job remains `tessctl gate ci`, but its
-   name is not the identity boundary.
+   `policy.ci_admission`, and the platform must supply matching GitHub workflow
+   and `job.workflow_*` identity. Do not use a mutable candidate branch as that
+   source. The required job remains `tessctl gate ci`, but its name is not the
+   identity boundary.
 7. If that source-bound `workflows` control is unavailable, production remains
    blocked until a Tess-specific GitHub App emits a separately required check
    only after it verifies the workflow run identity, source repository ID,
@@ -151,8 +167,9 @@ spoofable by a different workflow from that same application.
 
 After configuration, test the reverse direction in a disposable branch:
 squash, rebase, fast-forward, stale-base, reordered-parent, octopus,
-tree-mismatch, tag-ref, manual-dispatch, and merge-queue attempts must not
-produce authoritative admission.
+tree-mismatch, tag-ref, push, `pull_request_target`, manual-dispatch,
+same-named-job, missing-job-identity, and merge-queue attempts must not produce
+authoritative admission.
 
 ## Why other merge methods are rejected
 
@@ -168,4 +185,6 @@ produce authoritative admission.
 
 Local `tessctl gate ci`, pre-push, and MCP gate checks remain diagnostics. They
 cannot manufacture GitHub's protected event provenance or satisfy this
-external admission contract.
+external admission contract. `gate post-merge-audit` additionally requires its
+dedicated target-main push context and, even there, is explicitly
+non-authoritative evidence after the fact.

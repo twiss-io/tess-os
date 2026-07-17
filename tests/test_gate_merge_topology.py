@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,6 +77,7 @@ def graph(tmp_path):
     configured_policy = json.loads(json.dumps(unconfigured_policy))
     configured_policy["policy"]["ci_admission"] = {
         "version": 1,
+        "event": "pull_request",
         "workflow_source_repository": WORKFLOW_SOURCE_REPOSITORY,
         "workflow_source_path": WORKFLOW_SOURCE_PATH,
         "workflow_source_ref": WORKFLOW_SOURCE_REF,
@@ -122,6 +124,15 @@ def _set_event(
             f"{WORKFLOW_SOURCE_REF}"
         ),
         "GITHUB_WORKFLOW_SHA": workflow_sha,
+        "TESS_JOB_CONTEXT_JSON": json.dumps({
+            "workflow_ref": workflow_ref or (
+                f"{WORKFLOW_SOURCE_REPOSITORY}/{WORKFLOW_SOURCE_PATH}@"
+                f"{WORKFLOW_SOURCE_REF}"
+            ),
+            "workflow_sha": workflow_sha,
+            "workflow_repository": WORKFLOW_SOURCE_REPOSITORY,
+            "workflow_file_path": WORKFLOW_SOURCE_PATH,
+        }),
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -154,15 +165,11 @@ def _push_event(graph, *, base: str | None = None,
     }
 
 
-@pytest.mark.parametrize("event_name", ["pull_request", "push"])
-def test_exact_two_parent_wrapper_is_authoritative(engine, graph, monkeypatch, event_name):
+def test_exact_two_parent_pr_wrapper_is_authoritative(engine, graph, monkeypatch):
     assert WORKFLOW_SOURCE_REPOSITORY != EVENT_REPOSITORY
-    if event_name == "pull_request":
-        event = _pr_event(graph)
-        github_ref = "refs/pull/17/merge"
-    else:
-        event = _push_event(graph)
-        github_ref = "refs/heads/main"
+    event_name = "pull_request"
+    event = _pr_event(graph)
+    github_ref = "refs/pull/17/merge"
     _set_event(
         monkeypatch, graph, event_name=event_name, event=event,
         github_sha=graph["evaluation"], github_ref=github_ref,
@@ -246,7 +253,7 @@ def test_divergent_attestation_head_fails_closed(engine, graph, monkeypatch):
     [
         ("pull_request", "refs/heads/main", "CI_EVENT_REF_MISMATCH:"),
         ("pull_request", "refs/pull/18/merge", "CI_EVENT_REF_MISMATCH:"),
-        ("push", "refs/tags/v1.0.0", "CI_EVENT_REF_MISMATCH:"),
+        ("push", "refs/tags/v1.0.0", "CI_PR_EVENT_REQUIRED:"),
     ],
 )
 def test_arbitrary_ref_or_pr_number_is_rejected(
@@ -392,11 +399,35 @@ def test_unconfigured_immutable_base_never_authorizes(engine, graph, monkeypatch
     assert reason.startswith("CI_TRUST_BOOTSTRAP_REQUIRED:")
 
 
+@pytest.mark.parametrize("event_value", [None, "push", "pull_request_target"])
+def test_ci_admission_event_must_be_explicit_pull_request(
+    engine, graph, event_value,
+):
+    policy_path = graph["root"] / "core" / "policy" / "policy.yaml"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    if event_value is None:
+        policy["policy"]["ci_admission"].pop("event")
+    else:
+        policy["policy"]["ci_admission"]["event"] = event_value
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    invalid_base = _commit_all(graph["root"], "invalid CI admission event")
+
+    config, reason = engine._gate_ci_admission_config_at_base(
+        graph["root"], invalid_base,
+    )
+
+    assert config is None
+    assert reason.startswith("CI_TRUST_BOOTSTRAP_REQUIRED:")
+    assert "ci_admission.event" in reason
+
+
 @pytest.mark.parametrize(
     ("event_name", "expected_prefix"),
     [
-        ("workflow_dispatch", "CI_EVENT_SOURCE_REQUIRED:"),
-        ("merge_group", "MERGE_GROUP_UNSUPPORTED:"),
+        ("push", "CI_PR_EVENT_REQUIRED:"),
+        ("pull_request_target", "CI_PR_EVENT_REQUIRED:"),
+        ("workflow_dispatch", "CI_PR_EVENT_REQUIRED:"),
+        ("merge_group", "CI_PR_EVENT_REQUIRED:"),
     ],
 )
 def test_manual_and_merge_queue_events_never_authorize(
@@ -417,6 +448,133 @@ def test_manual_and_merge_queue_events_never_authorize(
 
     assert authoritative is False
     assert reason.startswith(expected_prefix)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_ref", "attacker/workflows/.github/workflows/tess-gate.yml@refs/heads/main"),
+        ("workflow_sha", "b" * 40),
+        ("workflow_repository", "attacker/workflows"),
+        ("workflow_file_path", ".github/workflows/spoofed.yml"),
+    ],
+)
+def test_job_workflow_identity_mismatch_is_rejected(
+    engine, graph, monkeypatch, field, value,
+):
+    _set_event(
+        monkeypatch, graph, event_name="pull_request", event=_pr_event(graph),
+        github_sha=graph["evaluation"], github_ref="refs/pull/17/merge",
+    )
+    job_context = json.loads(os.environ["TESS_JOB_CONTEXT_JSON"])
+    job_context[field] = value
+    monkeypatch.setenv("TESS_JOB_CONTEXT_JSON", json.dumps(job_context))
+
+    authoritative, reason, topology = engine._gate_ci_event_provenance(
+        graph["root"], graph["base"], graph["evaluation"],
+    )
+
+    assert authoritative is False
+    assert topology is None
+    assert reason.startswith("CI_WORKFLOW_SOURCE_MISMATCH:")
+
+
+def _set_post_merge_event(monkeypatch, graph, *, event: dict | None = None):
+    root = graph["root"]
+    event = event or _push_event(graph)
+    event_path = root / "post-merge-event.json"
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+    workflow_ref = (
+        f"{EVENT_REPOSITORY}/.github/workflows/tess-post-merge-audit.yml@"
+        "refs/heads/main"
+    )
+    values = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_JOB": "post-merge-audit",
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_REPOSITORY": EVENT_REPOSITORY,
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": graph["evaluation"],
+        "GITHUB_WORKFLOW_REF": workflow_ref,
+        "GITHUB_WORKFLOW_SHA": graph["evaluation"],
+        "TESS_JOB_CONTEXT_JSON": json.dumps({
+            "workflow_ref": workflow_ref,
+            "workflow_sha": graph["evaluation"],
+            "workflow_repository": EVENT_REPOSITORY,
+            "workflow_file_path": ".github/workflows/tess-post-merge-audit.yml",
+        }),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_post_merge_audit_validates_landed_two_parent_topology(
+    engine, graph, monkeypatch,
+):
+    _set_post_merge_event(monkeypatch, graph)
+
+    valid, reason, topology = engine._gate_post_merge_event_provenance(
+        graph["root"], graph["base"], graph["evaluation"],
+    )
+
+    assert valid is True
+    assert reason is None
+    assert topology == {
+        "base_sha": graph["base"],
+        "attestation_head_sha": graph["attestation"],
+        "evaluation_head_sha": graph["evaluation"],
+    }
+
+
+def test_post_merge_audit_rejects_non_merge_landed_head(engine, graph, monkeypatch):
+    event = _push_event(graph, evaluation=graph["attestation"])
+    _set_post_merge_event(monkeypatch, graph, event=event)
+    monkeypatch.setenv("GITHUB_SHA", graph["attestation"])
+    monkeypatch.setenv("GITHUB_WORKFLOW_SHA", graph["attestation"])
+    job_context = json.loads(os.environ["TESS_JOB_CONTEXT_JSON"])
+    job_context["workflow_sha"] = graph["attestation"]
+    monkeypatch.setenv("TESS_JOB_CONTEXT_JSON", json.dumps(job_context))
+
+    valid, reason, topology = engine._gate_post_merge_event_provenance(
+        graph["root"], graph["base"], graph["attestation"],
+    )
+
+    assert valid is False
+    assert topology is None
+    assert reason.startswith("POST_MERGE_TOPOLOGY_INVALID:")
+
+
+def test_post_merge_audit_output_never_claims_merge_prevention(
+    engine, graph, monkeypatch, capsys,
+):
+    _set_post_merge_event(monkeypatch, graph)
+    monkeypatch.setattr(engine, "_gate_diff_paths", lambda *_: ["docs/note.md"])
+    monkeypatch.setattr(
+        engine, "_gate_run_ship_check",
+        lambda *_: {"blocked": False, "reasons": [], "changed_paths": ["docs/note.md"]},
+    )
+    monkeypatch.setattr(engine, "_trace_record", lambda *args, **kwargs: None)
+
+    with pytest.raises(SystemExit) as stopped:
+        engine._cmd_gate_post_merge_audit(
+            SimpleNamespace(
+                base=graph["base"], head=graph["evaluation"],
+                verdict_dirs=None, json_out=True,
+            ),
+            graph["root"],
+        )
+
+    assert stopped.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "phase": "post-merge-audit",
+        "audit_passed": True,
+        "authoritative": False,
+        "prevented_merge": False,
+        "reasons": [],
+        "changed_paths": ["docs/note.md"],
+    }
 
 
 def test_hard_floor_receives_attestation_head_not_evaluation_merge(

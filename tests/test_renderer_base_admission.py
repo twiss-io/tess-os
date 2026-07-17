@@ -60,6 +60,7 @@ def _policy_document(*, admission: bool) -> dict:
         "repository_id": EVENT_REPOSITORY,
         "ci_admission": {
             "version": 1,
+            "event": "pull_request",
             "workflow_source_repository": WORKFLOW_SOURCE_REPOSITORY,
             "workflow_source_path": ".github/workflows/tess-gate.yml",
             "workflow_source_ref": WORKFLOW_SOURCE_REF,
@@ -1038,6 +1039,15 @@ def _github_event_env(history, event_name: str, payload: dict, head: str) -> dic
             f"{WORKFLOW_SOURCE_REF}"
         ),
         "GITHUB_WORKFLOW_SHA": WORKFLOW_SOURCE_SHA,
+        "TESS_JOB_CONTEXT_JSON": json.dumps({
+            "workflow_ref": (
+                f"{WORKFLOW_SOURCE_REPOSITORY}/.github/workflows/tess-gate.yml@"
+                f"{WORKFLOW_SOURCE_REF}"
+            ),
+            "workflow_sha": WORKFLOW_SOURCE_SHA,
+            "workflow_repository": WORKFLOW_SOURCE_REPOSITORY,
+            "workflow_file_path": ".github/workflows/tess-gate.yml",
+        }),
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_EVENT_PATH": str(event_path),
         "GITHUB_SHA": head,
@@ -1071,21 +1081,18 @@ def test_local_gate_ci_is_explicitly_non_authoritative(engine, tmp_path):
     assert payload["blocked"] is False
 
 
-@pytest.mark.parametrize("event_name", ["push", "pull_request"])
-def test_protected_gate_ci_accepts_only_exact_event_range(engine, tmp_path, event_name):
+def test_protected_gate_ci_accepts_only_exact_pr_event_range(engine, tmp_path):
     history = _new_history(tmp_path, engine)
     _write(history.root, "notes/event.txt", "event derived\n")
-    attestation = _commit(history.root, f"{event_name} event")
+    attestation = _commit(history.root, "pull_request event")
     evaluation = _merge_wrapper(history.root, history.base, attestation)
-    if event_name == "push":
-        event = {"before": history.base, "after": evaluation}
-    else:
-        event = {
-            "pull_request": {
-                "base": {"sha": history.base},
-                "head": {"sha": attestation},
-            }
+    event_name = "pull_request"
+    event = {
+        "pull_request": {
+            "base": {"sha": history.base},
+            "head": {"sha": attestation},
         }
+    }
 
     result = _run_history_cli(
         history, "gate", "ci", "--base", history.base, "--head", evaluation, "--json",
@@ -1104,11 +1111,16 @@ def test_protected_gate_ci_rejects_caller_selected_range(engine, tmp_path):
     _write(history.root, "notes/mismatch.txt", "mismatch\n")
     head = _commit(history.root, "event mismatch")
     evaluation = _merge_wrapper(history.root, history.base, head)
-    event = {"before": history.base, "after": evaluation}
+    event = {
+        "pull_request": {
+            "base": {"sha": history.base},
+            "head": {"sha": head},
+        }
+    }
 
     result = _run_history_cli(
         history, "gate", "ci", "--base", history.base, "--head", head, "--json",
-        extra_env=_github_event_env(history, "push", event, evaluation),
+        extra_env=_github_event_env(history, "pull_request", event, evaluation),
     )
 
     assert result.returncode == 1
@@ -1136,13 +1148,11 @@ def test_workflow_dispatch_cannot_create_authoritative_gate_context(engine, tmp_
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths_count"] == 0
-    assert payload["reasons"] == [
-        "CI_EVENT_SOURCE_REQUIRED: an authoritative CI event source is required",
-    ]
+    assert payload["changed_paths"] == []
+    assert payload["reasons"][0].startswith("CI_PR_EVENT_REQUIRED:")
 
 
-def test_all_zero_push_event_never_uses_empty_tree_as_base(engine, tmp_path):
+def test_push_event_never_becomes_authoritative_gate_ci(engine, tmp_path):
     history = _new_history(tmp_path, engine)
     _write(history.root, "notes/first-push.txt", "first push\n")
     head = _commit(history.root, "first push event")
@@ -1157,10 +1167,8 @@ def test_all_zero_push_event_never_uses_empty_tree_as_base(engine, tmp_path):
     payload = json.loads(result.stdout)
     assert payload["authoritative"] is False
     assert payload["blocked"] is True
-    assert payload["changed_paths_count"] == 0
-    assert payload["reasons"] == [
-        "REMOTE_BASE_REQUIRED: an immutable remote baseline is required",
-    ]
+    assert payload["changed_paths"] == []
+    assert payload["reasons"][0].startswith("CI_PR_EVENT_REQUIRED:")
 
 
 def _install_remote_head(history) -> None:

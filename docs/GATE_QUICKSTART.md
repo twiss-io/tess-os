@@ -204,7 +204,10 @@ and required GitHub enforcement are in place.
   policy.
 - `ci_admission` is intentionally absent in shipped policy. An Actions check
   remains non-authoritative until Xavier pins a reviewed workflow source and
-  applies a matching source-bound, no-bypass ruleset.
+  applies a matching source-bound, no-bypass ruleset. When configured, its
+  `event` must be exactly `pull_request`; landed main pushes use the separate
+  evidence-only `gate post-merge-audit` path, which always reports
+  `authoritative: false` and `prevented_merge: false`.
 - The historical GPG-backed gate-arena scorecard is 12/12. The separate
   no-key A13 path-ingress scorecard is 49/49; neither score proves
   unbypassability and they are not combined. A14, the multi-push
