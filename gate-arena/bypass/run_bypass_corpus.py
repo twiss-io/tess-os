@@ -2,7 +2,7 @@
 """
 gate-arena/bypass/run_bypass_corpus.py — Layer A orchestrator.
 
-Runs all 10 attack classes in `attacks.py` against fresh fixture repos (real
+Runs all 12 attack classes in `attacks.py` against fresh fixture repos (real
 git, real gpg, the real `.tess/bin/tessctl` engine copied verbatim from this
 checkout), and writes:
   - gate-arena/results/bypass-scorecard.json  (raw, machine-readable)
@@ -92,8 +92,11 @@ def main():
 
     print(f"\n[bypass] {blocked_count}/{total} blocked — wrote {RESULTS_DIR / 'bypass-scorecard.md'}")
     shutil.rmtree(base_dir, ignore_errors=True)
-    return raw
+    # A scorecard with a slipped attack is evidence of a security regression,
+    # not a successful test run. Preserve the complete honest artifact, then
+    # fail the invoking CI/job so a green process status cannot mask it.
+    return 0 if blocked_count == total else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

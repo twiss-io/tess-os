@@ -42,6 +42,16 @@ def _new_fixture(base_dir: Path, engine, tag: str) -> FixtureRepo:
     return FixtureRepo(d, engine)
 
 
+def _discard_fixture_runtime_trace(root: Path) -> None:
+    """Keep diagnostic trace output out of an attestation-only Git child.
+
+    `gate ci` intentionally writes a local trace. The arena's next commit is
+    sometimes required to contain *only* a sign-off, so the ephemeral fixture
+    trace must never be accidentally staged as authorization evidence.
+    """
+    shutil.rmtree(root / ".tess" / "trace", ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # A1 — `git push --no-verify` bypasses the LOCAL pre-push hook. Does the
 # CI-equivalent `tessctl gate ci` (the second, independent enforcement
@@ -130,26 +140,19 @@ def attack_A2_hard_floor_valid_verdict_insufficient(base_dir: Path, engine) -> d
             "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
             in payload["reasons"]
         )
+        _discard_fixture_runtime_trace(fx.root)
 
-        # Prove the mechanism isn't just permanently bricked: a REAL,
-        # cryptographically SIGNED human sign-off artifact (honesty-
-        # capstone-audit-2026-07-08 §3-d: an unsigned one no longer clears
-        # anything — see A12) — PLUS, since §3-c/§3-d also made
-        # `.tess/gate/signoffs/**` itself policy-covered, a covering Reid
-        # verdict for the sign-off artifact's own introduction — does
-        # clear it.
+        # Prove the mechanism is not permanently bricked. Schema-v2 requires
+        # one payload commit followed by one signoff-only child; after exact
+        # binding and a real signature validate, only that child path is
+        # exempt from ordinary verdict matching (adding a verdict here would
+        # violate the topology and recreate the hash cycle).
         write_signed_signoff(
             fx.root, "credentials", "credentials", "Xavier",
             "Xavier-authorized rotation, simulated for arena.", engine, fx.keys["Xavier"],
+            base2, head, ["config.env"],
         )
-        signoff_blob = blob_sha(fx.root, ".tess/gate/signoffs/credentials.signoff.json")
-        covering_verdict = base_verdict(
-            [".tess/gate/signoffs/**"], {".tess/gate/signoffs/credentials.signoff.json": signoff_blob},
-            verifier="Reid",
-        )
-        covering_verdict["signature"] = fx.sign(covering_verdict, "Reid")
-        write_verdict(fx.root, "verdicts/signoffs-dir.verdict.md", covering_verdict)
-        head2 = commit_all(fx.root, "add signed human sign-off + covering Reid verdict for the signoffs dir")
+        head2 = commit_all(fx.root, "add revision-bound signed human sign-off attestation")
         r2, payload2 = fx.gate_ci(base2, head2)
         clears_with_real_signoff = not payload2["blocked"]
 
@@ -158,16 +161,15 @@ def attack_A2_hard_floor_valid_verdict_insufficient(base_dir: Path, engine) -> d
             f"Quinn APPROVE verdict was NOT sufficient — blocked={blocked_without_signoff}, "
             f"hard_floor_code_present={hard_floor_reason} "
             f"({payload['reasons']}). With a real, cryptographically SIGNED "
-            f".tess/gate/signoffs/credentials.signoff.json artifact (from a registered "
-            f"policy.signoff_keys identity) plus a covering Reid verdict for the "
-            f"now-governed signoffs directory, the SAME change clears "
+            f"schema-v2 signoff-only attestation (from a registered fixture-only "
+            f"policy.signoff_keys identity) bound to the exact payload, the SAME change clears "
             f"(blocked={payload2['blocked']}) — proving this is a real escape valve "
             f"(authenticated human sign-off), not the hard floor being permanently unusable."
         )
         return {
             "id": "A2", "name": "hard-floor path + valid signed APPROVE verdict",
             "description": "A .env credential change gets a syntactically-valid, correctly-signed APPROVE verdict from an allowed verifier — the hard floor must still block on verdict alone.",
-            "blocked": blocked_without_signoff and hard_floor_reason,
+            "blocked": blocked_without_signoff and hard_floor_reason and clears_with_real_signoff,
             "mechanism": mechanism,
             "evidence": {"verdict_only": payload, "with_human_signoff": payload2, "clears_with_real_signoff": clears_with_real_signoff},
         }
@@ -683,14 +685,18 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         commit_all(fx.root, "add config.env baseline")
         base2 = head_sha(fx.root)
 
-        # (a) forged/unsigned sign-off — exactly what any agent able to
-        # write a file could produce pre-fix.
+        # (a) A fully bound v2 sign-off carrying a fabricated detached
+        # signature. This is stronger than a legacy shape check: every
+        # repository/range/rule/blob binding is correct, so only a real
+        # registered key may clear the floor.
         (fx.root / "config.env").write_text("DB_PASSWORD=rotated-by-attacker\n", encoding="utf-8")
+        forged_payload_head = commit_all(fx.root, "rotate credential payload for forged attestation")
         write_forged_signoff(
             fx.root, "credentials", "credentials", "Xavier",
-            "Reviewed refund logic change directly; approved out-of-band (FORGED — no signature).",
+            "Reviewed exact payload (FORGED detached signature).",
+            engine, base2, forged_payload_head, ["config.env"],
         )
-        head_forged = commit_all(fx.root, "rotate credential + FORGED (unsigned) signoff")
+        head_forged = commit_all(fx.root, "FORGED v2 signoff-only attestation")
         r_forged, payload_forged = fx.gate_ci(base2, head_forged)
         forged_blocked = payload_forged["blocked"]
         forged_hard_floor = (
@@ -698,43 +704,28 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
             in payload_forged["reasons"]
         )
 
-        # (b) genuinely signed sign-off (real, registered Xavier key) — the
-        # mechanism's actual, satisfiable escape valve. §3-c/§3-d also added
-        # `.tess/gate/signoffs/**` to tess-os-security-tier-doctrine's own
-        # globs (layered, not either/or): introducing the sign-off ARTIFACT
-        # is now itself `prod_touching` and needs a covering Reid/Cyra
-        # verdict, on top of the sign-off's own internal signature. This
-        # fixture registers real Reid/Cyra keys (unlike the real shipped
-        # policy's empty defaults), so the demonstration adds that covering
-        # verdict too — exactly the real, intended two-layer clearance path.
-        signed_signoff_path = fx.root / ".tess" / "gate" / "signoffs" / "credentials.signoff.json"
-        signed_signoff_path.unlink()
+        # (b) Rewind only the forged child, preserving the exact same payload
+        # parent and artifact hash. The control now differs solely in the
+        # attestation's valid fixture-only signature, not in reviewed bytes.
+        git(fx.root, "reset", "--hard", forged_payload_head)
+        _discard_fixture_runtime_trace(fx.root)
         write_signed_signoff(
             fx.root, "credentials", "credentials", "Xavier",
-            "Reviewed refund logic change directly; approved out-of-band (validly signed).",
-            engine, fx.keys["Xavier"],
+            "Reviewed exact payload (fixture-only valid signature).",
+            engine, fx.keys["Xavier"], base2, forged_payload_head, ["config.env"],
         )
-        signoff_blob = blob_sha(fx.root, ".tess/gate/signoffs/credentials.signoff.json")
-        covering_verdict = base_verdict(
-            [".tess/gate/signoffs/**"], {".tess/gate/signoffs/credentials.signoff.json": signoff_blob},
-            verifier="Reid",
-        )
-        covering_verdict["signature"] = fx.sign(covering_verdict, "Reid")
-        write_verdict(fx.root, "verdicts/signoffs-dir.verdict.md", covering_verdict)
-        head_signed = commit_all(
-            fx.root, "rotate credential + VALIDLY-SIGNED signoff + covering Reid verdict for the signoffs dir",
-        )
+        head_signed = commit_all(fx.root, "VALIDLY-SIGNED v2 signoff-only attestation")
         r_signed, payload_signed = fx.gate_ci(base2, head_signed)
         signed_clears = not payload_signed["blocked"]
 
         blocked = forged_blocked and forged_hard_floor and signed_clears
         mechanism = (
-            f"credentials hard floor matched config.env. Forged (unsigned, shape-valid-"
-            f"only) sign-off: blocked={forged_blocked}, hard_floor_code_present="
+            f"credentials hard floor matched config.env. Forged, otherwise fully revision-"
+            f"bound v2 sign-off: blocked={forged_blocked}, hard_floor_code_present="
             f"{forged_hard_floor} ({payload_forged['reasons']}). With the SAME sign-off "
             f"cryptographically signed by a REAL, registered operator key in "
-            f"policy.signoff_keys, PLUS a covering Reid verdict for the now-governed "
-            f"signoffs directory itself: blocked={payload_signed['blocked']} "
+            f"the fixture-only policy.signoff_keys and committed as the exact single-parent "
+            f"signoff-only child: blocked={payload_signed['blocked']} "
             f"({payload_signed['reasons']}) — proving the mechanism is a real, "
             f"satisfiable escape valve once AUTHENTICATED, not a hard floor that is "
             f"either permanently broken or permanently unusable."
@@ -742,8 +733,8 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         return {
             "id": "A12", "name": "hard-floor sign-off forgery (honesty-capstone-audit-2026-07-08 §3-d)",
             "description": (
-                "An unsigned, shape-valid-only sign-off (forgeable by any agent that can "
-                "write a file) must NOT clear a hard floor; the same sign-off, "
+                "A forged, otherwise fully revision-bound v2 sign-off (forgeable by any "
+                "agent able to write a file) must NOT clear a hard floor; the same sign-off, "
                 "cryptographically signed by a registered operator key, must."
             ),
             "blocked": blocked, "mechanism": mechanism,

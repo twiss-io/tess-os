@@ -30,7 +30,7 @@
       "name": "hard-floor path + valid signed APPROVE verdict",
       "description": "A .env credential change gets a syntactically-valid, correctly-signed APPROVE verdict from an allowed verifier \u2014 the hard floor must still block on verdict alone.",
       "blocked": true,
-      "mechanism": "hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed Quinn APPROVE verdict was NOT sufficient \u2014 blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid']). With a real, cryptographically SIGNED .tess/gate/signoffs/credentials.signoff.json artifact (from a registered policy.signoff_keys identity) plus a covering Reid verdict for the now-governed signoffs directory, the SAME change clears (blocked=False) \u2014 proving this is a real escape valve (authenticated human sign-off), not the hard floor being permanently unusable.",
+      "mechanism": "hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed Quinn APPROVE verdict was NOT sufficient \u2014 blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid']). With a real, cryptographically SIGNED schema-v2 signoff-only attestation (from a registered fixture-only policy.signoff_keys identity) bound to the exact payload, the SAME change clears (blocked=False) \u2014 proving this is a real escape valve (authenticated human sign-off), not the hard floor being permanently unusable.",
       "evidence": {
         "verdict_only": {
           "phase": "ci",
@@ -46,7 +46,7 @@
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 5,
+          "changed_paths_count": 3,
           "authoritative": false,
           "diagnostic_only": true
         },
@@ -236,9 +236,9 @@
     {
       "id": "A12",
       "name": "hard-floor sign-off forgery (honesty-capstone-audit-2026-07-08 \u00a73-d)",
-      "description": "An unsigned, shape-valid-only sign-off (forgeable by any agent that can write a file) must NOT clear a hard floor; the same sign-off, cryptographically signed by a registered operator key, must.",
+      "description": "A forged, otherwise fully revision-bound v2 sign-off (forgeable by any agent able to write a file) must NOT clear a hard floor; the same sign-off, cryptographically signed by a registered operator key, must.",
       "blocked": true,
-      "mechanism": "credentials hard floor matched config.env. Forged (unsigned, shape-valid-only) sign-off: blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in policy.signoff_keys, PLUS a covering Reid verdict for the now-governed signoffs directory itself: blocked=False ([]) \u2014 proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable.",
+      "mechanism": "credentials hard floor matched config.env. Forged, otherwise fully revision-bound v2 sign-off: blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in the fixture-only policy.signoff_keys and committed as the exact single-parent signoff-only child: blocked=False ([]) \u2014 proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable.",
       "evidence": {
         "forged": {
           "phase": "ci",
@@ -255,7 +255,7 @@
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 4,
+          "changed_paths_count": 2,
           "authoritative": false,
           "diagnostic_only": true
         }
