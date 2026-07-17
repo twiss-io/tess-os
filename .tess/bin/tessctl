@@ -8556,6 +8556,48 @@ def schema_validate(instance, schema: dict, root_schema: dict, base_dir: Path, p
     return errors
 
 
+_SCHEMA_SENSITIVE_DIAGNOSTIC_RULES = {
+    "verifier_keys": {
+        "marker": "verifier-public-key-path",
+        "pattern": r"^\.tess/keys/verifiers/.+$",
+        "role": "verifier",
+    },
+    "signoff_keys": {
+        "marker": "signoff-public-key-path",
+        "pattern": r"^\.tess/keys/signoffs/.+$",
+        "role": "sign-off",
+    },
+}
+
+
+def _schema_sensitive_public_key_path_reason(schema: dict, path: str) -> str | None:
+    """Return a value-free schema diagnostic only for trust-key paths.
+
+    The schema marker is descriptive, not an authority an arbitrary schema
+    node can claim.  The engine first owns the exact policy-field location,
+    then requires the shipped marker and pattern to match its immutable
+    allowlist.  Missing/tampered metadata still redacts the sensitive value
+    and fails closed; copying a marker onto an unrelated field does not hide
+    that field's ordinary operator diagnostic.
+    """
+    for registry, rule in _SCHEMA_SENSITIVE_DIAGNOSTIC_RULES.items():
+        prefix = f"$.policy.{registry}."
+        if not path.startswith(prefix) or not path.endswith(".public_key_file"):
+            continue
+        if (
+            schema.get("x-tess-sensitive-diagnostic") != rule["marker"]
+            or schema.get("pattern") != rule["pattern"]
+        ):
+            return _gate_key_path_containment_reason(
+                rule["role"],
+                "has invalid sensitive-diagnostic schema metadata",
+            )
+        return _gate_key_path_containment_reason(
+            rule["role"], "violates its dedicated namespace contract",
+        )
+    return None
+
+
 def _schema_validate_scalar(instance, schema: dict, path: str) -> list:
     errors = []
     if isinstance(instance, str):
@@ -8564,7 +8606,19 @@ def _schema_validate_scalar(instance, schema: dict, path: str) -> list:
         if "maxLength" in schema and len(instance) > schema["maxLength"]:
             errors.append(f"{path}: string length {len(instance)} > maxLength {schema['maxLength']}")
         if "pattern" in schema and not re.search(schema["pattern"], instance):
-            errors.append(f"{path}: {instance!r} does not match pattern {schema['pattern']!r}")
+            # Registered public-key paths are untrusted policy input and can
+            # contain host/user/client details.  Their schema nodes carry an
+            # explicit engine-owned diagnostic marker so the generic
+            # validator never reflects the rejected value into violations.
+            # Those violations flow unchanged through gate JSON/text, local
+            # traces, OTLP export, and MCP diagnostics, so redaction belongs
+            # here at the first producer rather than at one presentation
+            # layer.  Unknown markers fail closed to a value-free diagnostic.
+            sensitive_reason = _schema_sensitive_public_key_path_reason(schema, path)
+            if sensitive_reason is None:
+                errors.append(f"{path}: {instance!r} does not match pattern {schema['pattern']!r}")
+            else:
+                errors.append(f"{path}: {sensitive_reason}")
     if isinstance(instance, (int, float)) and not isinstance(instance, bool):
         if "minimum" in schema and instance < schema["minimum"]:
             errors.append(f"{path}: {instance} < minimum {schema['minimum']}")

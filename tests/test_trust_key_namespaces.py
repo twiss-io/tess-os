@@ -88,8 +88,12 @@ def test_policy_schema_and_lint_reject_cross_namespace_redirects(engine):
     )
     errors += engine._lint_contract("policy", instance)
 
-    assert any("verifiers" in error for error in errors)
-    assert any("signoffs" in error for error in errors)
+    serialized = json.dumps(errors)
+    assert engine.GATE_KEY_PATH_CONTAINMENT_CODE in serialized
+    assert any("verifier public-key path" in error for error in errors)
+    assert any("sign-off public-key path" in error for error in errors)
+    assert ".tess/keys/signoffs/reid.asc" not in serialized
+    assert ".tess/keys/verifiers/xavier.asc" not in serialized
 
 
 def test_shipped_policy_governs_both_key_namespaces_and_lock_pins_controls(engine):

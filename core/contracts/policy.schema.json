@@ -68,6 +68,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^\\.tess/keys/verifiers/.+$",
+          "x-tess-sensitive-diagnostic": "verifier-public-key-path",
           "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
         }
       },
@@ -86,6 +87,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^\\.tess/keys/signoffs/.+$",
+          "x-tess-sensitive-diagnostic": "signoff-public-key-path",
           "description": "Repo-relative path below the dedicated `.tess/keys/signoffs/` namespace to this operator's ASCII-armored PUBLIC key. Ship admission reads only the exact regular blob from immutable BASE, never candidate checkout bytes, an ambient keyring, or the verifier-key namespace."
         }
       },

@@ -667,6 +667,8 @@ def test_public_key_file_escaping_root_is_rejected_end_to_end(project, verifier_
         for reason in payload["reasons"]
     )
     assert all(rel_escape not in reason for reason in payload["reasons"])
+    assert rel_escape not in r.stdout
+    assert rel_escape not in r.stderr
 
 
 def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):
