@@ -1,0 +1,445 @@
+# Reference routing table — Tess's own 26 commands + 6 outcome orchestrators.
+#
+# This is an EXAMPLE instance, not a hardcoded default baked into the engine
+# (intent_router/*.py has zero references to any of the ids/commands below).
+# It exists so this component demonstrates end-to-end against a real,
+# already-shipped command set — conductor/commands.md (26 commands) and
+# conductor/outcome-orchestrators/README.md (6 orchestrators) — per Epic
+# E1's own "Existing Asset" note: "the complete 26-command + 6-orchestrator
+# system is the routing target; nothing new is invoked, only auto-selected."
+#
+# A different tess-os deployment ships its own routing_table.yaml with a
+# completely different command/orchestrator set; every module under
+# intent_router/ works unchanged against it. See intent-router/README.md
+# "Configuring a routing table" for the field contract.
+#
+# outcome_type is constrained to the SAME 9-value enum
+# core/contracts/crew-plan.schema.json already defines (decide, design,
+# build, convert, recover, govern, review, communicate, scale) — one
+# vocabulary, not two.
+
+routes:
+  # ---- Mode commands (map directly to the 6 outcome orchestrators) -------
+
+  - id: founder-mode
+    entry_command: "/founder-mode"
+    orchestrator: founders-office-orchestrator
+    outcome_type: decide
+    description: "Founder-level strategic clarity, high-stakes decisions, investor/board communication, executive messaging."
+    default_guilds: [strategy-guild, research-knowledge-guild]
+    keywords:
+      - "board meeting"
+      - "investor update"
+      - "fundraising"
+      - "strategic decision"
+      - "executive messaging"
+      - "founder level"
+      - "big bet"
+      - "raise a round"
+      - "should I even do this"
+      - "long-term direction"
+    examples:
+      - "I've been going back and forth for weeks on whether we should take outside funding or just keep growing slowly."
+      - "The board wants a clear point of view from me on where we're headed in three years."
+      - "I keep getting pulled into every decision and I'm not sure that's the right way for me to operate as founder anymore."
+      - "I have an investor call coming up and I don't feel confident about how I'm framing our direction."
+      - "I need to decide, at the founder level, whether this whole strategy still makes sense."
+
+  - id: revenue-mode
+    entry_command: "/revenue-mode"
+    orchestrator: revenue-orchestrator
+    outcome_type: convert
+    description: "Sales conversion, pipeline diagnosis, pricing and packaging, retention-linked revenue."
+    default_guilds: [sales-bd-guild, data-analytics-guild]
+    keywords:
+      - "conversion rate"
+      - "sales pipeline"
+      - "pricing"
+      - "packaging"
+      - "revenue dropped"
+      - "close rate"
+      - "closing deals"
+      - "leads dried up"
+      - "demos"
+      - "quarter"
+    examples:
+      - "Our conversion rate dropped over the last few months and I don't know why."
+      - "I think we're leaving money on the table with how we've packaged our pricing tiers."
+      - "The sales pipeline used to be full and now it's basically empty."
+      - "We keep losing deals right at the final negotiation stage and I can't tell why."
+      - "Our biggest lead source dried up and revenue this quarter is going to miss target."
+
+  - id: product-mode
+    entry_command: "/product-mode"
+    orchestrator: product-delivery-orchestrator
+    outcome_type: build
+    description: "New product or feature design, build prioritisation, technical architecture, launch readiness."
+    default_guilds: [product-guild, coding-team]
+    keywords:
+      - "build"
+      - "roadmap"
+      - "feature"
+      - "ship a release"
+      - "architecture"
+      - "launch readiness"
+      - "product decision"
+      - "engineering team"
+      - "scope"
+      - "module"
+    examples:
+      - "We need to decide what to build next quarter and the current roadmap doesn't reflect what customers want."
+      - "I want to add a new module to the app but I'm not sure how it fits the existing architecture."
+      - "We're close to a release and I need to make sure everything is actually ready to ship."
+      - "Customers keep asking for a feature we've never scoped out and I want to know if it's worth building."
+      - "The engineering team and I disagree on the technical approach for the next build."
+
+  - id: cx-mode
+    entry_command: "/cx-mode"
+    orchestrator: client-experience-orchestrator
+    outcome_type: recover
+    description: "Client onboarding and retention, churn risk, renewal strategy, premium experience design."
+    default_guilds: [cx-client-success-guild]
+    keywords:
+      - "client onboarding"
+      - "churn"
+      - "renewal"
+      - "retention"
+      - "client is unhappy"
+      - "client trust"
+      - "premium experience"
+      - "client relationship"
+      - "gone quiet"
+      - "evaluating a competitor"
+    examples:
+      - "One of our top clients has gone quiet on us and I'm worried they're about to churn."
+      - "New clients keep getting confused in their first two weeks and I think onboarding needs a rethink."
+      - "We had a bad incident with a client last month and I don't think we've repaired the relationship yet."
+      - "I want our best clients to feel like they're getting a genuinely premium experience."
+      - "A client mentioned they're evaluating a competitor and I need a retention plan before renewal."
+
+  - id: ops-mode
+    entry_command: "/ops-mode"
+    orchestrator: operational-reliability-orchestrator
+    outcome_type: govern
+    description: "Process design, org structure, vendor governance, risk controls, scaling readiness, operational recovery."
+    default_guilds: [ops-guild, people-talent-guild]
+    keywords:
+      - "process is broken"
+      - "scaling issues"
+      - "org structure"
+      - "vendor"
+      - "operational breakdown"
+      - "manual work"
+      - "handoffs"
+      - "headcount"
+      - "root cause"
+      - "standups"
+    examples:
+      - "Our internal handoffs between teams keep breaking down and things fall through the cracks constantly."
+      - "As we've grown headcount, our old way of running standups and reviews doesn't hold up anymore."
+      - "One of our vendors keeps missing deadlines and it's creating downstream problems for us."
+      - "We had an operational failure last week and I want to understand the root cause, not just patch the symptom."
+      - "Too much of what we do is still manual and it's not going to hold up as we keep scaling."
+
+  - id: strategic-mode
+    entry_command: "/strategic-mode"
+    orchestrator: strategic-growth-orchestrator
+    outcome_type: scale
+    description: "Market entry, new ventures, partnerships, M&A, ecosystem positioning, competitive strategy."
+    default_guilds: [strategy-guild, legal-risk-guild]
+    keywords:
+      - "new market"
+      - "expand into"
+      - "acquisition"
+      - "partnership"
+      - "competitive positioning"
+      - "new country"
+      - "joint venture"
+      - "market entry"
+      - "buying a competitor"
+      - "defensible"
+    examples:
+      - "I'm seriously considering opening up in a completely new country next year and want to know if it makes sense."
+      - "A potential partner reached out about doing something bigger together and I want to evaluate it properly."
+      - "I keep wondering if our current position in the market is actually defensible against the bigger players."
+      - "There's a smaller company in our space that might be worth buying instead of competing with."
+      - "We're considering a joint venture with another firm and need to assess whether it's structurally sound."
+
+  # ---- Mission lifecycle commands ---------------------------------------
+
+  - id: add-mission
+    entry_command: "/add-mission"
+    outcome_type: decide
+    description: "Generic intake and routing for a new mission — the fallback entry when nothing more specific fits."
+    keywords:
+      - "new mission"
+      - "not sure where this goes"
+      - "random idea"
+      - "kick off a project"
+      - "rough concept"
+    examples:
+      - "I have an idea I want to explore but I'm not sure what kind of work this actually is."
+      - "Here's a rough concept, can you figure out what to do with it."
+
+  - id: initiate
+    entry_command: "/initiate"
+    outcome_type: decide
+    description: "Legacy alias of /add-mission, kept for backward compatibility."
+    keywords:
+      - "legacy start flow"
+      - "old intake flow"
+    examples:
+      - "Kick this off the old way, same as before."
+
+  - id: review-mission
+    entry_command: "/review-mission"
+    outcome_type: review
+    description: "Full mission status snapshot — state, owner, active guilds, risks, next moves."
+    keywords:
+      - "status of the mission"
+      - "where are we on this"
+      - "mission status"
+      - "check in on"
+      - "full picture"
+    examples:
+      - "Can you give me the full picture of where the active mission stands right now, including who owns what."
+      - "What's the current state of the mission we've got running."
+
+  - id: route-mission
+    entry_command: "/route-mission"
+    outcome_type: review
+    description: "Re-evaluate whether the current mission is routed to the right orchestrator."
+    keywords:
+      - "wrong orchestrator"
+      - "re-route this"
+      - "reconsider routing"
+      - "scope shifted"
+      - "routed differently"
+    examples:
+      - "I think this mission is routed to the wrong team, can you re-check."
+      - "The scope of this has changed, does the current routing still make sense."
+
+  - id: show-owner
+    entry_command: "/show-owner"
+    outcome_type: review
+    description: "Display the current outcome owner and orchestrator assignment."
+    keywords:
+      - "who owns this"
+      - "who is responsible"
+      - "ownership"
+      - "who's driving this"
+    examples:
+      - "Who actually owns this mission right now."
+      - "I'm not sure who's supposed to be driving this."
+
+  - id: show-active-guilds
+    entry_command: "/show-active-guilds"
+    outcome_type: review
+    description: "List all currently active guilds with their assigned roles."
+    keywords:
+      - "which teams are active"
+      - "who's working on this"
+      - "active guilds"
+      - "currently involved"
+    examples:
+      - "Which teams are currently active on this mission."
+      - "Who's actually working on this right now."
+
+  - id: show-risks
+    entry_command: "/show-risks"
+    outcome_type: review
+    description: "Surface current risks, blockers, and early warning signals for the active mission."
+    keywords:
+      - "what could go wrong"
+      - "risks"
+      - "blockers"
+      - "early warning"
+      - "something feels off"
+      - "blow up on us"
+    examples:
+      - "Before we go further, I want to know what could blow up on us here."
+      - "Something feels off about this mission, what should I be worried about."
+
+  - id: show-next-moves
+    entry_command: "/show-next-moves"
+    outcome_type: review
+    description: "Display the immediate next actions for the active mission, in sequence."
+    keywords:
+      - "what's next"
+      - "next steps"
+      - "what should happen next"
+      - "sequence of actions"
+      - "lost track"
+    examples:
+      - "I've lost track of what actually needs to happen next on this."
+      - "What are the next steps here."
+
+  - id: wake
+    entry_command: "/wake"
+    outcome_type: review
+    description: "Session start checklist — orient, check mission state, surface blockers."
+    keywords:
+      - "starting a session"
+      - "just got back"
+      - "orient me"
+      - "catch me up"
+      - "just sat down"
+      - "resuming work"
+    examples:
+      - "I just sat down at my desk, get me oriented on everything that's going on."
+      - "Just got back, catch me up on where things stand."
+
+  - id: close
+    entry_command: "/close"
+    outcome_type: govern
+    description: "Session end checklist — confirm mission state, flag decisions, log to wiki."
+    keywords:
+      - "ending the session"
+      - "wrapping up for today"
+      - "let's close out"
+      - "log this and stop"
+      - "done for the day"
+      - "commit and push"
+    examples:
+      - "That's it for me today, wrap everything up and make sure it's all logged and pushed."
+      - "I'm done for today, let's wrap this up and log it."
+
+  - id: code-red
+    entry_command: "/code-red"
+    outcome_type: recover
+    description: "Emergency escalation mode for acute revenue loss, client risk, production incident, or reputational threat."
+    keywords:
+      - "emergency"
+      - "urgent incident"
+      - "production is down"
+      - "everything's on fire"
+      - "code red"
+      - "critical outage"
+      - "customers are complaining"
+    examples:
+      - "We just got a call that the production system is completely down and customers are already complaining loudly."
+      - "Production just went down and clients are furious, this is urgent."
+
+  - id: finalize
+    entry_command: "/finalize"
+    outcome_type: communicate
+    description: "Close the mission with a full executive synthesis memo."
+    keywords:
+      - "final recommendation"
+      - "wrap this into a decision"
+      - "executive summary"
+      - "ready for the final call"
+      - "finished their analysis"
+    examples:
+      - "The team has finished their analysis, I'm ready to hear the final recommendation and make the call."
+      - "I need the executive synthesis now, we're ready to decide."
+
+  - id: summary
+    entry_command: "/summary"
+    outcome_type: review
+    description: "Concise mission status snapshot — objective, state, agents, findings, open decisions."
+    keywords:
+      - "quick summary"
+      - "give me a snapshot"
+      - "brief me"
+      - "short status update"
+    examples:
+      - "Can I get a quick summary of where this stands."
+      - "Give me a short snapshot of progress so far."
+
+  - id: reset
+    entry_command: "/reset"
+    outcome_type: govern
+    description: "Reset the working context for the current mission; preserves doctrine and crew."
+    keywords:
+      - "start over"
+      - "scrap this and restart"
+      - "fresh start"
+      - "direction has completely changed"
+      - "reset the mission"
+    examples:
+      - "The direction has completely changed, let's just start over."
+      - "Scrap what we had and give this a fresh start."
+
+  # ---- Crew commands ------------------------------------------------------
+
+  - id: list-agents
+    entry_command: "/list-agents"
+    outcome_type: govern
+    description: "List all currently active agents and their responsibilities."
+    keywords:
+      - "who's on the crew"
+      - "list the agents"
+      - "who's active right now"
+      - "current roster"
+    examples:
+      - "Who's currently active on this mission."
+      - "Can you list the agents working right now."
+
+  - id: add-agent
+    entry_command: "/add-agent"
+    outcome_type: govern
+    description: "Request a new specialist agent be recruited or designed for a capability gap."
+    keywords:
+      - "need a new specialist"
+      - "recruit someone"
+      - "missing a skill"
+      - "add a new role"
+      - "bring someone new in"
+    examples:
+      - "We genuinely don't have anyone equipped to handle this kind of work, we need to bring someone new in."
+      - "I think we need a new role on the team for this."
+
+  - id: remove-agent
+    entry_command: "/remove-agent"
+    outcome_type: govern
+    description: "Assess whether an agent is still earning their seat and remove/reassign if not."
+    keywords:
+      - "isn't earning their seat"
+      - "remove someone from the crew"
+      - "role isn't needed anymore"
+    examples:
+      - "I don't think we need this specialist anymore, can you remove them."
+      - "This agent hasn't been useful, let's reassign or close the workstream."
+
+  # ---- System commands ------------------------------------------------------
+
+  - id: brainstorm
+    entry_command: "/brainstorm"
+    outcome_type: design
+    description: "Collaborative exploration mode — widen the possibility space before committing to a direction."
+    keywords:
+      - "just want to explore ideas"
+      - "brainstorm"
+      - "not ready to commit"
+      - "thinking out loud"
+      - "riff on this"
+    examples:
+      - "I don't want to commit to anything yet, I just want to throw around some rough ideas first."
+      - "Let's riff on a few directions without deciding yet."
+
+  - id: feedback
+    entry_command: "/feedback"
+    outcome_type: govern
+    description: "Capture and apply feedback on orchestration, output, crew, or tone."
+    keywords:
+      - "wasn't quite right"
+      - "adjust how you're working"
+      - "feedback on your output"
+      - "change your approach"
+    examples:
+      - "That output wasn't quite what I wanted, here's some feedback."
+      - "I want you to adjust how you're approaching these missions."
+
+  - id: help
+    entry_command: "/help"
+    outcome_type: communicate
+    description: "Display the command reference and operating orientation."
+    keywords:
+      - "what can you do"
+      - "how does this work"
+      - "list of commands"
+      - "help me understand the system"
+    examples:
+      - "What can you actually do for me."
+      - "How does this whole system work."
