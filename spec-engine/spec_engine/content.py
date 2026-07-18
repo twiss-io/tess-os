@@ -98,6 +98,22 @@ def plan_content_hash(plan: "Plan") -> str:
     changes this hash and fails `gate_approval.verify_gate_approval()` at
     the codegen boundary — exactly like mutating `what_it_does` does today.
 
+    **Backward-compatibility fix (post-#84 review, Reid HIGH):** the
+    `"resolved_connectors"` key is added to `payload` ONLY when
+    `plan.resolved_connectors` is non-empty — never unconditionally. A
+    zero-integration plan (the overwhelmingly common case pre-Connectors-v1,
+    and still common after it) must hash BYTE-IDENTICAL to how it hashed
+    before this feature existed, or every approval signed before this
+    change stops re-verifying at `gate_approval.verify_gate_approval()` for
+    a plan whose content never actually changed. This keeps the payload
+    truly ADDITIVE: a plan with at least one resolved connector still gets
+    that surface bound into the hash (the guarantee the paragraph above
+    describes); a plan with none produces the exact same canonical payload
+    — and therefore the exact same digest — as every plan hashed before
+    Connectors v1 landed. See `tests/spec_engine/test_content.py::
+    test_plan_content_hash_zero_integration_plan_matches_pre_connectors_v1_shape`
+    for the regression lock.
+
     Deterministic and pure: same content in, same hex digest out, every
     time, on every platform (canonical JSON — sorted keys, no
     whitespace — same discipline `gate_identity.sign_payload()` already
@@ -112,8 +128,9 @@ def plan_content_hash(plan: "Plan") -> str:
         "non_goals": list(plan.non_goals),
         "acceptance_criteria": list(plan.acceptance_criteria),
         "open_questions": [asdict(q) for q in plan.open_questions],
-        "resolved_connectors": [asdict(rc) for rc in plan.resolved_connectors],
     }
+    if plan.resolved_connectors:
+        payload["resolved_connectors"] = [asdict(rc) for rc in plan.resolved_connectors]
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 

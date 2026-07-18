@@ -128,7 +128,7 @@
     },
     "resolved_connectors": {
       "type": "array",
-      "description": "Connectors v1 (docs/design/connectors-architecture.md §6.2/§6.4): copied VERBATIM from the approved Plan's resolved_connectors by spec_builder.build_spec() — the plan-time resolution of how_it_works.integrations against the connector registry, one entry per integration, same order.",
+      "description": "Connectors v1 (docs/design/connectors-architecture.md §6.2/§6.4): copied VERBATIM from the approved Plan's resolved_connectors by spec_builder.build_spec() — the plan-time resolution of how_it_works.integrations against the connector registry, one entry per integration, same order. OPTIONAL (default []): a pre-Connectors-v1 persisted SpecDocument JSON record predates this field entirely and must still validate — see spec_engine.types.SpecDocument.resolved_connectors' own default_factory=list.",
       "items": {
         "type": "object",
         "properties": {
@@ -177,7 +177,7 @@
   "required": [
     "spec_id", "title", "spec_version", "status", "provenance",
     "what_it_does", "how_it_looks", "how_it_works", "data_model",
-    "non_goals", "acceptance_criteria", "open_questions", "resolved_connectors"
+    "non_goals", "acceptance_criteria", "open_questions"
   ],
   "additionalProperties": false,
   "$comment": "Minimal-validator keyword subset supported by spec_engine.spec_check: type, enum, properties, required, additionalProperties, items. Mirrors (in spirit, not in code) intent_router's own schema/routing-decision.schema.json convention — no $ref/$defs, everything inline, so the same dependency-free validator handles it with no ref-resolution step."
