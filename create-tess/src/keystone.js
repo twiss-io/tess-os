@@ -59,6 +59,31 @@ export function writeProfile(targetDir, choices) {
   return profile;
 }
 
+// tess.lock's core_key for the ship-gate policy — the EXACT string tess.lock
+// stores (forward-slash, POSIX-style, regardless of host OS: tess.lock is
+// YAML text, not a filesystem path join). `tessctl lock --regen --only`
+// matches this literally against core_key OR live_path (see
+// `_lock_resolve_only_paths` in .tess/bin/tessctl) — must NOT be built with
+// `path.join`, which would emit a backslash-joined string on Windows that
+// would never match.
+export const POLICY_LOCK_CORE_KEY = '.tess/core/policy/policy.yaml';
+
+// Scoped re-pin: `resetScaffoldedPolicyKeys` (scaffold.js) intentionally
+// rewrites `.tess/core/policy/policy.yaml`'s bytes post-copy (collapsing the
+// source repo's registered verifier_keys/signoff_keys back to the empty
+// default) — that invalidates the base_sha tess.lock inherited from the
+// source. Re-pinning ONLY this one entry (never an unscoped `--regen`, which
+// would bless ANY other unrelated core drift) keeps a freshly scaffolded
+// project `tessctl doctor`-clean without silently blessing anything else.
+// This mirrors the exact mechanism `tessctl verdict keygen` already uses for
+// the inverse operation (registering a real key) — see its own
+// `_lock_regen_core(root, only={core_key})` call in .tess/bin/tessctl.
+// A no-op (still exits 0) if base_sha already matches — safe to call even
+// when resetScaffoldedPolicyKeys reports nothing changed.
+export function regenPolicyLock(targetDir) {
+  return tessctl(targetDir, ['lock', '--regen', '--yes', '--only', POLICY_LOCK_CORE_KEY]);
+}
+
 // The keystone bake sequence (task spec). Each step is a real tessctl verb.
 // rename only runs when the conductor differs from the default 'Tess'.
 //

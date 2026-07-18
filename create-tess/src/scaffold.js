@@ -6,8 +6,18 @@ import { existsSync, statSync, cpSync, readdirSync, chmodSync, mkdirSync, rmSync
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isExcludedRel, makeCopyFilter } from './ignore.js';
+import { resetPolicyFile } from './policy-reset.js';
 
 export const DEFAULT_TEMPLATE_SOURCE = 'https://github.com/twiss-io/tess-os.git';
+
+// The two on-disk copies of the ship-gate policy every scaffold produces:
+// the LIVE path an operator actually edits, and its `.tess/core` mirror (the
+// pristine copy base_sha-pinned in tess.lock, and what `tessctl restore`
+// would reconstruct the live file FROM). Both must be reset identically —
+// resetting only the live copy would leave the maintainer's key sitting in
+// the core mirror, ready to leak back in on the next `tessctl restore`/
+// `tessctl reset`.
+const POLICY_REL_PATHS = ['core/policy/policy.yaml', join('.tess', 'core', 'policy', 'policy.yaml')];
 
 // Top-level entries never copied into a scaffolded instance. Derived from the
 // single shared ignore source (create-tess/src/ignore.js) — NOT a parallel list.
@@ -124,6 +134,13 @@ export function fetchTemplate(source, stagingDir) {
 }
 
 // Promote the staged template into the (confirmed) target directory.
+//
+// Returns { policyReset } — see resetScaffoldedPolicyKeys below. The caller
+// (index.js) uses `policyReset.changed` to decide whether the scaffolded
+// tess.lock also needs a scoped re-pin (a normalization that intentionally
+// alters `.tess/core/policy/policy.yaml`'s bytes invalidates the base_sha
+// tess.lock already pinned for that entry — `tessctl doctor` would otherwise
+// report CORE TAMPER on a project that was never tampered with, only scaffolded).
 export function promote(stagingDir, targetDir) {
   mkdirSync(targetDir, { recursive: true });
   const filter = makeCopyFilter(stagingDir);
@@ -142,6 +159,29 @@ export function promote(stagingDir, targetDir) {
       try { chmodSync(p, 0o755); } catch { /* best effort */ }
     }
   }
+  const policyReset = resetScaffoldedPolicyKeys(targetDir);
+  return { policyReset };
+}
+
+// Fail-closed scaffold reset: a scaffolded project must never inherit the
+// SOURCE repo's registered verifier_keys/signoff_keys (its OWN trust anchor —
+// see the header comment in policy-reset.js). Applies the same
+// comment-preserving reset to BOTH the live policy and its `.tess/core`
+// mirror, independently (each is skipped, not required, if it doesn't exist —
+// a minimal/test template may ship neither). NOT done via ignore.js exclusion
+// — the scaffold still needs every other rule/comment in the file; only the
+// two ALLOWED-KEY-SET maps are reset.
+//
+// Returns { changed, files } — `files` lists which of POLICY_REL_PATHS were
+// actually rewritten (empty if the source already shipped the clean, empty
+// default — the common case today, before any real verifier is registered).
+export function resetScaffoldedPolicyKeys(targetDir) {
+  const files = [];
+  for (const rel of POLICY_REL_PATHS) {
+    const { changed } = resetPolicyFile(join(targetDir, rel));
+    if (changed) files.push(rel);
+  }
+  return { changed: files.length > 0, files };
 }
 
 // M2 — framework-managed paths that a `--force` re-scaffold over an EXISTING
