@@ -34,6 +34,7 @@ findings are collected and returned, fail-loud is the CALLER's choice, matching
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
@@ -101,11 +102,88 @@ _KNOWN_PREFIX_RE = re.compile(
     "(?:" + "|".join(re.escape(p) for p in sorted(_KNOWN_KEY_PREFIXES, key=len, reverse=True)) + r")[A-Za-z0-9_-]{8,}"
 )
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{10,}")
-# A candidate "unbroken token" anywhere in the string: 20+ chars of
+# A candidate "unbroken token" anywhere in the string: 12+ chars of
 # alnum/underscore/hyphen with no whitespace boundary — matched via
 # re.finditer (not anchored), so a token embedded in longer prose is found
-# the same way a bare value is.
-_UNBROKEN_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{20,}")
+# the same way a bare value is. Lowered from the original 20+ floor
+# (post-#84 review, Cyra LOW F2) to let `_token_is_secret_shaped()` see
+# SHORT candidate tokens too, for the shape rules below that are safe to
+# apply at that shorter length; the shape rules calibrated specifically
+# against 20+-char tokens (mixed case, digit+separator, entropy) stay
+# explicitly gated at their original floor inside that function, so this
+# alone changes nothing for them — see that function's docstring.
+_UNBROKEN_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{12,}")
+
+# --- Cyra LOW F2 (PR #84 security review, fix-up round) -------------------
+# The original heuristic missed three real-world secret shapes: a
+# lowercase- or uppercase-only hex run (GitHub-OAuth-v1 tokens are 40
+# lowercase hex chars; SHA-256-style tokens are 64), an all-uppercase
+# alphanumeric run with digits but no separator (AWS-access-key-style
+# shapes without a recognized prefix), and a short (12-19 char) key that
+# is single-case and either carries a digit or is otherwise high-entropy.
+# The two additions below close all three WITHOUT loosening the original
+# 20+-char mixed-case/digit-separator rules (which stay exactly as they
+# were, just relocated into explicit length gates so the new, shorter
+# candidate population doesn't accidentally trip them — see the real-
+# registry-content calibration in tests/test_connector_manifest_validator.py).
+
+# (a) Pure hex run, single case, 32+ chars — long enough to cover a
+# GitHub-OAuth-v1 token (40) and a SHA-256-style token (64) but never a
+# legitimate manifest identifier (ids/aliases are lowercase-WITH-HYPHENS,
+# env names are SCREAMING_SNAKE_CASE, error classes are PascalCase mixed-
+# case — none of those are ever a pure single-case hex run this long).
+_HEX_LOWER_RUN_RE = re.compile(r"^[0-9a-f]{32,}$")
+_HEX_UPPER_RUN_RE = re.compile(r"^[0-9A-F]{32,}$")
+
+# (b) Same-case + digit, no separator, 12+ chars — an all-uppercase (or
+# all-lowercase) run mixing at least one letter and one digit with zero
+# hyphen/underscore. Every legitimate manifest identifier that mixes
+# letters and digits in this schema uses a separator (SCREAMING_SNAKE_CASE
+# env names, lowercase-hyphenated ids) — verified against every real
+# string in connectors/registry/**: zero digit-bearing, separator-free,
+# same-case runs of any length exist there today. 12 chars is deliberately
+# SHORTER than the mixed-case rule's floor below — this is what closes the
+# "short high-entropy key" gap for the common real-world case (a short key
+# that mixes letters and digits with no separator), via a deterministic
+# shape check rather than a noisy short-string entropy estimate (Shannon
+# entropy on strings under ~20 chars does not reliably separate random
+# tokens from ordinary compound-word identifiers — see (c) below, which is
+# deliberately NOT applied below that length for exactly this reason).
+_SAME_CASE_DIGIT_NO_SEP_FLOOR = 12
+
+# (c) Shannon-entropy threshold, 20+ chars only ("long alphanumeric
+# tokens") — a probabilistic backstop for a same-case, digit-free,
+# separator-free run (e.g. a purely alphabetic random key) that dodges
+# every shape rule above. Calibrated with a >0.2 bit/char margin over the
+# highest entropy observed across EVERY real string in this repo's three
+# connector manifests today (~3.75 bits/char, see
+# tests/test_connector_manifest_validator.py's calibration test) — kept at
+# the original 20+ floor because entropy estimated from fewer characters
+# is too noisy to reliably separate a random token from a natural-language
+# compound identifier (measured directly: real 12-19-char identifiers in
+# this repo's manifests score in the same 3.0-3.6 bit/char band as
+# synthetic random short tokens). Disclosed limitation, not silently
+# hidden: a short (12-19 char), single-case, digit-free random key is NOT
+# reliably caught by this heuristic — see connectors/README.md's corrected
+# claim ("secret-SHAPED", not "any secret").
+_ENTROPY_LONG_TOKEN_FLOOR = 20
+_ENTROPY_BITS_PER_CHAR_THRESHOLD = 4.0
+
+
+def _shannon_entropy_bits_per_char(token: str) -> float:
+    """Shannon entropy of `token`'s character distribution, in bits per
+    character. Pure, deterministic, no external dependency."""
+    if not token:
+        return 0.0
+    counts: Dict[str, int] = {}
+    for ch in token:
+        counts[ch] = counts.get(ch, 0) + 1
+    length = len(token)
+    entropy = 0.0
+    for count in counts.values():
+        p = count / length
+        entropy -= p * math.log2(p)
+    return entropy
 
 # Every FIXED-VOCABULARY string this schema itself defines (enum/const
 # values) — excluded from the generic secret-shape heuristic below so this
@@ -128,19 +206,55 @@ _KNOWN_SAFE_LITERALS: Set[str] = {
 def _token_is_secret_shaped(token: str) -> bool:
     if token in _KNOWN_SAFE_LITERALS:
         return False
+
+    # (a) Pure hex run, single case, 32+ chars — see constant docstring
+    # above (GitHub-OAuth-v1 / SHA-256-style tokens).
+    if _HEX_LOWER_RUN_RE.match(token) or _HEX_UPPER_RUN_RE.match(token):
+        return True
+
     has_lower = any(c.islower() for c in token)
     has_upper = any(c.isupper() for c in token)
     has_digit = any(c.isdigit() for c in token)
+    has_separator = "-" in token or "_" in token
+
     # A legitimate manifest identifier/slug in this schema is EITHER
     # all-lowercase-with-hyphens (ids/aliases/op names) OR
     # SCREAMING_SNAKE_CASE (env var names) — never a mix of upper AND
     # lower case letters. Real API keys/tokens routinely mix case (and/or
     # digits) inside one unbroken 20+ char run; that specific combination
-    # is what this flags.
-    if has_lower and has_upper:
+    # is what this flags. Explicitly gated at the ORIGINAL 20+ floor (not
+    # the shorter 12+ candidate population `_UNBROKEN_TOKEN_RE` now also
+    # feeds this function) — a genuine mixed-case identifier of 12-19
+    # chars is common in this schema's free-text descriptions (e.g.
+    # "systemInstruction", "ConnectorAuthError") and would false-positive
+    # below this floor.
+    if len(token) >= 20:
+        if has_lower and has_upper:
+            return True
+        if (has_lower or has_upper) and has_digit and has_separator:
+            return True
+
+    # (b) Same-case + digit, no separator — see
+    # `_SAME_CASE_DIGIT_NO_SEP_FLOOR`'s docstring above. `has_lower !=
+    # has_upper` requires exactly one letter-case present (excludes both
+    # "no letters at all" — a plain number — and "both cases" — already
+    # covered, at its own floor, by the rule above).
+    if (
+        len(token) >= _SAME_CASE_DIGIT_NO_SEP_FLOOR
+        and has_digit
+        and (has_lower != has_upper)
+        and not has_separator
+    ):
         return True
-    if (has_lower or has_upper) and has_digit and ("-" in token or "_" in token):
+
+    # (c) Shannon-entropy threshold for long (20+) alphanumeric tokens —
+    # see `_ENTROPY_LONG_TOKEN_FLOOR`'s docstring above.
+    if (
+        len(token) >= _ENTROPY_LONG_TOKEN_FLOOR
+        and _shannon_entropy_bits_per_char(token) >= _ENTROPY_BITS_PER_CHAR_THRESHOLD
+    ):
         return True
+
     return False
 
 

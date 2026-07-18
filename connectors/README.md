@@ -55,23 +55,40 @@ never collide across connectors, `auth.scheme` is `"env"` (v1's only
 supported scheme — `"vault-capability"` is reserved in the design doc but
 fails validation until a real implementation lands), `auth.env` entries
 are env-var-**NAME**-shaped (`^[A-Z][A-Z0-9_]*$`) — **a manifest carrying
-an actual secret VALUE anywhere fails validation**, not just in the auth
-block (see "No secrets, ever" below) — `limits.max_retries == 0`,
-`error_map` values are recognized typed-error classes, and
-`trust.tier` self-assertion never exceeds `T1` (`T2` requires a dated
-evidence entry; `T3` is unconditionally rejected — see "Trust tiers"
-below). Zero network, zero credentials, zero subprocess, zero write path.
+a value SHAPED like a real credential anywhere fails validation**, not
+just in the auth block (see "Secret-shaped values, rejected — heuristic,
+not a guarantee" below) — `limits.max_retries == 0`, `error_map` values
+are recognized typed-error classes, and `trust.tier` self-assertion never
+exceeds `T1` (`T2` requires a dated evidence entry; `T3` is
+unconditionally rejected — see "Trust tiers" below). Zero network, zero
+credentials, zero subprocess, zero write path.
 
-## No secrets, ever
+## Secret-shaped values, rejected — heuristic, not a guarantee
 
-Every string in a manifest — not just `auth.env` — is scanned for
-known provider-key shapes (`sk-…`, `sk-ant-…`, `AIza…`, `ghp_…`, `xox…`,
-`AKIA…`, a bare `Bearer <token>`, or any generic 20+-char mixed-
-case/digit run that isn't a name/URL/UUID/date) and rejected if found.
-`auth.env` additionally requires every entry to be
-SCREAMING_SNAKE_CASE — a real secret value essentially never satisfies
-that shape, so the two checks overlap deliberately (defense in depth,
-not two independent hopes).
+Every string in a manifest — not just `auth.env` — is scanned for known
+provider-key shapes (`sk-…`, `sk-ant-…`, `AIza…`, `ghp_…`, `xox…`,
+`AKIA…`, a bare `Bearer <token>`), a pure single-case hex run (32+
+chars — GitHub-OAuth-v1/SHA-256-style), a same-case alphanumeric run
+mixing letters and digits with no separator (12+ chars), and a
+high-entropy alphanumeric run (20+ chars) — and rejected if found.
+`auth.env` additionally requires every entry to be SCREAMING_SNAKE_CASE
+— a real secret value essentially never satisfies that shape, so the two
+checks overlap deliberately (defense in depth, not two independent
+hopes).
+
+**This validator rejects secret-SHAPED values — it does not, and cannot,
+guarantee it rejects every real secret VALUE.** It is a heuristic
+tripwire (pattern/shape/entropy matching against `connectors/registry/**`
+only), not a general secret-scanning service, and it has a disclosed
+residual gap: a short (12-19 char), single-case, digit-free random token
+is not reliably caught (see `connectors/manifest_validator.py`'s
+`_token_is_secret_shaped()` docstring and
+`tests/test_connector_manifest_validator.py` for the exact shapes proven
+caught vs. the one proven NOT reliably caught). **`gitleaks` (full git
+history, `.gitleaks.toml`, run in CI on every push) is the authoritative
+secret-scanning backstop for this repo** — this validator is a
+narrower, connector-registry-specific, offline-only complement to it,
+not a replacement.
 
 ## Trust tiers (T0–T3)
 

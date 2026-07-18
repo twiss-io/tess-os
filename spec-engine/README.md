@@ -325,10 +325,15 @@ validated by the offline, dependency-free
 [`connectors/manifest_validator.py`](../connectors/manifest_validator.py)
 (same harness pattern as `tools/adapter_manifest_validator.py`; run it via
 `python3 -m connectors.validate_connector_manifests --root . --json`).
-**No secrets, ever:** the validator rejects a manifest carrying an actual
-secret VALUE anywhere in it, not just in `auth.env` — see
-`connectors/README.md`'s "No secrets, ever" section and
-`tests/test_connector_manifest_validator.py`'s adversarial proof.
+**Secret-shaped values, rejected — heuristic, not a guarantee:** the
+validator rejects a manifest carrying a value SHAPED like a real
+credential anywhere in it, not just in `auth.env` — see
+`connectors/README.md`'s "Secret-shaped values, rejected — heuristic, not
+a guarantee" section and `tests/test_connector_manifest_validator.py`'s
+adversarial proof. This is a pattern/shape/entropy heuristic, not a
+guarantee of catching every real secret value — `gitleaks` (full git
+history, run in CI) is this repo's authoritative secret-scanning
+backstop.
 
 Real, no-real-API-calls-made proof that a resolved connector genuinely
 works end to end:

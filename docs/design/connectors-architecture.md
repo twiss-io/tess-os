@@ -176,10 +176,14 @@ Fields (illustrative sketch — the build epic writes the real JSON Schema):
 
 Three non-negotiable properties, enforced by the offline validator:
 
-- **No secrets, ever.** `auth.env` carries variable *names*. Any
-  high-entropy or value-shaped string in an auth block fails validation.
-  This is the same "keys in env/keychain only, never in specs or repos"
-  rule E3 states, made mechanical.
+- **Secret-shaped values, rejected — heuristic, not a guarantee.**
+  `auth.env` carries variable *names*. A high-entropy or value-shaped
+  string anywhere in the manifest fails validation — a pattern/shape/
+  entropy heuristic tripwire, not a general secret-scanning service (see
+  `connectors/README.md`). This is the same "keys in env/keychain only,
+  never in specs or repos" rule E3 states, made mechanical; `gitleaks`
+  (full git history, run in CI) remains this repo's authoritative
+  secret-scanning backstop.
 - **Declared data flows.** E8's packaging requirement ("a manifest
   declaring permissions, data flows, and secret requirements") lands here:
   `data_flows` + `auth` + per-operation `side_effect` are the audit
