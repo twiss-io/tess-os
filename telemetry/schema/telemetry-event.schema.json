@@ -13,7 +13,8 @@
     "event_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Opaque unique id for this event (uuid4 hex string) -- identifies the EVENT RECORD, never a person or a piece of content."
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Opaque unique id for this event (uuid4 hex string) -- identifies the EVENT RECORD, never a person or a piece of content. The pattern is [Cyra LOW-1]'s enforced shape: exactly 32 lowercase hex characters (uuid.uuid4().hex's own format), rejecting anything else -- including a well-formed-looking-but-non-hex or non-32-length string -- regardless of what a future caller passes in, not merely the shape today's one caller (telemetry.events.record_mission_completion()) happens to produce."
     },
     "event_type": {
       "type": "string",
@@ -23,12 +24,14 @@
     "timestamp": {
       "type": "string",
       "minLength": 1,
-      "description": "UTC ISO-8601 timestamp with a 'Z' suffix, the same convention intent_router.types.utc_now_iso() / spec_engine.content.utc_now_iso() already use."
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "UTC ISO-8601 timestamp with millisecond precision and a 'Z' suffix, the exact shape telemetry.consent.utc_now_iso() produces (mirroring intent_router.types.utc_now_iso() / spec_engine.content.utc_now_iso()'s own convention). [Cyra LOW-1]: the pattern enforces this exact shape -- a bare-seconds, non-'Z', or non-'T'-separated timestamp is rejected here, not merely discouraged by convention."
     },
     "install_id": {
       "type": "string",
       "minLength": 1,
-      "description": "A LOCALLY-GENERATED, RANDOM (uuid4) anonymous identifier for this opted-in install -- never derived from hostname, MAC address, OS username, IP address, or any other identifying machine/account property. Written once by telemetry.consent.enable() and re-used across a disable/re-enable cycle so retention counts stay attributable to one install; a fresh 'delete' (telemetry.store.delete_all()) followed by a fresh 'enable' generates a brand-new one."
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "A LOCALLY-GENERATED, RANDOM (uuid4) anonymous identifier for this opted-in install -- never derived from hostname, MAC address, OS username, IP address, or any other identifying machine/account property. Written once by telemetry.consent.enable() and re-used across a disable/re-enable cycle so retention counts stay attributable to one install; a fresh 'delete' (telemetry.store.delete_all()) followed by a fresh 'enable' generates a brand-new one. Same enforced 32-lowercase-hex pattern as `event_id` above."
     },
     "mission_ordinal": {
       "type": "integer",
@@ -43,5 +46,5 @@
   },
   "required": ["schema", "event_id", "event_type", "timestamp", "install_id", "mission_ordinal", "days_since_last_mission"],
   "additionalProperties": false,
-  "$comment": "Minimal-validator keyword subset supported by telemetry.schema_check: type, enum, properties, required, additionalProperties. ('minimum' above is documentation only, same as intent-router/schema/routing-decision.schema.json's own 'confidence' field -- the shared minimal-validator design does not enforce numeric bounds; additionalProperties:false is the one keyword here that is load-bearing for the privacy guarantee, and it IS enforced.)"
+  "$comment": "Minimal-validator keyword subset supported by telemetry.schema_check: type, enum, properties, required, additionalProperties, pattern. ('minimum'/'minLength' above are documentation only, same as intent-router/schema/routing-decision.schema.json's own 'confidence' field -- the shared minimal-validator design does not enforce numeric/string-length bounds; additionalProperties:false and, as of [Cyra LOW-1], the 'pattern' on event_id/install_id/timestamp are the keywords here that are load-bearing for the privacy guarantee, and they ARE enforced -- see telemetry/schema_check.py's own module docstring for the re.search() semantics.)"
 }

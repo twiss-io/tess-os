@@ -133,3 +133,43 @@ def test_disabling_after_one_mission_stops_further_emission(monkeypatch, tmp_pat
 
     events = list(store.read_events(store.default_events_log_path(telemetry_dir)))
     assert len(events) == 1  # only the first mission, recorded before disable(), is on file
+
+
+def test_store_io_failure_never_breaks_a_completed_governed_mission(monkeypatch, tmp_path, capsys):
+    """[Reid MEDIUM] The module docstring on telemetry/store.py promises
+    "telemetry failing must NEVER un-complete a governed mission." Before
+    this fix, telemetry.store.read_events()'s json.loads(line) could raise
+    a raw json.JSONDecodeError -- a type orchestrator.pipeline's Hop 6
+    catch (`except TelemetryError`) does NOT catch -- straight out of a
+    completed, real run_pipeline() call. Seed exactly the artifact a prior
+    crashed process could leave behind (a truncated line in events.jsonl)
+    and prove the governed mission still completes end to end, with the
+    store failure downgraded to a non-fatal warning instead."""
+    telemetry_dir = tmp_path / "telemetry"
+    monkeypatch.setenv("TESS_OS_TELEMETRY_DIR", str(telemetry_dir))
+    consent.enable(telemetry_dir)
+
+    events_log = store.default_events_log_path(telemetry_dir)
+    events_log.parent.mkdir(parents=True, exist_ok=True)
+    events_log.write_text('{"schema": "tess.telemetry.v1", "event_typ\n', encoding="utf-8")
+
+    result = run_pipeline(
+        CONFIDENT_INPUT, EXAMPLE_ROUTING_TABLE, _gate(tmp_path),
+        target_dir=tmp_path / "generated-app",
+        route_log_path=False, spec_log_path=False,
+    )
+
+    # The governed mission itself -- approval, finalized spec, generated
+    # app -- is completely unaffected by the telemetry store's read
+    # failure. This is the whole point of Hop 6 being a downstream
+    # *observer* of an already-completed mission, never a gate on it.
+    assert result.status == "generated"
+    assert result.codegen is not None
+    assert (tmp_path / "generated-app").exists()
+
+    # Telemetry could not be recorded (the corrupt read failed), but that
+    # failure was downgraded to a non-fatal warning, never raised past
+    # _record_governed_mission_telemetry()'s own `except TelemetryError`.
+    assert result.telemetry is None
+    captured = capsys.readouterr()
+    assert "WARNING: telemetry not recorded (non-fatal)" in captured.err

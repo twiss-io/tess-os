@@ -2,18 +2,28 @@
 
 Deliberately NOT a general JSON Schema engine — it supports exactly the
 keyword subset `schema/telemetry-event.schema.json` uses: type, required,
-properties, additionalProperties, enum. This is a byte-for-byte-in-spirit
-copy of `intent_router.schema_check` / `spec_engine.spec_check` (see
-those modules' own docstrings for the full rationale) — deliberately
-DUPLICATED, not imported, so this component keeps zero import dependency
-on any sibling top-level component and stays independently deployable
-(the same discipline `spec_engine.content.utc_now_iso()` documents for
-itself: "Duplicated here (not imported) so spec-engine has zero import
-dependency on intent-router").
+properties, additionalProperties, enum, pattern. This is a
+byte-for-byte-in-spirit copy of `intent_router.schema_check` /
+`spec_engine.spec_check` (see those modules' own docstrings for the full
+rationale) — deliberately DUPLICATED, not imported, so this component
+keeps zero import dependency on any sibling top-level component and stays
+independently deployable (the same discipline `spec_engine.content.
+utc_now_iso()` documents for itself: "Duplicated here (not imported) so
+spec-engine has zero import dependency on intent-router").
+
+`pattern` ([Cyra LOW-1]) is checked with `re.search` (not `re.fullmatch`)
+against string values only — every pattern this schema actually declares
+(`event_id`/`install_id`/`timestamp`) is itself `^...$`-anchored, so
+`search` and `fullmatch` are equivalent for THIS schema; `search` is used
+because it is the one behavior every other keyword here (`enum`,
+`additionalProperties`) already assumes zero surprises for a schema that
+declares no pattern at all (an absent `pattern` key never blocks
+anything, exactly like an absent `enum` key today).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 _TYPE_MAP: Dict[str, Any] = {
@@ -54,6 +64,9 @@ def _check(value: Any, schema: Dict[str, Any], path: str, errors: List[str]) -> 
 
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{path}: {value!r} not in enum {schema['enum']}")
+
+    if "pattern" in schema and isinstance(value, str) and re.search(schema["pattern"], value) is None:
+        errors.append(f"{path}: {value!r} does not match pattern {schema['pattern']!r}")
 
     if isinstance(value, dict):
         props = schema.get("properties", {})
