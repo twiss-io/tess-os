@@ -17,7 +17,7 @@ import {
   isLocalSource,
 } from './scaffold.js';
 import { loadRoster, installSetForPath, squadDisplayNames } from './roster.js';
-import { writeProfile, bake, check, activateGate } from './keystone.js';
+import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keystone.js';
 import { runJourney } from './journey.js';
 import { VIBES } from './content/vibes.js';
 import { buildArrival, RECRUIT_TIP } from './content/pathways.js';
@@ -133,11 +133,17 @@ function relTargetHint(targetDir) {
   return rel && !rel.startsWith('..') ? rel : targetDir;
 }
 
-// A fresh instance intentionally has no authorized verifier. Local hooks and
-// a rendered workflow are useful setup, but they do not establish the
-// external trust anchor or required GitHub enforcement a production gate
-// needs. Say that plainly at the point an operator would otherwise mistake a
-// successful scaffold for production readiness.
+// A fresh scaffold always ships with empty verifier/sign-off registries —
+// fail-closed by design, not a gap: create-tess resets them to empty on
+// every scaffold, regardless of what the SOURCE repo's own policy currently
+// contains (see policy-reset.js). The maintainer repo (twiss-io/tess-os)
+// separately registers its own verifiers, in its own policy.yaml, to govern
+// its own development — that registration is never carried into a
+// scaffolded project. Local hooks and a rendered workflow are useful setup,
+// but they do not establish the external trust anchor or required GitHub
+// enforcement a production gate needs. Say that plainly at the point an
+// operator would otherwise mistake a successful scaffold for production
+// readiness.
 function printFirstPushNotice() {
   const bang = plain ? '!' : c.yellow('!');
   process.stdout.write(
@@ -145,7 +151,11 @@ function printFirstPushNotice() {
   );
   process.stdout.write(
     dim(
-      '    Fresh policy registries intentionally have no authorized verifier, so\n' +
+      '    This project ships with empty policy registries — fail-closed by\n' +
+        '    design: you register your own verifier and sign-off keys. (The\n' +
+        '    framework maintainer repository separately registers its own\n' +
+        '    verifiers, in its own policy, to govern its own development — that\n' +
+        '    registration is never carried into a scaffolded project.) So\n' +
         '    a first governed push can fail closed with no covering APPROVE verdict\n' +
         '    found. Do not bypass or disable the hook to represent a change as\n' +
         '    protected, or create, register, or sign review authority from this\n' +
@@ -274,7 +284,17 @@ export async function main(argv) {
       // managed dirs first, so stale framework files can't survive the merge.
       if (opts.force && targetPreexisted) clearManagedDirs(targetDir);
 
-      promote(staging, targetDir);
+      const { policyReset } = promote(staging, targetDir);
+      // The scaffold reset (scaffold.js resetScaffoldedPolicyKeys) may have
+      // just rewritten `.tess/core/policy/policy.yaml`'s bytes — collapsing
+      // the source repo's own registered verifier_keys/signoff_keys back to
+      // the empty, fail-closed default so this project never inherits
+      // another repo's trust anchor (see policy-reset.js). That intentional
+      // rewrite invalidates the base_sha tess.lock inherited from the
+      // source; re-pin ONLY that one entry (scoped, never an unscoped
+      // regen) before doctor ever runs, so a fresh scaffold is
+      // `tessctl doctor`-clean, not reported as CORE-TAMPERED.
+      if (policyReset.changed) regenPolicyLock(targetDir);
       printBakeHeader(vibe);
       bake(targetDir, choices, makeBakeProgress(vibe));
       // PREFERRED (HIGH-1): write operator/profile.json only AFTER a successful
