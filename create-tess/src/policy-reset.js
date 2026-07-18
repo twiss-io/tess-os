@@ -44,6 +44,19 @@ function leadingSpaces(line) {
   return n;
 }
 
+// Is `line` a comment line (a '#' as the first non-space character)? A
+// comment's OWN indentation is not a reliable signal of which YAML section
+// it belongs to — real policy.yaml prose routinely comments a nested child
+// key (e.g. a specific verifier's entry) at the PARENT key's indent rather
+// than the child's, for readability. Treating a comment's indent as if it
+// were a real sibling-key boundary (the bug this module used to have) can
+// stop block removal early and leave a later, still-real, more-indented
+// entry — fingerprint included — sitting untouched right after the point
+// the block was declared "reset to {}". See resetKeyToEmptyInline below.
+function isCommentLine(line) {
+  return line.slice(leadingSpaces(line)).startsWith('#');
+}
+
 // Split `text` into lines that each RETAIN their trailing '\n' (mirrors
 // Python's `str.splitlines(keepends=True)`), except a final line with no
 // trailing newline, which is kept newline-less. Returns [] for empty input.
@@ -95,28 +108,41 @@ export function resetKeyToEmptyInline(text, keyName) {
     return { text, changed: false }; // already clean — nothing to reset
   }
 
-  // `${keyName}:` opens a block — consume every line more-indented than the
-  // header until a line at or below the header's own indent is reached (the
-  // next sibling key, or a comment introducing it). A run of blank lines is
-  // only part of the block if a MORE-indented line follows it (an interior
-  // separator between entries) — a trailing blank line immediately before
-  // the next sibling key/comment belongs to THAT section, not this block,
-  // and must be left untouched. `pendingBlank` tracks an as-yet-uncommitted
-  // blank run so it can be rolled back out of the removed range.
+  // `${keyName}:` opens a block — consume every line until the block's real
+  // end is found, or EOF. The end is decided ONLY by REAL (non-blank,
+  // non-comment) lines: a real line at or below the header's own indent is
+  // the next sibling key (or EOF, if none follows) — everything from `idx`
+  // up to (not including) that boundary belongs to this block and is
+  // replaced by the empty inline form.
+  //
+  // Blank lines and COMMENT lines are never themselves the boundary — a
+  // comment's own indentation is not a trustworthy signal (see
+  // isCommentLine above: real policy.yaml prose comments a nested child at
+  // the PARENT's indent as often as the child's). Each contiguous run of
+  // blank/comment lines is held as `pending` until the next REAL line
+  // resolves what it was:
+  //   - if that real line is MORE indented than the header, the block
+  //     continues (e.g. a second registered entry) — the pending run was
+  //     interior documentation for that entry, so it is committed
+  //     (consumed) along with it;
+  //   - if that real line is at or below the header's indent (or none
+  //     remains — EOF), the pending run introduces THAT next section (a
+  //     sibling key or its own leading comment) — it is rolled back out of
+  //     the removed range so it survives untouched.
   let end = idx + 1;
-  let pendingBlank = 0;
+  let pending = 0;
   while (end < lines.length) {
     const line = lines[end];
-    if (line.trim() === '') {
-      pendingBlank += 1;
+    if (line.trim() === '' || isCommentLine(line)) {
+      pending += 1;
       end += 1;
       continue;
     }
     if (leadingSpaces(line) <= indent) {
-      end -= pendingBlank; // roll back: this blank run belongs to what follows
+      end -= pending; // roll back: this run belongs to what follows, not this block
       break;
     }
-    pendingBlank = 0; // this blank run was interior to the block — consume it
+    pending = 0; // this run was interior to the block — consume it
     end += 1;
   }
 
