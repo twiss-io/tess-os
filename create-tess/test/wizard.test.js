@@ -547,6 +547,19 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
     filter: (src) => !relative(TEMPLATE_SOURCE, src).split(sep).includes('.git'),
   });
 
+  // A SECOND registered entry, under each key, preceded by an interior
+  // annotation comment written at the PARENT key's indent (2 spaces)
+  // rather than the entry's own indent (4 spaces) — an entirely ordinary
+  // way a second contributor documents "why/when this entry was added"
+  // (this repo's own header prose comments this way throughout). This is
+  // the exact realistic shape that broke the old resetKeyToEmptyInline: a
+  // comment at header-indent used to be treated, unconditionally, as "the
+  // next sibling key," stopping block removal one entry too early and
+  // leaving the second entry's fingerprint spliced in right after the
+  // supposedly-reset `{}` — corrupting the YAML in the process.
+  const REID_FINGERPRINT = '1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD';
+  const PRIYA_FINGERPRINT = 'FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE';
+
   const injectKeys = (rel) => {
     const p = join(fakeSource, rel);
     let text = readFileSync(p, 'utf8');
@@ -556,14 +569,24 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
       '$1verifier_keys:\n' +
         '$1  Cyra:\n' +
         '$1    fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"\n' +
-        '$1    public_key_file: .tess/keys/verifiers/cyra.asc',
+        '$1    public_key_file: .tess/keys/verifiers/cyra.asc\n' +
+        '\n' +
+        '$1# Reid — registered 2026-07-20 via `tessctl verdict keygen --verifier Reid`\n' +
+        '$1  Reid:\n' +
+        `$1    fingerprint: "${REID_FINGERPRINT}"\n` +
+        '$1    public_key_file: .tess/keys/verifiers/reid.asc',
     );
     text = text.replace(
       /( {2})signoff_keys: \{\}/,
       '$1signoff_keys:\n' +
         '$1  Xavier:\n' +
         '$1    fingerprint: "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"\n' +
-        '$1    public_key_file: .tess/keys/signoffs/xavier.asc',
+        '$1    public_key_file: .tess/keys/signoffs/xavier.asc\n' +
+        '\n' +
+        '$1# Priya — registered 2026-07-20 via `tessctl gate signoff sign`\n' +
+        '$1  Priya:\n' +
+        `$1    fingerprint: "${PRIYA_FINGERPRINT}"\n` +
+        '$1    public_key_file: .tess/keys/signoffs/priya.asc',
     );
     assert.notEqual(text, before, `${rel}: fixture injection must actually change the file`);
     writeFileSync(p, text);
@@ -608,11 +631,24 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
     const out = readFileSync(join(target, rel), 'utf8');
     assert.match(out, /verifier_keys: \{\}/, `${rel} must ship empty verifier_keys, not the source's Cyra`);
     assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys, not the source's Xavier`);
-    assert.doesNotMatch(
-      out, new RegExp(CYRA_FINGERPRINT), `${rel} must not carry the source repo's registered verifier fingerprint`,
-    );
-    assert.doesNotMatch(
-      out, new RegExp(XAVIER_FINGERPRINT), `${rel} must not carry the source repo's registered sign-off fingerprint`,
+    for (const fp of [CYRA_FINGERPRINT, XAVIER_FINGERPRINT, REID_FINGERPRINT, PRIYA_FINGERPRINT]) {
+      assert.doesNotMatch(
+        out, new RegExp(fp), `${rel} must not carry the source repo's registered fingerprint ${fp}`,
+      );
+    }
+    // The output must still be well-formed YAML — the second entry's
+    // interior annotation comment must not have caused a value line to be
+    // fused onto a following comment with no separating newline.
+    const yamlCheck = spawnSync('python3', [
+      '-c',
+      'import sys, yaml\n' +
+        'd = yaml.safe_load(sys.stdin.read())\n' +
+        'assert d["policy"]["verifier_keys"] == {}, d["policy"]["verifier_keys"]\n' +
+        'assert d["policy"]["signoff_keys"] == {}, d["policy"]["signoff_keys"]\n',
+    ], { input: out, encoding: 'utf8' });
+    assert.equal(
+      yamlCheck.status, 0,
+      `${rel} must be valid YAML with both registries empty after reset\nSTDOUT:\n${yamlCheck.stdout}\nSTDERR:\n${yamlCheck.stderr}`,
     );
   }
 
