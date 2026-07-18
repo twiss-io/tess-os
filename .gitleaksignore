@@ -9,3 +9,28 @@
 # This fingerprint is belt-and-suspenders so the CI gitleaks gate stays clean
 # even if a future edit reintroduces a secret-shaped pattern on that doctrine line.
 conductor/vault.md:generic-api-key:47
+
+# tests/test_gitleaks_local_prepush.py (DATA-LEAK-SAFETY, issue #92, PR
+# data-leak-safety-publish-clean-gate): the e2e test that proves the new
+# local gitleaks pre-push guard actually blocks a real secret needed an
+# AWS-access-key-SHAPED literal (the standard "AKIA" + 16 chars pattern) to
+# exist in an earlier commit before the fix below was applied. The literal
+# was NEVER a real credential — it was a fake test fixture value. The
+# current commit already breaks that pattern's shape in source (builds the
+# fake value via runtime string concatenation instead of one contiguous
+# literal — see the test's own comment; NOTE: this comment deliberately does
+# NOT spell the old literal out contiguously either, for the same reason —
+# gitleaks scans .gitleaksignore's own prose like any other file). This
+# fingerprint is belt-and-suspenders so the full-history CI scan stays clean
+# for the one earlier commit that still has the old shape, without
+# rewriting published PR history.
+tests/test_gitleaks_local_prepush.py:aws-access-token:122
+
+# Self-referential follow-up to the entry above: an EARLIER version of this
+# same explanatory comment block spelled the old fake literal out
+# contiguously (to describe what was being fixed), which gitleaks then
+# flagged INSIDE this very file (.gitleaksignore's own prose is scanned like
+# any other tracked file). That earlier commit's line is immutable history;
+# this second fingerprint covers it the same way the one above covers the
+# original test-fixture literal.
+.gitleaksignore:aws-access-token:18

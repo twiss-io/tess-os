@@ -2706,12 +2706,214 @@ def _doctor_result_is_error(r: dict) -> bool:
     return is_error
 
 
+# ---------------------------------------------------------------------------
+# `tessctl doctor --publish-clean` — DATA-LEAK-SAFETY (issue #92).
+#
+# The commit-side PUBLISH-CLEAN gate, symmetric to the write-gate
+# (check_manifest_write_gate / guarded_write above): the write-gate stops
+# tessctl itself from ever WRITING to a never_touch path; this stops the
+# operator's own `git commit` from ever COMMITTING one. Two independent
+# controls for the two independent ways private data reaches the live tree
+# (tessctl writes vs. the operator's/agent's own git usage) — the write-gate
+# alone left the second one completely open (a plain `git add -A` picks up
+# whatever gitignore didn't already exclude, and gitignore had drifted from
+# the manifest — see the .gitignore reconciliation in this same PR).
+#
+# CURATED subset, NOT the full manifest never_touch list. never_touch also
+# covers paths that are merely "tessctl must not manage this" but are
+# legitimately tracked, public, framework-repo content: docs/**, adapters/**,
+# starter/**, README.md, main.py, pyproject.toml, uv.lock, .python-version,
+# .venv/**, example-project/**, infrastructure/**, .agents/**,
+# skills-lock.json (the non-framework/tooling/messy-repo entries the
+# manifest's own _never_touch_notes documents) plus tessctl's own
+# transactional runtime state (.tess/snapshots/**, .tess/staging/**,
+# .tess/modified.json, .tess/update.lock, .tess/trace/** — already correctly
+# gitignored with only .gitkeep tracked). Using the FULL never_touch list
+# here was tried and rejected during development: it flagged 155 paths in
+# THIS repo alone (every file under docs/, adapters/, starter/, plus
+# README.md, main.py, ...) — a gate that permanently blocks ordinary
+# framework development is a self-inflicted DoS on the very repo it
+# protects, not a security control. Each glob below is verified present in
+# tess.manifest.json's never_touch by tests/test_publish_clean_gate.py.
+_PUBLISH_CLEAN_PRIVATE_GLOBS = [
+    "kb/**",                # internal + client knowledge base
+    "clients/*/**",         # real client operating systems (clients/_template/** stays owned_globs)
+    "operator/**",          # operator identity & context
+    ".env",
+    ".env.*",
+    "*.local.md",           # append-first shadow files
+    "**/*.local.md",
+    "missions/**",          # manifest note: "same fenced-off treatment as kb/**"
+    "UPGRADE-NOTES.md",
+    ".mcp.json",
+    # Vault material is never in the manifest's never_touch list (the write-
+    # gate treats it as an unconditional hardcoded tier, Step 3b above, not a
+    # manifest-driven one) — added here explicitly for the same coverage.
+    "**/*.age",
+    ".claude/vault/**",
+    "clients/*/.vault/**",
+]
+
+# Paths that would otherwise match a glob above but are deliberately shipped,
+# tracked framework scaffold — mirrors the explicit `!` re-includes in
+# .gitignore (this PR's reconciliation) for the exact same reason: no
+# onboarding code path ever overwrites these with real per-instance data.
+# clients/_template/** needs no entry here — it is already exempted below via
+# owned_globs precedence (same as the write-gate's Step 5).
+_PUBLISH_CLEAN_ALLOWLIST = frozenset({
+    "operator/build-facts-stub.md",
+    "operator/identity-stub.md",
+    "operator/org-channels.md",
+    "operator/user-profile.md",
+    "missions/README.md",
+    ".claude/vault/.gitkeep",
+    ".claude/vault/vault.registry.json",
+    # Matches ".env.*" but is the committed, secret-free template (mirrors
+    # .gitignore's own "!.env.example" re-include).
+    ".env.example",
+})
+
+
+def _publish_clean_tracked_paths(root: Path, scope: str) -> list:
+    """
+    scope="staged" (the pre-commit hook default): `git diff --cached
+    --name-only --diff-filter=ACMR` — files being Added/Copied/Modified/
+    Renamed by the commit about to happen. Deliberately EXCLUDES Deleted
+    (D): `git rm --cached <leaked-path>` is the documented remediation for an
+    already-committed leak, and a gate that blocks the fix would be absurd.
+    Deliberately narrower than the full tracked set so a never_touch path
+    that is ALREADY tracked (grandfathered — e.g. this repo's own generic
+    operator/profile.json) does not re-fail every future UNRELATED commit
+    forever; only a commit that actually touches a never_touch path is
+    blocked.
+
+    scope="all": `git ls-files` — the full current index, for a manual
+    repo-hygiene audit (`tessctl doctor --publish-clean --publish-clean-all`).
+    Reports pre-existing grandfathered tracked paths too — diagnostic, not
+    the commit gate's default behavior.
+
+    Raises RuntimeError (never a bare crash) if this is not a git repo or git
+    is unavailable — the caller decides how to report that.
+    """
+    if not shutil.which("git"):
+        raise RuntimeError("git not found on PATH — cannot evaluate the publish-clean gate")
+
+    if scope == "staged":
+        cmd = ["git", "-C", str(root), "diff", "--cached", "--name-only", "--diff-filter=ACMR"]
+    else:
+        cmd = ["git", "-C", str(root), "ls-files"]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`{' '.join(cmd[2:])}` failed (not a git repository?): {result.stderr.strip()}"
+        )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged") -> list:
+    """
+    Returns a list of (path, matched_glob) for every path (see
+    `_publish_clean_tracked_paths` for what `scope` selects) that matches
+    `_PUBLISH_CLEAN_PRIVATE_GLOBS` and is NOT exempted — by `owned_globs`
+    (owned_globs > never_touch, same precedence `check_manifest_write_gate`
+    enforces — e.g. clients/_template/**), by `_PUBLISH_CLEAN_ALLOWLIST`, or
+    by being a `.gitkeep` placeholder (the universal "shipped empty scaffold"
+    convention this same repo's own .gitignore already relies on throughout —
+    kb/raw/.gitkeep, .tess/snapshots/.gitkeep, etc.).
+    """
+    owned = manifest.get("owned_globs", [])
+    tracked = _publish_clean_tracked_paths(root, scope)
+
+    violations = []
+    for rel in tracked:
+        norm = rel.replace(os.sep, "/")
+        if os.path.basename(norm) == ".gitkeep":
+            continue
+        if norm in _PUBLISH_CLEAN_ALLOWLIST:
+            continue
+        if path_matches_globs(norm, owned):
+            continue  # owned_globs wins (e.g. clients/_template/**)
+        matched = next((g for g in _PUBLISH_CLEAN_PRIVATE_GLOBS if path_matches_globs(norm, [g])), None)
+        if matched:
+            violations.append((norm, matched))
+    return violations
+
+
+def _cmd_doctor_publish_clean(root: Path, scope: str = "staged") -> None:
+    """
+    `tessctl doctor --publish-clean` body (staged scope — the pre-commit hook
+    body) / `--publish-clean --publish-clean-all` (full tracked-set audit).
+    FAILS (exit 1) if any matching path is about to be committed — private
+    overlay data (operator identity, client data, mission logs, secrets,
+    *.local.md, vault material).
+
+    A missing `tess.manifest.json` (this isn't a real Tess OS root — an
+    unrelated repo, an early bootstrap state, or a minimal test fixture)
+    SKIPS with a loud warning rather than hard-crashing via `load_manifest`'s
+    own `sys.exit`. Deliberate fail-open, same posture as the "not a git
+    repo" / "git not on PATH" case below: this hook body is spliced ABOVE
+    whatever else is installed, and a hard crash here would BLOCK every
+    commit for a reason unrelated to any actual private-data violation —
+    the write-gate's own `check_manifest_write_gate` already hard-refuses to
+    write anything at all without a manifest, so the absence of a manifest
+    is never itself how private data would leak.
+    """
+    manifest_path = root / MANIFEST_FILE
+    if not manifest_path.exists():
+        print(
+            f"tessctl doctor --publish-clean: SKIPPED — {MANIFEST_FILE} not found "
+            f"at {root} (not a Tess OS root?)."
+        )
+        sys.exit(0)
+
+    manifest = load_manifest(root)
+    try:
+        violations = _publish_clean_violations(root, manifest, scope=scope)
+    except RuntimeError as e:
+        print(f"tessctl doctor --publish-clean: SKIPPED — {e}")
+        sys.exit(0)
+
+    label = "staged" if scope == "staged" else "full tracked set (--publish-clean-all)"
+    print(f"\ntessctl doctor --publish-clean  ({label})")
+    print("=" * 60)
+    if not violations:
+        print("  OK: no private overlay path is about to be committed.")
+        print("\npublish-clean: OK")
+        return
+
+    for rel, matched in violations:
+        print(f"  BLOCKED  {rel}  (matches private-data glob: {matched!r})")
+    print(
+        f"\npublish-clean: FAIL — {len(violations)} private overlay path(s) about to be committed.\n"
+        f"  Private overlay data (operator identity, client data, mission logs,\n"
+        f"  secrets, .local.md shadows, vault material) must never be committed.\n"
+        f"  Fix: `git restore --staged <path>` (unstage) or `git rm --cached <path>`\n"
+        f"  (already-committed leak — also consider history rewrite + credential\n"
+        f"  rotation if real secrets were involved), then verify the path is\n"
+        f"  actually gitignored (`git check-ignore --no-index <path>`).\n"
+        f"  See docs/DATA_LEAK_SAFETY.md."
+    )
+    sys.exit(1)
+
+
 def cmd_doctor(args, root: Path) -> None:
     """
     SHA-integrity check every core-managed file.
     Reports drift; security-tier files flagged distinctly.
     Manifest scope sanity check.
     """
+    # DATA-LEAK-SAFETY (issue #92): --publish-clean is a DIFFERENT check with
+    # DIFFERENT failure semantics from the rest of doctor (SHA-integrity vs.
+    # "is a private path about to be committed") — handled as an early,
+    # exclusive branch rather than folded into the SHA-integrity loop below,
+    # so neither check's exit-code/--json contract can bleed into the other's.
+    if getattr(args, "publish_clean", False):
+        _cmd_doctor_publish_clean(
+            root, scope="all" if getattr(args, "publish_clean_all", False) else "staged"
+        )
+        return
+
     lock = load_lock(root)
     as_json = getattr(args, "json_out", False)
     fix = getattr(args, "fix", False)
@@ -10617,9 +10819,233 @@ def _gate_install_ci_workflow(root: Path) -> None:
     print(f"  installed CI workflow at {workflow_path} (workflow_dispatch + push + pull_request)")
 
 
+# ---------------------------------------------------------------------------
+# `tessctl gate install-hooks` also installs the DATA-LEAK-SAFETY (issue #92)
+# publish-clean pre-commit guard and a local gitleaks pre-push guard — via
+# the EXISTING hook-install mechanism, per the task's own instruction to
+# prefer that over a new installer. Each is its OWN independent splice
+# implementation (own marker, own end sentinel) — same "don't touch a proven
+# subsystem for an unrelated feature" discipline the gate guard's own module
+# comment above already documents for not sharing code with the vault guard's
+# splice. Three (now four, with gitleaks) independently-shipped hook
+# installers compose because each only cares about its OWN marker: whatever
+# is already in the file — another guard or an operator's own hook — is
+# "pre-existing content" to splice above, regardless of what it happens to
+# be. tests/test_hook_coexistence.py and tests/test_publish_clean_gate.py
+# prove all combinations still coexist and all still fire.
+# ---------------------------------------------------------------------------
+
+_PUBLISH_HOOK_MARKER_V1 = "# tess-publish-guard v1"
+_PUBLISH_HOOK_END_SENTINEL = "# tess-publish-guard end"
+
+_PUBLISH_HOOK_BODY = r"""set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TESSCTL="$ROOT/.tess/bin/tessctl"
+if [ ! -f "$TESSCTL" ]; then
+  echo "tess-publish-guard: $TESSCTL not found — fail-closed, refusing (framework engine missing or moved)." >&2
+  exit 1
+fi
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "tess-publish-guard: no python3/python on PATH — fail-closed, refusing." >&2
+  exit 1
+fi
+TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" doctor --publish-clean
+"""
+
+
+def _publish_hook_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        f"{_PUBLISH_HOOK_MARKER_V1}\n"
+        "# Pre-commit hook: block a staged private-overlay path (DATA-LEAK-SAFETY,\n"
+        "# issue #92) — symmetric to the manifest write-gate. Installed by\n"
+        "# `tessctl gate install-hooks`. Runs `tessctl doctor --publish-clean`.\n"
+        + _PUBLISH_HOOK_BODY
+    )
+
+
+def _publish_splice_above_existing(existing: str) -> str:
+    """Same containment-subshell splice pattern as `_gate_splice_above_existing`
+    (pre-commit only — no stdin to worry about, unlike the pre-push guards)."""
+    inner = _PUBLISH_HOOK_BODY.rstrip("\n")
+    header = (
+        f"{_PUBLISH_HOOK_MARKER_V1}\n"
+        "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
+        "# Runs first inside a containment subshell: BLOCKS on a private-path\n"
+        "# violation, FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+    )
+    guard_block = (
+        header
+        + "if (\n"
+        + f"{inner}\n"
+        + "); then :; else\n"
+        + "  exit $?\n"
+        + "fi\n"
+        + f"{_PUBLISH_HOOK_END_SENTINEL} — pre-existing hook follows\n"
+    )
+    existing_lines = existing.splitlines(keepends=True)
+    if existing_lines and existing_lines[0].startswith("#!"):
+        shebang = existing_lines[0]
+        rest = "".join(existing_lines[1:])
+    else:
+        shebang = "#!/usr/bin/env bash\n"
+        rest = existing
+    return shebang + guard_block + "\n" + rest
+
+
+def _publish_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = root / ".git" / "hooks"
+    if not git_hooks_dir.exists():
+        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return
+
+    hook_path = git_hooks_dir / "pre-commit"
+    hook_script = _publish_hook_script()
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if _PUBLISH_HOOK_MARKER_V1 in existing:
+            print("  git hook pre-commit: tess-publish-guard already v1 (skipped)")
+            return
+        updated = _publish_splice_above_existing(existing)
+        print(
+            "  NOTICE: pre-existing pre-commit hook detected — the publish-clean guard "
+            "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
+        )
+        hook_path.write_text(updated, encoding="utf-8")
+    else:
+        hook_path.write_text(hook_script, encoding="utf-8")
+    os.chmod(str(hook_path), 0o755)
+    print(f"  installed git pre-commit hook (publish-clean guard) at {hook_path}")
+
+
+# ---------------------------------------------------------------------------
+# Local gitleaks pre-push guard (DATA-LEAK-SAFETY, issue #92, fix 4) —
+# SECRETS-ONLY, clearly labeled as such: it does NOT cover PII/business-data
+# paths (that is the publish-clean guard's job, above). CI's `secret-scan`
+# job (.github/workflows/ci.yml) already runs gitleaks against the FULL
+# history unconditionally and is the enforced backstop regardless of this
+# hook; this hook is a faster LOCAL feedback loop, scoped to just the commits
+# being pushed (not the whole repo history, unlike the CI job) — a missing
+# local `gitleaks` binary WARNS and falls through rather than blocking every
+# push, since installing a third-party binary cannot be assumed for every
+# contributor and CI still catches anything this hook misses.
+# ---------------------------------------------------------------------------
+
+_GITLEAKS_HOOK_MARKER_V1 = "# tess-gitleaks-guard v1"
+_GITLEAKS_HOOK_END_SENTINEL = "# tess-gitleaks-guard end"
+
+_GITLEAKS_HOOK_BODY = r"""set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+GITLEAKS_BIN="$(command -v gitleaks 2>/dev/null || true)"
+if [ -z "$GITLEAKS_BIN" ]; then
+  echo "tess-gitleaks-guard: gitleaks not installed locally — skipping (secrets-only; CI's gitleaks job is the enforced backstop regardless). Install: https://github.com/gitleaks/gitleaks#installing" >&2
+  exit 0
+fi
+
+# No bash arrays here (deliberately) — macOS ships bash 3.2 as /bin/bash, and
+# an EMPTY array expanded as "${ARR[@]}" under `set -u` raises "unbound
+# variable" on bash 3.2 (no .gitleaks.toml present is the common case for a
+# fresh scaffold). A plain if/else with the config flag inlined per branch
+# sidesteps the whole class of bug.
+FAILED=0
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$local_sha" ] && continue
+  if echo "$remote_sha" | grep -qE '^0+$'; then
+    RANGE="4b825dc642cb6eb9a060e54bf8d69288fbee4904..$local_sha"
+  else
+    RANGE="$remote_sha..$local_sha"
+  fi
+  if [ -f "$ROOT/.gitleaks.toml" ]; then
+    "$GITLEAKS_BIN" git "$ROOT" --config "$ROOT/.gitleaks.toml" --log-opts="$RANGE" --no-banner --redact --exit-code 1 || FAILED=1
+  else
+    "$GITLEAKS_BIN" git "$ROOT" --log-opts="$RANGE" --no-banner --redact --exit-code 1 || FAILED=1
+  fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "tess-gitleaks-guard: BLOCKED — gitleaks found a likely secret in the commit(s) being pushed. Secrets-only: this does not cover PII/business-data paths (see the publish-clean pre-commit guard for that)." >&2
+  exit 1
+fi
+exit 0
+"""
+
+
+def _gitleaks_hook_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        f"{_GITLEAKS_HOOK_MARKER_V1}\n"
+        "# Pre-push hook: local gitleaks secret scan of the commits being pushed\n"
+        "# (DATA-LEAK-SAFETY, issue #92, fix 4 — secrets-only, NOT a PII/business-\n"
+        "# data check; see the publish-clean pre-commit guard for that). Installed\n"
+        "# by `tessctl gate install-hooks`. Git feeds ref ranges on stdin.\n"
+        + _GITLEAKS_HOOK_BODY
+    )
+
+
+def _gitleaks_splice_above_existing(existing: str) -> str:
+    """Stdin-preserving splice (pre-push reads ref ranges from stdin) — same
+    capture-once-and-refeed technique `_vault_install_git_hooks` /
+    `_gate_splice_above_existing` use for their own pre-push splices."""
+    inner = _GITLEAKS_HOOK_BODY.rstrip("\n")
+    header = (
+        f"{_GITLEAKS_HOOK_MARKER_V1}\n"
+        "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
+        "# Runs first inside a containment subshell: BLOCKS on a detected secret,\n"
+        "# FALLS THROUGH to the pre-existing hook below on a clean result.\n"
+    )
+    guard_block = (
+        header
+        + 'GITLEAKS_STDIN="$(cat; printf x)"; GITLEAKS_STDIN="${GITLEAKS_STDIN%x}"\n'
+        + "if printf '%s' \"$GITLEAKS_STDIN\" | (\n"
+        + f"{inner}\n"
+        + "); then :; else\n"
+        + "  exit $?\n"
+        + "fi\n"
+        + f"{_GITLEAKS_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
+    )
+    existing_lines = existing.splitlines(keepends=True)
+    if existing_lines and existing_lines[0].startswith("#!"):
+        shebang = existing_lines[0]
+        rest = "".join(existing_lines[1:])
+    else:
+        shebang = "#!/usr/bin/env bash\n"
+        rest = existing
+    if rest.strip():
+        rest = "printf '%s' \"$GITLEAKS_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
+    return shebang + guard_block + "\n" + rest
+
+
+def _gitleaks_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = root / ".git" / "hooks"
+    if not git_hooks_dir.exists():
+        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return
+
+    hook_path = git_hooks_dir / "pre-push"
+    hook_script = _gitleaks_hook_script()
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if _GITLEAKS_HOOK_MARKER_V1 in existing:
+            print("  git hook pre-push: tess-gitleaks-guard already v1 (skipped)")
+            return
+        updated = _gitleaks_splice_above_existing(existing)
+        print(
+            "  NOTICE: pre-existing pre-push hook detected — the local gitleaks guard "
+            "was spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs)."
+        )
+        hook_path.write_text(updated, encoding="utf-8")
+    else:
+        hook_path.write_text(hook_script, encoding="utf-8")
+    os.chmod(str(hook_path), 0o755)
+    print(f"  installed git pre-push hook (local gitleaks guard) at {hook_path}")
+
+
 def _cmd_gate_install_hooks(args, root: Path) -> None:
     print("tessctl gate install-hooks:")
     _gate_install_git_hooks(root)
+    _publish_install_git_hooks(root)
+    _gitleaks_install_git_hooks(root)
     _gate_install_ci_workflow(root)
 
 
@@ -14476,6 +14902,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help="SHA-integrity check; flag security-tier drift")
     p_doctor.add_argument("--fix", action="store_true", help="auto-capture uncaptured drift")
     p_doctor.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+    # DATA-LEAK-SAFETY (issue #92): the commit-side PUBLISH-CLEAN gate — symmetric
+    # to the write-gate (check_manifest_write_gate/guarded_write). A dedicated
+    # flag rather than folding into the default doctor run: the SHA-integrity
+    # scan and the publish-clean scan have unrelated failure semantics (an
+    # operator running plain `tessctl doctor` should not suddenly start failing
+    # over "is a private path staged in git", which most tessctl installs
+    # aren't even a git repo when the standard doctor check matters most —
+    # see cmd_doctor's early handling of --publish-clean below).
+    p_doctor.add_argument(
+        "--publish-clean", action="store_true", dest="publish_clean",
+        help="FAIL if a staged path is private overlay data (operator PII, "
+             "*.local.md, kb/**, clients/**, .env*, vault) — the pre-commit hook body",
+    )
+    p_doctor.add_argument(
+        "--publish-clean-all", action="store_true", dest="publish_clean_all",
+        help="with --publish-clean, audit the FULL git-tracked set (git ls-files) "
+             "instead of just staged changes — a repo-hygiene audit, not the hook default",
+    )
     p_doctor.add_argument("path", nargs="?", help="check a specific file")
 
     # update
