@@ -5,6 +5,67 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Security
+- **DATA-LEAK-SAFETY (issue #92)** — the write-gate (`check_manifest_write_gate`
+  / `guarded_write`) was solid: `tessctl` itself already refuses to write to a
+  `never_touch` path. The COMMIT boundary (`.gitignore`) had drifted from it —
+  `operator/*.md`, `operator/profile.json`, `*.local.md`, and
+  `kb/wiki/log.md` were not gitignored, and there was no commit-side control
+  at all (gitleaks was secrets-only and CI/post-push only). A plain
+  `git add -A && git commit` in a freshly scaffolded (or self-hosted) Tess OS
+  instance could commit private operator/client data to a public repo — the
+  blocker for safely dogfooding an instance with real data.
+  - **`.gitignore` reconciled** with the manifest's `never_touch` set: added
+    `operator/**` (four static doc-template stubs explicitly re-included by
+    name — `build-facts-stub.md`, `identity-stub.md`, `org-channels.md`,
+    `user-profile.md` — but deliberately NOT `operator/profile.json`, the one
+    file `create-tess`'s onboarding wizard unconditionally overwrites with
+    real operator identity), `*.local.md` / `**/*.local.md`, `missions/*`
+    (`!missions/README.md`), `UPGRADE-NOTES.md`, `.mcp.json`. Removed the
+    previous `!kb/wiki/index.md` / `!kb/wiki/log.md` overrides — `log.md` is
+    the file a live instance appends real mission/client entries to, not a
+    static template. Deliberately did NOT gitignore the rest of `never_touch`
+    (`docs/**`, `adapters/**`, `starter/**`, `README.md`, `main.py`,
+    `pyproject.toml`, `uv.lock`, ...) — those are legitimately tracked,
+    public, framework-repo content that `tessctl` is merely out of scope to
+    manage, not private data; doing so was tried during development and
+    produced ~155 false violations against this repo's own history.
+  - **`tessctl doctor --publish-clean`** — the commit-side PUBLISH-CLEAN gate,
+    symmetric to the write-gate. FAILS if a staged path matches a curated
+    private-data subset (operator identity, `kb/**`, `clients/**`, `.env*`,
+    `*.local.md`, vault material, `missions/**`) — deliberately a curated
+    subset of `never_touch`, not the full list, for the same reason the
+    `.gitignore` reconciliation above stayed curated. Default scope is
+    STAGED changes (`git diff --cached --diff-filter=ACMR`) so a
+    pre-existing grandfathered tracked file (this repo's own generic
+    `operator/profile.json`) doesn't re-fail every future unrelated commit;
+    `--publish-clean-all` audits the full `git ls-files` set instead.
+  - **`tessctl gate install-hooks`** now also installs the publish-clean
+    guard as a pre-commit hook (`tess-publish-guard`) and a local `gitleaks`
+    guard as a pre-push hook (`tess-gitleaks-guard`, secrets-only, clearly
+    labeled as NOT covering PII — falls through with a warning if `gitleaks`
+    isn't installed locally, since CI's `secret-scan` job is the enforced
+    backstop regardless). Both are independent splice implementations (own
+    marker, own end sentinel) using the same containment-subshell coexistence
+    pattern the vault guard and contract gate guard already proved — four
+    independently-shipped hook installers now compose on the same
+    pre-commit/pre-push files without any of them neutering another.
+  - **`docs/DATA_LEAK_SAFETY.md`** — the framework + private-overlay model:
+    private data lives ONLY in overlay dirs (`clients/`, `kb/`, `operator/`,
+    `.env`, `*.local.md`); framework-owned dirs (`agents/`, `conductor/`,
+    `.claude/agents|commands|hooks|skills`, `CLAUDE.md`, `prompts/`,
+    `AGENTS.md`, `core/contracts|policy`) are overwritten on update — Cyra
+    proved a planted `agents/*.md` secret gets silently clobbered by the next
+    upstream file at that path.
+  - **87 new tests** — `tests/test_publish_clean_gate.py` (44: curated-glob
+    consistency, per-path unit coverage, CLI exit codes, real
+    pre-commit-hook-fires e2e, three-guard coexistence),
+    `tests/test_gitleaks_local_prepush.py` (6: splice/idempotency, real
+    secret-blocks-a-push e2e, missing-binary warn-and-fall-through), and
+    `tests/test_gitignore_reconciliation.py` (37: `git check-ignore
+    --no-index` proof for every private path, proof every shipped template
+    stays tracked, proof non-private framework content stays untouched).
+
 ### Fixed
 - **`dispatch-guard.sh` — headless / no-subagent-available exception**
   (Ada, Lead Backend Engineer, 2026-07-07, closing a finding from Ada's own

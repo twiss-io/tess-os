@@ -28,6 +28,56 @@ clients/*/.vault/
 operator/secrets
 operator/*.secret
 
+# DATA-LEAK-SAFETY (issue #92): operator/** reconciled with the manifest's
+# never_touch entry ("operator/**": "user-authored identity & context").
+# operator/* below is a belt-and-suspenders superset of the two lines above —
+# it also blocks operator/profile.json, which the create-tess wizard
+# (writeProfile() in create-tess/src/keystone.js) unconditionally overwrites
+# with REAL identity (operator_name, telegram_channel, ...) during onboarding,
+# BEFORE any git commit happens in a freshly `git init`'d instance.
+#
+# Deliberate asymmetry, documented (PR data-leak-safety hardening):
+#   - operator/profile.json gets NO `!` re-include. It is the one file that
+#     is always programmatically overwritten with real PII. The copy already
+#     tracked in THIS repo's own history (a harmless generic default —
+#     {"operator_name": "Operator", ...}) stays tracked only via git's
+#     "already-tracked files survive a new ignore rule" behavior, never via
+#     an override — so a FRESH install (git init, empty history, this same
+#     .gitignore copied verbatim by create-tess's scaffolder) never tracks
+#     the real value written over it.
+#   - The 4 static doc-template stubs below ARE re-included: no onboarding
+#     code path (create-tess/src/keystone.js bake()) ever writes to them —
+#     they ship with placeholder text ("<your build command>",
+#     "<your-dm-chat-id>") the operator hand-edits later, same shipped-
+#     scaffold role as clients/_template/** below.
+operator/*
+!operator/build-facts-stub.md
+!operator/identity-stub.md
+!operator/org-channels.md
+!operator/user-profile.md
+
+# DATA-LEAK-SAFETY (issue #92): the append-first customization shadow layer
+# (spec §5 Layer 2) — hard-guarded in the write-gate (check_manifest_write_gate
+# Step 3c) but, until now, absent from .gitignore entirely.
+*.local.md
+**/*.local.md
+
+# DATA-LEAK-SAFETY (issue #92): reconciled with the remaining never_touch
+# entries that carry real per-instance data risk (not merely "tessctl must
+# not manage this" — actual private content). `missions/**` mirrors the
+# kb/wiki/* pattern below: the manifest's own note calls it "same fenced-off
+# treatment as kb/**" — per-mission records (mission.md, verdicts/, retries/)
+# can describe real client/business work in a live instance; only the
+# hand-authored convention doc (missions/README.md) is a shipped template.
+missions/*
+!missions/README.md
+# UPGRADE-NOTES.md: written by `tessctl update` with per-instance upgrade
+# detail; not shipped, not currently tracked, but should never be committed.
+UPGRADE-NOTES.md
+# .mcp.json: MCP server configuration commonly embeds API keys/tokens
+# directly in JSON — same secret-risk class as .env, not currently tracked.
+.mcp.json
+
 # ─────────────────────────────────────────────────────────────
 # Dependencies / build artifacts
 # ─────────────────────────────────────────────────────────────
@@ -81,10 +131,23 @@ kb/raw/*
 !kb/raw/.gitkeep
 kb/lint/*
 !kb/lint/.gitkeep
-# wiki: ignore content but keep the maintained index/log and the section-dir placeholders
+# wiki: ignore ALL content, keep only the section-dir placeholders.
+#
+# DATA-LEAK-SAFETY (issue #92): kb/wiki/index.md and kb/wiki/log.md were
+# PREVIOUSLY explicitly un-ignored here (`!kb/wiki/index.md`, `!kb/wiki/log.md`)
+# despite kb/** being in the manifest's never_touch list. That override is
+# REMOVED. log.md is the file Tess appends real mission/client entries to over
+# the life of a live instance (see kb/wiki/log.md's own "Chronological record
+# of internal missions" format) — not a static template; index.md is
+# Tess-maintained the same way. Both now fall under the general `kb/wiki/*`
+# ignore below, same treatment as every other kb/wiki subdirectory.
+#
+# This repo's own copies of these two files (harmless "No missions logged
+# yet." scaffold placeholders) remain tracked here via git's "already-tracked
+# survives a new ignore rule" behavior — NOT via a `!` override — so a FRESH
+# instance (create-tess `git init`s empty, this .gitignore copied verbatim)
+# never tracks whatever real content accumulates in its own copy.
 kb/wiki/*
-!kb/wiki/index.md
-!kb/wiki/log.md
 !kb/wiki/concepts/
 !kb/wiki/missions/
 !kb/wiki/people/
