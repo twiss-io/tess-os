@@ -206,7 +206,10 @@ def test_capped_reasons_truncates_and_marks_overflow(engine):
 
 
 def test_capped_reasons_leaves_a_short_list_untouched(engine):
-    assert engine._trace_capped_reasons(["a", "b"]) == ["a", "b"]
+    assert engine._trace_capped_reasons(["a", "b"]) == [
+        "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
+        "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
+    ]
     assert engine._trace_capped_reasons(None) == []
 
 
@@ -216,8 +219,11 @@ def test_append_event_writes_to_mission_path_when_mission_id_present(engine, tmp
         duration_ms=5.0, mission_id="m9", reasons=["x"],
     )
     written = engine._trace_append_event(tmp_path, event)
-    assert written == tmp_path / "missions" / "m9" / "trace.jsonl"
-    assert _read_jsonl(written) == [event]
+    opaque_id = engine._trace_safe_mission_id("m9")
+    assert written == tmp_path / "missions" / opaque_id / "trace.jsonl"
+    stored = _read_jsonl(written)
+    assert stored[0]["mission_id"] == opaque_id
+    assert stored[0]["reasons"] == ["INTERNAL_ERROR_REDACTED: an internal failure was redacted"]
 
 
 def test_append_event_writes_to_fallback_path_when_no_mission_id(engine, tmp_path):
@@ -238,7 +244,7 @@ def test_append_event_appends_not_overwrites(engine, tmp_path):
     p1 = engine._trace_append_event(tmp_path, e1)
     p2 = engine._trace_append_event(tmp_path, e2)
     assert p1 == p2
-    assert _read_jsonl(p1) == [e1, e2]
+    assert _read_jsonl(p1) == [engine._trace_safe_event(e1), engine._trace_safe_event(e2)]
 
 
 def test_append_event_raises_trace_error_on_schema_invalid_event(engine, tmp_path):
@@ -263,7 +269,8 @@ def test_trace_record_is_best_effort_and_never_raises(engine, tmp_path, monkeypa
     )
     captured = capsys.readouterr()
     assert "WARNING" in captured.err
-    assert "synthetic tracer bug" in captured.err
+    assert "TRACE_RECORDING_FAILED" in captured.err
+    assert "synthetic tracer bug" not in captured.err
 
 
 # ===========================================================================
@@ -283,7 +290,9 @@ def test_otlp_span_has_required_gen_ai_attributes_on_a_pass_event(engine):
     assert attrs["gen_ai.agent.name"]["stringValue"]
     assert attrs["gen_ai.agent.id"]["stringValue"]
     assert attrs["gen_ai.agent.description"]["stringValue"]
-    assert attrs["gen_ai.conversation.id"] == {"stringValue": "m1"}
+    assert attrs["gen_ai.conversation.id"] == {
+        "stringValue": engine._trace_safe_mission_id("m1")
+    }
     assert "error.type" not in attrs
     assert span["status"]["code"] == engine._OTLP_STATUS_OK
     # status.message is an OTLP error-description field — an OK span carries
@@ -391,7 +400,9 @@ def test_gate_ci_block_on_prod_touching_change_appends_block_event_to_fallback(t
     assert event["mission_id"] is None  # src/prod/app.py isn't mission-scoped
     assert event["subject"]["changed_paths_count"] == 1
     assert event["counts"]["changed_paths"] == 1
-    assert any("app.py" in r for r in event["reasons"])
+    assert event["reasons"] == [
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ]
 
 
 def test_gate_ci_clean_change_appends_pass_event(trace_repo, run_cli, engine):
@@ -431,7 +442,7 @@ def test_gate_pre_commit_schema_invalid_staged_brief_appends_block_event_under_m
     r = run_cli(trace_repo, "gate", "pre-commit", "--json")
     assert r.returncode == 1, r.stdout + r.stderr
 
-    mission_trace = trace_repo / "missions" / "m1" / "trace.jsonl"
+    mission_trace = trace_repo / "missions" / engine._trace_safe_mission_id("m1") / "trace.jsonl"
     assert mission_trace.exists()
     events = _read_jsonl(mission_trace)
     assert len(events) == 1
@@ -439,7 +450,7 @@ def test_gate_pre_commit_schema_invalid_staged_brief_appends_block_event_under_m
     assert event["phase"] == "gate"
     assert event["action"] == "gate.pre-commit"
     assert event["outcome"] == "block"
-    assert event["mission_id"] == "m1"
+    assert event["mission_id"] == engine._trace_safe_mission_id("m1")
     assert engine.schema_validate(event, engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
     # nothing leaked into the no-mission-id fallback for a fully mission-scoped change
     assert _fallback_events(trace_repo) == []
@@ -458,8 +469,12 @@ def test_gate_pre_push_stdin_protocol_appends_event(trace_repo, run_cli, engine)
     events = _fallback_events(trace_repo)
     gate_events = [e for e in events if e["action"] == "gate.pre-push"]
     assert len(gate_events) == 1
-    assert gate_events[0]["outcome"] == "block"
-    assert engine.schema_validate(gate_events[0], engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
+    event = gate_events[0]
+    assert event["outcome"] == "error"
+    assert event["exit_code"] == 1
+    assert any("REMOTE_BASE_REQUIRED" in reason for reason in event["reasons"])
+    assert "REMOTE_BASE_REQUIRED" in r.stdout + r.stderr
+    assert engine.schema_validate(event, engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
 
 
 def test_validate_valid_and_invalid_and_missing_file_outcomes(trace_repo, run_cli, engine):
@@ -477,13 +492,15 @@ def test_validate_valid_and_invalid_and_missing_file_outcomes(trace_repo, run_cl
     r_missing = run_cli(trace_repo, "validate", "brief", "missions/m2/briefs/does-not-exist.brief.md", "--json")
     assert r_missing.returncode == 2, r_missing.stdout + r_missing.stderr
 
-    events = _read_jsonl(trace_repo / "missions" / "m2" / "trace.jsonl")
+    events = _read_jsonl(
+        trace_repo / "missions" / engine._trace_safe_mission_id("m2") / "trace.jsonl"
+    )
     by_outcome = {e["outcome"]: e for e in events}
     assert set(by_outcome) == {"pass", "block", "error"}
     for e in events:
         assert e["phase"] == "validate"
         assert e["action"] == "validate"
-        assert e["mission_id"] == "m2"
+        assert e["mission_id"] == engine._trace_safe_mission_id("m2")
         assert e["subject"]["contract_type"] == "brief"
         assert engine.schema_validate(e, engine.TRACE_EVENT_SCHEMA, engine.TRACE_EVENT_SCHEMA, trace_repo) == []
     assert by_outcome["pass"]["exit_code"] == 0
@@ -502,7 +519,7 @@ def test_validate_outside_missions_falls_back_to_per_run_path(trace_repo, run_cl
     events = _fallback_events(trace_repo)
     assert len(events) == 1
     assert events[0]["mission_id"] is None
-    assert events[0]["subject"]["file"] == "loose.brief.md"
+    assert events[0]["subject"]["file_kind"] == "repository-file"
 
 
 # ===========================================================================
@@ -523,7 +540,7 @@ def _assert_valid_gen_ai_agent_span(span: dict) -> None:
     assert span["kind"] == 1
 
 
-def test_trace_export_cli_produces_valid_otlp_json_with_gen_ai_attributes(trace_repo, run_cli):
+def test_trace_export_cli_produces_valid_otlp_json_with_gen_ai_attributes(trace_repo, run_cli, engine):
     base = _base_sha(trace_repo)
     (trace_repo / "src" / "prod").mkdir(parents=True)
     (trace_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
@@ -548,7 +565,7 @@ def test_trace_export_cli_produces_valid_otlp_json_with_gen_ai_attributes(trace_
         next((a["value"]["stringValue"] for a in s["attributes"] if a["key"] == "gen_ai.conversation.id"), None)
         for s in spans
     }
-    assert "m3" in conv_ids  # the mission-scoped validate call
+    assert engine._trace_safe_mission_id("m3") in conv_ids  # the mission-scoped validate call
     assert None in conv_ids  # the fallback (no mission id) gate ci call
 
 
@@ -557,7 +574,7 @@ def test_trace_export_unsupported_format_is_rejected(trace_repo, run_cli):
     assert r.returncode != 0
 
 
-def test_trace_export_mission_id_scoping(trace_repo, run_cli):
+def test_trace_export_mission_id_scoping(trace_repo, run_cli, engine):
     for mid in ("alpha", "beta"):
         brief = trace_repo / "missions" / mid / "briefs" / "ok.brief.md"
         brief.parent.mkdir(parents=True)
@@ -569,7 +586,9 @@ def test_trace_export_mission_id_scoping(trace_repo, run_cli):
     spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
     assert len(spans) == 1
     attrs = {a["key"]: a["value"] for a in spans[0]["attributes"]}
-    assert attrs["gen_ai.conversation.id"] == {"stringValue": "alpha"}
+    assert attrs["gen_ai.conversation.id"] == {
+        "stringValue": engine._trace_safe_mission_id("alpha")
+    }
 
 
 def test_trace_export_out_file_writes_to_disk(trace_repo, run_cli, tmp_path):
@@ -779,7 +798,7 @@ def test_no_network_in_gate_pre_commit_call_graph(trace_repo, engine, no_network
     with pytest.raises(SystemExit):
         engine._cmd_gate_pre_commit(ns(json_out=True), trace_repo)
 
-    assert (trace_repo / "missions" / "m6" / "trace.jsonl").exists()
+    assert (trace_repo / "missions" / engine._trace_safe_mission_id("m6") / "trace.jsonl").exists()
 
 
 def test_trace_record_never_swallows_a_socket_open_on_the_append_path(engine, tmp_path, monkeypatch, no_network):

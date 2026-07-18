@@ -54,15 +54,15 @@ output scrolls off a terminal.
   "event_id": "d2d5317f4a8f420386a3dde170896b48",
   "timestamp": "2026-07-07T10:31:10.273090Z",
   "run_id": "f437a6d0df1648cf9f851631e6234ced",
-  "mission_id": "m1",
+  "mission_id": "mission-0d4b0f55e7d9f8d1",
   "phase": "validate",
   "action": "validate",
   "outcome": "block",
   "exit_code": 1,
   "duration_ms": 3.201,
-  "subject": {"contract_type": "brief", "file": "missions/m1/briefs/task1.brief.md"},
+  "subject": {"contract_type": "brief", "file_kind": "repository-file"},
   "counts": {"violations": 2},
-  "reasons": ["$.milestones: expected type array, got NoneType"]
+  "reasons": ["CONTRACT_INVALID: a governed contract is invalid"]
 }
 ```
 
@@ -72,13 +72,13 @@ output scrolls off a terminal.
   failed, policy file missing/invalid, instance file unreadable) — the same
   distinction `GateSpineError` vs. an ordinary `{"blocked": true}` result
   already draws inside the engine, now surfaced in the trace too.
-- **`mission_id`** is inferred from the `missions/<id>/...` path convention
-  (`core/contracts/README.md`, `GATE_CONTRACT_PATH_PATTERNS`) already used by
-  `tessctl gate`'s own contract-type inference — never invented, never a
-  fallback UUID.
-- **`reasons`** is capped at 20 entries (`TRACE_MAX_REASONS`) with a
-  `"...and N more (truncated for the trace log)"` marker, so one huge
-  violation list can never blow up a JSONL line.
+- **`mission_id`** is an opaque stable hash of an inferred
+  `missions/<id>/...` id. Trace files and exports therefore preserve event
+  grouping without retaining mission names.
+- **`reasons`** are allowlisted decision codes with fixed messages and are
+  capped at 20 entries (`TRACE_MAX_REASONS`), so raw Git/GPG/schema/path
+  values cannot enter JSONL or OTLP and one huge violation list cannot blow
+  up a JSONL line.
 - Every event is validated against `TRACE_EVENT_SCHEMA` (the same generic
   `schema_validate()` engine `core/contracts/*.schema.json` already use)
   **before** it is written — a tracer bug raises `TraceError` loudly inside
@@ -89,7 +89,7 @@ output scrolls off a terminal.
 
 ### Where it's written
 
-- **Mission-scoped** — `missions/<id>/trace.jsonl`, appended, when at least
+- **Mission-scoped** — `missions/mission-<opaque-id>/trace.jsonl`, appended, when at least
   one path in the gate/validate call is `missions/<id>/...`-shaped. This is a
   normal working-tree file in the SAME bucket as
   `missions/<id>/{briefs,verdicts,returns}/**` — committing it (or not) is the

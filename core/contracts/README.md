@@ -140,12 +140,14 @@ already-wired files rather than adding new ones to this list.
 `.tess/keys/verifiers/<name>.asc` (each verifier's bundled PUBLIC key) is
 deliberately NOT core-managed/keystone-tracked, the same posture
 `.tess/keys/twiss-release-key.asc` already has — it's a plain committed
-repo asset, not part of the `.tess/core` mirror system. It IS, however,
-covered by `core/policy/policy.yaml`'s own `tess-os-security-tier-doctrine`
-rule (`.tess/keys/verifiers/**` was added to that rule's `globs` in Phase
-2b) — so editing the key registry still requires a covering, signed
-Reid/Cyra verdict, even though the key files themselves aren't
-keystone-tracked. See `conductor/verdict-signing.md` for the full picture.
+repo asset, not part of the `.tess/core` mirror system. During a ship-gate
+run, however, the gate reads both verifier registration and exact public-key
+bytes from the immutable BASE Git tree; candidate checkout bytes cannot add,
+replace, delete, symlink, or roll back the trust material used for that run.
+The directory is also covered by `core/policy/policy.yaml`'s own
+`tess-os-security-tier-doctrine` rule (`.tess/keys/verifiers/**` was added to
+that rule's `globs` in Phase 2b). See
+`docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md` for the trust boundary.
 
 **Goal #5 note:** `mission.schema.json` + `retry.schema.json` are wired into
 `tess.lock`/`tier: normal` the same way `crew-plan.schema.json` was from the

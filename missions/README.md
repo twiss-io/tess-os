@@ -131,6 +131,8 @@ Every mission record is seeded with all five, `cleared: false`, at
                                                                   # full check — same decision
                                                                   # `retry log` would make, but
                                                                   # writes nothing either way
+./tessctl retry migrate --mission <id>                            # dry-run legacy v1 migration
+./tessctl retry migrate --mission <id> --apply                    # resumable v2 migration (atomic per-record replacement)
 ```
 
 **`--mission <id>` is always explicit.** This CLI keeps no implicit
@@ -158,16 +160,22 @@ region — never from the model's own say-so:
    own `task` field/body).
 2. **Same-brief retries are forbidden for every non-transient cause**
    (`subagent-failure-protocol.md`, cause-classification table). Each
-   attempt file stores the VERBATIM `brief_text` used for that attempt (not
-   just a path, since the live brief a path points at can change between
-   attempts). A proposed attempt whose `--brief` file's content is a
-   **literal** match — after collapsing all whitespace runs, not just
-   trimming the ends — of **any prior attempt's** stored `brief_text` (not
-   only the immediately preceding one, so an A -> B -> A ping-pong is
+   attempt file stores the SHA-256 commitment and normalized byte length of
+   the dispatch brief, never its plaintext. A proposed attempt whose
+   whitespace-normalized `--brief` commitment matches **any prior** attempt
+   (not only the immediately preceding one, so an A -> B -> A ping-pong is
    still caught) is blocked — UNLESS `--cause transient` (an infrastructure
    hiccup is explicitly allowed a same-brief retry with backoff). This is a
    trivial-evasion guard, not a semantic diff — a genuine paraphrase of an
-   old brief is not detected.
+   old brief is not detected. A v1 ledger containing `brief_text` is blocked
+   until the operator first runs the explicit, dry-run-by-default `retry
+   migrate` command. `--apply` prevalidates every record, then atomically
+   replaces one source record at a time with a fsynced v2-only sibling file;
+   it never moves or retains a plaintext backup. An interrupted run can leave
+   a v1/v2 mixture, which remains fail-closed until rerunning `retry migrate`
+   upgrades the remaining v1 records. The migration preserves the empty
+   `.gitkeep` created for a new mission and refuses any other unexpected
+   retry-directory entry rather than dropping or copying unknown data.
 
 **`task` and `--mission <id>` are both constrained to safe values.** `task`
 is normalized through the same kebab-slug alphabet (`[a-z0-9-]`) used for

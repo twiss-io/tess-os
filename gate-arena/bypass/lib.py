@@ -26,6 +26,7 @@ list, not a toy policy.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -237,23 +238,10 @@ def write_verdict(root: Path, rel_path: str, verdict_dict: dict) -> Path:
     return p
 
 
-def write_signoff(root: Path, rule_id: str, category: str, rationale: str) -> Path:
-    p = root / ".tess" / "gate" / "signoffs" / f"{rule_id}.signoff.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({
-        "rule_id": rule_id,
-        "category": category,
-        "authorized_by": "Xavier (arena fixture — simulated hard-floor sign-off)",
-        "rationale": rationale,
-        "authorized_at": "2026-07-08T00:00:00Z",
-    }, indent=2), encoding="utf-8")
-    return p
-
-
 # ---------------------------------------------------------------------------
-# honesty-capstone-audit-2026-07-08 §3-d — hard-floor sign-off signing
-# helpers (attack A12). Twins of sign_verdict/bundle_key/write_signoff
-# above, applied to the sign-off authentication path instead of verdicts.
+# Hard-floor sign-off v2 helpers. The arena must exercise the same strict
+# payload-then-single-attestation topology as the ship gate; an old v1-style
+# same-commit fixture would only prove that the v2 topology rejects it.
 # ---------------------------------------------------------------------------
 
 def sign_signoff(engine, signoff: dict, key) -> dict:
@@ -284,40 +272,98 @@ def bundle_signoff_key(root: Path, name: str, key) -> str:
     return f".tess/keys/signoffs/{name.lower()}.asc"
 
 
-def write_forged_signoff(root: Path, rule_id: str, category: str, authorized_by: str, rationale: str) -> Path:
-    """An UNSIGNED, shape-valid-only sign-off — exactly what any agent able
-    to write a file could forge pre-(d)-fix, and exactly what
-    `write_signoff` above (A2) also writes. Named distinctly here (A12
-    reuses this construction deliberately, not by coincidence) to make the
-    forgery explicit at the call site."""
-    p = root / ".tess" / "gate" / "signoffs" / f"{rule_id}.signoff.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({
+def _revision_bound_signoff(
+    root: Path, rule_id: str, category: str, authorized_by: str, rationale: str,
+    engine, base_sha: str, payload_head_sha: str, governed_paths: list[str],
+) -> dict:
+    """Build the complete v2 content that the immutable gate will expect.
+
+    This deliberately derives rule semantics and blob ids from the fixture's
+    own committed policy/payload. It never reads the working tree for the
+    evidence it claims to attest, and it leaves the real shipped policy/key
+    registry untouched: the arena fixture has its separate throwaway keyring.
+    """
+    policy_doc = yaml.safe_load((root / "core" / "policy" / "policy.yaml").read_text(encoding="utf-8"))
+    policy = policy_doc.get("policy") if isinstance(policy_doc, dict) else None
+    if not isinstance(policy, dict):
+        raise ValueError("arena fixture policy is not a policy object")
+    rule = next(
+        (
+            candidate for candidate in (policy.get("hard_floor_rules") or [])
+            if isinstance(candidate, dict) and candidate.get("id") == rule_id
+        ),
+        None,
+    )
+    if not isinstance(rule, dict) or rule.get("category") != category:
+        raise ValueError(f"arena fixture has no hard-floor rule {rule_id!r}/{category!r}")
+    contexts, reasons = engine._gate_hard_floor_rule_contexts(
+        {path: [rule] for path in governed_paths}
+    )
+    if reasons or rule_id not in contexts:
+        raise ValueError(f"cannot derive v2 sign-off rule context: {reasons}")
+    repository_id = policy.get("repository_id")
+    if not isinstance(repository_id, str) or not repository_id.strip():
+        raise ValueError("arena fixture policy has no repository_id")
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    return {
+        "schema_version": engine.SIGNOFF_SCHEMA_VERSION,
+        "repository_id": repository_id,
         "rule_id": rule_id,
         "category": category,
+        "effective_rule_sha256": contexts[rule_id]["effective_rule_sha256"],
+        "base_sha": base_sha,
+        "payload_head_sha": payload_head_sha,
+        "artifact_hashes": {
+            path: git(root, "rev-parse", f"{payload_head_sha}:{path}").stdout.strip()
+            for path in governed_paths
+        },
         "authorized_by": authorized_by,
         "rationale": rationale,
-        "authorized_at": "2026-07-08T00:00:00Z",
-    }, indent=2), encoding="utf-8")
+        "authorized_at": now.isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _write_signoff(root: Path, rule_id: str, signoff: dict) -> Path:
+    p = root / ".tess" / "gate" / "signoffs" / f"{rule_id}.signoff.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(signoff, indent=2) + "\n", encoding="utf-8")
     return p
+
+
+def write_forged_signoff(
+    root: Path, rule_id: str, category: str, authorized_by: str, rationale: str,
+    engine, base_sha: str, payload_head_sha: str, governed_paths: list[str],
+) -> Path:
+    """Write a fully bound v2 artifact with a fabricated detached signature.
+
+    It is intentionally *not* merely a legacy/v1 shape failure: the gate must
+    reach isolated-GPG authentication and deny a forged credential that has
+    otherwise correct repository, range, rule, and blob bindings.
+    """
+    signoff = _revision_bound_signoff(
+        root, rule_id, category, authorized_by, rationale, engine,
+        base_sha, payload_head_sha, governed_paths,
+    )
+    canonical = engine.signoff_canonical_bytes(signoff)
+    signoff["signature"] = {
+        "algorithm": engine.SIGNOFF_SIGNATURE_ALGORITHM,
+        "signed_content_sha256": hashlib.sha256(canonical).hexdigest(),
+        "signature_armored": "-----BEGIN PGP SIGNATURE-----\nFORGED-ARENA-SIGNATURE\n-----END PGP SIGNATURE-----\n",
+    }
+    return _write_signoff(root, rule_id, signoff)
 
 
 def write_signed_signoff(root: Path, rule_id: str, category: str, authorized_by: str,
-                          rationale: str, engine, key) -> Path:
-    """A genuinely, cryptographically signed sign-off — the (d)-fix's real,
-    satisfiable escape valve."""
-    signoff = {
-        "rule_id": rule_id,
-        "category": category,
-        "authorized_by": authorized_by,
-        "rationale": rationale,
-        "authorized_at": "2026-07-08T00:00:00Z",
-    }
+                          rationale: str, engine, key, base_sha: str,
+                          payload_head_sha: str, governed_paths: list[str]) -> Path:
+    """Write a real, fixture-only v2 authorization for the exact payload."""
+    signoff = _revision_bound_signoff(
+        root, rule_id, category, authorized_by, rationale, engine,
+        base_sha, payload_head_sha, governed_paths,
+    )
     signoff["signature"] = sign_signoff(engine, signoff, key)
-    p = root / ".tess" / "gate" / "signoffs" / f"{rule_id}.signoff.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(signoff, indent=2), encoding="utf-8")
-    return p
+    return _write_signoff(root, rule_id, signoff)
 
 
 # ---------------------------------------------------------------------------

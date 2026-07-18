@@ -506,6 +506,137 @@ def _literal_string(token: tokenize.TokenInfo) -> Optional[str]:
     return source[quote_start + 1:-1]
 
 
+def _top_level_function_body_spans(
+    tokens: Sequence[tokenize.TokenInfo], name: str
+) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Return lexical body spans for top-level functions named ``name``.
+
+    The source-parity validator intentionally tokenizes the whole engine but
+    AST-parses only its two registry literals so it remains usable on the
+    project's Python 3.9 floor.  This small scope helper follows the same
+    constraint: it recognizes a top-level ``def`` and its balanced INDENT /
+    DEDENT body without executing or whole-module parsing the engine.
+    """
+    spans: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+    indent_depth = 0
+    for index, token in enumerate(tokens):
+        if token.type == tokenize.INDENT:
+            indent_depth += 1
+            continue
+        if token.type == tokenize.DEDENT:
+            indent_depth = max(0, indent_depth - 1)
+            continue
+        if indent_depth != 0 or token.type != tokenize.NAME or token.string != "def":
+            continue
+        function_name = _next_significant(tokens, index)
+        if (
+            function_name is None
+            or tokens[function_name].type != tokenize.NAME
+            or tokens[function_name].string != name
+        ):
+            continue
+        header_end = function_name + 1
+        while header_end < len(tokens) and tokens[header_end].type != tokenize.NEWLINE:
+            header_end += 1
+        if header_end >= len(tokens):
+            continue
+        body_indent = header_end + 1
+        while body_indent < len(tokens) and tokens[body_indent].type in {
+            tokenize.COMMENT,
+            tokenize.NL,
+        }:
+            body_indent += 1
+        if body_indent >= len(tokens) or tokens[body_indent].type != tokenize.INDENT:
+            continue
+        body_depth = 1
+        body_end = tokens[-1].end
+        for cursor in range(body_indent + 1, len(tokens)):
+            current = tokens[cursor]
+            if current.type == tokenize.INDENT:
+                body_depth += 1
+            elif current.type == tokenize.DEDENT:
+                body_depth -= 1
+                if body_depth == 0:
+                    body_end = current.start
+                    break
+        spans.append((tokens[body_indent].end, body_end))
+    return spans
+
+
+def _inside_unique_top_level_function(
+    tokens: Sequence[tokenize.TokenInfo], position: Tuple[int, int], name: str
+) -> bool:
+    spans = _top_level_function_body_spans(tokens, name)
+    return len(spans) == 1 and spans[0][0] <= position < spans[0][1]
+
+
+def _approved_read_only_registry_call(
+    tokens: Sequence[tokenize.TokenInfo], index: int, registry_name: str
+) -> bool:
+    """Recognize only the exact direct read calls the engine relies on.
+
+    ``sorted(REGISTRY)`` is the validator's long-standing display/iteration
+    allowance.  Renderer admission additionally compares the executing
+    registry with immutable BASE through one exact
+    ``set(RENDER_TARGETS)`` call in ``_gate_renderer_validate_pair``.
+    Attribute calls, aliases, extra arguments, nested expressions, and the
+    same call from any other function all remain fail-closed.
+    """
+    opening = _previous_significant(tokens, index)
+    closing = _next_significant(tokens, index)
+    if (
+        opening is None
+        or closing is None
+        or tokens[opening].string != "("
+        or tokens[closing].string != ")"
+    ):
+        return False
+    caller = _previous_significant(tokens, opening)
+    if caller is None or tokens[caller].type != tokenize.NAME:
+        return False
+    qualifier = _previous_significant(tokens, caller)
+    if qualifier is not None and tokens[qualifier].string == ".":
+        return False
+    if tokens[caller].string == "sorted":
+        return True
+    return (
+        tokens[caller].string == "set"
+        and registry_name == "RENDER_TARGETS"
+        and _inside_unique_top_level_function(
+            tokens, tokens[index].start, "_gate_renderer_validate_pair"
+        )
+    )
+
+
+def _approved_read_only_registry_literal(
+    tokens: Sequence[tokenize.TokenInfo], index: int, registry_name: str
+) -> bool:
+    """Allow the renderer parser's exact ``node.id == REGISTRY_NAME`` tests.
+
+    The literal is data used to inspect an immutable source blob; it is not a
+    reflective lookup of the executing module.  Keeping this allowance tied
+    to one unique helper and to an equality comparison on an ``.id`` field
+    prevents a similarly named caller or dynamic access path from inheriting
+    it.
+    """
+    if registry_name != "RENDER_TARGETS" or not _inside_unique_top_level_function(
+        tokens, tokens[index].start, "_gate_renderer_registry_targets"
+    ):
+        return False
+    equality = _previous_significant(tokens, index)
+    attribute = _previous_significant(tokens, equality) if equality is not None else None
+    dot = _previous_significant(tokens, attribute) if attribute is not None else None
+    return (
+        equality is not None
+        and tokens[equality].string == "=="
+        and attribute is not None
+        and tokens[attribute].type == tokenize.NAME
+        and tokens[attribute].string == "id"
+        and dot is not None
+        and tokens[dot].string == "."
+    )
+
+
 def _call_second_argument(
     tokens: Sequence[tokenize.TokenInfo], opening: int
 ) -> Optional[int]:
@@ -597,10 +728,13 @@ def _direct_registry_literal_errors(
     (``locals()["RENDER_TARGETS"]`` and friends), so it must be surfaced.
     """
     findings: List[str] = []
-    for token in _source_tokens(source):
+    tokens = _source_tokens(source)
+    for index, token in enumerate(tokens):
         if _literal_string(token) != registry_name:
             continue
         if declaration_start <= token.start and token.end <= declaration_end:
+            continue
+        if _approved_read_only_registry_literal(tokens, index, registry_name):
             continue
         findings.append(
             "{}: source contains direct registry literal outside canonical declaration".format(
@@ -665,10 +799,8 @@ def _registry_mutation_errors(
             continue
         if previous is not None and tokens[previous].type == tokenize.NAME and tokens[previous].string == "in":
             continue
-        if next_token.string == ")" and previous is not None and tokens[previous].string == "(":
-            call_name = _previous_significant(tokens, previous)
-            if call_name is not None and tokens[call_name].type == tokenize.NAME and tokens[call_name].string == "sorted":
-                continue
+        if _approved_read_only_registry_call(tokens, index, name):
+            continue
         findings.append("{}: source uses the registry outside approved read-only forms".format(name))
     return findings
 

@@ -308,6 +308,53 @@ def test_source_parity_rejects_unmanifested_targets_and_registry_mutation(tmp_pa
         assert any(expected in finding for finding in findings), findings
 
 
+def test_source_parity_allows_only_exact_renderer_registry_reads(tmp_path):
+    root = _fixture_repository(tmp_path)
+    assert validator.validate_repository(root) == []
+
+    rejected_uses = (
+        ("\nregistry_alias = RENDER_TARGETS\n", "outside approved read-only forms"),
+        ("\ntuple(RENDER_TARGETS)\n", "outside approved read-only forms"),
+        ("\nregistry_set(RENDER_TARGETS)\n", "outside approved read-only forms"),
+        ("\nnamespace.set(RENDER_TARGETS)\n", "outside approved read-only forms"),
+        ("\nset(RENDER_TARGETS)\n", "outside approved read-only forms"),
+        ("\nset(RENDER_TARGETS, object())\n", "outside approved read-only forms"),
+    )
+    for index, (snippet, expected) in enumerate(rejected_uses):
+        rejected_root = _fixture_repository(tmp_path / "rejected-read-{}".format(index))
+        engine = rejected_root / validator.ENGINE_PATH
+        engine.write_text(engine.read_text(encoding="utf-8") + snippet, encoding="utf-8")
+        findings = validator.validate_repository(rejected_root)
+        assert any(expected in finding for finding in findings), findings
+
+    literal_root = _fixture_repository(tmp_path / "unauthorized-literal")
+    engine = literal_root / validator.ENGINE_PATH
+    source = engine.read_text(encoding="utf-8")
+    source = source.replace(
+        "def _gate_renderer_registry_targets(blob: bytes, label: str)",
+        "def unauthorized_renderer_reader():\n"
+        "    return object().id == \"RENDER_TARGETS\"\n\n\n"
+        "def _gate_renderer_registry_targets(blob: bytes, label: str)",
+        1,
+    )
+    engine.write_text(source, encoding="utf-8")
+    findings = validator.validate_repository(literal_root)
+    assert any("direct registry literal outside canonical declaration" in finding for finding in findings)
+
+    helper_misuse_root = _fixture_repository(tmp_path / "helper-literal-misuse")
+    engine = helper_misuse_root / validator.ENGINE_PATH
+    source = engine.read_text(encoding="utf-8")
+    source = source.replace(
+        "    try:\n        module = ast.parse(blob.decode(\"utf-8\"), filename=label)",
+        "    consume(\"RENDER_TARGETS\")\n"
+        "    try:\n        module = ast.parse(blob.decode(\"utf-8\"), filename=label)",
+        1,
+    )
+    engine.write_text(source, encoding="utf-8")
+    findings = validator.validate_repository(helper_misuse_root)
+    assert any("direct registry literal outside canonical declaration" in finding for finding in findings)
+
+
 def test_source_parity_rejects_dynamic_registry_reflection(tmp_path):
     reflections = (
         (

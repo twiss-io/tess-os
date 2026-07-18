@@ -39,6 +39,7 @@ import json
 import os
 import shutil
 import subprocess
+import datetime
 from pathlib import Path
 
 import pytest
@@ -91,12 +92,20 @@ def _commit_all(root, message):
 
 
 def _base_signoff(rule_id="money", category="money_movement", authorized_by="Xavier"):
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     return {
+        "schema_version": 2,
+        "repository_id": "test/tess-os",
         "rule_id": rule_id,
         "category": category,
+        "effective_rule_sha256": "a" * 64,
+        "base_sha": "1" * 40,
+        "payload_head_sha": "2" * 40,
+        "artifact_hashes": {"payments/charge.py": "3" * 40},
         "authorized_by": authorized_by,
         "rationale": "Reviewed out-of-band; approved.",
-        "authorized_at": "2026-07-08T00:00:00Z",
+        "authorized_at": now.isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -104,6 +113,7 @@ def _policy_dict(hard_floor_globs, signoff_keys):
     return {
         "policy": {
             "version": 1,
+            "repository_id": "test/tess-os",
             "rules": [],
             "hard_floor_rules": [{
                 "id": "money",
@@ -202,7 +212,9 @@ def test_adding_a_signoff_file_with_no_verdict_is_blocked_on_real_shipped_policy
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(".tess/gate/signoffs/money.signoff.json" in reason for reason in payload["reasons"])
+    assert payload["reasons"] == [
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ]
 
 
 def test_editing_the_engine_with_no_verdict_is_blocked_on_real_shipped_policy(signoffs_dir_repo, run_cli):
@@ -219,7 +231,10 @@ def test_editing_the_engine_with_no_verdict_is_blocked_on_real_shipped_policy(si
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(".tess/bin/tessctl" in reason for reason in payload["reasons"])
+    assert payload["reasons"] == [
+        "ADMISSION_EVENT_SOURCE_REQUIRED: an authoritative admission event source is required",
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +267,30 @@ def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys):
     assert payload["valid"] is True
 
 
+def test_immutable_base_signoff_import_uses_stdin_without_certificate_tempfile(
+    engine, verifier_gpg_keys, tmp_path, monkeypatch,
+):
+    key = verifier_gpg_keys["Reid"]
+    signoff = _base_signoff()
+    signoff["signature"] = sign_signoff_for_test(engine, signoff, key)
+    policy = _policy_dict(["payments/**"], {
+        "Xavier": {"fingerprint": key.fpr, "public_key_file": ".tess/keys/signoffs/xavier.asc"},
+    })
+    original_write_bytes = Path.write_bytes
+
+    def deny_trusted_certificate_tempfile(path, data):
+        if path.name == "trusted-signoff-key.asc":
+            raise AssertionError("immutable BASE sign-off certificate must never be written to disk")
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", deny_trusted_certificate_tempfile)
+    ok, reason = engine._gate_verify_signoff_signature(
+        tmp_path, policy, signoff,
+        trusted_signoff_key_blobs={"Xavier": key.pubkey_armored.encode("utf-8")},
+    )
+    assert ok is True, reason
+
+
 def test_cli_verify_fails_on_unsigned_signoff(project, run_cli, verifier_gpg_keys):
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
@@ -269,7 +308,7 @@ def test_cli_verify_fails_on_unsigned_signoff(project, run_cli, verifier_gpg_key
     assert r_verify.returncode == 1
     payload = json.loads(r_verify.stdout)
     assert payload["valid"] is False
-    assert "no signature block present" in payload["reason"]
+    assert payload["reason"] == "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
 
 
 def test_cli_sign_rejects_missing_authorized_by(project, run_cli, verifier_gpg_keys):
@@ -434,6 +473,11 @@ def test_verify_rejects_traversal_public_key_file(engine, tmp_path):
 
 
 def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
+    """Standalone sign-off diagnostics reject a checkout symlink explicitly.
+
+    Ship-gate verification instead requires a regular public-key blob from
+    the immutable BASE tree and never follows this candidate path.
+    """
     if os.name == "nt":
         pytest.skip("symlinks require elevated privileges on Windows")
     root = tmp_path / "repo"
@@ -455,5 +499,5 @@ def test_verify_rejects_symlink_escape_public_key_file(engine, tmp_path):
     }
     ok, reason = engine._gate_verify_signoff_signature(root, policy_instance, data)
     assert ok is False
-    assert "resolves outside the Tess root" in reason
+    assert "is a symlink" in reason
     assert "C1 containment" in reason

@@ -203,7 +203,8 @@ def test_editing_gate_workflow_with_no_verdict_is_blocked_on_real_shipped_policy
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(WORKFLOW_REL in reason for reason in payload["reasons"])
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in payload["reasons"]
+    assert WORKFLOW_REL not in json.dumps(payload)
 
 
 @pytestmark_git

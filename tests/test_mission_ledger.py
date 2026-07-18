@@ -33,7 +33,9 @@ Coverage (per the dispatch brief's explicit acceptance list):
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -312,8 +314,162 @@ def test_retry_log_writes_valid_attempt_file(mroot):
     assert fm["attempt"] == 1
     assert fm["cause_class"] == "context-gap"
     assert fm["failure_state"] == "degraded"
-    assert fm["brief_text"] == "Investigate the failing test."
+    assert "brief_text" not in fm
+    assert re.fullmatch(r"[0-9a-f]{64}", fm["brief_digest_sha256"])
+    assert fm["brief_length"] == len("Investigate the failing test.")
+    assert fm["brief_change_code"] == "initial"
     assert fm["mission_id"] == mission_id
+
+
+def _write_legacy_retry_attempt(root, mission_id, task, attempt, brief_text):
+    """Create a pre-v2 record directly, to prove migration rather than
+    silently accepting its plaintext contract."""
+    path = root / "missions" / mission_id / "retries" / f"{task}.attempt-{attempt}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "mission_id": mission_id, "task": task, "attempt": attempt,
+        "failure_state": "degraded", "cause_class": "context-gap",
+        "brief_text": brief_text, "logged_at": "2026-07-17T00:00:00Z",
+    }
+    path.write_text("---\n" + yaml.safe_dump(record) + "---\n\n# Legacy retry\n", encoding="utf-8")
+    return path
+
+
+def test_retry_v2_legacy_is_blocked_then_opt_in_migrated_without_plaintext(mroot):
+    mission_id = _new_mission(mroot)
+    sentinel = "P73_RETRY_BRIEF_SENTINEL_do_not_persist"
+    legacy = _write_legacy_retry_attempt(mroot, mission_id, "taskx", 1, sentinel)
+    legacy.chmod(0o600)
+    before = legacy.read_bytes()
+    same = _brief(mroot, "same.md", sentinel)
+    changed = _brief(mroot, "changed.md", "A genuinely changed retry brief.")
+
+    blocked = _run(
+        mroot, "retry", "check", "taskx", "--mission", mission_id,
+        "--cause", "context-gap", "--brief", same,
+    )
+    assert blocked.returncode == 1
+    assert "RETRY_LEDGER_MIGRATION_REQUIRED" in (blocked.stdout + blocked.stderr)
+    assert legacy.read_bytes() == before, "precheck must not mutate a legacy record"
+
+    dry_run = _run(mroot, "retry", "migrate", "--mission", mission_id)
+    assert dry_run.returncode == 0
+    assert "dry-run" in dry_run.stdout
+    assert legacy.read_bytes() == before, "dry-run must leave source bytes untouched"
+
+    applied = _run(mroot, "retry", "migrate", "--mission", mission_id, "--apply")
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    migrated = legacy.read_text(encoding="utf-8")
+    assert sentinel not in migrated and "brief_text" not in migrated
+    fm = yaml.safe_load(migrated.split("---", 2)[1])
+    assert fm["brief_digest_sha256"] == hashlib.sha256(sentinel.encode("utf-8")).hexdigest()
+    assert fm["brief_length"] == len(sentinel.encode("utf-8"))
+    assert fm["brief_change_code"] == "migrated-legacy"
+    assert legacy.stat().st_mode & 0o777 == 0o600, "migration must not widen a restrictive retry record"
+    assert _run(mroot, "validate", "retry", str(legacy)).returncode == 0
+    assert not list((mroot / "missions" / mission_id).glob(".retries-*")), "no migration backup may remain"
+
+    same_after = _run(
+        mroot, "retry", "check", "taskx", "--mission", mission_id,
+        "--cause", "context-gap", "--brief", same,
+    )
+    assert same_after.returncode == 1
+    assert "same-brief retry forbidden" in same_after.stdout
+    changed_after = _run(
+        mroot, "retry", "check", "taskx", "--mission", mission_id,
+        "--cause", "context-gap", "--brief", changed,
+    )
+    assert changed_after.returncode == 0
+
+
+def test_retry_v2_migration_preserves_a_to_b_to_a_denial(mroot):
+    mission_id = _new_mission(mroot)
+    a = "P73_A_BRIEF_SENTINEL"
+    b = "P73_B_BRIEF_SENTINEL"
+    _write_legacy_retry_attempt(mroot, mission_id, "ping", 1, a)
+    _write_legacy_retry_attempt(mroot, mission_id, "ping", 2, b)
+    assert _run(mroot, "retry", "migrate", "--mission", mission_id, "--apply").returncode == 0
+    a_path = _brief(mroot, "a.md", a)
+    replay = _run(
+        mroot, "retry", "check", "ping", "--mission", mission_id,
+        "--cause", "context-gap", "--brief", a_path,
+    )
+    assert replay.returncode == 1
+    assert "same-brief retry forbidden" in replay.stdout
+
+
+def test_retry_v2_migration_interruption_fails_closed_and_rerun_resumes(mroot, engine, monkeypatch):
+    """Each replacement is atomic, but a crash between records is resumable.
+
+    The important reverse direction is that the partially upgraded ledger is
+    not treated as valid: retry precheck sees the remaining v1 plaintext and
+    blocks until a later explicit migration run completes it.
+    """
+    mission_id = _new_mission(mroot)
+    first = _write_legacy_retry_attempt(mroot, mission_id, "resume", 1, "P73_FIRST_PLAINTEXT")
+    second = _write_legacy_retry_attempt(mroot, mission_id, "resume", 2, "P73_SECOND_PLAINTEXT")
+    retry_dir = first.parent
+    real_replace = engine.os.replace
+    replacements = 0
+
+    def fail_after_first_record(src, dst):
+        nonlocal replacements
+        if str(src).endswith(".tmp"):
+            replacements += 1
+            if replacements == 2:
+                raise OSError("injected post-first-record interruption")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(engine.os, "replace", fail_after_first_record)
+    with pytest.raises(engine.MissionError, match="RETRY_LEDGER_MIGRATION_REFUSED"):
+        engine._retry_migrate_legacy(mroot, mission_id, apply=True)
+
+    assert retry_dir.is_dir(), "the source retry directory is never renamed away"
+    assert "brief_text" not in first.read_text(encoding="utf-8")
+    assert "P73_FIRST_PLAINTEXT" not in first.read_text(encoding="utf-8")
+    assert "brief_text" in second.read_text(encoding="utf-8")
+    allowed, _attempt, reason = engine._retry_precheck(
+        mroot, mission_id, "resume", "context-gap", "changed brief",
+    )
+    assert allowed is False and reason == "RETRY_LEDGER_MIGRATION_REQUIRED"
+    assert not list((mroot / "missions" / mission_id).glob(".retries-v1-retire-*"))
+    assert not list(retry_dir.glob("*.tmp"))
+
+    monkeypatch.setattr(engine.os, "replace", real_replace)
+    migrated_count, applied = engine._retry_migrate_legacy(mroot, mission_id, apply=True)
+    assert (migrated_count, applied) == (1, True)
+    assert "brief_text" not in second.read_text(encoding="utf-8")
+    assert "P73_SECOND_PLAINTEXT" not in second.read_text(encoding="utf-8")
+    assert not list(retry_dir.glob("*.tmp"))
+
+
+def test_retry_v2_malformed_legacy_refuses_without_touching_source(mroot):
+    mission_id = _new_mission(mroot)
+    broken = mroot / "missions" / mission_id / "retries" / "bad.attempt-1.md"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    original = b"---\nbrief_text: P73_MALFORMED_SENTINEL\n[\n---\n"
+    broken.write_bytes(original)
+    result = _run(mroot, "retry", "migrate", "--mission", mission_id, "--apply")
+    assert result.returncode == 1
+    assert "RETRY_LEDGER_MIGRATION_REFUSED" in (result.stdout + result.stderr)
+    assert broken.read_bytes() == original
+
+
+def test_retry_v2_migration_refuses_unknown_retry_artifact_without_data_loss(mroot):
+    mission_id = _new_mission(mroot)
+    legacy = _write_legacy_retry_attempt(mroot, mission_id, "taskx", 1, "legacy brief")
+    unexpected = legacy.parent / "operator-note.txt"
+    sentinel = b"P73_UNEXPECTED_RETRY_ARTIFACT_MUST_NOT_BE_DROPPED"
+    unexpected.write_bytes(sentinel)
+    before_legacy = legacy.read_bytes()
+
+    result = _run(mroot, "retry", "migrate", "--mission", mission_id, "--apply")
+
+    assert result.returncode == 1
+    assert "RETRY_LEDGER_MIGRATION_REFUSED" in (result.stdout + result.stderr)
+    assert legacy.read_bytes() == before_legacy
+    assert unexpected.read_bytes() == sentinel
+    assert not list((mroot / "missions" / mission_id).glob(".retries-*"))
 
 
 def test_retry_blocks_identical_brief_for_context_gap_but_allows_changed_brief(mroot):
@@ -506,7 +662,8 @@ def test_retry_schema_rejects_attempt_above_cap(engine):
     inst = {
         "mission_id": "2026-07-07-x", "task": "t", "attempt": 4,
         "failure_state": "error", "cause_class": "transient",
-        "brief_text": "x", "logged_at": "2026-07-07T00:00:00Z",
+        "brief_digest_sha256": "0" * 64, "brief_length": 1,
+        "brief_change_code": "initial", "logged_at": "2026-07-07T00:00:00Z",
     }
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
