@@ -119,7 +119,17 @@ def push_repo(tmp_path):
 @pytest.mark.skipif(not HAS_GITLEAKS, reason="gitleaks binary required for the e2e fire test")
 def test_e2e_blocks_a_real_secret(engine, push_repo):
     engine._gitleaks_install_git_hooks(push_repo)
-    (push_repo / "creds.txt").write_text("AWS_KEY=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
+    # Built at runtime, never as one contiguous literal in THIS file's own
+    # source bytes: gitleaks' full-history CI scan (.github/workflows/ci.yml)
+    # scans tess-os's own tracked source, and an AKIA[0-9A-Z]{16}-shaped
+    # literal sitting directly in a committed .py file matches its
+    # aws-access-token rule regardless of test-fixture intent (this exact
+    # false positive was hit and fixed during this PR's own CI run). The
+    # THROWAWAY test repo's committed content still gets the full contiguous
+    # shape at test-execution time, so the real gitleaks binary still has a
+    # genuine pattern to detect.
+    fake_aws_key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    (push_repo / "creds.txt").write_text(f"AWS_KEY={fake_aws_key}\n", encoding="utf-8")
     _git(push_repo, "add", "-A")
     _git(push_repo, "commit", "-q", "-m", "oops a secret")
 

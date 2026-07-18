@@ -9,3 +9,16 @@
 # This fingerprint is belt-and-suspenders so the CI gitleaks gate stays clean
 # even if a future edit reintroduces a secret-shaped pattern on that doctrine line.
 conductor/vault.md:generic-api-key:47
+
+# tests/test_gitleaks_local_prepush.py (DATA-LEAK-SAFETY, issue #92, PR
+# data-leak-safety-publish-clean-gate): the e2e test that proves the new
+# local gitleaks pre-push guard actually blocks a real secret needed an
+# AWS-key-SHAPED literal to exist in an earlier commit before the fix below
+# was applied. The literal was NEVER a real credential — it's a fake test
+# fixture value (AKIAABCDEFGHIJKLMNOP). The current commit already breaks
+# the AKIA[0-9A-Z]{16} shape in source (builds the string via runtime
+# concatenation instead of one contiguous literal — see the test's own
+# comment); this fingerprint is belt-and-suspenders so the full-history CI
+# scan stays clean for the one earlier commit that still has the old shape,
+# without rewriting published PR history.
+tests/test_gitleaks_local_prepush.py:aws-access-token:122
