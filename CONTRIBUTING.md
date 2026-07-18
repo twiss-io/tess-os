@@ -52,9 +52,15 @@ an accountable engineering process if it doesn't run one itself.
   (or `Fixes #N` / `Resolves #N`) in the PR description. Do not rely on
   someone remembering to close it by hand afterward — link it so merging the
   PR closes it automatically.
-- **CI must be green and an independent review must approve before merge.**
-  This is existing practice restated explicitly: nothing here merges red, and
-  nothing merges without a reviewer other than the author signing off.
+- **An independent review must approve before merge.** This is
+  platform-enforced: the `main` branch ruleset requires at least one approving
+  review from someone other than the author before a PR can merge.
+- **CI must be green before merge.** This is required practice today, but not
+  yet a platform-enforced gate — the branch ruleset has no required status
+  checks, so nothing currently stops a merge with failing or pending CI.
+  Adding that enforcement is tracked in
+  [#87](https://github.com/twiss-io/tess-os/issues/87), pending a repo-admin
+  (owner) action.
 - **Direct commits to `main` are not permitted** — see "Workflow" above; PRs
   are the only path in. If a repo admin ever has to bypass this in a genuine
   production emergency, open a retroactive PR/issue immediately afterward so
