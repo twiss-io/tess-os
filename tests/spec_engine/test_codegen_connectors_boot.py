@@ -233,6 +233,7 @@ def mock_provider(_self_signed_cert):
     cert_path, key_path = _self_signed_cert
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # never allow TLSv1/TLSv1.1
     ssl_context.load_cert_chain(str(cert_path), str(key_path))
     server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -558,6 +559,7 @@ def _start_mock(status, body, self_signed_cert, headers=None):
     cert_path, key_path = self_signed_cert
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # never allow TLSv1/TLSv1.1
     ssl_context.load_cert_chain(str(cert_path), str(key_path))
     server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
