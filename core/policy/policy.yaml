@@ -189,7 +189,10 @@ policy:
   #     Cyra:
   #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
   #       public_key_file: .tess/keys/verifiers/cyra.asc
-  verifier_keys: {}
+  verifier_keys:
+    Cyra:
+      fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"
+      public_key_file: .tess/keys/verifiers/cyra.asc
 
   # signoff_keys — honesty-capstone-audit-2026-07-08 §3-d FIX's ALLOWED-KEY
   # SET for hard-floor SIGN-OFF artifacts (core/contracts/policy.schema.json
