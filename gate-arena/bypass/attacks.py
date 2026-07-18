@@ -126,7 +126,10 @@ def attack_A2_hard_floor_valid_verdict_insufficient(base_dir: Path, engine) -> d
 
         r, payload = fx.gate_ci(base2, head)
         blocked_without_signoff = payload["blocked"]
-        hard_floor_reason = any("HARD FLOOR" in reason for reason in payload["reasons"])
+        hard_floor_reason = (
+            "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
+            in payload["reasons"]
+        )
 
         # Prove the mechanism isn't just permanently bricked: a REAL,
         # cryptographically SIGNED human sign-off artifact (honesty-
@@ -153,7 +156,7 @@ def attack_A2_hard_floor_valid_verdict_insufficient(base_dir: Path, engine) -> d
         mechanism = (
             f"hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed "
             f"Quinn APPROVE verdict was NOT sufficient — blocked={blocked_without_signoff}, "
-            f"hard_floor_reason_present={hard_floor_reason} "
+            f"hard_floor_code_present={hard_floor_reason} "
             f"({payload['reasons']}). With a real, cryptographically SIGNED "
             f".tess/gate/signoffs/credentials.signoff.json artifact (from a registered "
             f"policy.signoff_keys identity) plus a covering Reid verdict for the "
@@ -690,7 +693,10 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         head_forged = commit_all(fx.root, "rotate credential + FORGED (unsigned) signoff")
         r_forged, payload_forged = fx.gate_ci(base2, head_forged)
         forged_blocked = payload_forged["blocked"]
-        forged_hard_floor = any("HARD FLOOR" in reason for reason in payload_forged["reasons"])
+        forged_hard_floor = (
+            "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
+            in payload_forged["reasons"]
+        )
 
         # (b) genuinely signed sign-off (real, registered Xavier key) — the
         # mechanism's actual, satisfiable escape valve. §3-c/§3-d also added
@@ -724,7 +730,7 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         blocked = forged_blocked and forged_hard_floor and signed_clears
         mechanism = (
             f"credentials hard floor matched config.env. Forged (unsigned, shape-valid-"
-            f"only) sign-off: blocked={forged_blocked}, hard_floor_reason_present="
+            f"only) sign-off: blocked={forged_blocked}, hard_floor_code_present="
             f"{forged_hard_floor} ({payload_forged['reasons']}). With the SAME sign-off "
             f"cryptographically signed by a REAL, registered operator key in "
             f"policy.signoff_keys, PLUS a covering Reid verdict for the now-governed "

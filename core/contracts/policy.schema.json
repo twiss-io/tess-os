@@ -52,7 +52,7 @@
         "public_key_file": {
           "type": "string",
           "minLength": 1,
-          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). `tessctl gate` imports this file into an ISOLATED, throwaway GNUPGHOME for every verification — never the ambient/system keyring — so CI needs no manual `gpg --import` bootstrap step the way release-tag verification does (a verdict-signature verification, unlike a fresh clone's very first trust decision, already trusts the checked-out tree enough to read this file: `core/policy/**` and `.tess/keys/verifiers/**` are themselves `prod_touching` under this repo's own `tess-os-security-tier-doctrine` rule, so tampering with the key registry requires its own covering Reid/Cyra verdict)."
+          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
         }
       },
       "required": ["fingerprint", "public_key_file"],

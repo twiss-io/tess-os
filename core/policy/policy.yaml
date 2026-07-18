@@ -39,7 +39,7 @@
 # committer-authored plain files with no cryptographic signature). A covering
 # verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
 # that verifies against the SAME-named entry in `verifier_keys` below — see
-# conductor/verdict-signing.md for the full trust model and onboarding steps.
+# docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md for the fail-closed trust boundary.
 # `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
 # added to tess-os-security-tier-doctrine's globs below: tampering with the key
 # registry is exactly as consequential as tampering with policy.yaml itself,
@@ -168,27 +168,13 @@ policy:
   #   consequence of shipping verdict signing without also fabricating a
   #   throwaway "Reid" identity that could be mistaken for a real trust anchor.
   #
-  # To onboard a real verifier (see conductor/verdict-signing.md for the full
-  # walkthrough):
-  #   1. The verifier generates their own GPG keypair (private key stays in
-  #      THEIR custody only — never committed, never shared — same posture
-  #      release-process.md already documents for the release signing key).
-  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
-  #      .tess/keys/verifiers/<name-lowercase>.asc` and commit that file.
-  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
-  #      .tess/keys/verifiers/<name-lowercase>.asc}.
-  #   4. The verifier signs their own verdicts going forward with
-  #      `tessctl verdict sign <file> --verifier <Name> --key-id <fingerprint>`.
-  #
-  # Example shape (commented out — replace with a REAL registered key, never
-  # ship a placeholder fingerprint that would silently "verify" nothing):
-  #   verifier_keys:
-  #     Reid:
-  #       fingerprint: "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000"
-  #       public_key_file: .tess/keys/verifiers/reid.asc
-  #     Cyra:
-  #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
-  #       public_key_file: .tess/keys/verifiers/cyra.asc
+  # Trust-anchor registration is deliberately NOT a self-service policy edit,
+  # key-generation command, lockfile re-pin, or candidate-pull-request step.
+  # An unreviewed candidate cannot establish the authority that clears its
+  # own gate. The first anchor, recovery, rotation, and any user-facing Trust
+  # Center are Xavier-owned, user-present custody decisions; until that design
+  # exists, `TRUST_BOOTSTRAP_REQUIRED` is the correct outcome. See
+  # docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md.
   verifier_keys: {}
 
   # signoff_keys — honesty-capstone-audit-2026-07-08 §3-d FIX's ALLOWED-KEY
@@ -217,24 +203,14 @@ policy:
   #   verifier_keys: {} already documents above, applied to the sign-off
   #   escape valve.
   #
-  # To onboard a real sign-off authorizer (same walkthrough as verifier
-  # onboarding, conductor/verdict-signing.md — mirror it for sign-offs):
-  #   1. The operator generates their own GPG keypair (private key stays in
-  #      THEIR custody only — never committed, never shared).
-  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
-  #      .tess/keys/signoffs/<name-lowercase>.asc` and commit that file.
-  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
-  #      .tess/keys/signoffs/<name-lowercase>.asc}.
-  #   4. The operator signs their own sign-off artifacts with
-  #      `tessctl gate signoff sign <file> --key-id <fingerprint>`, then sets
-  #      that same <Name> as the artifact's own `authorized_by` field.
-  #
-  # Example shape (commented out — replace with a REAL registered key, never
-  # ship a placeholder fingerprint that would silently "verify" nothing):
-  #   signoff_keys:
-  #     Xavier:
-  #       fingerprint: "CCCC2222CCCC2222CCCC2222CCCC2222CCCC2222"
-  #       public_key_file: .tess/keys/signoffs/xavier.asc
+  # Sign-off authority has the same boundary: it is not created through a
+  # candidate change, manual policy edit, key-generation command, or lockfile
+  # re-pin. During a ship-gate run, both an established registration and its
+  # public-key bytes come from the immutable base revision, never candidate
+  # checkout bytes. A future user-present custody design must define
+  # registration, recovery, and rotation before a sign-off key can become
+  # effective. Until then, a hard floor remains intentionally unsatisfiable
+  # rather than silently accepting a self-issued clearance.
   signoff_keys: {}
 
   hard_floor_rules:
@@ -253,7 +229,7 @@ policy:
         must now ALSO carry a signature that verifies against a registered
         key in signoff_keys below — an unsigned/hand-authored/forged
         sign-off can no longer clear this floor (see signoff_keys' own
-        comment for the onboarding walkthrough).
+        custody-boundary comment).
       globs:
         - "**/*.env"
         - "**/*.env.*"

@@ -23,17 +23,18 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   validate    Phase 0 contracts-as-code: check a brief/crew-plan/verdict/return-manifest
               instance against core/contracts/*.schema.json; schema-miss classifies
               degraded_output per subagent-failure-protocol.md (see core/contracts/README.md)
-  verdict     Phase 2b: `keygen` turnkey-generates a verifier's local GPG identity and
-              registers it in core/policy/policy.yaml; `sign` a verdict's canonical
-              content with a verifier's GPG key; `verify` a signed verdict against
-              core/policy/policy.yaml's verifier_keys
+  verdict     Phase 2b: `keygen` is deliberately disabled: verifier bootstrap is
+              user-present custody work, never candidate-repository automation;
+              `sign` a verdict's canonical content with a verifier's existing GPG key;
+              `verify` a signed verdict against core/policy/policy.yaml's verifier_keys
   gate        Phase 2 (+2b): deterministic enforcement spine — pre-commit/pre-push/ci
               contract + covering-verdict + signature checks; install-hooks scaffolds the
               git hooks and the CI workflow (now push/pull_request-triggered, not just
               workflow_dispatch); `clear` (Goal #5) clears a mission gate — refuses
               without a real, on-disk --evidence artifact
   trace       Goal #8: local-first mission trace log — every `gate`/`validate`
-              invocation appends a schema-valid JSONL event to missions/<id>/trace.jsonl
+              invocation appends a schema-valid JSONL event to
+              missions/mission-<opaque-id>/trace.jsonl
               (or a per-run fallback under .tess/trace/runs/ when no mission id is
               inferable). `trace export --format otlp-json` maps the JSONL to OTel GenAI
               semantic-convention agent spans (OTLP/JSON) for ingestion by any APM that
@@ -73,6 +74,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -3371,16 +3373,12 @@ def _verify_tag_secure(
 # verification pins ONE key and requires the operator export it from their
 # AMBIENT system keyring (`gpg --import key.asc` first) — a genuine
 # bootstrapping requirement, since a fresh clone must not yet trust anything
-# in the repo it just cloned. Verdict-signature verification instead imports
-# the registered verifier's PUBLIC key straight from the repo's own
-# `.tess/keys/verifiers/<name>.asc` file into a fresh, ISOLATED, throwaway
-# GNUPGHOME per check — no ambient keyring dependency, so CI needs no manual
-# import step. This is safe specifically because, by the time a verdict is
-# being checked, the gate already trusts the checked-out tree enough to read
-# core/policy/policy.yaml — and `.tess/keys/verifiers/**` is itself gated as
-# prod_touching under this repo's own tess-os-security-tier-doctrine rule, so
-# tampering with the key registry requires its own covering Reid/Cyra
-# verdict. Same "C3 — exact fingerprint equality, no short-ID matching"
+# in the repo it just cloned. The ship gate instead imports the registered
+# verifier's PUBLIC key from the same immutable BASE git tree as the trusted
+# registration, into a fresh, ISOLATED, throwaway GNUPGHOME per check — no
+# ambient keyring dependency and no candidate-checkout key bytes. Standalone
+# `tessctl verdict verify` has no push base and is intentionally a local
+# diagnostic. Same "C3 — exact fingerprint equality, no short-ID matching"
 # discipline as _verify_tag_secure throughout.
 # ---------------------------------------------------------------------------
 
@@ -3453,7 +3451,64 @@ def _gpg_verify_detached_signature(payload: bytes, sig_armored: str, homedir: Pa
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
-def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: dict) -> tuple[bool, str | None]:
+def _gpg_public_certificate_from_bytes_is_safe(key_bytes: bytes, homedir: Path) -> bool:
+    """Validate immutable BASE key bytes before importing them from stdin.
+
+    ``--import-options show-only --dry-run`` parses the same OpenPGP packet
+    stream without creating a keyring entry.  Only a non-empty public-only
+    certificate is admitted; a secret-key packet, malformed stream, or GPG
+    execution failure is a fail-closed false.  The caller imports the exact
+    same bytes via stdin afterwards, never through a temporary ``.asc`` path.
+    """
+    if not isinstance(key_bytes, bytes) or not key_bytes or len(key_bytes) > 1024 * 1024:
+        return False
+    try:
+        inspected = subprocess.run(
+            [
+                "gpg", "--batch", "--no-options", "--homedir", str(homedir),
+                "--with-colons", "--fixed-list-mode", "--import-options", "show-only",
+                "--dry-run", "--import",
+            ],
+            input=key_bytes, capture_output=True,
+        )
+    except OSError:
+        return False
+    if inspected.returncode != 0:
+        return False
+    record_types = {
+        line.split(":", 1)[0]
+        for line in inspected.stdout.decode("utf-8", errors="replace").splitlines()
+        if line
+    }
+    return "pub" in record_types and not bool(record_types & {"sec", "ssb"})
+
+
+def _gate_validate_verifier_key_file_rel(
+    verifier: str, key_file: object,
+) -> tuple[str | None, str | None]:
+    """Validate a registered verifier key path without reading the checkout.
+
+    The ship gate uses this before asking git for the BASE-tree blob.  Keeping
+    this check independent of the working tree is deliberate: a candidate
+    cannot redirect a trusted registration through an absolute path, ``..``,
+    or a checkout symlink.
+    """
+    if not isinstance(key_file, str) or not key_file:
+        return None, f"policy.verifier_keys[{verifier!r}].public_key_file is not set"
+    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
+        return None, (
+            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is an "
+            f"absolute path or contains '..' traversal components — rejected "
+            f"(C1 containment, fail-closed)"
+        )
+    return key_file, None
+
+
+def _gate_verify_verdict_signature(
+    root: Path, policy_instance: dict, instance: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
     """The single source of truth for 'is this verdict's signature valid AND
     tied to an allowed verifier's registered key'. Returns (True, None) when
     the signature verifies; otherwise (False, <human-readable reason>) — the
@@ -3473,7 +3528,14 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
     `_gpg_signing_key_validity_reason`) — all return False. Pure
     with respect to `instance` and `policy_instance` — does not consult
     `covers_paths`/`artifact_hashes`/`allowed_verifiers`-per-rule at all;
-    those remain the gate's own separate, per-(path, rule) checks."""
+    those remain the gate's own separate, per-(path, rule) checks.
+
+    ``trusted_verifier_key_blobs`` is supplied only by the ship gate.  Its
+    bytes come from the immutable BASE git tree that supplied the effective
+    registration, never the candidate checkout.  ``None`` preserves the
+    standalone ``tessctl verdict verify`` behavior, which has no push base to
+    bind against; an empty mapping is intentionally distinct and fails closed.
+    """
     verifier = instance.get("verifier")
     sig = instance.get("signature")
     if not isinstance(sig, dict):
@@ -3518,41 +3580,48 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
             f"fingerprint"
         )
 
-    key_file = key_entry.get("public_key_file")
-    if not isinstance(key_file, str) or not key_file:
-        return False, f"policy.verifier_keys[{verifier!r}].public_key_file is not set"
+    key_file, key_path_reason = _gate_validate_verifier_key_file_rel(
+        verifier, key_entry.get("public_key_file"),
+    )
+    if key_path_reason:
+        return False, key_path_reason
 
-    # LOW-1 (Fable Phase-2b follow-up, defense-in-depth): containment check.
-    # `key_path = root / key_file` alone lets an ABSOLUTE `public_key_file`
-    # (Path.__truediv__ treats an absolute right-hand side as a full override,
-    # silently discarding `root`) or a `../`-bearing relative one resolve
-    # OUTSIDE `root` — e.g. reading an attacker-planted key from anywhere on
-    # disk. Not exploitable TODAY: `core/policy/policy.yaml` is itself gated
-    # by this repo's own tess-os-security-tier-doctrine rule (any edit needs
-    # its own covering Reid/Cyra verdict), and even an escaped key still has
-    # to produce a signature whose fingerprint matches the REGISTERED one —
-    # but reject it fail-closed anyway, same C1-containment discipline
-    # check_manifest_write_gate / cmd_rollback already apply to every other
-    # filesystem path this tool touches.
-    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
-        return False, (
-            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} is an "
-            f"absolute path or contains '..' traversal components — rejected "
-            f"(C1 containment, fail-closed)"
-        )
-    root_resolved = root.resolve()
-    key_path = (root / key_file).resolve()
-    try:
-        key_path.relative_to(root_resolved)
-    except ValueError:
-        return False, (
-            f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} resolves "
-            f"outside the Tess root — rejected (C1 containment, fail-closed)"
-        )
-    if not key_path.exists():
-        return False, (
-            f"registered public key file {key_file!r} for verifier {verifier!r} not found on disk"
-        )
+    trusted_key_bytes = None
+    if trusted_verifier_key_blobs is not None:
+        # P0: gate callers get their key bytes exclusively from the immutable
+        # BASE tree.  Do not fall back to root/key_file when the BASE blob is
+        # absent or malformed: that fallback would re-open the same-push
+        # key-swap / revoked-key rollback bypass.
+        trusted_key_bytes = trusted_verifier_key_blobs.get(verifier)
+        if trusted_key_bytes is None:
+            return False, (trusted_verifier_key_errors or {}).get(
+                verifier,
+                f"no immutable BASE-tree public-key blob is available for verifier "
+                f"{verifier!r} — fail-closed",
+            )
+    else:
+        # Standalone `verdict verify` has no immutable push base. Keep its
+        # explicitly local diagnostic behavior, while still refusing a path
+        # that resolves outside the project or is itself a symlink.
+        candidate_key_path = root / key_file
+        if candidate_key_path.is_symlink():
+            return False, (
+                f"registered public key file {key_file!r} for verifier {verifier!r} "
+                f"is a symlink — rejected (C1 containment, fail-closed)"
+            )
+        root_resolved = root.resolve()
+        key_path = candidate_key_path.resolve()
+        try:
+            key_path.relative_to(root_resolved)
+        except ValueError:
+            return False, (
+                f"policy.verifier_keys[{verifier!r}].public_key_file {key_file!r} resolves "
+                f"outside the Tess root — rejected (C1 containment, fail-closed)"
+            )
+        if not key_path.exists():
+            return False, (
+                f"registered public key file {key_file!r} for verifier {verifier!r} not found on disk"
+            )
 
     isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_verdict_gpg_"))
     try:
@@ -3560,10 +3629,13 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
             isolated_gpg.chmod(0o700)
         except OSError:
             pass
-        import_r = subprocess.run(
-            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
-            capture_output=True,
-        )
+        import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
+        if trusted_key_bytes is not None:
+            if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
+                return False, "immutable BASE verifier certificate is not a public-only OpenPGP key"
+            import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
+        else:
+            import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
         if import_r.returncode != 0:
             return False, (
                 f"could not import registered public key {key_file!r} for verifier "
@@ -3630,7 +3702,26 @@ def _gate_verify_verdict_signature(root: Path, policy_instance: dict, instance: 
 # to the hook-splice code.
 # ---------------------------------------------------------------------------
 
-def _gate_verify_signoff_signature(root: Path, policy_instance: dict, data: dict) -> tuple[bool, str | None]:
+def _gate_validate_signoff_key_file_rel(
+    authorized_by: str, key_file: object,
+) -> tuple[str | None, str | None]:
+    """Validate a sign-off public-key path without reading the checkout."""
+    if not isinstance(key_file, str) or not key_file:
+        return None, f"policy.signoff_keys[{authorized_by!r}].public_key_file is not set"
+    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
+        return None, (
+            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is an "
+            f"absolute path or contains '..' traversal components — rejected "
+            f"(C1 containment, fail-closed)"
+        )
+    return key_file, None
+
+
+def _gate_verify_signoff_signature(
+    root: Path, policy_instance: dict, data: dict,
+    trusted_signoff_key_blobs: dict[str, bytes] | None = None,
+    trusted_signoff_key_errors: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
     """The single source of truth for 'is this hard-floor sign-off
     cryptographically authenticated'. Returns (True, None) when the
     signature verifies against a REGISTERED key for the sign-off's own
@@ -3649,7 +3740,12 @@ def _gate_verify_signoff_signature(root: Path, policy_instance: dict, data: dict
     used to accept a sign-off on JSON SHAPE ALONE (five non-empty fields, no
     signature, no authentication) — any agent able to write a file could
     forge a hard-floor clearance. `authorized_by` is now an authenticated
-    cryptographic identity, not just a free-text string field."""
+    cryptographic identity, not just a free-text string field.
+
+    The ship gate supplies ``trusted_signoff_key_blobs`` from its immutable
+    BASE tree. ``None`` is reserved for standalone sign-off diagnostics,
+    which have no push base; an empty mapping is intentionally fail-closed.
+    """
     authorized_by = data.get("authorized_by")
     sig = data.get("signature")
     if not isinstance(sig, dict):
@@ -3696,33 +3792,44 @@ def _gate_verify_signoff_signature(root: Path, policy_instance: dict, data: dict
             f"fingerprint"
         )
 
-    key_file = key_entry.get("public_key_file")
-    if not isinstance(key_file, str) or not key_file:
-        return False, f"policy.signoff_keys[{authorized_by!r}].public_key_file is not set"
+    key_file, key_path_reason = _gate_validate_signoff_key_file_rel(
+        authorized_by, key_entry.get("public_key_file"),
+    )
+    if key_path_reason:
+        return False, key_path_reason
 
-    # Same C1 containment discipline as `_gate_verify_verdict_signature`'s
-    # LOW-1 fix: an absolute or '..'-bearing `public_key_file` must never
-    # resolve outside `root`.
-    if os.path.isabs(key_file) or ".." in Path(key_file).parts:
-        return False, (
-            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} is an "
-            f"absolute path or contains '..' traversal components — rejected "
-            f"(C1 containment, fail-closed)"
-        )
-    root_resolved = root.resolve()
-    key_path = (root / key_file).resolve()
-    try:
-        key_path.relative_to(root_resolved)
-    except ValueError:
-        return False, (
-            f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} resolves "
-            f"outside the Tess root — rejected (C1 containment, fail-closed)"
-        )
-    if not key_path.exists():
-        return False, (
-            f"registered public key file {key_file!r} for sign-off authorizer "
-            f"{authorized_by!r} not found on disk"
-        )
+    trusted_key_bytes = None
+    if trusted_signoff_key_blobs is not None:
+        # Same P0 rule as verifier verdicts: no fallback to the candidate
+        # checkout when a BASE registration/key blob is absent or invalid.
+        trusted_key_bytes = trusted_signoff_key_blobs.get(authorized_by)
+        if trusted_key_bytes is None:
+            return False, (trusted_signoff_key_errors or {}).get(
+                authorized_by,
+                f"no immutable BASE-tree public-key blob is available for sign-off "
+                f"authorizer {authorized_by!r} — fail-closed",
+            )
+    else:
+        candidate_key_path = root / key_file
+        if candidate_key_path.is_symlink():
+            return False, (
+                f"registered public key file {key_file!r} for sign-off authorizer "
+                f"{authorized_by!r} is a symlink — rejected (C1 containment, fail-closed)"
+            )
+        root_resolved = root.resolve()
+        key_path = candidate_key_path.resolve()
+        try:
+            key_path.relative_to(root_resolved)
+        except ValueError:
+            return False, (
+                f"policy.signoff_keys[{authorized_by!r}].public_key_file {key_file!r} resolves "
+                f"outside the Tess root — rejected (C1 containment, fail-closed)"
+            )
+        if not key_path.exists():
+            return False, (
+                f"registered public key file {key_file!r} for sign-off authorizer "
+                f"{authorized_by!r} not found on disk"
+            )
 
     isolated_gpg = Path(tempfile.mkdtemp(prefix="tessctl_signoff_gpg_"))
     try:
@@ -3730,10 +3837,13 @@ def _gate_verify_signoff_signature(root: Path, policy_instance: dict, data: dict
             isolated_gpg.chmod(0o700)
         except OSError:
             pass
-        import_r = subprocess.run(
-            ["gpg", "--homedir", str(isolated_gpg), "--import", str(key_path)],
-            capture_output=True,
-        )
+        import_command = ["gpg", "--homedir", str(isolated_gpg), "--import"]
+        if trusted_key_bytes is not None:
+            if not _gpg_public_certificate_from_bytes_is_safe(trusted_key_bytes, isolated_gpg):
+                return False, "immutable BASE sign-off certificate is not a public-only OpenPGP key"
+            import_r = subprocess.run(import_command, input=trusted_key_bytes, capture_output=True)
+        else:
+            import_r = subprocess.run([*import_command, str(key_path)], capture_output=True)
         if import_r.returncode != 0:
             return False, (
                 f"could not import registered public key {key_file!r} for sign-off "
@@ -5484,9 +5594,8 @@ def _lock_regen_core(root: Path, only: set | None = None) -> tuple[int, int, int
     arguments, which may be given as either core_key or live_path strings,
     through that function FIRST, so a typo/unresolved path fails loud before
     this function is ever called) — every entry NOT in `only` is left
-    completely untouched. This is what makes it safe for a narrow, single-
-    purpose command (e.g. `verdict keygen`, which only ever writes ONE core
-    file it just produced itself) to re-pin WITHOUT the interactive
+    completely untouched. This is what makes it safe for a narrow,
+    deliberately reviewed maintenance operation to re-pin WITHOUT the interactive
     confirmation `tessctl lock --regen`'s CLI form requires: a scoped regen
     can never silently "bless" an unrelated tamper/drift elsewhere in
     `.tess/core`, because it never even looks at those entries. `only=None`
@@ -5541,8 +5650,7 @@ def _lock_regen(args, root: Path) -> None:
     narrow, reviewed fix. Prefer --only whenever the change is scoped to a
     known, small set of files (the common case); reserve a full unscoped
     --regen for genuinely repo-wide, deliberate re-baselines. The actual
-    re-pin loop is shared with programmatic callers (e.g. `verdict keygen`)
-    via `_lock_regen_core` — this function owns only the CLI-facing
+    re-pin loop is kept separate from the CLI-facing
     validation, warning text, and confirmation gate.
     """
     only_paths = getattr(args, "only", None) or []
@@ -8846,17 +8954,18 @@ def _cmd_verdict_verify(args, root: Path) -> None:
 
     Standalone check: does this verdict's `signature` verify against the
     registered public key for its claimed `verifier` in
-    core/policy/policy.yaml's `verifier_keys`? Uses the EXACT same
-    `_gate_verify_verdict_signature` helper `tessctl gate`'s covering-verdict
-    check calls — this command exists so a verifier (or anyone) can check a
-    signature in isolation, without running the full ship-gate.
+    core/policy/policy.yaml's `verifier_keys`? Uses the same signature
+    validation helper the ship-gate calls, but has no immutable push base and
+    therefore reads its registered key from the local checkout. This command
+    is a diagnostic only; `tessctl gate` binds registration metadata and key
+    bytes to BASE before a verdict can cover a protected change.
     """
     as_json = getattr(args, "json_out", False)
     file_path = _verdict_sign_load_file(args.file)
     try:
         instance = load_contract_instance(file_path)
     except ContractError as e:
-        result = {"valid": False, "file": str(file_path), "reason": str(e)}
+        result = {"valid": False, "reason": str(e)}
         _print_verdict_verify_result(result, as_json)
         sys.exit(2)
 
@@ -8870,447 +8979,44 @@ def _cmd_verdict_verify(args, root: Path) -> None:
         sys.exit(1)
 
     ok, reason = _gate_verify_verdict_signature(root, policy_instance, instance)
-    result = {"valid": ok, "file": str(file_path), "reason": reason}
+    result = {"valid": ok, "reason": reason}
     _print_verdict_verify_result(result, as_json)
     sys.exit(0 if ok else 1)
 
 
 def _print_verdict_verify_result(result: dict, as_json: bool) -> None:
+    safe_reason = _safe_decision_reason(result.get("reason")) if result.get("reason") else None
+    safe = {"valid": bool(result.get("valid")), "subject": "VERDICT_ARTIFACT_REDACTED", "reason": safe_reason}
     if as_json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(safe, indent=2))
         return
-    status = "VALID" if result["valid"] else "INVALID"
-    print(f"tessctl verdict verify — {result['file']} — {status}")
-    if result.get("reason"):
-        print(f"  {result['reason']}")
+    status = "VALID" if safe["valid"] else "INVALID"
+    print(f"tessctl verdict verify — {safe['subject']} — {status}")
+    if safe_reason:
+        print(f"  {safe_reason}")
 
 
-# ---------------------------------------------------------------------------
-# Phase 2b hardening — `tessctl verdict keygen`: turnkey verifier onboarding.
-#
-# Closes the "cannot turn the gate on without manual GPG surgery" adoption
-# gap: `core/policy/policy.yaml` ships `verifier_keys: {}` on purpose (see
-# that file's own header and conductor/verdict-signing.md — a deliberate,
-# disclosed non-fabrication of a throwaway trust anchor), but a fresh
-# adopter had NO mechanical path from "I want Reid to be a real verifier" to
-# a registered key short of hand-running `gpg --full-gen-key`, `gpg
-# --export`, and hand-editing TWO copies of policy.yaml (the live one and
-# the `.tess/core` pristine mirror) without breaking `tessctl doctor`/
-# `verify`/`lock --check`. `keygen` automates exactly that sequence — the
-# SAME steps `conductor/verdict-signing.md`'s "Onboarding a verifier"
-# section already documents by hand, now scripted:
-#   1. generate a fresh, sign-only, no-passphrase-by-default local GPG
-#      identity for the named verifier (private key NEVER leaves the target
-#      GNUPGHOME's own keyring — tessctl never stores or transmits it, the
-#      same posture already documented for the release-signing key);
-#   2. export its PUBLIC half to .tess/keys/verifiers/<name>.asc;
-#   3. register {fingerprint, public_key_file} under policy.verifier_keys.
-#      <Name> in BOTH core/policy/policy.yaml (live) and
-#      .tess/core/policy/policy.yaml (the pristine core mirror tess.lock
-#      tracks) — a text-level, COMMENT-PRESERVING patch (policy.yaml's
-#      extensive header/rule commentary is real documentation; a naive
-#      yaml.safe_load + yaml.safe_dump round-trip would silently destroy it);
-#   4. re-pin ONLY that one tess.lock entry via `_lock_regen_core`'s scoped
-#      `only=` mode — the same mechanism `tessctl lock --regen` uses, just
-#      never touching (and so never able to silently "bless") any OTHER
-#      core file's unrelated drift/tamper.
-# ---------------------------------------------------------------------------
 
-def _policy_yaml_upsert_verifier_key(
-    text: str, verifier: str, fingerprint: str, key_file_rel: str,
-) -> tuple[str, bool]:
-    """
-    Text-level, comment-preserving patch of a `policy.verifier_keys` YAML
-    mapping: inserts (or, when the verifier already has an entry, REPLACES)
-    a `<Name>: {fingerprint, public_key_file}` child block under the
-    existing `verifier_keys:` key, touching nothing else in `text` — every
-    other line (including policy.yaml's extensive header/rule commentary)
-    is passed through byte-for-byte. `yaml.safe_load` + `yaml.safe_dump`
-    would round-trip the DATA correctly but silently drop every comment in
-    the file — unacceptable for a file whose comments ARE load-bearing
-    documentation (see core/policy/policy.yaml's own header).
-
-    Supports both shapes `verifier_keys` can appear in:
-      - the shipped default, inline empty-mapping form: `verifier_keys: {}`
-      - block form, with zero or more existing `<Name>:` children already
-        present (from a prior `keygen` run for a different/same verifier).
-
-    Returns (new_text, existed_before) — `existed_before` is True when
-    `verifier` already had an entry that was just replaced (the caller uses
-    this for its own idempotency/--force decision; this function itself
-    does not refuse to overwrite — that policy lives in the caller).
-
-    Raises ValueError if no `verifier_keys:` mapping key is found at all
-    (a policy.yaml this old/nonstandard needs manual registration).
-    """
-    lines = text.splitlines(keepends=True)
-
-    def _indent_of(line: str) -> int:
-        return len(line) - len(line.lstrip(" "))
-
-    vk_idx = None
-    vk_indent = None
-    for i, line in enumerate(lines):
-        if line.lstrip(" ").startswith("#"):
-            continue  # skip commented-out example blocks (e.g. the shipped walkthrough)
-        stripped = line.strip()
-        if stripped in ("verifier_keys: {}", "verifier_keys:"):
-            vk_idx = i
-            vk_indent = _indent_of(line)
-            break
-
-    if vk_idx is None:
-        raise ValueError(
-            "no `verifier_keys:` mapping key found under `policy:` — this policy.yaml "
-            "predates Phase 2b, or uses a non-standard layout `keygen`'s text patcher "
-            "does not recognize. Register the key by hand per "
-            "conductor/verdict-signing.md's 'Onboarding a verifier' section."
-        )
-
-    entry_indent = vk_indent + 2
-    field_indent = vk_indent + 4
-    new_entry = (
-        f"{' ' * entry_indent}{verifier}:\n"
-        f"{' ' * field_indent}fingerprint: \"{fingerprint}\"\n"
-        f"{' ' * field_indent}public_key_file: {key_file_rel}\n"
-    )
-    new_entry_lines = new_entry.splitlines(keepends=True)
-
-    if lines[vk_idx].strip() == "verifier_keys: {}":
-        # Empty inline form → convert to block form with the one new entry.
-        header_line = f"{' ' * vk_indent}verifier_keys:\n"
-        lines[vk_idx:vk_idx + 1] = [header_line] + new_entry_lines
-        return "".join(lines), False
-
-    # Block form: walk forward to find (a) the full extent of the
-    # verifier_keys block (first line at indent <= vk_indent, or EOF) and
-    # (b) each existing child's own (start, end) line range, so a repeat
-    # registration for the SAME verifier replaces just that child's lines
-    # rather than appending a duplicate key.
-    end_idx = vk_idx + 1
-    child_starts: list[tuple[str | None, int]] = []
-    while end_idx < len(lines):
-        line = lines[end_idx]
-        if line.strip() == "":
-            end_idx += 1
-            continue
-        this_indent = _indent_of(line)
-        if this_indent <= vk_indent:
-            break
-        if this_indent == entry_indent:
-            m = re.match(r'^[ \t]*([^\s:][^:]*):\s*$', line)
-            child_starts.append((m.group(1).strip() if m else None, end_idx))
-        end_idx += 1
-    block_end = end_idx
-
-    ranges: dict[str, tuple[int, int]] = {}
-    for idx, (name, start) in enumerate(child_starts):
-        stop = child_starts[idx + 1][1] if idx + 1 < len(child_starts) else block_end
-        if name:
-            ranges[name] = (start, stop)
-
-    if verifier in ranges:
-        s, e = ranges[verifier]
-        lines[s:e] = new_entry_lines
-        return "".join(lines), True
-
-    lines[block_end:block_end] = new_entry_lines
-    return "".join(lines), False
+TRUST_BOOTSTRAP_REQUIRED = (
+    "tessctl verdict keygen: disabled (TRUST_BOOTSTRAP_REQUIRED).\n"
+    "  Tess OS never provides a self-service path that generates a verifier "
+    "private key, registers a trust anchor, or re-pins policy/lock state.\n"
+    "  This invocation made no key, policy, or lock changes. A user-present "
+    "bootstrap and recovery ceremony is undecided and Xavier-owned; see "
+    "docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md."
+)
 
 
 def _cmd_verdict_keygen(args, root: Path) -> None:
-    """
-    tessctl verdict keygen --verifier <Name> [--force] [--gnupg-home <PATH>]
-
-    Turnkey Phase 2b onboarding (see docs/GATE_QUICKSTART.md and the module
-    comment above `_policy_yaml_upsert_verifier_key`): generates a fresh
-    sign-only local GPG identity for the named verifier, exports its PUBLIC
-    key to `.tess/keys/verifiers/<name>.asc`, registers
-    `policy.verifier_keys.<Name>` in both `core/policy/policy.yaml` (live)
-    and `.tess/core/policy/policy.yaml` (the pristine core mirror), then
-    re-pins ONLY that one tess.lock entry.
-
-    tessctl NEVER stores, backs up, or transmits the resulting PRIVATE key —
-    it lives solely in the target GNUPGHOME's own keyring (the ambient
-    default keyring unless --gnupg-home is given), exactly as if the
-    verifier had run `gpg --full-gen-key` themselves. This automates
-    conductor/verdict-signing.md's "1. The verifier generates their own GPG
-    keypair" onboarding step; it does not change who holds the key.
-
-    Idempotent: refuses to clobber an existing `.tess/keys/verifiers/<name>.asc`
-    or an existing `policy.verifier_keys.<Name>` registration unless --force
-    is given, in which case a NEW keypair is generated and both are REPLACED
-    (a manual key-rotation, automated).
-    """
-    verifier = args.verifier
-    if verifier not in VERIFIER_NAMES:
-        sys.exit(
-            f"tessctl verdict keygen: {verifier!r} is not one of the six named verifiers "
-            f"{list(VERIFIER_NAMES)} — policy.verifier_keys/allowed_verifiers/verdict.verifier "
-            f"are all schema/lint-constrained to exactly these six names "
-            f"(core/contracts/policy.schema.json, _lint_policy)."
-        )
-
-    if shutil.which("gpg") is None:
-        sys.exit(
-            "tessctl verdict keygen: `gpg` not found on PATH.\n"
-            "  Install GnuPG and retry (e.g. `brew install gnupg` / `apt-get install gnupg`)."
-        )
-
-    force = getattr(args, "force", False)
-    gnupg_home = getattr(args, "gnupg_home", None)
-    name_lower = verifier.lower()
-    key_file_rel = f".tess/keys/verifiers/{name_lower}.asc"
-    key_file_path = root / key_file_rel
-    uid_email = f"{name_lower}@verifier.tessctl.local"
-
-    # ---- Locate + load the policy instance (fail-closed if absent/unloadable) ----
-    policy_path = _gate_find_policy_instance_path(root)
-    if policy_path is None:
-        sys.exit(
-            f"tessctl verdict keygen: no policy instance found at "
-            f"{POLICY_DIR}/policy.{{yaml,yml,json}} — run `tessctl init` first "
-            f"(fail-closed: refusing to register a key against a policy file that "
-            f"does not exist)."
-        )
-    if policy_path.suffix.lower() not in (".yaml", ".yml"):
-        sys.exit(
-            f"tessctl verdict keygen: {policy_path} is JSON — keygen's comment-preserving "
-            f"registration currently supports only the YAML policy instance. Register "
-            f"{verifier}'s key under policy.verifier_keys by hand instead."
-        )
-    try:
-        existing_instance = load_contract_instance(policy_path)
-    except ContractError as e:
-        sys.exit(f"tessctl verdict keygen: cannot load {policy_path}: {e}")
-    existing_keys = ((existing_instance.get("policy") or {}).get("verifier_keys") or {})
-    already_registered = isinstance(existing_keys, dict) and verifier in existing_keys
-    already_key_file = key_file_path.exists()
-
-    if (already_registered or already_key_file) and not force:
-        details = []
-        if already_key_file:
-            details.append(f"public key file already exists at {key_file_rel}")
-        if already_registered:
-            details.append(f"policy.verifier_keys already has an entry for {verifier!r}")
-        sys.exit(
-            f"tessctl verdict keygen: refusing to clobber existing {verifier!r} key material — "
-            + "; ".join(details) + ".\n"
-            f"  Re-run with --force to generate a NEW keypair and REPLACE both the "
-            f"exported public key and the policy registration (key rotation)."
-        )
-
-    # ---- core/live mirror lookup + drift guard ----
-    live_rel = str(policy_path.relative_to(root)).replace(os.sep, "/")
-    lock = load_lock(root)
-    core_key = None
-    for ck, attrs in lock.get("files", {}).items():
-        if attrs.get("live_path") == live_rel:
-            core_key = ck
-            break
-    core_path = (root / core_key) if core_key else None
-
-    if core_path is not None and core_path.exists():
-        if core_path.read_bytes() != policy_path.read_bytes():
-            sys.exit(
-                f"tessctl verdict keygen: {core_path.relative_to(root)} (core) and {live_rel} "
-                f"(live) are NOT byte-identical — resolve this drift first "
-                f"(`tessctl doctor`, `tessctl restore`) before keygen edits either copy."
-            )
-
-    # ---- Pre-flight: patch + schema/lint validate policy.yaml BEFORE
-    # generating any key material. A lint/schema failure discovered only
-    # AFTER gpg has already created a real keypair would leave a live,
-    # unregistered private key sitting in the target keyring for no
-    # reason — this proves the patch is well-formed first, using a
-    # placeholder fingerprint of the exact shape (40 uppercase hex chars)
-    # the real one will have. No schema/lint rule inspects the
-    # fingerprint's VALUE, only its shape (schema `pattern`) and the
-    # verifier NAME (already checked against VERIFIER_NAMES above), so a
-    # placeholder of the same shape proves exactly what the real value
-    # will prove once it exists.
-    live_text = policy_path.read_text(encoding="utf-8")
-    _preflight_fingerprint = "0" * 40
-    try:
-        _preflight_text, _ = _policy_yaml_upsert_verifier_key(
-            live_text, verifier, _preflight_fingerprint, key_file_rel
-        )
-    except ValueError as e:
-        sys.exit(f"tessctl verdict keygen: cannot patch {live_rel}: {e}")
-    try:
-        _preflight_parsed = yaml.safe_load(_preflight_text)
-    except yaml.YAMLError as e:
-        sys.exit(
-            f"tessctl verdict keygen: internal error — patched {live_rel} is not valid "
-            f"YAML ({e}); aborting before generating any key material."
-        )
-    try:
-        schema = load_contract_schema(root, "policy")
-    except ContractError as e:
-        sys.exit(f"tessctl verdict keygen: cannot load policy schema: {e}")
-    base_dir = root / CONTRACTS_DIR
-    schema_errors = schema_validate(_preflight_parsed, schema, schema, base_dir)
-    lint_errors = _lint_contract("policy", _preflight_parsed)
-    if schema_errors or lint_errors:
-        sys.exit(
-            "tessctl verdict keygen: internal error — patched policy fails schema/lint; "
-            "aborting before generating any key material:\n  "
-            + "\n  ".join(schema_errors + lint_errors)
-        )
-
-    # ---- Generate the GPG identity (sign-only, no-passphrase by default) ----
-    env = dict(os.environ)
-    homedir_args: list[str] = []
-    if gnupg_home:
-        Path(gnupg_home).mkdir(parents=True, exist_ok=True)
-        try:
-            Path(gnupg_home).chmod(0o700)
-        except OSError:
-            pass
-        homedir_args = ["--homedir", gnupg_home]
-        env["GNUPGHOME"] = gnupg_home
-
-    batch_params = (
-        "%no-protection\n"
-        "Key-Type: RSA\n"
-        "Key-Length: 4096\n"
-        "Key-Usage: sign\n"
-        f"Name-Real: {verifier} (Tess OS verdict verifier)\n"
-        "Name-Comment: generated by tessctl verdict keygen\n"
-        f"Name-Email: {uid_email}\n"
-        "Expire-Date: 0\n"
-        "%commit\n"
-    )
-    # SECURITY: the fingerprint of the key we just generated is captured
-    # DIRECTLY from gpg's own machine-readable status stream for THIS
-    # `--gen-key` invocation (`[GNUPG:] KEY_CREATED <type> <fingerprint>`) —
-    # never by re-querying the keyring afterward with
-    # `--list-secret-keys <uid_email>`. `uid_email` is a fixed,
-    # non-unique string (`<name>@verifier.tessctl.local`); if the target
-    # keyring already holds ANY other key using that same email — an
-    # attacker-planted key, or (on `--force` rotation) the very key being
-    # retired — a by-email re-query can silently resolve to that OTHER
-    # key instead of the one this call just created, and keygen would then
-    # register + export it as if it were fresh. Reading the fingerprint off
-    # the generation operation itself has no such ambiguity: it is the
-    # fingerprint of exactly the key this process just asked gpg to create,
-    # full stop, regardless of anything else already in the keyring.
-    status_r_fd, status_w_fd = os.pipe()
-    os.set_inheritable(status_w_fd, True)
-    try:
-        gen_r = subprocess.run(
-            ["gpg", *homedir_args, "--batch", f"--status-fd={status_w_fd}", "--gen-key"],
-            input=batch_params.encode("utf-8"), capture_output=True, env=env,
-            pass_fds=(status_w_fd,),
-        )
-    finally:
-        os.close(status_w_fd)
-    status_chunks: list[bytes] = []
-    try:
-        while True:
-            chunk = os.read(status_r_fd, 65536)
-            if not chunk:
-                break
-            status_chunks.append(chunk)
-    finally:
-        os.close(status_r_fd)
-    status_output = b"".join(status_chunks).decode("utf-8", errors="replace")
-
-    if gen_r.returncode != 0:
-        sys.exit(
-            f"tessctl verdict keygen: gpg key generation failed for {verifier!r}:\n"
-            f"  {gen_r.stderr.decode('utf-8', errors='replace').strip()}"
-        )
-
-    # "[GNUPG:] KEY_CREATED <P|B|S> <fingerprint>" — P/B/S is which part was
-    # created (primary-only / both / subkey-only); irrelevant here, we only
-    # want the fingerprint gpg reports for the key this exact call created.
-    fingerprint = ""
-    for line in status_output.splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[0] == "[GNUPG:]" and parts[1] == "KEY_CREATED":
-            fingerprint = parts[3]
-            break
-    if not fingerprint or not _FULL_FP_RE.match(fingerprint):
-        sys.exit(
-            f"tessctl verdict keygen: gpg reported success generating a key for "
-            f"{verifier!r} but its KEY_CREATED status line did not carry a 40-hex "
-            f"fingerprint we could parse — aborting before writing anything "
-            f"(fail-closed). gpg status output:\n{status_output.strip()}"
-        )
-    fingerprint = fingerprint.upper()
-
-    export_r = subprocess.run(
-        ["gpg", *homedir_args, "--export", "--armor", fingerprint],
-        capture_output=True, env=env,
-    )
-    if export_r.returncode != 0 or not export_r.stdout.strip():
-        sys.exit(
-            f"tessctl verdict keygen: could not export the public key just generated "
-            f"for {verifier!r} (fingerprint {fingerprint}): "
-            f"{export_r.stderr.decode('utf-8', errors='replace').strip()}"
-        )
-    public_key_armored = export_r.stdout.decode("utf-8")
-
-    # ---- Patch the live policy.yaml text with the REAL fingerprint
-    # (comment-preserving) — the pre-flight pass above already proved this
-    # exact patch shape is schema/lint-clean, so this is a cheap structural
-    # re-check that the patcher put the RIGHT verifier/fingerprint/file in,
-    # not a full re-validate. ----
-    try:
-        new_live_text, _existed = _policy_yaml_upsert_verifier_key(
-            live_text, verifier, fingerprint, key_file_rel
-        )
-    except ValueError as e:
-        sys.exit(f"tessctl verdict keygen: cannot patch {live_rel}: {e}")
-    try:
-        parsed = yaml.safe_load(new_live_text)
-    except yaml.YAMLError as e:
-        sys.exit(
-            f"tessctl verdict keygen: internal error — patched {live_rel} is not valid "
-            f"YAML ({e}); aborting before writing anything."
-        )
-    got = ((parsed.get("policy") or {}).get("verifier_keys") or {}).get(verifier) or {}
-    if got.get("fingerprint") != fingerprint or got.get("public_key_file") != key_file_rel:
-        sys.exit(
-            f"tessctl verdict keygen: internal error — patched policy does not contain "
-            f"the expected verifier_keys.{verifier} entry; aborting before writing anything."
-        )
-
-    # ---- All checks passed — write public key, then both policy copies, then re-pin ----
-    _atomic_write_bytes(key_file_path, public_key_armored.encode("utf-8"), mode=0o644)
-
-    manifest = load_manifest(root)
-    guarded_write(root, live_rel, new_live_text.encode("utf-8"), op="verdict keygen", manifest=manifest)
-
-    if core_path is not None:
-        _atomic_write_bytes(core_path, new_live_text.encode("utf-8"), mode=0o644)
-        _total, repinned, _missing, _touched = _lock_regen_core(root, only={core_key})
-        regen_note = f"  tessctl lock --regen (scoped to {core_key}): {repinned} base_sha re-pinned."
-    else:
-        regen_note = (
-            f"  WARNING: no tess.lock entry found for live_path {live_rel!r} — skipped the "
-            f"core-mirror update + lock re-pin. If this repo tracks a .tess/core mirror for "
-            f"this file, update it by hand and run `tessctl lock --regen --yes`."
-        )
-
-    print(f"tessctl verdict keygen: generated a new sign-only GPG identity for verifier {verifier!r}")
-    print(f"  fingerprint: {fingerprint}")
-    print(f"  public key:  {key_file_rel}")
-    registered_where = live_rel if core_path is None else f"{live_rel} and {core_key}"
-    print(f"  registered:  policy.verifier_keys.{verifier} in {registered_where}")
-    print(regen_note)
-    print(
-        f"  Private key stays ONLY in this local GPG keyring "
-        f"({gnupg_home or '(ambient/default keyring)'}) — tessctl never stores or transmits it.\n"
-        f"  Sign verdicts with:\n"
-        f"    tessctl verdict sign <file> --verifier {verifier} --key-id {fingerprint}"
-        + (f" --gnupg-home {gnupg_home}" if gnupg_home else "")
-    )
+    """Refuse self-service verifier bootstrap before any filesystem or
+    cryptographic operation. Candidate repositories cannot establish
+    their own reviewer trust anchor."""
+    sys.exit(TRUST_BOOTSTRAP_REQUIRED)
 
 
 def cmd_verdict(args, root: Path) -> None:
-    """tessctl verdict <sign|verify> — Phase 2b verdict-signing key management."""
+    """tessctl verdict <keygen|sign|verify> — keygen refuses self-service
+    bootstrap; signing and verification use existing custody-managed keys."""
     sub = getattr(args, "verdict_sub", None)
     handlers = {"keygen": _cmd_verdict_keygen, "sign": _cmd_verdict_sign, "verify": _cmd_verdict_verify}
     fn = handlers.get(sub)
@@ -9354,7 +9060,163 @@ class GateSpineError(Exception):
     shape, so it is caught locally in each cmd_gate_* entrypoint instead)."""
 
 
+# Decision outputs cross trust boundaries (CLI JSON, trace export, and MCP).
+# Keep detailed values only inside the engine long enough to make its
+# fail-closed decision; every external projection uses this allowlist.  Do not
+# replace this with a sink-only regex scrubber: unknown failures must be
+# visibly redacted rather than guessed safe.
+_DECISION_MESSAGES = {
+    "CONTRACT_INVALID": "a governed contract is invalid",
+    "POLICY_INVALID": "the effective policy is invalid",
+    "GIT_OPERATION_FAILED": "a required Git operation failed",
+    "GATE_INPUT_INVALID": "gate invocation input is invalid",
+    "COVERING_APPROVAL_MISSING": "no covering APPROVE verdict found",
+    "VERDICT_SIGNATURE_INVALID": "a covering verdict signature is invalid",
+    "VERIFIER_NOT_ALLOWED": "no covering verdict is from an allowed verifier",
+    "VERDICT_CONTENT_STALE": "a covering verdict is not bound to current content",
+    "HARD_FLOOR_UNSATISFIED": "a required hard-floor sign-off is not valid",
+    "BASE_REQUIRED": "an immutable BASE commit is required",
+    "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
+    "PATH_SET_MISMATCH": "the supplied path set does not match the immutable Git diff",
+    "GOVERNED_TRANSITION_UNSUPPORTED": "a governed Git path transition is unsupported",
+    "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
+    "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
+    "NONREGULAR_ADDITION_UNSUPPORTED": "a non-regular Git path addition is unsupported",
+    "REF_DELETION_UNSUPPORTED": "a Git ref deletion is unsupported",
+    "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
+}
+
+
+_DECISION_REASON_WRAPPERS = (
+    "[renderer-base] ",
+    "[contract] ",
+    "[gate] ",
+)
+
+
+def _decision_reason_code(raw_reason: object) -> str:
+    """Classify an internal reason without ever returning its value."""
+    text = str(raw_reason or "")
+    # `_gate_run_ship_check` owns three static, internal grouping labels.  Do
+    # not treat those labels as public diagnostics: unwrap exactly one known
+    # label, then classify the underlying reason through the same allowlist
+    # used everywhere else.  In particular, do not strip arbitrary brackets,
+    # whitespace, or a second wrapper: an unknown reason must remain
+    # INTERNAL_ERROR_REDACTED rather than becoming accidentally reportable.
+    for wrapper in _DECISION_REASON_WRAPPERS:
+        if text.startswith(wrapper):
+            text = text[len(wrapper):]
+            break
+    lower = text.lower()
+    if text.startswith("BASE_REQUIRED:"):
+        return "BASE_REQUIRED"
+    if text.startswith("CONTRACT_INVALID:"):
+        return "CONTRACT_INVALID"
+    if text.startswith("PATH_SET_MISMATCH:"):
+        return "PATH_SET_MISMATCH"
+    if text.startswith("GOVERNED_TRANSITION_UNSUPPORTED:"):
+        return "GOVERNED_TRANSITION_UNSUPPORTED"
+    if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
+        return "ADMISSION_EVENT_SOURCE_REQUIRED"
+    if text.startswith("NONREGULAR_ADDITION_UNSUPPORTED:"):
+        return "NONREGULAR_ADDITION_UNSUPPORTED"
+    if text.startswith("REF_DELETION_UNSUPPORTED:"):
+        return "REF_DELETION_UNSUPPORTED"
+    if text.startswith("[policy]") or lower.startswith("cannot load policy"):
+        return "POLICY_INVALID"
+    if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
+        return "GIT_OPERATION_FAILED"
+    if (
+        "--base and --head must both be given" in lower
+        or "stdin protocol" in lower
+        or "malformed stdin ref-update" in lower
+    ):
+        return "GATE_INPUT_INVALID"
+    if "hard floor" in lower or "sign-off" in lower:
+        return "HARD_FLOOR_UNSATISFIED"
+    if "no covering approve verdict" in lower or "no-glob-match" in lower:
+        return "COVERING_APPROVAL_MISSING"
+    if "artifact_hashes" in lower or "stale-content" in lower:
+        return "VERDICT_CONTENT_STALE"
+    if "allowed verifier" in lower or "wrong-verifier" in lower:
+        return "VERIFIER_NOT_ALLOWED"
+    if any(token in lower for token in (
+        "signature", "gpg", "fingerprint", "public key", "verifier_keys", "signoff_keys",
+    )):
+        return "VERDICT_SIGNATURE_INVALID"
+    return "INTERNAL_ERROR_REDACTED"
+
+
+def _safe_decision_reason(raw_reason: object) -> str:
+    code = _decision_reason_code(raw_reason)
+    return f"{code}: {_DECISION_MESSAGES[code]}"
+
+
+def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
+    """Public gate decision projection; raw paths and refs stay local."""
+    safe = {
+        "blocked": bool(result.get("blocked")),
+        "reasons": [_safe_decision_reason(r) for r in result.get("reasons", [])],
+        "changed_paths_count": len(result.get("changed_paths", []) or []),
+    }
+    if phase is not None:
+        safe = {"phase": phase, **safe}
+    return safe
+
+
 EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+_GATE_OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
+_GATE_TRACKED_MODES = {"000000", "100644", "100755", "120000", "160000"}
+_GATE_REGULAR_FILE_MODES = {"100644", "100755"}
+_GATE_REVIEWABLE_ADDITION_MODE = "100644"
+
+
+class GatePathDelta:
+    """One machine-parsed Git tree transition.
+
+    The ship-gate must retain status, modes, and full object IDs until after
+    policy classification.  A path-only list cannot distinguish a regular
+    edit from a deletion, chmod, symlink, or gitlink transition, and the
+    current verdict/sign-off artifact hashes authorize only surviving blobs.
+    """
+
+    __slots__ = ("status", "old_mode", "new_mode", "old_oid", "new_oid", "path")
+
+    def __init__(
+        self, status: str, old_mode: str, new_mode: str,
+        old_oid: str, new_oid: str, path: str,
+    ) -> None:
+        self.status = status
+        self.old_mode = old_mode
+        self.new_mode = new_mode
+        self.old_oid = old_oid
+        self.new_oid = new_oid
+        self.path = path
+
+    def __repr__(self) -> str:
+        return (
+            "GatePathDelta("
+            f"status={self.status!r}, old_mode={self.old_mode!r}, "
+            f"new_mode={self.new_mode!r}, old_oid={self.old_oid!r}, "
+            f"new_oid={self.new_oid!r}, path={self.path!r})"
+        )
+
+
+class GateChangedPaths(list):
+    """List-compatible changed paths carrying their immutable raw deltas.
+
+    Keeping list behavior preserves the public result/trace shape and the
+    established `_gate_run_ship_check` signature (including the A11 engine-
+    tamper fixture), while preventing authority-bearing callers from
+    discarding transition metadata before verdict/sign-off evaluation.
+    """
+
+    __slots__ = ("deltas",)
+
+    def __init__(self, paths=(), deltas=()) -> None:
+        super().__init__(paths)
+        self.deltas = tuple(deltas)
 
 # Directory names skipped entirely when the gate walks the working tree
 # looking for verdict-shaped files to check for ship-gate coverage — these
@@ -9402,7 +9264,11 @@ def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: s
     LOOKS like a contract is never silently skipped."""
     abs_path = root / rel_path
     if not abs_path.exists():
-        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+        # Deletions now remain in raw path ingress so policy can deny them as
+        # an unsupported governed transition.  There is no candidate contract
+        # instance to schema-validate here; transition enforcement happens in
+        # `_gate_governed_transition_gap_report` before authorization artifacts.
+        return []
     try:
         schema = load_contract_schema(root, contract_type)
         instance = load_contract_instance(abs_path)
@@ -9443,24 +9309,240 @@ def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
 def _gate_run_git(root: Path, *args: str) -> str:
     r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
     if r.returncode != 0:
+        raise GateSpineError("GIT_OPERATION_FAILED")
+    return r.stdout
+
+
+def _gate_run_git_bytes(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    """Run Git without text decoding.
+
+    Authority-bearing path output is NUL-delimited and repository path bytes
+    are not line-oriented text.  Decoding at subprocess level would recreate
+    the quoted/newline path ambiguity this helper exists to close.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True, input=input_bytes,
+    )
+    if r.returncode != 0:
+        stderr = r.stderr.decode("utf-8", errors="replace").strip() or "no stderr"
         raise GateSpineError(
-            f"tessctl gate: `git {' '.join(args)}` failed ({r.stderr.strip() or 'no stderr'}) "
+            f"tessctl gate: `git {' '.join(args)}` failed ({stderr}) "
             f"— fail-closed, refusing"
         )
     return r.stdout
 
 
+def _gate_object_id_length(root: Path) -> int:
+    """Return the repository storage object-ID width (SHA-1 or SHA-256)."""
+    object_format = _gate_run_git(
+        root, "rev-parse", "--show-object-format=storage",
+    ).strip()
+    oid_length = _GATE_OBJECT_FORMAT_LENGTHS.get(object_format)
+    if oid_length is None:
+        raise GateSpineError(
+            "tessctl gate: Git reported unsupported repository object format "
+            f"{object_format!r}; expected sha1 or sha256 — fail-closed, refusing"
+        )
+    return oid_length
+
+
+def _gate_path_display(path: str) -> str:
+    """Stable one-line representation for an attacker-controlled Git path."""
+    return json.dumps(path, ensure_ascii=True)
+
+
+def _gate_decode_raw_path(raw_path: bytes) -> str:
+    if not raw_path:
+        raise GateSpineError(
+            "tessctl gate: malformed raw Git diff contains an empty path "
+            "— fail-closed, refusing"
+        )
+    try:
+        path = raw_path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        sample = raw_path[:32].hex()
+        suffix = "..." if len(raw_path) > 32 else ""
+        raise GateSpineError(
+            "tessctl gate: Git path is not valid UTF-8 "
+            f"(hex={sample}{suffix}) — fail-closed, refusing"
+        )
+    if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
+        raise GateSpineError(
+            "tessctl gate: Git emitted a non-canonical repository-relative path "
+            f"{_gate_path_display(path)} — fail-closed, refusing"
+        )
+    if unicodedata.normalize("NFC", path) != path:
+        raise GateSpineError(
+            "tessctl gate: Git path is not Unicode NFC-normalized "
+            f"{_gate_path_display(path)} — fail-closed, refusing to admit an "
+            "ambiguous policy pathname"
+        )
+    return path
+
+
+def _gate_validate_raw_delta_shape(delta: GatePathDelta, oid_length: int) -> None:
+    zero_oid = "0" * oid_length
+    if (delta.old_mode == "000000") != (delta.old_oid == zero_oid):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff old mode/object absence markers disagree "
+            f"for {_gate_path_display(delta.path)} — fail-closed, refusing"
+        )
+    if (delta.new_mode == "000000") != (delta.new_oid == zero_oid):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff new mode/object absence markers disagree "
+            f"for {_gate_path_display(delta.path)} — fail-closed, refusing"
+        )
+    old_absent = delta.old_mode == "000000" and delta.old_oid == zero_oid
+    new_absent = delta.new_mode == "000000" and delta.new_oid == zero_oid
+
+    if delta.old_mode not in _GATE_TRACKED_MODES or delta.new_mode not in _GATE_TRACKED_MODES:
+        raise GateSpineError(
+            "tessctl gate: raw Git diff has unsupported mode transition "
+            f"{delta.old_mode}->{delta.new_mode} for {_gate_path_display(delta.path)} "
+            "— fail-closed, refusing"
+        )
+    if delta.status == "A":
+        valid = old_absent and not new_absent
+    elif delta.status == "D":
+        valid = not old_absent and new_absent
+    elif delta.status == "M":
+        valid = not old_absent and not new_absent and not (
+            delta.old_mode == delta.new_mode and delta.old_oid == delta.new_oid
+        )
+    elif delta.status == "T":
+        valid = not old_absent and not new_absent and delta.old_mode != delta.new_mode
+    else:
+        valid = False
+    if not valid:
+        raise GateSpineError(
+            "tessctl gate: raw Git diff status/mode/object tuple is inconsistent "
+            f"for {_gate_path_display(delta.path)} (status={delta.status}, "
+            f"modes={delta.old_mode}->{delta.new_mode}) — fail-closed, refusing"
+        )
+
+
+def _gate_parse_raw_diff(raw_output: bytes, oid_length: int) -> list:
+    """Strict parser for `git diff --raw -z --no-renames --no-abbrev`.
+
+    With rename detection disabled every record is exactly HEADER NUL PATH
+    NUL.  Renames therefore become deletion(source) + addition(destination),
+    so the governed source cannot disappear behind Git's similarity pairing.
+    """
+    if oid_length not in _GATE_OBJECT_FORMAT_LENGTHS.values():
+        raise GateSpineError(
+            f"tessctl gate: unsupported object-ID width {oid_length} "
+            "— fail-closed, refusing"
+        )
+    if not raw_output:
+        return []
+    if not raw_output.endswith(b"\0"):
+        raise GateSpineError(
+            "tessctl gate: raw Git diff is not NUL-terminated "
+            "— fail-closed, refusing"
+        )
+
+    fields = raw_output.split(b"\0")
+    fields.pop()  # required trailing terminator
+    deltas = []
+    seen_paths = set()
+    index = 0
+    oid_pattern = rb"[0-9a-f]{" + str(oid_length).encode("ascii") + rb"}"
+    header_pattern = re.compile(
+        rb":"
+        rb"([0-7]{6}) ([0-7]{6}) "
+        b"(" + oid_pattern + rb") (" + oid_pattern + rb") "
+        rb"([A-Z](?:[0-9]{1,3})?)"
+    )
+
+    while index < len(fields):
+        header = fields[index]
+        index += 1
+        match = header_pattern.fullmatch(header)
+        if match is None:
+            sample = header[:96].decode("ascii", errors="backslashreplace")
+            raise GateSpineError(
+                "tessctl gate: malformed raw Git diff header "
+                f"{sample!r} — fail-closed, refusing"
+            )
+        status_token = match.group(5).decode("ascii")
+        if status_token not in ("A", "M", "D", "T"):
+            raise GateSpineError(
+                "tessctl gate: unexpected raw Git diff status "
+                f"{status_token!r}; only A/M/D/T records are reviewable. "
+                "Rename/copy records and unmerged/unknown/broken-pairing states "
+                "are forbidden — fail-closed, refusing"
+            )
+        if index >= len(fields):
+            raise GateSpineError(
+                "tessctl gate: truncated raw Git diff record has no path "
+                "— fail-closed, refusing"
+            )
+        path = _gate_decode_raw_path(fields[index])
+        index += 1
+        if path in seen_paths:
+            raise GateSpineError(
+                "tessctl gate: raw Git diff contains duplicate path record "
+                f"{_gate_path_display(path)} — fail-closed, refusing"
+            )
+        seen_paths.add(path)
+        delta = GatePathDelta(
+            status_token,
+            match.group(1).decode("ascii"),
+            match.group(2).decode("ascii"),
+            match.group(3).decode("ascii"),
+            match.group(4).decode("ascii"),
+            path,
+        )
+        _gate_validate_raw_delta_shape(delta, oid_length)
+        deltas.append(delta)
+    return deltas
+
+
+def _gate_raw_diff(root: Path, *range_args: str, cached: bool = False) -> list:
+    args = ["diff"]
+    if cached:
+        args.append("--cached")
+    args += [
+        "--raw", "-z", "--no-renames", "--no-abbrev", "--no-ext-diff",
+        "--ignore-submodules=none", "--diff-filter=ACMRTDUXB",
+    ]
+    args += list(range_args)
+    args.append("--")
+    raw_output = _gate_run_git_bytes(root, *args)
+    return _gate_parse_raw_diff(raw_output, _gate_object_id_length(root))
+
+
+def _gate_paths_from_deltas(deltas: list) -> GateChangedPaths:
+    return GateChangedPaths(sorted({delta.path for delta in deltas}), deltas)
+
+
+def _gate_empty_tree_oid(root: Path) -> str:
+    oid_length = _gate_object_id_length(root)
+    raw_oid = _gate_run_git_bytes(
+        root, "hash-object", "-t", "tree", "--stdin", input_bytes=b"",
+    ).strip()
+    try:
+        oid = raw_oid.decode("ascii")
+    except UnicodeDecodeError:
+        oid = ""
+    if not re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", oid):
+        raise GateSpineError(
+            "tessctl gate: could not derive the repository-format empty-tree "
+            "object ID — fail-closed, refusing"
+        )
+    return oid
+
+
 def _gate_changed_paths_staged(root: Path) -> list:
-    """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
-    return [line for line in out.splitlines() if line.strip()]
+    """Pre-commit mode: byte-safe staged tree transitions."""
+    return _gate_paths_from_deltas(_gate_raw_diff(root, cached=True))
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
     when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
-    return [line for line in out.splitlines() if line.strip()]
+    return _gate_paths_from_deltas(_gate_raw_diff(root, base, head))
 
 
 def _gate_changed_paths_from_stdin(root: Path):
@@ -9482,22 +9564,45 @@ def _gate_changed_paths_from_stdin(root: Path):
     pre-push policy baseline for the policy-self-tamper check."""
     lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
     if not lines:
-        return [], [], []  # nothing being pushed (e.g. a ref deletion) — nothing to gate
-    changed = set()
+        return GateChangedPaths(), [], []  # no ref updates
+    oid_length = _gate_object_id_length(root)
+    zero_oid = "0" * oid_length
+    deltas = []
     head_shas = []
     base_shas = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
-            continue
+            raise GateSpineError(
+                "tessctl gate pre-push: malformed stdin ref-update record "
+                "— fail-closed, refusing"
+            )
         _local_ref, local_sha, _remote_ref, remote_sha = parts
-        if not local_sha or set(local_sha) == {"0"}:
-            continue  # deleting the ref — nothing pushed
-        base = EMPTY_TREE_SHA if set(remote_sha) == {"0"} else remote_sha
-        changed.update(_gate_diff_paths(root, base, local_sha))
+        if not re.fullmatch(rf"[0-9A-Fa-f]{{{oid_length}}}", local_sha or ""):
+            raise GateSpineError(
+                "tessctl gate pre-push: local object ID has the wrong repository "
+                "format/length — fail-closed, refusing"
+            )
+        if not re.fullmatch(rf"[0-9A-Fa-f]{{{oid_length}}}", remote_sha or ""):
+            raise GateSpineError(
+                "tessctl gate pre-push: remote object ID has the wrong repository "
+                "format/length — fail-closed, refusing"
+            )
+        local_sha = local_sha.lower()
+        remote_sha = remote_sha.lower()
+        if local_sha == zero_oid:
+            raise GateSpineError(
+                "REF_DELETION_UNSUPPORTED: tessctl gate pre-push cannot authorize "
+                f"deletion of {_gate_path_display(_remote_ref)} because blob/path "
+                "review evidence does not bind ref-topology deletion — fail-closed, "
+                "refusing"
+            )
+        base = _gate_empty_tree_oid(root) if remote_sha == zero_oid else remote_sha
+        ref_changes = _gate_diff_paths(root, base, local_sha)
+        deltas.extend(ref_changes.deltas)
         head_shas.append(local_sha)
         base_shas.append(base)
-    return sorted(changed), head_shas, base_shas
+    return _gate_paths_from_deltas(deltas), head_shas, base_shas
 
 
 # ---------------------------------------------------------------------------
@@ -9562,6 +9667,147 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
     return path_rule_matches, hard_floor_matches
 
 
+def _gate_governed_transition_gap_report(
+    root: Path, changed_paths: list, path_rule_matches: dict,
+    hard_floor_matches: dict, head_shas: list | None, base_shas: list | None,
+) -> list:
+    """Reject governed transitions that blob hashes cannot authorize.
+
+    A verdict's artifact hash can bind a surviving regular blob.  It cannot
+    bind the *absence* of a deleted path, a pathname move, an executable-bit
+    transition, a symlink target, or a gitlink/submodule commit.  Those
+    transitions therefore stop here, before hard-floor sign-offs or verdicts
+    are consulted.  Only a non-executable regular-file addition (100644) or a
+    same-mode regular-file content modification reaches normal review.  A new
+    100755 path is not reviewable until signed evidence binds Git status/mode,
+    rather than blob content alone.
+    """
+    governed_paths = set(path_rule_matches) | set(hard_floor_matches)
+    if not governed_paths:
+        return []
+
+    deltas = changed_paths.deltas if isinstance(changed_paths, GateChangedPaths) else None
+    if deltas is None and len(base_shas or []) == 1 and len(head_shas or []) == 1:
+        try:
+            derived = _gate_diff_paths(root, base_shas[0], head_shas[0])
+        except GateSpineError as e:
+            return [
+                "GOVERNED_TRANSITION_UNSUPPORTED: could not derive trusted raw "
+                f"PathDelta evidence ({e})"
+            ]
+        # A path-only caller must not choose a convenient subset/superset of
+        # the immutable Git range.  Ship-gate authority comes from Git, not
+        # from an agent-provided list.
+        if set(derived) != set(changed_paths):
+            return [
+                "GOVERNED_TRANSITION_UNSUPPORTED: caller-supplied changed paths "
+                "do not exactly match the immutable raw Git diff — fail-closed, "
+                "refusing path-only transition evidence"
+            ]
+        deltas = derived.deltas
+
+    if deltas is None:
+        return [
+            "GOVERNED_TRANSITION_UNSUPPORTED: governed paths have no trusted raw "
+            "PathDelta evidence (status, modes, and full object IDs are required)"
+        ]
+
+    by_path: dict[str, list] = {}
+    for delta in deltas:
+        by_path.setdefault(delta.path, []).append(delta)
+
+    reasons = []
+    for path in sorted(governed_paths):
+        path_deltas = by_path.get(path) or []
+        if not path_deltas:
+            reasons.append(
+                "GOVERNED_TRANSITION_UNSUPPORTED: "
+                f"{_gate_path_display(path)} has no trusted raw PathDelta evidence"
+            )
+            continue
+        for delta in path_deltas:
+            reviewable = (
+                delta.status == "A"
+                and delta.old_mode == "000000"
+                and delta.new_mode == _GATE_REVIEWABLE_ADDITION_MODE
+            ) or (
+                delta.status == "M"
+                and delta.old_mode == delta.new_mode
+                and delta.new_mode in _GATE_REGULAR_FILE_MODES
+            )
+            if reviewable:
+                continue
+            if (
+                delta.status == "A"
+                and delta.old_mode == "000000"
+                and delta.new_mode == "100755"
+            ):
+                reasons.append(
+                    "GOVERNED_TRANSITION_UNSUPPORTED: "
+                    f"{_gate_path_display(path)} status=A mode=000000->100755; "
+                    "governed executable-file additions are unavailable because "
+                    "the current signed verdict schema binds blob content but not "
+                    "Git status/mode"
+                )
+                continue
+            reasons.append(
+                "GOVERNED_TRANSITION_UNSUPPORTED: "
+                f"{_gate_path_display(path)} status={delta.status} "
+                f"mode={delta.old_mode}->{delta.new_mode}; current signed "
+                "evidence binds blob content but cannot bind this Git status/mode "
+                "transition. Only non-executable regular-file additions (100644) "
+                "and same-mode regular-file content modifications can proceed to "
+                "verdict/sign-off review"
+            )
+    return reasons
+
+
+def _gate_pre_commit_transition_gap_report(root: Path, changed_paths: list) -> list:
+    """Early local transition checks over the staged index.
+
+    The ship-gate remains pre-push/CI.  Pre-commit provides faster feedback
+    for two cases that should never look locally admissible: every new
+    symlink/gitlink (even outside policy) and every categorical transition of
+    a path governed by the immutable policy already committed at HEAD.  It
+    never trusts a staged/working candidate policy for that classification.
+    Regular additions/modifications remain advisory here and reach the real
+    verdict check only at pre-push/CI.
+    """
+    deltas = changed_paths.deltas if isinstance(changed_paths, GateChangedPaths) else None
+    if deltas is None:
+        return [
+            "PRE_COMMIT_TRANSITION_EVIDENCE_MISSING: staged paths have no trusted "
+            "raw PathDelta evidence — fail-closed"
+        ]
+
+    reasons = []
+    for delta in deltas:
+        if delta.status == "A" and delta.new_mode not in _GATE_REGULAR_FILE_MODES:
+            reasons.append(
+                "NONREGULAR_ADDITION_UNSUPPORTED: "
+                f"{_gate_path_display(delta.path)} status=A "
+                f"mode={delta.old_mode}->{delta.new_mode}; local pre-commit never "
+                "admits a new symlink or gitlink because blob review evidence does "
+                "not bind those semantics"
+            )
+
+    head_policy, policy_errors = _gate_load_policy_at_head_for_pre_commit(root)
+    if policy_errors:
+        reasons += [f"[head-policy] {error}" for error in policy_errors]
+        return reasons
+    if head_policy is None:
+        return reasons
+
+    path_rule_matches, hard_floor_matches = _gate_classify_paths(
+        head_policy, changed_paths,
+    )
+    reasons += _gate_governed_transition_gap_report(
+        root, changed_paths, path_rule_matches, hard_floor_matches,
+        head_shas=None, base_shas=None,
+    )
+    return reasons
+
+
 # ---------------------------------------------------------------------------
 # A3 FIX — policy self-tamper (Gate Arena finding, disclosed 2026-07-07):
 # "Deleting or weakening policy.yaml's own self-gating rule in the SAME
@@ -9601,10 +9847,9 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
 # then self-sign a "covering" verdict using material they JUST installed
 # in the SAME push. `_gate_merge_rule_restrictive` (intersects
 # allowed_verifiers so a verifier not already trusted in BOTH old and new
-# cannot satisfy a rule for this push) and `_gate_merge_verifier_keys_
-# baseline_first` (signature verification always prefers the BASELINE's
-# registered fingerprint for a verifier name the baseline already
-# registered) close this chained variant the same way.
+# cannot satisfy a rule for this push) and `_gate_verifier_keys_from_trusted_
+# baseline` (signature verification trusts only registrations already
+# present at BASE) close this chained variant and candidate-key self-bootstrap.
 # ---------------------------------------------------------------------------
 
 def _gate_git_show_at_ref(root: Path, ref: str, rel_path: str) -> str | None:
@@ -9627,7 +9872,7 @@ def _gate_git_show_at_ref(root: Path, ref: str, rel_path: str) -> str | None:
     return r.stdout
 
 
-def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
+def _gate_load_policy_at_base_with_ref(root: Path, base_shas: list) -> tuple[dict | None, str | None]:
     """The policy instance AS IT EXISTED at the push's base ref(s), i.e.
     BEFORE any commit in this push — used only to detect policy self-tamper
     (A3). Deliberately a plain structural parse (`_parse_contract_instance_
@@ -9639,15 +9884,17 @@ def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
     is to recover `rules[]` / `hard_floor_rules[]` / `verifier_keys` for
     comparison purposes.
 
-    Returns None — NOT a fail-closed condition on its own (see this
+    Returns ``(None, None)`` — NOT a fail-closed condition on its own (see this
     section's module comment above) — when no policy file existed at ANY
     given base ref (brand-new project, nothing to tamper), when none of
     `base_shas` resolve, or when the historical content fails to parse. A
-    missing/unparsable baseline can only ever leave enforcement UNCHANGED
-    from before this fix (ordinary NEW-policy-only classification), never
-    WEAKEN it — the fail-CLOSED guarantee this fix adds lives entirely in
-    what happens when a baseline IS found and DOES union in a requirement,
-    not in whether one was available to find."""
+    missing/unparsable baseline can only ever leave *policy classification*
+    unchanged from before this fix (ordinary NEW-policy-only classification),
+    never weaken it. Separately, verdict-signature trust is stricter: without
+    a readable BASE policy there is no established verifier registry or
+    public-key blob, so normal APPROVE verdicts fail closed. The union
+    guarantee here lives entirely in what happens when a baseline IS found
+    and DOES union in a requirement."""
     for base_sha in base_shas or []:
         for name in POLICY_INSTANCE_CANDIDATES:
             text = _gate_git_show_at_ref(root, base_sha, f"{POLICY_DIR}/{name}")
@@ -9658,8 +9905,127 @@ def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
             except ContractError:
                 continue
             if isinstance(instance, dict):
-                return instance
-    return None
+                return instance, base_sha
+    return None, None
+
+
+def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
+    """Compatibility wrapper for callers that only need baseline policy data.
+
+    Ship-gate signature verification needs the corresponding base object ID as
+    well, so it calls `_gate_load_policy_at_base_with_ref` directly. Keeping
+    this narrow wrapper avoids accidentally changing the historical policy
+    comparison API for independent callers/tests.
+    """
+    instance, _base_sha = _gate_load_policy_at_base_with_ref(root, base_shas)
+    return instance
+
+
+def _gate_load_policy_at_head_for_pre_commit(
+    root: Path,
+) -> tuple[dict | None, list]:
+    """Load classification policy from immutable ``HEAD`` for pre-commit.
+
+    Pre-commit is an early local diagnostic, not the delivery authority, but
+    it must still refuse an obvious staged policy-then-transition bypass.  A
+    candidate can stage a weakened policy beside a protected chmod/deletion;
+    classification therefore comes only from the already-committed HEAD tree.
+    An unborn repository has no old governed paths and returns ``(None, [])``;
+    universal non-regular-addition denial still applies separately.
+
+    This parser intentionally validates the classification shape directly
+    instead of loading the candidate checkout's schema.  A staged schema edit
+    must not decide whether the immutable HEAD policy is usable.
+    """
+    head_lookup = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+        capture_output=True, text=True,
+    )
+    if head_lookup.returncode != 0:
+        return None, []  # unborn repository: no previously governed paths
+    head = head_lookup.stdout.strip().lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", head):
+        return None, [
+            "immutable HEAD did not resolve to a full SHA-1/SHA-256 commit ID "
+            "— fail-closed"
+        ]
+
+    for name in POLICY_INSTANCE_CANDIDATES:
+        rel_path = f"{POLICY_DIR}/{name}"
+        tree_lookup = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-z", "--full-tree", head, "--", rel_path],
+            capture_output=True,
+        )
+        if tree_lookup.returncode != 0:
+            return None, [
+                f"could not inspect {rel_path} in immutable HEAD {head} — fail-closed"
+            ]
+        records = [record for record in tree_lookup.stdout.split(b"\0") if record]
+        if not records:
+            continue
+        if len(records) != 1:
+            return None, [
+                f"{rel_path} is ambiguous in immutable HEAD {head} — fail-closed"
+            ]
+        meta, separator, recorded_path = records[0].partition(b"\t")
+        fields = meta.split()
+        if (
+            not separator
+            or len(fields) != 3
+            or recorded_path.decode("utf-8", errors="surrogateescape") != rel_path
+            or fields[0] not in (b"100644", b"100755")
+            or fields[1] != b"blob"
+        ):
+            return None, [
+                f"{rel_path} is not a regular policy blob in immutable HEAD {head} "
+                "— fail-closed"
+            ]
+        blob = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", fields[2].decode("ascii")],
+            capture_output=True,
+        )
+        if blob.returncode != 0:
+            return None, [
+                f"could not read {rel_path} from immutable HEAD {head} — fail-closed"
+            ]
+        try:
+            text = blob.stdout.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return None, [
+                f"{rel_path} in immutable HEAD {head} is not valid UTF-8 — fail-closed"
+            ]
+        try:
+            instance = _parse_contract_instance_text(text, Path(name).suffix, rel_path)
+        except ContractError as e:
+            return None, [
+                f"{rel_path} in immutable HEAD {head} cannot be parsed ({e}) — fail-closed"
+            ]
+        policy = instance.get("policy") if isinstance(instance, dict) else None
+        if not isinstance(policy, dict):
+            return None, [
+                f"{rel_path} in immutable HEAD {head} has no policy mapping — fail-closed"
+            ]
+        for field in ("rules", "hard_floor_rules"):
+            rules = policy.get(field)
+            if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+                return None, [
+                    f"{rel_path} in immutable HEAD {head} has invalid policy.{field} "
+                    "classification data — fail-closed"
+                ]
+            for rule in rules:
+                globs = rule.get("globs")
+                if not isinstance(globs, list) or not all(isinstance(glob, str) for glob in globs):
+                    return None, [
+                        f"{rel_path} in immutable HEAD {head} has invalid policy.{field} "
+                        "glob data — fail-closed"
+                    ]
+                if field == "rules" and not isinstance(rule.get("require_verdict"), bool):
+                    return None, [
+                        f"{rel_path} in immutable HEAD {head} has invalid require_verdict "
+                        "classification data — fail-closed"
+                    ]
+        return instance, []
+    return None, []
 
 
 def _gate_merge_rule_restrictive(new_rule: dict, base_rule: dict) -> dict:
@@ -9739,40 +10105,167 @@ def _gate_union_baseline_matches(
             existing_ids.add(rule.get("id"))
 
 
-def _gate_merge_verifier_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
-    """An effective policy_instance for SIGNATURE VERIFICATION whose
-    `verifier_keys` prefers the BASELINE's (pre-push) registered key for
-    any verifier name the baseline already registered, falling back to the
-    NEW policy's registration only for names the baseline did NOT yet
-    register (bootstrap-friendly: a genuinely new verifier onboarded for
-    the first time in this exact push is not penalized). `rules[]` /
-    `hard_floor_rules[]` come from the UNION step elsewhere
-    (`_gate_union_baseline_matches`) — this function touches ONLY
-    verifier_keys, and only for the purpose of resolving a covering
-    verdict's signature.
+def _gate_verifier_keys_from_trusted_baseline(new_instance: dict, baseline_instance: dict | None) -> dict:
+    """Return a signature-verification policy that trusts ONLY verifier
+    registrations already present in the base ref.
 
-    Why baseline-first: `verifier_keys` lives INSIDE core/policy/
-    policy.yaml, so it is exactly as self-tamperable as any rule in the
-    same file. Without this, an attacker could swap an allowed verifier's
-    registered fingerprint for a key they control AND self-sign a
-    'covering' verdict claiming that verifier's name, all in the same
-    push — the rule-level union/intersection alone does not catch this,
-    since the forged verdict's `verifier` field is a real, allowed name;
-    only the PHYSICAL KEY behind that name changed. Requiring the
-    pre-existing key (the one nobody could have altered as part of this
-    push) closes that chained variant of the same self-tamper class.
-    Returns `new_instance` unchanged when no baseline is available (see
-    `_gate_load_policy_at_base`'s own bootstrap note)."""
-    if baseline_instance is None:
-        return new_instance
-    new_policy = (new_instance or {}).get("policy", {}) or {}
+    A candidate can add a public key and verdict in the same PR. That key is
+    candidate-supplied evidence, not a pre-established trust anchor, so it
+    can never authenticate that PR. An empty or unavailable baseline leaves
+    the effective registry empty and normal APPROVE verdicts fail closed.
+
+    `rules[]` / `hard_floor_rules[]` come from the UNION step elsewhere
+    (`_gate_union_baseline_matches`) — this function touches ONLY
+    `verifier_keys`, and only for the purpose of resolving a covering
+    verdict's signature. This is not a key-custody or recovery workflow:
+    a future user-present Trust Center can make a key effective only after
+    it is independently anchored in a prior protected revision."""
     base_policy = (baseline_instance or {}).get("policy", {}) or {}
-    merged_keys = dict(new_policy.get("verifier_keys") or {})
-    for name, entry in (base_policy.get("verifier_keys") or {}).items():
-        merged_keys[name] = entry  # baseline's registration wins for any name it already covers
+    baseline_keys = base_policy.get("verifier_keys") or {}
+    merged_keys = dict(baseline_keys) if isinstance(baseline_keys, dict) else {}
     merged = json.loads(json.dumps(new_instance))  # deep copy — never mutate the caller's dict
     merged.setdefault("policy", {})["verifier_keys"] = merged_keys
     return merged
+
+
+def _gate_git_regular_blob_at_ref(
+    root: Path, ref: str, rel_path: str,
+) -> tuple[bytes | None, str | None]:
+    """Return exact bytes for one regular blob from an immutable git tree.
+
+    This deliberately does *not* inspect ``root / rel_path``. A key file
+    present in a candidate checkout can be changed, deleted, or replaced by a
+    symlink after review; only a regular blob recorded in the same BASE tree
+    as the trusted registration is admissible. Git mode ``120000`` (symlink),
+    directories, and missing paths all fail closed with an auditable reason.
+    """
+    lookup = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-z", "--full-tree", ref, "--", rel_path],
+        capture_output=True,
+    )
+    if lookup.returncode != 0:
+        return None, (
+            f"could not read immutable BASE tree {ref!r} for registered public key "
+            f"{rel_path!r} — fail-closed"
+        )
+    records = [record for record in lookup.stdout.split(b"\0") if record]
+    if len(records) != 1:
+        return None, (
+            f"registered public key {rel_path!r} is missing or ambiguous in immutable "
+            f"BASE tree {ref!r} — fail-closed"
+        )
+    meta, separator, recorded_path = records[0].partition(b"\t")
+    fields = meta.split()
+    if (
+        not separator
+        or recorded_path.decode("utf-8", errors="surrogateescape") != rel_path
+        or len(fields) != 3
+    ):
+        return None, (
+            f"registered public key {rel_path!r} has an invalid immutable BASE-tree entry "
+            f"at {ref!r} — fail-closed"
+        )
+    mode, object_type, blob_sha = fields
+    if object_type != b"blob" or mode == b"120000":
+        return None, (
+            f"registered public key {rel_path!r} in immutable BASE tree {ref!r} is not "
+            f"a regular blob (symlinks/directories are rejected) — fail-closed"
+        )
+    blob = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "blob", blob_sha.decode("ascii")],
+        capture_output=True,
+    )
+    if blob.returncode != 0:
+        return None, (
+            f"could not read immutable BASE blob for registered public key {rel_path!r} "
+            f"at {ref!r} — fail-closed"
+        )
+    return blob.stdout, None
+
+
+def _gate_load_baseline_verifier_key_blobs(
+    root: Path, baseline_instance: dict | None, baseline_ref: str | None,
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Load each baseline verifier key's bytes from the same BASE tree.
+
+    The returned maps are passed to `_gate_verify_verdict_signature` for a
+    push/CI check. An invalid baseline registration is not silently skipped:
+    its verifier gets an explicit error and every verdict claiming it is
+    denied before GPG can accept any candidate-controlled public-key bytes.
+    """
+    if baseline_instance is None or not baseline_ref:
+        return {}, {}
+    base_policy = (baseline_instance.get("policy") or {})
+    baseline_keys = base_policy.get("verifier_keys") if isinstance(base_policy, dict) else None
+    if not isinstance(baseline_keys, dict):
+        return {}, {}
+
+    blobs: dict[str, bytes] = {}
+    errors: dict[str, str] = {}
+    for verifier, entry in baseline_keys.items():
+        if not isinstance(verifier, str):
+            continue
+        if not isinstance(entry, dict):
+            errors[verifier] = (
+                f"policy.verifier_keys[{verifier!r}] is not a mapping in immutable BASE "
+                f"policy — fail-closed"
+            )
+            continue
+        key_file, path_reason = _gate_validate_verifier_key_file_rel(
+            verifier, entry.get("public_key_file"),
+        )
+        if path_reason:
+            errors[verifier] = path_reason
+            continue
+        key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
+        if blob_reason:
+            errors[verifier] = blob_reason
+            continue
+        blobs[verifier] = key_bytes
+    return blobs, errors
+
+
+def _gate_load_baseline_signoff_key_blobs(
+    root: Path, baseline_instance: dict | None, baseline_ref: str | None,
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Load hard-floor sign-off key bytes from the same immutable BASE tree.
+
+    This is intentionally symmetric with verifier-key loading. A hard-floor
+    clearance is itself an authorization boundary, so a candidate must not be
+    able to replace a pre-registered operator's key bytes (including by
+    deleting revocation material) while retaining the same policy identity or
+    fingerprint.
+    """
+    if baseline_instance is None or not baseline_ref:
+        return {}, {}
+    base_policy = (baseline_instance.get("policy") or {})
+    baseline_keys = base_policy.get("signoff_keys") if isinstance(base_policy, dict) else None
+    if not isinstance(baseline_keys, dict):
+        return {}, {}
+
+    blobs: dict[str, bytes] = {}
+    errors: dict[str, str] = {}
+    for authorized_by, entry in baseline_keys.items():
+        if not isinstance(authorized_by, str):
+            continue
+        if not isinstance(entry, dict):
+            errors[authorized_by] = (
+                f"policy.signoff_keys[{authorized_by!r}] is not a mapping in immutable "
+                f"BASE policy — fail-closed"
+            )
+            continue
+        key_file, path_reason = _gate_validate_signoff_key_file_rel(
+            authorized_by, entry.get("public_key_file"),
+        )
+        if path_reason:
+            errors[authorized_by] = path_reason
+            continue
+        key_bytes, blob_reason = _gate_git_regular_blob_at_ref(root, baseline_ref, key_file)
+        if blob_reason:
+            errors[authorized_by] = blob_reason
+            continue
+        blobs[authorized_by] = key_bytes
+    return blobs, errors
 
 
 def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instance: dict | None) -> dict:
@@ -9786,8 +10279,10 @@ def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instanc
     inside the SAME `core/policy/policy.yaml` as `verifier_keys`, so it is
     exactly as self-tamperable — requiring the pre-existing (baseline) key
     for any name the baseline already registered closes the chained variant
-    the same way. Returns `new_instance` unchanged when no baseline is
-    available (bootstrap case, same as its verdict-signing twin)."""
+    the same way. When no baseline is available this returns the candidate
+    shape for classification compatibility, but the ship gate separately
+    supplies an empty immutable BASE-blob map, so no candidate sign-off key
+    can authenticate a hard-floor clearance."""
     if baseline_instance is None:
         return new_instance
     new_policy = (new_instance or {}).get("policy", {}) or {}
@@ -9832,7 +10327,7 @@ def _gate_merge_signoff_keys_baseline_first(new_instance: dict, baseline_instanc
 # ---------------------------------------------------------------------------
 
 def _gate_git_ls_tree(root: Path, ref: str) -> dict:
-    """rel_path -> git blob SHA-1 for every tracked, non-symlink blob at
+    """rel_path -> storage-format object ID for each tracked regular blob at
     `ref` (via `git ls-tree -r --full-tree`). Symlink entries (git mode
     120000) are EXCLUDED on purpose (LOW-1): the gate must never resolve a
     symlink to decide ship-gate coverage — a symlink's name says nothing
@@ -9841,7 +10336,14 @@ def _gate_git_ls_tree(root: Path, ref: str) -> dict:
     GateSpineError on any non-zero exit (the caller has typically already
     proven `ref` resolvable via `_gate_diff_paths`, so a failure here means
     something changed underneath the run — refuse rather than silently
-    return an empty/partial index)."""
+    return an empty/partial index).
+
+    Raw path/tree ingress retains full SHA-1 (40 hex) or SHA-256 (64 hex)
+    IDs. That does not broaden the current verdict contract: its
+    `artifact_hashes` entries remain SHA-1-only, so a governed SHA-256 blob
+    cannot receive covering approval and fails closed until a future schema
+    revision defines that migration.
+    """
     out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", ref)
     result: dict = {}
     for line in out.splitlines():
@@ -9948,6 +10450,8 @@ def _gate_find_covering_approved_verdicts(root: Path, tree_index: dict, search_d
 def _gate_path_covering_status(
     rel_path: str, rules: list, approved_verdicts: list, current_shas: set,
     root: Path, policy_instance: dict, sig_cache: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
 ):
     """Whether `rel_path` (which matched `rules`) is covered by at least one
     approved verdict, and — when it is NOT — which stage of the check it
@@ -9987,7 +10491,11 @@ def _gate_path_covering_status(
         if reason == "no-glob-match":
             reason = "unsigned"
         if verdict_rel not in sig_cache:
-            sig_cache[verdict_rel] = _gate_verify_verdict_signature(root, policy_instance, instance)
+            sig_cache[verdict_rel] = _gate_verify_verdict_signature(
+                root, policy_instance, instance,
+                trusted_verifier_key_blobs=trusted_verifier_key_blobs,
+                trusted_verifier_key_errors=trusted_verifier_key_errors,
+            )
         sig_ok, _sig_reason = sig_cache[verdict_rel]
         if not sig_ok:
             continue
@@ -10007,6 +10515,8 @@ def _gate_path_covering_status(
 def _gate_covering_gap_report(
     path_rule_matches: dict, approved_verdicts: list, tree_index: dict,
     root: Path, policy_instance: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
 ) -> list:
     reasons = []
     sig_cache: dict = {}
@@ -10015,6 +10525,7 @@ def _gate_covering_gap_report(
         current_shas = tree_index.get(rel_path) or set()
         covered, why = _gate_path_covering_status(
             rel_path, rules, approved_verdicts, current_shas, root, policy_instance, sig_cache,
+            trusted_verifier_key_blobs, trusted_verifier_key_errors,
         )
         if covered:
             continue
@@ -10088,7 +10599,11 @@ def _gate_covering_gap_report(
 # verifier's verdict alone; requires a distinct human sign-off artifact.
 # ---------------------------------------------------------------------------
 
-def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance: dict):
+def _gate_validate_signoff(
+    path: Path, rule_id: str, root: Path, policy_instance: dict,
+    trusted_signoff_key_blobs: dict[str, bytes] | None = None,
+    trusted_signoff_key_errors: dict[str, str] | None = None,
+):
     """Returns (True, 'ok') if `path` is a well-formed, AUTHENTICATED
     sign-off artifact for `rule_id`; otherwise (False, reason). Deliberately
     NOT a `tessctl validate` contract type (see policy.schema.json's
@@ -10130,7 +10645,11 @@ def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance
             f"sign-off artifact at {path} rule_id {data.get('rule_id')!r} does not match "
             f"rule '{rule_id}'"
         )
-    sig_ok, sig_reason = _gate_verify_signoff_signature(root, policy_instance, data)
+    sig_ok, sig_reason = _gate_verify_signoff_signature(
+        root, policy_instance, data,
+        trusted_signoff_key_blobs=trusted_signoff_key_blobs,
+        trusted_signoff_key_errors=trusted_signoff_key_errors,
+    )
     if not sig_ok:
         return False, (
             f"sign-off artifact at {path} failed AUTHENTICATION: {sig_reason} — "
@@ -10141,7 +10660,11 @@ def _gate_validate_signoff(path: Path, rule_id: str, root: Path, policy_instance
     return True, "ok"
 
 
-def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_instance: dict) -> list:
+def _gate_hard_floor_gap_report(
+    root: Path, hard_floor_matches: dict, policy_instance: dict,
+    trusted_signoff_key_blobs: dict[str, bytes] | None = None,
+    trusted_signoff_key_errors: dict[str, str] | None = None,
+) -> list:
     reasons = []
     rule_by_id = {}
     for rules in hard_floor_matches.values():
@@ -10151,7 +10674,10 @@ def _gate_hard_floor_gap_report(root: Path, hard_floor_matches: dict, policy_ins
     for rule_id in sorted(rule_by_id):
         rule = rule_by_id[rule_id]
         signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
-        ok, reason = _gate_validate_signoff(signoff_path, rule_id, root, policy_instance)
+        ok, reason = _gate_validate_signoff(
+            signoff_path, rule_id, root, policy_instance,
+            trusted_signoff_key_blobs, trusted_signoff_key_errors,
+        )
         if not ok:
             # A3 fix: this hard-floor rule only still applies because the
             # pre-push baseline policy required it (removed/narrowed by the
@@ -10177,7 +10703,7 @@ def _gate_run_ship_check(
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
-    reasons = [f"[contract] {v}" for v in _gate_validate_contracts(root, changed_paths)]
+    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
 
     policy_instance, policy_errors = _gate_load_policy(root)
     if policy_errors:
@@ -10195,22 +10721,44 @@ def _gate_run_ship_check(
     # ref); `_gate_load_policy_at_base` treats an empty/missing list as "no
     # baseline available," which degrades to the pre-fix, NEW-policy-only
     # behavior — never a security regression, just no additional coverage.
-    baseline_policy_instance = _gate_load_policy_at_base(root, base_shas or [])
+    baseline_policy_instance, baseline_policy_ref = _gate_load_policy_at_base_with_ref(
+        root, base_shas or [],
+    )
 
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
     if baseline_policy_instance is not None:
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
 
+    transition_reasons = _gate_governed_transition_gap_report(
+        root, changed_paths, path_rule_matches, hard_floor_matches,
+        head_shas, base_shas,
+    )
+    if transition_reasons:
+        # Categorical stop: a blob-only verdict/sign-off cannot authorize a
+        # path's deletion, type/mode transition, symlink, or gitlink state.
+        # Do not even consult those downstream artifacts for this request.
+        reasons += transition_reasons
+        return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+
     if hard_floor_matches:
         # honesty-capstone-audit-2026-07-08 §3-d (chained-variant closure,
         # same discipline as verifier_keys just above): sign-off signature
-        # verification uses a baseline-signoff_keys-first merged view — a
-        # registered sign-off authorizer's key cannot be swapped and then
-        # used to self-sign a forged 'clearance' sign-off, all in the same push.
+        # verification uses a baseline-signoff_keys-first merged view AND
+        # immutable BASE-tree key bytes — a registered sign-off authorizer's
+        # key cannot be swapped/rolled back and then used to self-sign a
+        # forged 'clearance' sign-off, all in the same push.
         effective_policy_instance_for_signoffs = _gate_merge_signoff_keys_baseline_first(
             policy_instance, baseline_policy_instance,
         )
-        reasons += _gate_hard_floor_gap_report(root, hard_floor_matches, effective_policy_instance_for_signoffs)
+        trusted_signoff_key_blobs, trusted_signoff_key_errors = (
+            _gate_load_baseline_signoff_key_blobs(
+                root, baseline_policy_instance, baseline_policy_ref,
+            )
+        )
+        reasons += _gate_hard_floor_gap_report(
+            root, hard_floor_matches, effective_policy_instance_for_signoffs,
+            trusted_signoff_key_blobs, trusted_signoff_key_errors,
+        )
 
     if path_rule_matches:
         # HIGH-1(c): covering-verdict discovery + current-content lookups
@@ -10221,27 +10769,37 @@ def _gate_run_ship_check(
         except GateSpineError as e:
             reasons.append(f"[gate] {e}")
             return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
-        # A3 fix (chained-variant closure): signature verification for a
-        # covering verdict uses a baseline-verifier_keys-first merged view
-        # — a verifier's registered key cannot be swapped and then used to
-        # self-sign the swap's own covering verdict, all in the same push.
-        effective_policy_instance = _gate_merge_verifier_keys_baseline_first(policy_instance, baseline_policy_instance)
+        # Signature verification trusts only verifier registrations present
+        # at BASE. Candidate-added keys cannot authorize their own PR; with
+        # an empty baseline registry, normal APPROVE remains impossible.
+        effective_policy_instance = _gate_verifier_keys_from_trusted_baseline(
+            policy_instance, baseline_policy_instance,
+        )
+        trusted_verifier_key_blobs, trusted_verifier_key_errors = (
+            _gate_load_baseline_verifier_key_blobs(
+                root, baseline_policy_instance, baseline_policy_ref,
+            )
+        )
         approved = _gate_find_covering_approved_verdicts(root, tree_index, verdict_dirs)
-        reasons += _gate_covering_gap_report(path_rule_matches, approved, tree_index, root, effective_policy_instance)
+        reasons += _gate_covering_gap_report(
+            path_rule_matches, approved, tree_index, root, effective_policy_instance,
+            trusted_verifier_key_blobs, trusted_verifier_key_errors,
+        )
 
     return {"blocked": bool(reasons), "reasons": reasons, "changed_paths": changed_paths}
 
 
 def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
+    safe = _safe_gate_result(result, phase=phase)
     if as_json:
-        print(json.dumps({"phase": phase, **result}, indent=2))
+        print(json.dumps(safe, indent=2))
         return
-    status = "BLOCKED" if result["blocked"] else "PASS"
+    status = "BLOCKED" if safe["blocked"] else "PASS"
     print(f"tessctl gate {phase} — {status}")
-    print(f"  changed paths: {len(result['changed_paths'])}")
-    for reason in result["reasons"]:
+    print(f"  changed paths: {safe['changed_paths_count']}")
+    for reason in safe["reasons"]:
         print(f"    - {reason}")
-    if result["blocked"]:
+    if safe["blocked"]:
         print(
             "  refusing (fail-closed) — see README.md 'tessctl gate', "
             "conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6"
@@ -10267,12 +10825,18 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
         sys.exit(1)
 
     violations = _gate_validate_contracts(root, changed)
-    result = {"blocked": bool(violations), "reasons": [f"[contract] {v}" for v in violations], "changed_paths": changed}
+    transition_reasons = _gate_pre_commit_transition_gap_report(root, changed)
+    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in violations] + transition_reasons
+    result = {
+        "blocked": bool(reasons),
+        "reasons": reasons,
+        "changed_paths": changed,
+    }
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-commit",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
         duration_s=time.perf_counter() - _trace_t0, changed_paths=changed,
-        violations_count=len(violations), reasons=result["reasons"],
+        violations_count=len(reasons), reasons=result["reasons"],
     )
     _gate_print_result("pre-commit", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
@@ -10832,10 +11396,10 @@ def cmd_gate(args, root: Path) -> None:
 # `TRACE_EVENT_SCHEMA` below (validated with the SAME generic `schema_validate()`
 # engine core/contracts/*.schema.json already use — no new contract-type file
 # added to core/contracts/**, since a trace event is engine telemetry, not a
-# fifth mission contract). Location: `missions/<id>/trace.jsonl` when a
-# mission id can be inferred from the paths the gate/validate call actually
-# touched (the same `missions/<id>/...` convention `core/contracts/README.md`
-# and `GATE_CONTRACT_PATH_PATTERNS` already use); otherwise a per-run
+# fifth mission contract). Location: `missions/mission-<opaque-id>/trace.jsonl`
+# when a mission id can be inferred from paths the gate/validate call actually
+# touched; the opaque id preserves grouping without retaining the authored
+# mission name. Otherwise a per-run
 # fallback at `.tess/trace/runs/<run_id>.jsonl` (local runtime state, same
 # bucket as `.tess/snapshots/**` / `.tess/staging/**` — gitignored, never
 # core-managed, never touched by the manifest write-gate).
@@ -10939,7 +11503,9 @@ def _trace_rel_or_str(root: Path, path: Path) -> str:
 
 
 def _trace_capped_reasons(reasons) -> list:
-    reasons = [str(r) for r in (reasons or [])]
+    # Trace storage/export is an external decision boundary.  Store only the
+    # stable projections, never raw Git/GPG/schema/path diagnostics.
+    reasons = [_safe_decision_reason(r) for r in (reasons or [])]
     if len(reasons) > TRACE_MAX_REASONS:
         overflow = len(reasons) - TRACE_MAX_REASONS
         return reasons[:TRACE_MAX_REASONS] + [f"...and {overflow} more (truncated for the trace log)"]
@@ -10973,9 +11539,48 @@ def _trace_build_event(*, phase: str, action: str, outcome: str, exit_code: int,
     }
 
 
+def _trace_safe_mission_id(mission_id: str | None) -> str | None:
+    """Stable opaque trace grouping key; mission ids are authored input."""
+    if not mission_id:
+        return None
+    if isinstance(mission_id, str) and re.fullmatch(r"mission-[0-9a-f]{16}", mission_id):
+        return mission_id
+    return "mission-" + hashlib.sha256(mission_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _trace_safe_subject(subject: object) -> dict:
+    """Projection for both new and legacy trace events before persistence/export."""
+    source = subject if isinstance(subject, dict) else {}
+    safe: dict = {}
+    if source.get("file") is not None:
+        safe["file_kind"] = "out-of-tree-file" if str(source["file"]).startswith("<out-of-tree>") else "repository-file"
+    contract_type = source.get("contract_type")
+    if contract_type in CONTRACT_SCHEMAS:
+        safe["contract_type"] = contract_type
+    count = source.get("changed_paths_count")
+    if isinstance(count, int) and count >= 0:
+        safe["changed_paths_count"] = count
+    return safe
+
+
+def _trace_safe_event(event: dict) -> dict:
+    """Apply the confidential trace schema projection to an event copy."""
+    safe = dict(event)
+    safe["mission_id"] = _trace_safe_mission_id(event.get("mission_id"))
+    safe["subject"] = _trace_safe_subject(event.get("subject"))
+    safe["reasons"] = _trace_capped_reasons(event.get("reasons"))
+    safe_counts = {}
+    for key, value in (event.get("counts") or {}).items():
+        if isinstance(key, str) and isinstance(value, int) and value >= 0:
+            safe_counts[key] = value
+    safe["counts"] = safe_counts
+    return safe
+
+
 def _trace_append_event(root: Path, event: dict) -> Path:
     """Schema-validate (fail loud on OUR OWN bug — see TraceError) then
     append one JSONL line, local file only. Returns the path written."""
+    event = _trace_safe_event(event)
     violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
     if violations:
         raise TraceError(f"tessctl trace: refusing to write a schema-invalid trace event: {violations}")
@@ -11017,10 +11622,10 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
     call-graph shape a purely-Exception-rooted guard signal used to miss."""
     try:
         mission_paths = list(changed_paths) if changed_paths is not None else ([file_path] if file_path else [])
-        mission_id = _trace_infer_mission_id(mission_paths)
+        mission_id = _trace_safe_mission_id(_trace_infer_mission_id(mission_paths))
         subject: dict = {}
         if file_path is not None:
-            subject["file"] = file_path
+            subject["file"] = _trace_rel_or_str(root, Path(file_path))
         if contract_type is not None:
             subject["contract_type"] = contract_type
         if changed_paths is not None:
@@ -11036,11 +11641,11 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
             subject=subject, counts=counts, reasons=reasons,
         )
         _trace_append_event(root, event)
-    except Exception as e:  # best-effort observability, scoped to Exception —
+    except Exception:  # best-effort observability, scoped to Exception —
                              # NOT BaseException — on purpose; see the
                              # "Guard-defeat hardening" note in this
                              # function's docstring before touching this line.
-        print(f"tessctl trace: WARNING — could not record trace event ({e}); continuing (non-fatal)", file=sys.stderr)
+        print("tessctl trace: WARNING — TRACE_RECORDING_FAILED; continuing (non-fatal)", file=sys.stderr)
 
 
 def _trace_discover_jsonl_files(root: Path, mission_id: str | None = None) -> list:
@@ -11049,7 +11654,7 @@ def _trace_discover_jsonl_files(root: Path, mission_id: str | None = None) -> li
     `missions/*/trace.jsonl` PLUS every per-run fallback file under
     `.tess/trace/runs/` — sorted for deterministic export ordering."""
     if mission_id:
-        p = root / "missions" / mission_id / "trace.jsonl"
+        p = root / "missions" / _trace_safe_mission_id(mission_id) / "trace.jsonl"
         return [p] if p.exists() else []
     found = []
     missions_dir = root / "missions"
@@ -11144,6 +11749,9 @@ def _otlp_attr(key: str, value) -> dict:
 
 
 def _trace_event_to_otlp_span(event: dict) -> dict:
+    # Existing v1 JSONL can predate the confidential projection.  Re-project
+    # on export so legacy on-disk diagnostics cannot cross an OTLP boundary.
+    event = _trace_safe_event(event)
     run_id = event.get("run_id", "")
     event_id = event.get("event_id", "")
     trace_id = _trace_hex_id(f"tess-trace:{run_id}", 16)
@@ -11246,17 +11854,17 @@ def _cmd_trace_export(args, root: Path) -> None:
     events, skipped = [], []
     for jp in jsonl_paths:
         if not jp.exists():
-            skipped.append(f"{jp}: file not found")
+            skipped.append("TRACE_INPUT_SKIPPED")
             continue
         for lineno, line in _trace_iter_jsonl_lines(jp):
             try:
                 event = json.loads(line)
-            except json.JSONDecodeError as e:
-                skipped.append(f"{jp}:{lineno}: unparsable JSON ({e})")
+            except json.JSONDecodeError:
+                skipped.append("TRACE_INPUT_SKIPPED")
                 continue
             violations = schema_validate(event, TRACE_EVENT_SCHEMA, TRACE_EVENT_SCHEMA, root)
             if violations:
-                skipped.append(f"{jp}:{lineno}: schema-invalid ({'; '.join(violations)})")
+                skipped.append("TRACE_INPUT_SKIPPED")
                 continue
             events.append(event)
 
@@ -11270,7 +11878,7 @@ def _cmd_trace_export(args, root: Path) -> None:
             out_path = Path.cwd() / out_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output + "\n", encoding="utf-8")
-        print(f"tessctl trace export: wrote {len(events)} span(s) ({len(skipped)} skipped) to {out_path}")
+        print(f"tessctl trace export: wrote {len(events)} span(s) ({len(skipped)} skipped)")
     else:
         print(output)
 
@@ -11954,6 +12562,30 @@ def _normalize_brief_for_compare(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _brief_commitment(brief_text: str) -> tuple[str, int]:
+    """Value-free commitment used by retry-ledger v2.
+
+    The comparison semantics remain exactly the pre-v2 whitespace-normalized
+    comparison.  Only the normalized UTF-8 bytes are committed; neither the
+    supplied dispatch brief nor a free-text summary is persisted.
+    """
+    normalized_bytes = _normalize_brief_for_compare(brief_text).encode("utf-8")
+    return hashlib.sha256(normalized_bytes).hexdigest(), len(normalized_bytes)
+
+
+def _retry_record_commitment(record: dict) -> tuple[tuple[str, int] | None, str | None]:
+    """Return a v2 commitment or a stable fail-closed ledger condition."""
+    if "brief_text" in record:
+        return None, "RETRY_LEDGER_MIGRATION_REQUIRED"
+    digest = record.get("brief_digest_sha256")
+    length = record.get("brief_length")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None, "RETRY_LEDGER_INVALID"
+    if not isinstance(length, int) or length < 0:
+        return None, "RETRY_LEDGER_INVALID"
+    return (digest, length), None
+
+
 def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_text):
     """Returns (allowed: bool, next_attempt: int, reason: str). Pure/
     read-only — shared by BOTH `retry check` (report-only) and `retry log`
@@ -11986,16 +12618,25 @@ def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_te
             f"(subagent-failure-protocol.md 'Attempt Cap — 3')."
         )
 
-    if brief_text is not None and cause != "transient" and attempts:
-        normalized_new = _normalize_brief_for_compare(brief_text)
+    if attempts:
+        prior_commitments = []
         for prior_n in attempts:
             prior_path = _retry_attempt_path(root, mission_id, task, prior_n)
             try:
                 prior_record = load_contract_instance(prior_path)
-            except ContractError as e:
-                return False, next_attempt, f"could not read prior attempt {prior_path}: {e}"
-            prior_brief = _normalize_brief_for_compare(str(prior_record.get("brief_text", "")))
-            if prior_brief == normalized_new:
+            except ContractError:
+                return False, next_attempt, "RETRY_LEDGER_INVALID"
+            commitment, ledger_error = _retry_record_commitment(prior_record)
+            if ledger_error:
+                return False, next_attempt, ledger_error
+            prior_commitments.append((prior_n, commitment))
+    else:
+        prior_commitments = []
+
+    if brief_text is not None and cause != "transient" and prior_commitments:
+        new_commitment = _brief_commitment(brief_text)
+        for prior_n, prior_commitment in prior_commitments:
+            if prior_commitment == new_commitment:
                 return False, next_attempt, (
                     f"same-brief retry forbidden for cause {cause!r} — attempt "
                     f"{next_attempt}'s brief (after whitespace normalization) is a literal "
@@ -12006,6 +12647,105 @@ def _retry_precheck(root: Path, mission_id: str, task: str, cause: str, brief_te
                 )
 
     return True, next_attempt, "allowed"
+
+
+def _retry_fsync_directory(directory: Path) -> None:
+    """Persist an in-place retry-record replacement before advancing."""
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _retry_migrate_legacy(root: Path, mission_id: str, *, apply: bool) -> tuple[int, bool]:
+    """Opt-in, resumable migration from plaintext retry records to v2.
+
+    Every candidate is parsed and its v2 replacement schema/lint-validated
+    before the first write.  Application then upgrades one record at a time:
+    a v2-only sibling temp file is fsynced, atomically replaced over its
+    source record, and the retry directory is fsynced.  A crash can therefore
+    leave a v1/v2 mixture, never a moved plaintext backup; normal retry checks
+    fail closed on the remaining v1 record and re-running migration safely
+    upgrades only those records.
+    """
+    source = _retry_dir(root, mission_id)
+    if not source.exists():
+        return 0, False
+    source_entries = sorted(source.iterdir())
+    # Do not silently delete or copy unexpected data.  The empty mission
+    # scaffold marker is the one documented non-record entry.
+    if any(
+        not p.is_file()
+        or (p.suffix != ".md" and (p.name != ".gitkeep" or p.read_bytes() != b""))
+        for p in source_entries
+    ):
+        raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+
+    schema = load_contract_schema(root, "retry")
+    replacements: list[tuple[Path, dict, int]] = []
+    legacy_count = 0
+    for path in (p for p in source_entries if p.suffix == ".md"):
+        try:
+            record = load_contract_instance(path)
+            source_mode = path.stat().st_mode & 0o777
+        except ContractError as e:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+        except OSError as e:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+        if "brief_text" in record:
+            if not isinstance(record.get("brief_text"), str):
+                raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+            digest, length = _brief_commitment(record["brief_text"])
+            candidate = {
+                key: value for key, value in record.items()
+                if key not in {"brief_text", "brief_change_note"}
+            }
+            candidate.update({
+                "brief_digest_sha256": digest,
+                "brief_length": length,
+                "brief_change_code": "migrated-legacy",
+            })
+            legacy_count += 1
+            replacements.append((path, candidate, source_mode))
+        else:
+            _commitment, ledger_error = _retry_record_commitment(record)
+            candidate = record
+            if ledger_error:
+                raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+        violations = schema_validate(candidate, schema, schema, root / CONTRACTS_DIR)
+        violations += _lint_contract("retry", candidate)
+        if violations:
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED")
+
+    if not apply or legacy_count == 0:
+        return legacy_count, False
+
+    for path, candidate, source_mode in replacements:
+        temp = path.parent / f".{path.name}.v2-{uuid.uuid4().hex}.tmp"
+        _assert_under_missions(root, temp)
+        try:
+            with open(temp, "x", encoding="utf-8") as replacement:
+                replacement.write(
+                    "---\n" + yaml.safe_dump(candidate, sort_keys=False)
+                    + "---\n\n# Retry attempt (v2)\n"
+                )
+                replacement.flush()
+                # Keep the source record's permission boundary through the
+                # atomic replacement.  The process umask must never widen a
+                # previously restrictive retry record (for example 0600).
+                os.fchmod(replacement.fileno(), source_mode)
+                os.fsync(replacement.fileno())
+            os.replace(temp, path)
+            _retry_fsync_directory(path.parent)
+        except Exception as e:
+            try:
+                if temp.exists():
+                    temp.unlink()
+            except OSError:
+                pass
+            raise MissionError("RETRY_LEDGER_MIGRATION_REFUSED") from e
+    return legacy_count, True
 
 
 def _read_brief_text(path_str: str) -> str:
@@ -12024,8 +12764,10 @@ def cmd_retry(args, root: Path) -> None:
             _cmd_retry_log(args, root)
         elif sub == "check":
             _cmd_retry_check(args, root)
+        elif sub == "migrate":
+            _cmd_retry_migrate(args, root)
         else:
-            sys.exit("tessctl retry: choose a subcommand — log | check")
+            sys.exit("tessctl retry: choose a subcommand — log | check | migrate")
     except MissionError as e:
         sys.exit(str(e))
 
@@ -12062,6 +12804,8 @@ def _cmd_retry_log(args, root: Path) -> None:
     cause = args.cause
 
     _read_mission_record(root, mission_id)  # confirms the mission exists; raises MissionError otherwise
+    if getattr(args, "note", None):
+        sys.exit("tessctl retry log: RETRY_NOTE_NOT_PERSISTED")
     brief_text = _read_brief_text(args.brief)
 
     allowed, next_attempt, reason = _retry_precheck(root, mission_id, task, cause, brief_text)
@@ -12074,13 +12818,12 @@ def _cmd_retry_log(args, root: Path) -> None:
         "attempt": next_attempt,
         "failure_state": args.failure_state,
         "cause_class": cause,
-        "brief_text": brief_text,
+        "brief_digest_sha256": _brief_commitment(brief_text)[0],
+        "brief_length": _brief_commitment(brief_text)[1],
+        "brief_change_code": "initial" if next_attempt == 1 else "changed-brief",
         "logged_at": _utc_now_iso(),
         "logged_by": getattr(args, "by", None) or getpass.getuser(),
     }
-    if getattr(args, "note", None):
-        attempt_record["brief_change_note"] = args.note
-
     path = _retry_attempt_path(root, mission_id, task, next_attempt)
     _assert_under_missions(root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -12107,6 +12850,15 @@ def _cmd_retry_log(args, root: Path) -> None:
             f"  ** this was the final permitted attempt ({RETRY_ATTEMPT_CAP}) — a 4th will be "
             f"BLOCKED. If it fails again, escalate to the operator with the full per-attempt log."
         )
+
+
+def _cmd_retry_migrate(args, root: Path) -> None:
+    _read_mission_record(root, args.mission)
+    legacy_count, applied = _retry_migrate_legacy(root, args.mission, apply=bool(args.apply))
+    if applied:
+        print(f"tessctl retry migrate: migrated {legacy_count} legacy record(s) to v2")
+    else:
+        print(f"tessctl retry migrate: dry-run — {legacy_count} legacy record(s) would migrate; pass --apply")
 
 
 # ===========================================================================
@@ -12933,9 +13685,9 @@ def _run_check_return_manifest_artifacts_exist_under_root(root: Path, contract_t
 
 def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
     """HIGH-1(b) FIX (Fable adversarial review, BLOCK finding — 'pre-planted
-    verdict FORGES verification'): applies the EXACT SAME signed-verdict
-    trust model `tessctl gate` already enforces (`_gate_verify_verdict_
-    signature` against `policy.verifier_keys`) INSIDE `run`'s own loop. Prior
+    verdict FORGES verification'): applies the same local signed-verdict
+    primitive `tessctl gate` uses (`_gate_verify_verdict_signature` against
+    `policy.verifier_keys`) INSIDE `run`'s own loop. Prior
     to this fix, a verdict artifact only had to be schema/lint-valid to
     satisfy a mandatory verifier dispatch — an unsigned, wrong-key, or
     tampered verdict passed just as easily as a genuine one, because
@@ -12949,9 +13701,12 @@ def _run_check_verdict_signature(root: Path, instance: dict) -> tuple:
     to check against, so let it through' branch. This is the correct,
     honestly-documented outcome of fail-closed-by-design, not a bug: a
     project that wants `tessctl run`'s mandatory verification to ever
-    produce a passing result must register at least one verifier's key in
-    `core/policy/policy.yaml` (`tessctl verdict keygen` automates exactly
-    that onboarding step)."""
+    produce a passing result must have a locally registered verifier key.
+    `run` receives no immutable push BASE, so this is an execution-time
+    diagnostic, not ship-gate authorization and not evidence that a candidate
+    could not bootstrap trust. Only `tessctl gate` binds registration metadata
+    and public-key bytes to the immutable BASE tree before authorizing a
+    protected change."""
     policy_instance, policy_errors = _gate_load_policy(root)
     if policy_errors:
         return False, (
@@ -13212,7 +13967,7 @@ def _run_attempt_summaries(root: Path, mission_id: str, task_id: str) -> list:
             continue
         out.append({
             "attempt": rec.get("attempt"), "failure_state": rec.get("failure_state"),
-            "cause_class": rec.get("cause_class"), "brief_change_note": rec.get("brief_change_note"),
+            "cause_class": rec.get("cause_class"), "brief_change_code": rec.get("brief_change_code"),
         })
     return sorted(out, key=lambda r: r.get("attempt") or 0)
 
@@ -13245,11 +14000,12 @@ def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, f
     attempt_record = {
         "mission_id": mission_id, "task": task, "attempt": next_attempt,
         "failure_state": failure_state, "cause_class": cause,
-        "brief_text": brief_text, "logged_at": _utc_now_iso(),
+        "brief_digest_sha256": _brief_commitment(brief_text)[0],
+        "brief_length": _brief_commitment(brief_text)[1],
+        "brief_change_code": "initial" if next_attempt == 1 else "changed-brief",
+        "logged_at": _utc_now_iso(),
         "logged_by": by or getpass.getuser(),
     }
-    if note:
-        attempt_record["brief_change_note"] = note
 
     path = _retry_attempt_path(root, mission_id, task, next_attempt)
     _run_assert_contained(root, path, what=f"write retry attempt for task {task!r}")  # HIGH-3
@@ -13269,11 +14025,85 @@ def _run_log_retry_attempt(root: Path, mission_id: str, task: str, cause: str, f
     return True, path
 
 
+def _run_opaque_label(value: object, prefix: str) -> str:
+    """Return a stable label without persisting the supplied value.
+
+    Escalation records are durable, operator-readable audit artifacts.  A
+    driver, Git, or GPG error must not turn them into an archival channel for
+    artifact paths, hashes, identities, or command output.  The label lets an
+    operator correlate two values without retaining either value itself.
+    """
+    try:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        canonical = repr(type(value))
+    digest = hashlib.sha256(canonical.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"{prefix}-{digest}"
+
+
+def _run_safe_escalation_details(details: object) -> dict:
+    """Project untrusted run diagnostics to codes, counts, and opaque labels.
+
+    ``details`` may contain raw validator violations, a full verdict object,
+    tool diagnostics, or artifact metadata.  This function is deliberately
+    allowlist-only: unknown keys disappear rather than becoming a new
+    persistence sink.  It is the sole path from retry/verifier runtime
+    details into escalation front matter or Markdown.
+    """
+    if not isinstance(details, dict):
+        return {}
+
+    safe: dict[str, object] = {}
+    attempts = details.get("attempts")
+    if isinstance(attempts, list):
+        safe_attempts = []
+        for item in attempts:
+            if not isinstance(item, dict):
+                continue
+            safe_attempts.append({
+                "attempt": item.get("attempt") if isinstance(item.get("attempt"), int) else 0,
+                "failure_state_code": _run_safe_retry_code(item.get("failure_state")),
+                "cause_class_code": _run_safe_retry_code(item.get("cause_class")),
+                "brief_change_code": _run_safe_retry_code(item.get("brief_change_code")),
+            })
+        safe["attempt_count"] = len(safe_attempts)
+        safe["attempts"] = safe_attempts
+
+    violations = details.get("last_violations")
+    if isinstance(violations, list):
+        safe["last_violation_count"] = len(violations)
+        safe["last_violation_codes"] = sorted({_decision_reason_code(v) for v in violations})
+
+    verdict = details.get("verdict")
+    if isinstance(verdict, dict):
+        disposition = verdict.get("disposition")
+        safe["verdict_code"] = "VERDICT_BLOCK" if disposition == "BLOCK" else "VERDICT_ARTIFACT_REDACTED"
+        if verdict.get("verifier") is not None:
+            safe["verdict_verifier_label"] = _run_opaque_label(verdict.get("verifier"), "verifier")
+
+    for source_key, safe_key in (
+        ("expected_verifier", "expected_verifier_label"),
+        ("actual_verifier", "actual_verifier_label"),
+    ):
+        if details.get(source_key) is not None:
+            safe[safe_key] = _run_opaque_label(details[source_key], "verifier")
+
+    return safe
+
+
+def _run_safe_retry_code(value: object) -> str:
+    """Keep retry enums useful while refusing arbitrary persisted strings."""
+    text = str(value or "")
+    allowed = {
+        "degraded", "empty", "failed", "blocked", "transient", "context-gap",
+        "initial", "changed-brief",
+    }
+    return text if text in allowed else "RETRY_VALUE_REDACTED"
+
+
 def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str, details: dict, *, by=None) -> Path:
-    """Writes missions/<id>/escalations/<task_id>.<reason>[-N].md — the
-    full per-attempt analysis subagent-failure-protocol.md's Attempt Cap
-    section requires ("Escalate to the operator with the full per-attempt
-    analysis log") — and flips the mission record's own `state` to
+    """Writes missions/<id>/escalations/<task_id>.<reason>[-N].md with a
+    projected per-attempt analysis and flips the mission record's own `state` to
     'code-red' (mission-states.md's EXISTING FSM state for exactly this
     situation; NO mission.schema.json change needed — 'code-red' is already
     one of the eleven values mission.schema.json's `state` enum accepts).
@@ -13298,34 +14128,52 @@ def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str
         path = d / f"{task_id}.{reason}-{n}.md"
         _run_assert_contained(root, path, what=f"write escalation for task {task_id!r}")  # HIGH-3
 
+    safe_details = _run_safe_escalation_details(details)
     record = {
-        "mission_id": mission_id, "task": task_id, "reason": reason,
-        "halted_at": _utc_now_iso(), "halted_by": by,
+        "mission_label": _run_opaque_label(mission_id, "mission"),
+        "task_label": _run_opaque_label(task_id, "task"),
+        "reason_code": reason,
+        "halted_at": _utc_now_iso(),
+        "halted_by_label": _run_opaque_label(by, "actor"),
+        **safe_details,
     }
-    record.update(details)
     fm_text = yaml.safe_dump(record, sort_keys=False, default_flow_style=False)
 
     lines = [
-        f"# Escalation — task `{task_id}` — mission `{mission_id}`", "",
-        f"**Reason:** {reason}", "",
+        f"# Escalation — {record['task_label']} — {record['mission_label']}", "",
+        f"**Reason code:** {reason}", "",
         "Per conductor/subagent-failure-protocol.md's Attempt Cap section: STOP; do not "
         "dispatch again without the operator's direction.", "",
     ]
-    attempts = details.get("attempts")
+    attempts = safe_details.get("attempts")
     if attempts:
         lines.append("## Per-attempt analysis")
         for a in attempts:
             lines.append(
-                f"- attempt {a.get('attempt')}: failure_state={a.get('failure_state')}, "
-                f"cause_class={a.get('cause_class')}"
-                + (f" — {a.get('brief_change_note')}" if a.get("brief_change_note") else "")
+                f"- attempt {a.get('attempt')}: failure_state_code={a.get('failure_state_code')}, "
+                f"cause_class_code={a.get('cause_class_code')}, "
+                f"brief_change_code={a.get('brief_change_code')}"
             )
         lines.append("")
-    verdict = details.get("verdict")
-    if verdict:
+    if safe_details.get("last_violation_codes"):
+        lines.append("## Last validation result")
+        lines.append(
+            f"- violations: {safe_details.get('last_violation_count', 0)} "
+            f"({', '.join(safe_details.get('last_violation_codes', []))})"
+        )
+        lines.append("")
+    if safe_details.get("verdict_code"):
         lines.append("## Blocking verdict")
-        lines.append(f"- verifier: {verdict.get('verifier')}  ·  disposition: {verdict.get('disposition')}")
-        lines.append(f"- summary: {verdict.get('summary_line')}")
+        lines.append(f"- verdict_code: {safe_details['verdict_code']}")
+        if safe_details.get("verdict_verifier_label"):
+            lines.append(f"- verifier_label: {safe_details['verdict_verifier_label']}")
+        lines.append("")
+    if safe_details.get("expected_verifier_label") or safe_details.get("actual_verifier_label"):
+        lines.append("## Verifier routing")
+        if safe_details.get("expected_verifier_label"):
+            lines.append(f"- expected_verifier_label: {safe_details['expected_verifier_label']}")
+        if safe_details.get("actual_verifier_label"):
+            lines.append(f"- actual_verifier_label: {safe_details['actual_verifier_label']}")
         lines.append("")
     body = "\n".join(lines)
     path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
@@ -13449,6 +14297,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
         if not logged_ok:
             esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
                 "attempts": _run_attempt_summaries(root, mission_id, task_id),
+                "last_violations": violations,
             }, by=by)
             return {
                 "status": "halted", "instance": None, "attempts": attempt_num,
@@ -13461,6 +14310,7 @@ def _run_dispatch_with_retry(root: Path, mission_id: str, task_id: str, initial_
         if not allowed2:
             esc = _run_write_escalation(root, mission_id, task_id, "retry_cap_exhausted", {
                 "attempts": _run_attempt_summaries(root, mission_id, task_id),
+                "last_violations": violations,
             }, by=by)
             return {
                 "status": "halted", "instance": None, "attempts": attempt_num,
@@ -13526,6 +14376,7 @@ def _run_execute_task(root: Path, mission_id: str, task: dict, driver: DispatchD
             esc = _run_write_escalation(root, mission_id, verify_task_id, "verifier_identity_mismatch", {
                 "verdict": v_outcome["instance"],
                 "expected_verifier": verifier.get("agent"),
+                "actual_verifier": verdict_verifier,
             }, by=by)
             return {
                 "task_id": task_id, "status": "halted", "attempts": outcome["attempts"],
@@ -13828,15 +14679,30 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
     `tessctl gate pre-push` / `tessctl gate ci`: calls _gate_run_ship_check()
     directly (GATE region above) rather than re-deriving its logic, so the
     verdict returned here is provably identical to what a push/CI run of
-    those paths at `head` would get. Given an explicit set of paths (the
-    caller — e.g. an in-session agent — already knows which paths it
-    touched, so no git-diff derivation happens here) plus a `head` ref/sha
-    to resolve committed-verdict coverage against (mirrors `gate pre-push
-    --base/--head` / `gate ci --base/--head`'s head_shas=[head]; defaults
-    to the current HEAD commit if omitted)."""
+    those paths at `head` would get. The caller supplies a claimed path set,
+    but authority comes from the same byte-safe raw Git diff used by CLI/CI;
+    an incomplete or invented list is denied. `base` is mandatory: the gate
+    must never silently evaluate a candidate policy/key registry without the
+    prior trusted tree that binds verifier registrations and public-key
+    bytes. `head` defaults to current HEAD when omitted."""
     paths = arguments.get("paths")
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `paths` (non-empty array of strings) is required")
+    base = arguments.get("base")
+    # A branch/tag/ref is mutable and cannot be the immutable trust boundary
+    # for a ship-gate answer. Accept both SHA-1 and SHA-256 full object IDs as
+    # raw ref ingress only; the current verdict artifact_hashes schema remains
+    # SHA-1-only and therefore cannot approve a governed SHA-256 blob.
+    if not isinstance(base, str) or not re.fullmatch(r"[0-9A-Fa-f]{40}(?:[0-9A-Fa-f]{24})?", base):
+        return _safe_gate_result({
+            "blocked": True,
+            "reasons": [
+                "BASE_REQUIRED: gate_check_paths requires an explicit immutable base "
+                "commit ID (a full 40- or 64-hex SHA); it never falls back to "
+                "candidate policy, verifier registrations, or public-key files"
+            ],
+            "changed_paths": [],
+        })
     head = arguments.get("head")
     if head is not None and not isinstance(head, str):
         raise McpError(JSONRPC_INVALID_PARAMS, "gate_check_paths: `head`, if given, must be a string ref/sha")
@@ -13850,14 +14716,32 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
         try:
             head = _gate_run_git(root, "rev-parse", "HEAD").strip()
         except GateSpineError as e:
-            return {"blocked": True, "reasons": [str(e)], "changed_paths": paths, "head": None}
+            return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
 
     try:
-        result = _gate_run_ship_check(root, paths, verdict_dirs, [head])
+        authoritative_paths = _gate_diff_paths(root, base, head)
     except GateSpineError as e:
-        return {"blocked": True, "reasons": [str(e)], "changed_paths": paths, "head": head}
-    result["head"] = head
-    return result
+        return _safe_gate_result({"blocked": True, "reasons": [str(e)], "changed_paths": paths})
+    if len(paths) != len(set(paths)) or set(paths) != set(authoritative_paths):
+        return _safe_gate_result({
+            "blocked": True,
+            "reasons": [
+                "PATH_SET_MISMATCH: gate_check_paths caller-supplied paths do not "
+                "exactly match the immutable byte-safe raw Git diff; Git is the "
+                "authority for ship-gate path ingress"
+            ],
+            "changed_paths": authoritative_paths,
+        })
+    try:
+        result = _gate_run_ship_check(
+            root, authoritative_paths, verdict_dirs, [head], [base],
+        )
+    except GateSpineError as e:
+        return _safe_gate_result({
+            "blocked": True, "reasons": [str(e)],
+            "changed_paths": authoritative_paths,
+        })
+    return _safe_gate_result(result)
 
 
 def _mcp_tool_mission_status(root: Path, arguments: dict) -> dict:
@@ -13946,8 +14830,9 @@ MCP_TOOLS = {
             "Run the gate's verdict-coverage ship-check for an explicit set of paths — the "
             "SAME decision engine `tessctl gate pre-push` / `tessctl gate ci` use "
             "(_gate_run_ship_check), so the result is identical to what a push of those paths "
-            "at `head` would get. Moves gate enforcement IN-SESSION: check before you ever "
-            "commit or push."
+            "at `head` against an immutable `base` commit would get. `base` is mandatory: "
+            "the tool refuses candidate-trust fallback. Moves gate enforcement IN-SESSION: "
+            "check before you ever commit or push."
         ),
         "inputSchema": {
             "type": "object",
@@ -13956,6 +14841,10 @@ MCP_TOOLS = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Repo-relative paths to check.",
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Required immutable base commit ID: full 40- or 64-hex SHA only; mutable refs are rejected.",
                 },
                 "head": {
                     "type": "string",
@@ -13967,7 +14856,7 @@ MCP_TOOLS = {
                     "description": "Restrict covering-verdict discovery to these directories (default: whole tree).",
                 },
             },
-            "required": ["paths"],
+            "required": ["paths", "base"],
         },
         "fn": _mcp_tool_gate_check_paths,
     },
@@ -14063,11 +14952,11 @@ def _mcp_handle_request(root: Path, req: dict):
                 result = _mcp_call_tool(root, tool_name, arguments)
             except McpError as e:
                 return err(e.code, str(e), e.data)
-            except Exception as e:  # noqa: BLE001 — deliberate boundary: an exception raised
+            except Exception:  # noqa: BLE001 — deliberate boundary: an exception raised
                 # INSIDE a tool's own execution is a business-logic/runtime failure, which the
                 # MCP spec's "Tool Execution Errors" require be reported as `isError: true` in
                 # the tools/call RESULT, never as a JSON-RPC protocol error.
-                return ok({"content": [{"type": "text", "text": f"{tool_name}: {e}"}], "isError": True})
+                return ok({"content": [{"type": "text", "text": "TOOL_EXECUTION_FAILED"}], "isError": True})
             return ok({
                 "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
                 "structuredContent": result,
@@ -14091,12 +14980,12 @@ def _mcp_handle_message(root: Path, req) -> dict | None:
         }
     try:
         return _mcp_handle_request(root, req)
-    except Exception as e:  # noqa: BLE001 — see docstring: this is the last-resort catch-all.
+    except Exception:  # noqa: BLE001 — see docstring: this is the last-resort catch-all.
         if "id" not in req:
             return None  # was a notification — still no response, even on our own bug
         return {
             "jsonrpc": "2.0", "id": req.get("id"),
-            "error": {"code": JSONRPC_INTERNAL_ERROR, "message": f"Internal error: {e}"},
+            "error": {"code": JSONRPC_INTERNAL_ERROR, "message": "INTERNAL_ERROR_REDACTED"},
         }
 
 
@@ -14136,10 +15025,10 @@ def _mcp_serve(root: Path, in_stream=None, out_stream=None) -> None:
 
         try:
             req = json.loads(line)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             resp = {
                 "jsonrpc": "2.0", "id": None,
-                "error": {"code": JSONRPC_PARSE_ERROR, "message": f"Parse error: {e}"},
+                "error": {"code": JSONRPC_PARSE_ERROR, "message": "PARSE_ERROR"},
             }
             out_stream.write(json.dumps(resp) + "\n")
             out_stream.flush()
@@ -14482,29 +15371,26 @@ def build_parser() -> argparse.ArgumentParser:
     # verdict — Phase 2b verdict-signing key management
     p_verdict = sub.add_parser(
         "verdict",
-        help="verdict signing key management: generate a verifier key, sign a verdict, "
+        help="verdict signing: key bootstrap is disabled; sign with an existing verifier key "
              "or verify a signed verdict (Phase 2b)",
     )
     verdict_sub = p_verdict.add_subparsers(dest="verdict_sub", metavar="SUBCOMMAND")
 
     p_verdict_keygen = verdict_sub.add_parser(
         "keygen",
-        help="turnkey onboarding: generate a local GPG identity for a named verifier, "
-             "export its public key, and register it in core/policy/policy.yaml",
+        help="disabled: self-service verifier bootstrap is not permitted",
     )
     p_verdict_keygen.add_argument(
-        "--verifier", required=True, metavar="NAME",
-        help="the verifier to generate a key for (one of: Reid, Quinn, Cyra, Verity, Maialen, Lysandra)",
+        "--verifier", metavar="NAME",
+        help="deprecated and ignored: this command always returns the same trust-bootstrap refusal",
     )
     p_verdict_keygen.add_argument(
         "--force", action="store_true",
-        help="generate a NEW keypair and REPLACE any existing public key file / policy registration "
-             "for this verifier (key rotation) — refused without this flag if either already exists",
+        help="deprecated and ignored: key bootstrap and rotation need a user-present custody design",
     )
     p_verdict_keygen.add_argument(
         "--gnupg-home", metavar="PATH",
-        help="generate the identity in this GNUPGHOME instead of the ambient/default gpg keyring "
-             "(mainly for testing; created with 0700 perms if missing)",
+        help="deprecated and ignored: this command never invokes GPG",
     )
 
     p_verdict_sign = verdict_sub.add_parser(
@@ -14711,7 +15597,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to a text file holding this attempt's dispatch-brief content "
              "(compared LITERALLY against the prior attempt's brief)",
     )
-    p_retry_log.add_argument("--note", help="free-text note on what the brief changed (optional)")
+    p_retry_log.add_argument("--note", help="deprecated and refused: retry records never persist free-text notes")
     p_retry_log.add_argument("--by", help="override the recorded logger (default: current OS user)")
 
     p_retry_check = retry_sub.add_parser(
@@ -14729,6 +15615,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="proposed brief file for the next attempt (required together with --cause)",
     )
     p_retry_check.add_argument("--json", action="store_true", dest="json_out")
+
+    p_retry_migrate = retry_sub.add_parser(
+        "migrate",
+        help="dry-run or explicitly migrate legacy plaintext retry records to commitment-only v2",
+    )
+    p_retry_migrate.add_argument("--mission", required=True, metavar="ID", help="mission id")
+    p_retry_migrate.add_argument(
+        "--apply", action="store_true",
+        help="perform resumable v2 migration with atomic per-record replacement; omitted means dry-run",
+    )
 
     # run — Goal #6: the mechanical conductor loop
     p_run = sub.add_parser(
@@ -14792,6 +15688,11 @@ def main() -> None:
         "verdict":     ["gpg"],            # sign (detach-sign) / verify (isolated GNUPGHOME)
     }
     tools_needed = _TOOL_REQUIREMENTS.get(args.command, [])
+    if args.command == "verdict" and getattr(args, "verdict_sub", None) == "keygen":
+        # This subcommand is a refusal-only compatibility surface. Check no
+        # external tool first so every environment gets the same explicit
+        # TRUST_BOOTSTRAP_REQUIRED state without invoking or requiring GPG.
+        tools_needed = []
     if tools_needed:
         _check_tools(*tools_needed)
 

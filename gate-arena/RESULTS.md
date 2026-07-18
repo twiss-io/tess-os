@@ -5,6 +5,28 @@ Committed to `goal-gate-arena`, built per
 Read `PRE_REGISTERED_CAVEAT.md` — committed before any Layer B result
 existed — for the binding rules this write-up follows.
 
+## Addendum (2026-07-17) — A13 path ingress, measured separately
+
+The path-only diff ingress used by the ship-gate could not represent deletion,
+rename-away, executable-bit, symlink, or gitlink/submodule semantics. A
+separate no-key regression corpus now exercises a strict NUL-delimited raw Git
+parser and categorical governed-transition denial across the local staged
+diagnostic, explicit-ref ship-check, pre-push stdin, installed local hook,
+locally invoked CI phase, and MCP entrypoints. It accepts SHA-256 only at raw
+Git ingress; the current SHA-1-only approval schema is tested to fail closed for
+a governed SHA-256 blob.
+
+**Result: 48/48 tests passed; 0 failures, 0 errors, 0 skips.** Full artifacts:
+`results/path-ingress-scorecard.md` / `.json`. This run performed no key
+generation, registration, verdict/sign-off signing, or trust bootstrap.
+
+This is deliberately not rewritten as “60/60”: the historical A1-A12 corpus
+and the A13 path-ingress regression have different fixtures and trust
+preconditions. Both records remain separate, and neither proves
+unbypassability. A14 remains an open policy/topology decision.
+Pre-push ref deletion denial does not change or adopt A14's multi-ref/multi-push
+semantics.
+
 ## Addendum (2026-07-08, honesty-capstone-audit-2026-07-08) — reconciled to 12/12
 
 **Superseded by the fixes below; original 8/10 write-up preserved

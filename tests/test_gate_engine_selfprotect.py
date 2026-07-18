@@ -211,7 +211,11 @@ def test_same_push_engine_tamper_slips_past_naive_execution_but_not_the_real_wor
         f"REGRESSION: the real committed .github/workflows/tess-gate.yml's own "
         f"trusted-engine steps did not block a same-push engine tamper — {trusted_out}"
     )
-    assert ".tess/bin/tessctl" in trusted_out
+    # Public gate output is deliberately redacted: the trusted BASE engine
+    # still blocks its candidate-tree replacement, but does not disclose the
+    # protected path through the CI log.
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in trusted_out
+    assert ".tess/bin/tessctl" not in trusted_out
 
 
 def test_unmodified_engine_and_ordinary_payload_still_correctly_evaluated(real_engine_root):
@@ -276,4 +280,5 @@ def test_editing_the_engine_with_no_covering_verdict_is_blocked_end_to_end(real_
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(".tess/bin/tessctl" in reason for reason in payload["reasons"])
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in payload["reasons"]
+    assert ".tess/bin/tessctl" not in json.dumps(payload)
