@@ -244,7 +244,7 @@ def test_ci_blocks_prod_touching_change_with_no_verdict(gate_repo, run_cli):
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("src/prod/app.py" in reason and "no covering APPROVE verdict" in reason for reason in payload["reasons"])
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in payload["reasons"]
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ def test_pre_commit_blocks_schema_invalid_staged_brief(gate_repo, run_cli):
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("missions/m1/briefs/task1.brief.md" in reason for reason in payload["reasons"])
+    assert "CONTRACT_INVALID: a governed contract is invalid" in payload["reasons"]
 
 
 def test_pre_commit_passes_valid_staged_brief(gate_repo, run_cli):
@@ -418,7 +418,7 @@ def test_ci_blocks_schema_invalid_committed_verdict(gate_repo, run_cli):
     r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
     assert r.returncode == 1
     payload = json.loads(r.stdout)
-    assert any("[contract]" in reason and "broken.verdict.json" in reason for reason in payload["reasons"])
+    assert "CONTRACT_INVALID: a governed contract is invalid" in payload["reasons"]
 
 
 # ---------------------------------------------------------------------------
@@ -468,25 +468,55 @@ def test_infer_contract_type_by_convention(engine):
     assert engine._gate_infer_contract_type("src/prod/app.py") is None
 
 
+def test_gate_contract_validation_rejects_external_return_manifest_artifact(engine, gate_repo):
+    """Changed return manifests cannot cite an existing external host file."""
+    manifest_path = gate_repo / "missions" / "m1" / "returns" / "task.return.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        "task_id": "task",
+        "mission_id": "m1",
+        "agent": "test-agent",
+        "status": "complete",
+        "self_reported_complete": True,
+        "artifacts": [{"path": "/etc/hosts", "description": "external host file"}],
+        "claims": [{"claim": "done", "evidence": "none", "inferred": False}],
+        "flags": [],
+    }), encoding="utf-8")
+
+    violations = engine._gate_validate_contracts(
+        gate_repo, ["missions/m1/returns/task.return.json"]
+    )
+
+    assert violations
+    assert any("absolute" in violation for violation in violations)
+
+
 # ---------------------------------------------------------------------------
 # Hard floor: never satisfiable by a verdict alone; needs a sign-off artifact
 # ---------------------------------------------------------------------------
 
-def test_ci_blocks_hard_floor_match_even_with_covering_approve_verdict(gate_repo, run_cli):
+def test_ci_blocks_hard_floor_match_even_with_covering_signed_approve_verdict(
+    gate_repo, run_cli, engine, verifier_gpg_keys,
+):
     base = _base_sha(gate_repo)
     (gate_repo / "payments").mkdir(parents=True)
     (gate_repo / "payments" / "charge.py").write_text("refund()\n")
     # Even a perfectly valid, covering APPROVE verdict must NOT clear a hard floor.
     _write_verdict(
         gate_repo, "missions/m1/verdicts/payments.verdict.md",
-        _valid_verdict(covers_paths=["payments/**"]),
+        _valid_verdict(
+            covers_paths=["payments/**"],
+            artifact_hashes={"payments/charge.py": _blob_sha(gate_repo, "payments/charge.py")},
+            engine=engine,
+            keys=verifier_gpg_keys,
+        ),
     )
     head = _commit_all(gate_repo, "payments change + APPROVE verdict (should not matter)")
 
     r = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
     assert r.returncode == 1
     payload = json.loads(r.stdout)
-    assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_ci_allows_hard_floor_match_with_valid_signed_signoff_artifact(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -535,10 +565,7 @@ def test_ci_blocks_hard_floor_match_with_unsigned_forged_signoff_artifact(gate_r
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "HARD FLOOR" in reason and "money_movement" in reason and "AUTHENTICATION" in reason
-        for reason in payload["reasons"]
-    )
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_ci_blocks_hard_floor_match_with_hand_faked_signature_signoff(gate_repo, run_cli):
@@ -572,7 +599,7 @@ def test_ci_blocks_hard_floor_match_with_hand_faked_signature_signoff(gate_repo,
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_ci_blocks_hard_floor_match_with_wrong_key_signoff_signature(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -596,7 +623,7 @@ def test_ci_blocks_hard_floor_match_with_wrong_key_signoff_signature(gate_repo, 
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("HARD FLOOR" in reason and "money_movement" in reason for reason in payload["reasons"])
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -617,10 +644,7 @@ def test_ci_blocks_hard_floor_match_with_tampered_after_signing_signoff(gate_rep
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "HARD FLOOR" in reason and "tampered" in reason
-        for reason in payload["reasons"]
-    )
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_ci_blocks_hard_floor_match_with_unregistered_signoff_authorizer(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -640,10 +664,7 @@ def test_ci_blocks_hard_floor_match_with_unregistered_signoff_authorizer(gate_re
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "HARD FLOOR" in reason and "no registered public key" in reason
-        for reason in payload["reasons"]
-    )
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
@@ -689,7 +710,7 @@ def test_ci_fails_closed_when_policy_file_missing(gate_repo, run_cli):
     assert r.returncode == 1
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("no policy instance found" in reason for reason in payload["reasons"])
+    assert "POLICY_INVALID: the effective policy is invalid" in payload["reasons"]
 
 
 def test_ci_fails_closed_when_policy_file_is_invalid(gate_repo, run_cli):
@@ -725,12 +746,15 @@ def test_pre_push_stdin_protocol_blocks(gate_repo, run_cli):
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
     head = _commit_all(gate_repo, "prod change")
 
-    stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
+    # Exercise the content-policy path against a real immutable remote base.
+    # All-zero first-push rejection is covered independently and must stop at
+    # REMOTE_BASE_REQUIRED before content evaluation.
+    stdin = f"refs/heads/main {head} refs/heads/main {base}\n"
     r = run_cli(gate_repo, "gate", "pre-push", "--json", input_text=stdin)
     assert r.returncode == 1
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("src/prod/app.py" in reason for reason in payload["reasons"])
+    assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in payload["reasons"]
 
 
 def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -738,6 +762,7 @@ def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli
     verdict check exactly like explicit --base/--head does — proven
     independently since _gate_changed_paths_from_stdin's return shape
     changed (HIGH-1(c)) to also surface the pushed head sha(s)."""
+    base = _base_sha(gate_repo)
     (gate_repo / "src" / "prod").mkdir(parents=True)
     (gate_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
     blob = _blob_sha(gate_repo, "src/prod/app.py")
@@ -750,7 +775,10 @@ def test_pre_push_stdin_protocol_allows_with_covering_verdict(gate_repo, run_cli
     )
     head = _commit_all(gate_repo, "prod change + covering verdict")
 
-    stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
+    # The allow path must name the actual remote/base commit.  An all-zero
+    # remote SHA is a first-push boundary: it deliberately has no established
+    # verifier registration or public-key bytes and therefore fails closed.
+    stdin = f"refs/heads/main {head} refs/heads/main {base}\n"
     r = run_cli(gate_repo, "gate", "pre-push", "--json", input_text=stdin)
     assert r.returncode == 0, r.stdout + r.stderr
     payload = json.loads(r.stdout)
@@ -762,7 +790,7 @@ def test_pre_push_requires_both_base_and_head_or_neither(gate_repo, run_cli):
     assert r.returncode == 1
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("--base and --head must both be given" in reason for reason in payload["reasons"])
+    assert "GATE_INPUT_INVALID: gate invocation input is invalid" in payload["reasons"]
 
 
 # ---------------------------------------------------------------------------
@@ -808,10 +836,7 @@ def test_covering_verdict_only_clears_its_reviewed_content_not_a_later_edit(gate
     assert r2.returncode == 1, r2.stdout + r2.stderr
     payload = json.loads(r2.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and "does not record THIS path's CURRENT content" in reason
-        for reason in payload["reasons"]
-    )
+    assert "VERDICT_CONTENT_STALE: a covering verdict is not bound to current content" in payload["reasons"]
 
 
 def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -841,7 +866,7 @@ def test_covering_verdict_does_not_cover_a_brand_new_file_under_the_same_glob(ga
     assert r2.returncode == 1, r2.stdout + r2.stderr
     payload = json.loads(r2.stdout)
     assert payload["blocked"] is True
-    assert any("src/prod/new_module.py" in reason for reason in payload["reasons"])
+    assert "VERDICT_CONTENT_STALE: a covering verdict is not bound to current content" in payload["reasons"]
 
 
 # (ii) master-key rejection ----------------------------------------------------
@@ -909,10 +934,7 @@ def test_allowed_verifiers_is_enforced_wrong_domain_verifier_does_not_clear(gate
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any(
-        "src/prod/app.py" in reason and "allowed verifier" in reason
-        for reason in payload["reasons"]
-    )
+    assert "VERIFIER_NOT_ALLOWED: no covering verdict is from an allowed verifier" in payload["reasons"]
 
     # Sanity: the identical change, reviewed by the rule's ACTUAL allowed
     # verifier (Reid), signed with Reid's own key, clears it.
@@ -975,7 +997,7 @@ def test_glob_fix_gates_a_real_root_level_env_file(gate_repo, run_cli):
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    assert any("HARD FLOOR" in reason and "credentials" in reason for reason in payload["reasons"])
+    assert "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid" in payload["reasons"]
 
 
 # (v) uncommitted pre-push verdict does not clear ------------------------------

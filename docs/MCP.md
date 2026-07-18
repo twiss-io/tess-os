@@ -137,24 +137,51 @@ schema-invalid contract is `valid: false`, not a protocol error).
 
 ### `gate_check_paths`
 
-Runs the **same decision engine** as `tessctl gate pre-push` / `tessctl gate
-ci` — it calls `_gate_run_ship_check()` directly, the exact shared function
-both of those CLI subcommands call. Given an explicit set of paths (the
-caller already knows what it touched — no git-diff derivation happens
-inside this tool) and a `head` ref/sha to resolve committed-verdict coverage
-against.
+Provides a **diagnostic preview only**. It calls the shared ship evaluator
+after validating the supplied commit range, but an MCP caller cannot establish
+CI-event or Git pre-push remote provenance. Its top-level result is always
+`authoritative: false`, `blocked: true`, with `MCP_DIAGNOSTIC_ONLY` as the
+first reason. Never use this tool's result to authorize a merge, release,
+deployment, or publish.
+
+The caller provides a claimed path set. The tool independently derives the
+same authoritative NUL-delimited raw Git diff used by CLI/CI, including status,
+modes, and full object IDs. A duplicate, omitted, or invented caller path adds
+`PATH_SET_MISMATCH` to the blocked diagnostic result; path-only agent input is
+never admission authority.
+
+Full 40- or 64-hex IDs are accepted here only as immutable raw Git ingress.
+The current `verdict.artifact_hashes` contract remains SHA-1-only (40 hex), so
+this tool cannot turn a governed SHA-256 blob into an approvable change; it
+fails closed until a future schema migration explicitly defines that support.
+
+`base` is not optional. `base` and `head` must resolve to distinct full
+40- or 64-hex **commit objects**, and `base` must be the exact merge-base and
+a proper ancestor of `head`. Trees, blobs, missing objects, same/reversed
+ranges, unrelated histories, branch names, tags, and other mutable refs are
+rejected before the shared evaluator runs. If `head` is omitted, the tool
+resolves the current `HEAD` to a full commit ID and applies the same checks.
+The evaluator reads verifier-registration metadata and public-key bytes from
+the BASE tree; it never falls back to candidate policy, candidate key files,
+or the working tree as a trust anchor.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `paths` | string[] | yes | repo-relative paths to check |
-| `head` | string | no | git ref/sha; defaults to current `HEAD` |
+| `paths` | string[] | yes | claimed repo-relative paths; must exactly equal the immutable raw Git diff |
+| `base` | string | yes | immutable full 40- or 64-hex base commit ID; mutable refs are rejected |
+| `head` | string | no | immutable full 40- or 64-hex commit ID; defaults to resolved current `HEAD` |
 | `verdict_dirs` | string[] | no | restrict covering-verdict discovery to these directories |
 
-Result: `{blocked, reasons[], changed_paths[], head}` — identical shape (plus
-the resolved `head`) to `tessctl gate pre-push --base X --head Y --json`'s
-`result` for the same `changed_paths`/`head`. See `tests/test_mcp_serve.py`
-for the equivalence proof against a real fixture repo (BLOCKED and ALLOWED
-cases).
+For a valid range, the result is
+`{authoritative:false, blocked:true, diagnostic_would_block, reasons[],
+changed_paths[], base, head}`. `diagnostic_would_block` reports what the
+shared evaluator observed, but it is informational only: both `true` and
+`false` still produce a blocked MCP result. Invalid ranges and path-set
+mismatches omit that field because evaluation never began.
+`tests/test_mcp_serve.py` exercises the real stdio boundary in would-block,
+would-allow, path substitution, missing-base, same-range, tree, blob,
+reversed, and nonexistent-object directions without creating a verifier key
+or verdict.
 
 ### `mission_status`
 
@@ -204,11 +231,12 @@ No arguments. Result: `{installed[], staged[], installed_count, staged_count}`.
 ## What's genuinely working vs. v1 scope
 
 Working, tested over real stdio pipes: the `initialize` → `tools/list` →
-`tools/call` round trip; all four tools; `gate_check_paths`'s equivalence to
-`gate pre-push`/`gate ci`, proven against a real git+GPG fixture in both the
-BLOCKED and ALLOWED-with-covering-verdict directions; JSON-RPC error paths
-(bad method, bad params, malformed JSON); the Claude Code `.mcp.json`
-snippet, smoke-tested by spawning the server exactly as that config would.
+`tools/call` round trip; all four tools; `gate_check_paths`'s diagnostic-only
+boundary, including proof that a shared-evaluator would-allow result remains
+non-authoritative and blocked plus fail-closed invalid-range tests; JSON-RPC
+error paths (bad method, bad params, malformed JSON); the Claude Code
+`.mcp.json` snippet, smoke-tested by spawning the server exactly as that
+config would.
 
 Not built (deliberately out of v1 scope):
 

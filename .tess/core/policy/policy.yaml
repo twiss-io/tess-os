@@ -39,7 +39,7 @@
 # committer-authored plain files with no cryptographic signature). A covering
 # verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
 # that verifies against the SAME-named entry in `verifier_keys` below — see
-# conductor/verdict-signing.md for the full trust model and onboarding steps.
+# docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md for the fail-closed trust boundary.
 # `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
 # added to tess-os-security-tier-doctrine's globs below: tampering with the key
 # registry is exactly as consequential as tampering with policy.yaml itself,
@@ -96,6 +96,113 @@
 policy:
   version: 1
 
+  # Immutable renderer admission inventory. Bootstrap truth: this inventory
+  # is NOT authority for the PR that first introduces it because that PR's
+  # BASE does not contain it. The first adoption remains owner-controlled and
+  # NO-MERGE. Once committed, only this BASE copy — never candidate policy or
+  # candidate lock rows — defines renderer families, canonical lock mappings,
+  # and generated outputs for the next admission decision.
+  renderer_admission:
+    version: 1
+    rule_id: tess-os-renderer-base-admission
+    lock_file: .tess/tess.lock
+    registry_file: .tess/bin/tessctl
+    target_config_files:
+      - tess.manifest.json
+    family_globs:
+      - .tess/core/templates/CLAUDE.md.tpl
+      - .tess/core/templates/claude-md/**
+      - .tess/core/settings-core.json
+      - .tess/core/conductor/identity.md
+      - .tess/core/conductor/personality.md
+      - .tess/core/templates/client/_template/CLAUDE.md
+      - .tess/core/templates/agents-md/**
+      - .tess/core/commands/**
+    mappings:
+      - input_glob: .tess/core/templates/CLAUDE.md.tpl
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: template
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/claude-md/*.md
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: fragment
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/settings-core.json
+        lock_live_glob: .claude/settings.json
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: rendered
+        projections:
+          - {output_glob: .claude/settings.json, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/identity.md
+        lock_live_glob: conductor/identity.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/identity.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/personality.md
+        lock_live_glob: conductor/personality.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/personality.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/client/_template/CLAUDE.md
+        lock_live_glob: clients/_template/CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: clients/_template/CLAUDE.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/AGENTS.md.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/*.md
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 3
+      - input_glob: .tess/core/templates/agents-md/codex-config.toml.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .codex/config.toml, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/commands/*.md
+        lock_live_glob: .claude/commands/*.md
+        lock_name_binding: true
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .claude/commands/*.md, mode: source-copy}
+          - {output_glob: .codex/prompts/*.md, mode: engine-render}
+          - {output_glob: prompts/*.md, mode: engine-render}
+        min_matches: 1
+
   rules:
     - id: tess-os-security-tier-doctrine
       description: >-
@@ -107,6 +214,7 @@ policy:
         core/contracts/verdict.schema.json), and the gate's own policy surface
         (core/contracts/policy.schema.json, core/policy/**, the verifier
         public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
+        immutable-BASE CI dependency lock at .tess/ci/**, plus the
         gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
         self-gating trap where a PR could keep the required check name while
         neutering its step), PLUS — honesty-capstone-audit-2026-07-08 §3-c/
@@ -127,10 +235,44 @@ policy:
         - core/contracts/policy.schema.json
         - core/policy/**
         - .tess/keys/verifiers/**
+        - .tess/ci/**
         - .github/workflows/**
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+      classification: [prod_touching]
+      require_verdict: true
+      allowed_verifiers: [Reid, Cyra]
+
+    - id: tess-os-renderer-base-admission
+      description: >-
+        Immutable-BASE renderer admission surface. The committed BASE policy
+        inventory, BASE lock rows, BASE engine registry, and BASE source blobs
+        define required renderer ownership. Candidate policy/lock bytes may
+        prove a coherent upgrade but cannot delete, remap, downgrade, or
+        re-hash that authority to approve their own generated doctrine.
+      globs:
+        - .tess/tess.lock
+        - .tess/bin/tessctl
+        - tess.manifest.json
+        - .tess/core/templates/CLAUDE.md.tpl
+        - .tess/core/templates/claude-md/**
+        - .tess/core/settings-core.json
+        - .tess/core/conductor/identity.md
+        - .tess/core/conductor/personality.md
+        - .tess/core/templates/client/_template/CLAUDE.md
+        - .tess/core/templates/agents-md/**
+        - .tess/core/commands/**
+        - CLAUDE.md
+        - .claude/settings.json
+        - conductor/identity.md
+        - conductor/personality.md
+        - clients/_template/CLAUDE.md
+        - AGENTS.md
+        - .codex/config.toml
+        - .claude/commands/*.md
+        - .codex/prompts/*.md
+        - prompts/*.md
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
@@ -168,27 +310,13 @@ policy:
   #   consequence of shipping verdict signing without also fabricating a
   #   throwaway "Reid" identity that could be mistaken for a real trust anchor.
   #
-  # To onboard a real verifier (see conductor/verdict-signing.md for the full
-  # walkthrough):
-  #   1. The verifier generates their own GPG keypair (private key stays in
-  #      THEIR custody only — never committed, never shared — same posture
-  #      release-process.md already documents for the release signing key).
-  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
-  #      .tess/keys/verifiers/<name-lowercase>.asc` and commit that file.
-  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
-  #      .tess/keys/verifiers/<name-lowercase>.asc}.
-  #   4. The verifier signs their own verdicts going forward with
-  #      `tessctl verdict sign <file> --verifier <Name> --key-id <fingerprint>`.
-  #
-  # Example shape (commented out — replace with a REAL registered key, never
-  # ship a placeholder fingerprint that would silently "verify" nothing):
-  #   verifier_keys:
-  #     Reid:
-  #       fingerprint: "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000"
-  #       public_key_file: .tess/keys/verifiers/reid.asc
-  #     Cyra:
-  #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
-  #       public_key_file: .tess/keys/verifiers/cyra.asc
+  # Trust-anchor registration is deliberately NOT a self-service policy edit,
+  # key-generation command, lockfile re-pin, or candidate-pull-request step.
+  # An unreviewed candidate cannot establish the authority that clears its
+  # own gate. The first anchor, recovery, rotation, and any user-facing Trust
+  # Center are Xavier-owned, user-present custody decisions; until that design
+  # exists, `TRUST_BOOTSTRAP_REQUIRED` is the correct outcome. See
+  # docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md.
   verifier_keys: {}
 
   # signoff_keys — honesty-capstone-audit-2026-07-08 §3-d FIX's ALLOWED-KEY
@@ -217,24 +345,14 @@ policy:
   #   verifier_keys: {} already documents above, applied to the sign-off
   #   escape valve.
   #
-  # To onboard a real sign-off authorizer (same walkthrough as verifier
-  # onboarding, conductor/verdict-signing.md — mirror it for sign-offs):
-  #   1. The operator generates their own GPG keypair (private key stays in
-  #      THEIR custody only — never committed, never shared).
-  #   2. Export the PUBLIC half: `gpg --export --armor <fingerprint> >
-  #      .tess/keys/signoffs/<name-lowercase>.asc` and commit that file.
-  #   3. Add an entry below: <Name>: {fingerprint: <40-hex>, public_key_file:
-  #      .tess/keys/signoffs/<name-lowercase>.asc}.
-  #   4. The operator signs their own sign-off artifacts with
-  #      `tessctl gate signoff sign <file> --key-id <fingerprint>`, then sets
-  #      that same <Name> as the artifact's own `authorized_by` field.
-  #
-  # Example shape (commented out — replace with a REAL registered key, never
-  # ship a placeholder fingerprint that would silently "verify" nothing):
-  #   signoff_keys:
-  #     Xavier:
-  #       fingerprint: "CCCC2222CCCC2222CCCC2222CCCC2222CCCC2222"
-  #       public_key_file: .tess/keys/signoffs/xavier.asc
+  # Sign-off authority has the same boundary: it is not created through a
+  # candidate change, manual policy edit, key-generation command, or lockfile
+  # re-pin. During a ship-gate run, both an established registration and its
+  # public-key bytes come from the immutable base revision, never candidate
+  # checkout bytes. A future user-present custody design must define
+  # registration, recovery, and rotation before a sign-off key can become
+  # effective. Until then, a hard floor remains intentionally unsatisfiable
+  # rather than silently accepting a self-issued clearance.
   signoff_keys: {}
 
   hard_floor_rules:
@@ -253,7 +371,7 @@ policy:
         must now ALSO carry a signature that verifies against a registered
         key in signoff_keys below — an unsigned/hand-authored/forged
         sign-off can no longer clear this floor (see signoff_keys' own
-        comment for the onboarding walkthrough).
+        custody-boundary comment).
       globs:
         - "**/*.env"
         - "**/*.env.*"

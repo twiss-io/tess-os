@@ -1,0 +1,260 @@
+{
+  "schema": 1,
+  "corpus": "A13-path-ingress-no-key",
+  "measured_at": "2026-07-17T08:23:30.563015Z",
+  "command": "python3 -m pytest -q tests/test_gate_path_ingress.py tests/test_gate_type_swaps.py",
+  "engine_sha256": "29cc8f2984e7597fb8529d6475dd8031c6c9c527201b15dc7444439004c99476",
+  "trust_operations": {
+    "key_generation": false,
+    "key_registration": false,
+    "verdict_signing": false,
+    "signoff_signing": false
+  },
+  "total": 48,
+  "passed": 48,
+  "failed": 0,
+  "errors": 0,
+  "skipped": 0,
+  "cases": [
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_accepts_full_sha1_and_sha256_object_ids[40]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_accepts_full_sha1_and_sha256_object_ids[64]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 100644 0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa A\\x00core/policy/fixtures/file.txt-40-not NUL-terminated]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:malformed\\x00path\\x00-40-malformed raw Git diff header]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 100644 0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa R100\\x00core/policy/fixtures/file.txt\\x00-40-unexpected raw Git diff status]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa A\\x00core/policy/fixtures/file.txt\\x00-40-absence markers disagree]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 100644 0000000000000000000000000000000000000000 0000000000000000000000000000000000000000 A\\x00core/policy/fixtures/file.txt\\x00-40-absence markers disagree]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 040000 0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa A\\x00core/policy/fixtures/file.txt\\x00-40-unsupported mode transition]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_malformed_status_mode_and_oid_tuples[:000000 100644 0000000000000000000000000000000000000000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa A\\x00core/policy/fixtures/file.txt\\x00-40-malformed raw Git diff header]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_duplicate_and_uxb_records_and_filter_captures_them",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_noncanonical_paths[/absolute]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_noncanonical_paths[a/../b]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_noncanonical_paths[a//b]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_noncanonical_paths[./a]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_accepts_control_characters_and_nfc_unicode",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_raw_parser_rejects_nfd_and_non_utf8_paths",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_nonexecutable_addition_reaches_normal_review",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_executable_addition_is_unavailable_without_mode_bound_evidence",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_same_mode_regular_modification_reaches_normal_review",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_deletion_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_rename_away_is_deletion_plus_addition_and_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_0644_to_0755_after_review_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_regular_to_symlink_type_change_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_new_symlink_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_new_gitlink_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_governed_regular_to_gitlink_type_change_is_categorical",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_git_hostile_but_valid_paths_are_unambiguous_and_json_safe[core/policy/fixtures/line\\nbreak.txt]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_git_hostile_but_valid_paths_are_unambiguous_and_json_safe[core/policy/fixtures/tab\\tname.txt]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_git_hostile_but_valid_paths_are_unambiguous_and_json_safe[core/policy/fixtures/caf\\xe9.txt]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_git_nfd_path_fails_closed_before_policy_matching",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_git_non_utf8_path_fails_closed_before_policy_matching",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_real_sha256_repo_ingress_is_full_width_but_approval_schema_fails_closed",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_pre_push_stdin_uses_raw_delta_and_blocks_deletion",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_pre_push_stdin_rejects_malformed_ref_update_record",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_pre_push_stdin_validates_sha256_repository_width",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_staged_ingress_retains_deletion_metadata_and_rejects_real_conflict",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_installed_pre_push_hook_uses_same_raw_transition_denial",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_mcp_gate_derives_raw_diff_and_rejects_claimed_subset",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_path_ingress::test_ship_check_rejects_governed_path_only_evidence",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_protected_guardrails_type_swap_is_categorically_blocked_before_verdict[ci]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_protected_guardrails_type_swap_is_categorically_blocked_before_verdict[pre-push]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_combined_policy_and_guardrails_type_swaps_are_both_blocked_without_verdict[ci]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_combined_policy_and_guardrails_type_swaps_are_both_blocked_without_verdict[pre-push]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_ordinary_protected_edit_remains_blocked_without_verdict[ci]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_ordinary_protected_edit_remains_blocked_without_verdict[pre-push]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict[ci]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_ungoverned_type_swap_is_reported_but_does_not_require_a_verdict[pre-push]",
+      "status": "passed",
+      "detail": null
+    },
+    {
+      "id": "tests.test_gate_type_swaps::test_staged_protected_type_swap_is_discovered_by_the_staged_diff_ingress",
+      "status": "passed",
+      "detail": null
+    }
+  ]
+}

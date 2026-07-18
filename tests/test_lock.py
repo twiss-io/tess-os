@@ -65,12 +65,10 @@ def test_lock_regen_refused_without_yes_noninteractive(project, run_cli):
 # lock --regen --only <path> — surgical re-baseline. Scopes the re-baseline
 # to a named entry instead of blessing the whole tree, so a reviewed fix to
 # ONE file never silently blesses unrelated, unreviewed drift elsewhere in
-# core. Added independently by two goals that both needed it: Ada's
-# dispatch-guard.sh headless-fix task (2026-07-07), and `tessctl verdict
-# keygen` (which needs to re-pin the ONE core file it just touched without
-# blessing any OTHER file's unrelated drift/tamper as a side effect — see
-# `_lock_regen_core` in .tess/bin/tessctl and tests/test_verdict_keygen.py).
-# Reconciled onto one shared implementation at merge time.
+# core. It was added for Ada's dispatch-guard.sh headless-fix task
+# (2026-07-07) and remains the reviewed maintenance path for deliberately
+# scoped re-baselines. The retired verifier-bootstrap command neither calls
+# nor re-pins through this helper.
 # ---------------------------------------------------------------------------
 
 

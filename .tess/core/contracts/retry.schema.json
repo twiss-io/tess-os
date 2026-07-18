@@ -31,14 +31,20 @@
       "enum": ["transient", "context-gap", "wrong-approach", "wrong-task"],
       "description": "subagent-failure-protocol.md 'Cause Classification' table, verbatim. Retry rule per class: transient permits a same-brief retry; the other three forbid one ('Same-brief retries are forbidden for every non-transient cause') — enforced by `tessctl retry check`/`retry log`, not by this schema node."
     },
-    "brief_text": {
+    "brief_digest_sha256": {
       "type": "string",
-      "minLength": 1,
-      "description": "The VERBATIM content of the dispatch brief used for this attempt (read from the `--brief <path>` file at log time). Stored here, not just referenced by path, because the brief a live path points at can change between attempts — the ledger needs the actual text THIS attempt used to make the literal diff against the next attempt meaningful and tamper-resistant."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the whitespace-normalized dispatch brief. The retry ledger stores this commitment, never dispatch-brief plaintext, so the same-brief rule remains deterministic without persisting potentially confidential operator instructions."
     },
-    "brief_change_note": {
+    "brief_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "UTF-8 byte length of the whitespace-normalized dispatch brief, stored beside the digest as a transparent format/integrity guard."
+    },
+    "brief_change_code": {
       "type": "string",
-      "description": "Optional free-text note on what changed vs. the prior attempt's brief (docs/ULTIMATE_FRAMEWORK_PLAN.md §C4: 'what-the-brief-changed'). Human-readable context; the actual enforcement compares `brief_text` literally, not this note."
+      "enum": ["initial", "changed-brief", "same-brief-transient", "migrated-legacy"],
+      "description": "Controlled, value-free explanation of the retry relation. Free-text notes are deliberately not persisted in retry records."
     },
     "logged_at": {
       "type": "string",
@@ -50,7 +56,7 @@
       "description": "Who ran `tessctl retry log` (defaults to the OS user)."
     }
   },
-  "required": ["mission_id", "task", "attempt", "failure_state", "cause_class", "brief_text", "logged_at"],
+  "required": ["mission_id", "task", "attempt", "failure_state", "cause_class", "brief_digest_sha256", "brief_length", "brief_change_code", "logged_at"],
   "additionalProperties": false,
   "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
 }

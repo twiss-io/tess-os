@@ -32,6 +32,10 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
           "description": "honesty-capstone-audit-2026-07-08 §3-d FIX — the hard-floor SIGN-OFF ALLOWED-KEY SET: a registered map of operator-identity -> public key the gate trusts to authenticate a `.tess/gate/signoffs/<rule-id>.signoff.json` artifact's `signature` block. Reuses the EXACT SAME entry shape as `verifier_keys` (`VerifierKeyEntry`: fingerprint + public_key_file) and the same isolated-GNUPGHOME/C3-exact-fingerprint/C1-containment trust model `_gate_verify_verdict_signature` already applies — but keyed by the sign-off's `authorized_by` field, NOT by one of the six named AI verifiers: a hard-floor sign-off is guardrails.md Rule 18's human-operator escape valve, so `authorized_by` names an arbitrary project-specific human identity (e.g. an operator's name), not a verifier persona, and this map's keys are DELIBERATELY UNCONSTRAINED to any fixed enum (unlike `verifier_keys`, whose keys `_lint_policy` restricts to the six named verifiers). OPTIONAL at the schema level, but — same 'fail-closed by omission, not fail-open' posture as `verifier_keys` — with NO entry for a given `authorized_by` name, no sign-off can ever authenticate as that name, so it can never clear a hard floor. Before this fix, `.tess/gate/signoffs/**` was validated by JSON SHAPE ALONE (five non-empty fields, no signature, no authentication) — any agent able to write a file could forge a hard-floor clearance; this closes that gap the same way Phase 2b closed the equivalent gap for verdicts."
+        },
+        "renderer_admission": {
+          "$ref": "#/$defs/RendererAdmission",
+          "description": "Optional immutable-BASE renderer admission inventory. Candidate policy and lock bytes are consistency evidence only; they never replace the inventory already committed at the event-derived BASE."
         }
       },
       "required": ["version", "rules", "hard_floor_rules"],
@@ -52,10 +56,82 @@
         "public_key_file": {
           "type": "string",
           "minLength": 1,
-          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). `tessctl gate` imports this file into an ISOLATED, throwaway GNUPGHOME for every verification — never the ambient/system keyring — so CI needs no manual `gpg --import` bootstrap step the way release-tag verification does (a verdict-signature verification, unlike a fresh clone's very first trust decision, already trusts the checked-out tree enough to read this file: `core/policy/**` and `.tess/keys/verifiers/**` are themselves `prod_touching` under this repo's own `tess-os-security-tier-doctrine` rule, so tampering with the key registry requires its own covering Reid/Cyra verdict)."
+          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
         }
       },
       "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
+    "RepoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "RepoRelativeGlob": {
+      "allOf": [
+        { "$ref": "#/$defs/RepoRelativePath" },
+        { "not": { "pattern": "[?\\[]" } }
+      ]
+    },
+    "RendererAdmission": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "lock_file": { "$ref": "#/$defs/RepoRelativePath" },
+        "registry_file": { "$ref": "#/$defs/RepoRelativePath" },
+        "target_config_files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RepoRelativePath" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "family_globs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RepoRelativeGlob" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "mappings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RendererMapping" },
+          "minItems": 1
+        }
+      },
+      "required": ["version", "rule_id", "lock_file", "registry_file", "target_config_files", "family_globs", "mappings"],
+      "additionalProperties": false
+    },
+    "RendererMapping": {
+      "type": "object",
+      "properties": {
+        "input_glob": { "$ref": "#/$defs/RepoRelativeGlob" },
+        "lock_live_glob": {
+          "anyOf": [
+            { "$ref": "#/$defs/RepoRelativeGlob" },
+            { "type": "null" }
+          ]
+        },
+        "lock_name_binding": { "type": "boolean" },
+        "canonical_status": { "const": "core-managed" },
+        "canonical_tier": { "type": "string", "enum": ["normal", "security"] },
+        "canonical_render": { "type": ["string", "null"], "enum": ["fragment", "rendered", "template", null] },
+        "projections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RendererProjection" },
+          "minItems": 1
+        },
+        "min_matches": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["input_glob", "lock_live_glob", "canonical_status", "canonical_tier", "canonical_render", "projections", "min_matches"],
+      "additionalProperties": false
+    },
+    "RendererProjection": {
+      "type": "object",
+      "properties": {
+        "output_glob": { "$ref": "#/$defs/RepoRelativeGlob" },
+        "mode": { "type": "string", "enum": ["core-render", "engine-render", "source-copy"] }
+      },
+      "required": ["output_glob", "mode"],
       "additionalProperties": false
     },
     "PathRule": {
