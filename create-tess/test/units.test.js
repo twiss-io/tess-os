@@ -5,7 +5,7 @@
 // Run: npm test   (or `node --test`)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +15,7 @@ import { parseArgs } from '../src/args.js';
 import { validateName } from '../src/validate.js';
 import { isExcludedRel } from '../src/ignore.js';
 import { fetchTemplate, promote } from '../src/scaffold.js';
+import { resetKeyToEmptyInline, resetPolicyKeyRegistries } from '../src/policy-reset.js';
 
 // L3 / Lysandra #5 + #4 — the "language, not the power" honesty line is LIFTED
 // off each vibe's cinematic `engaged` beat onto a DIMMED follow-line (rendered in
@@ -284,6 +285,150 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     kept('.tess/snapshots/.gitkeep');
     kept('.tess/staging/.gitkeep');
     kept('agents/leah/README.md');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ── Scaffold reset: verifier_keys/signoff_keys never inherited from source ──
+// A repo's registered verifier/sign-off keys are ITS OWN trust anchor (e.g.
+// twiss-io/tess-os registering Cyra via chore/register-verifier-cyra-phase1,
+// PR #91, to govern its OWN development). Without a reset, promote() would
+// copy core/policy/policy.yaml (and its .tess/core mirror) verbatim — a
+// scaffolded USER project would silently inherit the maintainer's key as its
+// own trust anchor. See create-tess/src/policy-reset.js.
+
+test('policy-reset: resetKeyToEmptyInline collapses a populated block to {}, preserving every other line', () => {
+  const text =
+    'policy:\n' +
+    '  rules: []\n' +
+    '\n' +
+    '  verifier_keys:\n' +
+    '    Cyra:\n' +
+    '      fingerprint: "AAAA"\n' +
+    '      public_key_file: .tess/keys/verifiers/cyra.asc\n' +
+    '\n' +
+    '  # signoff_keys comment\n' +
+    '  signoff_keys: {}\n';
+  const { text: out, changed } = resetKeyToEmptyInline(text, 'verifier_keys');
+  assert.equal(changed, true);
+  assert.equal(
+    out,
+    'policy:\n' +
+      '  rules: []\n' +
+      '\n' +
+      '  verifier_keys: {}\n' +
+      '\n' +
+      '  # signoff_keys comment\n' +
+      '  signoff_keys: {}\n',
+    'every other line (including the trailing blank line before the next key) must survive byte-for-byte',
+  );
+});
+
+test('policy-reset: already-empty registries are a no-op (changed:false, byte-identical)', () => {
+  const text = 'policy:\n  verifier_keys: {}\n  signoff_keys: {}\n';
+  const { text: out, changed } = resetPolicyKeyRegistries(text);
+  assert.equal(changed, false);
+  assert.equal(out, text);
+});
+
+test('policy-reset: a commented-out example block is never mistaken for the real key', () => {
+  const text =
+    'policy:\n' +
+    '  # Example shape (commented out — replace with a REAL registered key):\n' +
+    '  #   verifier_keys:\n' +
+    '  #     Reid:\n' +
+    '  #       fingerprint: "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000"\n' +
+    '  verifier_keys:\n' +
+    '    Cyra:\n' +
+    '      fingerprint: "AAAA"\n' +
+    '      public_key_file: .tess/keys/verifiers/cyra.asc\n' +
+    '  signoff_keys: {}\n';
+  const { text: out, changed } = resetPolicyKeyRegistries(text);
+  assert.equal(changed, true);
+  assert.ok(
+    out.includes('#   verifier_keys:\n  #     Reid:'),
+    'the commented-out example block must survive untouched',
+  );
+  assert.ok(out.includes('  verifier_keys: {}\n'), 'the REAL (uncommented) key must be reset');
+});
+
+test('policy-reset: resetKeyToEmptyInline throws when the key is entirely absent (fail loud, never silent)', () => {
+  assert.throws(
+    () => resetKeyToEmptyInline('policy:\n  rules: []\n', 'verifier_keys'),
+    /no `verifier_keys:` key found/,
+  );
+});
+
+// THE REGRESSION LOCK (task spec): a scaffold produced from a source repo
+// whose policy HAS verifier_keys registered (simulating Cyra's PR #91
+// registration on twiss-io/tess-os) must ship with EMPTY registries in BOTH
+// the live policy and its .tess/core mirror — never inheriting the source
+// repo's trust anchor.
+test('scaffold reset: a source with verifier_keys registered (Cyra) scaffolds with empty registries in both copies', () => {
+  const base = mkdtempSync(join(tmpdir(), 'tess-policy-reset-test-'));
+  const src = join(base, 'source');
+  const staging = join(base, 'staging');
+  const target = join(base, 'instance');
+
+  // Mirrors the exact shape PR #91 (chore/register-verifier-cyra-phase1)
+  // registers in the real repo — both verifier_keys (Cyra) and signoff_keys
+  // (a fabricated Xavier entry, exercising both registries) populated in
+  // BOTH the live policy and its .tess/core mirror, exactly as
+  // twiss-io/tess-os's own repo will be once that PR merges.
+  const CYRA_POLICY =
+    'policy:\n' +
+    '  version: 1\n' +
+    '  rules: []\n' +
+    '\n' +
+    '  verifier_keys:\n' +
+    '    Cyra:\n' +
+    '      fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"\n' +
+    '      public_key_file: .tess/keys/verifiers/cyra.asc\n' +
+    '\n' +
+    '  signoff_keys:\n' +
+    '    Xavier:\n' +
+    '      fingerprint: "CCCC2222CCCC2222CCCC2222CCCC2222CCCC2222"\n' +
+    '      public_key_file: .tess/keys/signoffs/xavier.asc\n' +
+    '\n' +
+    '  hard_floor_rules: []\n';
+
+  const w = (rel, body) => {
+    const fp = join(src, rel);
+    mkdirSync(join(fp, '..'), { recursive: true });
+    writeFileSync(fp, body);
+  };
+  w('core/policy/policy.yaml', CYRA_POLICY);
+  w('.tess/core/policy/policy.yaml', CYRA_POLICY);
+
+  try {
+    fetchTemplate(src, staging);
+    const { policyReset } = promote(staging, target);
+
+    assert.equal(policyReset.changed, true, 'promote() must report that the reset ran');
+    assert.deepEqual(
+      [...policyReset.files].sort(),
+      ['.tess/core/policy/policy.yaml', 'core/policy/policy.yaml'].sort(),
+      'both the live policy and its .tess/core mirror must be reported as reset',
+    );
+
+    for (const rel of ['core/policy/policy.yaml', join('.tess', 'core', 'policy', 'policy.yaml')]) {
+      const out = readFileSync(join(target, rel), 'utf8');
+      assert.match(out, /verifier_keys: \{\}/, `${rel} must ship empty verifier_keys`);
+      assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys`);
+      assert.doesNotMatch(
+        out, /Cyra/, `${rel} must NOT carry the source repo's registered Cyra verifier key`,
+      );
+      assert.doesNotMatch(
+        out, /Xavier/, `${rel} must NOT carry the source repo's registered Xavier sign-off key`,
+      );
+      // Every other line (version, rules, hard_floor_rules) must survive.
+      assert.match(out, /version: 1/, `${rel} must keep unrelated policy content intact`);
+    }
+
+    // The SOURCE itself must be untouched — promote() must never write back
+    // into staging/source, only into the target.
+    assert.match(readFileSync(join(src, 'core', 'policy', 'policy.yaml'), 'utf8'), /Cyra/);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
