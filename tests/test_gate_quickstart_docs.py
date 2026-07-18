@@ -66,9 +66,20 @@ def test_managed_signing_guide_is_mirrored_and_custody_only():
     assert guide == mirror
     for required_text in (
         "Technology-preview boundary",
-        "empty verifier and sign-off registries",
+        # A FRESH scaffold ships empty registries (create-tess resets them —
+        # see policy-reset.js) regardless of what the source repo's own
+        # policy currently contains; this is no longer a claim about what
+        # "the shipped policy" always is (that went false once a real
+        # verifier, e.g. Cyra, is registered in this repo's OWN policy —
+        # see chore/register-verifier-cyra-phase1).
+        "empty `verifier_keys` and `signoff_keys` registries",
         "There is no self-service bootstrap path",
         "candidate repository must never\ncreate or register the trust anchor",
+        # The maintainer repo (twiss-io/tess-os) registering its OWN
+        # verifiers is a distinct fact from a scaffolded project's registries
+        # — this guide must state that distinction explicitly, not conflate
+        # "this repo has a registered verifier" with "scaffolds inherit it".
+        "separately registers\nits own verifiers",
         "Escalate to Xavier",
         "Security-governed policy, key-registry, and workflow surfaces remain outside",
         "NO-MERGE proposal and Xavier custody",

@@ -1,0 +1,13 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 401 authentication_error response (Anthropic API docs, verified 2026-07-18) — not a captured real call. Proves error_map['401'] -> ConnectorAuthError. No real key of any kind appears here — 'invalid x-api-key' is the provider's own generic message text, not a captured value.",
+  "response": {
+    "status": 401,
+    "body": {
+      "type": "error",
+      "error": { "type": "authentication_error", "message": "invalid x-api-key" },
+      "request_id": "req_fixture_401"
+    }
+  },
+  "expected_error_class": "ConnectorAuthError",
+  "expected_http_status": 503
+}

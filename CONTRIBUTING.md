@@ -38,6 +38,44 @@ By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 4. Keep all gates green (below). Add or adjust tests for any behavior change.
 5. Open a PR. Describe what changed and why; note any doctrine or NOTICE updates.
 
+## Accountability
+
+This applies identically to **human contributors and to any agent operating in
+this repo** (Claude Code, Codex, or otherwise — see [AGENTS.md](AGENTS.md)).
+Tess OS is a governance framework; it has no standing to help anyone else run
+an accountable engineering process if it doesn't run one itself.
+
+- **Every tracked piece of work gets a GitHub issue.** If it's worth doing,
+  it's worth an issue — that's what makes the tracker a reliable signal of
+  what's actually outstanding.
+- **Every PR that resolves an issue MUST reference it with `Closes #N`**
+  (or `Fixes #N` / `Resolves #N`) in the PR description. Do not rely on
+  someone remembering to close it by hand afterward — link it so merging the
+  PR closes it automatically.
+- **An independent review must approve before merge.** This is
+  platform-enforced: the `main` branch ruleset requires at least one approving
+  review from someone other than the author before a PR can merge.
+- **CI must be green before merge.** This is required practice today, but not
+  yet a platform-enforced gate — the branch ruleset has no required status
+  checks, so nothing currently stops a merge with failing or pending CI.
+  Adding that enforcement is tracked in
+  [#87](https://github.com/twiss-io/tess-os/issues/87), pending a repo-admin
+  (owner) action.
+- **Direct commits to `main` are not permitted** — see "Workflow" above; PRs
+  are the only path in. If a repo admin ever has to bypass this in a genuine
+  production emergency, open a retroactive PR/issue immediately afterward so
+  the change still has a linked, reviewable audit trail rather than a silent
+  gap in history.
+
+### Agents operating this repo
+
+Agents follow the identical loop, with no shortcuts for being automated:
+issue → PR referencing it with `Closes #N` → CI green → independent review →
+merge. An agent never self-provisions verifier keys or signs its own
+approval, and never pushes directly to `main` — see the Ship-Gate section of
+[AGENTS.md](AGENTS.md) for the mechanism that enforces the review-gate half
+of this for policy-tagged paths.
+
 ## Quality gates (must pass before a PR is mergeable)
 
 Run these locally before pushing:

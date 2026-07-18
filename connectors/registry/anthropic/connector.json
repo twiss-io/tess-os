@@ -1,0 +1,59 @@
+{
+  "manifest_version": "connector-manifest.v1",
+  "id": "anthropic",
+  "version": "0.1.0",
+  "display_name": "Anthropic (Claude)",
+  "aliases": ["claude"],
+  "provider": {
+    "base_url": "https://api.anthropic.com",
+    "base_url_override_env": "ANTHROPIC_API_BASE_URL",
+    "api_version_pin": { "kind": "header", "name": "anthropic-version", "value": "2023-06-01" }
+  },
+  "auth": {
+    "scheme": "env",
+    "env": ["ANTHROPIC_API_KEY"],
+    "header": { "name": "x-api-key" }
+  },
+  "operations": [
+    {
+      "name": "generate",
+      "description": "Single-turn or multi-turn text generation via the Messages API. max_tokens is required by this endpoint (Anthropic has no server-side default) — a caller-supplied value is always forwarded as-is; this connector applies no capping or clamping of its own.",
+      "side_effect": "spend",
+      "idempotent": false,
+      "http": { "method": "POST", "path": "/v1/messages" },
+      "input_schema": {
+        "fields": [
+          { "name": "model", "type": "string" },
+          { "name": "messages", "type": "array" },
+          { "name": "max_tokens", "type": "integer" },
+          { "name": "temperature", "type": "number" }
+        ]
+      },
+      "output_schema": {
+        "fields": [
+          { "name": "text", "type": "string" },
+          { "name": "stop_reason", "type": "string" },
+          { "name": "usage", "type": "object" },
+          { "name": "raw", "type": "object" }
+        ]
+      }
+    }
+  ],
+  "data_flows": [
+    "input.messages (including any input.messages entries with role 'system') and input.model/max_tokens/temperature are sent, as JSON, to provider.base_url (or its base_url_override_env override, when explicitly configured) over HTTPS.",
+    "No data is sent anywhere else — there is no secondary destination, logging sink, or analytics call in this connector.",
+    "The provider's full raw response is returned to the caller unmodified as output.raw; nothing is dropped, redacted, or summarized before being handed back."
+  ],
+  "error_map": {
+    "401": "ConnectorAuthError",
+    "403": "ConnectorAuthError",
+    "400": "ConnectorInvocationError",
+    "429": "ConnectorRateLimitError",
+    "500": "ConnectorProviderError",
+    "502": "ConnectorProviderError",
+    "503": "ConnectorProviderError",
+    "529": "ConnectorProviderError"
+  },
+  "limits": { "timeout_ms": 60000, "max_retries": 0 },
+  "trust": { "tier": "T0", "evidence": [] }
+}

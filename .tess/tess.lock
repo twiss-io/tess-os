@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-16T23:19:57.524492Z'
+  last_updated: '2026-07-18T17:30:09.012446Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5385,7 +5385,7 @@ files:
   .tess/core/conductor/verdict-signing.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:62b3e2fa43a5598fd5a8b9a05d48c0780213fd98ffcc649dbfaf4e24dfb4ba10
+    base_sha: sha256:80853b157fc03a15213bc94fbd3f5bdf20812a918f84c613250c09a3df54bb0a
     live_path: conductor/verdict-signing.md
     last_updated: '2026-07-07T00:00:00.000000Z'
   .tess/core/conductor/agent-lifecycle.md:
@@ -6035,6 +6035,6 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:f45cfc16538eb52aca959d3f4e269e9703fb44b5d5fe14d6bc3ef5178c284837
+    base_sha: sha256:6dde5b4a367a260fc936a93e3fb40445d9e21cb4472235af9735781989bb2104
     live_path: core/policy/policy.yaml
     last_updated: '2026-07-17T00:00:00.000000Z'

@@ -27,9 +27,10 @@ import {
   readFileSync,
   writeFileSync,
   copyFileSync,
+  cpSync,
   existsSync,
 } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, relative, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -521,5 +522,189 @@ test('gate activation: an already-git target is detected and left untouched (hoo
   assert.ok(
     existsSync(join(target, '.git', 'hooks', 'pre-commit')),
     'hooks must still be installed into a pre-existing repo',
+  );
+});
+
+// ── Scaffold reset — end-to-end proof, incl. the lock re-pin ────────────────
+// A source repo with a REGISTERED verifier (the exact state twiss-io/tess-os
+// itself will be in once chore/register-verifier-cyra-phase1, PR #91, merges
+// — this test builds that state synthetically so it does not depend on #91's
+// merge order) must still scaffold a project with EMPTY policy registries,
+// AND that project must still pass `tessctl doctor`/`tessctl verify` — proving
+// the scoped tess.lock re-pin (create-tess/src/keystone.js regenPolicyLock)
+// keeps a freshly scaffolded project integrity-clean after the reset
+// intentionally alters `.tess/core/policy/policy.yaml`'s bytes.
+test('scaffold reset (end-to-end): a source with a registered verifier still scaffolds empty + doctor-clean', { timeout: 180000 }, () => {
+  // A full copy of the real template (everything `.git` excludes) so the
+  // rest of the tree — roster, contracts, tess.lock's ~1000 OTHER entries —
+  // is exactly what a real scaffold sees; only the two policy.yaml copies
+  // are patched to simulate a post-PR-#91 registered verifier.
+  const fakeSource = mkdtempSync(join(tmpdir(), 'create-tess-keys-fixture-'));
+  tempDirs.push(fakeSource);
+  cpSync(TEMPLATE_SOURCE, fakeSource, {
+    recursive: true,
+    dereference: false,
+    filter: (src) => !relative(TEMPLATE_SOURCE, src).split(sep).includes('.git'),
+  });
+
+  // TEMPLATE_SOURCE is THIS repo, checked out at whatever ref CI/dev happens
+  // to be running against — e.g. on chore/register-verifier-cyra-phase1
+  // (PR #91) its core/policy/policy.yaml already carries a REAL registered
+  // Cyra entry, not `verifier_keys: {}`. injectKeys() below patches via a
+  // `verifier_keys: {}` / `signoff_keys: {}` regex, so it needs a guaranteed
+  // pristine (nothing-registered) starting point regardless of what's live
+  // right now — otherwise onboarding a real verifier silently defeats this
+  // test's own fixture-injection step instead of failing loudly. Force both
+  // copied policy.yaml files back to the FROZEN golden pristine shape (the
+  // same fixture units.test.js's realisticMultiEntryPolicyText() reads)
+  // before injecting the synthetic Cyra+Reid/Xavier+Priya entries — this
+  // only overwrites the two policy.yaml copies; the rest of the copied tree
+  // (roster, contracts, tess.lock, etc.) is still the real, live template.
+  const PRISTINE_POLICY = readFileSync(
+    join(TEST_DIR, 'fixtures', 'policy.pristine.yaml'),
+    'utf8',
+  );
+  writeFileSync(join(fakeSource, 'core', 'policy', 'policy.yaml'), PRISTINE_POLICY);
+  writeFileSync(join(fakeSource, '.tess', 'core', 'policy', 'policy.yaml'), PRISTINE_POLICY);
+
+  // A SECOND registered entry, under each key, preceded by an interior
+  // annotation comment written at the PARENT key's indent (2 spaces)
+  // rather than the entry's own indent (4 spaces) — an entirely ordinary
+  // way a second contributor documents "why/when this entry was added"
+  // (this repo's own header prose comments this way throughout). This is
+  // the exact realistic shape that broke the old resetKeyToEmptyInline: a
+  // comment at header-indent used to be treated, unconditionally, as "the
+  // next sibling key," stopping block removal one entry too early and
+  // leaving the second entry's fingerprint spliced in right after the
+  // supposedly-reset `{}` — corrupting the YAML in the process.
+  const REID_FINGERPRINT = '1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD';
+  const PRIYA_FINGERPRINT = 'FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE';
+
+  const injectKeys = (rel) => {
+    const p = join(fakeSource, rel);
+    let text = readFileSync(p, 'utf8');
+    const before = text;
+    text = text.replace(
+      /( {2})verifier_keys: \{\}/,
+      '$1verifier_keys:\n' +
+        '$1  Cyra:\n' +
+        '$1    fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"\n' +
+        '$1    public_key_file: .tess/keys/verifiers/cyra.asc\n' +
+        '\n' +
+        '$1# Reid — registered 2026-07-20 via `tessctl verdict keygen --verifier Reid`\n' +
+        '$1  Reid:\n' +
+        `$1    fingerprint: "${REID_FINGERPRINT}"\n` +
+        '$1    public_key_file: .tess/keys/verifiers/reid.asc',
+    );
+    text = text.replace(
+      /( {2})signoff_keys: \{\}/,
+      '$1signoff_keys:\n' +
+        '$1  Xavier:\n' +
+        '$1    fingerprint: "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"\n' +
+        '$1    public_key_file: .tess/keys/signoffs/xavier.asc\n' +
+        '\n' +
+        '$1# Priya — registered 2026-07-20 via `tessctl gate signoff sign`\n' +
+        '$1  Priya:\n' +
+        `$1    fingerprint: "${PRIYA_FINGERPRINT}"\n` +
+        '$1    public_key_file: .tess/keys/signoffs/priya.asc',
+    );
+    assert.notEqual(text, before, `${rel}: fixture injection must actually change the file`);
+    writeFileSync(p, text);
+  };
+  injectKeys(join('core', 'policy', 'policy.yaml'));
+  injectKeys(join('.tess', 'core', 'policy', 'policy.yaml'));
+
+  const target = mkdtempSync(join(tmpdir(), 'create-tess-keys-target-'));
+  tempDirs.push(target);
+  const combo = COMBOS[0];
+  const run = spawnSync(
+    process.execPath,
+    [
+      ENTRY,
+      '--yes',
+      `--operator=${combo.operator}`,
+      `--vibe=${combo.vibe}`,
+      `--path=${combo.path}`,
+      `--pathway=${combo.pathway}`,
+      `--conductor=${combo.conductor}`,
+      `--template-source=${fakeSource}`,
+      `--target=${target}`,
+    ],
+    { cwd: PKG_DIR, encoding: 'utf8' },
+  );
+  assert.equal(
+    run.status,
+    0,
+    `wizard exited non-zero against a keys-present source\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`,
+  );
+
+  // NOTE: the shipped policy.yaml legitimately mentions "Cyra"/"Xavier" in its
+  // own commented-out walkthrough/example text (real names used as worked
+  // examples) even in its pristine, nothing-registered state — so asserting
+  // against the bare names would false-fail on the file's own documentation.
+  // Assert against the INJECTED FINGERPRINTS instead: cryptographic material
+  // that can only be present if the real (fake, for this test) registered
+  // entry survived the reset — a precise, unambiguous proof of leakage.
+  const CYRA_FINGERPRINT = 'F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8';
+  const XAVIER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF';
+  for (const rel of [join('core', 'policy', 'policy.yaml'), join('.tess', 'core', 'policy', 'policy.yaml')]) {
+    const out = readFileSync(join(target, rel), 'utf8');
+    assert.match(out, /verifier_keys: \{\}/, `${rel} must ship empty verifier_keys, not the source's Cyra`);
+    assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys, not the source's Xavier`);
+    for (const fp of [CYRA_FINGERPRINT, XAVIER_FINGERPRINT, REID_FINGERPRINT, PRIYA_FINGERPRINT]) {
+      assert.doesNotMatch(
+        out, new RegExp(fp), `${rel} must not carry the source repo's registered fingerprint ${fp}`,
+      );
+    }
+    // The output must still be well-formed YAML — the second entry's
+    // interior annotation comment must not have caused a value line to be
+    // fused onto a following comment with no separating newline.
+    const yamlCheck = spawnSync('python3', [
+      '-c',
+      'import sys, yaml\n' +
+        'd = yaml.safe_load(sys.stdin.read())\n' +
+        'assert d["policy"]["verifier_keys"] == {}, d["policy"]["verifier_keys"]\n' +
+        'assert d["policy"]["signoff_keys"] == {}, d["policy"]["signoff_keys"]\n',
+    ], { input: out, encoding: 'utf8' });
+    assert.equal(
+      yamlCheck.status, 0,
+      `${rel} must be valid YAML with both registries empty after reset\nSTDOUT:\n${yamlCheck.stdout}\nSTDERR:\n${yamlCheck.stderr}`,
+    );
+  }
+
+  // The scoped lock re-pin must have kept the project doctor/verify-clean —
+  // NOT reported as CORE-TAMPERED for a file that was normalized, not tampered.
+  const doctor = tessctl(target, 'doctor');
+  assert.equal(
+    doctor.status,
+    0,
+    `tessctl doctor must pass after the scaffold reset\nSTDOUT:\n${doctor.stdout}\nSTDERR:\n${doctor.stderr}`,
+  );
+  // Precise positive check (not a loose doesNotMatch): doctor's own summary
+  // line reports "core tamper: N" unconditionally — a doesNotMatch on a
+  // "CORE TAMPER" pattern would false-fail on that innocuous zero-count line,
+  // so assert the actual count instead.
+  assert.match(doctor.stdout, /core tamper: 0\b/, 'doctor must report zero core tampers after the scaffold reset');
+  const verify = tessctl(target, 'verify');
+  assert.equal(
+    verify.status,
+    0,
+    `tessctl verify must pass after the scaffold reset\nSTDOUT:\n${verify.stdout}\nSTDERR:\n${verify.stderr}`,
+  );
+
+  // The gate itself must still work post-reset (schema-valid empty registries).
+  const gatePreCommit = tessctl(target, 'gate', 'pre-commit');
+  assert.equal(
+    gatePreCommit.status,
+    0,
+    `tessctl gate pre-commit must pass post-reset\n${gatePreCommit.stdout}\n${gatePreCommit.stderr}`,
+  );
+
+  // The fake SOURCE itself must be untouched — the reset only ever writes
+  // into the target, never back into the source it was staged from.
+  assert.match(
+    readFileSync(join(fakeSource, 'core', 'policy', 'policy.yaml'), 'utf8'),
+    new RegExp(CYRA_FINGERPRINT),
+    'the source fixture must retain its registered key untouched',
   );
 });

@@ -1,0 +1,16 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 401 invalid_api_key response (OpenAI API docs, verified 2026-07-18) — not a captured real call. Proves error_map['401'] -> ConnectorAuthError. No real key appears here.",
+  "response": {
+    "status": 401,
+    "body": {
+      "error": {
+        "message": "Incorrect API key provided.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": "invalid_api_key"
+      }
+    }
+  },
+  "expected_error_class": "ConnectorAuthError",
+  "expected_http_status": 503
+}

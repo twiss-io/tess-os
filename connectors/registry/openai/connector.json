@@ -1,0 +1,58 @@
+{
+  "manifest_version": "connector-manifest.v1",
+  "id": "openai",
+  "version": "0.1.0",
+  "display_name": "OpenAI",
+  "aliases": ["gpt"],
+  "provider": {
+    "base_url": "https://api.openai.com",
+    "base_url_override_env": "OPENAI_API_BASE_URL",
+    "api_version_pin": { "kind": "url_path", "value": "v1" }
+  },
+  "auth": {
+    "scheme": "env",
+    "env": ["OPENAI_API_KEY"],
+    "header": { "name": "Authorization", "value_prefix": "Bearer " }
+  },
+  "operations": [
+    {
+      "name": "generate",
+      "description": "Single-turn or multi-turn text generation via the stable Chat Completions surface (POST /v1/chat/completions), not the newer Responses API (POST /v1/responses) — a deliberate v1 stability choice (connectors-architecture.md §5.2), cheap to revisit via a version bump. KNOWN v1 LIMITATION: this connector sends the normalized max_tokens field as the request body's max_tokens. OpenAI's o-series reasoning models (o1/o3/o4-mini) reject max_tokens and require max_completion_tokens instead; this connector does not special-case model family (the normalized input carries no model-family signal to key on) — calling generate with an o-series model name surfaces the provider's own 400 as a typed ConnectorInvocationError, not a silent failure or a wrong-parameter retry.",
+      "side_effect": "spend",
+      "idempotent": false,
+      "http": { "method": "POST", "path": "/v1/chat/completions" },
+      "input_schema": {
+        "fields": [
+          { "name": "model", "type": "string" },
+          { "name": "messages", "type": "array" },
+          { "name": "max_tokens", "type": "integer" },
+          { "name": "temperature", "type": "number" }
+        ]
+      },
+      "output_schema": {
+        "fields": [
+          { "name": "text", "type": "string" },
+          { "name": "stop_reason", "type": "string" },
+          { "name": "usage", "type": "object" },
+          { "name": "raw", "type": "object" }
+        ]
+      }
+    }
+  ],
+  "data_flows": [
+    "input.messages (role 'system' entries included verbatim as chat messages) and input.model/max_tokens/temperature are sent, as JSON, to provider.base_url (or its base_url_override_env override, when explicitly configured) over HTTPS.",
+    "No data is sent anywhere else — there is no secondary destination, logging sink, or analytics call in this connector.",
+    "The provider's full raw response is returned to the caller unmodified as output.raw; nothing is dropped, redacted, or summarized before being handed back."
+  ],
+  "error_map": {
+    "401": "ConnectorAuthError",
+    "403": "ConnectorAuthError",
+    "400": "ConnectorInvocationError",
+    "429": "ConnectorRateLimitError",
+    "500": "ConnectorProviderError",
+    "502": "ConnectorProviderError",
+    "503": "ConnectorProviderError"
+  },
+  "limits": { "timeout_ms": 60000, "max_retries": 0 },
+  "trust": { "tier": "T0", "evidence": [] }
+}

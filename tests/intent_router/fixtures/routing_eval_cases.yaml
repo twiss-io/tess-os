@@ -1,0 +1,234 @@
+# 40-case routing eval fixture — Epic E1 acceptance criteria: "A 40-case
+# routing eval ... routes >=90% to the same entry point a human operator
+# chose."
+#
+# HONEST DATA-SOURCE NOTE: the epic's acceptance criteria is written against
+# the PRIVATE Tess repo's real historical mission briefs (kb/wiki/log.md),
+# which do not exist in this public tess-os repo. These 40 cases are
+# synthetic-but-representative mission-brief-style utterances, styled after
+# the SAME six outcome-orchestrator domains and mission-lifecycle commands
+# documented in conductor/commands.md and
+# conductor/outcome-orchestrators/README.md — deliberately paraphrased away
+# from the routing table's own keyword/example wording so the eval measures
+# generalization, not string-matching against itself. This is NOT a claim
+# that these are the private repo's actual historical missions; see
+# intent-router/README.md "The 40-case eval" for the full disclosure.
+#
+# expected_route_ids: a list, not a single id — most cases have exactly one
+# correct answer, but a few name TWO acceptable routes where the underlying
+# doctrine itself documents genuine overlap (e.g. conductor/
+# outcome-orchestrators/integration.md: "SGO vs FO on M&A: SGO leads
+# assessment, FO takes over at commitment" — an M&A-flavored input can
+# honestly land on either founder-mode or strategic-mode). A case counts as
+# correct if the router's route_id is IN this list.
+
+cases:
+  # -- founder-mode (Founder's Office) --------------------------------------
+  - input: >-
+      Honestly I've been going back and forth for weeks on whether we
+      should take outside funding or just keep growing slowly ourselves.
+    expected_route_ids: [founder-mode]
+
+  - input: >-
+      The board is going to ask me next week where I think the company
+      should be in three years and I don't have a crisp answer yet.
+    expected_route_ids: [founder-mode]
+
+  - input: >-
+      I keep getting pulled into every single decision in the business and
+      I'm not sure that's still the right way for me to operate as the
+      person running it.
+    expected_route_ids: [founder-mode]
+
+  - input: >-
+      I need to figure out whether I'm optimizing for the right long-term
+      outcome for myself as the person in charge, or just chasing growth
+      for its own sake.
+    expected_route_ids: [founder-mode]
+
+  - input: >-
+      I have an investor call in a few days and I don't feel confident
+      about how I'm framing where we're headed.
+    expected_route_ids: [founder-mode]
+
+  # -- revenue-mode (Revenue Orchestrator) ----------------------------------
+  - input: >-
+      Something happened around three months ago because our close rate
+      on demos just fell off a cliff.
+    expected_route_ids: [revenue-mode]
+
+  - input: >-
+      I think we're leaving money on the table with how we've packaged our
+      pricing tiers.
+    expected_route_ids: [revenue-mode]
+
+  - input: >-
+      The sales pipeline used to be full and now it's basically empty and
+      I don't know why.
+    expected_route_ids: [revenue-mode]
+
+  - input: >-
+      We keep losing deals right at the final negotiation stage and I
+      can't tell if it's price or something else.
+    expected_route_ids: [revenue-mode]
+
+  - input: >-
+      Our biggest lead source dried up and revenue this quarter is going
+      to miss target.
+    expected_route_ids: [revenue-mode]
+
+  # -- product-mode (Product and Delivery Orchestrator) ---------------------
+  - input: >-
+      We need to decide what to build next quarter and I don't think our
+      current roadmap reflects what customers actually want.
+    expected_route_ids: [product-mode]
+
+  - input: >-
+      I want to add a whole new module to the app but I'm not sure how it
+      should fit into the existing architecture.
+    expected_route_ids: [product-mode]
+
+  - input: >-
+      We're getting close to a release and I need to make sure everything
+      is actually ready to ship.
+    expected_route_ids: [product-mode]
+
+  - input: >-
+      Customers keep asking for a feature we've never scoped out, and I
+      want to figure out if it's worth building.
+    expected_route_ids: [product-mode]
+
+  - input: >-
+      The engineering team and I disagree on the technical approach for
+      the next big build and I need this resolved.
+    expected_route_ids: [product-mode]
+
+  # -- cx-mode (Client Experience Orchestrator) -----------------------------
+  - input: >-
+      One of our top clients has gone quiet on us and I'm worried they're
+      about to churn.
+    expected_route_ids: [cx-mode]
+
+  - input: >-
+      New clients keep getting confused in their first two weeks with us
+      and I think onboarding needs a rethink.
+    expected_route_ids: [cx-mode]
+
+  - input: >-
+      We had a bad incident with a client last month and I don't think
+      we've repaired the relationship yet.
+    expected_route_ids: [cx-mode]
+
+  - input: >-
+      I want our best clients to feel like they're getting a genuinely
+      premium experience, not just the standard package.
+    expected_route_ids: [cx-mode]
+
+  - input: >-
+      A client mentioned they're evaluating a competitor and I need a
+      retention plan before renewal.
+    expected_route_ids: [cx-mode]
+
+  # -- ops-mode (Operational Reliability Orchestrator) ----------------------
+  - input: >-
+      Our internal handoffs between teams keep breaking down and things
+      fall through the cracks constantly.
+    expected_route_ids: [ops-mode]
+
+  - input: >-
+      As we've grown headcount, our old way of running standups and
+      reviews just doesn't hold up anymore.
+    expected_route_ids: [ops-mode]
+
+  - input: >-
+      One of our vendors keeps missing deadlines and it's creating
+      downstream problems for us.
+    expected_route_ids: [ops-mode]
+
+  - input: >-
+      We had an operational failure last week and I want to understand
+      the root cause, not just patch the symptom.
+    expected_route_ids: [ops-mode]
+
+  - input: >-
+      Too much of what we do is still manual and it's not going to hold
+      up if we keep scaling.
+    expected_route_ids: [ops-mode]
+
+  # -- strategic-mode (Strategic Growth Orchestrator) -----------------------
+  - input: >-
+      I'm seriously considering opening up in a completely new country
+      next year and want to know if it makes sense.
+    expected_route_ids: [strategic-mode]
+
+  - input: >-
+      A potential partner reached out about doing something bigger
+      together and I want to evaluate it properly.
+    expected_route_ids: [strategic-mode]
+
+  - input: >-
+      I keep wondering if our current position in the market is actually
+      defensible against the bigger players.
+    expected_route_ids: [strategic-mode]
+
+  - input: >-
+      There's a smaller company in our space that might be worth buying
+      instead of competing with them long term.
+    # M&A is genuinely ambiguous per outcome-orchestrators/integration.md
+    # ("SGO leads assessment... FO takes over at commitment") — either
+    # orchestrator is a defensible entry point at this early stage.
+    expected_route_ids: [strategic-mode, founder-mode]
+
+  - input: >-
+      We're thinking about a joint venture with another firm and need to
+      assess whether it's structurally sound.
+    expected_route_ids: [strategic-mode]
+
+  # -- mission-lifecycle / system commands (10 cases) -----------------------
+  - input: >-
+      Can you just give me the full picture of where the active mission
+      stands right now, including who owns what.
+    expected_route_ids: [review-mission]
+
+  - input: >-
+      Before we go further, I want to know what could blow up on us here.
+    expected_route_ids: [show-risks]
+
+  - input: >-
+      I've lost track of what actually needs to happen next on this.
+    expected_route_ids: [show-next-moves]
+
+  - input: >-
+      I just sat down at my desk, get me oriented on everything that's
+      going on.
+    expected_route_ids: [wake]
+
+  - input: >-
+      That's it for me today, wrap everything up and make sure it's all
+      logged and pushed.
+    expected_route_ids: [close]
+
+  - input: >-
+      We just got a call that the production system is completely down
+      and customers are already complaining loudly.
+    expected_route_ids: [code-red]
+
+  - input: >-
+      The team has finished their analysis, I'm ready to hear the final
+      recommendation and make the call.
+    expected_route_ids: [finalize]
+
+  - input: >-
+      I don't want to commit to anything yet, I just want to throw around
+      some rough ideas first.
+    expected_route_ids: [brainstorm]
+
+  - input: >-
+      We genuinely don't have anyone equipped to handle this kind of
+      work, we need to bring someone new onto the team.
+    expected_route_ids: [add-agent]
+
+  - input: >-
+      I honestly don't really understand what this whole system is
+      capable of doing for me.
+    expected_route_ids: [help]

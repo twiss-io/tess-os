@@ -1,0 +1,13 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 529 overloaded_error response (Anthropic API docs + community reports, verified 2026-07-18) — Anthropic-wide overload, distinct from the per-account 429 rate limit above. Proves error_map['529'] -> ConnectorProviderError.",
+  "response": {
+    "status": 529,
+    "body": {
+      "type": "error",
+      "error": { "type": "overloaded_error", "message": "Overloaded" },
+      "request_id": "req_fixture_529"
+    }
+  },
+  "expected_error_class": "ConnectorProviderError",
+  "expected_http_status": 502
+}

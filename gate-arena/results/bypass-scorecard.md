@@ -1,6 +1,6 @@
 # Layer A — Bypass Corpus Scorecard
 
-Generated: 2026-07-17T10:34:59.842184+00:00
+Generated: 2026-07-18T17:32:17.766217+00:00
 
 **12/12 attacks BLOCKED** (0 slipped through). Every attack ran the real `.tess/bin/tessctl` engine, real `git`, real `gpg`, against a fixture policy forked verbatim from this repo's own shipped `core/policy/policy.yaml`.
 

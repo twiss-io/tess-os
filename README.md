@@ -174,6 +174,8 @@ reproducible release rehearsal and the production prerequisites are complete.
 - [Observability](docs/OBSERVABILITY.md) — local trace/export behavior.
 - [Comparison and roadmap](docs/COMPARISON.md) — factual current-state
   comparison rather than unsupported feature claims.
+- [Data-leak safety](docs/DATA_LEAK_SAFETY.md) — the overlay/dogfood model,
+  the reconciled `.gitignore`, and the commit-side publish-clean gate.
 - [Security policy](SECURITY.md) — reporting and local-first security posture.
 
 ## Honest framing

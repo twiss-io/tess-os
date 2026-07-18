@@ -1,0 +1,18 @@
+{
+  "activated": false,
+  "model": "sonnet",
+  "state_dir": null,
+  "timezone": "UTC",
+  "notify": {
+    "channel": "none",
+    "telegram_bot_token_env": "TESS_MEMORY_TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id_env": "TESS_MEMORY_TELEGRAM_CHAT_ID",
+    "webhook_url_env": "TESS_MEMORY_WEBHOOK_URL"
+  },
+  "daily_recompile": {
+    "org_repo_scan": [],
+    "memory_project_glob": null,
+    "wiki_log_path": "kb/wiki/log.md",
+    "wiki_log_tail_lines": 150
+  }
+}
