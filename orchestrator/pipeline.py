@@ -1,6 +1,7 @@
 """The wired spine: freeform input -> intent-router classify/route ->
 spec-engine intake -> Plan -> REAL authenticated approval gate ->
-spec-engine finalize -> spec_engine.codegen.generate_app().
+spec-engine finalize -> spec_engine.codegen.generate_app() -> OPT-IN
+activation/retention telemetry (see `docs/TELEMETRY.md`).
 
 `run_pipeline()` is the ONE function that glues all three components
 together end to end — this is the first debt this epic closes: the three
@@ -12,6 +13,12 @@ downstream hop is itself partially a stub (`spec_engine.codegen`'s
 `service`/`integration` module honesty), that labeling rides through
 unchanged in `CodegenResult.manifest` — this module makes no claim about
 it either way.
+
+The final hop, `telemetry.events.record_mission_completion()`, is the
+ONE call site in this repo for local, OPT-IN activation/retention
+instrumentation — OFF by default, no-op unless a human has run
+`python -m telemetry.cli enable`. See `telemetry/README.md` and
+`docs/TELEMETRY.md` for the full privacy contract.
 
     from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
     from orchestrator.pipeline import run_pipeline
@@ -28,6 +35,7 @@ it either way.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -39,6 +47,9 @@ from spec_engine.codegen import DEFAULT_TARGET_STACK, CodegenResult, generate_ap
 from spec_engine.integrations.from_intent_router import routing_context_from_decision
 from spec_engine.pipeline import finalize_spec_with_approval, run_intake_and_plan
 from spec_engine.types import Approval, Plan, SpecDocument
+
+from telemetry.consent import TelemetryError
+from telemetry.events import MissionCompletionEvent, record_mission_completion
 
 from .approval_gate import ApprovalAuthenticationError, ApprovalGate
 
@@ -65,6 +76,15 @@ class PipelineResult:
       no spec or app was built (a normal, expected outcome, not an error).
     - `"generated"` — the full pipeline ran end to end; `spec` and `codegen`
       are populated.
+
+    `telemetry` is populated ONLY on `"generated"` — see `_record_
+    governed_mission_telemetry()`'s own docstring below for exactly what
+    it records (OPT-IN, OFF by default; see `docs/TELEMETRY.md`).
+    `MissionCompletionEvent(recorded=False)` (the default when telemetry
+    is disabled, which it is for every caller that has not explicitly
+    run `python -m telemetry.cli enable`) is NOT an error — most callers
+    of this function will see exactly that, forever, and that is the
+    correct, private-by-default outcome.
     """
 
     status: str
@@ -74,6 +94,7 @@ class PipelineResult:
     spec: Optional[SpecDocument] = None
     codegen: Optional[CodegenResult] = None
     clarifying_question: Optional[str] = None
+    telemetry: Optional[MissionCompletionEvent] = None
 
 
 def _identity_dir_hint(approval_gate: ApprovalGate) -> Optional[Path]:
@@ -114,6 +135,34 @@ def _route(
             decision, clarification_answer, routing_table_path, log_path=route_log_path,
         )
     return decision
+
+
+def _record_governed_mission_telemetry() -> Optional[MissionCompletionEvent]:
+    """Fire the OPT-IN activation/retention event for this `run_pipeline()`
+    call reaching `"generated"` — the ONE integration point in this repo
+    for `telemetry.events.record_mission_completion()`. This is called
+    AFTER `generate_app()` has already succeeded, i.e. AFTER the full
+    accountability chain (a human approval, independently re-verified,
+    -> a finalized spec -> a generated app) has already, fully,
+    completed — telemetry observes that fact; it never gates it.
+
+    `record_mission_completion()` self-gates on `telemetry.consent.
+    is_enabled()` and is a complete, instant no-op — nothing counted,
+    timestamped, or written — when the user has not explicitly opted in
+    (see that function's own docstring and `docs/TELEMETRY.md`). A
+    `TelemetryError` (a corrupt local consent/events file — the only
+    exception this call can raise) is caught here and downgraded to a
+    non-fatal stderr warning, mirroring `docs/OBSERVABILITY.md`'s own
+    tessctl-trace precedent: "a trace-log write failure must never flip
+    the exit code of the security-critical command it is merely
+    observing." An optional telemetry sidecar failing must never
+    retroactively un-complete a governed mission that already, genuinely,
+    finished."""
+    try:
+        return record_mission_completion()
+    except TelemetryError as exc:
+        print(f"WARNING: telemetry not recorded (non-fatal): {exc}", file=sys.stderr)
+        return None
 
 
 def run_pipeline(
@@ -166,6 +215,11 @@ def run_pipeline(
     Hop 5 (REAL codegen — with per-module honesty already labeled by
     `spec_engine.codegen` itself, see its manifest): `generate_app()`
     writes the running app to `target_dir`.
+
+    Hop 6 (OPT-IN, OFF by default — see `docs/TELEMETRY.md`): once Hop 5
+    succeeds, `_record_governed_mission_telemetry()` fires this install's
+    activation (first-ever) or retention (repeat) event — a no-op unless
+    a human has explicitly run `python -m telemetry.cli enable`.
     """
     decision = _route(
         input_text, routing_table_path, mission_id=mission_id,
@@ -199,9 +253,10 @@ def run_pipeline(
         return PipelineResult(status="rejected", decision=decision, plan=plan, approval=approval)
 
     codegen_result = generate_app(spec, target_dir, target_stack=codegen_target_stack)
+    telemetry_event = _record_governed_mission_telemetry()
     return PipelineResult(
         status="generated", decision=decision, plan=plan, approval=approval,
-        spec=spec, codegen=codegen_result,
+        spec=spec, codegen=codegen_result, telemetry=telemetry_event,
     )
 
 
