@@ -246,6 +246,7 @@ def test_generated_app_all_route_kinds_respond_over_real_http(tmp_path, node_ser
         new_id,
         utc_now_iso,
     )
+    from spec_engine.connector_resolver import resolve_connectors
     from spec_engine.types import Plan
 
     plan = Plan(
@@ -267,6 +268,7 @@ def test_generated_app_all_route_kinds_respond_over_real_http(tmp_path, node_ser
         data_model=DataModel(entities=[Entity(name="Invoice", fields=[EntityField(name="amount", type="number")])]),
         acceptance_criteria=["Invoice dashboard lists all invoices"],
         summary_for_approval="summary",
+        resolved_connectors=resolve_connectors(["Stripe"]),  # not registered -> unresolved, same as before
     )
     approval = sign_local_approval(plan, approved_by="Xavier")
     spec = build_spec(plan, approval)

@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 429 RESOURCE_EXHAUSTED response (Gemini API docs, verified 2026-07-18) — not a captured real call. Proves error_map['429'] -> ConnectorRateLimitError.",
+  "response": {
+    "status": 429,
+    "body": {
+      "error": {
+        "code": 429,
+        "message": "Resource has been exhausted (e.g. check quota).",
+        "status": "RESOURCE_EXHAUSTED"
+      }
+    }
+  },
+  "expected_error_class": "ConnectorRateLimitError",
+  "expected_http_status": 429
+}

@@ -16,6 +16,7 @@ composes with intent-router (the front door).
 """
 
 from .approval import record_approval, reject_plan
+from .connector_resolver import default_registry_root, resolve_connectors
 from .content import (
     DataModel,
     Entity,
@@ -25,6 +26,8 @@ from .content import (
     KeyFlow,
     KeyScreen,
     OpenQuestion,
+    ResolvedConnector,
+    ResolvedConnectorOperation,
     SpecEngineError,
     WhatItDoes,
     plan_content_hash,
@@ -57,6 +60,8 @@ from .types import (
 __all__ = [
     "record_approval",
     "reject_plan",
+    "default_registry_root",
+    "resolve_connectors",
     "DataModel",
     "Entity",
     "EntityField",
@@ -65,6 +70,8 @@ __all__ = [
     "KeyFlow",
     "KeyScreen",
     "OpenQuestion",
+    "ResolvedConnector",
+    "ResolvedConnectorOperation",
     "SpecEngineError",
     "WhatItDoes",
     "plan_content_hash",

@@ -126,7 +126,54 @@
       "additionalProperties": false
     },
     "summary_for_approval": { "type": "string" },
-    "open_question_count": { "type": "integer", "minimum": 0 }
+    "open_question_count": { "type": "integer", "minimum": 0 },
+    "resolved_connectors": {
+      "type": "array",
+      "description": "Connectors v1 (docs/design/connectors-architecture.md §6.2/§6.4): the PLAN-TIME resolution of how_it_works.integrations against the connector registry — one entry per integration, same order. Bound into content.plan_content_hash() alongside every other content dimension (PR #82's existing approval-gate mechanism; no new trust machinery). OPTIONAL (default []): a pre-Connectors-v1 persisted Plan JSON record predates this field entirely and must still validate — see spec_engine.types.Plan.resolved_connectors' own default_factory=list and content.plan_content_hash()'s additive-only hashing.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "integration_name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["resolved", "unresolved"] },
+          "connector_id": { "type": ["string", "null"] },
+          "connector_version": { "type": ["string", "null"] },
+          "manifest_hash": { "type": ["string", "null"] },
+          "display_name": { "type": ["string", "null"] },
+          "base_url": { "type": ["string", "null"] },
+          "base_url_override_env": { "type": ["string", "null"] },
+          "api_version_pin_kind": { "type": ["string", "null"] },
+          "api_version_pin_name": { "type": ["string", "null"] },
+          "api_version_pin_value": { "type": ["string", "null"] },
+          "auth_env_vars": { "type": "array", "items": { "type": "string" } },
+          "auth_header_name": { "type": ["string", "null"] },
+          "auth_header_value_prefix": { "type": "string" },
+          "timeout_ms": { "type": ["integer", "null"] },
+          "error_map": { "type": "object" },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "side_effect": { "type": "string", "enum": ["read", "write", "spend"] },
+                "http_method": { "type": "string", "minLength": 1 },
+                "http_path": { "type": "string", "minLength": 1 }
+              },
+              "required": ["name", "side_effect", "http_method", "http_path"],
+              "additionalProperties": false
+            }
+          },
+          "registered_connector_ids": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": [
+          "integration_name", "status", "connector_id", "connector_version", "manifest_hash",
+          "display_name", "base_url", "base_url_override_env", "api_version_pin_kind",
+          "api_version_pin_name", "api_version_pin_value", "auth_env_vars", "auth_header_name",
+          "auth_header_value_prefix", "timeout_ms", "error_map", "operations", "registered_connector_ids"
+        ],
+        "additionalProperties": false
+      }
+    }
   },
   "required": [
     "plan_id", "mission_id", "created_at", "source_type", "input_excerpt",

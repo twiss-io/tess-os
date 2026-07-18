@@ -1,0 +1,30 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real POST /v1/messages 200 response (Anthropic Messages API docs, verified 2026-07-18) — not a captured real call. No real request was made; no credential of any kind appears anywhere in this file.",
+  "request": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "body": {
+      "model": "claude-sonnet-4-5",
+      "max_tokens": 256,
+      "messages": [{ "role": "user", "content": "Say hello in five words or fewer." }]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "msg_fixture_01",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-4-5",
+      "content": [{ "type": "text", "text": "Hello! How can I help?" }],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "usage": { "input_tokens": 14, "output_tokens": 7 }
+    }
+  },
+  "expected_normalized_output": {
+    "text": "Hello! How can I help?",
+    "stop_reason": "end_turn",
+    "usage": { "input_tokens": 14, "output_tokens": 7 }
+  }
+}

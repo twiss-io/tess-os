@@ -23,6 +23,16 @@ without both of those being true, and without that approval's
 content-hash matching `plan`'s CURRENT content (closing [Cyra MEDIUM-2]:
 a `plan_id` match alone is not proof the content an approver reviewed is
 the content actually being built — see `content.plan_content_hash()`).
+
+**Connectors v1** (`docs/design/connectors-architecture.md`): `plan.
+resolved_connectors` — the plan-time resolution of `how_it_works.
+integrations` against the connector registry (`connector_resolver.py`) —
+is copied verbatim into the built `SpecDocument` here, the same way every
+other content dimension is, and is one of the dimensions
+`content.plan_content_hash()` covers. No new trust machinery: a registry
+swap, a connector version bump, or a side-effect-class change made to
+`plan.resolved_connectors` after an approval was signed is caught by the
+SAME content-hash re-verification this module already enforces.
 """
 
 from __future__ import annotations
@@ -114,4 +124,5 @@ def build_spec(
         non_goals=list(plan.non_goals),
         acceptance_criteria=list(plan.acceptance_criteria),
         open_questions=list(plan.open_questions),
+        resolved_connectors=list(plan.resolved_connectors),
     )

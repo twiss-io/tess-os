@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 429 rate_limit_error response (Anthropic API docs, verified 2026-07-18) — not a captured real call. Proves error_map['429'] -> ConnectorRateLimitError and Retry-After passthrough.",
+  "response": {
+    "status": 429,
+    "headers": { "retry-after": "12" },
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "rate_limit_error",
+        "message": "Number of request tokens has exceeded your per-minute rate limit."
+      },
+      "request_id": "req_fixture_429"
+    }
+  },
+  "expected_error_class": "ConnectorRateLimitError",
+  "expected_http_status": 429
+}

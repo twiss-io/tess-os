@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 401 UNAUTHENTICATED response (Gemini API docs, verified 2026-07-18) — not a captured real call. Proves error_map['401'] -> ConnectorAuthError. No real key appears here.",
+  "response": {
+    "status": 401,
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "API key not valid. Please pass a valid API key.",
+        "status": "UNAUTHENTICATED"
+      }
+    }
+  },
+  "expected_error_class": "ConnectorAuthError",
+  "expected_http_status": 503
+}

@@ -17,6 +17,7 @@ from .content import (
     HowItLooks,
     HowItWorks,
     OpenQuestion,
+    ResolvedConnector,
     SpecEngineError,
     WhatItDoes,
     is_valid_slug,
@@ -133,6 +134,7 @@ class Plan:
     open_questions: List[OpenQuestion] = field(default_factory=list)
     routing_context: Optional[RoutingContext] = None
     summary_for_approval: str = ""
+    resolved_connectors: List[ResolvedConnector] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not is_valid_slug(self.plan_id):
@@ -191,6 +193,7 @@ class SpecDocument:
     non_goals: List[str] = field(default_factory=list)
     acceptance_criteria: List[str] = field(default_factory=list)
     open_questions: List[OpenQuestion] = field(default_factory=list)
+    resolved_connectors: List[ResolvedConnector] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not is_valid_slug(self.spec_id):
