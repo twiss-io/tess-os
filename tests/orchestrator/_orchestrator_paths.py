@@ -49,3 +49,19 @@ if "TESS_OS_APPROVAL_IDENTITY_DIR" not in os.environ:
     _identity_tmp_dir = tempfile.mkdtemp(prefix="orchestrator-tests-approval-identity-")
     os.environ["TESS_OS_APPROVAL_IDENTITY_DIR"] = _identity_tmp_dir
     atexit.register(shutil.rmtree, _identity_tmp_dir, ignore_errors=True)
+
+# Same defense-in-depth, same rationale, for telemetry (added alongside
+# orchestrator.pipeline.run_pipeline()'s Hop 6 -- see telemetry/README.md
+# and docs/TELEMETRY.md). Every test in this directory that exercises
+# telemetry explicitly enables it against its OWN tmp_path-scoped
+# telemetry_dir (never the default); this is a safety net so a test that
+# forgets to still cannot touch the real machine's own
+# ~/.tess-os/telemetry/ by accident -- and so every OTHER test in this
+# suite (which never touches telemetry at all) keeps observing the
+# default OFF/disabled state it already expects, scoped to a directory
+# that is guaranteed empty rather than whatever happens to exist on the
+# machine actually running the tests.
+if "TESS_OS_TELEMETRY_DIR" not in os.environ:
+    _telemetry_tmp_dir = tempfile.mkdtemp(prefix="orchestrator-tests-telemetry-")
+    os.environ["TESS_OS_TELEMETRY_DIR"] = _telemetry_tmp_dir
+    atexit.register(shutil.rmtree, _telemetry_tmp_dir, ignore_errors=True)

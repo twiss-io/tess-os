@@ -227,6 +227,25 @@ in-process/in-memory only — see `spec_engine.gate_approval`'s module
 docstring's "Replay" section). Both are flagged as open questions for
 Xavier in the hardening PR that introduced this section.
 
+## Telemetry (opt-in, off by default)
+
+`run_pipeline()`'s final hop, right after `generate_app()` succeeds, calls
+`telemetry.events.record_mission_completion()` — a local, OPT-IN
+activation/retention event for this install's governed-mission pipeline.
+It is OFF by default and a complete, instant no-op (nothing counted,
+timestamped, or written) unless a human has explicitly run
+`python -m telemetry.cli enable`. `PipelineResult.telemetry` carries the
+result (`MissionCompletionEvent(recorded=False)` in the default, disabled
+case — not an error).
+
+This is a genuinely separate concern from the approval gate above:
+`ApprovalGate` authenticates WHO approved a plan; `telemetry` counts
+THAT a governed mission (approval -> spec -> generated app) completed,
+locally, with no content, no PII, and no network call. See
+`telemetry/README.md` for the module's own architecture and
+`docs/TELEMETRY.md` for the full privacy contract — what is/isn't
+captured, where it lives, and how to inspect/disable/delete it.
+
 ## Handling ambiguous routing
 
 If `intent_router` returns `ambiguous=True` and no `clarification_answer`

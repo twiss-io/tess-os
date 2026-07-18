@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/telemetry/contracts/telemetry-event.schema.json",
+  "title": "Telemetry — Activation/Retention Event Contract",
+  "description": "The COMPLETE, EXHAUSTIVE field set any event telemetry.events.record_mission_completion() ever writes may contain. This is the technical enforcement of the privacy contract in docs/TELEMETRY.md, not just a documentation promise: additionalProperties:false means telemetry.store.append_event() raises telemetry.consent.TelemetryError (schema_check.SchemaValidationError, wrapped) rather than writing ANY record carrying an undocumented field -- spec text, plan content, entity/user names, file paths, or any other free-form or identifying string are not merely discouraged, they are IMPOSSIBLE to write through this contract without a code change to this file itself (which tests/telemetry/test_events_privacy.py would then have to be updated to match, in full view of review). See intent-router/schema/routing-decision.schema.json for this repo's own established precedent of the same additionalProperties:false discipline.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": ["tess.telemetry.v1"],
+      "description": "Contract version tag, mirroring intent_router's own 'schema' field convention."
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque unique id for this event (uuid4 hex string) -- identifies the EVENT RECORD, never a person or a piece of content."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["activation", "retention"],
+      "description": "'activation' -- this install's FIRST completed governed mission (mission_ordinal == 1: a human approval -> a finalized spec -> a generated app, the full accountability chain, firing once). 'retention' -- every governed mission completed after the first (mission_ordinal >= 2)."
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp with a 'Z' suffix, the same convention intent_router.types.utc_now_iso() / spec_engine.content.utc_now_iso() already use."
+    },
+    "install_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A LOCALLY-GENERATED, RANDOM (uuid4) anonymous identifier for this opted-in install -- never derived from hostname, MAC address, OS username, IP address, or any other identifying machine/account property. Written once by telemetry.consent.enable() and re-used across a disable/re-enable cycle so retention counts stay attributable to one install; a fresh 'delete' (telemetry.store.delete_all()) followed by a fresh 'enable' generates a brand-new one."
+    },
+    "mission_ordinal": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "A coarse count: this event is the Nth governed mission this install has completed (1 for the activation event, 2+ for every retention event). Never a spec_id, plan_id, or any other content-derived slug."
+    },
+    "days_since_last_mission": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Wall-clock days between THIS mission's completion and the immediately preceding one (round-tripped through datetime, not wall-clock-drift-sensitive beyond that) -- null for the activation event (mission_ordinal == 1, there is no prior mission to measure a gap from)."
+    }
+  },
+  "required": ["schema", "event_id", "event_type", "timestamp", "install_id", "mission_ordinal", "days_since_last_mission"],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by telemetry.schema_check: type, enum, properties, required, additionalProperties. ('minimum' above is documentation only, same as intent-router/schema/routing-decision.schema.json's own 'confidence' field -- the shared minimal-validator design does not enforce numeric bounds; additionalProperties:false is the one keyword here that is load-bearing for the privacy guarantee, and it IS enforced.)"
+}
