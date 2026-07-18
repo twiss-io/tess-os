@@ -22,7 +22,10 @@ costs money; v1 performs zero automatic retries (`max_retries: 0`).
 - **Base URL override (testing/self-hosted-proxy only):**
   `ANTHROPIC_API_BASE_URL`, if set, replaces `https://api.anthropic.com`.
   Not a secret — a network target override, disclosed and versioned like
-  everything else in the manifest.
+  everything else in the manifest. **https-pinned at runtime:** a
+  non-`https://` value is refused with a `ConnectorConfigError` (503)
+  before any network call — this override cannot be used to downgrade the
+  manifest's https-only guarantee to cleartext.
 
 ## Data flows
 

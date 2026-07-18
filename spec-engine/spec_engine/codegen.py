@@ -925,7 +925,24 @@ function createConnectorClient(config) {{
 
   function resolveBaseUrl() {{
     if (baseUrlOverrideEnv && process.env[baseUrlOverrideEnv]) {{
-      return process.env[baseUrlOverrideEnv];
+      const override = process.env[baseUrlOverrideEnv];
+      // https-pinned, same as the manifest's declared `base_url` (Cyra
+      // LOW F6, PR #84 security review fix-up round): this override is a
+      // disclosed escape hatch (connectors/registry/*/README.md "Base URL
+      // override"), never a license to downgrade transport security. An
+      // http:// (or any non-https://) value here would let a local env
+      // var silently send the real auth header/key in cleartext, or to an
+      // unintended internal endpoint — refused BEFORE any network call is
+      // ever attempted, with the same typed-error/503 discipline every
+      // other config problem in this client already uses.
+      if (!override.startsWith("https://")) {{
+        throw new ConnectorConfigError(
+          id + ": " + baseUrlOverrideEnv + " is set but is not an https:// URL (" +
+          JSON.stringify(override) + ") — refusing a non-HTTPS base-url override; " +
+          "this manifest's https-only guarantee applies to base_url_override_env too"
+        );
+      }}
+      return override;
     }}
     return baseUrl;
   }}
@@ -960,11 +977,18 @@ function createConnectorClient(config) {{
       );
     }}
 
+    // Resolved (and https-scheme-validated) BEFORE the request-building
+    // try/catch below — same reason resolveApiKey() is checked above it:
+    // a config problem must surface as its own typed ConnectorConfigError
+    // (503), never get silently re-wrapped into a generic
+    // ConnectorInvocationError (400) by the request-building catch block.
+    const resolvedBaseUrl = resolveBaseUrl();
+
     let url;
     let requestInit;
     try {{
       const built = buildRequest(op, input || {{}});
-      url = resolveBaseUrl().replace(/\\/$/, "") + built.path;
+      url = resolvedBaseUrl.replace(/\\/$/, "") + built.path;
       const headers = Object.assign({{ "Content-Type": "application/json" }}, built.headers || {{}});
       headers[headerName] = (headerValuePrefix || "") + key.value;
       if (apiVersionPin && apiVersionPin.kind === "header") {{

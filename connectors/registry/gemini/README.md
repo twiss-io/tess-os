@@ -24,7 +24,10 @@ automatic retries (`max_retries: 0`).
 - **Base URL override (testing/self-hosted-proxy only):**
   `GEMINI_API_BASE_URL`, if set, replaces
   `https://generativelanguage.googleapis.com`. Not a secret — a network
-  target override.
+  target override. **https-pinned at runtime:** a non-`https://` value is
+  refused with a `ConnectorConfigError` (503) before any network call —
+  this override cannot be used to downgrade the manifest's https-only
+  guarantee to cleartext.
 
 ## Data flows
 

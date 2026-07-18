@@ -21,7 +21,10 @@ automatic retries (`max_retries: 0`).
 - **Header:** `Authorization: Bearer <value of OPENAI_API_KEY>`.
 - **Base URL override (testing/self-hosted-proxy only):**
   `OPENAI_API_BASE_URL`, if set, replaces `https://api.openai.com`. Not a
-  secret — a network target override.
+  secret — a network target override. **https-pinned at runtime:** a
+  non-`https://` value is refused with a `ConnectorConfigError` (503)
+  before any network call — this override cannot be used to downgrade the
+  manifest's https-only guarantee to cleartext.
 
 ## Data flows
 
