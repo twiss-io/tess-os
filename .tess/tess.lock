@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-18T13:28:35.437245Z'
+  last_updated: '2026-07-18T16:36:41.038463Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5950,7 +5950,7 @@ files:
   .tess/core/contracts/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6636df95cd62a61141a76f294983bdce5608eb9357b2431683c92e785b7662c8
+    base_sha: sha256:0310b5a99aed22d7c69ca9675923ad59c263aa13c1b82f208cade58fc471603c
     live_path: core/contracts/README.md
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/brief.schema.json:
@@ -5980,7 +5980,7 @@ files:
   .tess/core/contracts/policy.schema.json:
     status: core-managed
     tier: security
-    base_sha: sha256:8b732ed1230e9d7ec7fb408dc4ca2e6ef2471e123ea3b5054bb55f4bb57fa359
+    base_sha: sha256:cdfa9107196594f74ca0cc50fa061527eaa803c7dbb6723419c01452a976c975
     live_path: core/contracts/policy.schema.json
     last_updated: '2026-07-06T22:50:20.142367Z'
   .tess/core/contracts/mission.schema.json:
@@ -5992,12 +5992,12 @@ files:
   .tess/core/contracts/retry.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:67611343324d08b0f3fb9bf148d175f33c029198783077084c10c66a6f1a7a6e
+    base_sha: sha256:c9ef4ec9aeea0536254ca8408232de91ba90198dd14d6572c4ab09432a47c60f
     live_path: core/contracts/retry.schema.json
     last_updated: '2026-07-07T00:00:00.000000Z'
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:105149f5a2aeee36741ae421addeeacbd643b5399bd381ebf0dd7f1f377520d2
+    base_sha: sha256:7db22951764cdc8d81bf8afdfcb47f64fbbd1e3d46f21bb8c7a995b7eec5477c
     live_path: core/policy/policy.yaml
     last_updated: '2026-07-06T22:50:20.142367Z'

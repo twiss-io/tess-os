@@ -14,7 +14,7 @@ call), except where noted:
   * All four tools produce a `tools/call` result (validate_contract,
     gate_check_paths, mission_status, roster_list).
   * `gate_check_paths` returns the SAME verdict-coverage result as
-    `tessctl gate pre-push` for the same paths/head, in both the BLOCKED
+    `tessctl gate pre-push` for the same paths/base/head, in both the BLOCKED
     (no covering verdict) and ALLOWED (valid signed covering verdict)
     directions — proving it calls the identical `_gate_run_ship_check`
     code path, not a re-derivation.
@@ -553,7 +553,7 @@ def test_gate_check_paths_matches_gate_pre_push_when_blocked(gate_repo, run_cli)
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": cli_payload["changed_paths"], "head": head},
+            "arguments": {"paths": ["src/prod/app.py"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
@@ -561,8 +561,8 @@ def test_gate_check_paths_matches_gate_pre_push_when_blocked(gate_repo, run_cli)
 
     assert mcp_payload["blocked"] == cli_payload["blocked"] is True
     assert mcp_payload["reasons"] == cli_payload["reasons"]
-    assert mcp_payload["changed_paths"] == cli_payload["changed_paths"]
-    assert any("src/prod/app.py" in r and "no covering APPROVE verdict" in r for r in mcp_payload["reasons"])
+    assert mcp_payload["changed_paths_count"] == cli_payload["changed_paths_count"] == 1
+    assert mcp_payload["reasons"] == ["COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"]
 
 
 def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli, engine, verifier_gpg_keys):
@@ -590,18 +590,18 @@ def test_gate_check_paths_matches_gate_pre_push_when_allowed(gate_repo, run_cli,
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": cli_payload["changed_paths"], "head": head},
+            "arguments": {"paths": ["src/prod/app.py"], "base": base, "head": head},
         })
         mcp_payload = resp["result"]["structuredContent"]
     finally:
         client.close()
 
-    # `gate pre-push --json`'s own CLI report wraps the SAME result dict
-    # with one extra CLI-only key ("phase") — everything else must match
-    # byte-for-byte, since both paths call the identical
-    # _gate_run_ship_check() function.
-    cli_result_only = {k: v for k, v in cli_payload.items() if k != "phase"}
-    assert mcp_payload == {**cli_result_only, "head": head}
+    # The same engine permits both calls. The CLI diff includes the committed
+    # verdict as well as the requested governed path; MCP intentionally does
+    # not echo raw paths and reports only the caller-supplied path count.
+    assert mcp_payload["blocked"] == cli_payload["blocked"] is False
+    assert mcp_payload["reasons"] == cli_payload["reasons"] == []
+    assert mcp_payload["changed_paths_count"] == 1
 
 
 def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
@@ -619,11 +619,12 @@ def test_gate_check_paths_defaults_head_to_current_head(gate_repo):
         _initialize(client)
         resp = client.request("tools/call", {
             "name": "gate_check_paths",
-            "arguments": {"paths": ["docs/notes.md"]},
+            "arguments": {"paths": ["docs/notes.md"], "base": real_head},
         })
         payload = resp["result"]["structuredContent"]
-        assert payload["head"] == real_head
         assert payload["blocked"] is False
+        assert payload["changed_paths_count"] == 1
+        assert "head" not in payload and "base" not in payload
     finally:
         client.close()
 
@@ -634,6 +635,80 @@ def test_gate_check_paths_missing_paths_argument(mcp_root):
         _initialize(client)
         resp = client.request("tools/call", {"name": "gate_check_paths", "arguments": {}})
         assert resp["error"]["code"] == -32602
+    finally:
+        client.close()
+
+
+def test_gate_check_paths_without_immutable_base_is_explicitly_denied(mcp_root):
+    """Reverse direction: MCP cannot silently fall back to candidate trust."""
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {"paths": ["docs/notes.md"]},
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["blocked"] is True
+        assert "base" not in payload
+        assert payload["reasons"] == ["BASE_REQUIRED: an immutable BASE commit is required"]
+    finally:
+        client.close()
+
+
+def test_gate_check_paths_no_base_denial_never_enters_git_or_gate(engine, tmp_path, monkeypatch):
+    """No BASE means no candidate fallback, even before a HEAD is resolved."""
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("BASE_REQUIRED must be returned before candidate evaluation")
+
+    monkeypatch.setattr(engine, "_gate_run_git", forbidden)
+    monkeypatch.setattr(engine, "_gate_run_ship_check", forbidden)
+
+    result = engine._mcp_tool_gate_check_paths(
+        tmp_path, {"paths": ["core/policy/policy.yaml"], "base": "main"},
+    )
+    assert result["blocked"] is True
+    assert "base" not in result
+    assert result["reasons"] == ["BASE_REQUIRED: an immutable BASE commit is required"]
+
+
+def test_gate_decision_redacts_attacker_sentinel_across_cli_trace_otlp_and_mcp(
+    gate_repo, run_cli,
+):
+    """One governed attacker-controlled pathname must not cross any decision
+    output boundary.  The gate still blocks; only its safe code is exported."""
+    sentinel = "P73_GATE_SENTINEL_never_export"
+    base = _base_sha(gate_repo)
+    path = f"src/prod/{sentinel}.py"
+    (gate_repo / "src" / "prod").mkdir(parents=True)
+    (gate_repo / path).write_text("print('blocked')\n", encoding="utf-8")
+    head = _commit_all(gate_repo, "add governed sentinel path")
+
+    cli_json = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head, "--json")
+    cli_text = run_cli(gate_repo, "gate", "ci", "--base", base, "--head", head)
+    assert cli_json.returncode == cli_text.returncode == 1
+    assert sentinel not in (cli_json.stdout + cli_json.stderr + cli_text.stdout + cli_text.stderr)
+    payload = json.loads(cli_json.stdout)
+    assert payload["reasons"] == ["COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"]
+
+    trace_bytes = b"".join(
+        p.read_bytes() for p in (gate_repo / ".tess" / "trace" / "runs").glob("*.jsonl")
+    )
+    assert sentinel.encode() not in trace_bytes
+    otlp = run_cli(gate_repo, "trace", "export", "--format", "otlp-json")
+    assert otlp.returncode == 0
+    assert sentinel not in (otlp.stdout + otlp.stderr)
+
+    client = McpStdio(gate_repo)
+    try:
+        _initialize(client)
+        response = client.request("tools/call", {
+            "name": "gate_check_paths",
+            "arguments": {"paths": [path], "base": base, "head": head},
+        })
+        serialized = json.dumps(response)
+        assert sentinel not in serialized
+        assert response["result"]["structuredContent"]["blocked"] is True
     finally:
         client.close()
 

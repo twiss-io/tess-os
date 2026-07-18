@@ -350,7 +350,11 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
-    assert _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False).returncode == 0
+    # Seed the same remote ref this test updates below.  Pushing the default
+    # local branch name here and then `HEAD:main` later would make the latter
+    # look like a brand-new ref (empty BASE), which correctly has no trusted
+    # verifier registration under the immutable-base contract.
+    assert _git(e2e_repo, "push", "-u", "origin", "HEAD:main", check=False).returncode == 0
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")

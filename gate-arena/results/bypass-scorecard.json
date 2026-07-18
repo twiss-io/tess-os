@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-07T18:54:49.985057+00:00",
+  "generated_at": "2026-07-17T04:43:28.026493+00:00",
   "total_attacks": 12,
   "blocked": 12,
   "slipped_through": 0,
@@ -9,20 +9,17 @@
       "name": "--no-verify local hook bypass",
       "description": "Push an unreviewed prod-src change with --no-verify, then check whether the CI gate independently catches it.",
       "blocked": true,
-      "mechanism": "local pre-push hook bypassed via --no-verify (push rc=0, local_bypass_succeeded=True); CI-equivalent `tessctl gate ci` over the same base..head range BLOCKED it independently \u2014 ['.github/workflows/tess-gate.yml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path', 'src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path']",
+      "mechanism": "local pre-push hook bypassed via --no-verify (push rc=0, local_bypass_succeeded=True); CI-equivalent `tessctl gate ci` over the same base..head range BLOCKED it independently \u2014 ['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']",
       "evidence": {
         "local_bypass_succeeded": true,
         "ci_gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            ".github/workflows/tess-gate.yml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path",
-            "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths": [
-            ".github/workflows/tess-gate.yml",
-            "src/prod/app.py"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -31,29 +28,21 @@
       "name": "hard-floor path + valid signed APPROVE verdict",
       "description": "A .env credential change gets a syntactically-valid, correctly-signed APPROVE verdict from an allowed verifier \u2014 the hard floor must still block on verdict alone.",
       "blocked": true,
-      "mechanism": "hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed Quinn APPROVE verdict was NOT sufficient \u2014 blocked=True, hard_floor_reason_present=True ([\"HARD FLOOR [credentials] rule 'credentials': no human sign-off artifact at /private/var/folders/wj/hsspmmcs4zq9h6_mhr0p5lsw0000gq/T/gate-arena-bypass-4d477b1y/A2/repo/.tess/gate/signoffs/credentials.signoff.json \u2014 guardrails.md Rule 18 hard-floor categories are never satisfiable by a verifier's verdict alone; requires an explicit operator sign-off artifact (see README.md 'tessctl gate')\"]). With a real, cryptographically SIGNED .tess/gate/signoffs/credentials.signoff.json artifact (from a registered policy.signoff_keys identity) plus a covering Reid verdict for the now-governed signoffs directory, the SAME change clears (blocked=False) \u2014 proving this is a real escape valve (authenticated human sign-off), not the hard floor being permanently unusable.",
+      "mechanism": "hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed Quinn APPROVE verdict was NOT sufficient \u2014 blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid']). With a real, cryptographically SIGNED .tess/gate/signoffs/credentials.signoff.json artifact (from a registered policy.signoff_keys identity) plus a covering Reid verdict for the now-governed signoffs directory, the SAME change clears (blocked=False) \u2014 proving this is a real escape valve (authenticated human sign-off), not the hard floor being permanently unusable.",
       "evidence": {
         "verdict_only": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "HARD FLOOR [credentials] rule 'credentials': no human sign-off artifact at /private/var/folders/wj/hsspmmcs4zq9h6_mhr0p5lsw0000gq/T/gate-arena-bypass-4d477b1y/A2/repo/.tess/gate/signoffs/credentials.signoff.json \u2014 guardrails.md Rule 18 hard-floor categories are never satisfiable by a verifier's verdict alone; requires an explicit operator sign-off artifact (see README.md 'tessctl gate')"
+            "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid"
           ],
-          "changed_paths": [
-            "config.env",
-            "verdicts/config-env.verdict.md"
-          ]
+          "changed_paths_count": 2
         },
         "with_human_signoff": {
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths": [
-            ".tess/gate/signoffs/credentials.signoff.json",
-            "config.env",
-            "verdicts/config-env.verdict.md",
-            "verdicts/signoffs-dir.verdict.md"
-          ]
+          "changed_paths_count": 5
         },
         "clears_with_real_signoff": true
       }
@@ -63,19 +52,16 @@
       "name": "policy-tamper in the same push (self-gating rule deleted)",
       "description": "Delete policy.yaml's own self-gating rule (protecting core/policy/**) AND ship an unreviewed prod-src change, both in one commit.",
       "blocked": true,
-      "mechanism": "policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** \u2014 MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) \u2014 result: BLOCKED (['core/policy/policy.yaml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path \u2014 A3 fail-closed: rule(s) tess-os-security-tier-doctrine were REMOVED, NARROWED, or had require_verdict turned off by the NEWLY-PUSHED policy, but ALREADY REQUIRED a verdict for this path in the pre-push baseline policy \u2014 a single push cannot both weaken the policy and rely on the weakened policy to pass', 'src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path \u2014 A3 fail-closed: rule(s) prod-src were REMOVED, NARROWED, or had require_verdict turned off by the NEWLY-PUSHED policy, but ALREADY REQUIRED a verdict for this path in the pre-push baseline policy \u2014 a single push cannot both weaken the policy and rely on the weakened policy to pass'])",
+      "mechanism": "policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** \u2014 MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) \u2014 result: BLOCKED (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'])",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "core/policy/policy.yaml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path \u2014 A3 fail-closed: rule(s) tess-os-security-tier-doctrine were REMOVED, NARROWED, or had require_verdict turned off by the NEWLY-PUSHED policy, but ALREADY REQUIRED a verdict for this path in the pre-push baseline policy \u2014 a single push cannot both weaken the policy and rely on the weakened policy to pass",
-            "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path \u2014 A3 fail-closed: rule(s) prod-src were REMOVED, NARROWED, or had require_verdict turned off by the NEWLY-PUSHED policy, but ALREADY REQUIRED a verdict for this path in the pre-push baseline policy \u2014 a single push cannot both weaken the policy and rely on the weakened policy to pass"
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths": [
-            "core/policy/policy.yaml",
-            "src/prod/app.py"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -84,18 +70,15 @@
       "name": "unsigned verdict",
       "description": "A hand-authored, schema-valid APPROVE verdict with correct glob/artifact_hashes/verifier but no signature block.",
       "blocked": true,
-      "mechanism": "unsigned APPROVE verdict, otherwise perfect (right glob/hashes/verifier) \u2014 ['src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (no signature block present on this verdict \u2014 an unsigned verdict can never cover any path (Phase 2b, fail-closed)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate']",
+      "mechanism": "unsigned APPROVE verdict, otherwise perfect (right glob/hashes/verifier) \u2014 ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid']",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (no signature block present on this verdict \u2014 an unsigned verdict can never cover any path (Phase 2b, fail-closed)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths": [
-            "src/prod/app.py",
-            "verdicts/prod-src.verdict.md"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -104,18 +87,15 @@
       "name": "wrong-key / mismatched-identity signature",
       "description": "A verdict claims verifier: Quinn but is signed with Reid's real, registered key.",
       "blocked": true,
-      "mechanism": "verdict claims verifier=Quinn but is signed with Reid's key \u2014 [\"src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (gpg signature verification failed for verifier 'Quinn' (bad signature, or the signature does not match this content)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate\"]",
+      "mechanism": "verdict claims verifier=Quinn but is signed with Reid's key \u2014 ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid']",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (gpg signature verification failed for verifier 'Quinn' (bad signature, or the signature does not match this content)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths": [
-            "src/prod/app.py",
-            "verdicts/prod-src.verdict.md"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -124,18 +104,15 @@
       "name": "tampered-after-signing verdict",
       "description": "A validly-signed verdict is edited (summary_line changed) after signing, without re-signing.",
       "blocked": true,
-      "mechanism": "verdict content edited after signing (signed_content_sha256 stale) \u2014 [\"src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (signature.signed_content_sha256 does not match this verdict's CURRENT canonical content \u2014 the verdict was edited/tampered with after signing (fail-closed)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate\"]",
+      "mechanism": "verdict content edited after signing (signed_content_sha256 stale) \u2014 ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid']",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (signature.signed_content_sha256 does not match this verdict's CURRENT canonical content \u2014 the verdict was edited/tampered with after signing (fail-closed)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
-          "changed_paths": [
-            "src/prod/app.py",
-            "verdicts/prod-src.verdict.md"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -144,17 +121,15 @@
       "name": "pre-planted / uncommitted verdict",
       "description": "A perfectly valid, signed verdict is planted in the working tree but never committed.",
       "blocked": true,
-      "mechanism": "a fully valid signed verdict sits UNCOMMITTED in the working tree (git status: '?? verdicts/') at check time \u2014 covering-verdict discovery reads the git TREE at the pushed head, not the on-disk working tree (HIGH-1(c)) \u2014 ['src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path']",
+      "mechanism": "a fully valid signed verdict sits UNCOMMITTED in the working tree (git status: '?? verdicts/') at check time \u2014 covering-verdict discovery reads the git TREE at the pushed head, not the on-disk working tree (HIGH-1(c)) \u2014 ['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths": [
-            "src/prod/app.py"
-          ]
+          "changed_paths_count": 1
         },
         "git_status": "?? verdicts/\n"
       }
@@ -164,19 +139,16 @@
       "name": ".github/workflows neutering in the same push",
       "description": "Replace the gate's own CI workflow body with a no-op, keeping the same job name, in the same commit as the payload.",
       "blocked": true,
-      "mechanism": ".github/workflows/tess-gate.yml body replaced with a no-op in the same commit as the unreviewed src/prod change; .github/workflows/** is itself covered by tess-os-security-tier-doctrine (MEDIUM-1) \u2014 BLOCKED (['.github/workflows/tess-gate.yml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path', 'src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path']). NOTE: this only proves the CONTENT check blocks the commit from clearing `tessctl gate ci` run independently; it does not (cannot, from inside this arena) prove a real GitHub branch-protection required-check would refuse to go green if the neutered workflow is what actually executes in CI \u2014 that half of defense-in-depth is a GitHub-admin-side control (required status checks + CODEOWNERS on .github/workflows/**), disclosed as a boundary, not tested here.",
+      "mechanism": ".github/workflows/tess-gate.yml body replaced with a no-op in the same commit as the unreviewed src/prod change; .github/workflows/** is itself covered by tess-os-security-tier-doctrine (MEDIUM-1) \u2014 BLOCKED (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). NOTE: this only proves the CONTENT check blocks the commit from clearing `tessctl gate ci` run independently; it does not (cannot, from inside this arena) prove a real GitHub branch-protection required-check would refuse to go green if the neutered workflow is what actually executes in CI \u2014 that half of defense-in-depth is a GitHub-admin-side control (required status checks + CODEOWNERS on .github/workflows/**), disclosed as a boundary, not tested here.",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            ".github/workflows/tess-gate.yml: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path",
-            "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths": [
-            ".github/workflows/tess-gate.yml",
-            "src/prod/app.py"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -185,18 +157,15 @@
       "name": "stale artifact_hashes replay",
       "description": "A validly-signed verdict approves v2 of a file; v3 ships in the same range, reusing the old (stale) verdict.",
       "blocked": true,
-      "mechanism": "verdict's artifact_hashes records v2's blob sha (01d7864ea22f524ba5967b2465248b9b156686ef); the pushed head's actual content is v3 (different blob) \u2014 [\"src/prod/app.py: a covering, validly-signed APPROVE verdict from an allowed verifier exists, but its artifact_hashes does not record THIS path's CURRENT content (current blob(s): ['287e2920e3d9df72ad59bdd1af6445a7c02445a9']) \u2014 HIGH-1 fix: verification is per-change; an old, stale, or missing content hash does not clear a new or re-edited version of this file, or a brand-new file under the same covers_paths glob\"]",
+      "mechanism": "verdict's artifact_hashes records v2's blob sha (01d7864ea22f524ba5967b2465248b9b156686ef); the pushed head's actual content is v3 (different blob) \u2014 ['VERDICT_CONTENT_STALE: a covering verdict is not bound to current content']",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering, validly-signed APPROVE verdict from an allowed verifier exists, but its artifact_hashes does not record THIS path's CURRENT content (current blob(s): ['287e2920e3d9df72ad59bdd1af6445a7c02445a9']) \u2014 HIGH-1 fix: verification is per-change; an old, stale, or missing content hash does not clear a new or re-edited version of this file, or a brand-new file under the same covers_paths glob"
+            "VERDICT_CONTENT_STALE: a covering verdict is not bound to current content"
           ],
-          "changed_paths": [
-            "src/prod/app.py",
-            "verdicts/prod-src.verdict.md"
-          ]
+          "changed_paths_count": 2
         }
       }
     },
@@ -210,22 +179,22 @@
         "master_key_glob": {
           "blocked": true,
           "reasons": [
-            "[contract] [verdict] verdicts/master-key.verdict.md $.covers_paths: ['**'] act(s) as a blanket 'master key' glob that would match every path in the repo (or every root-level path, for a bare '*') regardless of what this verdict actually reviewed \u2014 a verdict must scope covers_paths to the specific paths it reviewed, never a blanket glob",
-            "src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+            "CONTRACT_INVALID: a governed contract is invalid",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
           "note": "should be rejected at schema/lint time (HIGH-1(b), 'is_overbroad_glob') before it ever reaches covering-verdict discovery"
         },
         "empty_verifier_keys": {
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (no registered public key for verifier 'Quinn' in policy.verifier_keys (fail-closed \u2014 an unregistered verifier's signature can never verify)) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
           "note": "a real signature with nowhere to be checked against must fail-closed, not fail-open"
         },
         "expired_key": {
           "blocked": true,
           "reasons": [
-            "src/prod/app.py: a covering APPROVE verdict exists for this path, but its signature does not verify (the signature is cryptographically valid and was made by the exact key registered for verifier 'Quinn', but gpg reports that key is EXPIRED as of RIGHT NOW (checked at verification time, not signing time) \u2014 A10c fix, fail-closed: a verdict signed by an expired key can never cover a path, even one signed while the key was still good; rotate 'Quinn''s entry in policy.verifier_keys to a currently-valid key and have this verdict re-signed) \u2014 Phase 2b fix: an unsigned, hand-faked, wrong-key, or tampered verdict can never clear the gate"
+            "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
           ],
           "note": "the key's short (seconds=6) Expire-Date has genuinely elapsed by verification time (waited past the key's own recorded expiration epoch, not a fixed sleep); `_gate_verify_verdict_signature` inspects gpg's own EXPKEYSIG/REVKEYSIG status classification (`_gpg_signing_key_validity_reason`), checked at verification time, not signing time. Empirically: the gate BLOCKED it \u2014 an expired verifier key's signature is rejected fail-closed even though the crypto math and exact fingerprint both check out."
         }
@@ -236,20 +205,17 @@
       "name": "same-push engine tamper (honesty-capstone-audit-2026-07-08 \u00a73-c)",
       "description": "Edit the gate engine's own decision logic (_gate_run_ship_check) to self-attest 'not blocked', in the same push as an unreviewed payload \u2014 does the REAL CI workflow's trusted-engine defense still catch it?",
       "blocked": true,
-      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): NOT BLOCKED \u2014 slips past naively ({'phase': 'ci', 'blocked': False, 'reasons': [], 'changed_paths': ['.tess/bin/tessctl', 'src/prod/app.py']}). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED ( - src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
+      "mechanism": "`.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine \u2014 exactly what the v2/unpatched CI workflow ran): NOT BLOCKED \u2014 slips past naively ({'phase': 'ci', 'blocked': False, 'reasons': [], 'changed_paths_count': 2}). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 \u2014 extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED (tessctl gate ci \u2014 BLOCKED\n  changed paths: 2\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6)",
       "evidence": {
         "naive_blocked": false,
         "naive_payload": {
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths": [
-            ".tess/bin/tessctl",
-            "src/prod/app.py"
-          ]
+          "changed_paths_count": 2
         },
         "trusted_returncode": 1,
-        "trusted_output": "tessctl gate ci \u2014 BLOCKED\n  changed paths: 2\n    - .tess/bin/tessctl: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path\n    - src/prod/app.py: no covering APPROVE verdict found (policy rule(s): prod-src; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n"
+        "trusted_output": "tessctl gate ci \u2014 BLOCKED\n  changed paths: 2\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n    - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found\n  refusing (fail-closed) \u2014 see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6\n"
       }
     },
     {
@@ -257,29 +223,22 @@
       "name": "hard-floor sign-off forgery (honesty-capstone-audit-2026-07-08 \u00a73-d)",
       "description": "An unsigned, shape-valid-only sign-off (forgeable by any agent that can write a file) must NOT clear a hard floor; the same sign-off, cryptographically signed by a registered operator key, must.",
       "blocked": true,
-      "mechanism": "credentials hard floor matched config.env. Forged (unsigned, shape-valid-only) sign-off: blocked=True, hard_floor_reason_present=True ([\"HARD FLOOR [credentials] rule 'credentials': sign-off artifact at /private/var/folders/wj/hsspmmcs4zq9h6_mhr0p5lsw0000gq/T/gate-arena-bypass-4d477b1y/A12/repo/.tess/gate/signoffs/credentials.signoff.json failed AUTHENTICATION: no signature block present on this sign-off \u2014 an unsigned/hand-authored sign-off can never clear a hard floor (fail-closed, honesty-capstone-audit-2026-07-08 \u00a73-d) \u2014 honesty-capstone-audit-2026-07-08 \u00a73-d fix: a hard-floor sign-off must be cryptographically signed by a registered operator key (policy.signoff_keys); shape-valid JSON alone can never clear a hard floor\", '.tess/gate/signoffs/credentials.signoff.json: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in policy.signoff_keys, PLUS a covering Reid verdict for the now-governed signoffs directory itself: blocked=False ([]) \u2014 proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable.",
+      "mechanism": "credentials hard floor matched config.env. Forged (unsigned, shape-valid-only) sign-off: blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in policy.signoff_keys, PLUS a covering Reid verdict for the now-governed signoffs directory itself: blocked=False ([]) \u2014 proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable.",
       "evidence": {
         "forged": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
-            "HARD FLOOR [credentials] rule 'credentials': sign-off artifact at /private/var/folders/wj/hsspmmcs4zq9h6_mhr0p5lsw0000gq/T/gate-arena-bypass-4d477b1y/A12/repo/.tess/gate/signoffs/credentials.signoff.json failed AUTHENTICATION: no signature block present on this sign-off \u2014 an unsigned/hand-authored sign-off can never clear a hard floor (fail-closed, honesty-capstone-audit-2026-07-08 \u00a73-d) \u2014 honesty-capstone-audit-2026-07-08 \u00a73-d fix: a hard-floor sign-off must be cryptographically signed by a registered operator key (policy.signoff_keys); shape-valid JSON alone can never clear a hard floor",
-            ".tess/gate/signoffs/credentials.signoff.json: no covering APPROVE verdict found (policy rule(s): tess-os-security-tier-doctrine; classification: prod_touching) \u2014 Decision #6: the ship-gate refuses without a schema-valid, COMMITTED verdict carrying disposition: APPROVE and a covers_paths entry matching this path"
+            "HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid",
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
-          "changed_paths": [
-            ".tess/gate/signoffs/credentials.signoff.json",
-            "config.env"
-          ]
+          "changed_paths_count": 2
         },
         "signed": {
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths": [
-            ".tess/gate/signoffs/credentials.signoff.json",
-            "config.env",
-            "verdicts/signoffs-dir.verdict.md"
-          ]
+          "changed_paths_count": 4
         }
       }
     }

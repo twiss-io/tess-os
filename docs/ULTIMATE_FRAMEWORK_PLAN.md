@@ -336,7 +336,7 @@ Each module: what exists → target interface → weak-agent function. All modul
 
 ### C4 — Typed Retry module
 - **Exists:** `conductor/subagent-failure-protocol.md` (complete: states, causes, changed-brief rule, cap 3, escalation format).
-- **Target:** retry ledger in the mission record: `missions/<id>/retries/<task>.attempt-N.md` (front-matter: failure state, cause class, what-the-brief-changed; enforced: attempt N+1's brief must differ from attempt N's when cause ≠ transient — a literal diff check). CLI: `tessctl retry log`, `tessctl retry check` (blocks a 4th attempt; blocks a same-brief non-transient retry).
+- **Target:** retry ledger in the mission record: `missions/<id>/retries/<task>.attempt-N.md` (front-matter: failure state, cause class, commitment-only brief digest/length, controlled change code; enforced: attempt N+1's normalized brief commitment must differ from every earlier non-transient attempt). CLI: `tessctl retry log`, `tessctl retry check`, `tessctl retry migrate` (dry-run by default; blocks a 4th attempt, a same-brief non-transient retry, and a legacy plaintext ledger until explicitly migrated).
 - **Weak-agent function:** §A.5. The diff check is the productized "no same-brief retries" rule — currently pure model discipline, becomes deterministic.
 
 ### C5 — Guardrails / hard-floor module
