@@ -1,0 +1,58 @@
+{
+  "manifest_version": "connector-manifest.v1",
+  "id": "gemini",
+  "version": "0.1.0",
+  "display_name": "Google Gemini",
+  "aliases": ["google-gemini"],
+  "provider": {
+    "base_url": "https://generativelanguage.googleapis.com",
+    "base_url_override_env": "GEMINI_API_BASE_URL",
+    "api_version_pin": { "kind": "url_path", "value": "v1beta" }
+  },
+  "auth": {
+    "scheme": "env",
+    "env": ["GEMINI_API_KEY"],
+    "header": { "name": "x-goog-api-key" }
+  },
+  "operations": [
+    {
+      "name": "generate",
+      "description": "Single-turn or multi-turn text generation via generateContent. The endpoint path embeds the model name (/v1beta/models/{model}:generateContent) rather than carrying it in the body — this connector substitutes input.model into the path at call time. Auth uses the x-goog-api-key header (the current documented mechanism), never the legacy ?key= query-string form, so the key is never written into a URL that could end up in access logs.",
+      "side_effect": "spend",
+      "idempotent": false,
+      "http": { "method": "POST", "path": "/v1beta/models/{model}:generateContent" },
+      "input_schema": {
+        "fields": [
+          { "name": "model", "type": "string" },
+          { "name": "messages", "type": "array" },
+          { "name": "max_tokens", "type": "integer" },
+          { "name": "temperature", "type": "number" }
+        ]
+      },
+      "output_schema": {
+        "fields": [
+          { "name": "text", "type": "string" },
+          { "name": "stop_reason", "type": "string" },
+          { "name": "usage", "type": "object" },
+          { "name": "raw", "type": "object" }
+        ]
+      }
+    }
+  ],
+  "data_flows": [
+    "input.messages (role 'system' entries sent separately as systemInstruction) and input.model/max_tokens/temperature are sent, as JSON, to provider.base_url (or its base_url_override_env override, when explicitly configured) over HTTPS.",
+    "No data is sent anywhere else — there is no secondary destination, logging sink, or analytics call in this connector.",
+    "The provider's full raw response is returned to the caller unmodified as output.raw; nothing is dropped, redacted, or summarized before being handed back."
+  ],
+  "error_map": {
+    "401": "ConnectorAuthError",
+    "403": "ConnectorAuthError",
+    "400": "ConnectorInvocationError",
+    "429": "ConnectorRateLimitError",
+    "500": "ConnectorProviderError",
+    "502": "ConnectorProviderError",
+    "503": "ConnectorProviderError"
+  },
+  "limits": { "timeout_ms": 60000, "max_retries": 0 },
+  "trust": { "tier": "T0", "evidence": [] }
+}

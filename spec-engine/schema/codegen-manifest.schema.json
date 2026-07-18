@@ -18,11 +18,25 @@
           "module_id": { "type": "string", "minLength": 1, "description": "Matches the module_id in the sibling scaffold-plan.json — traceability between the plan and what was actually written." },
           "kind": { "type": "string", "enum": ["backend-model", "frontend-page", "service", "integration", "test-suite"] },
           "source_section": { "type": "string", "minLength": 1 },
-          "generation_status": { "type": "string", "enum": ["generated", "generated-stub-logic", "stub"] },
+          "generation_status": { "type": "string", "enum": ["generated", "generated-stub-logic", "stub", "generated-connector"], "description": "'generated-connector' (Connectors v1, docs/design/connectors-architecture.md §6.3) is an ADDITIVE fourth value: real client code generated from a REGISTERED connector manifest, operational once its declared env var is configured — deliberately distinct from plain 'generated' because operability depends on runtime configuration this repo cannot carry." },
           "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "notes": { "type": "string" }
+          "notes": { "type": "string" },
+          "connector": {
+            "type": ["object", "null"],
+            "description": "Non-null ONLY on a 'generated-connector' entry: connector id@version, manifest content hash, the operations wired, the declared env var names, and the side-effect classes — the exact surface the approval gate's content hash (spec_engine.content.plan_content_hash) is bound to. Always present as a key (null on every other generation_status) so this schema can require it uniformly.",
+            "properties": {
+              "connector_id": { "type": "string", "minLength": 1 },
+              "connector_version": { "type": "string", "minLength": 1 },
+              "manifest_hash": { "type": "string", "minLength": 1 },
+              "operations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "env_vars": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "side_effect_classes": { "type": "array", "items": { "type": "string", "enum": ["read", "write", "spend"] } }
+            },
+            "required": ["connector_id", "connector_version", "manifest_hash", "operations", "env_vars", "side_effect_classes"],
+            "additionalProperties": false
+          }
         },
-        "required": ["module_id", "kind", "source_section", "generation_status", "files", "notes"],
+        "required": ["module_id", "kind", "source_section", "generation_status", "files", "notes", "connector"],
         "additionalProperties": false
       }
     },

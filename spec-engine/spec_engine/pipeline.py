@@ -58,12 +58,17 @@ def run_intake_and_plan(
     routing_context: Optional[RoutingContext] = None,
     model_assisted: Optional[ModelAssistedHarvest] = None,
     log_path: PathLikeOrFalse = None,
+    registry_root=None,
 ) -> Plan:
     """Harvest `input_text` and build the `Plan` an approver reviews. Pass
     `log_path=False` to skip writing to the plans log (e.g. a dry run);
-    omit it (or pass `None`) to use the component's default sink."""
+    omit it (or pass `None`) to use the component's default sink.
+    `registry_root` overrides the connector registry directory
+    `plan_builder.build_plan()` resolves `how_it_works.integrations`
+    against (default: the real `connectors/registry/` in this checkout) —
+    see that function's own docstring."""
     harvest = harvest_intake(input_text, source_type, model_assisted=model_assisted)
-    plan = build_plan(harvest, mission_id=mission_id, routing_context=routing_context)
+    plan = build_plan(harvest, mission_id=mission_id, routing_context=routing_context, registry_root=registry_root)
     if log_path is not False:
         append_plan(plan, log_path)
     return plan
@@ -166,6 +171,7 @@ def run_spec_engine(
     notes: str = "",
     log_path: PathLikeOrFalse = None,
     identity_dir: Optional[str] = None,
+    registry_root=None,
 ) -> Optional[SpecDocument]:
     """Convenience wrapper for tests/scripts/evals that already know the
     approval decision up front (e.g. a scripted eval harness, or a
@@ -178,7 +184,8 @@ def run_spec_engine(
     still mints a genuine, gate-verifiable, content-hash-bound approval
     under the hood (see its own docstring) — `approved_by` here is a
     caller-supplied label, not proof of identity, exactly as documented;
-    pass `identity_dir` to scope the local signing key (tests/CI)."""
+    pass `identity_dir` to scope the local signing key (tests/CI).
+    `registry_root` overrides the connector registry directory (tests/CI)."""
     plan = run_intake_and_plan(
         input_text,
         source_type,
@@ -186,6 +193,7 @@ def run_spec_engine(
         routing_context=routing_context,
         model_assisted=model_assisted,
         log_path=log_path,
+        registry_root=registry_root,
     )
     return finalize_spec(
         plan,

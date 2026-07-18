@@ -14,7 +14,8 @@
 > actually-runnable app (default target stack: plain Node core, zero npm
 > dependencies) — see "The spec -> scaffold plan, and REAL codegen"
 > below for exactly what's genuinely generated vs. still a labeled stub,
-> and "Integration status" for what a follow-up PR still needs to wire.
+> "Connectors v1" for the model-provider connector seam, and "Integration
+> status" for what a follow-up PR still needs to wire.
 
 ## What this is
 
@@ -238,7 +239,8 @@ real files:
 | `backend-model` | `src/models/<entity-slug>.js` — real in-memory CRUD store | `generated` |
 | `frontend-page` | `src/pages/<screen-slug>.js` — real server-rendered HTML, live entity data if the screen name matches an entity | `generated` |
 | `service` (flow) | `src/flows/<flow-slug>.js` — real, executable step sequence wired to a live route; each step's business-logic body is a `// TODO` (flow steps are free text — codegen can't compile prose into working logic) | `generated-stub-logic` |
-| `integration` | `src/integrations/<slug>.js` — a labeled connector STUB (codegen can't produce a working third-party connector without real credentials/API contract); wired to a route that returns HTTP 501 | `stub` |
+| `integration`, RESOLVED against the connector registry | `src/integrations/<slug>.js` — a REAL, vendored `fetch()` client generated from a registered connector manifest (Connectors v1, below); operational once its declared env var is configured, else its route answers `503` | `generated-connector` |
+| `integration`, unresolved (no registry match) | `src/integrations/<slug>.js` — a labeled connector STUB (codegen can't produce a working third-party connector without a registered manifest); wired to a route that returns HTTP 501 | `stub` |
 | `test-suite` | `tests/acceptance.test.js` — real `node:test` tests: a baseline boot/health check, one CRUD round-trip per entity, and one test per `acceptance_criteria` entry | `generated` |
 
 `ScaffoldPlan.codegen_status` becomes `"generated"` once `generate_app()`
@@ -260,6 +262,89 @@ every route kind (entity CRUD, a rendered page, a flow execution, an
 honest integration 501) — plus runs the GENERATED `tests/acceptance.test.js`
 with the real `node --test` runner and asserts it passes. Skips cleanly
 (does not fail) if no `node` binary is on PATH.
+
+## Connectors v1 — from a labeled 501 stub to a real client
+
+Full design: [`docs/design/connectors-architecture.md`](../docs/design/connectors-architecture.md).
+Registry + validator + the three v1 provider connectors:
+[`connectors/`](../connectors/README.md).
+
+The `integration` module kind used to be UNCONDITIONALLY a labeled `501`
+stub — deterministic codegen genuinely cannot invent a third party's API
+contract. Connectors v1 gives it one, when a spec's integration name
+matches a REGISTERED connector:
+
+1. **Resolution — plan time, exact match only.**
+   `plan_builder.build_plan()` calls `connector_resolver.
+   resolve_connectors()` on `how_it_works.integrations`, against
+   `connectors/registry/**`. Match rule: exact `id`/alias slug equality —
+   deliberately STRICTER than `codegen._match_entity_by_name()`'s
+   substring heuristic there; a false negative here just costs a labeled
+   stub (safe), a false positive would wire a real external call to the
+   wrong provider. The result — `Plan.resolved_connectors`, one entry per
+   integration, same order — is a frozen, self-contained snapshot of
+   everything `codegen` needs (connector id@version, manifest hash,
+   base URL, auth header/env var names, error map, the wired operation)
+   captured ONCE, from the registry ON DISK, at THIS moment. Resolution
+   never runs again.
+2. **The approval gate sees the real surface.** `resolved_connectors` is
+   folded into `plan.summary_for_approval` in plain language ("This app
+   will call Anthropic (spend-class) using the key in
+   `ANTHROPIC_API_KEY`...") and is one of the dimensions
+   `content.plan_content_hash()` hashes — the SAME PR #82 HMAC-signed,
+   content-hash-bound approval mechanism this repo already has, extended
+   to cover one more dimension, not a new trust mechanism. Swapping the
+   resolved connector, bumping its version, or changing a side-effect
+   class AFTER an approval was signed changes the hash and fails
+   `gate_approval.verify_gate_approval()` at `build_spec()` — see
+   `tests/spec_engine/test_connector_approval_binding.py`.
+3. **Generation reads ONLY the frozen snapshot.** `codegen.generate_app()`
+   never touches the registry itself — it reads `spec.resolved_connectors`
+   (copied verbatim from the approved plan by `spec_builder.build_spec()`)
+   and, for each `status="resolved"` entry, dispatches to a per-provider
+   JS template (`_CONNECTOR_CLIENT_RENDERERS`) that emits a real, vendored
+   Node-core `fetch()` client sharing one generic runtime
+   (`src/integrations/_connector-runtime.js`: env-var/base-url
+   resolution, the timeout+`AbortController`, the typed error classes,
+   `error_map` status mapping) plus a provider-specific `buildRequest`/
+   `parseResponse` pair. `status="unresolved"` entries are UNCHANGED —
+   today's honest labeled `501` stub, now additionally naming which
+   connector ids ARE registered.
+4. **Honest status split.** A resolved integration's `generation_status`
+   is `"generated-connector"`, deliberately NOT plain `"generated"` — the
+   code is real, but whether it can actually reach the provider depends on
+   an env var this repo cannot carry. Unconfigured -> `503` (never a
+   silent `200`, never the old `501` — that status means "no connector
+   resolved", not "not configured yet"). The generated server also logs
+   one loud, non-fatal boot `WARNING` per unconfigured connector (name +
+   env var NAME only, never a value).
+
+v1 ships exactly three provider connectors — Anthropic, OpenAI, Gemini
+(`connectors/registry/**`) — each a `connector-manifest.v1` JSON manifest
+validated by the offline, dependency-free
+[`connectors/manifest_validator.py`](../connectors/manifest_validator.py)
+(same harness pattern as `tools/adapter_manifest_validator.py`; run it via
+`python3 -m connectors.validate_connector_manifests --root . --json`).
+**No secrets, ever:** the validator rejects a manifest carrying an actual
+secret VALUE anywhere in it, not just in `auth.env` — see
+`connectors/README.md`'s "No secrets, ever" section and
+`tests/test_connector_manifest_validator.py`'s adversarial proof.
+
+Real, no-real-API-calls-made proof that a resolved connector genuinely
+works end to end:
+[`tests/spec_engine/test_codegen_connectors_boot.py`](../tests/spec_engine/test_codegen_connectors_boot.py)
+boots a generated app as a real `node` subprocess and round-trips real
+HTTP against a LOCAL mock provider server (never `api.anthropic.com` /
+`api.openai.com` / `generativelanguage.googleapis.com`), for all three
+connectors, asserting the real auth header/version pin/body shape each
+one sent — not just that the route answers `200`.
+
+**Out of scope for v1** (Xavier's calls, not built here — see the design
+doc §11): the hosted/paid marketplace, third-party connector submission,
+and `T3` ("audited") trust-tier activation — `core/policy/policy.yaml`'s
+`verifier_keys` ship empty by standing repo rule, and no agent may
+self-provision one; `connectors/manifest_validator.py` rejects `T3`
+unconditionally, mechanically, not just by policy.
 
 ## How this composes with the front door (intent-router)
 
@@ -348,6 +433,11 @@ boundary the original spec-engine PR (#79) drew for itself):
   exactly one entry (`node-http-minimal`); adding a second is an additive
   change (a new name + a matching generator function), not a rewrite, but
   it isn't built here.
+- The connector registry's marketplace/distribution layer, third-party
+  connector submission, and `T3` audited-tier activation (Connectors v1
+  ships the registry skeleton, three provider connectors, and the codegen
+  seam ONLY — see "Connectors v1" above and
+  `docs/design/connectors-architecture.md` §10/§11 for the honest gap).
 
 A follow-up integration PR is the natural place to: (a) wire a real
 `/add-mission`-equivalent flow to call `run_intake_and_plan()` after
@@ -367,11 +457,18 @@ python -m pytest                          # full repo suite (includes the above)
 python3 spec-engine/eval/spec_engine_eval.py   # the 3-brief eval as a standalone report
 ```
 
-`tests/spec_engine/test_codegen_app_boots.py` — the real boot-proof suite
-— additionally requires a `node` binary (>=18) on PATH; it skips cleanly
-(does not fail the run) if `node` is unavailable. Everything it spawns
-(the generated app, the `node` subprocess) lives under pytest's own
-`tmp_path` and is torn down at the end of each test.
+`tests/spec_engine/test_codegen_app_boots.py` and
+`tests/spec_engine/test_codegen_connectors_boot.py` — the real boot-proof
+suites — additionally require a `node` binary (>=18) on PATH; both skip
+cleanly (do not fail the run) if `node` is unavailable. Everything they
+spawn (the generated app, the `node` subprocess, the local mock HTTP
+server the connector-boot suite starts to stand in for a real provider)
+lives under pytest's own `tmp_path` / an ephemeral loopback port and is
+torn down at the end of each test. `python3 -m connectors.
+validate_connector_manifests --root . --json` (or
+`tests/test_connector_manifest_validator.py`, run as part of the normal
+suite) is the connector registry's own offline validator — see
+`connectors/README.md`.
 
 The test suite lives under the repo's existing `tests/` directory (not a
 separate `spec-engine/tests/`) for the same reason `intent-router/`'s
@@ -390,7 +487,11 @@ renamed for the same reason against pre-existing `test_pipeline.py` /
 ## Fields reference
 
 See [`spec_engine/content.py`](spec_engine/content.py) and
-[`spec_engine/types.py`](spec_engine/types.py) for the full dataclass set,
-and [`schema/`](schema/) for the machine-checkable shapes
+[`spec_engine/types.py`](spec_engine/types.py) for the full dataclass set
+(including `ResolvedConnector`/`ResolvedConnectorOperation`, Connectors
+v1) and [`schema/`](schema/) for the machine-checkable shapes
 (`spec.schema.json`, `plan.schema.json`, `scaffold-plan.schema.json`,
-`codegen-manifest.schema.json`).
+`codegen-manifest.schema.json` — all four now carry the
+`resolved_connectors`/`connector` fields). See
+[`spec_engine/connector_resolver.py`](spec_engine/connector_resolver.py)
+for the registry-reading/resolution logic itself.

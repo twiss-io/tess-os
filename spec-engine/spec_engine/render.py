@@ -47,6 +47,26 @@ def _render_how_it_looks(spec: SpecDocument) -> str:
     return "\n\n".join(p for p in parts if p and p.strip())
 
 
+def _render_connector_surface(spec: SpecDocument) -> str:
+    """One line per `resolved_connectors` entry — the exact external-call
+    surface this spec's approval was bound to (connectors-architecture.md
+    §6.4: "nobody approves 'integrations' in the abstract; they approve a
+    named list of providers, env vars, and side-effect classes")."""
+    lines = []
+    for rc in spec.resolved_connectors:
+        if rc.status == "resolved":
+            side_effects = "/".join(sorted({op.side_effect for op in rc.operations}))
+            env_vars = "/".join(rc.auth_env_vars)
+            lines.append(
+                f"- **{rc.integration_name}** — resolved to registered connector "
+                f"`{rc.connector_id}@{rc.connector_version}` ({side_effects}-class); "
+                f"reads `{env_vars}` at call time; route returns `503` until configured."
+            )
+        else:
+            lines.append(f"- **{rc.integration_name}** — unresolved; generated as a labeled `501` stub.")
+    return "\n".join(lines)
+
+
 def _render_how_it_works(spec: SpecDocument) -> str:
     parts = [spec.how_it_works.description]
     if spec.how_it_works.key_flows:
@@ -57,6 +77,8 @@ def _render_how_it_works(spec: SpecDocument) -> str:
         parts.append("**Key flows:**\n" + "\n".join(flows))
     if spec.how_it_works.integrations:
         parts.append("**Integrations:**\n" + _bullet_list(spec.how_it_works.integrations))
+    if spec.resolved_connectors:
+        parts.append("**Resolved connector surface (Connectors v1):**\n" + _render_connector_surface(spec))
     return "\n\n".join(p for p in parts if p and p.strip())
 
 

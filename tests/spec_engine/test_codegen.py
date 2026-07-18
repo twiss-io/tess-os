@@ -36,6 +36,7 @@ from spec_engine.content import (
     new_id,
     utc_now_iso,
 )
+from spec_engine.connector_resolver import resolve_connectors
 from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.scaffold import plan_scaffold_from_spec
@@ -109,6 +110,7 @@ def _rich_spec() -> SpecDocument:
         open_questions=[],
         routing_context=None,
         summary_for_approval="summary",
+        resolved_connectors=resolve_connectors(["Stripe", "SendGrid"]),  # neither is registered -> unresolved
     )
     approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)

@@ -79,7 +79,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .content import Entity, EntityField, KeyFlow, KeyScreen, SpecEngineError
+from .content import Entity, EntityField, KeyFlow, KeyScreen, ResolvedConnector, SpecEngineError
 from .scaffold import plan_scaffold_from_spec, write_scaffold_stub
 from .types import ScaffoldModule, ScaffoldPlan, SpecDocument
 
@@ -88,7 +88,22 @@ PathLike = Union[str, Path]
 DEFAULT_TARGET_STACK = "node-http-minimal"
 SUPPORTED_TARGET_STACKS = (DEFAULT_TARGET_STACK,)
 
-GENERATION_STATUSES = ("generated", "generated-stub-logic", "stub")
+# "generated-connector" (Connectors v1, docs/design/connectors-architecture.md
+# §6.3) is an ADDITIVE fourth value — a real client generated from a
+# REGISTERED connector manifest, operational once its declared env var is
+# configured. Deliberately NOT folded into plain "generated": operability
+# depends on runtime configuration this repo cannot carry (an unset env var
+# means a real, working client still answers 503, not 200) — collapsing that
+# distinction would be exactly the overstatement the per-module manifest
+# exists to prevent. See _render_connector_client_js() below.
+GENERATION_STATUSES = ("generated", "generated-stub-logic", "stub", "generated-connector")
+
+# Every v1 connector declares exactly one wired operation, by this name
+# (connector_resolver.DEFAULT_OPERATION_NAME) — the generated app's single
+# POST route per integration invokes it directly; there is no v1 operation
+# -selection surface in the request (see _render_server_js's INTEGRATION_ROUTES
+# handling below).
+_CONNECTOR_RUNTIME_REL_PATH = "src/integrations/_connector-runtime.js"
 
 # The one test file this codegen slice ever writes. Referenced by exact
 # path (never a bare directory or glob) in package.json's "test" script
@@ -202,6 +217,26 @@ def _match_entity_by_name(needle: str, entities: Sequence[Entity]) -> Optional[E
 
 
 # --------------------------------------------------------------------------
+# Connectors v1 — one route-shape descriptor per how_it_works.integrations
+# entry, built while writing src/integrations/**, consumed by
+# _render_server_js() to wire INTEGRATION_ROUTES. `kind` is what the
+# generated server's route loop branches on: "stub" keeps today's unchanged
+# call()-always-throws-501 behavior; "connector" calls the real client's
+# call(operation, input) and maps its typed errors to real HTTP statuses.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _IntegrationRoute:
+    integration_name: str
+    slug: str
+    kind: str  # "stub" | "connector"
+    operation: Optional[str]
+    env_vars: List[str]
+    connector_id: Optional[str]
+
+
+# --------------------------------------------------------------------------
 # Result type
 # --------------------------------------------------------------------------
 
@@ -277,6 +312,23 @@ def generate_app(
     integration_modules = _require_matching_count("integration", spec.how_it_works.integrations)
     test_modules = by_kind.get("test-suite", [])
 
+    # Connectors v1: `spec.resolved_connectors` was bound into the approval
+    # gate's content hash as a list POSITIONALLY aligned with
+    # `spec.how_it_works.integrations` (spec_builder.build_spec() copies it
+    # verbatim from the approved plan — see connector_resolver.py's module
+    # docstring for why this is resolved ONCE, at plan time, never re-read
+    # here). A length mismatch means the SpecDocument itself is internally
+    # inconsistent (never a normal "some integrations unresolved" case,
+    # which is `ResolvedConnector.status == "unresolved"`, not a missing
+    # entry) — fail loud rather than guess an alignment.
+    if len(spec.resolved_connectors) != len(spec.how_it_works.integrations):
+        raise SpecEngineError(
+            f"generate_app: {len(spec.resolved_connectors)} resolved_connectors entry(ies) but "
+            f"{len(spec.how_it_works.integrations)} how_it_works.integrations entry(ies) — spec is "
+            "internally inconsistent (resolved_connectors must be 1:1 positionally aligned with "
+            "how_it_works.integrations; see connector_resolver.resolve_connectors())."
+        )
+
     written: Dict[str, Path] = {}
     manifest_modules: List[Dict[str, Any]] = []
     entity_slugs: Dict[str, int] = {}
@@ -335,28 +387,90 @@ def generate_app(
             )
         )
 
-    integrations_written: List[Tuple[str, str]] = []
-    for module, integration_name in zip(integration_modules, spec.how_it_works.integrations):
+    integrations_written: List[_IntegrationRoute] = []
+    any_resolved_connector = False
+    for module, integration_name, resolved in zip(
+        integration_modules, spec.how_it_works.integrations, spec.resolved_connectors
+    ):
         slug = _unique_slug(integration_slugs, _slugify(integration_name))
         rel_path = f"src/integrations/{slug}.js"
-        _write_file(root, rel_path, _render_integration_js(integration_name, module))
-        written[rel_path] = root / rel_path
-        integrations_written.append((integration_name, slug))
-        manifest_modules.append(
-            _manifest_entry(
-                module,
-                "stub",
-                [rel_path],
-                f"Labeled connector stub for integration '{integration_name}' — codegen cannot "
-                "produce a working third-party connector without real credentials/API contract "
-                "details the spec does not carry. Wired to a route that returns HTTP 501.",
+
+        if resolved.status == "resolved":
+            renderer = _CONNECTOR_CLIENT_RENDERERS.get(resolved.connector_id)
+            if renderer is None:
+                raise SpecEngineError(
+                    f"generate_app: integration {integration_name!r} resolved to registered "
+                    f"connector {resolved.connector_id!r}, but codegen has no generated-client "
+                    "template for that connector id — the registry and codegen.py's "
+                    "_CONNECTOR_CLIENT_RENDERERS have drifted out of sync (a registry-only change "
+                    "that adds a 4th connector needs a matching codegen.py template before specs "
+                    "can resolve to it)."
+                )
+            any_resolved_connector = True
+            _write_file(root, rel_path, renderer(integration_name, module, resolved))
+            written[rel_path] = root / rel_path
+            operation_names = sorted({op.name for op in resolved.operations})
+            side_effects = sorted({op.side_effect for op in resolved.operations})
+            integrations_written.append(
+                _IntegrationRoute(
+                    integration_name=integration_name,
+                    slug=slug,
+                    kind="connector",
+                    operation=resolved.operations[0].name,
+                    env_vars=list(resolved.auth_env_vars),
+                    connector_id=resolved.connector_id,
+                )
             )
-        )
+            manifest_modules.append(
+                _manifest_entry(
+                    module,
+                    "generated-connector",
+                    [rel_path],
+                    f"Real, vendored fetch() client for integration '{integration_name}', generated "
+                    f"from registered connector {resolved.connector_id}@{resolved.connector_version} "
+                    f"(manifest_hash={resolved.manifest_hash}). Operational once "
+                    f"{'/'.join(resolved.auth_env_vars)} is configured; until then its route returns "
+                    "HTTP 503 (not 501) — the code is real, operability depends on runtime "
+                    "configuration this repo cannot carry.",
+                    connector={
+                        "connector_id": resolved.connector_id,
+                        "connector_version": resolved.connector_version,
+                        "manifest_hash": resolved.manifest_hash,
+                        "operations": operation_names,
+                        "env_vars": list(resolved.auth_env_vars),
+                        "side_effect_classes": side_effects,
+                    },
+                )
+            )
+        else:
+            _write_file(root, rel_path, _render_integration_js(integration_name, module))
+            written[rel_path] = root / rel_path
+            integrations_written.append(
+                _IntegrationRoute(
+                    integration_name=integration_name, slug=slug, kind="stub", operation=None,
+                    env_vars=[], connector_id=None,
+                )
+            )
+            registered_note = (
+                f" Connector ids registered in this checkout: {', '.join(resolved.registered_connector_ids)}."
+                if resolved.registered_connector_ids
+                else " No connectors are registered in this checkout at all."
+            )
+            manifest_modules.append(
+                _manifest_entry(
+                    module,
+                    "stub",
+                    [rel_path],
+                    f"Labeled connector stub for integration '{integration_name}' — no registered "
+                    "connector matched this name (exact id/alias match only)."
+                    + registered_note,
+                )
+            )
 
     # Infrastructure — required for any app on this target stack, not
     # attributed to a source_section (see module docstring).
     infra_files: List[str] = []
-    for rel_path, content in (
+    infra_entries: List[Tuple[str, str]] = [
         ("src/http-util.js", _render_http_util_js()),
         (
             "src/server.js",
@@ -369,8 +483,16 @@ def generate_app(
             ),
         ),
         ("package.json", _render_package_json(spec)),
-        ("README.md", _render_app_readme(spec, target_stack)),
-    ):
+        ("README.md", _render_app_readme(spec, target_stack, integrations_written)),
+    ]
+    # _connector-runtime.js is shared, generated-once infrastructure —
+    # written ONLY when at least one integration resolved to a registered
+    # connector (see the loop above); an app with zero resolved connectors
+    # (every integration unresolved, or no integrations at all) never gets
+    # a dead, unused file.
+    if any_resolved_connector:
+        infra_entries.append((_CONNECTOR_RUNTIME_REL_PATH, _render_connector_runtime_js()))
+    for rel_path, content in infra_entries:
         _write_file(root, rel_path, content)
         written[rel_path] = root / rel_path
         infra_files.append(rel_path)
@@ -441,10 +563,19 @@ def generate_app(
 
 
 def _manifest_entry(
-    module: ScaffoldModule, generation_status: str, files: List[str], notes: str
+    module: ScaffoldModule,
+    generation_status: str,
+    files: List[str],
+    notes: str,
+    *,
+    connector: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if generation_status not in GENERATION_STATUSES:
         raise SpecEngineError(f"_manifest_entry: {generation_status!r} not in {GENERATION_STATUSES}")
+    if connector is not None and generation_status != "generated-connector":
+        raise SpecEngineError(
+            "_manifest_entry: connector= is only valid on a 'generated-connector' entry"
+        )
     return {
         "module_id": module.module_id,
         "kind": module.kind,
@@ -452,6 +583,12 @@ def _manifest_entry(
         "generation_status": generation_status,
         "files": files,
         "notes": notes,
+        # Present (non-null) ONLY on generated-connector modules — connector
+        # id@version, manifest content hash, the operations wired, the
+        # declared env var names, and the side-effect classes (design §6.3).
+        # Always present as a key (never omitted) so the schema can require
+        # it uniformly rather than treat it as sometimes-absent.
+        "connector": connector,
     }
 
 
@@ -696,6 +833,445 @@ module.exports = {{ call }};
 
 
 # --------------------------------------------------------------------------
+# Connectors v1 — src/integrations/_connector-runtime.js (shared infra,
+# written ONLY when >=1 integration resolves to a registered connector) and
+# src/integrations/<slug>.js for a RESOLVED integration (generation_status:
+# "generated-connector"). docs/design/connectors-architecture.md §4.2/§6.3.
+#
+# Split, same discipline every other codegen template already applies: the
+# GENERIC transport/error-handling/config logic (fetch with an
+# AbortController timeout, env-var/base-url resolution, error_map status
+# mapping, the six typed error classes) lives ONCE in the shared runtime;
+# each provider's file supplies ONLY what is genuinely provider-specific —
+# how a normalized `generate` input becomes THAT provider's request body,
+# and how THAT provider's response becomes the normalized output. This is
+# manifest-driven for id/version/hash/env-var-names/base-url/auth-header/
+# timeout/error_map (all captured on the ResolvedConnector snapshot codegen
+# was handed — see connector_resolver.py) and hand-authored ONLY for the
+# per-provider request/response SHAPE, which the manifest's input_schema/
+# output_schema do not attempt to encode as a code-generation DSL in v1
+# (documented limitation — see spec-engine/README.md's Connectors section).
+# --------------------------------------------------------------------------
+
+
+def _render_connector_runtime_js() -> str:
+    return f"""\
+"use strict";
+
+/**
+ * GENERATED infrastructure — spec_engine.codegen (target_stack: {DEFAULT_TARGET_STACK}).
+ * {_INFRA_NOTE}
+ *
+ * Shared runtime for every GENERATED CONNECTOR client (generation_status:
+ * "generated-connector" — see ../../.spec-engine/codegen-manifest.json).
+ * Zero npm dependencies: Node core `fetch()` + `AbortController` only
+ * (both global in Node >=18). Every per-connector file in this directory
+ * (e.g. anthropic.js) calls createConnectorClient() with its own
+ * provider-specific buildRequest()/parseResponse() pair; everything else —
+ * env-var/base-url resolution, the fetch+timeout, error_map status
+ * mapping, the typed error classes — lives here exactly once.
+ *
+ * Contract (docs/design/connectors-architecture.md §4.2):
+ *   call(operation, input) -> {{ output, usage, raw }} on success.
+ *   Every failure is one of the typed error classes below — never a
+ *   silent 200, never invented output, never a credential in a message.
+ *   Config is read LAZILY, at call time, never at boot — a generated app
+ *   with a configured-nowhere connector still boots and serves every
+ *   other route; see _render_server_js()'s boot-time WARNING.
+ */
+
+class ConnectorConfigError extends Error {{
+  constructor(message) {{ super(message); this.name = "ConnectorConfigError"; this.statusCode = 503; }}
+}}
+class ConnectorAuthError extends Error {{
+  constructor(message) {{ super(message); this.name = "ConnectorAuthError"; this.statusCode = 503; }}
+}}
+class ConnectorRateLimitError extends Error {{
+  constructor(message, retryAfter) {{
+    super(message);
+    this.name = "ConnectorRateLimitError";
+    this.statusCode = 429;
+    this.retryAfter = retryAfter || null;
+  }}
+}}
+class ConnectorProviderError extends Error {{
+  constructor(message) {{ super(message); this.name = "ConnectorProviderError"; this.statusCode = 502; }}
+}}
+class ConnectorContractError extends Error {{
+  constructor(message) {{ super(message); this.name = "ConnectorContractError"; this.statusCode = 502; }}
+}}
+class ConnectorInvocationError extends Error {{
+  constructor(message) {{ super(message); this.name = "ConnectorInvocationError"; this.statusCode = 400; }}
+}}
+
+const ERROR_CLASSES = {{
+  ConnectorAuthError,
+  ConnectorRateLimitError,
+  ConnectorProviderError,
+  ConnectorContractError,
+  ConnectorInvocationError,
+}};
+
+function createConnectorClient(config) {{
+  const {{
+    id, version, manifestHash, displayName,
+    envVars, headerName, headerValuePrefix,
+    baseUrl, baseUrlOverrideEnv,
+    apiVersionPin, timeoutMs, errorMap,
+    operations, buildRequest, parseResponse,
+  }} = config;
+
+  const opByName = new Map(operations.map((op) => [op.name, op]));
+
+  function resolveBaseUrl() {{
+    if (baseUrlOverrideEnv && process.env[baseUrlOverrideEnv]) {{
+      return process.env[baseUrlOverrideEnv];
+    }}
+    return baseUrl;
+  }}
+
+  function resolveApiKey() {{
+    // v1 connectors declare exactly one env var; iterating handles a
+    // future manifest declaring more than one without a runtime change.
+    for (const name of envVars) {{
+      const value = process.env[name];
+      if (value) return {{ name, value }};
+    }}
+    return null;
+  }}
+
+  function isConfigured() {{
+    return resolveApiKey() !== null;
+  }}
+
+  async function call(operationName, input) {{
+    const op = opByName.get(operationName);
+    if (!op) {{
+      throw new ConnectorInvocationError(
+        id + ": unknown operation " + JSON.stringify(operationName) + " — declared operation(s): " +
+        Array.from(opByName.keys()).join(", ")
+      );
+    }}
+    const key = resolveApiKey();
+    if (!key) {{
+      throw new ConnectorConfigError(
+        id + ": not configured — set " + envVars.join(" or ") + " to make this connector " +
+        "operational (currently unset; this route returns 503 until it is)"
+      );
+    }}
+
+    let url;
+    let requestInit;
+    try {{
+      const built = buildRequest(op, input || {{}});
+      url = resolveBaseUrl().replace(/\\/$/, "") + built.path;
+      const headers = Object.assign({{ "Content-Type": "application/json" }}, built.headers || {{}});
+      headers[headerName] = (headerValuePrefix || "") + key.value;
+      if (apiVersionPin && apiVersionPin.kind === "header") {{
+        headers[apiVersionPin.name] = apiVersionPin.value;
+      }}
+      requestInit = {{ method: op.httpMethod, headers, body: JSON.stringify(built.body) }};
+    }} catch (err) {{
+      throw new ConnectorInvocationError(
+        id + ": could not build a request for " + operationName + " from the given input: " + err.message
+      );
+    }}
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {{
+      response = await fetch(url, Object.assign({{}}, requestInit, {{ signal: controller.signal }}));
+    }} catch (err) {{
+      if (err.name === "AbortError") {{
+        throw new ConnectorProviderError(id + ": request to provider timed out after " + timeoutMs + "ms");
+      }}
+      throw new ConnectorProviderError(id + ": network error calling provider: " + err.message);
+    }} finally {{
+      clearTimeout(timer);
+    }}
+
+    const bodyText = await response.text();
+    let bodyJson = null;
+    try {{
+      bodyJson = bodyText ? JSON.parse(bodyText) : null;
+    }} catch (err) {{
+      bodyJson = null; // handled below — a non-JSON body on a non-ok response still maps by status
+    }}
+
+    if (!response.ok) {{
+      const className = errorMap[String(response.status)];
+      const ErrClass = ERROR_CLASSES[className] || ConnectorProviderError;
+      const providerMessage =
+        bodyJson && bodyJson.error && typeof bodyJson.error === "object" && bodyJson.error.message
+          ? bodyJson.error.message
+          : bodyText.slice(0, 200);
+      const message = id + ": provider responded " + response.status + (providerMessage ? " — " + providerMessage : "");
+      if (ErrClass === ConnectorRateLimitError) {{
+        throw new ConnectorRateLimitError(message, response.headers.get("retry-after"));
+      }}
+      throw new ErrClass(message);
+    }}
+
+    if (bodyJson === null) {{
+      throw new ConnectorContractError(
+        id + ": provider response was not valid JSON — contract mismatch (manifest " + id + "@" + version + ")"
+      );
+    }}
+
+    let normalized;
+    try {{
+      normalized = parseResponse(op, bodyJson);
+      if (!normalized || typeof normalized.text !== "string" || !normalized.usage) {{
+        throw new Error("normalized output missing required fields (text, usage)");
+      }}
+    }} catch (err) {{
+      throw new ConnectorContractError(
+        id + ": provider response did not match the manifest's declared output shape (manifest " +
+        id + "@" + version + "): " + err.message
+      );
+    }}
+
+    return {{ output: normalized, usage: normalized.usage, raw: bodyJson }};
+  }}
+
+  return {{
+    call,
+    isConfigured,
+    envVars,
+    OPERATIONS: operations.map((op) => op.name),
+    CONNECTOR: {{ id, version, manifest_hash: manifestHash, display_name: displayName }},
+  }};
+}}
+
+module.exports = {{
+  createConnectorClient,
+  ERROR_CLASSES,
+  ConnectorConfigError,
+  ConnectorAuthError,
+  ConnectorRateLimitError,
+  ConnectorProviderError,
+  ConnectorContractError,
+  ConnectorInvocationError,
+}};
+"""
+
+
+def _resolved_connector_config_js(resolved: ResolvedConnector) -> str:
+    """The JS object-literal fragment shared by every per-provider
+    generated file's `createConnectorClient({{...}})` call — every field
+    that came from the manifest snapshot (`ResolvedConnector`), NOT the
+    provider-specific `buildRequest`/`parseResponse` pair (those are
+    appended by each `_render_<provider>_client_js()` caller)."""
+    op = resolved.operations[0]
+    api_version_pin_js = (
+        "{ kind: %s, name: %s, value: %s }"
+        % (
+            _js_string(resolved.api_version_pin_kind),
+            _js_string(resolved.api_version_pin_name) if resolved.api_version_pin_name else "null",
+            _js_string(resolved.api_version_pin_value or ""),
+        )
+        if resolved.api_version_pin_kind
+        else "null"
+    )
+    error_map_js = json.dumps(resolved.error_map, sort_keys=True)
+    env_vars_js = ", ".join(_js_string(v) for v in resolved.auth_env_vars)
+    return f"""\
+  id: {_js_string(resolved.connector_id)},
+  version: {_js_string(resolved.connector_version)},
+  manifestHash: {_js_string(resolved.manifest_hash)},
+  displayName: {_js_string(resolved.display_name or resolved.connector_id)},
+  envVars: [{env_vars_js}],
+  headerName: {_js_string(resolved.auth_header_name)},
+  headerValuePrefix: {_js_string(resolved.auth_header_value_prefix or "")},
+  baseUrl: {_js_string(resolved.base_url)},
+  baseUrlOverrideEnv: {_js_string(resolved.base_url_override_env) if resolved.base_url_override_env else "null"},
+  apiVersionPin: {api_version_pin_js},
+  timeoutMs: {resolved.timeout_ms},
+  errorMap: {error_map_js},
+  operations: [{{ name: {_js_string(op.name)}, httpMethod: {_js_string(op.http_method)}, httpPath: {_js_string(op.http_path)} }}],
+"""
+
+
+def _connector_client_header(integration_name: str, module: ScaffoldModule, resolved: ResolvedConnector) -> str:
+    return f"""\
+"use strict";
+
+/**
+ * GENERATED integration CONNECTOR CLIENT for {_js_string(integration_name)}.
+ * Source: spec section {module.source_section} — spec_engine.codegen
+ * (target_stack: {DEFAULT_TARGET_STACK}). generation_status:
+ * "generated-connector" (see ../../.spec-engine/codegen-manifest.json) —
+ * REAL code, generated from registered connector
+ * {resolved.connector_id}@{resolved.connector_version}
+ * (manifest_hash={resolved.manifest_hash}). Operational once
+ * {"/".join(resolved.auth_env_vars)} is configured in this process's
+ * environment; until then this connector's route returns HTTP 503 (never
+ * 501 — the code is real, only its runtime configuration is missing) and
+ * never a silent 200 with invented output.
+ *
+ * Auth: reads {"/".join(resolved.auth_env_vars)} at CALL time — never at
+ * boot, never logged, never echoed into any error message.
+ */
+
+const {{ createConnectorClient }} = require("./_connector-runtime.js");
+"""
+
+
+def _render_anthropic_client_js(integration_name: str, module: ScaffoldModule, resolved: ResolvedConnector) -> str:
+    config_js = _resolved_connector_config_js(resolved)
+    return _connector_client_header(integration_name, module, resolved) + f"""
+function buildRequest(op, input) {{
+  const allMessages = Array.isArray(input.messages) ? input.messages : [];
+  const systemText = allMessages
+    .filter((m) => m && m.role === "system")
+    .map((m) => m.text)
+    .join("\\n\\n");
+  const messages = allMessages
+    .filter((m) => m && m.role !== "system")
+    .map((m) => ({{ role: m.role, content: m.text }}));
+  const body = {{
+    model: input.model,
+    max_tokens: input.max_tokens,
+    messages,
+  }};
+  if (input.temperature !== undefined) body.temperature = input.temperature;
+  if (systemText) body.system = systemText;
+  return {{ path: op.httpPath, headers: {{}}, body }};
+}}
+
+function parseResponse(op, json) {{
+  const blocks = Array.isArray(json.content) ? json.content : [];
+  const textBlock = blocks.find((b) => b && b.type === "text");
+  const usage = json.usage || {{}};
+  return {{
+    text: textBlock ? textBlock.text : "",
+    stop_reason: json.stop_reason || "other",
+    usage: {{
+      input_tokens: usage.input_tokens || 0,
+      output_tokens: usage.output_tokens || 0,
+    }},
+  }};
+}}
+
+const client = createConnectorClient({{
+{config_js}  buildRequest,
+  parseResponse,
+}});
+
+module.exports = client;
+"""
+
+
+def _render_openai_client_js(integration_name: str, module: ScaffoldModule, resolved: ResolvedConnector) -> str:
+    config_js = _resolved_connector_config_js(resolved)
+    return _connector_client_header(integration_name, module, resolved) + f"""
+// KNOWN v1 LIMITATION (connectors/registry/openai/README.md): sends
+// normalized max_tokens as-is. OpenAI's o-series reasoning models
+// (o1/o3/o4-mini) require max_completion_tokens instead and will reject
+// max_tokens with their own 400 — surfaced here as a typed
+// ConnectorInvocationError, never a silent failure or a guessed retry.
+function buildRequest(op, input) {{
+  const messages = (Array.isArray(input.messages) ? input.messages : []).map((m) => ({{
+    role: m.role,
+    content: m.text,
+  }}));
+  const body = {{
+    model: input.model,
+    max_tokens: input.max_tokens,
+    messages,
+  }};
+  if (input.temperature !== undefined) body.temperature = input.temperature;
+  return {{ path: op.httpPath, headers: {{}}, body }};
+}}
+
+function parseResponse(op, json) {{
+  const choices = Array.isArray(json.choices) ? json.choices : [];
+  const first = choices[0] || {{}};
+  const message = first.message || {{}};
+  const usage = json.usage || {{}};
+  return {{
+    text: typeof message.content === "string" ? message.content : "",
+    stop_reason: first.finish_reason || "other",
+    usage: {{
+      input_tokens: usage.prompt_tokens || 0,
+      output_tokens: usage.completion_tokens || 0,
+    }},
+  }};
+}}
+
+const client = createConnectorClient({{
+{config_js}  buildRequest,
+  parseResponse,
+}});
+
+module.exports = client;
+"""
+
+
+def _render_gemini_client_js(integration_name: str, module: ScaffoldModule, resolved: ResolvedConnector) -> str:
+    config_js = _resolved_connector_config_js(resolved)
+    return _connector_client_header(integration_name, module, resolved) + f"""
+// The model name rides in the URL PATH ({{model}}:generateContent), not the
+// body — buildRequest() substitutes it at call time.
+function buildRequest(op, input) {{
+  if (!input.model) {{
+    throw new Error("input.model is required — Gemini's endpoint path embeds the model name");
+  }}
+  const allMessages = Array.isArray(input.messages) ? input.messages : [];
+  const systemParts = allMessages
+    .filter((m) => m && m.role === "system")
+    .map((m) => ({{ text: m.text }}));
+  const contents = allMessages
+    .filter((m) => m && m.role !== "system")
+    .map((m) => ({{ role: m.role === "assistant" ? "model" : "user", parts: [{{ text: m.text }}] }}));
+  const generationConfig = {{}};
+  if (input.max_tokens !== undefined) generationConfig.maxOutputTokens = input.max_tokens;
+  if (input.temperature !== undefined) generationConfig.temperature = input.temperature;
+  const body = {{ contents, generationConfig }};
+  if (systemParts.length) body.systemInstruction = {{ parts: systemParts }};
+  const path = op.httpPath.replace("{{model}}", encodeURIComponent(input.model));
+  return {{ path, headers: {{}}, body }};
+}}
+
+function parseResponse(op, json) {{
+  const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+  const first = candidates[0] || {{}};
+  const parts = (first.content && Array.isArray(first.content.parts)) ? first.content.parts : [];
+  const text = parts.map((p) => (p && typeof p.text === "string" ? p.text : "")).join("");
+  const usage = json.usageMetadata || {{}};
+  return {{
+    text,
+    stop_reason: first.finishReason || "other",
+    usage: {{
+      input_tokens: usage.promptTokenCount || 0,
+      output_tokens: usage.candidatesTokenCount || 0,
+    }},
+  }};
+}}
+
+const client = createConnectorClient({{
+{config_js}  buildRequest,
+  parseResponse,
+}});
+
+module.exports = client;
+"""
+
+
+# Registry connector id -> codegen JS template renderer. Additive — a 4th
+# provider connector needs an entry here (design §11 non-goal: v1 ships
+# exactly Anthropic/OpenAI/Gemini; a NEW registry entry alone does not
+# make it resolvable, deliberately — see the SpecEngineError raised above
+# when a resolved connector_id has no matching renderer).
+_CONNECTOR_CLIENT_RENDERERS = {
+    "anthropic": _render_anthropic_client_js,
+    "openai": _render_openai_client_js,
+    "gemini": _render_gemini_client_js,
+}
+
+
+# --------------------------------------------------------------------------
 # Infrastructure — src/http-util.js, src/server.js, package.json, README.md
 # --------------------------------------------------------------------------
 
@@ -751,7 +1327,7 @@ def _render_server_js(
     entities_by_slug: List[Tuple[str, Entity]],
     screens: List[Tuple[KeyScreen, str]],
     flows: List[Tuple[KeyFlow, str]],
-    integrations: List[Tuple[str, str]],
+    integrations: List["_IntegrationRoute"],
 ) -> str:
     model_requires = "\n".join(
         f'const {_class_name(entity.name)}Store = require("./models/{slug}.js").{_class_name(entity.name)}Store;'
@@ -780,12 +1356,33 @@ def _render_server_js(
     )
 
     integration_requires = "\n".join(
-        f'const integration_{slug.replace("-", "_")} = require("./integrations/{slug}.js");'
-        for _, slug in integrations
+        f'const integration_{route.slug.replace("-", "_")} = require("./integrations/{route.slug}.js");'
+        for route in integrations
     )
     integration_route_entries = ",\n  ".join(
-        f'{{ path: "/api/integrations/{slug}", name: {_js_string(name)}, call: integration_{slug.replace("-", "_")}.call }}'
-        for name, slug in integrations
+        (
+            f'{{ path: "/api/integrations/{route.slug}", name: {_js_string(route.integration_name)}, '
+            f'kind: "connector", operation: {_js_string(route.operation)}, '
+            f'envVars: [{", ".join(_js_string(v) for v in route.env_vars)}], '
+            f'call: integration_{route.slug.replace("-", "_")}.call }}'
+            if route.kind == "connector"
+            else
+            f'{{ path: "/api/integrations/{route.slug}", name: {_js_string(route.integration_name)}, '
+            f'kind: "stub", operation: null, envVars: [], '
+            f'call: integration_{route.slug.replace("-", "_")}.call }}'
+        )
+        for route in integrations
+    )
+    connector_boot_checks = "\n".join(
+        (
+            f'  if (!({" || ".join("process.env[" + _js_string(v) + "]" for v in route.env_vars)})) {{\n'
+            f'    console.warn("[connector] " + {_js_string(route.integration_name)} + " ({route.connector_id}) is NOT '
+            f'configured — set {" or ".join(route.env_vars)} to make POST /api/integrations/{route.slug} operational. '
+            'Until then it returns 503, never a silent 200.");\n'
+            "  }"
+        )
+        for route in integrations
+        if route.kind == "connector"
     )
 
     return f"""\
@@ -870,6 +1467,13 @@ async function handleEntityRoute(req, res, route, restPath) {{
 }}
 
 function createServer() {{
+  // Boot-time WARNING (never fatal) per unconfigured GENERATED CONNECTOR —
+  // an app with declared-but-unconfigured connectors still boots and
+  // serves every non-connector route; this is the only place that state
+  // is surfaced (design §4.2: "the state is visible without being
+  // fatal"). Never logs a key or its value — only the env var NAME.
+{connector_boot_checks}
+
   return http.createServer(async (req, res) => {{
     let url;
     try {{
@@ -931,6 +1535,30 @@ function createServer() {{
 
     for (const route of INTEGRATION_ROUTES) {{
       if (pathname === route.path && req.method === "POST") {{
+        if (route.kind === "connector") {{
+          // GENERATED CONNECTOR — a real client, wired to a real route.
+          // Every failure is one of the typed error classes from
+          // _connector-runtime.js; err.statusCode carries the real HTTP
+          // status (503 unconfigured, 429 rate-limited, 502 provider/
+          // contract, 400 invocation) — NEVER a bare 501 (that status is
+          // reserved for an UNRESOLVED integration, below) and never a
+          // silent 200 on failure.
+          let body = {{}};
+          try {{
+            body = await readJsonBody(req);
+          }} catch (err) {{
+            sendJson(res, err.statusCode || 400, {{ status: "error", connector: route.name, error: err.message }});
+            return;
+          }}
+          try {{
+            const result = await route.call(route.operation, body);
+            sendJson(res, 200, {{ status: "ok", output: result.output, usage: result.usage }});
+          }} catch (err) {{
+            sendJson(res, err.statusCode || 500, {{ status: "error", connector: route.name, error: err.message }});
+          }}
+          return;
+        }}
+        // UNRESOLVED integration — today's unchanged stub behavior.
         try {{
           await route.call();
           sendJson(res, 200, {{ status: "ok" }});
@@ -985,7 +1613,19 @@ def _render_package_json(spec: SpecDocument) -> str:
     return json.dumps(pkg, indent=2) + "\n"
 
 
-def _render_app_readme(spec: SpecDocument, target_stack: str) -> str:
+def _render_app_readme(spec: SpecDocument, target_stack: str, integrations: List["_IntegrationRoute"]) -> str:
+    stub_names = [r.integration_name for r in integrations if r.kind == "stub"]
+    connector_lines = [
+        f"  - **{r.integration_name}** — real connector client (`{r.connector_id}`); configure "
+        f"`{' or '.join(r.env_vars)}` to make `POST /api/integrations/{r.slug}` operational. Until "
+        "then that route returns `503` (not `501`)."
+        for r in integrations
+        if r.kind == "connector"
+    ]
+    connector_block = (
+        "\n" + "\n".join(connector_lines) if connector_lines
+        else "\n  - (none in this spec)"
+    )
     return f"""\
 # {spec.title}
 
@@ -1034,9 +1674,19 @@ generate:
   sequence execute for real, but every step's body is a `// TODO` — flow
   steps are free text in the spec, not something codegen can compile into
   working business logic.
-- **Labeled stubs, not functional:** third-party integrations. Codegen
-  cannot produce a working connector to `{", ".join(spec.how_it_works.integrations) or "(none in this spec)"}`
-  without real credentials/API contract details this spec does not carry.
+- **Real connector client — configure an env var to make it operational:**
+  an integration whose name matched a REGISTERED connector
+  (`connectors/registry/**` in the tess-os repo this app was generated
+  from) gets a real, vendored `fetch()` client, not a stub. The code is
+  real; whether it can actually reach the provider depends on runtime
+  configuration this repo cannot carry — until the env var below is set,
+  its route answers `503`, never a silent `200`, never `501` (that status
+  means "no connector", not "not configured yet"):{connector_block}
+- **Labeled stubs, not functional:** every OTHER integration name — no
+  registered connector matched it. Codegen cannot produce a working
+  connector to `{", ".join(stub_names) or "(none in this spec)"}` without
+  real credentials/API contract details this spec does not carry; its
+  route returns `501`.
 
 ## Persistence
 
