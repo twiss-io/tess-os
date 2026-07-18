@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -19,10 +19,10 @@ import { isExcludedRel } from '../src/ignore.js';
 import { fetchTemplate, promote } from '../src/scaffold.js';
 import { resetKeyToEmptyInline, resetPolicyKeyRegistries } from '../src/policy-reset.js';
 
-// Repo root (create-tess/ lives one level inside it) — used below to read
-// the REAL core/policy/policy.yaml so the comment-heavy fixture is the
-// file's actual shape, not a synthetic stand-in that could drift from it.
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+// This test file's own directory — used below to read the FROZEN golden
+// fixture at test/fixtures/policy.pristine.yaml (never the live, evolving
+// core/policy/policy.yaml — see realisticMultiEntryPolicyText()'s header).
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
 // L3 / Lysandra #5 + #4 — the "language, not the power" honesty line is LIFTED
 // off each vibe's cinematic `engaged` beat onto a DIMMED follow-line (rendered in
@@ -369,28 +369,38 @@ test('policy-reset: resetKeyToEmptyInline throws when the key is entirely absent
 
 // ── Realistic fixture: the REAL, comment-heavy policy.yaml, with a second
 // registered entry added under an interior annotation comment ──────────────
-// Reads THIS repo's actual core/policy/policy.yaml (not a hand-typed
-// stand-in — its extensive header/walkthrough prose is real, load-bearing
-// documentation, and drifts over time) and registers TWO entries under
-// EACH of verifier_keys/signoff_keys: the first mirrors PR #91's real,
-// merged Cyra registration (real name, real fingerprint, real
-// public_key_file path); the second is preceded by an interior comment
-// written at the PARENT key's indent (2 spaces) rather than the child
-// entry's own indent (4 spaces) — noting when/why that second key was
-// added. This is an entirely ordinary way a second contributor annotates a
-// growing map (this very file's own header comments are written this way
-// throughout), and it is the exact shape that broke resetKeyToEmptyInline:
-// a comment at header-indent used to be treated, unconditionally, as "the
-// next sibling key" — stopping block removal one entry too early and
-// leaving the second entry's fingerprint (and the rest of the file after
-// it) spliced in right after the supposedly-reset `{}`, corrupting the YAML.
+// Reads a FROZEN golden copy of this repo's core/policy/policy.yaml
+// (test/fixtures/policy.pristine.yaml — a snapshot of its pristine,
+// nothing-registered shape, captured pre-PR#91; NOT a hand-typed stand-in —
+// its extensive header/walkthrough prose is real, load-bearing
+// documentation) and registers TWO entries under EACH of
+// verifier_keys/signoff_keys: the first mirrors PR #91's real, merged Cyra
+// registration (real name, real fingerprint, real public_key_file path);
+// the second is preceded by an interior comment written at the PARENT key's
+// indent (2 spaces) rather than the child entry's own indent (4 spaces) —
+// noting when/why that second key was added. This is an entirely ordinary
+// way a second contributor annotates a growing map (this very file's own
+// header comments are written this way throughout), and it is the exact
+// shape that broke resetKeyToEmptyInline: a comment at header-indent used to
+// be treated, unconditionally, as "the next sibling key" — stopping block
+// removal one entry too early and leaving the second entry's fingerprint
+// (and the rest of the file after it) spliced in right after the
+// supposedly-reset `{}`, corrupting the YAML.
+//
+// DELIBERATELY reads the FROZEN fixture, not the live core/policy/policy.yaml:
+// the live file's verifier_keys legitimately stops being `{}` once a real
+// verifier (Cyra, PR #91) is registered, which is exactly the ordinary,
+// expected outcome this fixture must stay decoupled from — a test asserting
+// "the live file still ships an empty registry" would regress every time
+// this project (correctly) onboards a new verifier. See
+// test/fixtures/policy.pristine.yaml's own header for the full rationale.
 const CYRA_FINGERPRINT = 'F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8'; // real — PR #91
 const REID_FINGERPRINT = '1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD'; // fixture-only
 const XAVIER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF'; // fixture-only
 const PRIYA_FINGERPRINT = 'FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE'; // fixture-only
 
 function realisticMultiEntryPolicyText() {
-  const real = readFileSync(join(REPO_ROOT, 'core', 'policy', 'policy.yaml'), 'utf8');
+  const real = readFileSync(join(TEST_DIR, 'fixtures', 'policy.pristine.yaml'), 'utf8');
 
   const vkBefore = '  verifier_keys: {}\n';
   const vkAfter =

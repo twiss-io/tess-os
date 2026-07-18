@@ -1,3 +1,14 @@
+# FROZEN TEST FIXTURE — golden copy of core/policy/policy.yaml's pristine
+# (nothing-registered) shape, captured pre-PR#91. This file is intentionally
+# NEVER updated to track the live core/policy/policy.yaml's current
+# verifier_keys/signoff_keys registration state — that's the whole point.
+# Tests that need "a realistic, comment-heavy policy.yaml with verifier_keys:
+# {} / signoff_keys: {} to splice fixture entries into" must read THIS file,
+# not the live one, so registering a real verifier (Cyra, PR #91; future
+# verifiers after that) never breaks the fixture's baseline assumption again.
+# See create-tess/test/units.test.js's realisticMultiEntryPolicyText() and
+# create-tess/test/wizard.test.js's "scaffold reset (end-to-end)" test.
+#
 # core/policy/policy.yaml — Ship-Gate Policy (Phase 2 of docs/ULTIMATE_FRAMEWORK_PLAN.md,
 # Design Decision #2 "deterministic gate spine" + Design Decision #6 "verification
 # produces a gateable artifact"). Validated against core/contracts/policy.schema.json
@@ -189,10 +200,7 @@ policy:
   #     Cyra:
   #       fingerprint: "BBBB1111BBBB1111BBBB1111BBBB1111BBBB1111"
   #       public_key_file: .tess/keys/verifiers/cyra.asc
-  verifier_keys:
-    Cyra:
-      fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"
-      public_key_file: .tess/keys/verifiers/cyra.asc
+  verifier_keys: {}
 
   # signoff_keys — honesty-capstone-audit-2026-07-08 §3-d FIX's ALLOWED-KEY
   # SET for hard-floor SIGN-OFF artifacts (core/contracts/policy.schema.json
