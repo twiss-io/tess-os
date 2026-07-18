@@ -547,6 +547,26 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
     filter: (src) => !relative(TEMPLATE_SOURCE, src).split(sep).includes('.git'),
   });
 
+  // TEMPLATE_SOURCE is THIS repo, checked out at whatever ref CI/dev happens
+  // to be running against — e.g. on chore/register-verifier-cyra-phase1
+  // (PR #91) its core/policy/policy.yaml already carries a REAL registered
+  // Cyra entry, not `verifier_keys: {}`. injectKeys() below patches via a
+  // `verifier_keys: {}` / `signoff_keys: {}` regex, so it needs a guaranteed
+  // pristine (nothing-registered) starting point regardless of what's live
+  // right now — otherwise onboarding a real verifier silently defeats this
+  // test's own fixture-injection step instead of failing loudly. Force both
+  // copied policy.yaml files back to the FROZEN golden pristine shape (the
+  // same fixture units.test.js's realisticMultiEntryPolicyText() reads)
+  // before injecting the synthetic Cyra+Reid/Xavier+Priya entries — this
+  // only overwrites the two policy.yaml copies; the rest of the copied tree
+  // (roster, contracts, tess.lock, etc.) is still the real, live template.
+  const PRISTINE_POLICY = readFileSync(
+    join(TEST_DIR, 'fixtures', 'policy.pristine.yaml'),
+    'utf8',
+  );
+  writeFileSync(join(fakeSource, 'core', 'policy', 'policy.yaml'), PRISTINE_POLICY);
+  writeFileSync(join(fakeSource, '.tess', 'core', 'policy', 'policy.yaml'), PRISTINE_POLICY);
+
   // A SECOND registered entry, under each key, preceded by an interior
   // annotation comment written at the PARENT key's indent (2 spaces)
   // rather than the entry's own indent (4 spaces) — an entirely ordinary
