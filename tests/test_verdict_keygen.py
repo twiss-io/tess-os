@@ -13,7 +13,11 @@ Coverage:
     (idempotency/`--force` semantics live in the CLI layer, not here), and
     the `ValueError` when no `verifier_keys:` key exists at all. Exercised
     against the REAL shipped `core/policy/policy.yaml` so the comment-
-    preservation proof is real, not a synthetic stand-in.
+    preservation proof is real, not a synthetic stand-in — but normalized
+    back to a clean, empty `verifier_keys: {}` baseline first (see
+    `_policy_text_with_empty_verifier_keys` below), so this suite never
+    depends on which real verifiers (e.g. Cyra) happen to be registered
+    live in this repo at test time.
   * `tessctl verdict keygen` CLI: generates + registers + re-pins;
     idempotent refusal without `--force`; `--force` rotates; unknown
     verifier name rejected; missing `gpg` on PATH is a clear, fail-closed
@@ -50,6 +54,58 @@ HAS_GPG = shutil.which("gpg") is not None
 pytestmark = pytest.mark.skipif(not (HAS_GIT and HAS_GPG), reason="git + gpg required")
 
 
+def _policy_text_with_empty_verifier_keys(text: str) -> str:
+    """Reset `policy.verifier_keys` in `text` back to the clean, empty
+    inline form (`verifier_keys: {}`), leaving every other line — including
+    every comment, rule, and hard_floor_rule — byte-for-byte untouched.
+
+    These fixtures deliberately still read the REAL shipped `core/policy/
+    policy.yaml` (so the comment-preservation proof below is real, not a
+    synthetic stand-in) but must NOT depend on which verifiers happen to
+    already be registered live in THIS repo at test time — the whole point
+    of Phase 1 was to register Cyra's real key, and this suite would break
+    every time a new real verifier is onboarded if it asserted anything
+    about the live `verifier_keys` map's current contents. Normalizing back
+    to the shipped-clean baseline here decouples "does the upsert/keygen
+    machinery behave correctly" from "what is presently registered in prod."
+
+    Deliberately duplicates (rather than imports) the engine's own
+    `verifier_keys:` block-detection logic, so a bug in this test helper can
+    never mask a real regression in the function under test.
+    """
+    lines = text.splitlines(keepends=True)
+
+    def _indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    vk_idx = None
+    vk_indent = None
+    for i, line in enumerate(lines):
+        if line.lstrip(" ").startswith("#"):
+            continue  # skip commented-out example blocks (e.g. the shipped walkthrough)
+        if line.strip() in ("verifier_keys: {}", "verifier_keys:"):
+            vk_idx = i
+            vk_indent = _indent_of(line)
+            break
+    assert vk_idx is not None, "no `verifier_keys:` key found in core/policy/policy.yaml"
+
+    if lines[vk_idx].strip() == "verifier_keys: {}":
+        return text  # already clean — nothing to reset
+
+    end_idx = vk_idx + 1
+    while end_idx < len(lines):
+        line = lines[end_idx]
+        if line.strip() == "":
+            end_idx += 1
+            continue
+        if _indent_of(line) <= vk_indent:
+            break
+        end_idx += 1
+
+    lines[vk_idx:end_idx] = [f"{' ' * vk_indent}verifier_keys: {{}}\n"]
+    return "".join(lines)
+
+
 @pytest.fixture
 def make_gnupg_home():
     """Factory for short-prefixed GNUPGHOME dirs under /tmp (NOT pytest's
@@ -82,7 +138,7 @@ def make_gnupg_home():
 
 
 def test_upsert_converts_empty_inline_form_to_one_entry(engine):
-    text = POLICY_SRC.read_text(encoding="utf-8")
+    text = _policy_text_with_empty_verifier_keys(POLICY_SRC.read_text(encoding="utf-8"))
     new_text, existed = engine._policy_yaml_upsert_verifier_key(
         text, "Reid", "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000", ".tess/keys/verifiers/reid.asc",
     )
@@ -107,7 +163,7 @@ def test_upsert_converts_empty_inline_form_to_one_entry(engine):
 
 
 def test_upsert_adds_a_second_entry_after_the_first(engine):
-    text = POLICY_SRC.read_text(encoding="utf-8")
+    text = _policy_text_with_empty_verifier_keys(POLICY_SRC.read_text(encoding="utf-8"))
     text, _ = engine._policy_yaml_upsert_verifier_key(
         text, "Reid", "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000", ".tess/keys/verifiers/reid.asc",
     )
@@ -123,7 +179,7 @@ def test_upsert_adds_a_second_entry_after_the_first(engine):
 
 
 def test_upsert_replaces_an_existing_entry_in_place(engine):
-    text = POLICY_SRC.read_text(encoding="utf-8")
+    text = _policy_text_with_empty_verifier_keys(POLICY_SRC.read_text(encoding="utf-8"))
     text, _ = engine._policy_yaml_upsert_verifier_key(
         text, "Reid", "AAAA0000AAAA0000AAAA0000AAAA0000AAAA0000", ".tess/keys/verifiers/reid.asc",
     )
@@ -155,15 +211,19 @@ def test_upsert_raises_when_no_verifier_keys_key_present(engine):
 
 
 def _seed_keygen_project(project):
-    """A project with core/policy/policy.yaml (the REAL shipped content,
-    proving the comment-preservation guarantee end to end through the CLI)
-    lock-tracked, plus the real contract schemas (needed by keygen's own
-    schema/lint sanity check before it writes anything)."""
+    """A project with core/policy/policy.yaml (the REAL shipped content —
+    proving the comment-preservation guarantee end to end through the CLI —
+    with `verifier_keys` normalized back to its shipped-clean `{}` baseline
+    via `_policy_text_with_empty_verifier_keys`, so these tests model a
+    fresh adopter's project rather than accidentally inheriting whichever
+    real verifiers happen to be registered live in THIS repo) lock-tracked,
+    plus the real contract schemas (needed by keygen's own schema/lint
+    sanity check before it writes anything)."""
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     project.add(
         "core/policy/policy.yaml",
-        content=POLICY_SRC.read_text(encoding="utf-8"),
+        content=_policy_text_with_empty_verifier_keys(POLICY_SRC.read_text(encoding="utf-8")),
         tier="security",
         core_key=".tess/core/policy/policy.yaml",
     )
