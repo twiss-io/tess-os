@@ -32,8 +32,15 @@ production branch protected.
 
 ## Expected fail-closed state
 
-The shipped policy deliberately has empty verifier and sign-off registries. A
-protected candidate can therefore report:
+A project produced by `npm create tess` — or any other fresh scaffold —
+always ships with empty `verifier_keys` and `signoff_keys` registries in
+`core/policy/policy.yaml` (and its `.tess/core` mirror), regardless of what
+the source repository's own policy currently contains. `create-tess` resets
+both registries back to that clean, empty state as part of every scaffold
+(`create-tess/src/policy-reset.js`, applied in `promote()`), so a scaffolded
+project can never silently inherit another repository's registered trust
+anchor. A protected candidate in a freshly scaffolded project can therefore
+report:
 
 ```text
 no covering APPROVE verdict found
@@ -42,6 +49,19 @@ no covering APPROVE verdict found
 That is a correct result. It means there is no already-authorized, covering
 review artifact for the candidate content. A candidate repository must never
 create or register the trust anchor that clears its own change.
+
+## The maintainer repository is not the same trust boundary
+
+`twiss-io/tess-os` — the framework repository itself — separately registers
+its own verifiers in its own `core/policy/policy.yaml` (e.g. Cyra, registered
+by `chore/register-verifier-cyra-phase1`) to govern changes to its own
+doctrine, contracts, and gate engine. That registration protects THIS
+repository's development; it is a fact about `twiss-io/tess-os`, not about
+any project scaffolded from it. `create-tess` resets `verifier_keys` and
+`signoff_keys` to empty on every scaffold specifically so the maintainer's
+trust anchor can never leak into, and silently govern, someone else's
+project — see the scaffold-reset regression test in
+`create-tess/test/units.test.js` for the mechanism proven end to end.
 
 ## When a protected change blocks
 

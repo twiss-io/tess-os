@@ -1,0 +1,1 @@
+An app that helps freelancers track which invoices are overdue and automatically nudges clients by email until they pay.

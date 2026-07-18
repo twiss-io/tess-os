@@ -1,0 +1,7 @@
+# Local decision-log output (component default sink) — a per-checkout debug
+# artifact, not something a PR should ever carry.
+decisions/*.jsonl
+decisions/*.json
+!decisions/.gitkeep
+__pycache__/
+*.pyc
