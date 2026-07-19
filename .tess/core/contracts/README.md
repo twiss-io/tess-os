@@ -1,9 +1,10 @@
-# Contracts — Phase 0 (Contracts-as-Code) + Phase 2 (`policy.schema.json`) + Goal #5 (`mission`/`retry`)
+# Contracts — Phase 0 (Contracts-as-Code) + Phase 2 (`policy.schema.json`) + Goal #5 (`mission`/`retry`) + Phase 0.2 (`task`/`ledger-event`)
 
-> Spec: `docs/ULTIMATE_FRAMEWORK_PLAN.md` Phase 0 and Design Decision #3 ("Contracts become schemas"); Phase 2 and Design Decisions #2/#6 for `policy.schema.json`; §C3/§C4 for `mission.schema.json`/`retry.schema.json`.
+> Spec: `docs/ULTIMATE_FRAMEWORK_PLAN.md` Phase 0 and Design Decision #3 ("Contracts become schemas"); Phase 2 and Design Decisions #2/#6 for `policy.schema.json`; §C3/§C4 for `mission.schema.json`/`retry.schema.json`; `docs/STATE_LAYER.md` Phase 0.2 for `task.schema.json`/`ledger-event.schema.json`.
 > Validator: `tessctl validate <contract-type> <file>` (`.tess/bin/tessctl`).
 > Gate: `tessctl gate` (`.tess/bin/tessctl`) — see the top-level `README.md` "`tessctl gate` — the enforcement spine" section.
 > Missions: `tessctl mission` / `gate-status` / `gate clear` / `retry` (`.tess/bin/tessctl`'s MISSION LEDGER region) — see `missions/README.md`.
+> Tasks + ledger: `tessctl tasks` / `log` (`.tess/bin/tessctl`'s TASK LEDGER region, a sibling of MISSION LEDGER) — see `docs/STATE_LAYER.md`.
 
 This directory is the first piece of `core/` — the framework's single source of
 truth for machine-checkable contracts. It exists ahead of the full `core/`
@@ -16,8 +17,12 @@ built in Phase 2 alongside the `tessctl gate` spine that is its only consumer.
 Goal #5 alongside `tessctl mission`/`gate-status`/`gate clear`/`retry` — the
 machine-checkable form of `conductor/doctrine.md`'s "The Gates" table and
 `conductor/subagent-failure-protocol.md`'s typed retry protocol.
+`task.schema.json`/`ledger-event.schema.json` are the eighth and ninth, built
+in Phase 0.2 alongside `tessctl tasks`/`log` — the cross-harness task store
+and hash-chained accountability ledger, siblings of `mission`/`retry` landing
+in `.tess/state/` (docs/STATE_LAYER.md) instead of `missions/`.
 
-## The seven contracts
+## The nine contracts
 
 | Schema | Doctrine source | What it's grounded in |
 |---|---|---|
@@ -28,6 +33,8 @@ machine-checkable form of `conductor/doctrine.md`'s "The Gates" table and
 | `policy.schema.json` | **New in Phase 2, extended Phase 2b** — `conductor/verification-routing.md` + `conductor/guardrails.md` Rule 18 | The path→classification map (prod-touching/client-facing/externally-visible/irreversible-decision) that requires a covering verdict, plus the four Rule-18 hard-floor categories (credentials, money movement, destructive prod data, client-external claims) that are never verdict-satisfiable. **Phase 2b adds `policy.verifier_keys`** — the allowed-key set a verdict's `signature` is checked against (verifier name → fingerprint + bundled public-key file path). The actual policy DATA a project ships lives at `core/policy/policy.yaml`, not in this schema. |
 | `mission.schema.json` | **New in Goal #5** — `conductor/doctrine.md` "The Gates" table + `conductor/mission-states.md` | A mission record's id/name/state/gates — the five canonical gates (reusing `crew-plan.schema.json`'s own `Stage.gate_in` enum verbatim), each seeded pending and only flippable to `cleared:true` via `tessctl gate clear`, which requires a real, on-disk evidence artifact. Authored as `missions/<id>/mission.md` (front-matter) and/or `missions/<id>/mission.json` (pure JSON) — two serializations of the same record. |
 | `retry.schema.json` | **New in Goal #5** — `conductor/subagent-failure-protocol.md` | One logged retry attempt: `failure_state` (the five-state table) and `cause_class` (the four-class table) verbatim, `attempt` capped at 3 (`maximum: 3`), and the VERBATIM `brief_text` used for that attempt — the literal string `tessctl retry check`/`retry log` diff against the next attempt to enforce "same-brief retries are forbidden for every non-transient cause." Written to `missions/<id>/retries/<task>.attempt-N.md`. |
+| `task.schema.json` | **New in Phase 0.2** — `docs/STATE_LAYER.md` + Hermes' kanban design (`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md`) | One task record: id/title/status/owner/assignee/claim-lease/created_by/rev/depends_on/append-only evidence+notes. `claim` is all-null (unclaimed) or all-set (claimed) together — a relational rule `_lint_task` enforces. `rev` is the optimistic-concurrency counter `tessctl tasks set --expected-rev N` CASes against. Written to `.tess/state/tasks/<id>.json` — fenced instance data (never keystone-tracked), unlike this schema file itself. |
+| `ledger-event.schema.json` | **New in Phase 0.2** — Hermes' kanban `task_events` audit | One hash-chained accountability-ledger event: ts/actor/event/refs/summary/prev_hash/hash. `_lint_ledger_event` requires a non-null `refs.task` for every task-scoped event class. Written to `.tess/state/ledger/<YYYY-MM>.<origin>.jsonl` — fenced instance data, same posture as `task.schema.json`'s instances. |
 
 Every field in every schema carries a `description` (or `$comment`) citing the
 exact doctrine line it encodes. Where a schema field has **no** direct doctrine
@@ -120,12 +127,15 @@ wires the sibling `core/policy/**` data directory the same way:
   and this README stay `tier: normal` — their doctrine sources
   (`orchestra-model.md`; none; `doctrine.md`; `subagent-failure-protocol.md`)
   are not themselves `tier: security` prose, same as the original two.
-- `tessctl doctor` / `tessctl verify` / `tessctl lock --check` cover all nine
-  files (the five above + `mission.schema.json` + `retry.schema.json`) like
-  any other core-managed entry: unpinned `.tess/core` tamper is flagged as
-  CORE TAMPER (SECURITY-TIER for the three schemas + policy.yaml above), and
-  live drift from the pristine core is flagged and remediated the same way
-  as any other doctrine file.
+  `task.schema.json`/`ledger-event.schema.json` (Phase 0.2) are `tier:
+  normal` for the same reason — their doctrine source (`docs/STATE_LAYER.md`)
+  is not `tier: security` prose either.
+- `tessctl doctor` / `tessctl verify` / `tessctl lock --check` cover all
+  eleven files (the nine schemas above + `core/policy/policy.yaml`, the
+  policy DATA file + this README) like any other core-managed entry: unpinned
+  `.tess/core` tamper is flagged as CORE TAMPER (SECURITY-TIER for the three
+  schemas + policy.yaml above), and live drift from the pristine core is
+  flagged and remediated the same way as any other doctrine file.
 
 This closes the deferred Phase 0 item ("Not yet wired into keystone
 tracking") — the contracts are no longer invisible to the keystone
@@ -157,3 +167,13 @@ start — no "unwired" interim period. Their INSTANCE data
 `missions/**` is per-project mission data (added to `tess.manifest.json`'s
 `never_touch`, same fenced-off treatment `kb/**`/`clients/*/**` already
 get), not framework doctrine. See `missions/README.md`.
+
+**Phase 0.2 note:** `task.schema.json` + `ledger-event.schema.json` are wired
+into `tess.lock`/`tier: normal` the same way, from the moment they were
+introduced — no "unwired" interim period. Their INSTANCE data
+(`.tess/state/tasks/<id>.json`, `.tess/state/ledger/<YYYY-MM>.<origin>.jsonl`)
+is, like `missions/**`'s own instance data, deliberately NOT keystone-tracked
+— `.tess/state/**` is per-instance task/ledger data (already in
+`tess.manifest.json`'s `never_touch`, the SAME fenced-off treatment
+`missions/**` gets — see `docs/STATE_LAYER.md`'s four-part fence), not
+framework doctrine.
