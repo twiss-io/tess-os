@@ -241,6 +241,71 @@ def test_ledger_verify_shard_seq_gap_detected_independently_of_hash_chain(lroot,
     assert any("seq mismatch" in p for p in problems)
 
 
+# ---------------------------------------------------------------------------
+# Legacy (seq-absent) shards — Cyra-LOW / Reid-MED (#115 review, closed in a
+# later consolidated PR): a shard written before Phase 0.2's `seq` field
+# existed has NO `seq` key on ANY of its lines at all — the exact on-disk
+# shape a pre-#115 `log append` produced. That is an older shape THIS SAME
+# engine wrote honestly, not tampering, and `log append` to it must not
+# hard-refuse either.
+# ---------------------------------------------------------------------------
+
+def _hand_craft_legacy_shard(lroot, engine, origin="legacy"):
+    """A coherent 2-line shard (valid prev_hash/hash chain, exactly as
+    `_log_append_event` would have produced it before `seq` existed) with NO
+    `seq` key on either line."""
+    shard = _shard_path(lroot, origin)
+    shard.parent.mkdir(parents=True, exist_ok=True)
+    ev0 = {
+        "ts": "2026-06-01T00:00:00Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "pre-#115 event one", "prev_hash": "0" * 64,
+    }
+    ev0["hash"] = engine._ledger_event_hash(ev0)
+    ev1 = {
+        "ts": "2026-06-01T00:00:01Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "pre-#115 event two", "prev_hash": ev0["hash"],
+    }
+    ev1["hash"] = engine._ledger_event_hash(ev1)
+    shard.write_text(json.dumps(ev0) + "\n" + json.dumps(ev1) + "\n", encoding="utf-8")
+    return shard
+
+
+def test_verify_reports_legacy_seq_absent_shard_not_tampered(lroot, engine):
+    shard = _hand_craft_legacy_shard(lroot, engine, origin="legacy")
+
+    r = _run(lroot, "log", "verify")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "TAMPERED" not in r.stdout
+    assert "LEGACY" in r.stdout
+    assert shard.name in r.stdout
+
+
+def test_append_to_legacy_shard_backfills_seq_instead_of_erroring(lroot, engine):
+    shard = _hand_craft_legacy_shard(lroot, engine, origin="legacy")
+
+    r = _append(lroot, origin="legacy", event="dispatch", summary="first seq-aware append", harness="h")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    lines = [json.loads(l) for l in shard.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 3
+    assert "seq" not in lines[0] and "seq" not in lines[1], "pre-existing legacy lines are never rewritten"
+    assert lines[2]["seq"] == 2, "backfilled from the shard's own line count (2 legacy lines already on disk)"
+    assert lines[2]["prev_hash"] == lines[1]["hash"], (
+        "the hash chain still links correctly across the legacy/versioned boundary"
+    )
+
+    # The now-mixed shard (2 legacy lines + 1 newly-versioned line) still
+    # verifies clean — reported LEGACY (informational), never TAMPERED.
+    v = _run(lroot, "log", "verify")
+    assert v.returncode == 0, v.stdout + v.stderr
+    assert "TAMPERED" not in v.stdout
+    assert "LEGACY" in v.stdout
+
+
 def test_append_unknown_event_rejected(lroot):
     r = _run(lroot, "log", "append", "--origin", "ada", "--event", "not-a-real-event", "--summary", "x")
     assert r.returncode == 2  # argparse choices= usage error

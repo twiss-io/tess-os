@@ -175,6 +175,15 @@ kanban"):
   - Wording fixes (no behavior change): the schema/engine no longer says
     "tamper-evident" or "instead of a signature" without qualification —
     see "Trust boundary" below (Cyra L1/L2).
+  - **Migration note (Cyra-LOW/Reid-MED, #115 review, closed later):** a
+    shard written before this hardening landed has NO `seq` key on any of
+    its lines at all — that is a LEGACY on-disk shape, not tampering.
+    `log verify` reports a shard containing legacy lines as `LEGACY`
+    (hash chain still fully verified), never `TAMPERED`; `log append` to a
+    legacy shard backfills the next `seq` from the shard's own line count
+    instead of hard-refusing. No manual migration step is required — the
+    very next append to an old shard silently upgrades it to the
+    seq-aware format from that line onward.
 - `tests/test_task_store.py`, `tests/test_accountability_ledger.py`,
   `tests/test_task_ledger_fence.py` — CRUD + schema validation, claim-lease
   + a REAL two-process concurrency proof (no lost update), hash-chain

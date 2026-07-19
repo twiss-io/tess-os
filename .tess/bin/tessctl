@@ -14989,15 +14989,30 @@ def _ledger_tail_state(shard_path: Path) -> tuple:
     inconsistent. A contiguous, gapless `seq` (checked against the shard's
     own `.tip` sidecar + the ledger-wide registry at verify time — see
     `_ledger_verify_shard`) gives verify an INDEPENDENT expected tail length
-    to compare against, closing that gap."""
+    to compare against, closing that gap.
+
+    Cyra-LOW / Reid-MED (#115 review, closed here): a shard's tail line can
+    also be LEGACY — written before this Phase 0.2 hardening ever existed,
+    when the ledger format had `hash`/`prev_hash` but no per-line `seq` at
+    all (every shard produced by #113 before #115 merged looks like this).
+    That is an older on-disk shape this same engine produced honestly, not
+    corruption, and must not hard-refuse the next append. A seq-ABSENT tail
+    is treated as legacy and backfilled: the next seq to hand out is simply
+    the shard's own total line count (0-indexed — a legacy line's implicit
+    position IS its line number, so the count of everything already on disk
+    is exactly the next seq). A tail line that HAS a `seq` key but the WRONG
+    TYPE is still a hard error — a key that is genuinely absent is legacy;
+    one that is present-but-malformed is corruption."""
     if not shard_path.exists():
         return LEDGER_GENESIS_HASH, 0
     last = None
+    line_count = 0
     with open(shard_path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
                 last = line
+                line_count += 1
     if last is None:
         return LEDGER_GENESIS_HASH, 0
     try:
@@ -15007,9 +15022,13 @@ def _ledger_tail_state(shard_path: Path) -> tuple:
     h = obj.get("hash")
     if not isinstance(h, str):
         raise LedgerError(f"tessctl log: {shard_path} tail line has no 'hash' field")
+    if "seq" not in obj:
+        # Legacy tail — no hard error, backfill from the shard's own line
+        # count instead of refusing the append outright.
+        return h, line_count
     seq = obj.get("seq")
     if not isinstance(seq, int):
-        raise LedgerError(f"tessctl log: {shard_path} tail line has no 'seq' field")
+        raise LedgerError(f"tessctl log: {shard_path} tail line has an invalid 'seq' field: {seq!r}")
     return h, seq + 1
 
 
@@ -15222,12 +15241,25 @@ def _ledger_verify_shard(root: Path, shard_path: Path):
     discrepancy versus an independently-recorded tip; it is not proof
     against an adversary who also rewrites the `.tip` file and the registry
     entry consistently with a shortened chain — see docs/STATE_LAYER.md's
-    trust-boundary note.)"""
+    trust-boundary note.)
+
+    Cyra-LOW / Reid-MED (#115 review, closed here): a line with NO `seq` key
+    at all is a LEGACY line — written before Phase 0.2's `seq` field
+    existed — not tampering. `expected_seq` is really just "this line's
+    0-indexed position in the shard," true whether or not any given line
+    actually carries that value explicitly, so a legacy line is simply
+    skipped past without the seq-equality check (its hash-chain link is
+    still fully verified like every other line); only a line whose `seq`
+    key IS present but wrong (or the wrong type) is still reported as a
+    real seq mismatch. A shard containing one or more legacy lines is
+    reported OK with an informational LEGACY note appended to `problems`
+    (see `_cmd_log_verify`), never as TAMPERED."""
     problems = []
     prev_hash = LEDGER_GENESIS_HASH
     expected_seq = 0
     last_hash = None
     count = 0
+    legacy_lines = 0
     if shard_path.exists():
         with open(shard_path, "r", encoding="utf-8") as fh:
             for lineno, raw in enumerate(fh, start=1):
@@ -15245,13 +15277,16 @@ def _ledger_verify_shard(root: Path, shard_path: Path):
                         f"found {obj.get('prev_hash')!r} (chain break / reordering)"
                     )
                     return False, problems
-                seq = obj.get("seq")
-                if not isinstance(seq, int) or seq != expected_seq:
-                    problems.append(
-                        f"{shard_path.name}:{lineno}: seq mismatch — expected {expected_seq}, "
-                        f"found {seq!r} (a line was removed, reordered, or renumbered)"
-                    )
-                    return False, problems
+                if "seq" not in obj:
+                    legacy_lines += 1
+                else:
+                    seq = obj.get("seq")
+                    if not isinstance(seq, int) or seq != expected_seq:
+                        problems.append(
+                            f"{shard_path.name}:{lineno}: seq mismatch — expected {expected_seq}, "
+                            f"found {seq!r} (a line was removed, reordered, or renumbered)"
+                        )
+                        return False, problems
                 recorded_hash = obj.get("hash")
                 recomputed = _ledger_event_hash({k: v for k, v in obj.items() if k != "hash"})
                 if recomputed != recorded_hash:
@@ -15287,6 +15322,12 @@ def _ledger_verify_shard(root: Path, shard_path: Path):
                   "leaving a chain-break trace (Cyra M1, tail-truncation detection)"
             )
             return False, problems
+
+    if legacy_lines:
+        problems.append(
+            f"{shard_path.name}: {legacy_lines} legacy (seq-absent) line(s) — pre-#115 "
+            f"on-disk shape (hash chain intact); reported as LEGACY/unversioned, not tampered"
+        )
 
     return True, problems
 
@@ -15339,6 +15380,13 @@ def _cmd_tasks_new(args, root: Path) -> None:
 def _cmd_tasks_set(args, root: Path) -> None:
     task_id = args.task_id
     changes = []
+    # Reid-LOW (#115 review, closed here): populated by `mutate()` below
+    # when `--heartbeat` is set, so the ledger-event classification after
+    # `_tasks_write_locked` returns can key off an EXPLICIT boolean rather
+    # than string-matching `changes`' own human-readable text (mirrors
+    # `_cmd_tasks_claim`'s own `ledger = {}` out-of-closure capture pattern
+    # a few functions down).
+    heartbeat_meta = {}
 
     if not any([
         args.status, args.owner is not None, args.assignee is not None,
@@ -15398,6 +15446,7 @@ def _cmd_tasks_set(args, root: Path) -> None:
                 )
             claim["heartbeat_at"] = _utc_now_iso()
             record["claim"] = claim
+            heartbeat_meta["same_claimant"] = same_claimant
             changes.append(
                 "heartbeat refreshed" if same_claimant
                 else "heartbeat refreshed (forced, non-claimant identity)"
@@ -15414,7 +15463,24 @@ def _cmd_tasks_set(args, root: Path) -> None:
         # the ledger append entirely rather than attempt one with an empty
         # summary (LedgerError: "--summary must not be empty").
         if changes:
-            event = "heartbeat" if changes == ["heartbeat refreshed"] else "task_transition"
+            # Reid-LOW (#115 review, closed here): the previous check —
+            # `changes == ["heartbeat refreshed"]` — was exact STRING
+            # equality against `changes`' own human-readable text, so a
+            # `--force`/non-claimant heartbeat (whose own entry reads
+            # "heartbeat refreshed (forced, non-claimant identity)", never
+            # the plain "heartbeat refreshed" string) silently fell through
+            # to the generic `task_transition` bucket instead of `heartbeat`
+            # — losing its heartbeat-ness in the accountability trail.
+            # `only_heartbeat_changed` is a STRUCTURAL check instead: was
+            # `--heartbeat` the request, and was it the ONLY change this
+            # call produced (`mutate()`'s heartbeat branch is the only
+            # branch `args.heartbeat` gates, so those two facts together
+            # are sufficient regardless of which of the two summary
+            # strings above actually landed in `changes[0]`).
+            only_heartbeat_changed = bool(args.heartbeat) and len(changes) == 1
+            is_clean_heartbeat = only_heartbeat_changed and heartbeat_meta.get("same_claimant") is True
+            is_forced_heartbeat = only_heartbeat_changed and heartbeat_meta.get("same_claimant") is False
+            event = "heartbeat" if (is_clean_heartbeat or is_forced_heartbeat) else "task_transition"
             _ledger_auto_log(
                 root, harness=args.harness, event=event, task_id=task_id,
                 summary="; ".join(changes), session=args.session,
@@ -15694,8 +15760,17 @@ def _cmd_log_verify(args, root: Path) -> None:
         seen_names.add(shard.name)
         ok, problems = _ledger_verify_shard(root, shard)
         checked += 1
-        if ok:
+        if ok and not problems:
             print(f"OK        {shard.name}")
+        elif ok:
+            # Cyra-LOW / Reid-MED (#115 review, closed here): `problems`
+            # non-empty with ok=True can ONLY be `_ledger_verify_shard`'s
+            # own legacy (seq-absent) note — every other problem it ever
+            # appends is paired with an immediate `return False, problems`.
+            # Report it as LEGACY/unversioned, never as TAMPERED.
+            print(f"LEGACY    {shard.name}")
+            for p in problems:
+                print(f"  {p}")
         else:
             any_bad = True
             print(f"TAMPERED  {shard.name}")

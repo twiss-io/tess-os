@@ -300,6 +300,52 @@ def test_tasks_set_heartbeat_force_overrides_wrong_identity(troot):
     assert after["claim"]["heartbeat_at"] != before["claim"]["heartbeat_at"]
 
 
+# Reid-LOW (#115 review, closed here): `_cmd_tasks_set` used to classify the
+# auto-logged ledger event with exact STRING equality —
+# `changes == ["heartbeat refreshed"]` — which only ever matched the
+# same-claimant wording. A --force/non-claimant heartbeat's own `changes`
+# entry reads "heartbeat refreshed (forced, non-claimant identity)" instead,
+# so it silently fell through to the generic `task_transition` bucket,
+# losing its heartbeat-ness in the accountability trail.
+def test_tasks_set_heartbeat_forced_still_logs_as_heartbeat_event(troot):
+    task_id = _new(troot, harness="claude-code")
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "claude-code")
+
+    r = _run(
+        troot, "tasks", "set", task_id, "--heartbeat", "--force",
+        "--host", "h2", "--pid", "222", "--uuid", "u2", "--harness", "claude-code",
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    v = _run(troot, "log", "view", "--task", task_id, "--json")
+    events = json.loads(v.stdout)
+    assert events[-1]["event"] == "heartbeat", (
+        "a forced/non-claimant heartbeat must still be logged under `heartbeat`, "
+        "never silently reclassified as `task_transition`"
+    )
+    assert "forced" in events[-1]["summary"]
+
+
+def test_tasks_set_heartbeat_clean_still_logs_as_heartbeat_event(troot):
+    """Regression guard for the fix above: a same-claimant (clean) heartbeat
+    must still classify as `heartbeat` too — the fix must not have narrowed
+    the previously-working case while fixing the forced one."""
+    task_id = _new(troot, harness="claude-code")
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "claude-code")
+    time.sleep(1.1)
+
+    r = _run(
+        troot, "tasks", "set", task_id, "--heartbeat",
+        "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "claude-code",
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    v = _run(troot, "log", "view", "--task", task_id, "--json")
+    events = json.loads(v.stdout)
+    assert events[-1]["event"] == "heartbeat"
+    assert "forced" not in events[-1]["summary"]
+
+
 def test_tasks_set_unknown_task_refused(troot):
     r = _run(troot, "tasks", "set", "T-nope", "--status", "ready", "--harness", "h")
     assert r.returncode != 0
