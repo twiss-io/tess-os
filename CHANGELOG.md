@@ -77,6 +77,130 @@ All notable changes to Tess OS are documented here. This project adheres to
     clean/tamper/reorder, schema/lint), `tests/test_task_ledger_fence.py` (5
     tests — the data-leak fence against real CLI-produced content).
 
+- **Phase 0.3 — the cross-harness MEMORY LINK (`tessctl memory adopt`)**,
+  closing the memory half of the shared-brain build (the task/ledger half
+  landed as Phase 0.2 above). A sibling of the TASK LEDGER region — same
+  `.tess/state/` store, same fail-closed discipline — but memory is
+  different from tasks/ledger in one respect: Claude Code (and, eventually,
+  other harnesses) already had a WORKING harness-private memory convention
+  before this region existed, so the job here is "adopt" (move + symlink an
+  existing directory into the canonical store), not "invent a new format."
+  - **`tessctl memory adopt`** — moves an existing harness memory
+    directory's contents into `.tess/state/memory/` and replaces the
+    original with a symlink pointing at it, so that harness's own native
+    memory reads/writes transparently land in the ONE canonical store every
+    harness mounts. Dry-run by default (`--yes` to mutate; the entire
+    planning phase — idempotency check, source/target enumeration,
+    per-file conflict detection — is read-only, so even a refused call
+    never touches disk); refuses `--from`/`--to` resolving to the same path
+    or one nested inside the other, before any mutation, by INODE IDENTITY
+    (`os.path.samefile`) rather than string equality — a self-targeted
+    adopt would otherwise treat the source's own content as "already
+    present," copy nothing elsewhere, then delete the only copy, and a
+    string compare alone is bypassable on the real deployment filesystems
+    (macOS APFS, Windows NTFS), which are case-insensitive and treat
+    differently-cased spellings of the same directory as one and the same
+    file even though `Path.resolve()` preserves as-typed case; refuses a
+    non-empty target without `--merge` (bootstrap calls with no source
+    content are exempt — nothing is being merged); refuses a source entry
+    that is a symlink (never silently dereferenced); refuses any real
+    filename+content conflict outright, with zero partial writes;
+    idempotent against an already-adopted source (a clean no-op); every
+    `OSError` reachable from planning or the mutate-for-real path —
+    including the rmtree → symlink → manifest-write swap, made crash-safe
+    via a manifest written before the source is ever touched and a
+    verified temporary-sibling symlink created before the original
+    directory is removed — is converted to a typed `MemoryAdoptError`,
+    never a raw traceback, and a failure anywhere in that swap leaves the
+    source fully intact rather than half-deleted; a post-adopt round-trip
+    read/write check through the new symlink triggers an automatic full
+    rollback (via the same revert path) if it ever fails, so no
+    half-adopted state can survive. `--harness` defaults to Claude Code's
+    own well-known per-project path
+    (`~/.claude/projects/<flattened-root>/memory/`) but any path is
+    supported via `--from`.
+  - **`tessctl memory adopt --revert`** — dry-run by default, symmetric
+    with forward-adopt (`--yes` required to mutate) — undoes an adopt from
+    THAT adopt's own recorded manifest
+    (`.tess/state/memory/.tess-memory-adopt.<harness-slug>.<source-path-hash>.json`
+    — one per adopted (harness, source-path) pair; the hash keeps two
+    differently-spelled `--harness` names that slugify identically, e.g.
+    `Claude-Code`/`claude_code`, from clobbering each other's manifest),
+    restoring exactly the files that manifest recorded — never the store's
+    current full contents, which may since have grown from a different
+    harness's own adopt or ordinary shared writes. Of those files, only the
+    ones THIS adopt itself copied in are CANDIDATES for removal from the
+    store; a file that was already present (byte-identical) before this
+    adopt ran is copied back into the restored directory but left in the
+    store, since another still-adopted harness may depend on it — and that
+    protection is symmetric: a file THIS adopt itself copied in is ALSO
+    copied-back-but-left-in-store, not removed, if any OTHER still-live
+    harness's manifest references the same filename in its own
+    `source_files` (the reverse case — this harness was the original
+    owner, and a second harness later deduped against it). Refuses (no
+    mutation, no guessing) if the recorded source path has drifted since
+    adopt (already reverted, or manually altered).
+  - **`tessctl doctor` memory-link check** — non-fatal, informational only,
+    in every case (not-adopted, adopted-and-clean, or adopted-but-broken
+    never affect doctor's errors/warnings/exit code): per adopted harness,
+    symlink present + resolving, store writable, and
+    `.tess/state/memory/MEMORY.md`'s own index coherence against what is
+    actually on disk (broken links, unindexed files).
+  - **Codex/generic AGENTS.md pointer** —
+    `.tess/core/templates/agents-md/AGENTS.md.tpl` gains a "Session Memory
+    (Shared)" section (`{{WORKER_SESSION_MEMORY}}`,
+    `.tess/core/templates/agents-md/session-memory.md`) telling a
+    worker-profile harness to read `.tess/state/memory/MEMORY.md` at
+    session start and write durable learnings back to the same store —
+    Claude Code needs no equivalent (its own harness already auto-reads
+    its memory index natively). A pure repo/state fact, not orchestration
+    doctrine — verified clean against the G3 worker-profile
+    doctrine-denylist.
+  - **Fence held, not weakened**: `.tess/state/memory/**` was already in
+    `tess.manifest.json`'s `never_touch`, `.gitignore`'s content-ignore
+    rules (#111), and `_PUBLISH_CLEAN_PRIVATE_GLOBS` (#93) before this PR —
+    no change needed to any of the three. `tests/test_memory_adopt_fence.py`
+    proves the SAME fence blocks a genuinely CLI-adopted memory file and
+    its adopt manifest (source directory deliberately outside the git
+    working tree, mirroring a real harness home-directory layout):
+    invisible to `git add -A`, and still refused by `tessctl doctor
+    --publish-clean` if force-added.
+  - **Running an actual adopt against any specific instance's own live
+    memory remains a separate, later, opt-in operation** — this PR ships
+    only the mechanism, exercised entirely against disposable `tmp_path`
+    fixtures.
+  - **Tests**: `tests/test_memory_adopt.py` (41 tests — dry-run purity,
+    bootstrap + real adopt, idempotency, every refusal (including a
+    symlinked source entry and `--from`/`--to` self-collision/nesting),
+    `--merge` skip-on-identical-content, `--revert` (dry-run-by-default +
+    `--yes` gate, multi-harness disambiguation including the
+    harness-slug-collision case, drifted-state refusal, and the
+    two-harness shared-file preservation case in BOTH directions),
+    automatic rollback on a simulated round-trip failure, crash-safety of
+    the rmtree → symlink → manifest-write swap under injected `OSError`
+    failures, a guarded `read_bytes()` failure during planning, the
+    doctor memory-link check's four states, the `--from`/`--to`
+    self-destruct guard's inode-identity check on a case-insensitive
+    filesystem (exact-same-dir and nested variants), and the
+    reverse-direction two-harness shared-file preservation case),
+    `tests/test_memory_adopt_fence.py` (8 tests — the data-leak fence
+    against real CLI-adopted content, plus the AGENTS.md render
+    assertions). **49 tests total** (15 added responding to PR #117's
+    two-reviewer REJECT — Cyra/security found the `--from`==`--to`
+    self-destruct (H1) and the revert over-removal of a second harness's
+    shared file (M1); Reid/quality independently found the same
+    self-destruct as CRITICAL plus the unguarded rmtree → symlink →
+    manifest-write region (HIGH), the harness-slug manifest collision, the
+    missing revert dry-run/`--yes` gate, and an unguarded `read_bytes()`
+    during planning — all fixed and regression-tested. Cyra's
+    re-verification of that fix (commit `18a3fea`) then found two more
+    holes: HOLE 1/HIGH — the self-destruct guard compared resolved path
+    STRINGS, bypassable on a case-insensitive filesystem (macOS APFS /
+    Windows NTFS, this project's real deployment FS), fixed with inode
+    identity (`os.path.samefile`); HOLE 2/MEDIUM — the shared-file revert
+    protection only held in one direction, fixed by making it symmetric —
+    both fixed and regression-tested before this PR ships).
+
 ### Security
 - **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
   `.gitignore` fence (issue #110, found reviewing #105)** — PR #105's

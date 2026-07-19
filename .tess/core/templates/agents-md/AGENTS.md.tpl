@@ -29,6 +29,10 @@ are flagged as uncaptured drift).
 
 {{HARNESS_NOTE}}
 
+## Session Memory (Shared)
+
+{{WORKER_SESSION_MEMORY}}
+
 ---
 
 Full orchestration doctrine (Claude Code as {{ASSISTANT_NAME}}) lives in
