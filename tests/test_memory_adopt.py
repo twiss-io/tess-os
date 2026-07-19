@@ -36,6 +36,28 @@ Coverage:
   * `tessctl doctor`'s memory-link check: not-adopted (non-fatal, exit 0),
     adopted+clean, adopted+broken-symlink (still non-fatal, exit 0), and
     MEMORY.md index-coherence gaps (broken links / unindexed files).
+
+PR #117 two-reviewer REJECT remediation (Cyra + Reid — see this file's
+"PR #117 review fixes" section below for the full list):
+  * H1/CRITICAL: --from == --to (or one nested inside the other) is
+    refused BEFORE any mutation — the self-destruct (rmtree + self-
+    referential symlink loop + uncaught crash) is closed.
+  * HIGH: the rmtree -> symlink -> manifest-write critical region is
+    crash-safe — any OSError becomes a typed MemoryAdoptError, and a
+    monkeypatched mid-operation failure never leaves the source deleted
+    with no symlink/manifest (proven fully-intact, not half-adopted).
+  * MEDIUM (M1): --revert only removes files THIS adopt itself copied
+    (`newly_copied_files`) from the store; a byte-identical file another
+    still-adopted harness depends on is copied back but left in the
+    store.
+  * MEDIUM: the manifest filename folds in a hash of the source path, not
+    just the harness slug, so two --harness names that slugify identically
+    (`Claude-Code` / `claude_code`) never clobber each other's manifest.
+  * MEDIUM: `--revert` is dry-run by default and requires `--yes` to
+    mutate, symmetric with forward-adopt.
+  * LOW: a symlinked source entry is refused, not silently dereferenced.
+  * LOW: `read_bytes()` during planning is guarded — a permission/IO
+    failure surfaces as a typed refusal, not a raw traceback.
 """
 
 from __future__ import annotations
@@ -98,9 +120,14 @@ def _to_dir(root):
 
 
 def _manifest(root, harness="claude-code"):
-    return json.loads(
-        (_to_dir(root) / f".tess-memory-adopt.{harness}.json").read_text(encoding="utf-8")
-    )
+    # The manifest filename is `.tess-memory-adopt.<slug>.<path-hash>.json`
+    # (the path-hash disambiguates two --harness names that slugify to the
+    # same string but adopt from different --from paths — see PR #117
+    # review, Reid/MEDIUM) — glob by slug prefix rather than hardcoding
+    # the exact name.
+    matches = sorted(_to_dir(root).glob(f".tess-memory-adopt.{harness}.*.json"))
+    assert len(matches) == 1, f"expected exactly one manifest for harness {harness!r}, found {matches}"
+    return json.loads(matches[0].read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +348,7 @@ def test_revert_restores_real_directory_and_removes_manifest(troot, harness_home
     assert r1.returncode == 0, r1.stdout + r1.stderr
     assert harness_home.is_symlink()
 
-    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir))
+    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir), "--yes")
     assert r2.returncode == 0, r2.stdout + r2.stderr
 
     assert harness_home.is_dir() and not harness_home.is_symlink()
@@ -342,7 +369,7 @@ def test_revert_leaves_unrelated_store_content_untouched(troot, harness_home):
 
     (to_dir / "unrelated.md").write_text("belongs to someone else\n", encoding="utf-8")
 
-    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir))
+    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir), "--yes")
     assert r2.returncode == 0, r2.stdout + r2.stderr
     assert (to_dir / "unrelated.md").exists()  # untouched
     assert not (harness_home / "unrelated.md").exists()  # never exported into the harness dir
@@ -392,7 +419,7 @@ def test_revert_multiple_harnesses_requires_disambiguation(troot, harness_home, 
     assert r3.returncode != 0
     assert "--harness" in (r3.stdout + r3.stderr)
 
-    r4 = _run(troot, "memory", "adopt", "--revert", "--harness", "codex", "--to", str(to_dir))
+    r4 = _run(troot, "memory", "adopt", "--revert", "--harness", "codex", "--to", str(to_dir), "--yes")
     assert r4.returncode == 0, r4.stdout + r4.stderr
     assert other_home.is_dir() and not other_home.is_symlink()
     # The FIRST harness's own adoption is untouched by reverting the second.
@@ -530,3 +557,361 @@ def _seed_lock(root):
         "files: {}\n",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# PR #117 review fixes — Cyra (security) + Reid (quality), both REJECT.
+# Every test below reproduces the exact finding first (see the PR #117
+# review comments for the original live repro), then proves the fix
+# closes it.
+# ---------------------------------------------------------------------------
+
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+# --- H1/CRITICAL (Cyra + Reid) — --from == --to self-destruct ---------------
+
+def test_refuses_from_equals_to_self_destruct(troot):
+    """The exact reproduction from both reviews: --from and --to are the
+    SAME directory, with --merge (the flag that bypasses the plain
+    non-empty-target check). Before the fix this shutil.rmtree()'d the
+    directory, replaced it with a self-referential symlink loop, and
+    crashed with an uncaught FileExistsError — permanently destroying the
+    only copy of the content with no manifest to recover from."""
+    store = _to_dir(troot)
+    store.mkdir(parents=True)
+    (store / "a.md").write_text("the only copy of this content\n", encoding="utf-8")
+
+    r = _run(troot, "memory", "adopt", "--from", str(store), "--to", str(store), "--yes", "--merge")
+    assert r.returncode != 0
+    assert "resolve to the same path" in (r.stdout + r.stderr)
+    assert "Traceback" not in (r.stdout + r.stderr)  # typed refusal, never a raw crash
+
+    # Content fully intact: still a real directory, not a symlink, not a
+    # symlink loop, original bytes unchanged.
+    assert store.is_dir() and not store.is_symlink()
+    assert (store / "a.md").read_text(encoding="utf-8") == "the only copy of this content\n"
+    # No manifest was ever written (nothing to "recover" — nothing was lost).
+    assert not list(store.glob(".tess-memory-adopt.*.json"))
+
+
+def test_refuses_to_nested_inside_from(troot):
+    """The "one is a prefix of the other" variant Cyra/Reid both called
+    out alongside the exact-equal case: --to is a subdirectory of
+    --from."""
+    from_dir = _to_dir(troot)
+    to_dir = from_dir / "sub"
+    from_dir.mkdir(parents=True)
+    to_dir.mkdir(parents=True)
+    (from_dir / "x.md").write_text("nested-hazard content\n", encoding="utf-8")
+
+    r = _run(troot, "memory", "adopt", "--from", str(from_dir), "--to", str(to_dir), "--yes", "--merge")
+    assert r.returncode != 0
+    assert "resolve to the same path or one is nested inside the other" in (r.stdout + r.stderr)
+    assert (from_dir / "x.md").read_text(encoding="utf-8") == "nested-hazard content\n"
+
+
+def test_refuses_from_nested_inside_to(troot):
+    """The reverse nesting: --from is a subdirectory of --to."""
+    to_dir = _to_dir(troot)
+    from_dir = to_dir / "sub"
+    from_dir.mkdir(parents=True)
+    (from_dir / "y.md").write_text("nested-hazard content 2\n", encoding="utf-8")
+
+    r = _run(troot, "memory", "adopt", "--from", str(from_dir), "--to", str(to_dir), "--yes", "--merge")
+    assert r.returncode != 0
+    assert "resolve to the same path or one is nested inside the other" in (r.stdout + r.stderr)
+    assert (from_dir / "y.md").read_text(encoding="utf-8") == "nested-hazard content 2\n"
+
+
+# --- HIGH (Reid) — crash-safety of the rmtree->symlink->manifest region ----
+
+def test_symlink_creation_failure_leaves_source_fully_intact(engine, tmp_path, monkeypatch):
+    """Injects a failure in the FIRST half of the swap (creating the
+    verified temp symlink, before from_dir is touched at all). Before the
+    fix, an equivalent failure anywhere in this region (mkdir/rmtree/
+    symlink) was a raw, unguarded OSError with zero exception handling."""
+    root = tmp_path / "os"
+    root.mkdir()
+    from_dir = tmp_path / "harness-home" / "memory"
+    from_dir.mkdir(parents=True)
+    (from_dir / "a.md").write_text("original content\n", encoding="utf-8")
+    to_dir = root / ".tess" / "state" / "memory"
+
+    real_symlink = engine.os.symlink
+
+    def _boom_symlink(src, dst, *a, **kw):
+        if Path(dst).name.startswith(".tessctl-memory-adopt-tmp-"):
+            raise OSError("synthetic symlink-creation failure for this test")
+        return real_symlink(src, dst, *a, **kw)
+
+    monkeypatch.setattr(engine.os, "symlink", _boom_symlink)
+
+    with pytest.raises(engine.MemoryAdoptError, match="could not create a symlink"):
+        engine._memory_adopt(
+            root, from_dir=from_dir, to_dir=to_dir, harness="claude-code",
+            merge=False, dry_run=False,
+        )
+
+    # FULLY INTACT, never half: from_dir is still the original real
+    # directory, never partially deleted, never replaced.
+    assert from_dir.is_dir() and not from_dir.is_symlink()
+    assert (from_dir / "a.md").read_text(encoding="utf-8") == "original content\n"
+    # Bonus: even though the swap failed, content + manifest are already
+    # safely duplicated in the store — nothing is unrecoverable.
+    assert (to_dir / "a.md").read_text(encoding="utf-8") == "original content\n"
+    assert list(to_dir.glob(".tess-memory-adopt.*.json"))
+    # No leftover temp symlink debris.
+    assert list(from_dir.parent.glob(".tessctl-memory-adopt-tmp-*")) == []
+
+
+def test_rmtree_failure_during_swap_leaves_source_fully_intact(engine, tmp_path, monkeypatch):
+    """Injects a failure in the SECOND half of the swap (removing the
+    original from_dir after the temp symlink was already verified good)
+    — the exact failure window Reid's HIGH finding singles out: "if it
+    fails after rmtree but before symlink, the original directory is
+    already gone... no manifest was written yet". With this fix the
+    manifest is already durable by this point, and the mocked failure
+    fires before any real deletion happens, so from_dir survives
+    untouched."""
+    root = tmp_path / "os"
+    root.mkdir()
+    from_dir = tmp_path / "harness-home" / "memory"
+    from_dir.mkdir(parents=True)
+    (from_dir / "a.md").write_text("original content\n", encoding="utf-8")
+    to_dir = root / ".tess" / "state" / "memory"
+
+    real_rmtree = engine.shutil.rmtree
+
+    def _boom_rmtree(path, *a, **kw):
+        if str(path) == str(from_dir):
+            raise OSError("synthetic rmtree failure for this test")
+        return real_rmtree(path, *a, **kw)
+
+    monkeypatch.setattr(engine.shutil, "rmtree", _boom_rmtree)
+
+    with pytest.raises(engine.MemoryAdoptError, match="failed to replace"):
+        engine._memory_adopt(
+            root, from_dir=from_dir, to_dir=to_dir, harness="claude-code",
+            merge=False, dry_run=False,
+        )
+
+    # FULLY INTACT, never half: the mocked rmtree raised before deleting
+    # anything, so from_dir is still the original real directory.
+    assert from_dir.is_dir() and not from_dir.is_symlink()
+    assert (from_dir / "a.md").read_text(encoding="utf-8") == "original content\n"
+    assert (to_dir / "a.md").read_text(encoding="utf-8") == "original content\n"
+    assert list(to_dir.glob(".tess-memory-adopt.*.json"))
+
+
+def test_copy_loop_os_error_is_typed_not_raw(engine, tmp_path, monkeypatch):
+    """The copy loop (immediately upstream of the flagged critical
+    region, same "mutate for real" block) must also never leak a raw
+    OSError — a source file vanishing mid-copy is converted to a typed
+    MemoryAdoptError, and the copy loop's own rollback still fires."""
+    root = tmp_path / "os"
+    root.mkdir()
+    from_dir = tmp_path / "harness-home" / "memory"
+    from_dir.mkdir(parents=True)
+    (from_dir / "a.md").write_text("1\n", encoding="utf-8")
+    (from_dir / "b.md").write_text("2\n", encoding="utf-8")
+    to_dir = root / ".tess" / "state" / "memory"
+
+    real_copy2 = engine.shutil.copy2
+
+    def _boom_copy2(src, dst, *a, **kw):
+        if Path(src).name == "b.md":
+            raise OSError("synthetic copy failure for this test")
+        return real_copy2(src, dst, *a, **kw)
+
+    monkeypatch.setattr(engine.shutil, "copy2", _boom_copy2)
+
+    with pytest.raises(engine.MemoryAdoptError, match="failed while copying b.md"):
+        engine._memory_adopt(
+            root, from_dir=from_dir, to_dir=to_dir, harness="claude-code",
+            merge=False, dry_run=False,
+        )
+
+    # Rollback undid the one file that DID get copied before the failure —
+    # no orphan partial content left in the store, source untouched.
+    assert not to_dir.exists() or list(to_dir.iterdir()) == []
+    assert from_dir.is_dir() and not from_dir.is_symlink()
+    assert (from_dir / "a.md").read_text(encoding="utf-8") == "1\n"
+    assert (from_dir / "b.md").read_text(encoding="utf-8") == "2\n"
+
+
+# --- MEDIUM M1 (Cyra) — revert must not remove a shared already-present ----
+# --- file a second harness still depends on ---------------------------------
+
+def test_revert_two_harnesses_shared_file_preserved(troot, tmp_path):
+    """The exact M1 reproduction: harness A adopts shared.md. Harness B
+    --merge-adopts a BYTE-IDENTICAL shared.md (skipped as already-present,
+    never copied by B) plus its own b_only.md. Reverting B must NOT remove
+    shared.md from the store — harness A is still symlinked to it."""
+    harness_a = tmp_path / "harness-a" / "memory"
+    harness_b = tmp_path / "harness-b" / "memory"
+    harness_a.mkdir(parents=True)
+    harness_b.mkdir(parents=True)
+    (harness_a / "shared.md").write_text("shared content\n", encoding="utf-8")
+    (harness_b / "shared.md").write_text("shared content\n", encoding="utf-8")
+    (harness_b / "b_only.md").write_text("only B\n", encoding="utf-8")
+
+    to_dir = _to_dir(troot)
+    ra = _run(troot, "memory", "adopt", "--harness", "harness-a", "--from", str(harness_a), "--to", str(to_dir), "--yes")
+    assert ra.returncode == 0, ra.stdout + ra.stderr
+    rb = _run(troot, "memory", "adopt", "--harness", "harness-b", "--from", str(harness_b), "--to", str(to_dir), "--yes", "--merge")
+    assert rb.returncode == 0, rb.stdout + rb.stderr
+
+    manifest_b = _manifest(troot, harness="harness-b")
+    assert manifest_b["newly_copied_files"] == ["b_only.md"]  # shared.md was already-present, not copied by B
+
+    # Dry-run first: must show shared.md as "copy back, kept in store".
+    dry = _run(troot, "memory", "adopt", "--revert", "--harness", "harness-b", "--to", str(to_dir))
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "DRY RUN" in dry.stdout
+    assert "kept in the store" in dry.stdout
+    assert "shared.md" in dry.stdout
+    assert (to_dir / "shared.md").exists()  # dry-run touched nothing
+
+    # Real revert of B.
+    r2 = _run(troot, "memory", "adopt", "--revert", "--harness", "harness-b", "--to", str(to_dir), "--yes")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    # shared.md survives IN THE STORE (harness A still reads it via its
+    # own symlink) and b_only.md was removed (it was only ever B's copy).
+    assert (to_dir / "shared.md").exists()
+    assert not (to_dir / "b_only.md").exists()
+    assert harness_a.is_symlink() and harness_a.resolve() == to_dir.resolve()
+    assert (harness_a / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+
+    # Harness B got BOTH files back into its own restored private dir.
+    assert harness_b.is_dir() and not harness_b.is_symlink()
+    assert (harness_b / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+    assert (harness_b / "b_only.md").read_text(encoding="utf-8") == "only B\n"
+
+
+# --- MEDIUM (Reid) — harness-slug collision must not clobber manifests -----
+
+def test_harness_slug_collision_does_not_clobber_manifests(troot, tmp_path):
+    """_slugify("Claude-Code-X") and _slugify("claude_code_x") both
+    collide on the same slug — before the fix, the SECOND adopt's
+    manifest write would silently overwrite the FIRST's, leaving the
+    first harness's own --revert with no manifest to recover from."""
+    home_1 = tmp_path / "home-1" / "memory"
+    home_2 = tmp_path / "home-2" / "memory"
+    home_1.mkdir(parents=True)
+    home_2.mkdir(parents=True)
+    (home_1 / "one.md").write_text("harness one\n", encoding="utf-8")
+    (home_2 / "two.md").write_text("harness two\n", encoding="utf-8")
+
+    to_dir = _to_dir(troot)
+    r1 = _run(troot, "memory", "adopt", "--harness", "Claude-Code-X", "--from", str(home_1), "--to", str(to_dir), "--yes")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+    r2 = _run(troot, "memory", "adopt", "--harness", "claude_code_x", "--from", str(home_2), "--to", str(to_dir), "--yes", "--merge")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    # Both manifests exist — NOT clobbered into one.
+    manifests = sorted(to_dir.glob(".tess-memory-adopt.claude-code-x.*.json"))
+    assert len(manifests) == 2, manifests
+
+    manifest_1 = json.loads(manifests[0].read_text(encoding="utf-8"))
+    manifest_2 = json.loads(manifests[1].read_text(encoding="utf-8"))
+    recorded_from = {manifest_1["from_path"], manifest_2["from_path"]}
+    assert recorded_from == {str(home_1), str(home_2)}
+
+    # Both source files present in the store, both harness symlinks live.
+    assert (to_dir / "one.md").exists() and (to_dir / "two.md").exists()
+    assert home_1.is_symlink() and home_2.is_symlink()
+
+    # Reverting by the shared slug (either raw --harness spelling) is a
+    # refused AMBIGUITY, not a guess at which manifest to use.
+    r3 = _run(troot, "memory", "adopt", "--revert", "--harness", "Claude-Code-X", "--to", str(to_dir), "--yes")
+    assert r3.returncode != 0
+    assert "recorded adopt(s)" in (r3.stdout + r3.stderr)
+    # Refusal, no mutation: both symlinks and both manifests still stand.
+    assert home_1.is_symlink() and home_2.is_symlink()
+    assert len(sorted(to_dir.glob(".tess-memory-adopt.claude-code-x.*.json"))) == 2
+
+
+# --- MEDIUM (Reid) — --revert dry-run-by-default + --yes gate --------------
+
+def test_revert_is_dry_run_by_default_and_requires_yes(troot, harness_home):
+    _seed(harness_home, **{"a.md": "1\n"})
+    to_dir = _to_dir(troot)
+    r1 = _run(troot, "memory", "adopt", "--from", str(harness_home), "--to", str(to_dir), "--yes")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    # No --yes: dry-run only, touches nothing.
+    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir))
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert "DRY RUN" in r2.stdout
+    assert "Re-run with --yes" in r2.stdout
+    assert harness_home.is_symlink()  # untouched — still adopted
+    assert (to_dir / "a.md").exists()  # untouched
+    assert list(to_dir.glob(".tess-memory-adopt.*.json"))  # manifest untouched
+
+    # --yes: performs the revert for real.
+    r3 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir), "--yes")
+    assert r3.returncode == 0, r3.stdout + r3.stderr
+    assert harness_home.is_dir() and not harness_home.is_symlink()
+    assert (harness_home / "a.md").read_text(encoding="utf-8") == "1\n"
+    assert not list(to_dir.glob(".tess-memory-adopt.*.json"))
+
+
+def test_revert_dry_run_json_shape(troot, harness_home):
+    _seed(harness_home, **{"a.md": "1\n"})
+    to_dir = _to_dir(troot)
+    r1 = _run(troot, "memory", "adopt", "--from", str(harness_home), "--to", str(to_dir), "--yes")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+
+    r2 = _run(troot, "memory", "adopt", "--revert", "--from", str(harness_home), "--to", str(to_dir), "--json")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    obj = json.loads(r2.stdout)
+    assert obj["action"] == "revert"
+    assert obj["dry_run"] is True
+    assert obj["would_move"] == ["a.md"]
+
+
+# --- LOW (Cyra) — a symlinked source entry is refused, not dereferenced ----
+
+def test_refuses_symlinked_source_file(troot, harness_home, tmp_path):
+    outside = tmp_path / "outside-the-memory-dir"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP SECRET OUTSIDE FILE\n", encoding="utf-8")
+    (harness_home / "secret.txt").symlink_to(outside / "secret.txt")
+
+    to_dir = _to_dir(troot)
+    r = _run(troot, "memory", "adopt", "--from", str(harness_home), "--to", str(to_dir), "--yes")
+    assert r.returncode != 0
+    assert "non-file entries" in (r.stdout + r.stderr)
+    assert "secret.txt" in (r.stdout + r.stderr)
+    # No mutation: nothing copied into the store, source untouched — the
+    # symlink entry is still exactly what it was, never dereferenced.
+    assert not to_dir.exists()
+    assert harness_home.is_dir() and not harness_home.is_symlink()
+    assert (harness_home / "secret.txt").is_symlink()
+    assert (harness_home / "secret.txt").resolve() == (outside / "secret.txt").resolve()
+
+
+# --- LOW (Reid) — unguarded read_bytes() during planning -------------------
+
+@pytest.mark.skipif(_IS_ROOT, reason="permission bits are not enforced for root")
+def test_unreadable_target_file_during_planning_is_typed_not_raw(troot, harness_home):
+    """Reproduces Reid's LOW finding: a target file that becomes
+    unreadable (permission change) between source enumeration and the
+    per-file byte comparison must surface as a typed MemoryAdoptError —
+    not an uncaught PermissionError traceback."""
+    _seed(harness_home, **{"clash.md": "harness version\n"})
+    to_dir = _to_dir(troot)
+    to_dir.mkdir(parents=True)
+    (to_dir / "clash.md").write_text("store version\n", encoding="utf-8")
+    os.chmod(to_dir / "clash.md", 0o000)
+    try:
+        r = _run(troot, "memory", "adopt", "--from", str(harness_home), "--to", str(to_dir), "--yes", "--merge")
+    finally:
+        os.chmod(to_dir / "clash.md", 0o644)  # restore so tmp_path cleanup can remove it
+
+    assert r.returncode != 0
+    assert "could not read" in (r.stdout + r.stderr)
+    assert "clash.md" in (r.stdout + r.stderr)
+    assert "Traceback" not in (r.stdout + r.stderr)

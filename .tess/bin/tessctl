@@ -15789,19 +15789,41 @@ class MemoryAdoptError(Exception):
 
 
 MEMORY_DIR = f"{STATE_DIR}/memory"
-# Per-harness manifest — NOT a single shared file. The canonical store is
-# ONE directory multiple harnesses may each independently adopt into (each
-# with its own --from path); a shared filename would let a second harness's
-# adopt silently clobber the first harness's own revert record.
+# Per-(harness, source-path) manifest — NOT a single shared file, and NOT
+# keyed on the harness slug alone. The canonical store is ONE directory
+# multiple harnesses may each independently adopt into (each with its own
+# --from path); a shared filename would let a second harness's adopt
+# silently clobber the first harness's own revert record. `--harness` is
+# free-text with no `choices=` constraint, so the slug alone is not
+# sufficient either: `_slugify("Claude-Code")`, `_slugify("claude_code")`,
+# and `_slugify("CLAUDE CODE")` all collide on `claude-code` — folding a
+# hash of the source path into the filename too (Reid/MEDIUM, PR #117
+# review) disambiguates that case without requiring any change to how
+# `--revert --harness X` (no `--from`) locates a manifest, since that
+# lookup globs by slug prefix rather than reconstructing the exact name.
 MEMORY_ADOPT_MANIFEST_PREFIX = ".tess-memory-adopt."
 MEMORY_ADOPT_MANIFEST_SUFFIX = ".json"
 MEMORY_ADOPT_MANIFEST_GLOB = f"{MEMORY_ADOPT_MANIFEST_PREFIX}*{MEMORY_ADOPT_MANIFEST_SUFFIX}"
 DEFAULT_MEMORY_ADOPT_HARNESS = "claude-code"
 
 
-def _memory_adopt_manifest_path(to_dir: Path, harness: str) -> Path:
-    slug = _slugify(harness) or "harness"
-    return to_dir / f"{MEMORY_ADOPT_MANIFEST_PREFIX}{slug}{MEMORY_ADOPT_MANIFEST_SUFFIX}"
+def _memory_adopt_manifest_slug(harness: str) -> str:
+    return _slugify(harness) or "harness"
+
+
+def _memory_adopt_manifest_path(to_dir: Path, harness: str, from_dir: Path) -> Path:
+    """The manifest path for ONE adopt of ONE harness FROM ONE source
+    path. `from_dir` is hashed in its raw, as-given form (the same string
+    stored verbatim in the manifest's own `from_path` field) — not
+    `.resolve()`d — so the filename this function computes at adopt time
+    (when `from_dir` is still a real, pre-swap directory) stays
+    reproducible from that same raw string later, and critically is NEVER
+    recomputed by resolving a POST-adopt `--from` value, which by then is
+    a symlink that would resolve straight through to `to_dir` itself and
+    collapse every harness's hash onto the same value."""
+    slug = _memory_adopt_manifest_slug(harness)
+    path_hash = hashlib.sha256(str(from_dir).encode("utf-8")).hexdigest()[:12]
+    return to_dir / f"{MEMORY_ADOPT_MANIFEST_PREFIX}{slug}.{path_hash}{MEMORY_ADOPT_MANIFEST_SUFFIX}"
 
 
 def _is_memory_store_housekeeping_file(name: str) -> bool:
@@ -15873,6 +15895,16 @@ def _memory_adopt_roundtrip_check(from_dir: Path, to_dir: Path) -> None:
         )
 
 
+def _path_is_prefix(parent: Path, child: Path) -> bool:
+    """True if `child` (already `.resolve()`d by the caller) IS `parent`
+    itself or is nested inside it. Used by the `--from`/`--to` self-
+    destruct guard below — a resolved-equal check alone misses the
+    "one is a subdirectory of the other" variant of the same hazard
+    (copying into a location that is about to be deleted, or deleting a
+    location that is about to be copied from)."""
+    return parent == child or parent in child.parents
+
+
 def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
                    merge: bool, dry_run: bool) -> dict:
     """
@@ -15907,6 +15939,36 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
             f"symlink. Inspect manually."
         )
 
+    # 1.5. Self-destruct guard (CRITICAL, PR #117 review — Cyra H1 / Reid
+    #      CRITICAL): --from and --to must never resolve to the same
+    #      location, nor may one be nested inside the other. Without this,
+    #      `--merge` treats a self-targeted adopt's every file as
+    #      "already present" (comparing a file to itself), copies nothing
+    #      elsewhere, then `shutil.rmtree()`s the source — deleting the
+    #      only copy of the content — and replaces it with a
+    #      self-referential symlink loop. This check runs BEFORE source
+    #      enumeration/mutation and is independent of --merge/--yes/
+    #      dry-run: reachable through the documented, first-class
+    #      --from/--to CLI surface, it must never be bypassable.
+    #      (from_dir is guaranteed NOT a symlink here — the block above
+    #      already returned/raised for every symlink case, including the
+    #      legitimate "already adopted" one, so this can't misfire on a
+    #      normal post-adopt symlink whose resolved target IS to_dir.)
+    try:
+        from_dir_resolved = from_dir.resolve()
+    except OSError as e:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: {from_dir} could not be resolved: {e}"
+        )
+    if _path_is_prefix(from_dir_resolved, to_dir_resolved) or _path_is_prefix(to_dir_resolved, from_dir_resolved):
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: --from ({from_dir_resolved}) and --to "
+            f"({to_dir_resolved}) resolve to the same path or one is nested inside "
+            f"the other — refusing before any mutation (this would destroy or "
+            f"corrupt the only copy of this content). Pass distinct, unrelated "
+            f"paths for --from and --to."
+        )
+
     if from_dir.exists() and not from_dir.is_dir():
         raise MemoryAdoptError(
             f"tessctl memory adopt: {from_dir} exists but is not a directory — refusing"
@@ -15918,13 +15980,26 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     source_files: list = []
     if from_dir.is_dir():
         entries = list(from_dir.iterdir())
-        source_files = sorted((p for p in entries if p.is_file()), key=lambda p: p.name)
-        unexpected = sorted((p for p in entries if not p.is_file()), key=lambda p: p.name)
+        # A symlink (to a file OR a dir, live or dangling) is treated as
+        # "unexpected", never as a plain file — `p.is_file()` alone
+        # FOLLOWS symlinks, which would otherwise silently dereference a
+        # symlinked source entry and copy its (possibly out-of-tree)
+        # target content into the store as if it were a real memory file
+        # (Cyra/LOW, PR #117 review). This is consistent with the
+        # existing "only a flat directory of memory files" contract,
+        # which already refused symlinked directories and dangling
+        # symlinks — this closes the one remaining gap (a symlink to a
+        # real file elsewhere).
+        def _is_expected_source_file(p: Path) -> bool:
+            return p.is_file() and not p.is_symlink()
+
+        source_files = sorted((p for p in entries if _is_expected_source_file(p)), key=lambda p: p.name)
+        unexpected = sorted((p for p in entries if not _is_expected_source_file(p)), key=lambda p: p.name)
         if unexpected:
             raise MemoryAdoptError(
                 f"tessctl memory adopt: refusing — {from_dir} contains non-file entries "
                 f"({', '.join(p.name for p in unexpected)}) — only a flat directory of "
-                f"memory files is supported"
+                f"memory files (no symlinks, no subdirectories) is supported"
             )
 
     # 3. Enumerate the target — READ-ONLY (never creates --to during
@@ -15955,7 +16030,20 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     for f in source_files:
         dest = to_dir / f.name
         if dest.exists():
-            if dest.read_bytes() == f.read_bytes():
+            # Reid/LOW, PR #117 review: this read happens during the
+            # otherwise-read-only PLANNING phase, before the dry-run
+            # decision — a source or target file becoming unreadable
+            # between enumeration and comparison (permission change,
+            # concurrent process) must surface as a typed refusal, not a
+            # raw OSError traceback uncaught by _cmd_memory_adopt.
+            try:
+                same = dest.read_bytes() == f.read_bytes()
+            except OSError as e:
+                raise MemoryAdoptError(
+                    f"tessctl memory adopt: could not read {f.name} while planning "
+                    f"(comparing {f} against {dest}): {e}"
+                )
+            if same:
                 already_present.append(f.name)
             else:
                 conflicts.append(f.name)
@@ -15987,29 +16075,43 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     try:
         for f in to_copy:
             dest = to_dir / f.name
-            shutil.copy2(f, dest)
-            if dest.read_bytes() != f.read_bytes():
+            try:
+                shutil.copy2(f, dest)
+                copy_ok = dest.read_bytes() == f.read_bytes()
+            except OSError as e:
+                raise MemoryAdoptError(
+                    f"tessctl memory adopt: failed while copying {f.name} into the "
+                    f"canonical store: {e}"
+                )
+            if not copy_ok:
                 raise MemoryAdoptError(
                     f"tessctl memory adopt: copy verification failed for {f.name}"
                 )
             copied.append(f.name)
     except Exception:
         # Never leave a half-adopted store: undo whatever this attempt
-        # itself just copied, then re-raise. `from_dir` is untouched at
-        # this point (still the original real directory) — nothing else
-        # to roll back yet.
+        # itself just copied, then re-raise (always a typed
+        # MemoryAdoptError by this point — see the inner try/except
+        # above). `from_dir` is untouched at this point (still the
+        # original real directory) — nothing else to roll back yet.
         for name in copied:
             (to_dir / name).unlink(missing_ok=True)
         raise
 
     source_file_names = sorted(f.name for f in source_files)
 
-    if from_dir.exists():
-        shutil.rmtree(from_dir)
-    from_dir.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink(str(to_dir_resolved), str(from_dir))
-
-    manifest_path = _memory_adopt_manifest_path(to_dir, harness)
+    # Reid/HIGH + CRITICAL, PR #117 review: the manifest is written BEFORE
+    # from_dir is touched at all — every file this adopt is responsible
+    # for is ALREADY safely, verifiedly duplicated in to_dir at this
+    # point (the copy loop above verifies each copy and rolls itself back
+    # on failure), so once the manifest lands, to_dir alone is a
+    # complete, durable record of the adopted content EVEN IF the
+    # from_dir -> symlink swap below fails for any reason.
+    # `_memory_adopt_manifest_path` is keyed on the RAW (pre-resolve)
+    # `from_dir` — the exact string this manifest itself records below —
+    # never on a later, post-swap resolve() of a `--from` value (which by
+    # then is a symlink that would resolve straight through to `to_dir`).
+    manifest_path = _memory_adopt_manifest_path(to_dir, harness, from_dir)
     manifest = {
         "harness": harness,
         "from_path": str(from_dir),
@@ -16019,11 +16121,86 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
         # the authoritative restore list for --revert. A strict SUBSET,
         # `newly_copied_files`, records what was actually bytes-copied
         # (the rest were already byte-identical in --to and only the
-        # redundant original copy in --from was removed).
+        # redundant original copy in --from was removed) — --revert uses
+        # this split to know which files it may remove from the store
+        # (this adopt's own copies) versus which it must only copy back,
+        # leaving the store's copy in place for any other harness still
+        # symlinked to it (Cyra/MEDIUM, PR #117 review).
         "source_files": source_file_names,
         "newly_copied_files": sorted(copied),
     }
-    _atomic_write_bytes(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+    try:
+        _atomic_write_bytes(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+    except OSError as e:
+        # Nothing destructive has happened to from_dir yet — undo the
+        # copies made above so this stays a clean no-op, not orphaned
+        # duplicate content sitting in the store with no manifest to
+        # explain it.
+        for name in copied:
+            (to_dir / name).unlink(missing_ok=True)
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: failed to write the adopt manifest: {e}"
+        )
+
+    # The swap: replace from_dir with a symlink into to_dir. This is the
+    # one step that cannot be made a single atomic syscall on POSIX
+    # (rename can't swap a symlink onto an existing non-empty directory —
+    # Reid/HIGH, PR #117 review). To keep the exposure window as small as
+    # practically possible, AND make a failure here provably
+    # non-destructive:
+    #   1. First create the symlink at a TEMPORARY sibling path and
+    #      verify it resolves correctly — this proves symlink creation is
+    #      even possible on this filesystem BEFORE from_dir is touched at
+    #      all. A failure here leaves from_dir 100% untouched (still the
+    #      original real directory, byte-identical to before this call).
+    #   2. Only then remove from_dir and move the verified temp symlink
+    #      into its place with a single os.replace() — by that point
+    #      from_dir no longer exists, so this is a plain create, not a
+    #      directory-vs-symlink replace.
+    # By the time step 2 runs, the manifest + every copied file are
+    # ALREADY durable in to_dir (written above), so even in the narrow
+    # window between removing from_dir and completing the replace,
+    # content is never at risk of being unrecoverable — at worst from_dir
+    # is transiently absent, self-healed by re-running this (now
+    # idempotent, content-already-present) command with --merge, or by
+    # `--revert` once the underlying issue is fixed.
+    tmp_link = from_dir.parent / f".tessctl-memory-adopt-tmp-{secrets.token_hex(4)}"
+    try:
+        from_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(to_dir_resolved), str(tmp_link))
+        if tmp_link.resolve() != to_dir_resolved:
+            raise OSError(f"temporary symlink {tmp_link} did not resolve to {to_dir_resolved}")
+    except OSError as e:
+        try:
+            if tmp_link.is_symlink() or tmp_link.exists():
+                tmp_link.unlink()
+        except OSError:
+            pass
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: could not create a symlink from {from_dir} into "
+            f"{to_dir_resolved}: {e}. {from_dir} was NOT touched — the adopted "
+            f"content and manifest are already safely in {to_dir_resolved}; fix the "
+            f"underlying issue (e.g. filesystem symlink support, permissions) and "
+            f"retry `tessctl memory adopt --yes --merge` (idempotent — already-"
+            f"copied files are skipped, not re-copied)."
+        )
+
+    try:
+        if from_dir.is_dir() and not from_dir.is_symlink():
+            shutil.rmtree(from_dir)
+        elif from_dir.exists() or from_dir.is_symlink():
+            from_dir.unlink()
+        os.replace(str(tmp_link), str(from_dir))
+    except OSError as e:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: failed to replace {from_dir} with the verified "
+            f"symlink into {to_dir_resolved}: {e}. The adopted content and manifest "
+            f"are already safely in {to_dir_resolved} — {from_dir} may now be "
+            f"missing or partially removed; re-run `tessctl memory adopt --yes "
+            f"--merge` to finish the adopt (idempotent), or run `--revert` to "
+            f"restore it. The temporary symlink at {tmp_link} may need manual "
+            f"cleanup if it was not consumed by the replace."
+        )
 
     try:
         _memory_adopt_roundtrip_check(from_dir, to_dir)
@@ -16032,9 +16209,18 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
         # through the EXACT same revert path (same manifest we just wrote),
         # so a failed round-trip never leaves an unverified half-adopted
         # state — "safe" means the caller can trust either full success or
-        # a fully undone attempt, nothing in between.
+        # a fully undone attempt, nothing in between. `manifest_path_override`
+        # pins revert to the EXACT manifest this call just wrote (rather
+        # than re-deriving it via the harness-slug glob-lookup the CLI
+        # path uses), so the auto-rollback can never be ambiguous even if
+        # this harness has another, unrelated, still-adopted manifest
+        # from a different --from elsewhere in the store; `from_override`
+        # keeps the restore TARGET pinned to this exact from_dir too.
         try:
-            _memory_adopt_revert(root, to_dir, harness=harness)
+            _memory_adopt_revert(
+                root, to_dir, harness=harness, from_override=from_dir,
+                manifest_path_override=manifest_path,
+            )
             rollback_note = "automatically rolled back — no changes retained"
         except MemoryAdoptError as rollback_error:
             rollback_note = f"automatic rollback ALSO FAILED: {rollback_error}"
@@ -16056,7 +16242,9 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
 
 
 def _memory_adopt_revert(root: Path, to_dir: Path, *,
-                          harness: str = None, from_override: Path = None) -> dict:
+                          harness: str = None, from_override: Path = None,
+                          dry_run: bool = False,
+                          manifest_path_override: Path = None) -> dict:
     """Undo a previous `tessctl memory adopt`, using THAT adopt's own
     recorded manifest. Restores exactly `manifest["source_files"]` — never
     the canonical store's current full contents, which may since have
@@ -16066,6 +16254,26 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
     is not CURRENTLY a symlink resolving to `to_dir` — that means the
     state already changed since adopt (already reverted, or manually
     altered), and a blind revert would be a guess, not a genuine undo.
+
+    Of `manifest["source_files"]`, only the strict subset recorded as
+    `manifest["newly_copied_files"]` (files THIS adopt actually copied
+    into the store) is REMOVED from the store on revert; the remainder
+    (files that were already byte-identical in the store before this
+    adopt ran, and so were never this adopt's own copy) is copied back
+    into the restored private directory but LEFT in the store, because a
+    second, still-symlinked harness may depend on it (Cyra/MEDIUM, PR
+    #117 review — the PR's own "leaves a second harness's content
+    untouched" invariant, made to actually hold for the byte-identical-
+    filename case).
+
+    `dry_run` (default False — preserved for every INTERNAL caller, in
+    particular the round-trip-failure auto-rollback path in
+    `_memory_adopt`, which must always mutate for real regardless of any
+    user-facing flag) is enforced as a `--yes`-gated CLI default by
+    `_cmd_memory_adopt` only, mirroring forward-adopt's own dry-run-by-
+    default contract (Reid/MEDIUM, PR #117 review: revert previously
+    mutated unconditionally, the one asymmetry with adopt's own stated
+    safety default).
     """
     if not to_dir.is_dir():
         raise MemoryAdoptError(
@@ -16073,9 +16281,34 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
             f"nothing to revert"
         )
 
-    if harness:
-        candidate = _memory_adopt_manifest_path(to_dir, harness)
-        candidates = [candidate] if candidate.exists() else []
+    if manifest_path_override is not None:
+        # Internal callers (the round-trip auto-rollback path) already
+        # know the EXACT manifest this revert must target — skip the
+        # harness/glob lookup entirely so an unrelated, still-adopted
+        # manifest from the same harness slug (a different --from
+        # elsewhere in the store) can never introduce ambiguity here.
+        candidates = [manifest_path_override] if manifest_path_override.exists() else []
+    elif harness:
+        # A slug-prefix glob, NOT an exact filename reconstruction: the
+        # manifest filename also folds in a hash of the source path
+        # (Reid/MEDIUM, PR #117 review), which `--revert --harness X`
+        # (no `--from`) has no way to reproduce — and shouldn't need to,
+        # since `--from`/`from_override` here is a RESTORE-TARGET
+        # override (see below), not a lookup key: requiring it to match
+        # the original adopt's `--from` exactly would defeat the whole
+        # point of being able to restore to a different location.
+        slug = _memory_adopt_manifest_slug(harness)
+        pattern = f"{MEMORY_ADOPT_MANIFEST_PREFIX}{slug}.*{MEMORY_ADOPT_MANIFEST_SUFFIX}"
+        candidates = sorted(to_dir.glob(pattern))
+        if len(candidates) > 1:
+            raise MemoryAdoptError(
+                f"tessctl memory adopt --revert: harness {harness!r} (slug {slug!r}) has "
+                f"{len(candidates)} recorded adopt(s) under {to_dir} from different source "
+                f"paths ({', '.join(p.name for p in candidates)}) — revert only supports "
+                f"one adopt at a time per harness name; inspect the manifests directly "
+                f"under {to_dir} to determine which one to revert, or remove the stale "
+                f"manifest for a source that no longer applies"
+            )
     else:
         candidates = sorted(to_dir.glob(MEMORY_ADOPT_MANIFEST_GLOB))
 
@@ -16099,6 +16332,7 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
 
     from_path = from_override or Path(manifest["from_path"])
     source_files = manifest.get("source_files", [])
+    newly_copied = set(manifest.get("newly_copied_files", []))
 
     if not from_path.is_symlink():
         raise MemoryAdoptError(
@@ -16118,20 +16352,48 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
             f"unrelated symlink. Inspect manually."
         )
 
+    # Read-only classification (safe to compute regardless of dry_run):
+    # every recorded file is either moved out of the store (this adopt's
+    # own copy, no other owner), copied back but left in the store (may
+    # still be depended on by another symlinked harness), or missing
+    # (recorded but no longer present in the store).
+    would_move, would_copy, would_be_missing = [], [], []
+    for name in source_files:
+        if not (to_dir / name).exists():
+            would_be_missing.append(name)
+        elif name in newly_copied:
+            would_move.append(name)
+        else:
+            would_copy.append(name)
+
+    if dry_run:
+        return {
+            "action": "revert",
+            "harness": manifest.get("harness"),
+            "from": str(from_path),
+            "to": str(to_dir),
+            "dry_run": True,
+            "would_move": would_move,
+            "would_copy_back": would_copy,
+            "would_be_missing": would_be_missing,
+        }
+
+    # --- mutate for real (--yes) ---
     try:
         from_path.unlink()
         from_path.mkdir(parents=True)
     except OSError as e:
         raise MemoryAdoptError(f"tessctl memory adopt --revert: could not recreate {from_path}: {e}")
 
-    restored, missing = [], []
-    for name in source_files:
-        src = to_dir / name
-        if src.exists():
-            shutil.move(str(src), str(from_path / name))
-            restored.append(name)
-        else:
-            missing.append(name)
+    try:
+        for name in would_move:
+            shutil.move(str(to_dir / name), str(from_path / name))
+        for name in would_copy:
+            shutil.copy2(str(to_dir / name), str(from_path / name))
+    except OSError as e:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: failed restoring content into {from_path}: {e}"
+        )
 
     manifest_path.unlink()
 
@@ -16140,8 +16402,9 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
         "harness": manifest.get("harness"),
         "from": str(from_path),
         "to": str(to_dir),
-        "restored_files": restored,
-        "missing_files": missing,
+        "dry_run": False,
+        "restored_files": sorted(would_move + would_copy),
+        "missing_files": would_be_missing,
     }
 
 
@@ -16178,6 +16441,27 @@ def _print_memory_adopt_result(result: dict) -> None:
             print(f"  {result['from']} is now a symlink into the shared store.")
         return
     if action == "revert":
+        if result.get("dry_run"):
+            print(f"tessctl memory adopt --revert: DRY RUN — would restore {result['from']} from {result['to']}")
+            would_move = result.get("would_move", [])
+            would_copy = result.get("would_copy_back", [])
+            would_be_missing = result.get("would_be_missing", [])
+            if would_move:
+                print(f"  {len(would_move)} file(s) would be moved out of the store: {', '.join(would_move)}")
+            if would_copy:
+                print(
+                    f"  {len(would_copy)} file(s) would be copied back (kept in the store — "
+                    f"still shared with another harness): {', '.join(would_copy)}"
+                )
+            if not would_move and not would_copy:
+                print("  0 file(s) recorded to restore")
+            if would_be_missing:
+                print(
+                    f"  WARNING: {len(would_be_missing)} file(s) recorded as adopted are no "
+                    f"longer in the store and could not be restored: {', '.join(would_be_missing)}"
+                )
+            print("  Re-run with --yes to perform this for real.")
+            return
         restored = result.get("restored_files", [])
         missing = result.get("missing_files", [])
         print(f"tessctl memory adopt --revert: restored {result['from']} from {result['to']}")
@@ -16198,7 +16482,10 @@ def _cmd_memory_adopt(args, root: Path) -> None:
 
     try:
         if getattr(args, "revert", False):
-            result = _memory_adopt_revert(root, to_dir, harness=harness, from_override=from_override)
+            result = _memory_adopt_revert(
+                root, to_dir, harness=harness, from_override=from_override,
+                dry_run=not getattr(args, "yes", False),
+            )
         else:
             effective_harness = harness or DEFAULT_MEMORY_ADOPT_HARNESS
             from_dir = from_override or _default_harness_memory_dir(effective_harness, root)
@@ -17601,7 +17888,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_memory_adopt = memory_sub.add_parser(
         "adopt",
         help="move a harness memory dir's contents into the canonical store and "
-             "replace it with a symlink (dry-run by default; --revert to undo)",
+             "replace it with a symlink (dry-run by default for both adopt and "
+             "--revert; pass --yes to mutate)",
     )
     p_memory_adopt.add_argument(
         "--harness",
@@ -17612,7 +17900,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_memory_adopt.add_argument(
         "--from", dest="from_dir", metavar="DIR",
-        help="explicit source memory directory (overrides the --harness default)",
+        help="explicit source memory directory (overrides the --harness default when "
+             "adopting; when reverting, overrides where content is restored TO — it is "
+             "not used to locate the manifest, so it need not match the original adopt's "
+             "--from)",
     )
     p_memory_adopt.add_argument(
         "--to", dest="to_dir", metavar="DIR",
@@ -17620,7 +17911,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_memory_adopt.add_argument(
         "--yes", action="store_true",
-        help="perform the adopt for real (default: dry-run, reports the plan only)",
+        help="perform the adopt, or the --revert, for real (default: dry-run, reports "
+             "the plan only)",
     )
     p_memory_adopt.add_argument(
         "--merge", action="store_true",
@@ -17628,7 +17920,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_memory_adopt.add_argument(
         "--revert", action="store_true",
-        help="undo a previous adopt using its own recorded manifest",
+        help="undo a previous adopt using its own recorded manifest (dry-run by "
+             "default, same as adopt — pass --yes to perform it for real)",
     )
     p_memory_adopt.add_argument("--json", action="store_true", dest="json_out")
 

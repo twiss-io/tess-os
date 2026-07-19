@@ -220,26 +220,54 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   contents into `.tess/state/memory/` and replaces the original with a
   symlink pointing at it, so the harness's own native memory reads/writes
   transparently land in the ONE store every harness mounts from then on.
-- **Safe by construction.** Dry-run by default (`--yes` required to mutate
-  anything, and the planning phase — idempotency check, source/target
-  enumeration, per-file conflict detection — is read-only start to finish,
-  so even a refused call never touches disk); refuses a non-empty target
-  without `--merge` (but a bootstrap call with no source content never needs
-  `--merge` just because a DIFFERENT harness already adopted); refuses any
-  real filename+content conflict outright, atomically, with zero partial
-  writes; idempotent against an already-adopted source (a clean no-op, not
-  an error); verifies a real round-trip read/write THROUGH the new symlink
-  after adopting, and automatically rolls the whole adopt back (via the same
+- **Safe by construction.** Dry-run by default for BOTH directions —
+  forward-adopt and `--revert` alike require `--yes` to mutate anything —
+  and the planning phase (idempotency check, source/target enumeration,
+  per-file conflict detection) is read-only start to finish, so even a
+  refused call never touches disk. Refuses `--from` and `--to` resolving
+  to the same path, or one nested inside the other, BEFORE any mutation —
+  a self-targeted adopt would otherwise treat the source's own content as
+  "already present," copy nothing elsewhere, then delete the only copy of
+  it. Refuses a non-empty target without `--merge` (but a bootstrap call
+  with no source content never needs `--merge` just because a DIFFERENT
+  harness already adopted). Refuses a source entry that is a symlink —
+  never silently dereferenced; only a flat directory of real memory files
+  is supported. Refuses any real filename+content conflict outright,
+  atomically, with zero partial writes. Idempotent against an
+  already-adopted source (a clean no-op, not an error). Every `OSError`
+  reachable from planning or the mutate-for-real path — including the
+  rmtree → symlink → manifest-write swap — is converted to a typed
+  `MemoryAdoptError`, never a raw traceback; that swap is made crash-safe
+  by writing the manifest BEFORE the source is ever touched (every copied
+  file is already durably in the store by then) and by creating the
+  target symlink at a verified temporary sibling path before removing the
+  original directory, so a failure anywhere in the swap leaves the source
+  fully intact rather than half-deleted with nothing to show for it.
+  Verifies a real round-trip read/write THROUGH the new symlink after
+  adopting, and automatically rolls the whole adopt back (via the same
   revert path) if that check ever fails.
 - **`--revert`** undoes an adopt from THAT adopt's own recorded manifest
-  (`.tess/state/memory/.tess-memory-adopt.<harness>.json` — one per
-  adopted harness, never a single shared file two harnesses could clobber
-  each other's revert record with) — restoring exactly the files that
-  manifest recorded, never the store's current full contents (a second
-  harness's own separately adopted/merged content, or ordinary post-adopt
-  shared writes, is left untouched). Refuses (no mutation, no guessing) if
-  the recorded source path is not currently a symlink resolving to the
-  store — that means state already drifted since adopt.
+  (`.tess/state/memory/.tess-memory-adopt.<harness-slug>.<source-path-hash>.json`
+  — one per adopted (harness, source-path) pair, never a single shared
+  file two harnesses could clobber each other's revert record with; the
+  source-path hash exists because `--harness` is free-text with no fixed
+  choice set, so two differently-spelled names for what a human intends as
+  the same or different harness — e.g. `Claude-Code` / `claude_code` — can
+  slugify identically, and the hash keeps them from clobbering each
+  other's manifest filename even though their slugs collide; `--revert
+  --harness X` with no `--from` locates the manifest by slug PREFIX, not
+  by reconstructing the hash, and refuses if that slug has more than one
+  recorded source path) — restoring exactly the files that manifest
+  recorded, never the store's current full contents (a second harness's
+  own separately adopted/merged content, or ordinary post-adopt shared
+  writes, is left untouched). Of the recorded files, only the strict
+  subset THIS adopt itself copied in (`newly_copied_files`) is REMOVED
+  from the store on revert; a file that was already byte-identical in the
+  store before this adopt ran is copied back into the restored private
+  directory but LEFT in the store, because another still-adopted harness
+  may be symlinked to it and depend on it. Refuses (no mutation, no
+  guessing) if the recorded source path is not currently a symlink
+  resolving to the store — that means state already drifted since adopt.
 - **`tessctl doctor`'s memory-link check** — non-fatal, informational only
   (never affects doctor's errors/warnings/exit code, in either the
   not-adopted or the adopted-but-broken case): per adopted harness, is the
@@ -263,11 +291,17 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   not something this mechanism's existence performs on its own.
 - `tests/test_memory_adopt.py` — dry-run purity, bootstrap + real adopt,
   idempotency, every refusal (ambiguous existing symlink, non-directory
-  source, non-file source entries, non-empty target without `--merge`, a
-  real merge conflict), `--merge` skip-on-identical-content, `--revert`
-  (including multi-harness disambiguation and drifted-state refusal),
-  automatic rollback on a simulated round-trip failure, and the doctor
-  memory-link check's four states (not-adopted / clean / broken-symlink /
+  source, non-file source entries including symlinks, non-empty target
+  without `--merge`, `--from`/`--to` resolving to the same path or one
+  nested inside the other, a real merge conflict), `--merge`
+  skip-on-identical-content, `--revert` (dry-run-by-default + `--yes` gate,
+  multi-harness disambiguation including the harness-slug-collision case,
+  drifted-state refusal, and the two-harness shared-file preservation
+  case), automatic rollback on a simulated round-trip failure, crash-safety
+  of the rmtree → symlink → manifest-write swap under injected `OSError`
+  failures (proven fully-intact, never half-adopted), a guarded
+  `read_bytes()` failure during planning, and the doctor memory-link
+  check's four states (not-adopted / clean / broken-symlink /
   index-coherence gaps).
 - `tests/test_memory_adopt_fence.py` — the SAME #105/#111 fence proof
   `test_task_ledger_fence.py` gives the task store/ledger, against a

@@ -92,26 +92,44 @@ All notable changes to Tess OS are documented here. This project adheres to
     harness mounts. Dry-run by default (`--yes` to mutate; the entire
     planning phase — idempotency check, source/target enumeration,
     per-file conflict detection — is read-only, so even a refused call
-    never touches disk); refuses a non-empty target without `--merge`
-    (bootstrap calls with no source content are exempt — nothing is being
-    merged); refuses any real filename+content conflict outright, with zero
-    partial writes; idempotent against an already-adopted source (a clean
-    no-op); a post-adopt round-trip read/write check through the new
-    symlink triggers an automatic full rollback (via the same revert path)
-    if it ever fails, so no half-adopted state can survive. `--harness`
-    defaults to Claude Code's own well-known per-project path
+    never touches disk); refuses `--from`/`--to` resolving to the same path
+    or one nested inside the other, before any mutation (a self-targeted
+    adopt would otherwise treat the source's own content as "already
+    present," copy nothing elsewhere, then delete the only copy); refuses a
+    non-empty target without `--merge` (bootstrap calls with no source
+    content are exempt — nothing is being merged); refuses a source entry
+    that is a symlink (never silently dereferenced); refuses any real
+    filename+content conflict outright, with zero partial writes;
+    idempotent against an already-adopted source (a clean no-op); every
+    `OSError` reachable from planning or the mutate-for-real path —
+    including the rmtree → symlink → manifest-write swap, made crash-safe
+    via a manifest written before the source is ever touched and a
+    verified temporary-sibling symlink created before the original
+    directory is removed — is converted to a typed `MemoryAdoptError`,
+    never a raw traceback, and a failure anywhere in that swap leaves the
+    source fully intact rather than half-deleted; a post-adopt round-trip
+    read/write check through the new symlink triggers an automatic full
+    rollback (via the same revert path) if it ever fails, so no
+    half-adopted state can survive. `--harness` defaults to Claude Code's
+    own well-known per-project path
     (`~/.claude/projects/<flattened-root>/memory/`) but any path is
     supported via `--from`.
-  - **`tessctl memory adopt --revert`** — undoes an adopt from THAT
-    adopt's own recorded manifest
-    (`.tess/state/memory/.tess-memory-adopt.<harness>.json` — one per
-    adopted harness, never a single shared file two harnesses could
-    clobber each other's revert record with), restoring exactly the files
-    that manifest recorded — never the store's current full contents,
-    which may since have grown from a different harness's own adopt or
-    ordinary shared writes. Refuses (no mutation, no guessing) if the
-    recorded source path has drifted since adopt (already reverted, or
-    manually altered).
+  - **`tessctl memory adopt --revert`** — dry-run by default, symmetric
+    with forward-adopt (`--yes` required to mutate) — undoes an adopt from
+    THAT adopt's own recorded manifest
+    (`.tess/state/memory/.tess-memory-adopt.<harness-slug>.<source-path-hash>.json`
+    — one per adopted (harness, source-path) pair; the hash keeps two
+    differently-spelled `--harness` names that slugify identically, e.g.
+    `Claude-Code`/`claude_code`, from clobbering each other's manifest),
+    restoring exactly the files that manifest recorded — never the store's
+    current full contents, which may since have grown from a different
+    harness's own adopt or ordinary shared writes. Of those files, only the
+    ones THIS adopt itself copied in are removed from the store; a file
+    that was already present (byte-identical) before this adopt ran is
+    copied back into the restored directory but left in the store, since
+    another still-adopted harness may depend on it. Refuses (no mutation,
+    no guessing) if the recorded source path has drifted since adopt
+    (already reverted, or manually altered).
   - **`tessctl doctor` memory-link check** — non-fatal, informational only,
     in every case (not-adopted, adopted-and-clean, or adopted-but-broken
     never affect doctor's errors/warnings/exit code): per adopted harness,
@@ -141,14 +159,27 @@ All notable changes to Tess OS are documented here. This project adheres to
     memory remains a separate, later, opt-in operation** — this PR ships
     only the mechanism, exercised entirely against disposable `tmp_path`
     fixtures.
-  - **Tests**: `tests/test_memory_adopt.py` (26 tests — dry-run purity,
-    bootstrap + real adopt, idempotency, every refusal, `--merge`
-    skip-on-identical-content, `--revert` including multi-harness
-    disambiguation and drifted-state refusal, automatic rollback on a
-    simulated round-trip failure, the doctor memory-link check's four
-    states), `tests/test_memory_adopt_fence.py` (8 tests — the data-leak
-    fence against real CLI-adopted content, plus the AGENTS.md render
-    assertions).
+  - **Tests**: `tests/test_memory_adopt.py` (38 tests — dry-run purity,
+    bootstrap + real adopt, idempotency, every refusal (including a
+    symlinked source entry and `--from`/`--to` self-collision/nesting),
+    `--merge` skip-on-identical-content, `--revert` (dry-run-by-default +
+    `--yes` gate, multi-harness disambiguation including the
+    harness-slug-collision case, drifted-state refusal, and the
+    two-harness shared-file preservation case), automatic rollback on a
+    simulated round-trip failure, crash-safety of the rmtree → symlink →
+    manifest-write swap under injected `OSError` failures, a guarded
+    `read_bytes()` failure during planning, and the doctor memory-link
+    check's four states), `tests/test_memory_adopt_fence.py` (8 tests —
+    the data-leak fence against real CLI-adopted content, plus the
+    AGENTS.md render assertions). **46 tests total** (12 added responding
+    to PR #117's two-reviewer REJECT — Cyra/security found the
+    `--from`==`--to` self-destruct (H1) and the revert over-removal of a
+    second harness's shared file (M1); Reid/quality independently found
+    the same self-destruct as CRITICAL plus the unguarded rmtree →
+    symlink → manifest-write region (HIGH), the harness-slug manifest
+    collision, the missing revert dry-run/`--yes` gate, and an unguarded
+    `read_bytes()` during planning — all fixed and regression-tested
+    before this PR ships).
 
 ### Security
 - **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
