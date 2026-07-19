@@ -293,27 +293,45 @@ source, `core/contracts/**` is the resolved live output.
 
 `AGENTS.md`, `.codex/prompts/**`, `.codex/config.toml`, and `prompts/**` are
 rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
-`adapters/codex/README.md` + `adapters/generic/README.md`). Neither target
-is enabled by default (`tess.manifest.json`'s `render_targets.enabled` stays
-`["claude-code"]` — see that key's own `_doc`).
+`adapters/codex/README.md` + `adapters/generic/README.md`). `codex` is now
+enabled by default (issue #118 — `tess.manifest.json`'s `render_targets.enabled`
+is `["claude-code", "codex"]`; see that key's own `_doc`); `generic` remains
+opt-in.
 
-`AGENTS.md.tpl` and `harness-note.md` have `live_path: null` (core-internal —
-Check A / base_sha integrity only, the same pattern `personas/*.md` uses):
-their live output is conditional on a target being enabled per-install, so
-giving them an ordinary `live_path` would make doctor/verify treat `AGENTS.md`
-as unconditionally required the moment `codex`/`generic` is merely
-*registered* — see `_check_untracked_render_generated()` for how live-tree
-drift-checking works for these paths instead.
+`AGENTS.md.tpl` and its six fragments below are core-internal (`live_path: null`
+in principle, the same pattern `personas/*.md` uses) — their live output is
+conditional on a target being enabled per-install, so giving `AGENTS.md.tpl`
+an ordinary `live_path` would make doctor/verify treat `AGENTS.md` as
+unconditionally required the moment `codex`/`generic` is merely *registered*;
+see `_check_untracked_render_generated()` for how live-tree drift-checking
+works for the rendered `AGENTS.md` output instead. **Known gap:** unlike the
+`templates/claude-md/*.md` fragments below (each with its own `tess.lock`
+`base_sha` entry — Check A core-integrity), none of the seven files in this
+table currently has a `tess.lock` entry at all, so Check A (core-tampering
+of the SOURCE fragment, independent of what it renders to) does not run for
+any of them today — only the worker-profile denylist scan
+(`_check_worker_profile_denylist`) and the rendered-output drift check above
+cover this subtree. Not closed by issue #118; flagged as a follow-up.
 
 | Core file | Live path | Tier |
 |---|---|---|
 | `templates/agents-md/AGENTS.md.tpl` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-hard-floor.md` | `null` (core-internal) | normal |
+| `templates/agents-md/gate-compliance.md` | `null` (core-internal) | normal |
 | `templates/agents-md/harness-note.md` | `null` (core-internal) | normal |
+| `templates/agents-md/session-memory.md` | `null` (core-internal) | normal |
+| `templates/agents-md/shared-tasks.md` | `null` (core-internal) | normal |
 | `templates/agents-md/codex-config.toml.tpl` | `null` (core-internal) | normal |
 
-`AGENTS.md.tpl` reuses `templates/claude-md/rule-zero.md`, `hard-floor.md`,
-`system-laws.md`, and `directory.md` VERBATIM (see `render_agents_md()`'s
-docstring) — no duplicate doctrine text exists for those four sections.
+`AGENTS.md.tpl` is the WORKER doctrine profile (G3, 2026-07-08) — it does
+**not** reuse `templates/claude-md/rule-zero.md`, `system-laws.md`, or
+`directory.md` (those are ORCHESTRATOR-only; see `AGENTS_TOKEN_MAP`'s own
+header in `.tess/bin/tessctl` for the full rationale and drop list). It
+composes its own worker-only fragments instead: `worker-hard-floor.md`,
+`gate-compliance.md`, `harness-note.md`, `session-memory.md` (Phase 0.3 —
+cross-harness memory pointer), and `shared-tasks.md` (issue #118 —
+cross-harness task-board pointer) — none of which duplicates `claude-md/`
+doctrine text.
 
 ## (root) — settings + index
 

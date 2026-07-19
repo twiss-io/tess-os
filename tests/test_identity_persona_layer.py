@@ -205,6 +205,84 @@ def test_rename_noop_when_unchanged(project, run_cli):
 
 
 # ---------------------------------------------------------------------------
+# (2b) rename/set-operator propagate into an ENABLED non-claude-code target
+# too — issue #118. `rename`/`set-operator`/`pathway` used to call the
+# claude-code-only `_do_render()` directly (predates the Phase 2 render-
+# target seam), so on an install with `codex`/`generic` enabled (this repo,
+# as of #118) a rename left `AGENTS.md` stale — even though it embeds
+# {{ASSISTANT_NAME}} (AGENTS.md.tpl's own footer) and {{OPERATOR_NAME}}
+# (worker-hard-floor.md) via the SAME apply_token_sub() final pass
+# render_claude_md() uses. Fixed by switching all three verbs to
+# `_render_enabled_targets()`, which renders every enabled target uniformly.
+# ---------------------------------------------------------------------------
+
+_AGENTS_TPL_ID = "# {{ASSISTANT_NAME}} — worker profile\n\n{{WORKER_HARD_FLOOR}}\n"
+_AGENTS_HARD_FLOOR_ID = "These require {{OPERATOR_NAME}}'s go-ahead.\n"
+_AGENTS_TPL_KEY = ".tess/core/templates/agents-md/AGENTS.md.tpl"
+_AGENTS_HARD_FLOOR_KEY = ".tess/core/templates/agents-md/worker-hard-floor.md"
+_CODEX_CONFIG_TOML_ID = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
+_CODEX_CONFIG_TOML_KEY = ".tess/core/templates/agents-md/codex-config.toml.tpl"
+
+
+def _enable_codex(project):
+    mf_path = project.root / "tess.manifest.json"
+    manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+    manifest.setdefault("render_targets", {})["enabled"] = ["claude-code", "codex"]
+    mf_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _seed_identity_instance_with_codex(project):
+    """`_seed_identity_instance` plus a minimal codex AGENTS.md render
+    surface (same fixture shape `test_render_targets_codex_generic.py`
+    uses), with codex enabled for this install."""
+    _seed_identity_instance(project)
+    project.add(None, _AGENTS_TPL_ID, core_key=_AGENTS_TPL_KEY, render_live=False)
+    project.add(None, _AGENTS_HARD_FLOOR_ID, core_key=_AGENTS_HARD_FLOOR_KEY, render_live=False)
+    project.add(None, _CODEX_CONFIG_TOML_ID, core_key=_CODEX_CONFIG_TOML_KEY, render_live=False)
+    _enable_codex(project)
+    project.mod.RENDER_TARGETS["codex"].render(project.root, verbose=False)
+    return project
+
+
+def test_rename_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    agents_before = project.read_live("AGENTS.md")
+    assert "Tess" in agents_before and "Atlas" not in agents_before
+    assert "Operator" in agents_before  # default operator_name token site
+
+    r = run_cli(root, "rename", "Atlas")
+    assert r.returncode == 0, f"rename failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Atlas" in agents_after, "rename did not propagate into the enabled codex target's AGENTS.md"
+    assert "# Tess" not in agents_after
+
+    # CLAUDE.md-side files still propagate too — the fix is additive, not a
+    # replacement of the existing claude-code-only propagation.
+    assert "Atlas" in project.read_live("CLAUDE.md")
+
+    _assert_clean(run_cli, root, "after rename with codex enabled")
+
+
+def test_set_operator_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    r = run_cli(root, "set-operator", "Alex Rivera")
+    assert r.returncode == 0, f"set-operator failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Alex Rivera" in agents_after, (
+        "set-operator did not propagate into the enabled codex target's AGENTS.md"
+    )
+    assert "These require Operator's go-ahead." not in agents_after
+
+    _assert_clean(run_cli, root, "after set-operator with codex enabled")
+
+
+# ---------------------------------------------------------------------------
 # (3) pathway — switching injects THAT persona's voice and no other
 # ---------------------------------------------------------------------------
 

@@ -64,11 +64,14 @@ actually differ.
 
 ## Enabling this target
 
-Not enabled by default (see `tess.manifest.json`'s `render_targets._doc` —
-the future harness-select wizard axis is meant to make this choice
-per-install, not the engine). Preview it any time with
-`tessctl render --target codex`, or opt in permanently by adding `"codex"`
-to `tess.manifest.json`'s `render_targets.enabled` list.
+Enabled by default in this repo's own `tess.manifest.json` (issue #118 — a
+deliberate, reviewed manifest edit, not the engine auto-enabling a
+newly-registered target; see `render_targets._doc`). A different install
+that never edited its own manifest to add `"codex"` is unaffected — the
+future harness-select wizard axis is meant to make this choice per-install,
+not the engine. Preview it any time with `tessctl render --target codex`
+regardless of enablement, or edit `tess.manifest.json`'s
+`render_targets.enabled` list yourself to opt in or out.
 
 ## Determinism and idempotency
 

@@ -297,6 +297,19 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   such built-in behavior. A pure repo/state fact, not orchestration doctrine
   — `tests/test_memory_adopt_fence.py` proves it introduces no
   worker-profile doctrine-denylist violation (G3).
+- **Shared Tasks pointer (issue #118)** — the same `AGENTS.md.tpl`
+  (`{{WORKER_SHARED_TASKS}}`, `.tess/core/templates/agents-md/shared-tasks.md`)
+  is `{{WORKER_SESSION_MEMORY}}`'s sibling for the TASK STORE half of the
+  shared brain: it tells a worker-profile harness to `tessctl tasks pull`
+  before starting new work, `tessctl tasks claim <id>` with its OWN
+  `--host`/`--pid` before working a task, and `tessctl tasks set` /
+  `tessctl log append` to record progress back to the SAME shared board —
+  never a private, harness-only list. `codex` is enabled by default in this
+  repo's own `tess.manifest.json` as of this issue (a deliberate manifest
+  edit — see `render_targets._doc`), so a rendered Codex session's
+  `AGENTS.md` now carries both cross-harness state-mount pointers end to
+  end. Same category as the memory pointer above — a repo/CLI fact, not
+  orchestration doctrine (nothing from `WORKER_DOCTRINE_DENYLIST`).
 - Running an actual adopt against any specific instance's own live memory
   (e.g. a real `~/.claude/projects/<flattened>/memory/`) is explicitly OUT
   OF SCOPE for the PR that built this mechanism — a separate, later, opt-in

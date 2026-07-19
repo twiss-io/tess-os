@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-19T16:58:03.419694Z'
+  last_updated: '2026-07-19T21:08:40.731449Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8e78d994d6910d6a59e478c3d40c2a9bbc9c5a07df3fbdedb4e58c5991a56c38
+    base_sha: sha256:63cfa9d3a227647d911434c2666bcda83ebecb54ee178c4c5c0017baf0b86461
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:

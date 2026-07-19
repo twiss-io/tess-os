@@ -297,6 +297,17 @@ CLAUDE_TOKEN_MAP = {
 #     auto-reads its memory index natively; this fragment exists because
 #     Codex/generic harnesses have no such native behavior and must be told
 #     where the shared index lives.
+#   - {{WORKER_SHARED_TASKS}} (issue #118, docs/STATE_LAYER.md) is
+#     {{WORKER_SESSION_MEMORY}}'s sibling for the OTHER half of the shared
+#     brain: the cross-harness task board at `.tess/state/tasks/` (Phase 0.2,
+#     `tessctl tasks`/`tessctl log`). Same category as every fragment above —
+#     a repo/CLI fact ("here is the shared board, here is how to see/claim/
+#     update a task, claim with your own identity first"), never a dispatch
+#     instruction: it tells a worker how to participate in an EXISTING task
+#     board, not how to create/route/hand off work to another agent (no
+#     phrase from WORKER_DOCTRINE_DENYLIST). Without this pointer a Codex
+#     session has no doctrine-level way to discover it can see or claim work
+#     from the same board a Claude Code session already reads/writes.
 #
 # Deliberately DROPPED versus the pre-G3 map (see the harm this fixes in
 # AGENTS.md.tpl's own doctrine-drop banner + tests/test_worker_profile_denylist.py):
@@ -321,6 +332,7 @@ AGENTS_TOKEN_MAP = {
     "{{WORKER_GATE_COMPLIANCE}}":  ".tess/core/templates/agents-md/gate-compliance.md",
     "{{HARNESS_NOTE}}":            ".tess/core/templates/agents-md/harness-note.md",
     "{{WORKER_SESSION_MEMORY}}":   ".tess/core/templates/agents-md/session-memory.md",
+    "{{WORKER_SHARED_TASKS}}":     ".tess/core/templates/agents-md/shared-tasks.md",
 }
 AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
@@ -1174,7 +1186,10 @@ def render_agents_md(root: Path) -> str:
     / {{WORKER_GATE_COMPLIANCE}} (two WORKER-ONLY fragments — safety floor +
     gate-compliance facts, nothing else), {{WORKER_SESSION_MEMORY}} (Phase
     0.3 — points at the ONE cross-harness memory store every harness
-    mounts, docs/STATE_LAYER.md), and {{OPERATOR_BUILD_FACTS}} (an
+    mounts, docs/STATE_LAYER.md), {{WORKER_SHARED_TASKS}} (issue #118 —
+    WORKER_SESSION_MEMORY's sibling, points at the ONE cross-harness task
+    board every harness mounts and shows how to see/claim/update a task on
+    it), and {{OPERATOR_BUILD_FACTS}} (an
     operator-fillable, empty-by-default zone for the one class of
     "environment fact" this framework cannot know on a downstream project's
     behalf: ITS build/test/lint commands — see AGENTS_OPERATOR_TOKEN_MAP).
@@ -2351,11 +2366,14 @@ class GenericRenderTarget(RenderTarget):
 # Registry — Phase 2 adds "codex" and "generic" here (and nowhere else: no
 # change to core loading, the lock schema, or the manifest write gate is
 # required to register a new target — see adapters/README.md "Adding Phase
-# 2/3 targets"). Neither is in tess.manifest.json's render_targets.enabled
-# default (["claude-code"] — MED-3) — registering a target is not the same
-# as enabling it for every existing install; an operator opts in via
+# 2/3 targets"). Registering a target here is not the same as enabling it
+# for every existing install (MED-3) — an operator opts in via
 # `tessctl render --target codex` / `--target generic` explicitly, or by
 # adding the name to their own manifest's render_targets.enabled list.
+# `codex` is now in THIS repo's own tess.manifest.json render_targets.enabled
+# (issue #118) now that the worker-profile AGENTS.md mounts both halves of
+# the cross-harness shared brain (Session Memory + Shared Tasks, below);
+# `generic` remains opt-in — see tess.manifest.json's render_targets._doc.
 RENDER_TARGETS: dict = {
     "claude-code": ClaudeCodeRenderTarget(),
     "codex": CodexRenderTarget(),
@@ -2569,10 +2587,12 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
 
     LOW (noted, not fixed here): a DISABLED target's artifacts are excluded
     entirely (enabled_render_targets() above) even when they happen to
-    exist on disk — e.g. this very repo ships a committed AGENTS.md /
-    .codex/** while render_targets.enabled defaults to ["claude-code"]
-    only, and neither is drift-checked today. Deliberately NOT widened to
-    scan disabled targets' paths whenever present: `.codex/config.toml`
+    exist on disk — e.g. this repo ships a committed `prompts/**` (the
+    `generic` target's own artifact) while `generic` stays un-enabled in
+    render_targets.enabled (issue #118 enabled `codex` — see that key's own
+    `_doc` — but left `generic` opt-in), so `prompts/**` is not drift-checked
+    today. Deliberately NOT widened to scan disabled targets' paths whenever
+    present: `.codex/config.toml`
     and `AGENTS.md` are paths OTHER tools legitimately own independently of
     Tess (the Codex CLI itself; any AGENTS.md-reading assistant) — an
     install that has never enabled the codex/generic target could have its
@@ -2671,12 +2691,14 @@ def cmd_render(args, root: Path) -> None:
     Render-target dispatch (Phase 1 adapter seam).
 
     `tessctl render` (no flags): renders every ENABLED target for this
-    install (MED-3 — tess.manifest.json's render_targets.enabled; default
-    ["claude-code"]). Today that is exactly "claude-code", so default
-    behavior is UNCHANGED from pre-Phase-1 — CLAUDE.md from template +
-    operator/ stubs; settings.json; the name-bearing conductor files. A
-    Claude-only install never silently starts emitting e.g. codex/AGENTS.md
-    just because a second target was registered.
+    install (MED-3 — tess.manifest.json's render_targets.enabled; falls back
+    to ["claude-code"] only if the key is absent entirely, e.g. a manifest
+    that predates Phase 1). This repo's own manifest now lists
+    ["claude-code", "codex"] (issue #118) — a deliberate, reviewed edit to
+    THIS manifest, never an automatic side effect of registering a target: a
+    Claude-only install (whose own manifest was never edited to add "codex")
+    never silently starts emitting e.g. codex/AGENTS.md just because a
+    second target was registered in the engine.
 
     `tessctl render --target <name>` (repeatable): render only the named
     target(s) — an EXPLICIT ask, so it bypasses this install's enablement
@@ -6763,10 +6785,18 @@ def cmd_rename(args, root: Path) -> None:
     Set the conductor/assistant name and re-render (M6).
     tess rename <name>
 
-    Updates operator/profile.json[assistant_name] and calls _do_render so that
-    CLAUDE.md, conductor/identity.md, and conductor/personality.md all reflect
-    the new name. doctor + verify remain green because both compare the rendered
-    output from the same profile.json state.
+    Updates operator/profile.json[assistant_name] and re-renders EVERY
+    ENABLED render target (_render_enabled_targets — issue #118) so that
+    CLAUDE.md, conductor/identity.md, conductor/personality.md, AND any
+    other enabled target's own doctrine digest (codex/generic's shared
+    AGENTS.md — apply_token_sub's final pass resolves {{ASSISTANT_NAME}} in
+    its own template/fragments too, e.g. worker-hard-floor.md's
+    {{OPERATOR_NAME}}) all reflect the new name. Previously called
+    _do_render() directly — claude-code-only, predates the Phase 2
+    render-target seam — which left a stale AGENTS.md/`.codex/**` behind on
+    any install with `codex`/`generic` enabled (this repo, as of #118).
+    doctor + verify remain green because every enabled target compares its
+    OWN rendered output against the same profile.json state.
     """
     name = getattr(args, "name", None)
     if not name:
@@ -6784,7 +6814,7 @@ def cmd_rename(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl rename: {old_name!r} → {validated!r}")
     print("tessctl rename: re-rendering …")
-    _do_render(root, verbose=True)
+    _render_enabled_targets(root, verbose=True)
     print(f"tessctl rename: done. Run `tessctl doctor` to verify.")
 
 
@@ -6793,8 +6823,13 @@ def cmd_set_operator(args, root: Path) -> None:
     Set the operator's name and re-render (M6).
     tess set-operator <name>
 
-    Updates operator/profile.json[operator_name] and re-renders so that
-    persona arrival beats and any {{OPERATOR_NAME}} token sites reflect the name.
+    Updates operator/profile.json[operator_name] and re-renders EVERY
+    ENABLED render target (_render_enabled_targets — issue #118, same
+    reasoning as `cmd_rename` above) so that persona arrival beats, any
+    {{OPERATOR_NAME}} token sites in CLAUDE.md, AND any enabled non-
+    claude-code target's own digest (worker-hard-floor.md's
+    {{OPERATOR_NAME}}, mounted into codex/generic's shared AGENTS.md) all
+    reflect the name.
     """
     name = getattr(args, "name", None)
     if not name:
@@ -6812,7 +6847,7 @@ def cmd_set_operator(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl set-operator: {old_name!r} → {validated!r}")
     print("tessctl set-operator: re-rendering …")
-    _do_render(root, verbose=True)
+    _render_enabled_targets(root, verbose=True)
     print(f"tessctl set-operator: done. Run `tessctl doctor` to verify.")
 
 
@@ -6826,8 +6861,12 @@ def cmd_pathway(args, root: Path) -> None:
 
     The selected pathway is read from operator/profile.json[pathway] and
     rendered into conductor/personality.md via the {{PATHWAY}} token in the
-    core template. Changing pathway calls _do_render — doctor stays green
-    because it always compares against the freshly-rendered core output.
+    core template. Changing pathway re-renders EVERY ENABLED render target
+    (_render_enabled_targets — issue #118, same reasoning as `cmd_rename`
+    above: apply_token_sub resolves {{PATHWAY}} generically, so any future
+    worker-profile fragment that references it stays correct too, even
+    though none does today) — doctor stays green because every enabled
+    target always compares against its own freshly-rendered core output.
     """
     key = getattr(args, "key", None)
 
@@ -6859,7 +6898,7 @@ def cmd_pathway(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl pathway: {old_pathway!r} → {key!r}")
     print("tessctl pathway: re-rendering …")
-    _do_render(root, verbose=True)
+    _render_enabled_targets(root, verbose=True)
     print(f"tessctl pathway: done. Run `tessctl doctor` to verify.")
 
 
