@@ -17,6 +17,7 @@ repository today from pilot work and product plans.
 | Capability or surface | Label | Current boundary |
 |---|---|---|
 | Local policy and gate CLI | **Verified current state** | The engine can validate policy/evidence and fail closed. It is not a production admission control until first-key custody and GitHub required checks are fixed. |
+| Agent Receipt spec + standalone verifier + demo | **Verified current state** | `core/contracts/agent-receipt.schema.json`, `tools/receipt-verify/`, and `examples/receipt-demo/` (see `docs/AGENT_RECEIPT_SPEC.md`) are present, tested, and runnable with real GPG signatures. Not wired into `tessctl gate`; not a claim of external adoption; uses only test-only, ephemeral keys, never a registered trust anchor. |
 | Claude Code target and driver | **C3 — managed-adapter preview** | Reference integration. It remains an uncertified preview for protected delivery. |
 | Codex target and driver | **C2 — manual-gated compatibility** | The renderer emits `AGENTS.md`, `.codex/config.toml`, and prompt files. The driver is not live-tested against native event samples and does not have native-parity certification. |
 | Generic `AGENTS.md` target | **C2 — manual-gated compatibility** | Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
