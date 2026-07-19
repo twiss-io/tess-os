@@ -231,6 +231,49 @@ All notable changes to Tess OS are documented here. This project adheres to
     --name-only`) and none surfaced in `git status`, while each `.gitkeep`
     stays the only tracked entry.
 
+- **HIGH+MEDIUM+LOW×4 — TASK STORE + ACCOUNTABILITY LEDGER hardening
+  (issue #114, found reviewing #113; fixed in #115)** — a consolidated fix
+  for all six findings from #113's two-reviewer gate (Reid + Cyra), before
+  any consumer — in particular the future orphan-sweeper — trusts
+  `claim.heartbeat_at` or the ledger's integrity guarantees:
+  1. **[Reid HIGH]** `tessctl tasks set --heartbeat` had no claimant-identity
+     check — a forgeable liveness signal; anyone who merely knew a task id
+     could renew a DIFFERENT claimant's claim. Now requires
+     `--host`/`--pid`/`--uuid` matching the current claim
+     (`TASK_NOT_CLAIMANT` otherwise, or `--force`).
+  2. **[Reid MEDIUM]** `tessctl tasks claim`'s default `--uuid` was a fresh
+     `uuid4()` per call, so a same-process re-claim (e.g. after a restart)
+     was never recognized as itself. Now a stable `uuid5` derived from
+     `(host, pid)`.
+  3. **[Cyra M1]** The ledger's pure `prev_hash` chain walk was blind to a
+     removed TAIL line or a whole shard deleted outright — neither leaves a
+     chain-break trace. Added a per-event monotonic `seq`, a per-shard
+     `.tip` sidecar, and a ledger-wide `.registry.json`; `log verify`
+     cross-checks all three.
+  4. **[Cyra M2]** `_prune_stale_locks` had a TOCTOU window (check-then-
+     unlink) and a safety comment incorrectly claiming that unlinking a
+     lock file can never disturb a live holder. Fixed with a
+     non-blocking-flock-then-inode-recheck gate before any unlink; the
+     comment is corrected.
+  5. **[Cyra L1]** Reworded "tamper-evident"/"instead of a signature"
+     overclaims in the ledger-event schema, engine comments, and
+     `docs/STATE_LAYER.md` — an unsigned hash chain detects non-re-chained
+     edits, not an adversary who also rewrites the `.tip`/registry
+     consistently with a shortened chain, and it is not a signature.
+  6. **[Cyra L2]** Documented the trust boundary explicitly: claim-leases
+     are advisory coordination (filesystem write access is the real
+     boundary), not authentication.
+  - Full suite green (1555 passed) at the time, `doctor`/`verify`/`lock
+    --check` green. Closes #114.
+  - **Follow-up LOWs from the same #115 review, closed in a later
+    consolidated PR:** a shard written before this hardening (no `seq` on
+    any line) false-reported `TAMPERED` under `log verify` and hard-refused
+    `log append` — now read as `LEGACY` and backfilled, not refused
+    (Cyra-LOW/Reid-MED); a `--force`/non-claimant heartbeat's ledger event
+    was misclassified as `task_transition` by exact string-equality on
+    `changes` — now classified by an explicit structural boolean, so it
+    still logs under `heartbeat` (Reid-LOW).
+
 - **P0 G-01 — npm scaffold key-leak (readiness audit, 2026-07-19)** — the
   published `create-tess` 0.1.0 (npm, 2026-06-28) clones `twiss-io/tess-os`
   main HEAD **UNPINNED**, and every `main` commit since PR #91 (which

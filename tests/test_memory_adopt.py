@@ -935,6 +935,11 @@ def test_unreadable_target_file_during_planning_is_typed_not_raw(troot, harness_
     assert r.returncode != 0
     assert "could not read" in (r.stdout + r.stderr)
     assert "clash.md" in (r.stdout + r.stderr)
+    # Reid-LOW (#117 review, closed here): the attempt-3 delta silently
+    # dropped this trailing assertion from this already-closed test; restore
+    # it — the invariant it proves (a typed refusal, never a raw traceback)
+    # is exactly what this test is FOR.
+    assert "Traceback" not in (r.stdout + r.stderr)  # typed refusal, never a raw crash
 
 
 # ---------------------------------------------------------------------------
