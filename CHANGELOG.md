@@ -6,6 +6,35 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Security
+- **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
+  `.gitignore` fence (issue #110, found reviewing #105)** — PR #105's
+  `.gitignore` reconciliation only content-ignored `.tess/state/locks/*`;
+  `memory/`, `tasks/`, and `ledger/` were left un-gitignored at the content
+  level, relying solely on the `tessctl doctor --publish-clean` pre-commit
+  hook (`tessctl gate install-hooks`) — opt-in, not guaranteed installed on
+  every clone/re-init. On an instance without the hook, a plain
+  `git add -A` would silently STAGE real memory/task/ledger data;
+  `docs/STATE_LAYER.md`'s "can never leak regardless of gitignore state"
+  claim overclaimed for those three subdirs.
+  - **`.gitignore`** — added `.tess/state/memory/*` / `.tess/state/tasks/*`
+    / `.tess/state/ledger/*` (each with a `!.../.gitkeep` re-include),
+    mirroring the existing `.tess/state/locks/*` pattern and the
+    `kb/wiki/**` / `missions/**` / `operator/**` precedent buckets. New
+    files under any of the four subdirs are now structurally invisible to
+    `git add`, independent of whether the pre-commit hook is installed.
+  - **`docs/STATE_LAYER.md`** — reconciled the fence description from a
+    "three-part fence + gitignore only for locks/" framing to the accurate
+    four-part fence (never_touch, gitignore, publish-clean, scaffold-empty)
+    now applying symmetrically to all four subdirectories.
+  - **`tests/test_gitignore_reconciliation.py`** — extended with
+    `.tess/state/{memory,tasks,ledger,locks}` cases (ignored-content +
+    tracked-`.gitkeep` parametrizations) and a new
+    `test_git_add_dash_a_never_stages_real_state_content_no_hook` — a real
+    fresh git repo, no pre-commit hook installed, real files written under
+    all four subdirs, `git add -A`, asserts none staged (`git diff --cached
+    --name-only`) and none surfaced in `git status`, while each `.gitkeep`
+    stays the only tracked entry.
+
 - **P0 G-01 — npm scaffold key-leak (readiness audit, 2026-07-19)** — the
   published `create-tess` 0.1.0 (npm, 2026-06-28) clones `twiss-io/tess-os`
   main HEAD **UNPINNED**, and every `main` commit since PR #91 (which

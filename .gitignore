@@ -133,14 +133,26 @@ channels/
 # Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md).
 # .tess/state/** as a whole is instance DATA (tess.manifest.json never_touch
 # + the publish-clean deny set already block it from ever reaching a commit
-# regardless of this file). locks/ specifically is also gitignored outright
-# here: pure ephemeral runtime lock state (same rationale as .tess/update.lock
-# above), never worth tracking. memory/tasks/ledger content-tracking policy
-# is deferred to Phase 0.2+ (memory-adopt symlink / tasks CLI / ledger
-# schema) — Phase 0.1 relies on the publish-clean gate alone for those three.
+# regardless of this file). The publish-clean gate is itself a PRE-COMMIT
+# hook (`tessctl gate install-hooks`) — opt-in, not guaranteed installed on
+# every clone or re-init. Without a content-level ignore here, a plain
+# `git add -A` on an instance that never ran that hook would silently STAGE
+# real memory/tasks/ledger data (issue #110, found reviewing #105 — the
+# "can never leak regardless of gitignore state" claim in
+# docs/STATE_LAYER.md overclaimed until this block covered all four
+# subdirs, not just locks/). All four `.tess/state/**` subdirs now get the
+# same content-ignore treatment as the `kb/wiki/**` / `missions/**` /
+# `operator/**` precedent buckets below: structurally invisible to
+# `git add`, hook-independent.
 # ─────────────────────────────────────────────────────────────
 .tess/state/locks/*
 !.tess/state/locks/.gitkeep
+.tess/state/memory/*
+!.tess/state/memory/.gitkeep
+.tess/state/tasks/*
+!.tess/state/tasks/.gitkeep
+.tess/state/ledger/*
+!.tess/state/ledger/.gitkeep
 
 # ─────────────────────────────────────────────────────────────
 # Knowledge base content is operator/client data — keep structure, ignore content

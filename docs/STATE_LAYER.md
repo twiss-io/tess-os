@@ -41,20 +41,33 @@ doctrine content that gets rendered or merged.
 `.tess/state/**` is real operator/mission data the moment either harness
 starts writing to it — the same category as `missions/**` and `kb/**`, per
 the overlay model in `docs/DATA_LEAK_SAFETY.md`. Phase 0.1 wires the same
-three-part fence those paths already get, before anything writes to it for
+four-part fence those paths already get, before anything writes to it for
 real:
 
 1. **`tess.manifest.json`'s `never_touch`** — `.tess/state/**` is listed
    there, so the framework updater/renderer (`tessctl update` / `render` /
    `restore`) can never read, write, or publish it. There is no
    `.tess/core/state/**` mirror; nothing here is compiled from core.
-2. **The publish-clean gate** — `.tess/state/**` is in
+2. **`.gitignore`** ignores `.tess/state/{memory,tasks,ledger,locks}/*`
+   outright (keeping only each subdir's `.gitkeep`) — the same
+   content-ignore treatment the `kb/wiki/**` / `missions/**` / `operator/**`
+   precedent buckets already get elsewhere in the same file. New files under
+   any of the four subdirs are structurally invisible to `git add`,
+   independent of every other layer below. (Until issue #110 — found
+   reviewing #105 — this only covered `locks/`; `memory/`, `tasks/`, and
+   `ledger/` relied on layer 3 alone, which is a pre-commit hook and
+   therefore not guaranteed installed on every clone/re-init. A plain
+   `git add -A` on an instance that never ran that hook would have silently
+   staged real memory/tasks/ledger data. Closed by extending this same
+   content-ignore pattern to all four subdirs.)
+3. **The publish-clean gate** — `.tess/state/**` is in
    `_PUBLISH_CLEAN_PRIVATE_GLOBS` (`.tess/bin/tessctl`), the commit-side
    control from issue #92/#93. `tessctl doctor --publish-clean` (installed as
    a pre-commit hook by `tessctl gate install-hooks`) refuses a commit that
    stages anything under `.tess/state/**`, regardless of `.gitignore` state
-   — private memory/tasks/ledger data can never reach a public commit.
-3. **The public scaffold ships it EMPTY** — `create-tess` copies the
+   — a second, independent guarantee for any content that somehow still gets
+   staged (e.g. `git add -f`).
+4. **The public scaffold ships it EMPTY** — `create-tess` copies the
    template's `.tess/state/{memory,tasks,ledger,locks}/` directories (each
    holding only a `.gitkeep`) but strips any content underneath
    (`EXCLUDE_CONTENT_PREFIXES` in `create-tess/src/ignore.js`), the same
@@ -62,13 +75,9 @@ real:
    Adopters inherit the canonical structure; they never inherit another
    instance's actual memory, tasks, or ledger entries.
 
-`.gitignore` additionally ignores `.tess/state/locks/*` outright (keeping
-only `.gitkeep`) — locks are pure ephemeral runtime coordination state, the
-same rationale as `.tess/update.lock`. `memory/`, `tasks/`, and `ledger/` are
-not separately gitignored in Phase 0.1: their actual content-tracking policy
-(what gets committed, if anything, and how) is a Phase 0.2+ design decision;
-until then they rely on the publish-clean gate alone, which already covers
-the whole `.tess/state/**` tree regardless of `.gitignore`.
+All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
+and `locks/` — none of the four subdirectories depends on the pre-commit
+hook (layer 3) being installed to stay off a fresh `git add -A`.
 
 ## What's built today (Phase 0.1)
 
@@ -81,6 +90,11 @@ the whole `.tess/state/**` tree regardless of `.gitignore`.
   writes into `.tess/state/**`, the publish-clean gate blocks a commit that
   stages anything under it, and a local-source scaffold never copies real
   content into a produced instance's `.tess/state/**`.
+- `tests/test_gitignore_reconciliation.py` — proves the `.gitignore`
+  content-level layer itself, independent of the publish-clean hook: a
+  fresh file under any of `.tess/state/{memory,tasks,ledger,locks}/` is
+  `git check-ignore`d and never appears in `git add -A` staging, while each
+  subdir's `.gitkeep` stays trackable (issue #110).
 
 ## What's deliberately NOT built yet (Phase 0.2+)
 
