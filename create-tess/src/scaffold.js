@@ -10,6 +10,56 @@ import { resetPolicyFile } from './policy-reset.js';
 
 export const DEFAULT_TEMPLATE_SOURCE = 'https://github.com/twiss-io/tess-os.git';
 
+// PINNED default clone ref (P0 G-01, npm scaffold key-leak audit, 2026-07).
+// Before this fix, the git-clone path had NO ref at all — `git clone --depth
+// 1 <source>` clones whatever commit happens to be the default branch's HEAD
+// tip at the exact moment a user runs `npm create tess`, which is a moving
+// target with zero code change on the operator's end. Concretely: the
+// published `create-tess` 0.1.0 (npm, 2026-06-28) predates the #95/#101
+// scaffold key-strip fixes entirely, and an unpinned clone of `main` today
+// would carry them — but there is no guarantee an unpinned clone next month,
+// or next year, still lands on a commit where this exclusion (or the next
+// one this repo needs) is present. A pinned, tagged ref makes every
+// `npm create tess` run at a given create-tess version reproduce the EXACT
+// SAME tess-os commit — one that has already passed this repo's own CI
+// (`create-tess` test suite incl. the scaffold-key-guard regression lock,
+// plus `secret-scan`) — never an in-flight, not-yet-reviewed main tip.
+//
+// This tag lives in create-tess's OWN tag namespace (`create-tess-v*`, see
+// .github/workflows/publish-npm.yml's header comment), never the framework's
+// own `v*` release tags — the two release trains are deliberately decoupled
+// (create-tess versions independently of the framework it scaffolds).
+// Bumped by whoever cuts the next create-tess release; see
+// create-tess/README.md's release-prep note for the one-command cut + tag
+// push, and conductor/release-process.md for how framework `v*` tags
+// (separately) get their release-key signature.
+export const DEFAULT_TEMPLATE_REF = 'create-tess-v0.1.2';
+
+// Resolve the git ref to pin a git-URL clone to. An explicit ref (CLI
+// `--template-ref` / env `TESS_TEMPLATE_REF`) always wins, for ANY source —
+// an operator or CI job pointing at a specific commit/tag/branch is always
+// respected. Absent an explicit ref, the DEFAULT_TEMPLATE_REF pin applies
+// ONLY when `source` is the maintainer's own DEFAULT_TEMPLATE_SOURCE — a
+// custom `--template-source` (an operator's own fork, a private mirror, a CI
+// fixture pointing at a throwaway repo) has no reason to carry a
+// `create-tess-v*` tag at all, so it is cloned at ITS OWN default branch tip,
+// exactly as before this fix (no ref pin forced onto an source that never
+// asked for one).
+export function resolveTemplateRef(source, explicitRef) {
+  if (explicitRef) return explicitRef;
+  return source === DEFAULT_TEMPLATE_SOURCE ? DEFAULT_TEMPLATE_REF : null;
+}
+
+// Build the `git clone` argv for fetchTemplate's git-URL branch. Exported as
+// a pure, dependency-free function (no execFileSync call inside) so the
+// pinning behavior is unit-testable without invoking git or the network —
+// see test/units.test.js "clone pin" coverage.
+export function buildCloneArgs(source, stagingDir, ref) {
+  return ref
+    ? ['clone', '--depth', '1', '--branch', ref, '--', source, stagingDir]
+    : ['clone', '--depth', '1', '--', source, stagingDir];
+}
+
 // The two on-disk copies of the ship-gate policy every scaffold produces:
 // the LIVE path an operator actually edits, and its `.tess/core` mirror (the
 // pristine copy base_sha-pinned in tess.lock, and what `tessctl restore`
@@ -102,7 +152,12 @@ export function assertSafeTemplateSource(source) {
 
 // Stage the template into `stagingDir` (a temp dir) so the journey can read the
 // roster and validate names before the target is touched (atomicity, §6.5).
-export function fetchTemplate(source, stagingDir) {
+//
+// `ref` (optional) pins a git-URL clone to a specific tag/branch/SHA —
+// resolved by the caller via resolveTemplateRef() so this function stays a
+// pure "fetch whatever I was told to fetch" primitive. Ignored entirely for
+// a local source (there is no ref to pin — a local directory is copied as-is).
+export function fetchTemplate(source, stagingDir, ref = null) {
   // Defence in depth — refuse a flag-shaped source before it can reach git.
   assertSafeTemplateSource(source);
   mkdirSync(stagingDir, { recursive: true });
@@ -119,18 +174,28 @@ export function fetchTemplate(source, stagingDir) {
     }
     return { mode: 'local', source: abs };
   }
-  // Git URL → shallow clone, then strip .git + create-tess. The `--`
-  // end-of-options guard means a flag-shaped <source> can never be read as a
-  // git option (HIGH-2a; belt-and-suspenders with assertSafeTemplateSource).
-  execFileSync('git', ['clone', '--depth', '1', '--', source, stagingDir], {
-    stdio: 'inherit',
-  });
+  // Git URL → shallow clone (pinned to `ref` when set), then strip .git +
+  // create-tess. The `--` end-of-options guard means a flag-shaped <source>
+  // can never be read as a git option (HIGH-2a; belt-and-suspenders with
+  // assertSafeTemplateSource).
+  try {
+    execFileSync('git', buildCloneArgs(source, stagingDir, ref), { stdio: 'inherit' });
+  } catch (err) {
+    if (ref) {
+      throw new Error(
+        `git clone --branch ${ref} ${source} failed — the pinned ref "${ref}" may not ` +
+          `exist yet at this source (has it been released?). Override with ` +
+          `--template-ref/TESS_TEMPLATE_REF to target a different ref. ${err.message}`,
+      );
+    }
+    throw err;
+  }
   // Strip excluded dirs a clone brings in (so they never reach the target).
   for (const ex of ['.git', 'create-tess']) {
     const p = join(stagingDir, ex);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   }
-  return { mode: 'git', source };
+  return { mode: 'git', source, ref };
 }
 
 // Promote the staged template into the (confirmed) target directory.
