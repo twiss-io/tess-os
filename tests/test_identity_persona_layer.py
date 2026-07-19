@@ -205,6 +205,224 @@ def test_rename_noop_when_unchanged(project, run_cli):
 
 
 # ---------------------------------------------------------------------------
+# (2b) rename/set-operator propagate into an ENABLED non-claude-code target
+# too — issue #118. `rename`/`set-operator`/`pathway` used to call the
+# claude-code-only `_do_render()` directly (predates the Phase 2 render-
+# target seam), so on an install with `codex`/`generic` enabled (this repo,
+# as of #118) a rename left `AGENTS.md` stale — even though it embeds
+# {{ASSISTANT_NAME}} (AGENTS.md.tpl's own footer) and {{OPERATOR_NAME}}
+# (worker-hard-floor.md) via the SAME apply_token_sub() final pass
+# render_claude_md() uses. Fixed by switching all three verbs to
+# `_render_enabled_targets()`, which renders every enabled target uniformly.
+# ---------------------------------------------------------------------------
+
+_AGENTS_TPL_ID = "# {{ASSISTANT_NAME}} — worker profile\n\n{{WORKER_HARD_FLOOR}}\n"
+_AGENTS_HARD_FLOOR_ID = "These require {{OPERATOR_NAME}}'s go-ahead.\n"
+_AGENTS_TPL_KEY = ".tess/core/templates/agents-md/AGENTS.md.tpl"
+_AGENTS_HARD_FLOOR_KEY = ".tess/core/templates/agents-md/worker-hard-floor.md"
+_CODEX_CONFIG_TOML_ID = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
+_CODEX_CONFIG_TOML_KEY = ".tess/core/templates/agents-md/codex-config.toml.tpl"
+
+
+def _enable_codex(project):
+    mf_path = project.root / "tess.manifest.json"
+    manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+    manifest.setdefault("render_targets", {})["enabled"] = ["claude-code", "codex"]
+    mf_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _seed_identity_instance_with_codex(project):
+    """`_seed_identity_instance` plus a minimal codex AGENTS.md render
+    surface (same fixture shape `test_render_targets_codex_generic.py`
+    uses), with codex enabled for this install."""
+    _seed_identity_instance(project)
+    project.add(None, _AGENTS_TPL_ID, core_key=_AGENTS_TPL_KEY, render_live=False)
+    project.add(None, _AGENTS_HARD_FLOOR_ID, core_key=_AGENTS_HARD_FLOOR_KEY, render_live=False)
+    project.add(None, _CODEX_CONFIG_TOML_ID, core_key=_CODEX_CONFIG_TOML_KEY, render_live=False)
+    _enable_codex(project)
+    project.mod.RENDER_TARGETS["codex"].render(project.root, verbose=False)
+    return project
+
+
+def test_rename_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    agents_before = project.read_live("AGENTS.md")
+    assert "Tess" in agents_before and "Atlas" not in agents_before
+    assert "Operator" in agents_before  # default operator_name token site
+
+    r = run_cli(root, "rename", "Atlas")
+    assert r.returncode == 0, f"rename failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Atlas" in agents_after, "rename did not propagate into the enabled codex target's AGENTS.md"
+    assert "# Tess" not in agents_after
+
+    # CLAUDE.md-side files still propagate too — the fix is additive, not a
+    # replacement of the existing claude-code-only propagation.
+    assert "Atlas" in project.read_live("CLAUDE.md")
+
+    _assert_clean(run_cli, root, "after rename with codex enabled")
+
+
+def test_set_operator_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    r = run_cli(root, "set-operator", "Alex Rivera")
+    assert r.returncode == 0, f"set-operator failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Alex Rivera" in agents_after, (
+        "set-operator did not propagate into the enabled codex target's AGENTS.md"
+    )
+    assert "These require Operator's go-ahead." not in agents_after
+
+    _assert_clean(run_cli, root, "after set-operator with codex enabled")
+
+
+# ---------------------------------------------------------------------------
+# (2c) `tessctl identity --name/--operator` — Reid HIGH (re-review of #118's
+# first pass): this verb's own help text claims "same as rename" / "same as
+# set-operator" (see cmd_identity's printed verb table) but it was NOT
+# switched to `_render_enabled_targets()` alongside those two — it still
+# called the claude-code-only `_do_render()` directly, so on a codex-enabled
+# install `tessctl identity --name Atlas` left AGENTS.md stale and
+# `tessctl doctor` reported DRIFT immediately afterward. Reproduced against
+# the real repo (`tessctl identity --name Atlas` then `tessctl doctor` ->
+# DRIFT AGENTS.md) before this fix; mirrored here as a hermetic unit test.
+# ---------------------------------------------------------------------------
+
+def test_identity_name_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    agents_before = project.read_live("AGENTS.md")
+    assert "Tess" in agents_before and "Atlas" not in agents_before
+
+    r = run_cli(root, "identity", "--name", "Atlas")
+    assert r.returncode == 0, f"identity --name failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Atlas" in agents_after, (
+        "identity --name did not propagate into the enabled codex target's AGENTS.md"
+    )
+    assert "# Tess" not in agents_after
+    assert "Atlas" in project.read_live("CLAUDE.md")
+
+    _assert_clean(run_cli, root, "after identity --name with codex enabled")
+
+
+def test_identity_operator_propagates_into_enabled_codex_agents_md(project, run_cli):
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    r = run_cli(root, "identity", "--operator", "Alex Rivera")
+    assert r.returncode == 0, f"identity --operator failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Alex Rivera" in agents_after, (
+        "identity --operator did not propagate into the enabled codex target's AGENTS.md"
+    )
+    assert "These require Operator's go-ahead." not in agents_after
+
+    _assert_clean(run_cli, root, "after identity --operator with codex enabled")
+
+
+def test_identity_both_flags_propagate_into_enabled_codex_agents_md(project, run_cli):
+    """The `--name`/`--operator` combined-flag path (single re-render call
+    for both changes) also propagates — not just each flag in isolation."""
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    r = run_cli(root, "identity", "--name", "Atlas", "--operator", "Alex Rivera")
+    assert r.returncode == 0, f"identity --name --operator failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Atlas" in agents_after
+    assert "Alex Rivera" in agents_after
+
+    _assert_clean(run_cli, root, "after identity --name --operator with codex enabled")
+
+
+# ---------------------------------------------------------------------------
+# (2d) COMPANION sites — `init` and `restore` also used to call the
+# claude-code-only `_do_render()` directly (issue #118 completeness sweep,
+# Reid review). Both now render EVERY enabled target via
+# `_render_enabled_targets()`.
+# ---------------------------------------------------------------------------
+
+_LIVE_PATHS_TO_CLEAR = (
+    "CLAUDE.md", ".claude/settings.json",
+    "conductor/identity.md", "conductor/personality.md",
+    "AGENTS.md", ".codex/config.toml", ".codex/prompts",
+)
+
+
+def test_restore_propagates_into_enabled_codex_agents_md(project, run_cli):
+    """A fresh clone lands with a NEW committed operator/profile.json but a
+    live tree still reflecting the OLD name (nothing has re-rendered yet) —
+    `tessctl restore` is exactly the verb that's supposed to fix that. Must
+    refresh AGENTS.md too on a codex-enabled install, not just CLAUDE.md."""
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    agents_before = project.read_live("AGENTS.md")
+    assert "Tess" in agents_before and "Atlas" not in agents_before
+
+    # Simulate the "new profile.json landed, live tree not yet re-rendered"
+    # state directly (no render call) — e.g. a teammate's already-rendered
+    # commit, or a hand-edited profile.json. Goes through the engine's own
+    # load/save (profile.json does not exist yet — defaults are in force
+    # until the first write, per _load_operator_profile's own contract).
+    profile = project.mod._load_operator_profile(root)
+    profile["assistant_name"] = "Atlas"
+    project.mod._save_operator_profile(root, profile)
+
+    # Live tree is still stale at this point (proves the setup is real).
+    assert "Atlas" not in project.read_live("AGENTS.md")
+
+    r = run_cli(root, "restore")
+    assert r.returncode == 0, f"restore failed:\n{r.stdout}\n{r.stderr}"
+
+    agents_after = project.read_live("AGENTS.md")
+    assert "Atlas" in agents_after, "restore did not propagate into the enabled codex target's AGENTS.md"
+    assert "Atlas" in project.read_live("CLAUDE.md")
+
+    _assert_clean(run_cli, root, "after restore with codex enabled")
+
+
+def test_init_renders_enabled_codex_target(project, run_cli):
+    """A genuinely fresh clone: `.tess/core` + `tess.lock` committed, but NO
+    live tree yet at all. `tessctl init` runs restore + render — on a
+    codex-enabled install that render step must produce AGENTS.md too, not
+    leave it missing until a separate `tessctl render` is run by hand."""
+    root = project.root
+    _seed_identity_instance_with_codex(project)
+
+    # Wipe the live tree back to "never restored" — .tess/core + tess.lock
+    # (already flushed by project.write() inside the seed helper) stay put.
+    for rel in _LIVE_PATHS_TO_CLEAR:
+        p = root / rel
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.exists():
+            p.unlink()
+    assert not (root / "AGENTS.md").exists()
+    assert not (root / "CLAUDE.md").exists()
+
+    r = run_cli(root, "init")
+    assert r.returncode == 0, f"init failed:\n{r.stdout}\n{r.stderr}"
+
+    assert (root / "AGENTS.md").exists(), "init did not render the enabled codex target's AGENTS.md"
+    assert "Tess" in project.read_live("AGENTS.md")
+    assert (root / "CLAUDE.md").exists()
+
+    _assert_clean(run_cli, root, "after init with codex enabled")
+
+
+# ---------------------------------------------------------------------------
 # (3) pathway — switching injects THAT persona's voice and no other
 # ---------------------------------------------------------------------------
 

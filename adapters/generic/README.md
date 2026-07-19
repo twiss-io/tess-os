@@ -39,10 +39,11 @@ that function's docstring in `.tess/bin/tessctl`).
 
 ## Enabling this target
 
-Not enabled by default — same rollout note as `codex`
-(`tess.manifest.json`'s `render_targets._doc`). Preview with
-`tessctl render --target generic`, or add `"generic"` to
-`render_targets.enabled` to opt in permanently.
+Not enabled by default — unlike `codex` (enabled in this repo's own
+manifest as of issue #118), no target-specific consumer of the plain
+`prompts/**` mirror has been validated yet (`tess.manifest.json`'s
+`render_targets._doc`). Preview with `tessctl render --target generic`, or
+add `"generic"` to `render_targets.enabled` to opt in permanently.
 
 ## Capability tier
 

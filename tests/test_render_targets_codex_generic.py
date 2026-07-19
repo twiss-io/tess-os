@@ -121,12 +121,20 @@ def test_registry_contains_codex_and_generic(engine):
     assert isinstance(generic, engine.RenderTarget) and generic.name == "generic"
 
 
-def test_neither_codex_nor_generic_enabled_by_default(engine):
-    """MED-3: registering a target in RENDER_TARGETS is not the same as
-    enabling it for every existing install — the real tess.manifest.json's
-    default enabled list must still be exactly ["claude-code"]."""
+def test_codex_enabled_generic_not_enabled_by_default(engine):
+    """MED-3 (updated, issue #118): registering a target in RENDER_TARGETS is
+    not the same as enabling it for every existing install — but the real
+    tess.manifest.json now DELIBERATELY enables `codex` (a reviewed, explicit
+    default-flip, not the engine auto-adding a newly-registered target — see
+    render_targets._doc) now that the worker-profile AGENTS.md mounts both
+    halves of the cross-harness shared brain (Session Memory #117 + Shared
+    Tasks #118). `generic` stays un-enabled, exactly as MED-3 originally
+    guarded against for any target: it must be an explicit, reviewed
+    manifest edit, never a registry side effect."""
     manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
-    assert manifest["render_targets"]["enabled"] == ["claude-code"]
+    enabled = manifest["render_targets"]["enabled"]
+    assert enabled == ["claude-code", "codex"]
+    assert "generic" not in enabled
 
 
 @pytest.mark.parametrize("target_name", ["codex", "generic"])
