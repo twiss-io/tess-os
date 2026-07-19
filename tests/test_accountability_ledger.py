@@ -17,6 +17,15 @@ Coverage:
     a prev_hash break (line removed/reordered).
   * Schema-level: ledger-event.schema.json rejects a malformed hash/prev_hash
     pattern; `_lint_ledger_event` is exercised directly (engine-level).
+  * Phase 0.2 hardening (Cyra M1, PR #113 review — issue #114): per-event
+    `seq` is monotonic/gapless per shard; every append writes a co-located
+    `.tip` sidecar and upserts the ledger-wide `.registry.json`; `log
+    verify` cross-checks the tail it finds against both, so a removed TAIL
+    line (undetectable by a pure prev_hash walk) and a deleted WHOLE shard
+    (undiscoverable by directory-globbing alone) are both DETECTED, not
+    silently reported OK. A dedicated engine-level test also proves the
+    `seq` check itself catches a gap a self-consistent (recomputed) hash
+    chain alone would not.
 """
 
 from __future__ import annotations
@@ -74,6 +83,14 @@ def _shard_path(root, origin, when=None):
     return root / ".tess" / "state" / "ledger" / f"{when.strftime('%Y-%m')}.{origin}.jsonl"
 
 
+def _tip_path(root, origin, when=None):
+    return _shard_path(root, origin, when).with_name(_shard_path(root, origin, when).name + ".tip")
+
+
+def _registry_path(root):
+    return root / ".tess" / "state" / "ledger" / ".registry.json"
+
+
 # ---------------------------------------------------------------------------
 # append + hash chain
 # ---------------------------------------------------------------------------
@@ -84,6 +101,7 @@ def test_append_first_event_has_genesis_prev_hash(lroot):
     shard = _shard_path(lroot, "ada")
     line = json.loads(shard.read_text(encoding="utf-8").splitlines()[0])
     assert line["prev_hash"] == "0" * 64
+    assert line["seq"] == 0
     assert len(line["hash"]) == 64 and all(c in "0123456789abcdef" for c in line["hash"])
 
 
@@ -94,6 +112,133 @@ def test_append_chains_prev_hash_to_prior_events_hash(lroot):
     assert len(lines) == 2
     assert lines[1]["prev_hash"] == lines[0]["hash"]
     assert lines[0]["hash"] != lines[1]["hash"]
+    assert [l["seq"] for l in lines] == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.2 hardening (Cyra M1, PR #113 review) — seq + .tip sidecar +
+# ledger-wide .registry.json, and the tail-truncation / whole-shard-deletion
+# detection they exist to enable.
+# ---------------------------------------------------------------------------
+
+def test_append_writes_tip_sidecar_matching_last_event(lroot):
+    _append(lroot, origin="ada", event="dispatch", summary="first", harness="tess")
+    _append(lroot, origin="ada", event="dispatch", summary="second", harness="tess")
+    lines = [json.loads(l) for l in _shard_path(lroot, "ada").read_text().splitlines()]
+    tip = json.loads(_tip_path(lroot, "ada").read_text(encoding="utf-8"))
+    assert tip == {"seq": 1, "count": 2, "hash": lines[-1]["hash"]}
+
+
+def test_append_upserts_ledger_wide_registry(lroot):
+    _append(lroot, origin="ada", event="dispatch", summary="a1", harness="ada")
+    _append(lroot, origin="codex", event="dispatch", summary="c1", harness="codex")
+    _append(lroot, origin="ada", event="dispatch", summary="a2", harness="ada")
+    registry = json.loads(_registry_path(lroot).read_text(encoding="utf-8"))
+    ada_lines = [json.loads(l) for l in _shard_path(lroot, "ada").read_text().splitlines()]
+    codex_lines = [json.loads(l) for l in _shard_path(lroot, "codex").read_text().splitlines()]
+    assert registry["shards"][_shard_path(lroot, "ada").name] == {
+        "seq": 1, "count": 2, "hash": ada_lines[-1]["hash"],
+    }
+    assert registry["shards"][_shard_path(lroot, "codex").name] == {
+        "seq": 0, "count": 1, "hash": codex_lines[-1]["hash"],
+    }
+
+
+def test_verify_detects_tail_truncation_of_last_line(lroot):
+    """Removing the LAST line leaves every REMAINING line's own prev_hash
+    link to its predecessor perfectly intact — a pure hash-chain walk alone
+    would report this shard OK. The .tip sidecar + registry cross-check is
+    what actually catches it (Cyra M1)."""
+    _append(lroot, origin="ada", event="dispatch", summary="one", harness="ada")
+    _append(lroot, origin="ada", event="dispatch", summary="two", harness="ada")
+    _append(lroot, origin="ada", event="dispatch", summary="three", harness="ada")
+    shard = _shard_path(lroot, "ada")
+    lines = shard.read_text().splitlines()
+    shard.write_text("\n".join(lines[:-1]) + "\n")  # drop the TAIL line only
+
+    r = _run(lroot, "log", "verify")
+    assert r.returncode == 1
+    assert "TAMPERED" in r.stdout
+    assert "tail line" in r.stdout or "whole shard" in r.stdout
+
+
+def test_verify_detects_whole_shard_emptied(lroot):
+    """The file still exists (an empty stub) but every line was removed —
+    same detection path as tail-truncation, just count 0 vs. the registered
+    count."""
+    _append(lroot, origin="ada", event="dispatch", summary="one", harness="ada")
+    _append(lroot, origin="ada", event="dispatch", summary="two", harness="ada")
+    shard = _shard_path(lroot, "ada")
+    shard.write_text("")
+
+    r = _run(lroot, "log", "verify")
+    assert r.returncode == 1
+    assert "TAMPERED" in r.stdout
+
+
+def test_verify_detects_whole_shard_deletion(lroot):
+    """The shard file (AND its .tip sidecar) are deleted outright — a
+    directory glob of `*.jsonl` can never discover a file that simply is
+    not there anymore. Only the ledger-wide registry (which is NOT
+    co-located with any single shard) can still recall the shard existed."""
+    _append(lroot, origin="ada", event="dispatch", summary="one", harness="ada")
+    _append(lroot, origin="codex", event="dispatch", summary="c1", harness="codex")
+    shard = _shard_path(lroot, "ada")
+    shard.unlink()
+    _tip_path(lroot, "ada").unlink()
+
+    r = _run(lroot, "log", "verify")
+    assert r.returncode == 1
+    assert "MISSING" in r.stdout
+    assert shard.name in r.stdout
+    # the untouched origin is unaffected
+    codex_line = next(l for l in r.stdout.splitlines() if _shard_path(lroot, "codex").name in l)
+    assert codex_line.startswith("OK")
+
+
+def test_verify_scoped_to_origin_still_reports_other_origins_missing_shard(lroot):
+    _append(lroot, origin="ada", event="dispatch", summary="one", harness="ada")
+    _append(lroot, origin="codex", event="dispatch", summary="c1", harness="codex")
+    _shard_path(lroot, "codex").unlink()
+    _tip_path(lroot, "codex").unlink()
+
+    r_ada_only = _run(lroot, "log", "verify", "--origin", "ada")
+    assert r_ada_only.returncode == 0, r_ada_only.stdout + r_ada_only.stderr
+
+    r_codex_only = _run(lroot, "log", "verify", "--origin", "codex")
+    assert r_codex_only.returncode == 1
+    assert "MISSING" in r_codex_only.stdout
+
+
+def test_ledger_verify_shard_seq_gap_detected_independently_of_hash_chain(lroot, engine):
+    """A coherently-forged 2-line shard: prev_hash chain and every line's
+    own hash are BOTH internally self-consistent (recomputed exactly as
+    `_log_append_event` would), and no line was removed/reordered — the
+    ONLY thing wrong is that `seq` jumps 0 -> 5 instead of 0 -> 1. Proves
+    the `seq` contiguity check catches something the pre-existing
+    prev_hash/hash checks alone would not (Cyra M1)."""
+    shard = lroot / ".tess" / "state" / "ledger" / "2026-07.forge.jsonl"
+    shard.parent.mkdir(parents=True, exist_ok=True)
+
+    ev0 = {
+        "ts": "2026-07-19T00:00:00Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "one", "seq": 0, "prev_hash": "0" * 64,
+    }
+    ev0["hash"] = engine._ledger_event_hash(ev0)
+    ev1 = {
+        "ts": "2026-07-19T00:00:01Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "two", "seq": 5, "prev_hash": ev0["hash"],  # gap: should be 1
+    }
+    ev1["hash"] = engine._ledger_event_hash(ev1)
+    shard.write_text(json.dumps(ev0) + "\n" + json.dumps(ev1) + "\n", encoding="utf-8")
+
+    ok, problems = engine._ledger_verify_shard(lroot, shard)
+    assert ok is False
+    assert any("seq mismatch" in p for p in problems)
 
 
 def test_append_unknown_event_rejected(lroot):
@@ -273,6 +418,7 @@ def _valid_ledger_event():
         "event": "dispatch",
         "refs": {"task": None, "mission": None},
         "summary": "did a thing",
+        "seq": 0,
         "prev_hash": "0" * 64,
         "hash": "1" * 64,
     }
@@ -302,6 +448,24 @@ def test_ledger_event_schema_rejects_bad_event_enum(engine):
     schema = engine.load_contract_schema(REPO_ROOT, "ledger-event")
     inst = _valid_ledger_event()
     inst["event"] = "not-a-real-event"
+    base_dir = REPO_ROOT / "core" / "contracts"
+    violations = engine.schema_validate(inst, schema, schema, base_dir)
+    assert violations
+
+
+def test_ledger_event_schema_requires_seq(engine):
+    schema = engine.load_contract_schema(REPO_ROOT, "ledger-event")
+    inst = _valid_ledger_event()
+    del inst["seq"]
+    base_dir = REPO_ROOT / "core" / "contracts"
+    violations = engine.schema_validate(inst, schema, schema, base_dir)
+    assert violations
+
+
+def test_ledger_event_schema_rejects_negative_seq(engine):
+    schema = engine.load_contract_schema(REPO_ROOT, "ledger-event")
+    inst = _valid_ledger_event()
+    inst["seq"] = -1
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
     assert violations

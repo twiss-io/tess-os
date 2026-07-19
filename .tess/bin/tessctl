@@ -62,9 +62,11 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               DERIVED BOARD.md kanban view
   log         Phase 0.2: the hash-chained, append-only ACCOUNTABILITY LEDGER
               under .tess/state/ledger/<YYYY-MM>.<origin>.jsonl (sharded per
-              calendar month + per writer origin) — `append` a tamper-evident
-              event, `view` read filtered/sorted events, `verify` walk a
-              shard's hash chain and report tamper
+              calendar month + per writer origin) — `append` a hash-chained
+              event (unsigned; see docs/STATE_LAYER.md's trust-boundary
+              note), `view` read filtered/sorted events, `verify` walk a
+              shard's hash chain (+ per-shard seq/tip + registry cross-
+              check) and report tamper, truncation, or a deleted shard
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -14455,9 +14457,17 @@ def cmd_run(args, root: Path) -> None:
 #     hash-chained, append-only JSONL, SHARDED per calendar month AND per
 #     writer "origin" (harness/persona identifier) so two machines/harnesses
 #     writing concurrently never contend on the SAME shard file at all — each
-#     shard's own chain is independently tamper-evident (`tessctl log
-#     verify`); cross-shard ordering is reconciled only at READ time
-#     (`tessctl log view`, sorted by `ts`), never by a single global lock.
+#     shard's own chain detects a non-re-chained edit, a removed/reordered
+#     line, or (Phase 0.2 hardening, Cyra M1) a removed tail line / a deleted
+#     whole shard (`tessctl log verify`, cross-checked against a per-shard
+#     `seq` + `.tip` sidecar and a ledger-wide `.registry.json`) — an UNSIGNED
+#     hash chain, not a cryptographic signature; see docs/STATE_LAYER.md's
+#     trust-boundary note for the precise scope. Cross-shard ordering is
+#     reconciled only at READ time (`tessctl log view`, sorted by `ts`); the
+#     one deliberate, narrow exception to "never a single global lock" is the
+#     ledger-wide registry's own short-lived lock (`locks/ledger-registry.
+#     lock`), held only for a brief metadata upsert on append, never for a
+#     whole append's critical section.
 #
 # What this region deliberately does NOT build (Xavier's own scope fence —
 # separate, later PRs; see the dispatch brief for this build):
@@ -14613,15 +14623,60 @@ def _ledger_shard_path(root: Path, origin: str, when=None) -> Path:
 
 # ---------------------------------------------------------------------------
 # Stale-lock reaper (task-lock-set.sh precedent — see LOCK_STALE_SECONDS
-# above). Best-effort, never load-bearing for correctness: unlinking a lock
-# PATH does not disturb a live process's already-open flock fd (POSIX unlink
-# semantics — the fd stays valid until closed; a new open() on the
-# since-recreated path just starts a fresh, unrelated lock file), so this can
-# never un-protect an in-flight critical section, only tidy up a genuinely
-# leaked one.
+# above).
+#
+# CORRECTED SAFETY NOTE (Cyra M2, PR #113 review — the previous comment here
+# was WRONG and is preserved in history as a cautionary example, not
+# repeated): it claimed "unlinking a lock PATH does not disturb a live
+# process's already-open flock fd... so this can never un-protect an
+# in-flight critical section, only tidy up a genuinely leaked one." The
+# FIRST half is true in isolation (POSIX unlink semantics: an already-open
+# fd stays valid, pointing at the OLD inode, until closed) but the
+# conclusion does not follow, because unlinking is NOT a single-actor
+# operation. If process A holds a live flock on inode X at this path, and
+# the pruner unlinks the path (based on stale mtime — which can lag a live
+# holder's actual activity if the lock file's content is never rewritten
+# mid-critical-section), then a THIRD process C that subsequently opens the
+# SAME path gets a BRAND NEW inode Y (the "fresh, unrelated lock file" the
+# old comment treated as harmless). A's flock is on X; C's flock is on Y —
+# two different inodes never exclude each other, so A and C now run their
+# critical sections CONCURRENTLY, exactly the lost-update race this lock
+# exists to prevent. Unlinking a lock file out from under a live holder is
+# therefore a genuine correctness hazard, not a no-op.
+#
+# Fixed below by never unlinking a candidate until THIS function has itself
+# confirmed, via its own non-blocking flock attempt, that nobody currently
+# holds it — and then re-checking that the path still resolves to the
+# SAME inode we just locked (a stat()-after-flock() TOCTOU check), so a
+# concurrent unlink+recreate racing our own check is caught rather than
+# silently deleting somebody else's brand-new lock file.
 # ---------------------------------------------------------------------------
 
 def _prune_stale_locks(root: Path, ttl_seconds: int = LOCK_STALE_SECONDS) -> int:
+    """Best-effort reap of LEAKED lock files. See the corrected safety note
+    above (Cyra M2, PR #113 review) for why staleness (an old mtime) alone
+    used to be treated as sufficient — it is not. Each candidate now goes
+    through three gates before it is unlinked:
+
+      1. Stale by mtime (unchanged fast path/first filter).
+      2. We can acquire `LOCK_EX | LOCK_NB` on it ourselves. If any OTHER
+         process currently holds the flock, this raises immediately — treat
+         that as "live," never delete it, REGARDLESS of mtime. (A lock held
+         past its normal TTL by a genuinely slow-but-alive writer is a
+         separate problem — a stuck process — not this function's job to
+         arbitrate by deleting out from under it.)
+      3. Only once we hold the flock ourselves: `os.fstat(fd).st_ino` (the
+         inode our OPEN FD actually refers to) still equals
+         `os.stat(path).st_ino` (whatever inode the path resolves to RIGHT
+         NOW). A mismatch means some other process unlinked-and-recreated
+         this exact path between our `open()` and this check — the CURRENT
+         directory entry is somebody else's brand-new lock file, implicitly
+         not stale, and must not be touched; we release and skip it.
+
+    Only when all three hold do we unlink — at that point we provably hold
+    the sole flock on the file the path currently resolves to, so no
+    concurrent opener can ever observe a "torn" lock as a result of this
+    reap."""
     locks_dir = root / STATE_LOCKS_DIR
     if not locks_dir.is_dir():
         return 0
@@ -14629,11 +14684,40 @@ def _prune_stale_locks(root: Path, ttl_seconds: int = LOCK_STALE_SECONDS) -> int
     pruned = 0
     for p in locks_dir.glob("*.lock"):
         try:
-            if now - p.stat().st_mtime > ttl_seconds:
-                p.unlink()
-                pruned += 1
+            if now - p.stat().st_mtime <= ttl_seconds:
+                continue
         except OSError:
             continue
+
+        try:
+            fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            continue
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue  # live — someone else holds it right now
+            try:
+                fd_ino = os.fstat(fd).st_ino
+                path_ino = os.stat(str(p)).st_ino
+            except OSError:
+                continue
+            if fd_ino != path_ino:
+                continue  # recreated out from under us — not ours to delete
+            try:
+                p.unlink()
+                pruned += 1
+            except OSError:
+                continue
+        finally:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(fd)
     return pruned
 
 
@@ -14809,6 +14893,39 @@ def _claim_is_stale(claim: dict, stale_after: int) -> bool:
     return age > stale_after
 
 
+# A FIXED namespace UUID (a public constant, not secret material — see the
+# claim-lease trust-boundary note in docs/STATE_LAYER.md, Cyra L2) used only
+# to derive a STABLE per-(host, pid) default claim uuid below.
+_CLAIM_UUID_NAMESPACE = uuid.UUID("6f27b6a4-3c1e-4b1a-9c4d-2e6b7f9a1d3c")
+
+
+def _default_claim_uuid(host: str, pid: int) -> str:
+    """A STABLE (not fresh-per-call) uuid derived from (host, pid) — Reid
+    MEDIUM (PR #113 review): the previous default (`str(uuid.uuid4())` on
+    every `tasks claim` call with no explicit `--uuid`) meant a SAME process
+    re-claiming its OWN task (same host:pid, e.g. after a restart of its own
+    polling loop) always minted a brand-new, unrelated uuid — `_cmd_tasks_
+    claim`'s `same_claimant` check (host+pid+uuid all match) could then never
+    recognize it as itself, misclassifying every such re-claim as a stranger
+    stealing a live claim (refused, or — worse — a false `reclaimed` steal
+    once the OLD uuid's heartbeat eventually went stale) instead of a clean,
+    idempotent heartbeat refresh.
+
+    Deriving the default from (host, pid) via uuid5 (deterministic, not
+    uuid4/random) fixes this: two `tasks claim` calls from the SAME process,
+    neither passing `--uuid`, now always compute the SAME uuid and are
+    correctly recognized as the same claimant. This is deliberately NOT a
+    secret or a security boundary — Cyra L2 (PR #113 review) already
+    documents that claim-leases are advisory coordination, not
+    authentication, so a deterministic/derivable default here weakens
+    nothing that `--host`/`--pid`/`--uuid` didn't already let any caller
+    with filesystem access set to whatever it wants. An explicit `--uuid`
+    override remains available for a caller that needs finer disambiguation
+    than (host, pid) alone provides (e.g. two short-lived processes racing a
+    recycled pid moments apart)."""
+    return str(uuid.uuid5(_CLAIM_UUID_NAMESPACE, f"{host}:{pid}"))
+
+
 # ---------------------------------------------------------------------------
 # ACCOUNTABILITY LEDGER — hash-chain, append, view, verify.
 # ---------------------------------------------------------------------------
@@ -14817,8 +14934,10 @@ def _ledger_event_hash(event_minus_hash: dict) -> str:
     """sha256(prev_hash + canonical_json(event minus hash)) — the SAME
     "canonical bytes minus the field being computed" construction
     `verdict_canonical_bytes`/`signoff_canonical_bytes` already use elsewhere
-    in this engine (compact, key-sorted JSON), applied here to a hash chain
-    instead of a signature. `event_minus_hash` must already have its `hash`
+    in this engine (compact, key-sorted JSON), applied here to build a hash
+    CHAIN — not a signature (Cyra L1, PR #113 review): there is no private
+    key and no signer identity bound to this value, only a link to the prior
+    event in the same shard. `event_minus_hash` must already have its `hash`
     key removed (or never have had one); `prev_hash` is read from IT (it is
     itself one of the event's own persisted fields)."""
     prev_hash = event_minus_hash.get("prev_hash", "")
@@ -14828,9 +14947,21 @@ def _ledger_event_hash(event_minus_hash: dict) -> str:
     return hashlib.sha256(prev_hash.encode("utf-8") + canonical).hexdigest()
 
 
-def _ledger_tail_hash(shard_path: Path) -> str:
+def _ledger_tail_state(shard_path: Path) -> tuple:
+    """Returns (prev_hash, next_seq) — the hash-chain tip AND the next
+    monotonic per-shard `seq` the NEXT appended event must carry.
+
+    Cyra M1 (PR #113 review): a per-shard `seq` lets `tessctl log verify`
+    detect a removed TAIL line, which a pure `prev_hash` chain walk cannot —
+    deleting the LAST line of a shard leaves every REMAINING line's
+    `prev_hash` link to its own predecessor perfectly intact; the file just
+    "ends early," and nothing about walking what's left is internally
+    inconsistent. A contiguous, gapless `seq` (checked against the shard's
+    own `.tip` sidecar + the ledger-wide registry at verify time — see
+    `_ledger_verify_shard`) gives verify an INDEPENDENT expected tail length
+    to compare against, closing that gap."""
     if not shard_path.exists():
-        return LEDGER_GENESIS_HASH
+        return LEDGER_GENESIS_HASH, 0
     last = None
     with open(shard_path, "r", encoding="utf-8") as fh:
         for line in fh:
@@ -14838,7 +14969,7 @@ def _ledger_tail_hash(shard_path: Path) -> str:
             if line:
                 last = line
     if last is None:
-        return LEDGER_GENESIS_HASH
+        return LEDGER_GENESIS_HASH, 0
     try:
         obj = json.loads(last)
     except json.JSONDecodeError as e:
@@ -14846,7 +14977,95 @@ def _ledger_tail_hash(shard_path: Path) -> str:
     h = obj.get("hash")
     if not isinstance(h, str):
         raise LedgerError(f"tessctl log: {shard_path} tail line has no 'hash' field")
-    return h
+    seq = obj.get("seq")
+    if not isinstance(seq, int):
+        raise LedgerError(f"tessctl log: {shard_path} tail line has no 'seq' field")
+    return h, seq + 1
+
+
+LEDGER_REGISTRY_FILENAME = ".registry.json"
+
+
+def _ledger_registry_path(root: Path) -> Path:
+    return root / LEDGER_DIR / LEDGER_REGISTRY_FILENAME
+
+
+def _ledger_tip_path(shard_path: Path) -> Path:
+    return shard_path.with_name(shard_path.name + ".tip")
+
+
+def _ledger_read_tip(shard_path: Path):
+    """Read a shard's own co-located `.tip` sidecar (Cyra M1) — `{"seq":
+    ..., "count": ..., "hash": ...}` describing the tail this shard had as
+    of its last successful append. Returns None if absent or unreadable;
+    the caller (`_ledger_verify_shard`) treats "no tip to check against" and
+    "tip says something different than what's on disk" as distinct cases —
+    this function only ever reports the former by returning None, never
+    silently invents a match."""
+    tip_path = _ledger_tip_path(shard_path)
+    if not tip_path.exists():
+        return None
+    try:
+        data = json.loads(tip_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _ledger_write_tip(shard_path: Path, *, seq: int, count: int, event_hash: str) -> None:
+    data = (
+        json.dumps({"seq": seq, "count": count, "hash": event_hash}, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write_bytes(_ledger_tip_path(shard_path), data)
+
+
+def _ledger_read_registry(root: Path) -> dict:
+    """Best-effort read of the ledger-WIDE shard registry
+    (`.tess/state/ledger/.registry.json`) — Cyra M1's second half: the ONE
+    piece of state that survives even a WHOLE shard file (and its co-located
+    `.tip`) being deleted outright, so `tessctl log verify` can still notice
+    a shard it once knew about has vanished (a directory glob of `*.jsonl`
+    can never notice a file that simply is not there anymore). Missing or
+    corrupt is treated as "no shards registered yet" — a detection AID
+    layered on top of the hash chain, never itself a hard dependency for
+    `log append` to function."""
+    path = _ledger_registry_path(root)
+    if not path.exists():
+        return {"schema": 1, "shards": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"schema": 1, "shards": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("shards"), dict):
+        return {"schema": 1, "shards": {}}
+    return data
+
+
+def _ledger_update_registry(root: Path, shard_name: str, *, seq: int, count: int, event_hash: str) -> None:
+    """Upsert ONE shard's tip into the ledger-wide registry, under its OWN
+    short-lived lock (`locks/ledger-registry.lock`) — the one deliberate,
+    narrow exception to this region's "no single global lock" design (see
+    the TASK LEDGER region header comment): held only for a quick read-
+    modify-write of a small JSON dict, never for the whole append critical
+    section, and ALWAYS acquired after the caller's own per-shard lock is
+    already held (a fixed acquisition order — shard lock, then registry
+    lock, never the reverse — makes a deadlock between two concurrent
+    origins' appends impossible)."""
+    locks_dir = root / STATE_LOCKS_DIR
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = locks_dir / "ledger-registry.lock"
+    _prune_stale_locks(root)
+    with open(lock_path, "a+") as lockf:
+        if fcntl is not None:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            registry = _ledger_read_registry(root)
+            registry["shards"][shard_name] = {"seq": seq, "count": count, "hash": event_hash}
+            data = (json.dumps(registry, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            _atomic_write_bytes(_ledger_registry_path(root), data)
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
 
 
 def _lint_ledger_event(instance) -> list:
@@ -14903,13 +15122,14 @@ def _log_append_event(root: Path, *, origin: str, event: str, summary: str, harn
         if fcntl is not None:
             fcntl.flock(lockf, fcntl.LOCK_EX)
         try:
-            prev_hash = _ledger_tail_hash(shard_path)
+            prev_hash, seq = _ledger_tail_state(shard_path)
             record = {
                 "ts": _utc_now_iso(),
                 "actor": {"harness": harness, "model": model, "session": session, "persona": persona},
                 "event": event,
                 "refs": {"task": task, "mission": mission},
                 "summary": summary,
+                "seq": seq,
                 "prev_hash": prev_hash,
             }
             record["hash"] = _ledger_event_hash(record)
@@ -14919,6 +15139,14 @@ def _log_append_event(root: Path, *, origin: str, event: str, summary: str, harn
                 fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
+            # Cyra M1 (PR #113 review): update the per-shard `.tip` sidecar
+            # AND the ledger-wide registry with the tail we just produced —
+            # BOTH still inside this shard's own lock, so `tessctl log
+            # verify` always sees a tip/registry entry that is consistent
+            # with whatever line it describes (never a half-written pair).
+            count = seq + 1
+            _ledger_write_tip(shard_path, seq=seq, count=count, event_hash=record["hash"])
+            _ledger_update_registry(root, shard_path.name, seq=seq, count=count, event_hash=record["hash"])
             return record
         finally:
             if fcntl is not None:
@@ -14942,41 +15170,94 @@ def _ledger_auto_log(root: Path, *, harness: str, event: str, summary: str, task
     )
 
 
-def _ledger_verify_shard(shard_path: Path):
+def _ledger_verify_shard(root: Path, shard_path: Path):
     """Walk one shard's hash chain top to bottom. Returns (ok: bool,
-    problems: list[str]) — stops at the FIRST break (a broken link
-    invalidates everything after it in this shard just as much as everything
-    at it; reporting only the first is clearer than a cascade of downstream
-    "mismatch" noise that is really one root cause)."""
+    problems: list[str]) — stops the INTERNAL walk at the FIRST break (a
+    broken link invalidates everything after it in this shard just as much
+    as everything at it; reporting only the first is clearer than a cascade
+    of downstream "mismatch" noise that is really one root cause), then runs
+    ONE further cross-check the internal walk can never perform on its own.
+
+    Cyra M1 (PR #113 review): the internal walk above only proves that
+    whatever IS currently in the file is self-consistent — it cannot notice
+    a REMOVED tail line (nothing remains to break a `prev_hash` link
+    against) or a shard emptied down to zero lines. Cross-checking the
+    observed tail (seq/count/hash) against an INDEPENDENT record of what the
+    tail was supposed to be — the shard's own co-located `.tip` sidecar, and
+    the ledger-wide `.registry.json` — closes that gap: either source
+    recording a LARGER count or a DIFFERENT tip hash than what the file
+    currently contains is unambiguous evidence a tail line (or the whole
+    shard's content) was removed without leaving a chain-break trace.
+    (SCOPE, Cyra L1: this — like the hash chain itself — detects a
+    discrepancy versus an independently-recorded tip; it is not proof
+    against an adversary who also rewrites the `.tip` file and the registry
+    entry consistently with a shortened chain — see docs/STATE_LAYER.md's
+    trust-boundary note.)"""
     problems = []
     prev_hash = LEDGER_GENESIS_HASH
-    if not shard_path.exists():
-        return True, []
-    with open(shard_path, "r", encoding="utf-8") as fh:
-        for lineno, raw in enumerate(fh, start=1):
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as e:
-                problems.append(f"{shard_path.name}:{lineno}: invalid JSON — {e}")
-                return False, problems
-            if obj.get("prev_hash") != prev_hash:
-                problems.append(
-                    f"{shard_path.name}:{lineno}: prev_hash mismatch — expected {prev_hash}, "
-                    f"found {obj.get('prev_hash')!r} (chain break / reordering)"
-                )
-                return False, problems
-            recorded_hash = obj.get("hash")
-            recomputed = _ledger_event_hash({k: v for k, v in obj.items() if k != "hash"})
-            if recomputed != recorded_hash:
-                problems.append(
-                    f"{shard_path.name}:{lineno}: hash mismatch — recorded {recorded_hash!r}, "
-                    f"recomputed {recomputed!r} (content tamper detected)"
-                )
-                return False, problems
-            prev_hash = recorded_hash
+    expected_seq = 0
+    last_hash = None
+    count = 0
+    if shard_path.exists():
+        with open(shard_path, "r", encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError as e:
+                    problems.append(f"{shard_path.name}:{lineno}: invalid JSON — {e}")
+                    return False, problems
+                if obj.get("prev_hash") != prev_hash:
+                    problems.append(
+                        f"{shard_path.name}:{lineno}: prev_hash mismatch — expected {prev_hash}, "
+                        f"found {obj.get('prev_hash')!r} (chain break / reordering)"
+                    )
+                    return False, problems
+                seq = obj.get("seq")
+                if not isinstance(seq, int) or seq != expected_seq:
+                    problems.append(
+                        f"{shard_path.name}:{lineno}: seq mismatch — expected {expected_seq}, "
+                        f"found {seq!r} (a line was removed, reordered, or renumbered)"
+                    )
+                    return False, problems
+                recorded_hash = obj.get("hash")
+                recomputed = _ledger_event_hash({k: v for k, v in obj.items() if k != "hash"})
+                if recomputed != recorded_hash:
+                    problems.append(
+                        f"{shard_path.name}:{lineno}: hash mismatch — recorded {recorded_hash!r}, "
+                        f"recomputed {recomputed!r} (content tamper detected)"
+                    )
+                    return False, problems
+                prev_hash = recorded_hash
+                last_hash = recorded_hash
+                expected_seq += 1
+                count += 1
+
+    # Tail-truncation / whole-content-removal cross-check (Cyra M1) — see
+    # docstring above. Check the tip sidecar and the ledger-wide registry
+    # independently; either one disagreeing with what the file currently
+    # contains is reported.
+    tip = _ledger_read_tip(shard_path)
+    registry_entry = _ledger_read_registry(root).get("shards", {}).get(shard_path.name)
+    for label, expected in (("tip sidecar", tip), ("ledger registry", registry_entry)):
+        if not isinstance(expected, dict):
+            continue
+        expected_count = expected.get("count")
+        expected_hash = expected.get("hash")
+        if not isinstance(expected_count, int) or not isinstance(expected_hash, str):
+            continue
+        if expected_count != count or (count > 0 and expected_hash != last_hash):
+            problems.append(
+                f"{shard_path.name}: {label} recorded {expected_count} event(s) ending in "
+                f"hash {expected_hash!r}, but the shard now contains {count} event(s)"
+                + (f" ending in hash {last_hash!r}" if count else " (empty)")
+                + " — a tail line (or the whole shard's content) was removed without "
+                  "leaving a chain-break trace (Cyra M1, tail-truncation detection)"
+            )
+            return False, problems
+
     return True, problems
 
 
@@ -15064,9 +15345,33 @@ def _cmd_tasks_set(args, root: Path) -> None:
             claim = record.get("claim") or {}
             if not claim.get("host"):
                 raise TaskError(f"tessctl tasks set: {task_id} has no active claim to heartbeat")
+            # Reid HIGH (PR #113 review): a heartbeat with NO claimant-identity
+            # check is a forgeable liveness signal — anyone who merely knows
+            # the task id could renew a DIFFERENT claimant's claim, defeating
+            # `tasks claim --stale-after`'s reclaim logic (a stolen/abandoned
+            # task would look perpetually alive forever). Mirrors
+            # `_cmd_tasks_release`'s own identity check exactly: all three of
+            # --host/--pid/--uuid must be supplied AND match the CURRENT
+            # claim, or this is refused (TASK_NOT_CLAIMANT) unless --force.
+            same_claimant = (
+                args.host is not None and args.pid is not None and args.claim_uuid is not None
+                and claim.get("host") == args.host and claim.get("pid") == args.pid
+                and claim.get("uuid") == args.claim_uuid
+            )
+            if not same_claimant and not args.force:
+                raise TaskError(
+                    f"TASK_NOT_CLAIMANT: tessctl tasks set --heartbeat: {task_id} is "
+                    f"claimed by {claim.get('host')}:{claim.get('pid')}:{claim.get('uuid')}; "
+                    f"refusing to refresh its heartbeat without --host/--pid/--uuid "
+                    f"matching that claim — pass the matching identity, or --force to "
+                    f"override"
+                )
             claim["heartbeat_at"] = _utc_now_iso()
             record["claim"] = claim
-            changes.append("heartbeat refreshed")
+            changes.append(
+                "heartbeat refreshed" if same_claimant
+                else "heartbeat refreshed (forced, non-claimant identity)"
+            )
         return record
 
     try:
@@ -15100,7 +15405,9 @@ def _cmd_tasks_claim(args, root: Path) -> None:
     task_id = args.task_id
     host = args.host
     pid = args.pid
-    claim_uuid = args.claim_uuid or str(uuid.uuid4())
+    # Reid MEDIUM (PR #113 review): a fresh uuid4() default broke same-process
+    # re-claim recognition — see `_default_claim_uuid`'s own docstring.
+    claim_uuid = args.claim_uuid or _default_claim_uuid(host, pid)
     stale_after = args.stale_after if args.stale_after is not None else DEFAULT_CLAIM_STALE_SECONDS
     now = _utc_now_iso()
     ledger = {}
@@ -15352,8 +15659,10 @@ def _cmd_log_view(args, root: Path) -> None:
 def _cmd_log_verify(args, root: Path) -> None:
     any_bad = False
     checked = 0
+    seen_names = set()
     for shard in _iter_ledger_shards(root, args.origin):
-        ok, problems = _ledger_verify_shard(shard)
+        seen_names.add(shard.name)
+        ok, problems = _ledger_verify_shard(root, shard)
         checked += 1
         if ok:
             print(f"OK        {shard.name}")
@@ -15362,6 +15671,29 @@ def _cmd_log_verify(args, root: Path) -> None:
             print(f"TAMPERED  {shard.name}")
             for p in problems:
                 print(f"  {p}")
+
+    # Cyra M1 (second half) — a shard the ledger-wide registry KNOWS about
+    # but that no longer exists on disk AT ALL: the loop above (a directory
+    # glob of `*.jsonl`) can only ever check files that are PRESENT; it can
+    # never discover one that has been deleted outright. Cross-checking the
+    # registry's own list of shards against what actually still exists is
+    # the only way to catch a whole-shard deletion.
+    registry = _ledger_read_registry(root)
+    origin_slug = _ledger_origin_slug(args.origin) if args.origin else None
+    for shard_name, entry in sorted(registry.get("shards", {}).items()):
+        if shard_name in seen_names:
+            continue
+        if origin_slug and not shard_name.endswith(f".{origin_slug}.jsonl"):
+            continue
+        any_bad = True
+        checked += 1
+        print(f"MISSING   {shard_name}")
+        print(
+            f"  registered with {entry.get('count')} event(s) (tip hash "
+            f"{entry.get('hash')!r}) but the shard file no longer exists on disk at "
+            f"all — whole-shard deletion (Cyra M1)"
+        )
+
     if checked == 0:
         print("tessctl log verify: no ledger shards found — nothing to verify")
     sys.exit(1 if any_bad else 0)
@@ -16514,7 +16846,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_tasks_set.add_argument(
         "--heartbeat", action="store_true",
         help="refresh claim.heartbeat_at without changing anything else about the claim "
-             "(refuses if the task is not currently claimed)",
+             "(refuses if the task is not currently claimed). SECURITY (Reid HIGH, PR "
+             "#113 review): requires --host/--pid/--uuid matching the CURRENT claim — "
+             "refused as TASK_NOT_CLAIMANT otherwise (or pass --force) — a heartbeat "
+             "with no identity check would let anyone with the task id forge liveness "
+             "for a claim they never hold, defeating --stale-after reclaim.",
+    )
+    p_tasks_set.add_argument(
+        "--host", help="claimant host — required to --heartbeat unless --force (Reid HIGH)",
+    )
+    p_tasks_set.add_argument(
+        "--pid", type=int, help="claimant pid — required to --heartbeat unless --force (Reid HIGH)",
+    )
+    p_tasks_set.add_argument(
+        "--uuid", dest="claim_uuid",
+        help="claimant instance uuid — required to --heartbeat unless --force (Reid HIGH)",
+    )
+    p_tasks_set.add_argument(
+        "--force", action="store_true",
+        help="--heartbeat only: refresh the heartbeat even if --host/--pid/--uuid do not "
+             "match (or are omitted) — bypasses the TASK_NOT_CLAIMANT refusal",
     )
     p_tasks_set.add_argument(
         "--expected-rev", dest="expected_rev", type=int, metavar="N",
@@ -16531,7 +16882,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_tasks_claim.add_argument("--host", required=True)
     p_tasks_claim.add_argument("--pid", required=True, type=int)
     p_tasks_claim.add_argument(
-        "--uuid", dest="claim_uuid", help="claimant instance uuid (default: a fresh uuid4)",
+        "--uuid", dest="claim_uuid",
+        help="claimant instance uuid (default: a STABLE uuid5 derived from --host+--pid — "
+             "so a re-claim by the SAME process, with no explicit --uuid, is recognized as "
+             "the same claimant/a clean heartbeat, not a stranger stealing the claim; Reid "
+             "MEDIUM, PR #113 review — pass an explicit value only if you need finer "
+             "disambiguation than host+pid alone provides)",
     )
     p_tasks_claim.add_argument("--harness", required=True)
     p_tasks_claim.add_argument("--session")
@@ -16579,7 +16935,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     log_sub = p_log.add_subparsers(dest="log_sub", metavar="SUBCOMMAND")
 
-    p_log_append = log_sub.add_parser("append", help="append one tamper-evident event to a ledger shard")
+    p_log_append = log_sub.add_parser("append", help="append one hash-chained event to a ledger shard (unsigned — see docs/STATE_LAYER.md)")
     p_log_append.add_argument(
         "--origin", required=True,
         help="shard key (usually the harness/persona identifier) — "

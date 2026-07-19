@@ -23,6 +23,14 @@ Coverage:
   * Real concurrent writers (two actual OS processes) racing to mutate the
     SAME task never lose an update — the per-task flock proof.
   * C1 containment on task ids (mirrors `_validate_mission_id`'s own tests).
+  * Phase 0.2 hardening (PR #113 review, issue #114):
+    - Reid HIGH: `tasks set --heartbeat` refuses a forged (wrong- or
+      missing-identity) heartbeat as TASK_NOT_CLAIMANT; a correct-identity
+      heartbeat succeeds; --force overrides.
+    - Reid MEDIUM: `tasks claim` with no explicit --uuid derives a STABLE
+      default from (host, pid) — a re-claim by the SAME host:pid, still
+      with no explicit --uuid, is recognized as the same claimant (a clean
+      heartbeat), not a stranger stealing the claim.
 """
 
 from __future__ import annotations
@@ -220,6 +228,78 @@ def test_tasks_set_heartbeat_requires_active_claim(troot):
     assert "no active claim" in (r.stdout + r.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Reid HIGH (PR #113 review, issue #114): `tasks set --heartbeat` claimant-
+# identity check — a forged (wrong- or missing-identity) heartbeat is a
+# forgeable liveness signal that would let anyone with the task id renew a
+# DIFFERENT claimant's claim-lease, defeating `--stale-after` reclaim.
+# ---------------------------------------------------------------------------
+
+def test_tasks_set_heartbeat_forged_identity_refused(troot):
+    task_id = _new(troot)
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "a")
+    before = json.loads(_task_path(troot, task_id).read_text())
+
+    forged = _run(
+        troot, "tasks", "set", task_id, "--heartbeat",
+        "--host", "h2", "--pid", "222", "--uuid", "u2", "--harness", "b",
+    )
+    assert forged.returncode != 0
+    assert "TASK_NOT_CLAIMANT" in (forged.stdout + forged.stderr)
+    unchanged = json.loads(_task_path(troot, task_id).read_text())
+    assert unchanged == before, "a refused forged heartbeat must not mutate the claim at all"
+
+
+def test_tasks_set_heartbeat_missing_identity_refused(troot):
+    """The ORIGINAL bug: no --host/--pid/--uuid at all used to succeed
+    unconditionally. It must now be refused exactly like a wrong identity —
+    "no identity supplied" is not evidence of claimant-hood either."""
+    task_id = _new(troot)
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "a")
+    before = json.loads(_task_path(troot, task_id).read_text())
+
+    r = _run(troot, "tasks", "set", task_id, "--heartbeat", "--harness", "b")
+    assert r.returncode != 0
+    assert "TASK_NOT_CLAIMANT" in (r.stdout + r.stderr)
+    unchanged = json.loads(_task_path(troot, task_id).read_text())
+    assert unchanged == before
+
+
+def test_tasks_set_heartbeat_correct_identity_succeeds(troot):
+    task_id = _new(troot)
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "a")
+    before = json.loads(_task_path(troot, task_id).read_text())
+    time.sleep(1.1)
+
+    r = _run(
+        troot, "tasks", "set", task_id, "--heartbeat",
+        "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "a",
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    after = json.loads(_task_path(troot, task_id).read_text())
+    assert after["claim"]["heartbeat_at"] != before["claim"]["heartbeat_at"]
+    assert after["claim"]["claimed_at"] == before["claim"]["claimed_at"]
+    assert after["claim"]["host"] == "h1" and after["claim"]["uuid"] == "u1"
+
+
+def test_tasks_set_heartbeat_force_overrides_wrong_identity(troot):
+    task_id = _new(troot)
+    _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--uuid", "u1", "--harness", "a")
+    before = json.loads(_task_path(troot, task_id).read_text())
+    time.sleep(1.1)
+
+    r = _run(
+        troot, "tasks", "set", task_id, "--heartbeat", "--force",
+        "--host", "h2", "--pid", "222", "--uuid", "u2", "--harness", "b",
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    after = json.loads(_task_path(troot, task_id).read_text())
+    # --force refreshes the heartbeat but never silently reassigns the claim
+    # itself — only `tasks claim --force` (an explicit steal) does that.
+    assert after["claim"]["host"] == "h1" and after["claim"]["uuid"] == "u1"
+    assert after["claim"]["heartbeat_at"] != before["claim"]["heartbeat_at"]
+
+
 def test_tasks_set_unknown_task_refused(troot):
     r = _run(troot, "tasks", "set", "T-nope", "--status", "ready", "--harness", "h")
     assert r.returncode != 0
@@ -274,6 +354,45 @@ def test_tasks_claim_then_heartbeat_reclaim_by_same_claimant(troot):
     obj2 = json.loads(_task_path(troot, task_id).read_text())
     assert obj2["claim"]["claimed_at"] == claimed_at_1, "re-claim by the SAME claimant must not reset claimed_at"
     assert obj2["claim"]["heartbeat_at"] != obj["claim"]["heartbeat_at"]
+
+
+# ---------------------------------------------------------------------------
+# Reid MEDIUM (PR #113 review, issue #114): `tasks claim`'s default --uuid
+# is now a STABLE uuid5 derived from (host, pid), not a fresh uuid4() per
+# call — a same-process re-claim (no explicit --uuid, twice) must be
+# recognized as the SAME claimant.
+# ---------------------------------------------------------------------------
+
+def test_tasks_claim_no_explicit_uuid_reclaim_by_same_host_pid_is_same_claimant(troot):
+    task_id = _new(troot)
+    r1 = _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--harness", "claude-code")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+    obj = json.loads(_task_path(troot, task_id).read_text())
+    uuid_1 = obj["claim"]["uuid"]
+    assert uuid_1  # a default was assigned
+    claimed_at_1 = obj["claim"]["claimed_at"]
+
+    time.sleep(1.1)
+    r2 = _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "111", "--harness", "claude-code")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert "heartbeat" in r2.stdout, (
+        "a re-claim by the SAME host:pid, with no explicit --uuid, must be "
+        "recognized as the same claimant (a clean heartbeat), not a stranger"
+    )
+    obj2 = json.loads(_task_path(troot, task_id).read_text())
+    assert obj2["claim"]["uuid"] == uuid_1, "the default uuid must be STABLE across calls, not a fresh uuid4 each time"
+    assert obj2["claim"]["claimed_at"] == claimed_at_1
+
+
+def test_tasks_claim_default_uuid_differs_across_different_pids(troot):
+    a = _new(troot, "Task A")
+    b = _new(troot, "Task B")
+    ra = _run(troot, "tasks", "claim", a, "--host", "h1", "--pid", "111", "--harness", "x")
+    rb = _run(troot, "tasks", "claim", b, "--host", "h1", "--pid", "222", "--harness", "x")
+    assert ra.returncode == 0 and rb.returncode == 0
+    uuid_a = json.loads(_task_path(troot, a).read_text())["claim"]["uuid"]
+    uuid_b = json.loads(_task_path(troot, b).read_text())["claim"]["uuid"]
+    assert uuid_a != uuid_b
 
 
 def test_tasks_claim_refused_when_live_claim_held_by_another(troot):
