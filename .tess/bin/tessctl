@@ -1692,7 +1692,12 @@ def doctor_check_file(core_key: str, attrs: dict, root: Path) -> dict:
 def cmd_init(args, root: Path) -> None:
     """
     Scaffold a new project from the framework.
-    On an existing repo with .tess/core committed: runs restore + render.
+    On an existing repo with .tess/core committed: runs restore + render
+    (issue #118: render means EVERY enabled render target via
+    _render_enabled_targets, not just claude-code's CLAUDE.md/settings.json
+    — a fresh init on a codex-enabled manifest must produce a pristine
+    AGENTS.md/.codex/** too, not leave them missing until a separate
+    `tessctl render` is run by hand).
     With --from <upstream>: TODO (network).
     """
     if args.from_upstream:
@@ -1728,8 +1733,9 @@ def cmd_init(args, root: Path) -> None:
     # Restore live tree
     _do_restore(root, verbose=True)
 
-    # Render CLAUDE.md and settings.json
-    _do_render(root, verbose=True)
+    # Render every enabled target's compiled artifacts (issue #118 — was
+    # claude-code-only _do_render(); see this function's docstring).
+    _render_enabled_targets(root, verbose=True)
 
     print("\ntessctl init: complete.")
     print("  Run `tessctl doctor` to verify integrity.")
@@ -1936,6 +1942,14 @@ def cmd_restore(args, root: Path) -> None:
     Re-sync the live tree from .tess/core at the locked version.
     No network. Idempotent. The fresh-clone / CI command.
     Substitutes {{TESS_ROOT}} in all rendered files.
+
+    issue #118: the final render step covers EVERY enabled render target
+    (_render_enabled_targets), not just claude-code's CLAUDE.md/settings.json
+    — _do_restore() itself is Claude-Code-shaped for its COPY-only portion
+    (CodexRenderTarget's own docstring), but this function's own templated-
+    compile step must still refresh AGENTS.md/.codex/** when codex/generic
+    are enabled, or `tessctl restore` (e.g. after `rename` on a fresh clone,
+    or CI) leaves them stale relative to the just-restored core/profile.
     """
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
@@ -1951,8 +1965,9 @@ def cmd_restore(args, root: Path) -> None:
           f"{counts['missing_core']} missing core")
 
     if not dry_run:
-        # Also render CLAUDE.md and settings.json
-        _do_render(root, verbose=True)
+        # Also render every enabled target's compiled artifacts (issue #118
+        # — was claude-code-only _do_render(); see this function's docstring).
+        _render_enabled_targets(root, verbose=True)
         print("restore: complete.")
 
 
@@ -6738,7 +6753,13 @@ def cmd_identity(args, root: Path) -> None:
     Show or set conductor identity + operator name (M6).
 
     Without flags: print current state.
-    With --name / --operator: update profile.json and re-render.
+    With --name / --operator: update profile.json and re-render EVERY
+    ENABLED render target (_render_enabled_targets — issue #118, same fix
+    as `cmd_rename`/`cmd_set_operator`/`cmd_pathway`: this verb's own help
+    text below claims "same as rename"/"same as set-operator", so it must
+    actually share their fix too, not just their wording — it previously
+    still called the claude-code-only _do_render() directly, leaving
+    AGENTS.md stale on any install with codex/generic enabled).
     """
     profile = _load_operator_profile(root)
     name_arg = getattr(args, "assistant_name", None)
@@ -6762,7 +6783,7 @@ def cmd_identity(args, root: Path) -> None:
             f"operator_name={profile['operator_name']!r}"
         )
         print("tessctl identity: re-rendering …")
-        _do_render(root, verbose=True)
+        _render_enabled_targets(root, verbose=True)
         print("tessctl identity: done. Run `tessctl doctor` to verify.")
     else:
         # Read-only: show current state
