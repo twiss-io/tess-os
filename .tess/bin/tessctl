@@ -67,6 +67,19 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               note), `view` read filtered/sorted events, `verify` walk a
               shard's hash chain (+ per-shard seq/tip + registry cross-
               check) and report tamper, truncation, or a deleted shard
+  memory      Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region,
+              a sibling of TASK LEDGER) — `adopt` moves an existing harness-
+              private memory directory's contents into .tess/state/memory/
+              and replaces the original with a symlink, so that harness's
+              own native memory reads/writes transparently land in the ONE
+              canonical store every harness mounts (docs/STATE_LAYER.md).
+              Dry-run by default (--yes to mutate); refuses a non-empty
+              target without --merge; refuses any real filename/content
+              conflict outright (no partial writes); idempotent against an
+              already-adopted source; `--revert` undoes it from the
+              adopt's own recorded manifest, restoring exactly the files
+              that manifest recorded, never the store's current full
+              contents
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -275,6 +288,15 @@ CLAUDE_TOKEN_MAP = {
 #   - {{HARNESS_NOTE}} documents the `.codex/prompts/**` / `prompts/**`
 #     command-body mirrors (unchanged — a fact about what's on disk, not
 #     doctrine).
+#   - {{WORKER_SESSION_MEMORY}} (Phase 0.3, docs/STATE_LAYER.md) points a
+#     worker harness at the ONE cross-harness memory store
+#     (.tess/state/memory/) every harness mounts — a repo/state fact, same
+#     category as the other two fragments, not orchestration doctrine (no
+#     dispatch mechanics, no crew, nothing from WORKER_DOCTRINE_DENYLIST).
+#     Claude Code needs no equivalent pointer: its own harness already
+#     auto-reads its memory index natively; this fragment exists because
+#     Codex/generic harnesses have no such native behavior and must be told
+#     where the shared index lives.
 #
 # Deliberately DROPPED versus the pre-G3 map (see the harm this fixes in
 # AGENTS.md.tpl's own doctrine-drop banner + tests/test_worker_profile_denylist.py):
@@ -298,6 +320,7 @@ AGENTS_TOKEN_MAP = {
     "{{WORKER_HARD_FLOOR}}":       ".tess/core/templates/agents-md/worker-hard-floor.md",
     "{{WORKER_GATE_COMPLIANCE}}":  ".tess/core/templates/agents-md/gate-compliance.md",
     "{{HARNESS_NOTE}}":            ".tess/core/templates/agents-md/harness-note.md",
+    "{{WORKER_SESSION_MEMORY}}":   ".tess/core/templates/agents-md/session-memory.md",
 }
 AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
@@ -1149,7 +1172,9 @@ def render_agents_md(root: Path) -> str:
     always-mounted digest inside its ~40-60 line budget (AGENTS_TOKEN_MAP's
     own header has the full reasoning). In its place: {{WORKER_HARD_FLOOR}}
     / {{WORKER_GATE_COMPLIANCE}} (two WORKER-ONLY fragments — safety floor +
-    gate-compliance facts, nothing else) and {{OPERATOR_BUILD_FACTS}} (an
+    gate-compliance facts, nothing else), {{WORKER_SESSION_MEMORY}} (Phase
+    0.3 — points at the ONE cross-harness memory store every harness
+    mounts, docs/STATE_LAYER.md), and {{OPERATOR_BUILD_FACTS}} (an
     operator-fillable, empty-by-default zone for the one class of
     "environment fact" this framework cannot know on a downstream project's
     behalf: ITS build/test/lint commands — see AGENTS_OPERATOR_TOKEN_MAP).
@@ -3104,6 +3129,11 @@ def cmd_doctor(args, root: Path) -> None:
         f"quarantined: {quarantined_count}  |  core tamper: {core_tamper_count}  |  "
         f"security alerts: {security_drift}"
     )
+
+    # Phase 0.3 — memory-link check (informational only; see
+    # _print_memory_link_report's own header banner for why this never
+    # touches errors/warnings/the exit code).
+    _print_memory_link_report(root)
 
     # Defect #2: --fix EXCLUDES security-tier (never route to capture/launder).
     # R2: --fix re-renders render-generated files instead of capturing them.
@@ -15708,6 +15738,602 @@ def cmd_log(args, root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 0.3 — `tessctl memory adopt`: the cross-harness MEMORY LINK (MEMORY
+# ADOPT region, a sibling of TASK LEDGER above). docs/STATE_LAYER.md:
+# "shared state lives in harness-neutral files inside the project, mounted
+# by every harness — never in a harness's private home directory." Every
+# OTHER `.tess/state/**` subsystem (tasks/ledger) was built writing
+# CANONICAL-only from day one; memory is different — Claude Code (and,
+# eventually, other harnesses) already had a WORKING harness-private memory
+# convention before this region existed (an auto-maintained directory of
+# topic files plus an index, today at a well-known per-harness path). The
+# job here is not to invent a new memory format; it is to make an existing
+# one canonical WITHOUT breaking the harness that already depends on
+# reading/writing its own conventional path — hence "adopt" (move + THIS
+# repo's own version of a bind-mount: an "actual dir" -> "symlink into the
+# canonical store" swap), not "migrate" or "replace".
+#
+# Design constraints (Xavier's own brief for this build):
+#   - dry-run by default; `--yes` required to mutate anything.
+#   - refuse (no mutation) if the canonical store already has real content
+#     and `--merge` was not given.
+#   - refuse (no mutation) on any real filename+content conflict during a
+#     `--merge` — never silently prefer one side.
+#   - idempotent: re-running against an already-adopted source is a clean
+#     no-op, not an error.
+#   - reversible: `tessctl memory adopt --revert` undoes it, and does so
+#     from THIS adopt's own recorded manifest (which harness, which files),
+#     never by exporting the store's current full contents — a second
+#     harness's own adopt (or ordinary post-adopt shared writes) must never
+#     leak into a DIFFERENT harness's restored private directory.
+#   - verify round-trip read/write through the new symlink after adopting —
+#     if that fails, automatically roll the whole adopt back (via the exact
+#     same revert path) rather than leave a half-adopted, unverified state.
+#
+# Running the actual adopt against Xavier's own live `~/.claude/...` memory
+# directory is explicitly OUT OF SCOPE for this PR (a separate, later,
+# opt-in instance operation) — this region only builds and tests the
+# mechanism itself, entirely inside disposable tmp_path fixtures.
+# ---------------------------------------------------------------------------
+
+
+class MemoryAdoptError(Exception):
+    """Raised for any `tessctl memory adopt`/`--revert` refusal — an
+    ambiguous existing symlink, a non-file entry in the source directory, a
+    non-empty target without --merge, an unresolved merge conflict, a
+    failed post-adopt round-trip check, or a revert with no manifest / a
+    drifted symlink. Mirrors TaskError/LedgerError's typed-refusal
+    convention; every cmd_memory_* entrypoint catches this and converts it
+    to sys.exit(str(e)), plus the same defense-in-depth backstop in
+    main()."""
+
+
+MEMORY_DIR = f"{STATE_DIR}/memory"
+# Per-harness manifest — NOT a single shared file. The canonical store is
+# ONE directory multiple harnesses may each independently adopt into (each
+# with its own --from path); a shared filename would let a second harness's
+# adopt silently clobber the first harness's own revert record.
+MEMORY_ADOPT_MANIFEST_PREFIX = ".tess-memory-adopt."
+MEMORY_ADOPT_MANIFEST_SUFFIX = ".json"
+MEMORY_ADOPT_MANIFEST_GLOB = f"{MEMORY_ADOPT_MANIFEST_PREFIX}*{MEMORY_ADOPT_MANIFEST_SUFFIX}"
+DEFAULT_MEMORY_ADOPT_HARNESS = "claude-code"
+
+
+def _memory_adopt_manifest_path(to_dir: Path, harness: str) -> Path:
+    slug = _slugify(harness) or "harness"
+    return to_dir / f"{MEMORY_ADOPT_MANIFEST_PREFIX}{slug}{MEMORY_ADOPT_MANIFEST_SUFFIX}"
+
+
+def _is_memory_store_housekeeping_file(name: str) -> bool:
+    """True for a filename that is part of the adopt MECHANISM itself
+    (the always-tracked `.gitkeep` scaffold placeholder, or a per-harness
+    adopt manifest) rather than actual memory CONTENT — excluded from
+    "does the target already have real content" / index-coherence checks."""
+    if name == ".gitkeep":
+        return True
+    return name.startswith(MEMORY_ADOPT_MANIFEST_PREFIX) and name.endswith(MEMORY_ADOPT_MANIFEST_SUFFIX)
+
+
+def _default_harness_memory_dir(harness: str, root: Path) -> Path:
+    """The well-known, per-harness default memory directory `tessctl memory
+    adopt` reads from when `--from` is not given. Only 'claude-code' is
+    defined today: Claude Code's own auto-memory convention is one
+    directory per project, `~/.claude/projects/<flattened-root>/memory/`,
+    where `<flattened-root>` is this project's own absolute path with every
+    path separator replaced by '-' (verified live against a real installed
+    instance during this build — e.g. `/Users/x/Documents/tess` ->
+    `-Users-x-Documents-tess`). Uses `root` (the resolved Tess OS project
+    root), not raw cwd, so this is correct even when invoked from a
+    subdirectory. Any other `--harness` value REQUIRES an explicit `--from`
+    — there is no invented guess for a harness this engine does not know
+    the memory convention of."""
+    if harness == DEFAULT_MEMORY_ADOPT_HARNESS:
+        flattened = str(root.resolve()).replace(os.sep, "-")
+        return Path.home() / ".claude" / "projects" / flattened / "memory"
+    raise MemoryAdoptError(
+        f"tessctl memory adopt: no well-known default memory path for harness {harness!r} — "
+        f"pass --from explicitly"
+    )
+
+
+def _memory_adopt_roundtrip_check(from_dir: Path, to_dir: Path) -> None:
+    """Post-adopt safety check (Xavier's own brief: "verify round-trip
+    read/write after"): proves the harness's native read/write path — via
+    the symlink just created at `from_dir` — genuinely lands in the
+    canonical store (`to_dir`), not just that the symlink object exists.
+    Writes a small probe file THROUGH the symlink path, reads it back
+    through BOTH the symlink path and the canonical path, and removes it
+    again — then raises MemoryAdoptError (never returns a bool the caller
+    could forget to check) on any mismatch or I/O failure."""
+    probe_name = f".tess-memory-adopt-roundtrip-{secrets.token_hex(4)}"
+    probe_via_symlink = from_dir / probe_name
+    probe_via_canonical = to_dir / probe_name
+    payload = f"tessctl memory adopt round-trip check {_utc_now_iso()}".encode("utf-8")
+    try:
+        probe_via_symlink.write_bytes(payload)
+        ok = (
+            probe_via_symlink.read_bytes() == payload
+            and probe_via_canonical.read_bytes() == payload
+        )
+    except OSError as e:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: post-adopt round-trip read/write check failed: {e}"
+        )
+    finally:
+        for p in (probe_via_canonical, probe_via_symlink):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                pass
+    if not ok:
+        raise MemoryAdoptError(
+            "tessctl memory adopt: post-adopt round-trip check produced mismatched "
+            "content between the symlinked path and the canonical store"
+        )
+
+
+def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
+                   merge: bool, dry_run: bool) -> dict:
+    """
+    The `tessctl memory adopt` mechanism. See this region's own header
+    banner for the full design-constraint rationale. Every refusal below
+    (MemoryAdoptError) happens BEFORE any filesystem mutation — the
+    planning phase (idempotency check, source enumeration, target
+    enumeration, per-file conflict detection) is read-only start to
+    finish, so a refused call — including the default dry-run — never
+    touches disk at all.
+    """
+    to_dir_resolved = to_dir.resolve()
+
+    # 1. Idempotency: --from is ALREADY a symlink resolving to --to -> no-op,
+    #    regardless of --yes/dry-run. A symlink resolving somewhere ELSE is
+    #    refused outright — never silently repointed.
+    if from_dir.is_symlink():
+        try:
+            resolved = from_dir.resolve()
+        except OSError as e:
+            raise MemoryAdoptError(
+                f"tessctl memory adopt: {from_dir} is a symlink but could not be resolved: {e}"
+            )
+        if resolved == to_dir_resolved:
+            return {
+                "action": "noop", "reason": "already_adopted", "harness": harness,
+                "from": str(from_dir), "to": str(to_dir_resolved), "dry_run": dry_run,
+            }
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: {from_dir} is already a symlink, but it points at "
+            f"{resolved}, not {to_dir_resolved} — refusing to touch an unrelated existing "
+            f"symlink. Inspect manually."
+        )
+
+    if from_dir.exists() and not from_dir.is_dir():
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: {from_dir} exists but is not a directory — refusing"
+        )
+
+    # 2. Enumerate the source (empty list if it doesn't exist at all yet —
+    #    the "bootstrap" case: nothing to move, just wire up the symlink for
+    #    future writes to land in the canonical store).
+    source_files: list = []
+    if from_dir.is_dir():
+        entries = list(from_dir.iterdir())
+        source_files = sorted((p for p in entries if p.is_file()), key=lambda p: p.name)
+        unexpected = sorted((p for p in entries if not p.is_file()), key=lambda p: p.name)
+        if unexpected:
+            raise MemoryAdoptError(
+                f"tessctl memory adopt: refusing — {from_dir} contains non-file entries "
+                f"({', '.join(p.name for p in unexpected)}) — only a flat directory of "
+                f"memory files is supported"
+            )
+
+    # 3. Enumerate the target — READ-ONLY (never creates --to during
+    #    planning, so a dry-run truly touches nothing).
+    existing_target_files: list = []
+    if to_dir.is_dir():
+        existing_target_files = sorted(
+            p.name for p in to_dir.iterdir()
+            if p.is_file() and not _is_memory_store_housekeeping_file(p.name)
+        )
+
+    # Refuse a non-empty target without --merge — but ONLY when there is
+    # real content to bring in; a bootstrap call (nothing in --from) never
+    # needs --merge just because some OTHER harness already adopted here.
+    if source_files and existing_target_files and not merge:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: {to_dir} already has {len(existing_target_files)} "
+            f"file(s) of real content — refusing to adopt {len(source_files)} more "
+            f"without --merge. Pass --merge to adopt into a non-empty canonical store."
+        )
+
+    # 4. Per-file plan: identical-content files are already-merged (skip,
+    #    not an error); a same-name file with DIFFERENT content anywhere is
+    #    a hard refusal of the WHOLE operation — no partial writes ever.
+    conflicts: list = []
+    to_copy: list = []
+    already_present: list = []
+    for f in source_files:
+        dest = to_dir / f.name
+        if dest.exists():
+            if dest.read_bytes() == f.read_bytes():
+                already_present.append(f.name)
+            else:
+                conflicts.append(f.name)
+        else:
+            to_copy.append(f)
+
+    if conflicts:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: refusing — {len(conflicts)} file(s) exist in both "
+            f"{from_dir} and {to_dir} with DIFFERENT content ({', '.join(sorted(conflicts))}) "
+            f"— resolve manually, then retry"
+        )
+
+    plan = {
+        "action": "adopt",
+        "harness": harness,
+        "from": str(from_dir),
+        "to": str(to_dir_resolved),
+        "files_to_copy": [f.name for f in to_copy],
+        "files_already_present": already_present,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return plan
+
+    # --- mutate for real (--yes) ---
+    to_dir.mkdir(parents=True, exist_ok=True)
+    copied: list = []
+    try:
+        for f in to_copy:
+            dest = to_dir / f.name
+            shutil.copy2(f, dest)
+            if dest.read_bytes() != f.read_bytes():
+                raise MemoryAdoptError(
+                    f"tessctl memory adopt: copy verification failed for {f.name}"
+                )
+            copied.append(f.name)
+    except Exception:
+        # Never leave a half-adopted store: undo whatever this attempt
+        # itself just copied, then re-raise. `from_dir` is untouched at
+        # this point (still the original real directory) — nothing else
+        # to roll back yet.
+        for name in copied:
+            (to_dir / name).unlink(missing_ok=True)
+        raise
+
+    source_file_names = sorted(f.name for f in source_files)
+
+    if from_dir.exists():
+        shutil.rmtree(from_dir)
+    from_dir.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(str(to_dir_resolved), str(from_dir))
+
+    manifest_path = _memory_adopt_manifest_path(to_dir, harness)
+    manifest = {
+        "harness": harness,
+        "from_path": str(from_dir),
+        "to_path": str(to_dir_resolved),
+        "adopted_at": _utc_now_iso(),
+        # EVERY file that belonged to this harness's original directory —
+        # the authoritative restore list for --revert. A strict SUBSET,
+        # `newly_copied_files`, records what was actually bytes-copied
+        # (the rest were already byte-identical in --to and only the
+        # redundant original copy in --from was removed).
+        "source_files": source_file_names,
+        "newly_copied_files": sorted(copied),
+    }
+    _atomic_write_bytes(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+
+    try:
+        _memory_adopt_roundtrip_check(from_dir, to_dir)
+    except MemoryAdoptError as roundtrip_error:
+        # The one failure mode after the point of no return: auto-rollback
+        # through the EXACT same revert path (same manifest we just wrote),
+        # so a failed round-trip never leaves an unverified half-adopted
+        # state — "safe" means the caller can trust either full success or
+        # a fully undone attempt, nothing in between.
+        try:
+            _memory_adopt_revert(root, to_dir, harness=harness)
+            rollback_note = "automatically rolled back — no changes retained"
+        except MemoryAdoptError as rollback_error:
+            rollback_note = f"automatic rollback ALSO FAILED: {rollback_error}"
+        raise MemoryAdoptError(
+            f"tessctl memory adopt: post-adopt round-trip verification failed "
+            f"({rollback_note}). Original error: {roundtrip_error}"
+        )
+
+    return {
+        "action": "adopt",
+        "harness": harness,
+        "from": str(from_dir),
+        "to": str(to_dir_resolved),
+        "source_files": source_file_names,
+        "newly_copied_files": sorted(copied),
+        "dry_run": False,
+        "roundtrip_ok": True,
+    }
+
+
+def _memory_adopt_revert(root: Path, to_dir: Path, *,
+                          harness: str = None, from_override: Path = None) -> dict:
+    """Undo a previous `tessctl memory adopt`, using THAT adopt's own
+    recorded manifest. Restores exactly `manifest["source_files"]` — never
+    the canonical store's current full contents, which may since have
+    grown from a DIFFERENT harness's own adopt (or ordinary post-adopt
+    shared writes) that must never leak into this harness's restored
+    private directory. Refuses (no mutation) if the recorded `from_path`
+    is not CURRENTLY a symlink resolving to `to_dir` — that means the
+    state already changed since adopt (already reverted, or manually
+    altered), and a blind revert would be a guess, not a genuine undo.
+    """
+    if not to_dir.is_dir():
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: canonical store {to_dir} does not exist — "
+            f"nothing to revert"
+        )
+
+    if harness:
+        candidate = _memory_adopt_manifest_path(to_dir, harness)
+        candidates = [candidate] if candidate.exists() else []
+    else:
+        candidates = sorted(to_dir.glob(MEMORY_ADOPT_MANIFEST_GLOB))
+
+    if not candidates:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: no adopt manifest found under {to_dir} — "
+            f"nothing to revert (memory was never adopted here, or the manifest is missing)"
+        )
+    if len(candidates) > 1:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: {len(candidates)} adopted harness(es) found "
+            f"under {to_dir} ({', '.join(p.name for p in candidates)}) — pass --harness to "
+            f"pick one"
+        )
+    manifest_path = candidates[0]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise MemoryAdoptError(f"tessctl memory adopt --revert: manifest unreadable: {e}")
+
+    from_path = from_override or Path(manifest["from_path"])
+    source_files = manifest.get("source_files", [])
+
+    if not from_path.is_symlink():
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: {from_path} is not currently a symlink — "
+            f"state has already changed since adopt; refusing to guess. Inspect manually."
+        )
+    try:
+        resolved = from_path.resolve()
+    except OSError as e:
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: {from_path} could not be resolved: {e}"
+        )
+    if resolved != to_dir.resolve():
+        raise MemoryAdoptError(
+            f"tessctl memory adopt --revert: {from_path} is a symlink but resolves to "
+            f"{resolved}, not the recorded {to_dir.resolve()} — refusing to touch an "
+            f"unrelated symlink. Inspect manually."
+        )
+
+    try:
+        from_path.unlink()
+        from_path.mkdir(parents=True)
+    except OSError as e:
+        raise MemoryAdoptError(f"tessctl memory adopt --revert: could not recreate {from_path}: {e}")
+
+    restored, missing = [], []
+    for name in source_files:
+        src = to_dir / name
+        if src.exists():
+            shutil.move(str(src), str(from_path / name))
+            restored.append(name)
+        else:
+            missing.append(name)
+
+    manifest_path.unlink()
+
+    return {
+        "action": "revert",
+        "harness": manifest.get("harness"),
+        "from": str(from_path),
+        "to": str(to_dir),
+        "restored_files": restored,
+        "missing_files": missing,
+    }
+
+
+def _print_memory_adopt_result(result: dict) -> None:
+    action = result.get("action")
+    if action == "noop":
+        print(
+            f"tessctl memory adopt: already adopted — {result['from']} -> {result['to']} "
+            f"(no changes)"
+        )
+        return
+    if action == "adopt":
+        if result.get("dry_run"):
+            print(f"tessctl memory adopt: DRY RUN — would adopt {result['from']} -> {result['to']}")
+            to_copy = result.get("files_to_copy", [])
+            already = result.get("files_already_present", [])
+            if to_copy:
+                print(f"  {len(to_copy)} file(s) to copy: {', '.join(to_copy)}")
+            else:
+                print("  0 file(s) to copy (bootstrap — nothing to move yet, or already adopted)")
+            if already:
+                print(f"  {len(already)} file(s) already present in the store (identical content, skipped)")
+            print("  Re-run with --yes to perform this for real.")
+        else:
+            source_files = result.get("source_files", [])
+            copied = result.get("newly_copied_files", [])
+            print(f"tessctl memory adopt: adopted {result['from']} -> {result['to']}")
+            if copied:
+                print(f"  copied {len(copied)} file(s): {', '.join(copied)}")
+            else:
+                print("  copied 0 file(s) (bootstrap, or all content already present)")
+            print(f"  {len(source_files)} file(s) now tracked in this harness's adopt manifest")
+            print(f"  round-trip check: {'OK' if result.get('roundtrip_ok') else 'not run'}")
+            print(f"  {result['from']} is now a symlink into the shared store.")
+        return
+    if action == "revert":
+        restored = result.get("restored_files", [])
+        missing = result.get("missing_files", [])
+        print(f"tessctl memory adopt --revert: restored {result['from']} from {result['to']}")
+        print(f"  restored {len(restored)} file(s)" + (f": {', '.join(restored)}" if restored else ""))
+        if missing:
+            print(
+                f"  WARNING: {len(missing)} file(s) recorded as adopted were no longer in the "
+                f"store and could not be restored: {', '.join(missing)}"
+            )
+        print(f"  {result['from']} is a real directory again; the adopt manifest was removed.")
+        return
+
+
+def _cmd_memory_adopt(args, root: Path) -> None:
+    to_dir = Path(args.to_dir).expanduser().resolve() if getattr(args, "to_dir", None) else (root / MEMORY_DIR)
+    harness = getattr(args, "harness", None)
+    from_override = Path(args.from_dir).expanduser() if getattr(args, "from_dir", None) else None
+
+    try:
+        if getattr(args, "revert", False):
+            result = _memory_adopt_revert(root, to_dir, harness=harness, from_override=from_override)
+        else:
+            effective_harness = harness or DEFAULT_MEMORY_ADOPT_HARNESS
+            from_dir = from_override or _default_harness_memory_dir(effective_harness, root)
+            result = _memory_adopt(
+                root, from_dir=from_dir, to_dir=to_dir, harness=effective_harness,
+                merge=getattr(args, "merge", False), dry_run=not getattr(args, "yes", False),
+            )
+    except MemoryAdoptError as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(result, indent=2, default=str))
+        return
+    _print_memory_adopt_result(result)
+
+
+def cmd_memory(args, root: Path) -> None:
+    sub = getattr(args, "memory_sub", None)
+    if sub is None:
+        sys.exit("tessctl memory: a subcommand is required (adopt)")
+    handlers = {"adopt": _cmd_memory_adopt}
+    handlers[sub](args, root)
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.3 — `tessctl doctor`'s memory-link check. Purely informational:
+# NEVER contributes to doctor's errors/warnings counters or exit code (this
+# is an optional, opt-in mechanism — an instance that has never run
+# `tessctl memory adopt` must see a clean, unaffected `doctor: OK`, and even
+# an ADOPTED-but-broken link must not turn an otherwise-clean install's CI
+# gate red over a mechanism separate teams may not use uniformly). Human-
+# mode output only (called from cmd_doctor strictly after the `--json` early
+# return) — no change to doctor's existing JSON contract.
+# ---------------------------------------------------------------------------
+
+def _check_memory_link(root: Path) -> list:
+    """One report dict per adopted harness found under `.tess/state/memory/`
+    (glob over MEMORY_ADOPT_MANIFEST_GLOB — supports more than one harness
+    having adopted into the same store) plus a single not-adopted report if
+    none have. Each report: adopted / symlink_present / symlink_resolves /
+    target_writable / index_present / index_broken_links /
+    index_unindexed_files / issues (a list of human-readable strings)."""
+    memory_dir = root / MEMORY_DIR
+
+    manifests = sorted(memory_dir.glob(MEMORY_ADOPT_MANIFEST_GLOB)) if memory_dir.is_dir() else []
+    if not manifests:
+        return [{
+            "harness": None, "adopted": False, "issues": [],
+            "index_present": False, "index_broken_links": [], "index_unindexed_files": [],
+        }]
+
+    index_path = memory_dir / "MEMORY.md"
+    index_present = index_path.exists()
+    index_broken_links: list = []
+    index_unindexed_files: list = []
+    if index_present:
+        text = index_path.read_text(encoding="utf-8", errors="replace")
+        referenced = set(re.findall(r"\(([A-Za-z0-9_.\-]+\.md)\)", text))
+        on_disk = {p.name for p in memory_dir.glob("*.md") if p.name != "MEMORY.md"}
+        index_broken_links = sorted(referenced - on_disk)
+        index_unindexed_files = sorted(on_disk - referenced)
+
+    reports = []
+    for manifest_path in manifests:
+        report = {
+            "harness": None, "adopted": True, "issues": [],
+            "symlink_present": False, "symlink_resolves": False, "target_writable": False,
+            "index_present": index_present,
+            "index_broken_links": index_broken_links,
+            "index_unindexed_files": index_unindexed_files,
+        }
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            report["issues"].append(f"adopt manifest {manifest_path.name} unreadable/corrupt: {e}")
+            reports.append(report)
+            continue
+
+        report["harness"] = manifest.get("harness")
+        from_path = Path(manifest.get("from_path", ""))
+        to_path = Path(manifest.get("to_path", ""))
+
+        if from_path.is_symlink():
+            report["symlink_present"] = True
+            try:
+                resolved = from_path.resolve()
+                if resolved == to_path.resolve():
+                    report["symlink_resolves"] = True
+                else:
+                    report["issues"].append(
+                        f"symlink at {from_path} resolves to {resolved}, expected {to_path}"
+                    )
+            except OSError as e:
+                report["issues"].append(f"symlink at {from_path} could not be resolved: {e}")
+        else:
+            report["issues"].append(f"expected symlink at {from_path} is missing or not a symlink")
+
+        if to_path.is_dir():
+            if os.access(to_path, os.W_OK):
+                report["target_writable"] = True
+            else:
+                report["issues"].append(f"{to_path} is not writable")
+        else:
+            report["issues"].append(f"canonical memory store {to_path} is missing")
+
+        reports.append(report)
+    return reports
+
+
+def _print_memory_link_report(root: Path) -> None:
+    for report in _check_memory_link(root):
+        if not report["adopted"]:
+            print(
+                "\n  memory-link  not adopted (optional) — run `tessctl memory adopt` to "
+                "share memory across harnesses"
+            )
+            continue
+        label = report.get("harness") or "?"
+        if not report["issues"]:
+            if not report["index_present"]:
+                extra = "no MEMORY.md index yet"
+            elif report["index_broken_links"] or report["index_unindexed_files"]:
+                extra = "index present, coherence gaps below"
+            else:
+                extra = "index coherent"
+            print(f"\n  memory-link  ok — {label} adopted, symlink resolves, store writable ({extra})")
+        else:
+            print(f"\n  memory-link  ISSUE (non-fatal) — {label}: " + "; ".join(report["issues"]))
+        if report["index_broken_links"]:
+            print(f"               index references missing file(s): {', '.join(report['index_broken_links'])}")
+        if report["index_unindexed_files"]:
+            print(f"               unindexed file(s) in store: {', '.join(report['index_unindexed_files'])}")
+
+
+# ---------------------------------------------------------------------------
 # Goal #9 — `tessctl mcp serve`: the gate as an MCP server (MCP region).
 # Spec: Model Context Protocol 2025-06-18 — JSON-RPC 2.0 over stdio, newline-
 # delimited framing, no embedded newlines per message
@@ -16963,6 +17589,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_log_verify.add_argument("--origin")
 
+    # memory — Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region,
+    # a sibling of `tasks`/`log` above).
+    p_memory = sub.add_parser(
+        "memory",
+        help="cross-harness memory link: adopt a harness-private memory dir into "
+             ".tess/state/memory/ (adopt)",
+    )
+    memory_sub = p_memory.add_subparsers(dest="memory_sub", metavar="SUBCOMMAND")
+
+    p_memory_adopt = memory_sub.add_parser(
+        "adopt",
+        help="move a harness memory dir's contents into the canonical store and "
+             "replace it with a symlink (dry-run by default; --revert to undo)",
+    )
+    p_memory_adopt.add_argument(
+        "--harness",
+        help=f"which harness's well-known memory path to default --from to, or which "
+             f"harness's adopt manifest --revert targets (default when adopting: "
+             f"{DEFAULT_MEMORY_ADOPT_HARNESS!r}; default when reverting: infer from the "
+             f"single manifest present, or refuse if more than one)",
+    )
+    p_memory_adopt.add_argument(
+        "--from", dest="from_dir", metavar="DIR",
+        help="explicit source memory directory (overrides the --harness default)",
+    )
+    p_memory_adopt.add_argument(
+        "--to", dest="to_dir", metavar="DIR",
+        help=f"canonical store directory (default: {MEMORY_DIR})",
+    )
+    p_memory_adopt.add_argument(
+        "--yes", action="store_true",
+        help="perform the adopt for real (default: dry-run, reports the plan only)",
+    )
+    p_memory_adopt.add_argument(
+        "--merge", action="store_true",
+        help="allow adopting into a non-empty canonical store",
+    )
+    p_memory_adopt.add_argument(
+        "--revert", action="store_true",
+        help="undo a previous adopt using its own recorded manifest",
+    )
+    p_memory_adopt.add_argument("--json", action="store_true", dest="json_out")
+
     # mcp (Goal #9) — the gate as an MCP server
     p_mcp = sub.add_parser(
         "mcp",
@@ -17066,6 +17735,9 @@ def main() -> None:
         # the MISSION LEDGER region above).
         "tasks":        cmd_tasks,
         "log":          cmd_log,
+        # Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region, a
+        # sibling of TASK LEDGER above).
+        "memory":       cmd_memory,
     }
 
     fn = dispatch.get(args.command)
@@ -17088,9 +17760,12 @@ def main() -> None:
     # TaskError/LedgerError (Phase 0.2, TASK LEDGER region) mirror the same
     # pattern again — every cmd_tasks_*/cmd_log_* entrypoint already catches
     # them locally too; this is the defense-in-depth backstop.
+    # MemoryAdoptError (Phase 0.3, MEMORY ADOPT region) mirrors the same
+    # pattern again — _cmd_memory_adopt already catches it locally too;
+    # this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except (GateError, MissionError, RunError, TaskError, LedgerError) as e:
+    except (GateError, MissionError, RunError, TaskError, LedgerError, MemoryAdoptError) as e:
         sys.exit(str(e))
 
 

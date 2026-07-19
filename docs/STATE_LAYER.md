@@ -1,14 +1,20 @@
 # The state layer: one canonical store, every harness mounts it
 
-> **Status: Phase 0.2 — the fenced store PLUS the task store + accountability
-> ledger.** Phase 0.1 built the four empty, fenced directories and their
-> leak-proofing. Phase 0.2 (this page's own next section) lands the first two
-> real subsystems on top of that store: `tessctl tasks` (the shared task
-> graph, `.tess/state/tasks/`) and `tessctl log` (the hash-chained
-> accountability ledger, `.tess/state/ledger/`). Memory-adopt
-> (`.tess/state/memory/`) and any orphan-sweeper daemon remain NOT built —
-> see "What's deliberately NOT built yet" below, now scoped to just those
-> two.
+> **Status: Phase 0.3 — the fenced store, the task store + accountability
+> ledger, PLUS the memory link.** Phase 0.1 built the four empty, fenced
+> directories and their leak-proofing. Phase 0.2 landed the first two real
+> subsystems on top of that store: `tessctl tasks` (the shared task graph,
+> `.tess/state/tasks/`) and `tessctl log` (the hash-chained accountability
+> ledger, `.tess/state/ledger/`). Phase 0.3 (this page's own next-next
+> section) lands the third: `tessctl memory adopt` (`.tess/state/memory/`) —
+> the mechanism that moves an existing harness-private memory directory's
+> contents into the canonical store and replaces the original with a
+> symlink, so Claude Code and Codex (or any other adopted harness) read and
+> write the SAME memory. Running an actual adopt against any specific
+> instance's live memory is a separate, later, opt-in operation — this page
+> documents the mechanism itself. Any orphan-sweeper daemon remains NOT
+> built — see "What's deliberately NOT built yet" below, now scoped to just
+> that.
 
 ## The principle
 
@@ -30,7 +36,7 @@ private home directory.**
 
 ```
 .tess/state/
-├── memory/     ← cross-harness memory (adopted, not duplicated — Phase 0.2)
+├── memory/     ← cross-harness memory (adopted, not duplicated — Phase 0.3)
 ├── tasks/      ← the shared task graph (Phase 0.2 CLI)
 ├── ledger/     ← mission/retry ledger, harness-neutral form (Phase 0.2+)
 └── locks/      ← coordination locks between concurrent harness sessions
@@ -85,7 +91,7 @@ All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
 and `locks/` — none of the four subdirectories depends on the pre-commit
 hook (layer 3) being installed to stay off a fresh `git add -A`.
 
-## What's built today (Phase 0.1 + Phase 0.2)
+## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3)
 
 Phase 0.1 — the fenced store:
 
@@ -203,12 +209,75 @@ Two precise scope notes (Cyra L1/L2, closing the #113 review gate):
   claim (contrast with `verdict.schema.json`'s actual GPG-signed
   verdicts, which do).
 
-## What's deliberately NOT built yet (Phase 0.3+)
+Phase 0.3 — `tessctl memory adopt` (MEMORY ADOPT region, `.tess/bin/tessctl`,
+a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
 
-- **Memory adopt** — the mechanism by which a harness-private memory file
-  (e.g. a Claude Code memory artifact) gets adopted into
-  `.tess/state/memory/` as the canonical copy, rather than living only in
-  that harness's home directory. A separate, later PR.
+- **The mechanism, not a new memory format.** Claude Code (and, eventually,
+  other harnesses) already maintain a harness-private memory convention — an
+  auto-managed directory of topic files plus an index (`MEMORY.md`) at a
+  well-known per-project path. `tessctl memory adopt` does not invent a new
+  format; it makes the EXISTING one canonical: it moves that directory's
+  contents into `.tess/state/memory/` and replaces the original with a
+  symlink pointing at it, so the harness's own native memory reads/writes
+  transparently land in the ONE store every harness mounts from then on.
+- **Safe by construction.** Dry-run by default (`--yes` required to mutate
+  anything, and the planning phase — idempotency check, source/target
+  enumeration, per-file conflict detection — is read-only start to finish,
+  so even a refused call never touches disk); refuses a non-empty target
+  without `--merge` (but a bootstrap call with no source content never needs
+  `--merge` just because a DIFFERENT harness already adopted); refuses any
+  real filename+content conflict outright, atomically, with zero partial
+  writes; idempotent against an already-adopted source (a clean no-op, not
+  an error); verifies a real round-trip read/write THROUGH the new symlink
+  after adopting, and automatically rolls the whole adopt back (via the same
+  revert path) if that check ever fails.
+- **`--revert`** undoes an adopt from THAT adopt's own recorded manifest
+  (`.tess/state/memory/.tess-memory-adopt.<harness>.json` — one per
+  adopted harness, never a single shared file two harnesses could clobber
+  each other's revert record with) — restoring exactly the files that
+  manifest recorded, never the store's current full contents (a second
+  harness's own separately adopted/merged content, or ordinary post-adopt
+  shared writes, is left untouched). Refuses (no mutation, no guessing) if
+  the recorded source path is not currently a symlink resolving to the
+  store — that means state already drifted since adopt.
+- **`tessctl doctor`'s memory-link check** — non-fatal, informational only
+  (never affects doctor's errors/warnings/exit code, in either the
+  not-adopted or the adopted-but-broken case): per adopted harness, is the
+  expected symlink present and resolving, is the store writable, and does
+  `.tess/state/memory/MEMORY.md`'s own index cohere with what's actually on
+  disk (broken links, unindexed files) — surfaced for a human to notice,
+  never gated on.
+- **Codex/generic pointer** — `.tess/core/templates/agents-md/AGENTS.md.tpl`
+  (`{{WORKER_SESSION_MEMORY}}`) tells a worker-profile harness to read
+  `.tess/state/memory/MEMORY.md` at session start and write durable
+  learnings back to the same store, never a private copy. Claude Code needs
+  no equivalent: its own harness already auto-reads its memory index
+  natively — this pointer exists because Codex/generic harnesses have no
+  such built-in behavior. A pure repo/state fact, not orchestration doctrine
+  — `tests/test_memory_adopt_fence.py` proves it introduces no
+  worker-profile doctrine-denylist violation (G3).
+- Running an actual adopt against any specific instance's own live memory
+  (e.g. a real `~/.claude/projects/<flattened>/memory/`) is explicitly OUT
+  OF SCOPE for the PR that built this mechanism — a separate, later, opt-in
+  instance operation each adopter runs (or is run for them) deliberately,
+  not something this mechanism's existence performs on its own.
+- `tests/test_memory_adopt.py` — dry-run purity, bootstrap + real adopt,
+  idempotency, every refusal (ambiguous existing symlink, non-directory
+  source, non-file source entries, non-empty target without `--merge`, a
+  real merge conflict), `--merge` skip-on-identical-content, `--revert`
+  (including multi-harness disambiguation and drifted-state refusal),
+  automatic rollback on a simulated round-trip failure, and the doctor
+  memory-link check's four states (not-adopted / clean / broken-symlink /
+  index-coherence gaps).
+- `tests/test_memory_adopt_fence.py` — the SAME #105/#111 fence proof
+  `test_task_ledger_fence.py` gives the task store/ledger, against a
+  genuinely CLI-adopted memory file and its adopt manifest (source
+  directory deliberately outside the git working tree, mirroring a real
+  harness home-directory layout) — plus the AGENTS.md render assertions
+  above.
+
+## What's deliberately NOT built yet
+
 - **The orphan-sweeper** — a daemon/process that would scan
   `.tess/state/tasks/*.json`'s claim-leases and `.tess/state/ledger/**` for
   dead-PID claims and auto-resume/re-dispatch abandoned work. Phase 0.2
@@ -218,6 +287,7 @@ Two precise scope notes (Cyra L1/L2, closing the #113 review gate):
   autonomous sweeper is allowed to act is a separate Xavier trust-boundary
   decision, not a technical one this store's existence resolves.
 
-Do not assume the memory-adopt mechanism or an orphan-sweeper exists because
-this directory does. Phase 0.2 is the task store + accountability ledger
-substrate and the guarantee that neither can ever leak — nothing more.
+Do not assume an orphan-sweeper exists because this directory does. Phase
+0.1-0.3 built the fenced store, the task store + accountability ledger, and
+the memory link, and the guarantee that none of the three can ever leak —
+nothing more.

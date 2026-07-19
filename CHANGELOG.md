@@ -77,6 +77,79 @@ All notable changes to Tess OS are documented here. This project adheres to
     clean/tamper/reorder, schema/lint), `tests/test_task_ledger_fence.py` (5
     tests — the data-leak fence against real CLI-produced content).
 
+- **Phase 0.3 — the cross-harness MEMORY LINK (`tessctl memory adopt`)**,
+  closing the memory half of the shared-brain build (the task/ledger half
+  landed as Phase 0.2 above). A sibling of the TASK LEDGER region — same
+  `.tess/state/` store, same fail-closed discipline — but memory is
+  different from tasks/ledger in one respect: Claude Code (and, eventually,
+  other harnesses) already had a WORKING harness-private memory convention
+  before this region existed, so the job here is "adopt" (move + symlink an
+  existing directory into the canonical store), not "invent a new format."
+  - **`tessctl memory adopt`** — moves an existing harness memory
+    directory's contents into `.tess/state/memory/` and replaces the
+    original with a symlink pointing at it, so that harness's own native
+    memory reads/writes transparently land in the ONE canonical store every
+    harness mounts. Dry-run by default (`--yes` to mutate; the entire
+    planning phase — idempotency check, source/target enumeration,
+    per-file conflict detection — is read-only, so even a refused call
+    never touches disk); refuses a non-empty target without `--merge`
+    (bootstrap calls with no source content are exempt — nothing is being
+    merged); refuses any real filename+content conflict outright, with zero
+    partial writes; idempotent against an already-adopted source (a clean
+    no-op); a post-adopt round-trip read/write check through the new
+    symlink triggers an automatic full rollback (via the same revert path)
+    if it ever fails, so no half-adopted state can survive. `--harness`
+    defaults to Claude Code's own well-known per-project path
+    (`~/.claude/projects/<flattened-root>/memory/`) but any path is
+    supported via `--from`.
+  - **`tessctl memory adopt --revert`** — undoes an adopt from THAT
+    adopt's own recorded manifest
+    (`.tess/state/memory/.tess-memory-adopt.<harness>.json` — one per
+    adopted harness, never a single shared file two harnesses could
+    clobber each other's revert record with), restoring exactly the files
+    that manifest recorded — never the store's current full contents,
+    which may since have grown from a different harness's own adopt or
+    ordinary shared writes. Refuses (no mutation, no guessing) if the
+    recorded source path has drifted since adopt (already reverted, or
+    manually altered).
+  - **`tessctl doctor` memory-link check** — non-fatal, informational only,
+    in every case (not-adopted, adopted-and-clean, or adopted-but-broken
+    never affect doctor's errors/warnings/exit code): per adopted harness,
+    symlink present + resolving, store writable, and
+    `.tess/state/memory/MEMORY.md`'s own index coherence against what is
+    actually on disk (broken links, unindexed files).
+  - **Codex/generic AGENTS.md pointer** —
+    `.tess/core/templates/agents-md/AGENTS.md.tpl` gains a "Session Memory
+    (Shared)" section (`{{WORKER_SESSION_MEMORY}}`,
+    `.tess/core/templates/agents-md/session-memory.md`) telling a
+    worker-profile harness to read `.tess/state/memory/MEMORY.md` at
+    session start and write durable learnings back to the same store —
+    Claude Code needs no equivalent (its own harness already auto-reads
+    its memory index natively). A pure repo/state fact, not orchestration
+    doctrine — verified clean against the G3 worker-profile
+    doctrine-denylist.
+  - **Fence held, not weakened**: `.tess/state/memory/**` was already in
+    `tess.manifest.json`'s `never_touch`, `.gitignore`'s content-ignore
+    rules (#111), and `_PUBLISH_CLEAN_PRIVATE_GLOBS` (#93) before this PR —
+    no change needed to any of the three. `tests/test_memory_adopt_fence.py`
+    proves the SAME fence blocks a genuinely CLI-adopted memory file and
+    its adopt manifest (source directory deliberately outside the git
+    working tree, mirroring a real harness home-directory layout):
+    invisible to `git add -A`, and still refused by `tessctl doctor
+    --publish-clean` if force-added.
+  - **Running an actual adopt against any specific instance's own live
+    memory remains a separate, later, opt-in operation** — this PR ships
+    only the mechanism, exercised entirely against disposable `tmp_path`
+    fixtures.
+  - **Tests**: `tests/test_memory_adopt.py` (26 tests — dry-run purity,
+    bootstrap + real adopt, idempotency, every refusal, `--merge`
+    skip-on-identical-content, `--revert` including multi-harness
+    disambiguation and drifted-state refusal, automatic rollback on a
+    simulated round-trip failure, the doctor memory-link check's four
+    states), `tests/test_memory_adopt_fence.py` (8 tests — the data-leak
+    fence against real CLI-adopted content, plus the AGENTS.md render
+    assertions).
+
 ### Security
 - **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
   `.gitignore` fence (issue #110, found reviewing #105)** — PR #105's
