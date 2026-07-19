@@ -130,18 +130,78 @@ kanban"):
   AND per writer origin so concurrent writers on different machines/
   harnesses never contend on the same file. `append` computes
   `hash = sha256(prev_hash + canonical_json(event minus hash))`; `verify`
-  walks a shard's chain and reports the first tamper/break it finds.
+  walks a shard's chain and reports the first tamper/break it finds — plus
+  (Phase 0.2 hardening below) a removed tail line or a whole deleted shard.
   `tasks new|set|claim|release` auto-log the corresponding
   `task_transition|claim|heartbeat|release|completed|crashed|reclaimed`
   event on every real (non-no-op) write, so the "who picked up a task and
   progress, cleared or stuck" trail can never be silently skipped by a
   caller who forgot a separate logging step.
+- **Phase 0.2 hardening (closes the #113 review gate, issue #114)** — five
+  fixes to the substrate above before any consumer (in particular the
+  future orphan-sweeper) trusts it:
+  - `tasks set --heartbeat` now requires `--host`/`--pid`/`--uuid` matching
+    the CURRENT claim (refused `TASK_NOT_CLAIMANT` otherwise, or `--force`)
+    — the previous version refreshed a claim's heartbeat with no identity
+    check at all, a forgeable liveness signal that let anyone who knew a
+    task id renew a claim they never held, defeating `--stale-after`
+    reclaim (Reid HIGH).
+  - `tasks claim`'s default `--uuid` (when not explicitly given) is now a
+    STABLE uuid5 derived from `(host, pid)`, not a fresh `uuid4()` per call
+    — a same-process re-claim is now correctly recognized as the same
+    claimant (a clean heartbeat) instead of misclassified as a stranger
+    (Reid MEDIUM).
+  - Each ledger event now carries a monotonic per-shard `seq`; every append
+    also writes a co-located `.tip` sidecar and upserts a ledger-wide
+    `.registry.json` (`{seq, count, hash}` per shard). `log verify`
+    cross-checks the tail it actually finds against both, so a removed TAIL
+    line (which a pure `prev_hash` walk cannot notice — nothing remains to
+    break a chain link against) or an entire deleted shard (undiscoverable
+    by directory-globbing alone) is DETECTED, not silently reported OK
+    (Cyra M1).
+  - `_prune_stale_locks` no longer unlinks a lock file on mtime alone: it
+    first confirms, via its OWN non-blocking flock attempt, that nobody
+    currently holds it, then re-checks the path still resolves to the SAME
+    inode it just locked before unlinking — closing a TOCTOU where a
+    concurrent unlink+recreate could let two different processes each
+    believe they hold the sole lock on "the same" path via two different,
+    non-excluding inodes (Cyra M2).
+  - Wording fixes (no behavior change): the schema/engine no longer says
+    "tamper-evident" or "instead of a signature" without qualification —
+    see "Trust boundary" below (Cyra L1/L2).
 - `tests/test_task_store.py`, `tests/test_accountability_ledger.py`,
   `tests/test_task_ledger_fence.py` — CRUD + schema validation, claim-lease
   + a REAL two-process concurrency proof (no lost update), hash-chain
   append/verify/tamper-detection, and — the last file — proof that the
   SAME #105/#111 fence blocks a genuinely CLI-produced task file and ledger
   shard, not just a synthetic placeholder.
+
+## Trust boundary — what this substrate does NOT guarantee
+
+Two precise scope notes (Cyra L1/L2, closing the #113 review gate):
+
+- **Claim-leases are advisory coordination, not authentication.** A
+  `claim`'s `host:pid:uuid` + `heartbeat_at` is a cooperative bookkeeping
+  convention for well-behaved callers sharing the same `.tess/state/`
+  filesystem — `tasks claim`'s "refuse unless stale/`--force`" and `tasks
+  set --heartbeat`'s claimant-identity check (Phase 0.2 hardening above)
+  prevent one COOPERATING agent from accidentally stepping on another's
+  live claim. Neither is a security boundary: the real trust boundary is
+  filesystem write access to `.tess/state/**` itself — anything that can
+  write there can write any `host`/`pid`/`uuid` triple it likes, claimed or
+  not. Do not treat a claim-lease as proof of who is actually doing the
+  work, only as a coordination signal among cooperating callers.
+- **The ledger's hash chain is unsigned.** `tessctl log verify` (with the
+  Phase 0.2 seq/tip/registry hardening above) detects a NON-RE-CHAINED
+  edit to an already-appended line, a removed/reordered line, a removed
+  tail line, or a deleted whole shard. It does NOT detect a determined
+  adversary with filesystem write access who recomputes the entire
+  downstream chain to match an edited or shortened history — such a
+  fully-and-consistently re-chained forgery would still `verify` OK. This
+  is an integrity/accident-detection mechanism, not a cryptographic
+  signature: it carries no signer identity and makes no non-repudiation
+  claim (contrast with `verdict.schema.json`'s actual GPG-signed
+  verdicts, which do).
 
 ## What's deliberately NOT built yet (Phase 0.3+)
 

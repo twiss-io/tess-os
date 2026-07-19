@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tess-os.dev/contracts/ledger-event.schema.json",
   "title": "Accountability Ledger Event Contract",
-  "description": "Machine-checkable form of ONE line in the hash-chained, append-only ACCOUNTABILITY LEDGER (Phase 0.2 — .tess/state/ledger/<YYYY-MM>.<origin>.jsonl). The 'who did what, when, who's holding it' audit trail Xavier's re-aimed vision calls for, sibling to task.schema.json (which tracks the CURRENT state of a task; this schema tracks the immutable HISTORY of events that produced it). Ported from Hermes' kanban design's task_events audit (kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md). `tessctl log append` dogfood-validates every event against THIS schema (via the in-memory dict, before it is ever written to a shard — `_ledger_self_validate_or_raise`) — same discipline as `_self_validate_or_raise` for mission/task records, adapted to a value that is appended rather than a file that is replaced. Each shard's own hash chain is independently tamper-evident (`tessctl log verify`): `hash = sha256(prev_hash + canonical_json(event minus hash))`, `prev_hash` of the first event in a shard is 64 zero hex chars (genesis).",
+  "description": "Machine-checkable form of ONE line in the hash-chained, append-only ACCOUNTABILITY LEDGER (Phase 0.2 — .tess/state/ledger/<YYYY-MM>.<origin>.jsonl). The 'who did what, when, who's holding it' audit trail Xavier's re-aimed vision calls for, sibling to task.schema.json (which tracks the CURRENT state of a task; this schema tracks the immutable HISTORY of events that produced it). Ported from Hermes' kanban design's task_events audit (kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md). `tessctl log append` dogfood-validates every event against THIS schema (via the in-memory dict, before it is ever written to a shard — `_ledger_self_validate_or_raise`) — same discipline as `_self_validate_or_raise` for mission/task records, adapted to a value that is appended rather than a file that is replaced. Each shard's own hash chain detects a non-re-chained edit to an already-appended line, a removed/reordered line, and (Phase 0.2 hardening, Cyra M1) — via the per-event `seq` below cross-checked against the shard's own `.tip` sidecar and the ledger-wide `.registry.json` — a removed TAIL line or a deleted whole shard (`tessctl log verify`): `hash = sha256(prev_hash + canonical_json(event minus hash))`, `prev_hash` of the first event in a shard is 64 zero hex chars (genesis). SCOPE (Cyra L1, PR #113 review): this is an UNSIGNED hash chain. It detects accidental or naive tampering — an edit that does not also re-chain every hash after it — NOT a determined adversary with filesystem write access who recomputes the ENTIRE downstream chain to match a shortened or altered history (a `verify` pass over such a fully-and-consistently re-chained forgery would still report OK). It is not a cryptographic signature, carries no signer identity, and makes no non-repudiation claim; see docs/STATE_LAYER.md's trust-boundary note.",
   "type": "object",
   "properties": {
     "ts": {
@@ -31,6 +31,11 @@
       "minLength": 1,
       "description": "Human-readable one-line description of what happened (e.g. 'status: backlog -> in_progress', 'claimed by ada-host:4821:9c1e...'). Never empty — an empty summary carries no accountability information, the same rule task.schema.json's Note.text already applies."
     },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic, gapless, PER-SHARD sequence number — 0 for the first event ever appended to a shard, incrementing by exactly 1 for every subsequent event in THAT SAME shard (independent of every other shard's own seq, same per-shard scoping as `prev_hash`). Phase 0.2 hardening (Cyra M1, PR #113 review): a pure `prev_hash` chain walk cannot detect a REMOVED TAIL line — every remaining line's own `prev_hash` link to its predecessor stays internally consistent, the file just 'ends early.' `tessctl log verify` cross-checks the tail `seq` (and event count, and tip `hash`) it actually finds against the shard's own co-located `.tip` sidecar and the ledger-wide `.registry.json`, so a removed tail line (count/seq lower than recorded) or a deleted whole shard (registered but absent on disk) is DETECTED rather than silently reported OK."
+    },
     "prev_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
@@ -39,10 +44,10 @@
     "hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "sha256(`prev_hash` + compact key-sorted JSON of this event with the `hash` key itself removed) — the same 'canonical bytes minus the field being computed' construction `verdict_canonical_bytes`/`signoff_canonical_bytes` already use elsewhere in this engine, applied here to a hash chain instead of a signature. `tessctl log verify` recomputes this for every line and compares; any mismatch, OR any `prev_hash` that does not equal the prior line's `hash`, is reported as tamper."
+      "description": "sha256(`prev_hash` + compact key-sorted JSON of this event, including `seq`, with the `hash` key itself removed) — the same 'canonical bytes minus the field being computed' construction `verdict_canonical_bytes`/`signoff_canonical_bytes` already use elsewhere in this engine, applied here to build a hash CHAIN, not a signature — there is no private key and no signer identity bound to this value (Cyra L1, PR #113 review). `tessctl log verify` recomputes this for every line and compares; any mismatch, OR any `prev_hash` that does not equal the prior line's `hash`, is reported as tamper. See this schema's top-level description for the precise (and deliberately narrower than 'tamper-evident') threat-model scope this mechanism actually covers."
     }
   },
-  "required": ["ts", "actor", "event", "refs", "summary", "prev_hash", "hash"],
+  "required": ["ts", "actor", "event", "refs", "summary", "seq", "prev_hash", "hash"],
   "additionalProperties": false,
   "$defs": {
     "Actor": {
