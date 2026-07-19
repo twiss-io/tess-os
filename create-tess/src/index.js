@@ -15,6 +15,7 @@ import {
   isSafeTemplateSource,
   DEFAULT_TEMPLATE_SOURCE,
   isLocalSource,
+  resolveTemplateRef,
 } from './scaffold.js';
 import { loadRoster, installSetForPath, squadDisplayNames } from './roster.js';
 import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keystone.js';
@@ -230,6 +231,11 @@ export async function main(argv) {
 
   const targetDir = resolve(opts.target || process.cwd());
   const source = opts.templateSource || DEFAULT_TEMPLATE_SOURCE;
+  // Pinned-clone reproducibility (P0 G-01): resolves to an explicit
+  // --template-ref/TESS_TEMPLATE_REF when set, else the DEFAULT_TEMPLATE_REF
+  // release tag for the default source only, else null (unpinned — a custom
+  // source is cloned at its own branch tip, unchanged from prior behavior).
+  const templateRef = resolveTemplateRef(source, opts.templateRef);
 
   // Bootstrap gates (design doc §5.1).
   ensurePython3();
@@ -260,10 +266,11 @@ export async function main(argv) {
   let gate;
   try {
     const srcKind = isLocalSource(source) ? 'local template' : 'git';
+    const refSuffix = templateRef ? ` @ ${templateRef}` : '';
     process.stdout.write(
-      (plain ? '' : '  ') + dim(`Fetching keystone (${srcKind}: ${source}) …`) + '\n',
+      (plain ? '' : '  ') + dim(`Fetching keystone (${srcKind}: ${source}${refSuffix}) …`) + '\n',
     );
-    fetchTemplate(source, staging);
+    fetchTemplate(source, staging, templateRef);
     const roster = loadRoster(staging);
 
     if (isNonInteractive(opts)) {

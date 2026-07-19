@@ -57,9 +57,38 @@ export const EXCLUDE_NAMES = new Set([
 ]);
 
 // Excluded as a WHOLE subtree (the dir itself and everything under it).
+//
+// `.tess/keys/verifiers` / `.tess/keys/signoffs` (P0 G-01, npm scaffold
+// key-leak audit, 2026-07): each verifier's/sign-off's bundled PUBLIC PGP key
+// (e.g. `.tess/keys/verifiers/cyra.asc`, registered by THIS repo's own
+// `chore/register-verifier-cyra-phase1`, PR #91, to govern THIS repo's own
+// development) is exactly the same category of "this repo's own trust
+// anchor" material that policy-reset.js already resets out of
+// `policy.verifier_keys`/`policy.signoff_keys` — but until this fix, the
+// RAW KEY FILE itself was never covered by that reset (policy-reset.js only
+// rewrites the two YAML maps) NOR by any ignore-filter exclusion, so
+// `promote()` copied it into every scaffold verbatim regardless. Concretely:
+// the published `create-tess` 0.1.0 (npm, 2026-06-28) clones unpinned `main`
+// HEAD, and every `main` commit since #91 carries `cyra.asc` — so every
+// `npm create tess` run was shipping a scaffold that would trust the Twiss
+// maintainer's own verifier key as if it were the scaffolded project's own
+// trust root, the exact inversion policy-reset.js exists to prevent for the
+// YAML registration. Whole-subtree exclusion (not content-only, unlike
+// `.tess/snapshots`/`.tess/staging` below) — a scaffolded project has
+// registered no verifier/sign-off of its own yet, so it needs no directory,
+// let alone any key file, to preserve; the operator creates both when they
+// run their own `tessctl verdict keygen`-equivalent ceremony. Guarded by a
+// permanent regression test: test/scaffold-key-guard.test.js.
+// `.tess/keys/twiss-release-key.asc` (this repo's OWN release-signing PUBLIC
+// key, used to verify a `tessctl update` upstream fetch) is a DIFFERENT
+// category — a fixed, intentionally-bundled verification key, not a
+// per-project trust anchor a scaffold should ever discard — and is
+// deliberately NOT listed here.
 export const EXCLUDE_DIR_PREFIXES = [
   '.claude/tess-secrets',
   '.claude/channels',
+  '.tess/keys/verifiers',
+  '.tess/keys/signoffs',
 ];
 
 // B3 (gap-loop R2) — exact relative-path excludes. `.github/workflows/` is

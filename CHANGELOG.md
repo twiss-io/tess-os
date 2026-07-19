@@ -6,6 +6,60 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Security
+- **P0 G-01 — npm scaffold key-leak (readiness audit, 2026-07-19)** — the
+  published `create-tess` 0.1.0 (npm, 2026-06-28) clones `twiss-io/tess-os`
+  main HEAD **UNPINNED**, and every `main` commit since PR #91 (which
+  registers this repo's own verifier, Cyra, so this repo's gate can accept
+  her verdicts on its OWN doctrine changes) carries the real bundled PUBLIC
+  key file `.tess/keys/verifiers/cyra.asc`. Neither the scaffold copy filter
+  (`create-tess/src/ignore.js`) nor the policy reset (`create-tess/src/
+  policy-reset.js`, which only rewrites the two `policy.yaml` YAML maps back
+  to `{}`, never a raw key FILE) ever stripped that file, so every
+  `npm create tess` run shipped a scaffolded project trusting the Twiss
+  maintainer's own verifier key as if it were the scaffolded project's OWN
+  trust root — public-key-only, ~zero adoption, so low realized risk, but the
+  exact "governance vendor leaks its scaffold" launch landmine.
+  - **`create-tess/src/ignore.js`** — `.tess/keys/verifiers` and
+    `.tess/keys/signoffs` added as whole-subtree `EXCLUDE_DIR_PREFIXES`
+    (mirroring the existing `.claude/tess-secrets` / `.claude/channels`
+    treatment). The unrelated, intentionally-bundled release-verification key
+    (`.tess/keys/twiss-release-key.asc`, used by `tessctl update` to verify an
+    upstream fetch) is deliberately NOT excluded — this is a targeted fix, not
+    a blanket "never copy `.tess/keys/`" hammer.
+  - **`create-tess/test/scaffold-key-guard.test.js` (new, permanent CI
+    guard)** — a real, non-interactive, end-to-end scaffold run whose output
+    is scanned for (a) ANY PGP key-block marker or the registered Cyra
+    fingerprint ANYWHERE in the produced tree (not just the two known paths —
+    catches a future leak wherever it recurs) and (b) confirms
+    `.tess/keys/verifiers`/`.tess/keys/signoffs` do not exist at all while
+    `.tess/keys/twiss-release-key.asc` still ships intact. Wired into the
+    existing `create-tess` CI job (node 18/24) automatically — Node's test
+    runner discovers any `test/*.test.js`.
+  - **Pinned clone (reproducibility)** — `create-tess/src/scaffold.js`'s
+    git-clone path previously had NO ref at all (`git clone --depth 1
+    <source>`, whatever the default branch's HEAD tip happened to be at the
+    exact moment a user ran the wizard). Added `DEFAULT_TEMPLATE_REF`
+    (`create-tess-v0.1.2` — create-tess's own tag namespace, per
+    `.github/workflows/publish-npm.yml`, decoupled from the framework's own
+    `v*` release tags) plus `resolveTemplateRef()`/`buildCloneArgs()`: the
+    default source now clones a pinned, tagged release — the exact same
+    tess-os commit every time, one that has already passed this repo's own
+    CI (including the new guard test) — never an in-flight main tip. New
+    `--template-ref` flag / `TESS_TEMPLATE_REF` env var let an operator
+    override to a different ref; a custom `--template-source` is left
+    unpinned (its own branch tip) unless a ref is explicitly given, so a
+    fork/mirror/CI-fixture source is unaffected.
+  - **`create-tess` bumped 0.1.1 → 0.1.2** (package.json was already
+    unpublished-bumped to 0.1.1 by an earlier merge-train; this fix bumps it
+    further since the earlier bump was never published). npm publish itself
+    is NOT run by this change — remains Xavier's credentialed action (`git
+    tag create-tess-v0.1.2 && git push origin create-tess-v0.1.2`, or
+    `workflow_dispatch` with `confirm_version: 0.1.2`, per
+    `.github/workflows/publish-npm.yml`).
+  - **8 new / extended tests** (units.test.js: key-exclusion unit coverage +
+    ref-pinning unit coverage; scaffold-key-guard.test.js: the end-to-end
+    regression lock). Full create-tess suite: **33 passed**, zero
+    regressions; `tessctl doctor`/`verify` clean on every produced scaffold.
 - **DATA-LEAK-SAFETY (issue #92)** — the write-gate (`check_manifest_write_gate`
   / `guarded_write`) was solid: `tessctl` itself already refuses to write to a
   `never_touch` path. The COMMIT boundary (`.gitignore`) had drifted from it —

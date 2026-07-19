@@ -8,6 +8,9 @@
 //   starter path   : --path
 //   pathway        : --pathway
 //   template source: --template-source   (env TESS_TEMPLATE_SOURCE)
+//   template ref   : --template-ref      (env TESS_TEMPLATE_REF; pins a git-URL
+//                                          clone to a tag/branch/SHA — see
+//                                          scaffold.js resolveTemplateRef())
 //   target dir     : --target / --dir / first positional
 //   unattended     : --yes
 //   overwrite      : --force
@@ -42,6 +45,7 @@ const VALUE_ALIASES = {
   '--path': 'path',
   '--pathway': 'pathway',
   '--template-source': 'templateSource',
+  '--template-ref': 'templateRef',
   '--target': 'target',
   '--dir': 'target',
   '--telegram': 'telegram',
@@ -70,6 +74,7 @@ export function parseArgs(argv) {
     help: false,
     telegram: null,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
+    templateRef: process.env.TESS_TEMPLATE_REF || null,
     target: null,
   };
   const positionals = [];
@@ -154,6 +159,12 @@ OPTIONS
   --template-source <url|path>   git URL or local path for the Tess OS template
                                  (env: TESS_TEMPLATE_SOURCE;
                                   default: https://github.com/twiss-io/tess-os.git)
+  --template-ref <tag|branch|sha>  pin a git-URL --template-source to this ref
+                                 (env: TESS_TEMPLATE_REF; default source is
+                                  pinned to a tagged release automatically —
+                                  see scaffold.js DEFAULT_TEMPLATE_REF; a
+                                  custom --template-source is cloned at its
+                                  own default branch tip unless set here)
   --force                        overwrite a non-empty / existing-install target
   --no-doctor                    skip the post-bake integrity check
   --no-verify                    skip the post-bake verify check
