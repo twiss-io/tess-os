@@ -69,6 +69,13 @@ def _tracked(rel: str) -> bool:
     ".claude/vault/vault.age",
     ".claude/vault/identity.age",
     "clients/AcmeCorp/.vault/blob.age",
+    # issue #110 (found reviewing #105) — memory/tasks/ledger were the gap:
+    # only .tess/state/locks/* had a content-level ignore in Phase 0.1.
+    ".tess/state/memory/real-note.md",
+    ".tess/state/memory/nested/dir/note.json",
+    ".tess/state/tasks/graph.json",
+    ".tess/state/ledger/entry.md",
+    ".tess/state/locks/task.lock",
 ])
 def test_private_path_is_ignored(rel):
     assert _check_ignore(rel), f"{rel} must be gitignored (private overlay data)"
@@ -90,6 +97,13 @@ def test_private_path_is_ignored(rel):
     ".env.example",
     ".claude/vault/.gitkeep",
     ".claude/vault/vault.registry.json",
+    # issue #110 — the .gitkeep placeholder in each .tess/state/** subdir
+    # must survive the new content-ignore rule (the `!` re-include) and
+    # stay tracked, exactly like every other precedent-bucket .gitkeep.
+    ".tess/state/memory/.gitkeep",
+    ".tess/state/tasks/.gitkeep",
+    ".tess/state/ledger/.gitkeep",
+    ".tess/state/locks/.gitkeep",
 ])
 def test_shipped_template_is_not_ignored_and_is_tracked(rel):
     assert not _check_ignore(rel), f"{rel} is a shipped template and must stay committable"
@@ -143,3 +157,70 @@ def test_operator_profile_json_has_no_reinclude_override():
 ])
 def test_non_private_framework_content_stays_unignored(rel):
     assert not _check_ignore(rel), f"{rel} is legitimate tracked framework content, not private data"
+
+
+# ---------------------------------------------------------------------------
+# issue #110 (found reviewing #105) — the literal reproduction: a real
+# `git add -A` in a fresh checkout, with no pre-commit hook installed at all
+# (the publish-clean gate is opt-in via `tessctl gate install-hooks` — this
+# test proves the content-level .gitignore fence holds even when that hook
+# was never installed, which is exactly the gap the MEDIUM finding flagged).
+# Uses a real temp git repo seeded with THIS repo's own .gitignore, so a
+# regression in the actual shipped rules (not a synthetic stand-in) is what
+# gets caught.
+# ---------------------------------------------------------------------------
+
+def _git(root, *args, check=True):
+    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}\n{r.stdout}")
+    return r
+
+
+@pytest.fixture
+def fresh_checkout(tmp_path):
+    """A minimal fresh git repo: THIS repo's own .gitignore plus the same
+    .tess/state/{memory,tasks,ledger,locks}/.gitkeep scaffold create-tess
+    ships, committed as the starting point — i.e. what a real fresh
+    instance's tracked history looks like before any real data is written."""
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "test@tess.test")
+    _git(tmp_path, "config", "user.name", "Test")
+    shutil.copy2(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
+    for sub in ("memory", "tasks", "ledger", "locks"):
+        d = tmp_path / ".tess" / "state" / sub
+        d.mkdir(parents=True)
+        (d / ".gitkeep").write_text("", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "seed: gitignore + empty state scaffold")
+    return tmp_path
+
+
+def test_git_add_dash_a_never_stages_real_state_content_no_hook(fresh_checkout):
+    """The exact verify Cyra ran: write real files under memory/tasks/ledger
+    (+ locks for parity), `git add -A` with NO pre-commit hook installed at
+    all, then confirm none of them staged — only pre-existing .gitkeep stays
+    tracked, and `git status` doesn't surface the new files either."""
+    for sub in ("memory", "tasks", "ledger", "locks"):
+        (fresh_checkout / ".tess" / "state" / sub / "x.json").write_text(
+            "data\n", encoding="utf-8"
+        )
+
+    _git(fresh_checkout, "add", "-A")
+
+    staged = _git(fresh_checkout, "diff", "--cached", "--name-only").stdout.split()
+    for sub in ("memory", "tasks", "ledger", "locks"):
+        rel = f".tess/state/{sub}/x.json"
+        assert rel not in staged, f"{rel} must NOT be staged by a bare `git add -A`"
+
+    status = _git(fresh_checkout, "status", "--porcelain").stdout
+    for sub in ("memory", "tasks", "ledger", "locks"):
+        assert f".tess/state/{sub}/x.json" not in status, (
+            f".tess/state/{sub}/x.json must not surface in `git status` at all"
+        )
+
+    # The .gitkeep placeholders remain the only tracked content in each dir.
+    tracked = _git(fresh_checkout, "ls-files", ".tess/state/").stdout.split()
+    assert sorted(tracked) == sorted(
+        f".tess/state/{sub}/.gitkeep" for sub in ("memory", "tasks", "ledger", "locks")
+    )
