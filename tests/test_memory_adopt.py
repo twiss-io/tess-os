@@ -58,6 +58,27 @@ PR #117 two-reviewer REJECT remediation (Cyra + Reid — see this file's
   * LOW: a symlinked source entry is refused, not silently dereferenced.
   * LOW: `read_bytes()` during planning is guarded — a permission/IO
     failure surfaces as a typed refusal, not a raw traceback.
+
+Cyra re-verification of 18a3fea — two holes remained after the above
+round (see this file's "Cyra re-verification of 18a3fea" section below):
+  * HOLE 1/HIGH: the self-destruct guard compared resolved path STRINGS,
+    which `.resolve()` leaves as-typed-case — bypassable on a
+    case-insensitive filesystem (macOS APFS / Windows NTFS, the real
+    deployment FS for `.tess/state/memory` and
+    `~/.claude/projects/.../memory`), where `STORE` and `store` are the
+    SAME directory but compared unequal. Fixed with INODE IDENTITY
+    (`os.path.samefile`), walked across ancestors for the nesting case
+    too, with a case-fold-aware string fallback only when a path doesn't
+    yet exist (samefile requires both sides to exist).
+  * HOLE 2/MEDIUM: the M1 fix above only protected a shared file in ONE
+    direction (the harness that DEDUPED reverting). Reversed — the
+    harness that ORIGINALLY OWNED the file reverting, while a second,
+    still-live harness had since deduped against it — the file was
+    unconditionally removed from the store. Fixed by checking, for every
+    `newly_copied_files` candidate, whether any OTHER still-live
+    harness's manifest also references that filename in its own
+    `source_files`; if so, it is copied back but left in the store, same
+    as the already-established M1 invariant.
 """
 
 from __future__ import annotations
@@ -914,4 +935,157 @@ def test_unreadable_target_file_during_planning_is_typed_not_raw(troot, harness_
     assert r.returncode != 0
     assert "could not read" in (r.stdout + r.stderr)
     assert "clash.md" in (r.stdout + r.stderr)
-    assert "Traceback" not in (r.stdout + r.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Cyra re-verification of 18a3fea (PR #117) — two holes remained after the
+# first remediation round above. Each test below reproduces the exact
+# finding from Cyra's re-verify comment first, then proves the fix closes
+# it — same rigor precedent as the section above.
+# ---------------------------------------------------------------------------
+
+def _fs_is_case_insensitive(tmp_path) -> bool:
+    """True if the filesystem backing `tmp_path` treats differently-cased
+    names as the SAME file on disk — true of macOS APFS (default) and
+    Windows NTFS (default), the actual deployment filesystem for both
+    `.tess/state/memory` and `~/.claude/projects/<flattened>/memory`.
+    Detected empirically (never assumed from `sys.platform`) since a
+    case-SENSITIVE APFS volume is also a valid, if non-default, macOS
+    format, and this repo's own CI runners are Linux (case-sensitive)."""
+    probe = tmp_path / "case-fs-probe"
+    probe.mkdir()
+    (probe / "lower").write_text("x", encoding="utf-8")
+    is_insensitive = (probe / "LOWER").exists()
+    shutil.rmtree(probe)
+    return is_insensitive
+
+
+# --- HOLE 1 — HIGH (Cyra re-verify) — self-destruct guard bypassed on a ----
+# --- case-insensitive filesystem --------------------------------------------
+
+def test_refuses_case_divergent_same_dir_on_case_insensitive_fs(troot, tmp_path):
+    """Cyra's exact fresh repro against 18a3fea: `--from .../STORE --to
+    .../store` — differing ONLY in case. `Path.resolve()` preserves
+    as-typed case, so on a case-insensitive filesystem (macOS APFS /
+    Windows NTFS — this project's real deployment target for both
+    `.tess/state/memory` and `~/.claude/projects/.../memory`) these two
+    strings resolve to the SAME directory on disk, yet a string-equality
+    guard says "different": the guard passed, `--merge` treated the
+    directory's own file as "already present" (comparing it to itself),
+    nothing was copied elsewhere, `shutil.rmtree()` deleted the only copy,
+    and the store became a self-referential symlink loop. Skipped on a
+    genuinely case-sensitive filesystem (this repo's own Linux CI
+    runners), where `STORE` and `store` really are two distinct
+    (nonexistent) directories and this exact repro cannot occur there —
+    meaningful and exercised on macOS/Windows dev machines."""
+    if not _fs_is_case_insensitive(tmp_path):
+        pytest.skip("filesystem is case-sensitive — case-divergent same-dir repro does not apply here")
+
+    store = _to_dir(troot)
+    store.mkdir(parents=True)
+    (store / "notes.md").write_text("IRREPLACEABLE\n", encoding="utf-8")
+
+    store_divergent = store.parent / store.name.upper()
+    assert store_divergent != store  # genuinely different strings...
+    assert store_divergent.exists()  # ...but the SAME file on disk (case-insensitive FS)
+
+    r = _run(troot, "memory", "adopt", "--from", str(store_divergent), "--to", str(store), "--yes", "--merge")
+    assert r.returncode != 0
+    assert "resolve to the same path" in (r.stdout + r.stderr)
+    assert "Traceback" not in (r.stdout + r.stderr)  # typed refusal, never a raw crash
+
+    # Content fully intact: still a real directory, not a symlink (loop or
+    # otherwise), original bytes unchanged, no manifest ever written.
+    assert store.is_dir() and not store.is_symlink()
+    assert (store / "notes.md").read_text(encoding="utf-8") == "IRREPLACEABLE\n"
+    assert not list(store.glob(".tess-memory-adopt.*.json"))
+
+
+def test_refuses_nested_case_divergent_dirs_on_case_insensitive_fs(troot, tmp_path):
+    """The NESTING variant of HOLE 1: --to is a real subdirectory of
+    --from, but --from itself is passed with divergent case. A naive
+    string-prefix match against the literal (as-typed-case) resolved
+    --from path would miss this entirely, since the on-disk ancestor
+    directory is spelled differently; walking ancestors with inode
+    identity (`os.path.samefile`) catches it regardless of case."""
+    if not _fs_is_case_insensitive(tmp_path):
+        pytest.skip("filesystem is case-sensitive — case-divergent nesting repro does not apply here")
+
+    from_dir = _to_dir(troot)
+    to_dir = from_dir / "sub"
+    from_dir.mkdir(parents=True)
+    to_dir.mkdir(parents=True)
+    (from_dir / "x.md").write_text("nested-case-hazard content\n", encoding="utf-8")
+
+    from_dir_divergent = from_dir.parent / from_dir.name.upper()
+    assert from_dir_divergent != from_dir
+    assert from_dir_divergent.exists()
+
+    r = _run(troot, "memory", "adopt", "--from", str(from_dir_divergent), "--to", str(to_dir), "--yes", "--merge")
+    assert r.returncode != 0
+    assert "resolve to the same path or one is nested inside the other" in (r.stdout + r.stderr)
+    assert (from_dir / "x.md").read_text(encoding="utf-8") == "nested-case-hazard content\n"
+
+
+# --- HOLE 2 — MEDIUM (Cyra re-verify) — reverse-direction 2-harness revert -
+# --- deletes a still-depended-on file ---------------------------------------
+
+def test_revert_reverse_direction_two_harnesses_shared_file_preserved(troot, tmp_path):
+    """The REVERSE ordering of the already-closed M1 scenario
+    (`test_revert_two_harnesses_shared_file_preserved` above). There,
+    harness A owned shared.md and harness B deduped against it; here,
+    harness B is the ORIGINAL OWNER (adopts first, so shared.md is in
+    B's OWN `newly_copied_files`), and harness A adopts SECOND and dedupes
+    against the byte-identical shared.md already in the store
+    (already_present for A — in A's `source_files` but not A's
+    `newly_copied_files`). B then reverts. Before the fix, revert only
+    consulted THIS harness's own `newly_copied_files`, so shared.md —
+    being B's own recorded copy — was unconditionally moved out of the
+    store, silently breaking harness A, which is still live-symlinked to
+    it. The fix must recognize that A's manifest still lists shared.md in
+    its `source_files` and A is still live, and copy shared.md back into
+    B's restored dir while LEAVING it in the store."""
+    harness_b = tmp_path / "harness-b" / "memory"
+    harness_a = tmp_path / "harness-a" / "memory"
+    harness_b.mkdir(parents=True)
+    harness_a.mkdir(parents=True)
+    (harness_b / "shared.md").write_text("shared content\n", encoding="utf-8")
+    (harness_b / "b_only.md").write_text("only B\n", encoding="utf-8")
+    (harness_a / "shared.md").write_text("shared content\n", encoding="utf-8")
+
+    to_dir = _to_dir(troot)
+    rb = _run(troot, "memory", "adopt", "--harness", "harness-b", "--from", str(harness_b), "--to", str(to_dir), "--yes")
+    assert rb.returncode == 0, rb.stdout + rb.stderr
+    ra = _run(troot, "memory", "adopt", "--harness", "harness-a", "--from", str(harness_a), "--to", str(to_dir), "--yes", "--merge")
+    assert ra.returncode == 0, ra.stdout + ra.stderr
+
+    manifest_b = _manifest(troot, harness="harness-b")
+    assert sorted(manifest_b["newly_copied_files"]) == ["b_only.md", "shared.md"]  # B is the original owner
+    manifest_a = _manifest(troot, harness="harness-a")
+    assert manifest_a["newly_copied_files"] == []  # A deduped — copied nothing
+    assert manifest_a["source_files"] == ["shared.md"]
+
+    # Dry-run first: B's revert must classify shared.md as "copy back, kept
+    # in store" (NOT "moved out") — it's still A's dependency.
+    dry = _run(troot, "memory", "adopt", "--revert", "--harness", "harness-b", "--to", str(to_dir))
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "DRY RUN" in dry.stdout
+    assert "kept in the store" in dry.stdout
+    assert "shared.md" in dry.stdout
+    assert (to_dir / "shared.md").exists()  # dry-run touched nothing
+
+    # Real revert of B.
+    r2 = _run(troot, "memory", "adopt", "--revert", "--harness", "harness-b", "--to", str(to_dir), "--yes")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    # shared.md SURVIVES in the store — harness A still reads it, live,
+    # through its own unbroken symlink.
+    assert (to_dir / "shared.md").exists()
+    assert not (to_dir / "b_only.md").exists()  # b_only.md was only ever B's — correctly removed
+    assert harness_a.is_symlink() and harness_a.resolve() == to_dir.resolve()
+    assert (harness_a / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+
+    # Harness B got its OWN copy of BOTH files back into its restored dir.
+    assert harness_b.is_dir() and not harness_b.is_symlink()
+    assert (harness_b / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+    assert (harness_b / "b_only.md").read_text(encoding="utf-8") == "only B\n"

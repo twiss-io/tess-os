@@ -15895,14 +15895,55 @@ def _memory_adopt_roundtrip_check(from_dir: Path, to_dir: Path) -> None:
         )
 
 
+def _paths_are_same_location(a: Path, b: Path) -> bool:
+    """True if `a` and `b` refer to the SAME filesystem location — by
+    INODE IDENTITY (`os.path.samefile`, i.e. `(st_dev, st_ino)`), never by
+    string equality (Cyra HOLE 1, PR #117 re-verify — reopened the
+    H1/CRITICAL self-destruct class). `Path.resolve()` preserves
+    as-typed case, but macOS APFS (default) and Windows NTFS (default)
+    are case-INSENSITIVE — the real deployment filesystem for both
+    `.tess/state/memory` and `~/.claude/projects/<flattened>/memory` — so
+    `.../STORE` and `.../store` are literally the same directory on disk
+    yet a string/`==` comparison of their resolved paths says otherwise.
+    `os.path.samefile` asks the filesystem itself, so it is correct
+    regardless of case-sensitivity.
+
+    `os.path.samefile` requires BOTH paths to already exist (it stats
+    each one) and raises `OSError` otherwise — which is routine here: the
+    canonical store may not exist yet on a first-ever adopt, and the
+    source directory legitimately may not exist yet either (the
+    documented "bootstrap" case). When either path doesn't exist, this
+    falls back to a case-fold-aware string compare of the two (already
+    `.resolve()`d, by the caller) paths — still catches a case-divergent
+    same-path typo even before the directory exists, at the cost of also
+    (harmlessly, safety-first) refusing a genuinely distinct differently-
+    cased pair on a case-SENSITIVE filesystem where one side doesn't
+    exist yet; that is an acceptable false-refusal for a destructive-path
+    guard, never a false-pass."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return str(a).casefold() == str(b).casefold()
+
+
 def _path_is_prefix(parent: Path, child: Path) -> bool:
     """True if `child` (already `.resolve()`d by the caller) IS `parent`
-    itself or is nested inside it. Used by the `--from`/`--to` self-
-    destruct guard below — a resolved-equal check alone misses the
-    "one is a subdirectory of the other" variant of the same hazard
-    (copying into a location that is about to be deleted, or deleting a
-    location that is about to be copied from)."""
-    return parent == child or parent in child.parents
+    itself, or is nested inside it — determined by INODE IDENTITY
+    (`_paths_are_same_location`), not string equality/prefix matching, so
+    a case-divergent same-or-nested path is caught too (Cyra HOLE 1, PR
+    #117 re-verify). Used by the `--from`/`--to` self-destruct guard
+    below — an exact-equality check alone misses the "one is a
+    subdirectory of the other" variant of the same hazard (copying into a
+    location that is about to be deleted, or deleting a location that is
+    about to be copied from). Walks every ancestor of `child` (not just a
+    string-prefix match against `parent`) so the nesting case is caught
+    with the same inode-identity rigor as the direct-equality case."""
+    if _paths_are_same_location(parent, child):
+        return True
+    for ancestor in child.parents:
+        if _paths_are_same_location(parent, ancestor):
+            return True
+    return False
 
 
 def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
@@ -15954,6 +15995,14 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     #      already returned/raised for every symlink case, including the
     #      legitimate "already adopted" one, so this can't misfire on a
     #      normal post-adopt symlink whose resolved target IS to_dir.)
+    #      HOLE 1 (Cyra re-verify, PR #117): the comparison below is by
+    #      INODE IDENTITY (`_path_is_prefix` / `_paths_are_same_location`
+    #      -> `os.path.samefile`), never by string equality of the
+    #      resolved paths. `.resolve()` preserves as-typed case, but the
+    #      real deployment filesystems (macOS APFS, Windows NTFS, both
+    #      default case-insensitive) treat `.../STORE` and `.../store` as
+    #      the SAME directory — a string compare said "different", the
+    #      guard passed, and `rmtree` destroyed the only copy.
     try:
         from_dir_resolved = from_dir.resolve()
     except OSError as e:
@@ -16241,6 +16290,62 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     }
 
 
+def _memory_adopt_other_live_source_files(to_dir: Path, exclude_manifest_path: Path) -> set:
+    """The union of `source_files` across every OTHER adopt manifest
+    under `to_dir` (excluding `exclude_manifest_path`, the manifest THIS
+    revert is currently acting on) whose harness is still LIVE — i.e.
+    that other manifest's own recorded `from_path` is currently a
+    symlink resolving back to `to_dir`. A manifest whose harness has
+    already been reverted (or manually unlinked) is no longer live, so
+    it has no reader depending on the store's content and does not
+    count.
+
+    HOLE 2 (Cyra re-verify, PR #117): the original M1 fix only checked
+    THIS revert's own `newly_copied_files` vs `source_files` split — that
+    correctly protects a file the OTHER harness owns and THIS harness
+    deduped against, but misses the REVERSE ordering: if THIS reverting
+    harness is the ORIGINAL OWNER of a file (so it's in THIS harness's
+    own `newly_copied_files`), and a second, still-live harness later
+    deduped against it (so that file is in the OTHER harness's
+    `source_files` but not its `newly_copied_files`), the original one-
+    directional check had no way to see that the other harness still
+    depends on it — every one of THIS harness's `newly_copied_files` was
+    unconditionally moved out of the store. This function makes the
+    check symmetric: a file is protected from removal whenever ANY other
+    live harness's manifest references it, regardless of which harness
+    happens to "own" the copy."""
+    others: set = set()
+    try:
+        to_dir_resolved = to_dir.resolve()
+    except OSError:
+        return others
+    exclude_resolved = None
+    try:
+        exclude_resolved = exclude_manifest_path.resolve()
+    except OSError:
+        pass
+    for path in sorted(to_dir.glob(MEMORY_ADOPT_MANIFEST_GLOB)):
+        try:
+            if exclude_resolved is not None and path.resolve() == exclude_resolved:
+                continue
+        except OSError:
+            continue
+        try:
+            other = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        other_from = Path(other.get("from_path", ""))
+        try:
+            if not other_from.is_symlink():
+                continue
+            if other_from.resolve() != to_dir_resolved:
+                continue
+        except OSError:
+            continue
+        others.update(other.get("source_files", []))
+    return others
+
+
 def _memory_adopt_revert(root: Path, to_dir: Path, *,
                           harness: str = None, from_override: Path = None,
                           dry_run: bool = False,
@@ -16257,14 +16362,22 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
 
     Of `manifest["source_files"]`, only the strict subset recorded as
     `manifest["newly_copied_files"]` (files THIS adopt actually copied
-    into the store) is REMOVED from the store on revert; the remainder
-    (files that were already byte-identical in the store before this
-    adopt ran, and so were never this adopt's own copy) is copied back
-    into the restored private directory but LEFT in the store, because a
-    second, still-symlinked harness may depend on it (Cyra/MEDIUM, PR
-    #117 review — the PR's own "leaves a second harness's content
-    untouched" invariant, made to actually hold for the byte-identical-
-    filename case).
+    into the store) is a CANDIDATE for removal from the store on revert;
+    the remainder (files that were already byte-identical in the store
+    before this adopt ran, and so were never this adopt's own copy) is
+    copied back into the restored private directory but LEFT in the
+    store, because a second, still-symlinked harness may depend on it
+    (Cyra/MEDIUM, PR #117 review — the PR's own "leaves a second
+    harness's content untouched" invariant, made to actually hold for the
+    byte-identical-filename case). A `newly_copied_files` candidate is
+    itself downgraded to copy-back-but-leave-in-store if ANY OTHER
+    still-live harness's manifest also references that filename in its
+    own `source_files` (`_memory_adopt_other_live_source_files`) — the
+    REVERSE direction of the same invariant (Cyra HOLE 2, PR #117
+    re-verify): this harness may be the ORIGINAL owner of a file a
+    second harness later deduped against, and that second harness's
+    dependency must be honored regardless of which harness's manifest
+    happens to record the file as "newly copied".
 
     `dry_run` (default False — preserved for every INTERNAL caller, in
     particular the round-trip-failure auto-rollback path in
@@ -16357,11 +16470,19 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
     # own copy, no other owner), copied back but left in the store (may
     # still be depended on by another symlinked harness), or missing
     # (recorded but no longer present in the store).
+    #
+    # HOLE 2 (Cyra re-verify, PR #117): a file in THIS manifest's own
+    # `newly_copied_files` is only actually safe to remove from the store
+    # if NO other still-live harness's manifest also lists it in its
+    # `source_files` — otherwise that other harness, still symlinked to
+    # this store, would silently lose a file it depends on the moment
+    # this revert runs.
+    other_live_source_files = _memory_adopt_other_live_source_files(to_dir, manifest_path)
     would_move, would_copy, would_be_missing = [], [], []
     for name in source_files:
         if not (to_dir / name).exists():
             would_be_missing.append(name)
-        elif name in newly_copied:
+        elif name in newly_copied and name not in other_live_source_files:
             would_move.append(name)
         else:
             would_copy.append(name)

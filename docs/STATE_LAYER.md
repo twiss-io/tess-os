@@ -228,7 +228,14 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   to the same path, or one nested inside the other, BEFORE any mutation —
   a self-targeted adopt would otherwise treat the source's own content as
   "already present," copy nothing elsewhere, then delete the only copy of
-  it. Refuses a non-empty target without `--merge` (but a bootstrap call
+  it. That comparison is by INODE IDENTITY (`os.path.samefile`), never by
+  string equality of the resolved paths — `Path.resolve()` preserves
+  as-typed case, but the real deployment filesystems (macOS APFS, Windows
+  NTFS, both default case-insensitive) treat differently-cased spellings
+  of the same directory as one and the same file on disk, which a string
+  compare would miss (falls back to a case-fold-aware string compare only
+  when a path does not yet exist, since `samefile` requires both sides to
+  exist). Refuses a non-empty target without `--merge` (but a bootstrap call
   with no source content never needs `--merge` just because a DIFFERENT
   harness already adopted). Refuses a source entry that is a symlink —
   never silently dereferenced; only a flat directory of real memory files
@@ -261,13 +268,19 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   recorded, never the store's current full contents (a second harness's
   own separately adopted/merged content, or ordinary post-adopt shared
   writes, is left untouched). Of the recorded files, only the strict
-  subset THIS adopt itself copied in (`newly_copied_files`) is REMOVED
-  from the store on revert; a file that was already byte-identical in the
-  store before this adopt ran is copied back into the restored private
-  directory but LEFT in the store, because another still-adopted harness
-  may be symlinked to it and depend on it. Refuses (no mutation, no
-  guessing) if the recorded source path is not currently a symlink
-  resolving to the store — that means state already drifted since adopt.
+  subset THIS adopt itself copied in (`newly_copied_files`) is a
+  CANDIDATE for removal from the store on revert; a file that was already
+  byte-identical in the store before this adopt ran is copied back into
+  the restored private directory but LEFT in the store, because another
+  still-adopted harness may be symlinked to it and depend on it. That
+  protection is symmetric, not one-directional: a `newly_copied_files`
+  candidate (this harness's OWN original copy) is also downgraded to
+  copy-back-but-leave-in-store if ANY OTHER still-live harness's manifest
+  references the same filename in its own `source_files` — the reverse
+  case where THIS harness was the original owner and a second harness
+  later deduped against it. Refuses (no mutation, no guessing) if the
+  recorded source path is not currently a symlink resolving to the store
+  — that means state already drifted since adopt.
 - **`tessctl doctor`'s memory-link check** — non-fatal, informational only
   (never affects doctor's errors/warnings/exit code, in either the
   not-adopted or the adopted-but-broken case): per adopted harness, is the
@@ -300,9 +313,15 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   case), automatic rollback on a simulated round-trip failure, crash-safety
   of the rmtree → symlink → manifest-write swap under injected `OSError`
   failures (proven fully-intact, never half-adopted), a guarded
-  `read_bytes()` failure during planning, and the doctor memory-link
-  check's four states (not-adopted / clean / broken-symlink /
-  index-coherence gaps).
+  `read_bytes()` failure during planning, the doctor memory-link check's
+  four states (not-adopted / clean / broken-symlink / index-coherence
+  gaps), the `--from`/`--to` self-destruct guard's inode-identity check on
+  a case-insensitive filesystem (both the exact-same-dir and the nested
+  variant — skipped, not falsely passed, on a genuinely case-sensitive
+  filesystem where the repro cannot occur), and the reverse-direction
+  two-harness shared-file preservation case (the harness that ORIGINALLY
+  OWNED a file reverting while a second, still-live harness had since
+  deduped against it).
 - `tests/test_memory_adopt_fence.py` — the SAME #105/#111 fence proof
   `test_task_ledger_fence.py` gives the task store/ledger, against a
   genuinely CLI-adopted memory file and its adopt manifest (source

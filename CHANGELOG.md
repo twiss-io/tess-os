@@ -93,9 +93,14 @@ All notable changes to Tess OS are documented here. This project adheres to
     planning phase — idempotency check, source/target enumeration,
     per-file conflict detection — is read-only, so even a refused call
     never touches disk); refuses `--from`/`--to` resolving to the same path
-    or one nested inside the other, before any mutation (a self-targeted
+    or one nested inside the other, before any mutation, by INODE IDENTITY
+    (`os.path.samefile`) rather than string equality — a self-targeted
     adopt would otherwise treat the source's own content as "already
-    present," copy nothing elsewhere, then delete the only copy); refuses a
+    present," copy nothing elsewhere, then delete the only copy, and a
+    string compare alone is bypassable on the real deployment filesystems
+    (macOS APFS, Windows NTFS), which are case-insensitive and treat
+    differently-cased spellings of the same directory as one and the same
+    file even though `Path.resolve()` preserves as-typed case; refuses a
     non-empty target without `--merge` (bootstrap calls with no source
     content are exempt — nothing is being merged); refuses a source entry
     that is a symlink (never silently dereferenced); refuses any real
@@ -124,12 +129,17 @@ All notable changes to Tess OS are documented here. This project adheres to
     restoring exactly the files that manifest recorded — never the store's
     current full contents, which may since have grown from a different
     harness's own adopt or ordinary shared writes. Of those files, only the
-    ones THIS adopt itself copied in are removed from the store; a file
-    that was already present (byte-identical) before this adopt ran is
-    copied back into the restored directory but left in the store, since
-    another still-adopted harness may depend on it. Refuses (no mutation,
-    no guessing) if the recorded source path has drifted since adopt
-    (already reverted, or manually altered).
+    ones THIS adopt itself copied in are CANDIDATES for removal from the
+    store; a file that was already present (byte-identical) before this
+    adopt ran is copied back into the restored directory but left in the
+    store, since another still-adopted harness may depend on it — and that
+    protection is symmetric: a file THIS adopt itself copied in is ALSO
+    copied-back-but-left-in-store, not removed, if any OTHER still-live
+    harness's manifest references the same filename in its own
+    `source_files` (the reverse case — this harness was the original
+    owner, and a second harness later deduped against it). Refuses (no
+    mutation, no guessing) if the recorded source path has drifted since
+    adopt (already reverted, or manually altered).
   - **`tessctl doctor` memory-link check** — non-fatal, informational only,
     in every case (not-adopted, adopted-and-clean, or adopted-but-broken
     never affect doctor's errors/warnings/exit code): per adopted harness,
@@ -159,27 +169,37 @@ All notable changes to Tess OS are documented here. This project adheres to
     memory remains a separate, later, opt-in operation** — this PR ships
     only the mechanism, exercised entirely against disposable `tmp_path`
     fixtures.
-  - **Tests**: `tests/test_memory_adopt.py` (38 tests — dry-run purity,
+  - **Tests**: `tests/test_memory_adopt.py` (41 tests — dry-run purity,
     bootstrap + real adopt, idempotency, every refusal (including a
     symlinked source entry and `--from`/`--to` self-collision/nesting),
     `--merge` skip-on-identical-content, `--revert` (dry-run-by-default +
     `--yes` gate, multi-harness disambiguation including the
     harness-slug-collision case, drifted-state refusal, and the
-    two-harness shared-file preservation case), automatic rollback on a
-    simulated round-trip failure, crash-safety of the rmtree → symlink →
-    manifest-write swap under injected `OSError` failures, a guarded
-    `read_bytes()` failure during planning, and the doctor memory-link
-    check's four states), `tests/test_memory_adopt_fence.py` (8 tests —
-    the data-leak fence against real CLI-adopted content, plus the
-    AGENTS.md render assertions). **46 tests total** (12 added responding
-    to PR #117's two-reviewer REJECT — Cyra/security found the
-    `--from`==`--to` self-destruct (H1) and the revert over-removal of a
-    second harness's shared file (M1); Reid/quality independently found
-    the same self-destruct as CRITICAL plus the unguarded rmtree →
-    symlink → manifest-write region (HIGH), the harness-slug manifest
-    collision, the missing revert dry-run/`--yes` gate, and an unguarded
-    `read_bytes()` during planning — all fixed and regression-tested
-    before this PR ships).
+    two-harness shared-file preservation case in BOTH directions),
+    automatic rollback on a simulated round-trip failure, crash-safety of
+    the rmtree → symlink → manifest-write swap under injected `OSError`
+    failures, a guarded `read_bytes()` failure during planning, the
+    doctor memory-link check's four states, the `--from`/`--to`
+    self-destruct guard's inode-identity check on a case-insensitive
+    filesystem (exact-same-dir and nested variants), and the
+    reverse-direction two-harness shared-file preservation case),
+    `tests/test_memory_adopt_fence.py` (8 tests — the data-leak fence
+    against real CLI-adopted content, plus the AGENTS.md render
+    assertions). **49 tests total** (15 added responding to PR #117's
+    two-reviewer REJECT — Cyra/security found the `--from`==`--to`
+    self-destruct (H1) and the revert over-removal of a second harness's
+    shared file (M1); Reid/quality independently found the same
+    self-destruct as CRITICAL plus the unguarded rmtree → symlink →
+    manifest-write region (HIGH), the harness-slug manifest collision, the
+    missing revert dry-run/`--yes` gate, and an unguarded `read_bytes()`
+    during planning — all fixed and regression-tested. Cyra's
+    re-verification of that fix (commit `18a3fea`) then found two more
+    holes: HOLE 1/HIGH — the self-destruct guard compared resolved path
+    STRINGS, bypassable on a case-insensitive filesystem (macOS APFS /
+    Windows NTFS, this project's real deployment FS), fixed with inode
+    identity (`os.path.samefile`); HOLE 2/MEDIUM — the shared-file revert
+    protection only held in one direction, fixed by making it symmetric —
+    both fixed and regression-tested before this PR ships).
 
 ### Security
 - **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
