@@ -73,7 +73,8 @@
     ".mcp.json",
     "README.md",
     "adapters/**",
-    "missions/**"
+    "missions/**",
+    ".tess/state/**"
   ],
 
   "_never_touch_notes": {
@@ -87,6 +88,7 @@
     "python/data layer": "main.py, pyproject.toml, uv.lock, .python-version, .venv/** — the repo's Python/uv tooling, not framework doctrine.",
     "example-project/ , starter/ , docs/ , infrastructure/ , .agents/": "non-framework subtrees present in this messy repo; explicitly fenced off.",
     "adapters/**": "Phase 1 render-target-adapter documentation seam (docs/ULTIMATE_FRAMEWORK_PLAN.md Part B architecture; item 3 of the Phase 1 brief). Pure prose describing the RenderTarget interface implemented in .tess/bin/tessctl (RENDER_TARGETS registry) — same fenced-off treatment as docs/**, since there is no core->live split to track here (no .tess/core/adapters/** mirror exists; nothing to render). Phase 2 (Codex + generic targets) confirms this still holds: their rendered config fragment (.codex/config.toml) sources from .tess/core/templates/agents-md/codex-config.toml.tpl, NOT from anything under adapters/ — adapters/codex/README.md and adapters/generic/README.md (like adapters/claude-code/README.md before them) are hand-authored docs, not compiled artifacts. Revisit only if a future target ever needs to render something FROM adapters/**.",
-    "missions/**": "Goal #5 (tessctl mission + the typed-retry ledger) — PER-PROJECT mission records `tessctl mission new`/`gate clear`/`retry log` write at runtime (mission.md/mission.json, retries/<task>.attempt-N.md). User/mission DATA, not framework doctrine — same fenced-off treatment as kb/**/clients/*/**, and (like adapters/**/docs/**) there is no .tess/core/missions/** mirror; nothing here is rendered from core. missions/README.md (the convention doc) is a hand-authored, plain committed file, same as adapters/*/README.md."
+    "missions/**": "Goal #5 (tessctl mission + the typed-retry ledger) — PER-PROJECT mission records `tessctl mission new`/`gate clear`/`retry log` write at runtime (mission.md/mission.json, retries/<task>.attempt-N.md). User/mission DATA, not framework doctrine — same fenced-off treatment as kb/**/clients/*/**, and (like adapters/**/docs/**) there is no .tess/core/missions/** mirror; nothing here is rendered from core. missions/README.md (the convention doc) is a hand-authored, plain committed file, same as adapters/*/README.md.",
+    ".tess/state/**": "Phase 0.1 (cross-harness shared brain, docs/STATE_LAYER.md) — the canonical harness-neutral runtime-state root: memory/, tasks/, ledger/, locks/. Both Claude Code and Codex mount THIS tree for shared state (the architecture principle: shared state lives in harness-neutral files both harnesses mount, never in a harness's private home dir). Same bucket as missions/**/kb/**: PER-INSTANCE DATA, not framework content — there is no .tess/core/state/** mirror, nothing here is rendered from core, and `tessctl restore`/`render`/`update` never touch it. Ships EMPTY in the public scaffold (only .gitkeep placeholders under each subdir) — adopters inherit the structure, never any instance's actual memory/task/ledger data (same scaffold-strip precedent create-tess's ignore.js already applies to .tess/snapshots/.tess/staging). Phase 0.1 ships the fenced store only; the memory-adopt symlink, tasks CLI, and ledger read/write commands are Phase 0.2+."
   }
 }

@@ -2744,6 +2744,7 @@ _PUBLISH_CLEAN_PRIVATE_GLOBS = [
     "*.local.md",           # append-first shadow files
     "**/*.local.md",
     "missions/**",          # manifest note: "same fenced-off treatment as kb/**"
+    ".tess/state/**",       # Phase 0.1 cross-harness shared-brain state root (memory/tasks/ledger/locks) — same bucket as missions/**
     "UPGRADE-NOTES.md",
     ".mcp.json",
     # Vault material is never in the manifest's never_touch list (the write-

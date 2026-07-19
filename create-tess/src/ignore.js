@@ -78,9 +78,22 @@ export const EXCLUDE_REL_PATHS = new Set([
 // Excluded CONTENT under these dirs, while the dir itself and its `.gitkeep`
 // placeholder are preserved (so the produced instance keeps the empty structure
 // but never inherits the author's actual snapshots / staging state).
+//
+// Phase 0.1 (cross-harness shared brain, docs/STATE_LAYER.md): the four
+// .tess/state/** subdirs get the SAME treatment for the SAME reason —
+// adopters inherit the canonical memory/tasks/ledger/locks STRUCTURE, never
+// a source instance's actual runtime data. tess.manifest.json's never_touch
+// + the publish-clean deny set already stop this repo's own git history from
+// ever capturing real content there; this closes the THIRD path (a local
+// `--template-source` copying the author's working tree verbatim, same gap
+// Quinn's MEDIUM finding closed for .tess/snapshots/.tess/staging above).
 export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/snapshots',
   '.tess/staging',
+  '.tess/state/memory',
+  '.tess/state/tasks',
+  '.tess/state/ledger',
+  '.tess/state/locks',
 ];
 
 // Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).
