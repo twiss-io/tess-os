@@ -6059,16 +6059,29 @@ def cmd_lock(args, root: Path) -> None:
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
-        if not live_rel:
+        # R1 (issue #122): core-internal entries (live_path: null, e.g. the
+        # templates/agents-md/* fragments and personas/*.md) still get Check A
+        # (base_sha core-integrity) here if a base_sha is pinned — this used to
+        # unconditionally `continue` on ANY missing live_path, which silently
+        # exempted every core-internal entry from the CI gate even though
+        # `doctor`/`verify` already ran Check A for them (same R1 branch
+        # doctor_check_file implements below). That gap meant `lock --check`
+        # was NOT "equivalent to running doctor in fail-fast mode" as its own
+        # docstring claims for this whole class of file — a tampered core
+        # fragment with no live_path could pass CI clean. Mirror doctor's own
+        # gate (see cmd_doctor's `has_base_sha` fallthrough) instead of a bare
+        # live_path check; skip only when there is truly nothing to verify.
+        if not live_rel and not attrs.get("base_sha", ""):
             continue
         r = doctor_check_file(core_key, attrs, root)
         status = r.get("lock_status", "core-managed")
+        report_path = live_rel or core_key
         if r.get("core_tamper"):
-            issues.append(("CORE-TAMPER", live_rel))
+            issues.append(("CORE-TAMPER", report_path))
         elif status == "quarantined":
-            issues.append(("QUARANTINED", live_rel))
+            issues.append(("QUARANTINED", report_path))
         elif r.get("drift") and status == "core-managed":
-            issues.append(("DRIFT", live_rel))
+            issues.append(("DRIFT", report_path))
 
     # Phase 2 (Codex + generic targets): see _check_untracked_render_generated's
     # docstring — an ENABLED target's compiled artifacts with no individual
@@ -6093,7 +6106,10 @@ def cmd_lock(args, root: Path) -> None:
             print(f"  {kind:12}  {path}")
         sys.exit(1)
     else:
-        total = sum(1 for a in files.values() if a.get("live_path"))
+        total = sum(
+            1 for a in files.values()
+            if a.get("live_path") or a.get("base_sha", "")
+        )
         print(f"tessctl lock --check: OK — {total} managed files verified")
         sys.exit(0)
 

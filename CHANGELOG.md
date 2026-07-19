@@ -5,6 +5,36 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Security
+- **HIGH — `templates/agents-md/*` core fragments had no `tess.lock` entry;
+  core-tamper Check A never ran against them (issue #122, Cyra PoC)** —
+  the 7 files composing `AGENTS.md` (`AGENTS.md.tpl`, `worker-hard-floor.md`,
+  `gate-compliance.md`, `harness-note.md`, `session-memory.md`,
+  `shared-tasks.md`, `codex-config.toml.tpl`) had no `base_sha` pinned in
+  `.tess/tess.lock`, so tampering the SOURCE fragment, then re-rendering
+  (`tessctl render --target codex`) so the live `AGENTS.md` became
+  self-consistent with the tamper, went completely undetected by
+  `doctor`/`verify`/`lock --check` — `.tess/core/MANIFEST.md` self-disclosed
+  the gap. #121 just made `codex` an enabled-by-default render target for
+  every `npm create tess` scaffold, so this stopped being an opt-in edge
+  case and became the default path for new installs.
+  - **`.tess/tess.lock`** — added a `base_sha`-pinned, `live_path: null`
+    entry per file (the same R1 core-internal pattern `personas/*.md`
+    already uses), generated via `tessctl lock --regen --only <path> --yes`
+    (the repo's own re-pin mechanism, not hand-edited hashes).
+  - **`cmd_lock`'s `--check` loop (a second, independent bug this same fix
+    closes)** — it unconditionally skipped EVERY entry with `live_path:
+    null`, even pre-existing ones with a `base_sha` (the 6 `personas/*.md`
+    entries), so `lock --check` was never actually "equivalent to running
+    doctor in fail-fast mode" (its own docstring's claim) for this whole
+    class of file. Now mirrors `doctor`/`verify`'s own R1 branch — skips
+    only when there is truly nothing to check.
+  - **`MANIFEST.md`** — removed the self-disclosed "Known gap" caveat.
+  - Acceptance: the exact PoC (tamper `shared-tasks.md`, re-render, check)
+    now fails closed — `doctor`/`verify`/`lock --check` all report CORE
+    TAMPER named at the fragment. Reverting restores a clean pass on all
+    three.
+
 ### Added
 - **Phase 0.2 — the cross-harness TASK STORE + ACCOUNTABILITY LEDGER
   (`tessctl tasks`/`log`)**, ported from Hermes' kanban design

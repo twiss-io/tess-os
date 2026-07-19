@@ -304,14 +304,16 @@ conditional on a target being enabled per-install, so giving `AGENTS.md.tpl`
 an ordinary `live_path` would make doctor/verify treat `AGENTS.md` as
 unconditionally required the moment `codex`/`generic` is merely *registered*;
 see `_check_untracked_render_generated()` for how live-tree drift-checking
-works for the rendered `AGENTS.md` output instead. **Known gap:** unlike the
-`templates/claude-md/*.md` fragments below (each with its own `tess.lock`
-`base_sha` entry — Check A core-integrity), none of the seven files in this
-table currently has a `tess.lock` entry at all, so Check A (core-tampering
-of the SOURCE fragment, independent of what it renders to) does not run for
-any of them today — only the worker-profile denylist scan
-(`_check_worker_profile_denylist`) and the rendered-output drift check above
-cover this subtree. Not closed by issue #118; flagged as a follow-up.
+works for the rendered `AGENTS.md` output instead. All seven files in the
+table below now carry their own `tess.lock` `base_sha` entry (issue #122,
+mirroring the R1 pattern `personas/*.md` already uses) — Check A
+(core-tampering of the SOURCE fragment, independent of what it renders to)
+runs for all of them, in `doctor`, `verify`, AND `lock --check` (the CI gate
+also had to be fixed to stop skipping every `live_path: null` entry
+unconditionally — it now runs Check A the same way `doctor`/`verify`
+already did), on top of the worker-profile denylist scan
+(`_check_worker_profile_denylist`) and the rendered-output drift check
+above, which already covered this subtree.
 
 | Core file | Live path | Tier |
 |---|---|---|
