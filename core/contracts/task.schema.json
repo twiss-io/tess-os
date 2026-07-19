@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/task.schema.json",
+  "title": "Task Record Contract",
+  "description": "Machine-checkable form of one task in the CROSS-HARNESS TASK STORE (Phase 0.2 — docs/STATE_LAYER.md's deferred 'Tasks CLI', ported from Hermes' kanban design per kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md: durable board, claim-leases (host:pid:uuid), heartbeats, claimed/completed/crashed/reclaimed lifecycle). A SIBLING of mission.schema.json — that schema tracks a MISSION's five dependency gates; this one tracks the much more granular 'task list, updates, accountability... whoever picked up a task and progress, cleared or stuck, resumable by any agent' unit Xavier's re-aimed vision calls for. File-per-task JSON at .tess/state/tasks/<id>.json (fenced instance data — see tess.manifest.json never_touch + this same file's own docs/STATE_LAYER.md). Every mutation goes through `tessctl tasks set|claim|release`, which dogfood-validate whatever they just wrote against THIS schema before returning (mirrors mission.schema.json's `_self_validate_or_raise` discipline) — an on-disk task record that fails its own schema is an internal engine bug, never a caller-visible outcome.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^T-[0-9]{8}-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{4}$",
+      "description": "`T-<YYYYMMDD>-<kebab-slug>-<4hex>` — `tessctl tasks new <title>` derives this: an 8-digit UTC date, a truncated kebab-slug of the title (a human-readable hint, not the uniqueness guarantee), and a random 4-hex suffix that IS the uniqueness guarantee (so two tasks created the same day with the same title-prefix never collide, unlike mission.schema.json's id, which relies on a numeric collision suffix instead)."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable task title, as given to `tessctl tasks new`."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["backlog", "ready", "in_progress", "blocked", "review", "done", "cancelled"],
+      "description": "The kanban column this task is currently in. `tessctl tasks new` seeds `backlog` by default; `tessctl tasks claim` auto-advances `backlog`/`ready` to `in_progress`; every other transition is an explicit `tessctl tasks set --status`."
+    },
+    "owner": {
+      "type": ["string", "null"],
+      "description": "Human/team accountable for this task (distinct from `assignee`, the agent/persona currently doing the work, and from `claim`, the live claim-lease). null when not yet assigned."
+    },
+    "assignee": {
+      "type": ["string", "null"],
+      "description": "Agent/persona currently assigned to this task (may be set before an actual claim-lease exists, e.g. during planning). null when not yet assigned."
+    },
+    "claim": {
+      "$ref": "#/$defs/Claim",
+      "description": "The live claim-lease — who currently holds this task, cross-harness-resumable. All five fields are null together (unclaimed) or all five are set together (claimed); `_lint_task` flags a partially-set claim as a violation `tessctl validate` catches even though plain JSON Schema cannot express the all-or-nothing cross-field rule (same class of relational check `_lint_mission`/`_lint_crew_plan` already perform for their own schemas)."
+    },
+    "created_by": {
+      "$ref": "#/$defs/CreatedBy",
+      "description": "Which harness (and, optionally, which session of it) ran `tessctl tasks new` — the cross-harness provenance fact this whole subsystem exists to make durable (docs/STATE_LAYER.md: 'Tess OS is meant to run identically well from Claude Code, Codex, or any other AGENTS.md-reading harness... for state, not just doctrine')."
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp ('...Z' suffix), set once at `tessctl tasks new` time."
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp of the most recent successful `tasks set|claim|release` mutation. Bumped on EVERY write alongside `rev`."
+    },
+    "rev": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optimistic-concurrency counter, starting at 1 and incremented by exactly 1 on every successful write. `tessctl tasks set --expected-rev N` is the CAS precondition: the write is refused (TASK_CAS_CONFLICT, no mutation) if the on-disk `rev` is not exactly N at write time — the caller must reload the current record and retry, the same ETag-style optimistic-concurrency-control pattern HTTP conditional requests use."
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Task ids this task depends on. `_lint_task` flags a task that lists itself, and duplicate entries — both relational checks plain JSON Schema cannot express."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Repo-relative paths (or other locators) backing this task's progress — the same 'a claim must be evidenced' spirit mission.schema.json's Gate.evidence already applies at the gate level, applied here per-task. APPEND-ONLY by convention: `tessctl tasks set --add-evidence` only ever appends; no CLI verb removes an entry (an accountability trail that could be silently pruned would defeat its own purpose)."
+    },
+    "notes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Note" },
+      "description": "Free-text progress notes, APPEND-ONLY (same discipline as `evidence` — `tessctl tasks set --add-note` only ever appends)."
+    }
+  },
+  "required": [
+    "id", "title", "status", "owner", "assignee", "claim", "created_by",
+    "created_at", "updated_at", "rev", "depends_on", "evidence", "notes"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Claim": {
+      "type": "object",
+      "properties": {
+        "host": { "type": ["string", "null"], "description": "Claimant's hostname." },
+        "pid": { "type": ["integer", "null"], "description": "Claimant's OS process id." },
+        "uuid": { "type": ["string", "null"], "description": "Claimant's own instance uuid (distinguishes two concurrent processes on the SAME host:pid across process-id reuse, and distinguishes two different sessions of the same harness)." },
+        "claimed_at": { "type": ["string", "null"], "description": "UTC ISO-8601 timestamp of the ORIGINAL claim — unchanged across heartbeat refreshes by the same claimant." },
+        "heartbeat_at": { "type": ["string", "null"], "description": "UTC ISO-8601 timestamp of the most recent heartbeat (either an explicit `tessctl tasks set --heartbeat`, or an idempotent re-claim by the same host:pid:uuid). A future orphan-sweeper (NOT built by this region — see docs/STATE_LAYER.md) would compare this against a staleness threshold to decide a claim is abandoned; `tessctl tasks claim`'s own `--stale-after` does exactly that comparison today for the one caller-invoked case (another agent trying to claim the same task)." }
+      },
+      "required": ["host", "pid", "uuid", "claimed_at", "heartbeat_at"],
+      "additionalProperties": false
+    },
+    "CreatedBy": {
+      "type": "object",
+      "properties": {
+        "harness": { "type": "string", "minLength": 1, "description": "Which harness created this task (e.g. 'claude-code', 'codex')." },
+        "session": { "type": ["string", "null"], "description": "That harness's session id, if the caller supplied one." }
+      },
+      "required": ["harness", "session"],
+      "additionalProperties": false
+    },
+    "Note": {
+      "type": "object",
+      "properties": {
+        "at": { "type": "string", "minLength": 1, "description": "UTC ISO-8601 timestamp the note was appended." },
+        "by": { "type": "string", "minLength": 1, "description": "Who/what appended the note (defaults to the OS user if `--by` is omitted)." },
+        "text": { "type": "string", "minLength": 1, "description": "The note body. Never empty — an empty note carries no accountability information." }
+      },
+      "required": ["at", "by", "text"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

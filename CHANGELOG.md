@@ -5,6 +5,78 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **Phase 0.2 — the cross-harness TASK STORE + ACCOUNTABILITY LEDGER
+  (`tessctl tasks`/`log`)**, ported from Hermes' kanban design
+  (`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md`) onto the
+  `.tess/state/` store PR #105 + #111 fenced: "task list, updates,
+  accountability list, whoever picked up a task and progress, cleared or
+  stuck, resumable by any agent." A sibling of the existing MISSION LEDGER
+  region (`tessctl mission`/`gate-status`/`retry`) — reuses the same
+  contracts-as-code + dogfood-validate + atomic-write discipline that
+  region already proved out, applied to a much more granular unit (one task,
+  not one mission).
+  - **`tessctl tasks new|set|claim|release|pull|render`** — file-per-task
+    JSON at `.tess/state/tasks/<id>.json` (`core/contracts/task.schema.json`,
+    id `T-<YYYYMMDD>-<slug>-<4hex>`, status enum
+    `backlog|ready|in_progress|blocked|review|done|cancelled`). `set` is a
+    rev-CAS optimistic-concurrency write — `--expected-rev N` refuses with
+    `TASK_CAS_CONFLICT` (no mutation) if the on-disk rev has moved past N,
+    the caller reloads and retries itself (an ETag-style workflow, not a
+    silent auto-retry that could paper over a real conflict). `claim` writes
+    a claim-lease (`host:pid:uuid` + `claimed_at`/`heartbeat_at`) and
+    auto-advances `backlog`/`ready` to `in_progress`; a live claim held by a
+    DIFFERENT claimant is refused unless it is stale (`--stale-after`,
+    default 900s) or `--force`d, in which case it is a `reclaimed` event, not
+    a silent overwrite. `render` regenerates `.tess/state/tasks/BOARD.md`, a
+    DERIVED, GENERATED-marked kanban view — never a source of truth. Every
+    mutation is serialized by a per-task advisory flock
+    (`.tess/state/locks/task-<id>.lock`, stale-pruned on the same `find
+    -mmin +N -delete` precedent `.claude/hooks/task-lock-set.sh` already
+    uses) — contention is scoped to writers of the SAME task, never a global
+    lock. A real two-OS-process concurrency test proves no lost update.
+  - **`tessctl log append|view|verify`** — a hash-chained, append-only JSONL
+    ledger at `.tess/state/ledger/<YYYY-MM>.<origin>.jsonl`
+    (`core/contracts/ledger-event.schema.json`), sharded per calendar month
+    AND per writer origin so two machines/harnesses writing concurrently
+    never contend on the same file at all. `append` computes
+    `hash = sha256(prev_hash + canonical_json(event minus hash))` (the same
+    "canonical bytes minus the field being computed" construction
+    `verdict_canonical_bytes` already uses, applied to a hash chain instead
+    of a signature); `verify` walks a shard's chain and reports the first
+    tamper or `prev_hash` break it finds. `tasks new|set|claim|release`
+    auto-log the corresponding
+    `task_transition|claim|heartbeat|release|completed|crashed|reclaimed`
+    event on every real (non-no-op) write, so the accountability trail can
+    never be silently skipped by a caller who mutated a task but forgot a
+    separate logging step.
+  - **`core/contracts/task.schema.json` + `core/contracts/ledger-event.schema.json`**
+    (the eighth and ninth contracts, keystone-tracked in `.tess/tess.lock`
+    the same way `mission.schema.json`/`retry.schema.json` already are — see
+    `core/contracts/README.md`).
+  - **Fence held, not weakened**: `.tess/state/**` was already in
+    `tess.manifest.json`'s `never_touch`, `.gitignore`'s content-ignore rules
+    (#111), and `_PUBLISH_CLEAN_PRIVATE_GLOBS` (#93) before this PR — no
+    change needed to any of the three. `tests/test_task_ledger_fence.py`
+    proves the SAME fence blocks a genuinely CLI-produced task file and
+    ledger shard (not just a synthetic placeholder): invisible to `git add
+    -A`, and still refused by `tessctl doctor --publish-clean` if
+    force-added.
+  - **Deliberately NOT built here** (separate, later PRs — Xavier's own
+    scope fence): memory-adopt (`.tess/state/memory/**`) and the
+    orphan-sweeper that would scan claim-leases for dead-PID claims and
+    auto-resume/re-dispatch abandoned work. This PR builds only the
+    substrate a future sweeper would read (claim-lease + heartbeat fields,
+    `claim`/`heartbeat`/`reclaimed`/`crashed` ledger events) — never a
+    daemon that acts on them.
+  - **Tests**: `tests/test_task_store.py` (36 tests — CRUD, CAS conflict +
+    reload-and-retry, claim/heartbeat/reclaim/force, release reason
+    classification, pull filters, render, a REAL two-process concurrency
+    proof, C1 containment, schema/lint), `tests/test_accountability_ledger.py`
+    (25 tests — genesis + chaining, sharding, view filters/sort, verify
+    clean/tamper/reorder, schema/lint), `tests/test_task_ledger_fence.py` (5
+    tests — the data-leak fence against real CLI-produced content).
+
 ### Security
 - **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
   `.gitignore` fence (issue #110, found reviewing #105)** — PR #105's

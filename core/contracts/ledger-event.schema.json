@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/ledger-event.schema.json",
+  "title": "Accountability Ledger Event Contract",
+  "description": "Machine-checkable form of ONE line in the hash-chained, append-only ACCOUNTABILITY LEDGER (Phase 0.2 — .tess/state/ledger/<YYYY-MM>.<origin>.jsonl). The 'who did what, when, who's holding it' audit trail Xavier's re-aimed vision calls for, sibling to task.schema.json (which tracks the CURRENT state of a task; this schema tracks the immutable HISTORY of events that produced it). Ported from Hermes' kanban design's task_events audit (kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md). `tessctl log append` dogfood-validates every event against THIS schema (via the in-memory dict, before it is ever written to a shard — `_ledger_self_validate_or_raise`) — same discipline as `_self_validate_or_raise` for mission/task records, adapted to a value that is appended rather than a file that is replaced. Each shard's own hash chain is independently tamper-evident (`tessctl log verify`): `hash = sha256(prev_hash + canonical_json(event minus hash))`, `prev_hash` of the first event in a shard is 64 zero hex chars (genesis).",
+  "type": "object",
+  "properties": {
+    "ts": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp ('...Z' suffix) this event was appended — NOT necessarily when the underlying action started (e.g. a `claim` event's `ts` is append time; the task record's own `claim.claimed_at` is the authoritative claim-start time)."
+    },
+    "actor": {
+      "$ref": "#/$defs/Actor",
+      "description": "Who/what produced this event — the cross-harness accountability identity: which harness, optionally which model/session/persona."
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "dispatch", "task_transition", "claim", "heartbeat", "release",
+        "completed", "crashed", "reclaimed", "session_open", "session_close"
+      ],
+      "description": "Event classification. `task_transition` covers any tracked change to a task record via `tessctl tasks new|set` (including creation itself, logged as '(none) -> <initial status>'); `claim`/`heartbeat`/`release`/`completed`/`crashed`/`reclaimed` are `tessctl tasks claim|release`'s own five-way claim-lifecycle classification (Hermes' 'claimed/completed/crashed/reclaimed' vocabulary, verbatim); `dispatch`/`session_open`/`session_close` are broader harness-lifecycle bookkeeping events logged directly via `tessctl log append`, not tied to any one task."
+    },
+    "refs": {
+      "$ref": "#/$defs/Refs",
+      "description": "What this event refers to. `_lint_ledger_event` requires `refs.task` to be non-null for every task-scoped event class (`task_transition`, `claim`, `heartbeat`, `release`, `completed`, `crashed`, `reclaimed`) — a relational rule plain JSON Schema cannot express against a sibling field's own value."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable one-line description of what happened (e.g. 'status: backlog -> in_progress', 'claimed by ada-host:4821:9c1e...'). Never empty — an empty summary carries no accountability information, the same rule task.schema.json's Note.text already applies."
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The `hash` of the immediately preceding event IN THIS SAME SHARD (64 zero hex chars — genesis — for the first event ever appended to a shard). Chains are per-shard, NOT global: shards are sharded per calendar month AND per writer origin specifically so two machines/harnesses writing concurrently never contend on, or need to interleave into, the SAME chain (see .tess/bin/tessctl's TASK LEDGER region header)."
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256(`prev_hash` + compact key-sorted JSON of this event with the `hash` key itself removed) — the same 'canonical bytes minus the field being computed' construction `verdict_canonical_bytes`/`signoff_canonical_bytes` already use elsewhere in this engine, applied here to a hash chain instead of a signature. `tessctl log verify` recomputes this for every line and compares; any mismatch, OR any `prev_hash` that does not equal the prior line's `hash`, is reported as tamper."
+    }
+  },
+  "required": ["ts", "actor", "event", "refs", "summary", "prev_hash", "hash"],
+  "additionalProperties": false,
+  "$defs": {
+    "Actor": {
+      "type": "object",
+      "properties": {
+        "harness": { "type": "string", "minLength": 1, "description": "Which harness produced this event (e.g. 'claude-code', 'codex')." },
+        "model": { "type": ["string", "null"], "description": "Which model was driving the harness, if known/relevant." },
+        "session": { "type": ["string", "null"], "description": "The harness session id, if the caller supplied one." },
+        "persona": { "type": ["string", "null"], "description": "Which named persona/agent (e.g. 'Ada') was acting, if relevant." }
+      },
+      "required": ["harness", "model", "session", "persona"],
+      "additionalProperties": false
+    },
+    "Refs": {
+      "type": "object",
+      "properties": {
+        "task": { "type": ["string", "null"], "description": "Task id this event refers to, or null for a task-independent event (dispatch/session_open/session_close)." },
+        "mission": { "type": ["string", "null"], "description": "Mission id this event refers to, or null." }
+      },
+      "required": ["task", "mission"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

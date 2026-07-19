@@ -1,8 +1,14 @@
 # The state layer: one canonical store, every harness mounts it
 
-> **Status: Phase 0.1 — the fenced store only.** This page describes the
-> plan; most of it is not built yet. See "What's built today" vs. "What's
-> Phase 0.2+" below before assuming any of this is live.
+> **Status: Phase 0.2 — the fenced store PLUS the task store + accountability
+> ledger.** Phase 0.1 built the four empty, fenced directories and their
+> leak-proofing. Phase 0.2 (this page's own next section) lands the first two
+> real subsystems on top of that store: `tessctl tasks` (the shared task
+> graph, `.tess/state/tasks/`) and `tessctl log` (the hash-chained
+> accountability ledger, `.tess/state/ledger/`). Memory-adopt
+> (`.tess/state/memory/`) and any orphan-sweeper daemon remain NOT built —
+> see "What's deliberately NOT built yet" below, now scoped to just those
+> two.
 
 ## The principle
 
@@ -79,7 +85,9 @@ All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
 and `locks/` — none of the four subdirectories depends on the pre-commit
 hook (layer 3) being installed to stay off a fresh `git add -A`.
 
-## What's built today (Phase 0.1)
+## What's built today (Phase 0.1 + Phase 0.2)
+
+Phase 0.1 — the fenced store:
 
 - The four empty, fenced directories above.
 - The never_touch / publish-clean / scaffold-strip / gitignore protections
@@ -96,18 +104,60 @@ hook (layer 3) being installed to stay off a fresh `git add -A`.
   `git check-ignore`d and never appears in `git add -A` staging, while each
   subdir's `.gitkeep` stays trackable (issue #110).
 
-## What's deliberately NOT built yet (Phase 0.2+)
+Phase 0.2 — the TASK STORE + ACCOUNTABILITY LEDGER (TASK LEDGER region,
+`.tess/bin/tessctl`, directly below the RUN region — a sibling of the
+MISSION LEDGER region), ported from Hermes' kanban design
+(`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md` §"their
+kanban"):
+
+- **`tessctl tasks new|set|claim|release|pull|render`** — file-per-task JSON
+  at `.tess/state/tasks/<id>.json` (`core/contracts/task.schema.json`,
+  id `T-<YYYYMMDD>-<slug>-<4hex>`, status enum
+  `backlog|ready|in_progress|blocked|review|done|cancelled`). `set` is a
+  rev-CAS optimistic-concurrency write (`--expected-rev N` refuses with
+  `TASK_CAS_CONFLICT` — no mutation — if the on-disk rev has moved); `claim`
+  writes a claim-lease (`host:pid:uuid` + `claimed_at`/`heartbeat_at`) and
+  auto-advances `backlog`/`ready` to `in_progress`, refusing a live claim
+  held by someone else unless it is stale (`--stale-after`) or `--force`d;
+  `render` regenerates `.tess/state/tasks/BOARD.md`, a DERIVED, GENERATED-
+  marked kanban view — never a source of truth. Every mutation is
+  serialized by a per-task advisory flock
+  (`.tess/state/locks/task-<id>.lock`) — contention is scoped to writers of
+  the SAME task, never a global lock.
+- **`tessctl log append|view|verify`** — a hash-chained, append-only JSONL
+  ledger at `.tess/state/ledger/<YYYY-MM>.<origin>.jsonl`
+  (`core/contracts/ledger-event.schema.json`), sharded per calendar month
+  AND per writer origin so concurrent writers on different machines/
+  harnesses never contend on the same file. `append` computes
+  `hash = sha256(prev_hash + canonical_json(event minus hash))`; `verify`
+  walks a shard's chain and reports the first tamper/break it finds.
+  `tasks new|set|claim|release` auto-log the corresponding
+  `task_transition|claim|heartbeat|release|completed|crashed|reclaimed`
+  event on every real (non-no-op) write, so the "who picked up a task and
+  progress, cleared or stuck" trail can never be silently skipped by a
+  caller who forgot a separate logging step.
+- `tests/test_task_store.py`, `tests/test_accountability_ledger.py`,
+  `tests/test_task_ledger_fence.py` — CRUD + schema validation, claim-lease
+  + a REAL two-process concurrency proof (no lost update), hash-chain
+  append/verify/tamper-detection, and — the last file — proof that the
+  SAME #105/#111 fence blocks a genuinely CLI-produced task file and ledger
+  shard, not just a synthetic placeholder.
+
+## What's deliberately NOT built yet (Phase 0.3+)
 
 - **Memory adopt** — the mechanism by which a harness-private memory file
   (e.g. a Claude Code memory artifact) gets adopted into
   `.tess/state/memory/` as the canonical copy, rather than living only in
-  that harness's home directory.
-- **Tasks CLI** — `tessctl task ...` reading/writing the shared task graph
-  in `.tess/state/tasks/`.
-- **Ledger** — the harness-neutral form of the mission/retry ledger
-  (`tests/test_mission_ledger.py` is the existing per-project pattern this
-  will generalize) landing in `.tess/state/ledger/`.
+  that harness's home directory. A separate, later PR.
+- **The orphan-sweeper** — a daemon/process that would scan
+  `.tess/state/tasks/*.json`'s claim-leases and `.tess/state/ledger/**` for
+  dead-PID claims and auto-resume/re-dispatch abandoned work. Phase 0.2
+  builds ONLY the substrate such a sweeper would read (claim-lease +
+  heartbeat fields, and `claim`/`heartbeat`/`reclaimed`/`crashed` ledger
+  events) — never a process that acts on them autonomously. Whether/how an
+  autonomous sweeper is allowed to act is a separate Xavier trust-boundary
+  decision, not a technical one this store's existence resolves.
 
-Do not assume any of the above exists because this directory does. Phase 0.1
-is the fenced, empty store and the guarantee that it can never leak — nothing
-more.
+Do not assume the memory-adopt mechanism or an orphan-sweeper exists because
+this directory does. Phase 0.2 is the task store + accountability ledger
+substrate and the guarantee that neither can ever leak — nothing more.

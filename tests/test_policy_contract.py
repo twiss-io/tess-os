@@ -105,9 +105,13 @@ def test_policy_is_fifth_contract_schema(engine):
     # Goal #5 adds a sixth and seventh contract (mission, retry — see
     # core/contracts/mission.schema.json / retry.schema.json and the
     # MISSION LEDGER region of .tess/bin/tessctl) alongside Phase 0's
-    # original four and Phase 2's policy schema.
+    # original four and Phase 2's policy schema. Phase 0.2 adds an eighth
+    # and ninth (task, ledger-event — core/contracts/task.schema.json /
+    # ledger-event.schema.json, the TASK LEDGER region — a sibling of
+    # MISSION LEDGER).
     assert set(engine.CONTRACT_SCHEMAS) == {
         "brief", "crew-plan", "verdict", "return-manifest", "policy", "mission", "retry",
+        "task", "ledger-event",
     }
 
 

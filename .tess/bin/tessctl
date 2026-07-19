@@ -54,6 +54,17 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               mandatory verification, typed retry on failure (max 3, changed brief),
               and a hard halt + escalation record on retry-cap exhaustion or a
               verifier BLOCK
+  tasks       Phase 0.2: the CROSS-HARNESS TASK STORE (TASK LEDGER region, a
+              sibling of MISSION LEDGER) — file-per-task JSON under
+              .tess/state/tasks/<id>.json (new | set | claim | release | pull |
+              render); `claim` writes a claim-lease (host:pid:uuid) + heartbeat,
+              `set` uses rev-CAS optimistic concurrency, `render` regenerates the
+              DERIVED BOARD.md kanban view
+  log         Phase 0.2: the hash-chained, append-only ACCOUNTABILITY LEDGER
+              under .tess/state/ledger/<YYYY-MM>.<origin>.jsonl (sharded per
+              calendar month + per writer origin) — `append` a tamper-evident
+              event, `view` read filtered/sorted events, `verify` walk a
+              shard's hash chain and report tamper
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -61,6 +72,7 @@ Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.9 compat (int|None, X|Y unions)
 
 import argparse
+import copy
 import datetime
 import getpass
 import glob
@@ -68,6 +80,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -76,6 +89,16 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — POSIX-only (Linux/macOS CI + darwin dev);
+    # mirrors this file's existing sys.platform == "darwin" branches elsewhere:
+    # a feature that is inherently platform-scoped degrades explicitly rather
+    # than crashing at import time. Task/ledger locking (TASK LEDGER region)
+    # is a no-op best-effort skip when fcntl is unavailable, not a silent
+    # correctness gap on the platforms this repo actually ships/tests on.
+    fcntl = None
 
 try:
     import yaml
@@ -132,6 +155,14 @@ CONTRACT_SCHEMAS = {
     # validate` needs to dogfood-check whatever that region writes.
     "mission": "mission.schema.json",
     "retry": "retry.schema.json",
+    # Phase 0.2 (cross-harness TASK STORE + ACCOUNTABILITY LEDGER — TASK
+    # LEDGER region, a sibling of the MISSION LEDGER region above): the
+    # eighth and ninth contracts. Full command implementations live in the
+    # TASK LEDGER region of this file (directly below cmd_run()); this dict
+    # entry is the shared touch point `tessctl validate` needs to dogfood-
+    # check whatever that region writes.
+    "task": "task.schema.json",
+    "ledger-event": "ledger-event.schema.json",
 }
 
 # Phase 2 — where the ship-gate's policy INSTANCE (not the schema) lives.
@@ -8685,6 +8716,12 @@ def _lint_contract(contract_type: str, instance, root: Path = None) -> list:
         # contract type's lint is root-independent, so this is the one
         # additive, backward-compatible parameter on this shared dispatcher.
         return _lint_mission(instance, root)
+    if contract_type == "task":
+        # Phase 0.2, TASK LEDGER region below — same additive `root` param
+        # as "mission" above (evidence/containment checks need it).
+        return _lint_task(instance, root)
+    if contract_type == "ledger-event":
+        return _lint_ledger_event(instance)
     return []
 
 
@@ -14386,6 +14423,959 @@ def cmd_run(args, root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 0.2 — CROSS-HARNESS TASK STORE + ACCOUNTABILITY LEDGER (TASK LEDGER
+# region). Spec: docs/STATE_LAYER.md ("what's built today" vs. "Phase 0.2+"),
+# kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md's "their kanban"
+# section (durable board, claim-leases host:pid:uuid, heartbeats, task_events
+# audit, claimed/completed/crashed/reclaimed) — Hermes' kanban subsystem
+# ported onto THIS repo's own .tess/state/ store (PR #105 + #111). A SIBLING
+# of the MISSION LEDGER region above, not a replacement: mission.md/the
+# typed-retry ledger track a MISSION's five dependency gates + per-task retry
+# attempts; this region tracks the much more granular "task list, updates,
+# accountability list, whoever picked up a task and progress, cleared or
+# stuck, resumable by any agent" cross-harness trail Xavier's re-aimed vision
+# calls for. Reuses the SAME discipline the mission ledger already proved out
+# (contracts-as-code dogfood-validate on every write, atomic temp-then-
+# replace, a MissionError-style typed refusal per region) rather than
+# inventing a second convention.
+#
+# Two independent stores, two independent concurrency models:
+#   - TASK STORE (.tess/state/tasks/<id>.json): file-per-task JSON. An
+#     ordinary lost-update race is possible ONLY between writers of the SAME
+#     task (contention scoped to one file, per the dispatch brief); a
+#     per-task advisory flock (.tess/state/locks/task-<id>.lock) makes every
+#     mutation atomic, and an explicit `rev` field gives callers optimistic-
+#     concurrency-control (CAS): `tessctl tasks set --expected-rev N` is
+#     refused outright (TASK_CAS_CONFLICT, no mutation) if the on-disk rev
+#     has moved past N — the caller reloads and retries itself, the same
+#     ETag-style workflow HTTP conditional requests use. `BOARD.md` is a
+#     DERIVED, regenerable kanban view (`tessctl tasks render`) — never a
+#     source of truth.
+#   - ACCOUNTABILITY LEDGER (.tess/state/ledger/<YYYY-MM>.<origin>.jsonl):
+#     hash-chained, append-only JSONL, SHARDED per calendar month AND per
+#     writer "origin" (harness/persona identifier) so two machines/harnesses
+#     writing concurrently never contend on the SAME shard file at all — each
+#     shard's own chain is independently tamper-evident (`tessctl log
+#     verify`); cross-shard ordering is reconciled only at READ time
+#     (`tessctl log view`, sorted by `ts`), never by a single global lock.
+#
+# What this region deliberately does NOT build (Xavier's own scope fence —
+# separate, later PRs; see the dispatch brief for this build):
+#   - memory-adopt — .tess/state/memory/** is untouched by this region.
+#   - the orphan-sweeper that would scan the ledger/claim-leases for dead-PID
+#     claims and auto-resume/re-dispatch — a separate Xavier trust-boundary
+#     decision. This region builds ONLY the substrate a future sweeper would
+#     read: claim-lease + heartbeat fields on the task record, and
+#     claim/heartbeat/release/completed/crashed/reclaimed ledger events —
+#     never a daemon that acts on them.
+# ---------------------------------------------------------------------------
+
+
+class TaskError(Exception):
+    """Raised for any TASK STORE refusal or read failure — unknown task id,
+    an invalid/unsafe task id, a schema-invalid mutation, a CAS conflict, or
+    an already-claimed task that is not stale (and no --force). Every
+    cmd_tasks_* entrypoint catches this and converts it to sys.exit(str(e))
+    — mirrors MissionError/RunError, and is caught centrally in main() too
+    as a defense-in-depth backstop."""
+
+
+class LedgerError(Exception):
+    """Raised for any ACCOUNTABILITY LEDGER refusal or read failure — an
+    unknown event class, an empty summary, a schema-invalid event, or a
+    shard whose hash chain does not verify. Mirrors TaskError's same typed-
+    refusal convention."""
+
+
+STATE_DIR = ".tess/state"
+TASKS_DIR = f"{STATE_DIR}/tasks"
+LEDGER_DIR = f"{STATE_DIR}/ledger"
+STATE_LOCKS_DIR = f"{STATE_DIR}/locks"
+BOARD_FILENAME = "BOARD.md"
+
+TASK_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "done", "cancelled")
+
+# Task-record-scoped statuses `tessctl tasks claim` auto-advances FROM — a
+# freshly-created or ready-to-start task that gets claimed is self-evidently
+# now being worked on; every other status (blocked/review/done/cancelled) is
+# left exactly as-is by claim (claiming a `blocked` task does not silently
+# un-block it — that is an explicit `tasks set --status` decision).
+CLAIM_AUTO_ADVANCE_FROM = ("backlog", "ready")
+
+LEDGER_EVENTS = (
+    "dispatch", "task_transition", "claim", "heartbeat", "release",
+    "completed", "crashed", "reclaimed", "session_open", "session_close",
+)
+# Event classes `_lint_ledger_event` requires a non-null `refs.task` for —
+# every class that is inherently ABOUT one task record. `dispatch` and
+# `session_open`/`session_close` are broader harness-lifecycle bookkeeping
+# and may legitimately carry a null task ref.
+LEDGER_TASK_SCOPED_EVENTS = frozenset(
+    {"task_transition", "claim", "heartbeat", "release", "completed", "crashed", "reclaimed"}
+)
+LEDGER_GENESIS_HASH = "0" * 64
+
+# Advisory-lock stale-prune precedent: .claude/hooks/task-lock-set.sh (`find
+# "$LOCK_DIR" -name '*.lock' -mmin +"$STALE_MIN" -delete`) — reused here for
+# the SAME class of problem (a crashed writer's lock FILE must never
+# permanently jam a future writer; the OS already releases the flock itself
+# on process exit, this just tidies the leaked file) rather than reinvented.
+# Distinct from CLAIM staleness below: a LOCK FILE is held only for the
+# duration of one read-modify-write (seconds, not a whole session), so its
+# TTL is much shorter than task-lock-set.sh's own 240-minute session-scoped
+# one.
+LOCK_STALE_SECONDS = 3600
+# Default seconds of quiet heartbeat before `tessctl tasks claim` treats an
+# existing claim (held by a DIFFERENT host:pid:uuid) as abandoned and allows
+# a `reclaimed` steal without --force. Overridable per-call via --stale-after
+# for a caller that knows its own task's realistic working rhythm.
+DEFAULT_CLAIM_STALE_SECONDS = 900
+
+
+# ---------------------------------------------------------------------------
+# Path + id helpers — mirrors _validate_mission_id / _mission_dir / _slugify's
+# own C1 containment discipline (MISSION LEDGER region above), applied to
+# .tess/state/tasks/ and .tess/state/ledger/ instead of missions/.
+# ---------------------------------------------------------------------------
+
+def _validate_task_id(task_id: str) -> None:
+    if not task_id or not task_id.strip():
+        raise TaskError("tessctl tasks: task id must not be empty")
+    if os.path.isabs(task_id):
+        raise TaskError(
+            f"tessctl tasks: invalid task id {task_id!r} — absolute paths are not allowed "
+            f"(C1 containment, fail-closed)"
+        )
+    parts = Path(task_id).parts
+    if len(parts) != 1 or task_id in (".", ".."):
+        raise TaskError(
+            f"tessctl tasks: invalid task id {task_id!r} — must be a single path component, "
+            f"no '/' and no '..' (C1 containment, fail-closed)"
+        )
+
+
+def _task_path(root: Path, task_id: str) -> Path:
+    _validate_task_id(task_id)
+    p = root / TASKS_DIR / f"{task_id}.json"
+    tasks_root = (root / TASKS_DIR).resolve()
+    try:
+        p.resolve().relative_to(tasks_root)
+    except ValueError:
+        raise TaskError(
+            f"tessctl tasks: invalid task id {task_id!r} — resolves outside {TASKS_DIR}/ "
+            f"(symlink or resolve-time escape, C1 containment, fail-closed)"
+        )
+    return p
+
+
+def _task_lock_path(root: Path, task_id: str) -> Path:
+    _validate_task_id(task_id)
+    return root / STATE_LOCKS_DIR / f"task-{task_id}.lock"
+
+
+def _new_task_id(root: Path, title: str) -> str:
+    slug = _slugify(title)
+    if not slug:
+        raise TaskError(f"tessctl tasks new: {title!r} has no usable characters for an id slug")
+    # The slug is a human-readable HINT only — the 4-hex suffix below is
+    # what actually guarantees uniqueness — so cap it rather than let an
+    # unwieldy-long title produce an unwieldy-long filename.
+    slug = slug[:40].rstrip("-")
+    date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    for _ in range(20):
+        candidate = f"T-{date}-{slug}-{secrets.token_hex(2)}"
+        if not _task_path(root, candidate).exists():
+            return candidate
+    raise TaskError("tessctl tasks new: could not allocate a unique task id after 20 attempts")
+
+
+def _ledger_origin_slug(origin: str) -> str:
+    slug = _slugify(origin)
+    if not slug:
+        raise LedgerError(f"tessctl log: origin {origin!r} has no usable characters for a ledger shard key")
+    return slug
+
+
+def _ledger_shard_path(root: Path, origin: str, when=None) -> Path:
+    when = when or datetime.datetime.now(datetime.timezone.utc)
+    month = when.strftime("%Y-%m")
+    p = root / LEDGER_DIR / f"{month}.{_ledger_origin_slug(origin)}.jsonl"
+    ledger_root = (root / LEDGER_DIR).resolve()
+    try:
+        p.resolve().relative_to(ledger_root)
+    except ValueError:
+        raise LedgerError(
+            f"tessctl log: origin {origin!r} resolves outside {LEDGER_DIR}/ "
+            f"(symlink or resolve-time escape, C1 containment, fail-closed)"
+        )
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Stale-lock reaper (task-lock-set.sh precedent — see LOCK_STALE_SECONDS
+# above). Best-effort, never load-bearing for correctness: unlinking a lock
+# PATH does not disturb a live process's already-open flock fd (POSIX unlink
+# semantics — the fd stays valid until closed; a new open() on the
+# since-recreated path just starts a fresh, unrelated lock file), so this can
+# never un-protect an in-flight critical section, only tidy up a genuinely
+# leaked one.
+# ---------------------------------------------------------------------------
+
+def _prune_stale_locks(root: Path, ttl_seconds: int = LOCK_STALE_SECONDS) -> int:
+    locks_dir = root / STATE_LOCKS_DIR
+    if not locks_dir.is_dir():
+        return 0
+    now = time.time()
+    pruned = 0
+    for p in locks_dir.glob("*.lock"):
+        try:
+            if now - p.stat().st_mtime > ttl_seconds:
+                p.unlink()
+                pruned += 1
+        except OSError:
+            continue
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# TASK STORE — record shape, read/write, dogfood-validate, lint, CAS write.
+# ---------------------------------------------------------------------------
+
+def _new_task_record(task_id, title, status, owner, assignee, depends_on,
+                      created_by_harness, created_by_session, now_iso) -> dict:
+    return {
+        "id": task_id,
+        "title": title,
+        "status": status,
+        "owner": owner,
+        "assignee": assignee,
+        "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
+        "created_by": {"harness": created_by_harness, "session": created_by_session},
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "rev": 1,
+        "depends_on": list(depends_on or []),
+        "evidence": [],
+        "notes": [],
+    }
+
+
+def _task_read(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise TaskError(f"tessctl tasks: {path} is not valid JSON: {e}")
+
+
+def _task_atomic_write(path: Path, record: dict) -> None:
+    data = (json.dumps(record, indent=2, sort_keys=False, ensure_ascii=False) + "\n").encode("utf-8")
+    _atomic_write_bytes(path, data)
+
+
+def _self_validate_task_or_raise(root: Path, path: Path) -> None:
+    """Dogfood check: whatever this region just wrote to `path` must itself
+    pass `tessctl validate task <path>` — mirrors `_self_validate_or_raise`
+    (MISSION LEDGER region) exactly, adapted to the "task" contract type. A
+    failure here is an internal bug in THIS region, never a caller-visible
+    degraded_output."""
+    try:
+        schema = load_contract_schema(root, "task")
+        instance = load_contract_instance(path)
+    except ContractError as e:
+        raise TaskError(f"internal error: {path} failed to load for its own dogfood check — {e}")
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    violations += _lint_contract("task", instance, root)
+    if violations:
+        raise TaskError(
+            f"internal error: {path} does not pass its own schema (task) — " + "; ".join(violations)
+        )
+
+
+def _lint_task(instance, root: Path = None) -> list:
+    """Relational checks plain JSON Schema cannot express — same class of
+    lint as `_lint_mission`/`_lint_crew_plan` above, applied to a task
+    record. `root` is accepted (unused today) for the SAME reason
+    `_lint_mission(instance, root)` accepts it: a future evidence-path-
+    exists check (mirroring MEDIUM-2's Gate.evidence containment/regular/
+    non-empty rule) would need it, and every `_lint_contract` dispatch entry
+    that MIGHT grow a root-dependent check takes the parameter from day one
+    rather than threading it through later."""
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+
+    claim = instance.get("claim")
+    if isinstance(claim, dict):
+        fields = ("host", "pid", "uuid", "claimed_at", "heartbeat_at")
+        present = [f for f in fields if claim.get(f) is not None]
+        if present and len(present) != len(fields):
+            missing = [f for f in fields if f not in present]
+            errors.append(
+                f"$.claim: partially-set claim ({', '.join(present)} set, "
+                f"{', '.join(missing)} null) — a claim must be either fully null "
+                f"(unclaimed) or fully set (claimed)"
+            )
+
+    depends_on = instance.get("depends_on")
+    if isinstance(depends_on, list):
+        tid = instance.get("id")
+        if tid and tid in depends_on:
+            errors.append(f"$.depends_on: task {tid!r} lists itself as a dependency")
+        seen = set()
+        for dep in depends_on:
+            if dep in seen:
+                errors.append(f"$.depends_on: duplicate dependency {dep!r}")
+            seen.add(dep)
+
+    for i, note in enumerate(instance.get("notes") or []):
+        if isinstance(note, dict) and not (note.get("text") or "").strip():
+            errors.append(f"$.notes[{i}]: empty note text")
+
+    return errors
+
+
+def _tasks_write_locked(root: Path, task_id: str, mutate_fn, *, expected_rev: int = None) -> dict:
+    """The ONE mutation path every `tasks` CLI write goes through: acquire an
+    exclusive advisory flock scoped to THIS SINGLE task id
+    (.tess/state/locks/task-<id>.lock — contention is scoped to writers of
+    the same task, per this region's own header comment), read the CURRENT
+    on-disk record, optionally assert a caller-supplied `expected_rev`
+    precondition (a hard TASK_CAS_CONFLICT if it no longer holds — the
+    caller read a stale rev and must reload + retry itself, an explicit
+    ETag-style optimistic-concurrency workflow rather than a silent auto-
+    retry that could paper over a real conflict), hand the record to
+    `mutate_fn` for the actual field changes, bump `rev`/`updated_at`,
+    atomically replace the file, and dogfood-validate the result before
+    returning it. `mutate_fn` receives a fresh COPY of the current record and
+    must return the full desired next record (it may raise TaskError itself,
+    e.g. `tasks claim`'s TASK_ALREADY_CLAIMED refusal — the lock is still
+    held at that point, and is released via `finally` either way).
+
+    If `mutate_fn`'s returned record is field-for-field IDENTICAL to
+    `current` (e.g. `tasks set --add-depends X` where X is already present —
+    every mutation this region's handlers perform is itself a no-op guard
+    against re-applying an unchanged value), this is a genuine no-op: no
+    file write, no `rev` bump, no `updated_at` touch, and `current` is
+    returned as-is. This matters beyond just avoiding a wasted write — a
+    caller (e.g. `_cmd_tasks_set`) uses "did rev actually change" to decide
+    whether to append a ledger event at all, so a no-op mutation never
+    produces an empty-summary ledger-append attempt."""
+    path = _task_path(root, task_id)
+    if not path.exists():
+        raise TaskError(f"tessctl tasks: no such task {task_id!r} ({TASKS_DIR}/{task_id}.json)")
+    lock_path = _task_lock_path(root, task_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _prune_stale_locks(root)
+    with open(lock_path, "a+") as lockf:
+        if fcntl is not None:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            current = _task_read(path)
+            current_rev = int(current.get("rev", 0))
+            if expected_rev is not None and current_rev != expected_rev:
+                raise TaskError(
+                    f"TASK_CAS_CONFLICT: task {task_id} is at rev {current_rev}, "
+                    f"expected {expected_rev} — reload the current record and retry"
+                )
+            # deepcopy, NOT dict(current): a shallow copy shares the SAME
+            # nested list/dict objects (depends_on/evidence/notes/claim) as
+            # `current` — mutate_fn's in-place list.append() calls would
+            # otherwise silently mutate `current` too, making the no-op
+            # equality check below always trivially true regardless of
+            # whether a real change happened.
+            next_record = mutate_fn(copy.deepcopy(current))
+            if next_record == current:
+                return current
+            next_record["rev"] = current_rev + 1
+            next_record["updated_at"] = _utc_now_iso()
+            _task_atomic_write(path, next_record)
+            _self_validate_task_or_raise(root, path)
+            return next_record
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+def _claim_is_stale(claim: dict, stale_after: int) -> bool:
+    hb = claim.get("heartbeat_at")
+    if not hb:
+        return True
+    try:
+        ts = datetime.datetime.strptime(hb, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return True
+    age = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()
+    return age > stale_after
+
+
+# ---------------------------------------------------------------------------
+# ACCOUNTABILITY LEDGER — hash-chain, append, view, verify.
+# ---------------------------------------------------------------------------
+
+def _ledger_event_hash(event_minus_hash: dict) -> str:
+    """sha256(prev_hash + canonical_json(event minus hash)) — the SAME
+    "canonical bytes minus the field being computed" construction
+    `verdict_canonical_bytes`/`signoff_canonical_bytes` already use elsewhere
+    in this engine (compact, key-sorted JSON), applied here to a hash chain
+    instead of a signature. `event_minus_hash` must already have its `hash`
+    key removed (or never have had one); `prev_hash` is read from IT (it is
+    itself one of the event's own persisted fields)."""
+    prev_hash = event_minus_hash.get("prev_hash", "")
+    canonical = json.dumps(
+        event_minus_hash, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(prev_hash.encode("utf-8") + canonical).hexdigest()
+
+
+def _ledger_tail_hash(shard_path: Path) -> str:
+    if not shard_path.exists():
+        return LEDGER_GENESIS_HASH
+    last = None
+    with open(shard_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                last = line
+    if last is None:
+        return LEDGER_GENESIS_HASH
+    try:
+        obj = json.loads(last)
+    except json.JSONDecodeError as e:
+        raise LedgerError(f"tessctl log: {shard_path} tail line is not valid JSON: {e}")
+    h = obj.get("hash")
+    if not isinstance(h, str):
+        raise LedgerError(f"tessctl log: {shard_path} tail line has no 'hash' field")
+    return h
+
+
+def _lint_ledger_event(instance) -> list:
+    errors = []
+    if not isinstance(instance, dict):
+        return errors
+    event = instance.get("event")
+    refs = instance.get("refs") or {}
+    if event in LEDGER_TASK_SCOPED_EVENTS and not refs.get("task"):
+        errors.append(
+            f"$.refs.task: event {event!r} is task-scoped and requires a non-null task ref"
+        )
+    return errors
+
+
+def _ledger_self_validate_or_raise(root: Path, record: dict) -> None:
+    """Dogfood check on the IN-MEMORY event dict, before it is ever appended
+    to a shard — the append-only twin of `_self_validate_task_or_raise` (that
+    one re-reads a file it just wrote; this one validates a value that is
+    about to become one JSONL line and is never rewritten afterward)."""
+    try:
+        schema = load_contract_schema(root, "ledger-event")
+    except ContractError as e:
+        raise LedgerError(f"internal error: could not load ledger-event schema — {e}")
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(record, schema, schema, base_dir, path="$")
+    violations += _lint_contract("ledger-event", record, root)
+    if violations:
+        raise LedgerError(
+            "internal error: ledger event does not pass its own schema (ledger-event) — "
+            + "; ".join(violations)
+        )
+
+
+def _log_append_event(root: Path, *, origin: str, event: str, summary: str, harness: str,
+                       model: str = None, session: str = None, persona: str = None,
+                       task: str = None, mission: str = None) -> dict:
+    if event not in LEDGER_EVENTS:
+        raise LedgerError(
+            f"tessctl log: unknown event {event!r}; expected one of {', '.join(LEDGER_EVENTS)}"
+        )
+    if not summary or not summary.strip():
+        raise LedgerError("tessctl log: --summary must not be empty")
+    if not harness or not harness.strip():
+        raise LedgerError("tessctl log: actor harness must not be empty")
+
+    shard_path = _ledger_shard_path(root, origin)
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = root / STATE_LOCKS_DIR / f"ledger-{shard_path.name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _prune_stale_locks(root)
+
+    with open(lock_path, "a+") as lockf:
+        if fcntl is not None:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            prev_hash = _ledger_tail_hash(shard_path)
+            record = {
+                "ts": _utc_now_iso(),
+                "actor": {"harness": harness, "model": model, "session": session, "persona": persona},
+                "event": event,
+                "refs": {"task": task, "mission": mission},
+                "summary": summary,
+                "prev_hash": prev_hash,
+            }
+            record["hash"] = _ledger_event_hash(record)
+            _ledger_self_validate_or_raise(root, record)
+            line = json.dumps(record, sort_keys=False, ensure_ascii=False) + "\n"
+            with open(shard_path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())
+            return record
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+def _ledger_auto_log(root: Path, *, harness: str, event: str, summary: str, task_id: str = None,
+                      mission_id: str = None, session: str = None, persona: str = None,
+                      model: str = None, origin: str = None) -> dict:
+    """The auto-instrumentation call every `tasks new|set|claim|release`
+    handler makes on a successful write — so the accountability trail can
+    never be silently skipped by a caller who mutated a task but forgot to
+    log it separately. Defaults the ledger shard `origin` to the SAME
+    harness identifier that owns the mutation (a sensible default; an
+    explicit `tessctl log append --origin ...` call can still target any
+    shard directly)."""
+    return _log_append_event(
+        root, origin=origin or harness, event=event, summary=summary,
+        harness=harness, model=model, session=session, persona=persona,
+        task=task_id, mission=mission_id,
+    )
+
+
+def _ledger_verify_shard(shard_path: Path):
+    """Walk one shard's hash chain top to bottom. Returns (ok: bool,
+    problems: list[str]) — stops at the FIRST break (a broken link
+    invalidates everything after it in this shard just as much as everything
+    at it; reporting only the first is clearer than a cascade of downstream
+    "mismatch" noise that is really one root cause)."""
+    problems = []
+    prev_hash = LEDGER_GENESIS_HASH
+    if not shard_path.exists():
+        return True, []
+    with open(shard_path, "r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                problems.append(f"{shard_path.name}:{lineno}: invalid JSON — {e}")
+                return False, problems
+            if obj.get("prev_hash") != prev_hash:
+                problems.append(
+                    f"{shard_path.name}:{lineno}: prev_hash mismatch — expected {prev_hash}, "
+                    f"found {obj.get('prev_hash')!r} (chain break / reordering)"
+                )
+                return False, problems
+            recorded_hash = obj.get("hash")
+            recomputed = _ledger_event_hash({k: v for k, v in obj.items() if k != "hash"})
+            if recomputed != recorded_hash:
+                problems.append(
+                    f"{shard_path.name}:{lineno}: hash mismatch — recorded {recorded_hash!r}, "
+                    f"recomputed {recomputed!r} (content tamper detected)"
+                )
+                return False, problems
+            prev_hash = recorded_hash
+    return True, problems
+
+
+def _iter_ledger_shards(root: Path, origin: str = None):
+    ledger_dir = root / LEDGER_DIR
+    if not ledger_dir.is_dir():
+        return
+    pattern = f"*.{_ledger_origin_slug(origin)}.jsonl" if origin else "*.jsonl"
+    for p in sorted(ledger_dir.glob(pattern)):
+        if p.name == ".gitkeep":
+            continue
+        yield p
+
+
+# ---------------------------------------------------------------------------
+# `tessctl tasks` subcommand handlers
+# ---------------------------------------------------------------------------
+
+def _cmd_tasks_new(args, root: Path) -> None:
+    depends_on = []
+    if args.depends_on:
+        depends_on = [d.strip() for d in args.depends_on.split(",") if d.strip()]
+    status = args.status or "backlog"
+    try:
+        task_id = _new_task_id(root, args.title)
+        now = _utc_now_iso()
+        record = _new_task_record(
+            task_id, args.title, status, args.owner, args.assignee,
+            depends_on, args.harness, args.session, now,
+        )
+        path = _task_path(root, task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _task_atomic_write(path, record)
+        _self_validate_task_or_raise(root, path)
+        _ledger_auto_log(
+            root, harness=args.harness, event="task_transition", task_id=task_id,
+            summary=f"created: (none) -> {status} — {args.title!r}", session=args.session,
+        )
+    except (TaskError, LedgerError) as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"tessctl tasks new — {task_id}")
+        print(f"  {TASKS_DIR}/{task_id}.json")
+
+
+def _cmd_tasks_set(args, root: Path) -> None:
+    task_id = args.task_id
+    changes = []
+
+    if not any([
+        args.status, args.owner is not None, args.assignee is not None,
+        args.add_depends, args.add_evidence, args.add_note, args.heartbeat,
+    ]):
+        sys.exit(
+            "tessctl tasks set: no changes specified — pass at least one of "
+            "--status/--owner/--assignee/--add-depends/--add-evidence/--add-note/--heartbeat"
+        )
+
+    def mutate(record):
+        if args.status and args.status != record["status"]:
+            changes.append(f"status: {record['status']} -> {args.status}")
+            record["status"] = args.status
+        if args.owner is not None and args.owner != (record.get("owner") or ""):
+            changes.append(f"owner: {record.get('owner')!r} -> {args.owner!r}")
+            record["owner"] = args.owner or None
+        if args.assignee is not None and args.assignee != (record.get("assignee") or ""):
+            changes.append(f"assignee: {record.get('assignee')!r} -> {args.assignee!r}")
+            record["assignee"] = args.assignee or None
+        for dep in (args.add_depends or []):
+            if dep not in record["depends_on"]:
+                record["depends_on"].append(dep)
+                changes.append(f"+depends_on: {dep}")
+        for ev in (args.add_evidence or []):
+            record["evidence"].append(ev)
+            changes.append(f"+evidence: {ev}")
+        if args.add_note:
+            record["notes"].append({
+                "at": _utc_now_iso(), "by": args.by or getpass.getuser(), "text": args.add_note,
+            })
+            changes.append("+note")
+        if args.heartbeat:
+            claim = record.get("claim") or {}
+            if not claim.get("host"):
+                raise TaskError(f"tessctl tasks set: {task_id} has no active claim to heartbeat")
+            claim["heartbeat_at"] = _utc_now_iso()
+            record["claim"] = claim
+            changes.append("heartbeat refreshed")
+        return record
+
+    try:
+        record = _tasks_write_locked(root, task_id, mutate, expected_rev=args.expected_rev)
+        # Every requested mutation can individually turn out to be a no-op
+        # (e.g. `--add-depends X` where X is already present) — `changes`
+        # only ever gets an entry for a REAL change, so an empty list here
+        # means `_tasks_write_locked` itself detected no field-for-field
+        # difference and made no write at all (see its own docstring). Skip
+        # the ledger append entirely rather than attempt one with an empty
+        # summary (LedgerError: "--summary must not be empty").
+        if changes:
+            event = "heartbeat" if changes == ["heartbeat refreshed"] else "task_transition"
+            _ledger_auto_log(
+                root, harness=args.harness, event=event, task_id=task_id,
+                summary="; ".join(changes), session=args.session,
+            )
+    except (TaskError, LedgerError) as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    elif changes:
+        print(f"tessctl tasks set — {task_id} (rev {record['rev']})")
+        print(f"  {'; '.join(changes)}")
+    else:
+        print(f"tessctl tasks set — {task_id}: no effective change (rev unchanged at {record['rev']})")
+
+
+def _cmd_tasks_claim(args, root: Path) -> None:
+    task_id = args.task_id
+    host = args.host
+    pid = args.pid
+    claim_uuid = args.claim_uuid or str(uuid.uuid4())
+    stale_after = args.stale_after if args.stale_after is not None else DEFAULT_CLAIM_STALE_SECONDS
+    now = _utc_now_iso()
+    ledger = {}
+
+    def mutate(record):
+        claim = record.get("claim") or {}
+        same_claimant = (
+            claim.get("host") == host and claim.get("pid") == pid and claim.get("uuid") == claim_uuid
+        )
+        if not claim.get("host"):
+            ledger["kind"] = "claim"
+            ledger["summary"] = f"claimed by {host}:{pid}:{claim_uuid}"
+        elif same_claimant:
+            ledger["kind"] = "heartbeat"
+            ledger["summary"] = f"heartbeat refreshed by {host}:{pid}:{claim_uuid}"
+        else:
+            stale = _claim_is_stale(claim, stale_after)
+            if not (stale or args.force):
+                raise TaskError(
+                    f"TASK_ALREADY_CLAIMED: {task_id} is claimed by "
+                    f"{claim.get('host')}:{claim.get('pid')}:{claim.get('uuid')} since "
+                    f"{claim.get('claimed_at')} (heartbeat {claim.get('heartbeat_at')}); "
+                    f"use --force, or wait past --stale-after ({stale_after}s), to reclaim"
+                )
+            reason = "stale heartbeat" if stale else "forced"
+            ledger["kind"] = "reclaimed"
+            ledger["summary"] = (
+                f"reclaimed from {claim.get('host')}:{claim.get('pid')}:{claim.get('uuid')} "
+                f"by {host}:{pid}:{claim_uuid} ({reason})"
+            )
+        prior_status = record["status"]
+        record["claim"] = {
+            "host": host, "pid": pid, "uuid": claim_uuid,
+            "claimed_at": claim.get("claimed_at") if same_claimant else now,
+            "heartbeat_at": now,
+        }
+        if record["status"] in CLAIM_AUTO_ADVANCE_FROM:
+            record["status"] = "in_progress"
+            ledger["summary"] += f" (status {prior_status} -> in_progress)"
+        return record
+
+    try:
+        record = _tasks_write_locked(root, task_id, mutate)
+        _ledger_auto_log(
+            root, harness=args.harness, event=ledger["kind"], task_id=task_id,
+            summary=ledger["summary"], session=args.session, persona=args.persona,
+        )
+    except (TaskError, LedgerError) as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"tessctl tasks claim — {task_id} ({ledger['kind']})")
+        print(f"  {ledger['summary']}")
+
+
+def _cmd_tasks_release(args, root: Path) -> None:
+    task_id = args.task_id
+    ledger = {}
+
+    def mutate(record):
+        claim = record.get("claim") or {}
+        if not claim.get("host"):
+            raise TaskError(f"tessctl tasks release: {task_id} is not currently claimed")
+        matches = (
+            claim.get("host") == args.host and claim.get("pid") == args.pid
+            and claim.get("uuid") == args.claim_uuid
+        )
+        if not matches and not args.force:
+            raise TaskError(
+                f"tessctl tasks release: {task_id} is claimed by "
+                f"{claim.get('host')}:{claim.get('pid')}:{claim.get('uuid')}, not "
+                f"{args.host}:{args.pid}:{args.claim_uuid} — pass --force to release anyway"
+            )
+        reason = args.reason or "released"
+        ledger["kind"] = {"completed": "completed", "crashed": "crashed"}.get(reason, "release")
+        ledger["summary"] = f"released by {args.host}:{args.pid}:{args.claim_uuid} (reason: {reason})"
+        if not matches:
+            ledger["summary"] += (
+                f" [force; was held by "
+                f"{claim.get('host')}:{claim.get('pid')}:{claim.get('uuid')}]"
+            )
+        record["claim"] = {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None}
+        if args.status:
+            record["status"] = args.status
+        return record
+
+    try:
+        record = _tasks_write_locked(root, task_id, mutate)
+        _ledger_auto_log(
+            root, harness=args.harness, event=ledger["kind"], task_id=task_id,
+            summary=ledger["summary"], session=args.session,
+        )
+    except (TaskError, LedgerError) as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"tessctl tasks release — {task_id} ({ledger['kind']})")
+        print(f"  {ledger['summary']}")
+
+
+def _cmd_tasks_pull(args, root: Path) -> None:
+    tasks_dir = root / TASKS_DIR
+    results = []
+    if tasks_dir.is_dir():
+        for p in sorted(tasks_dir.glob("*.json")):
+            try:
+                rec = _task_read(p)
+            except TaskError:
+                continue
+            if args.status and rec.get("status") not in args.status:
+                continue
+            if args.owner and rec.get("owner") != args.owner:
+                continue
+            if args.unclaimed and (rec.get("claim") or {}).get("host"):
+                continue
+            results.append(rec)
+    results.sort(key=lambda r: r.get("created_at", ""))
+    if args.limit:
+        results = results[: args.limit]
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(results, indent=2))
+        return
+    if not results:
+        print("tessctl tasks pull: no matching tasks")
+        return
+    for r in results:
+        claim = r.get("claim") or {}
+        holder = f"{claim['host']}:{claim['pid']}" if claim.get("host") else "-"
+        owner = r.get("owner") or "-"
+        print(f"{r['id']}  [{r['status']:<11}]  owner={owner:<12} claim={holder:<22} {r['title']}")
+
+
+_BOARD_STATUS_LABELS = {
+    "backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress",
+    "blocked": "Blocked", "review": "Review", "done": "Done", "cancelled": "Cancelled",
+}
+
+
+def _cmd_tasks_render(args, root: Path) -> None:
+    tasks_dir = root / TASKS_DIR
+    by_status = {s: [] for s in TASK_STATUSES}
+    if tasks_dir.is_dir():
+        for p in sorted(tasks_dir.glob("*.json")):
+            try:
+                rec = _task_read(p)
+            except TaskError:
+                continue
+            by_status.setdefault(rec.get("status", "backlog"), []).append(rec)
+
+    total = sum(len(v) for v in by_status.values())
+    lines = [
+        "<!-- GENERATED by `tessctl tasks render` — do not hand-edit; this file is",
+        "     regenerated from .tess/state/tasks/*.json on every run and any manual",
+        "     edit here will be silently overwritten. -->",
+        "# Task Board",
+        "",
+        f"_Last rendered: {_utc_now_iso()} — {total} task(s)_",
+        "",
+    ]
+    for status in TASK_STATUSES:
+        items = sorted(by_status.get(status, []), key=lambda r: r.get("updated_at", ""))
+        lines.append(f"## {_BOARD_STATUS_LABELS[status]} ({len(items)})")
+        lines.append("")
+        if not items:
+            lines.append("_none_")
+        for r in items:
+            claim = r.get("claim") or {}
+            holder = f" — claimed by `{claim['host']}:{claim['pid']}`" if claim.get("host") else ""
+            owner = f" (owner: {r['owner']})" if r.get("owner") else ""
+            lines.append(f"- `{r['id']}` — {r['title']}{owner}{holder}")
+        lines.append("")
+
+    board_path = root / TASKS_DIR / BOARD_FILENAME
+    _atomic_write_bytes(board_path, ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
+    print(f"tessctl tasks render — wrote {TASKS_DIR}/{BOARD_FILENAME} ({total} task(s))")
+
+
+def cmd_tasks(args, root: Path) -> None:
+    sub = getattr(args, "tasks_sub", None)
+    if sub is None:
+        sys.exit("tessctl tasks: a subcommand is required (new | set | claim | release | pull | render)")
+    handlers = {
+        "new": _cmd_tasks_new, "set": _cmd_tasks_set, "claim": _cmd_tasks_claim,
+        "release": _cmd_tasks_release, "pull": _cmd_tasks_pull, "render": _cmd_tasks_render,
+    }
+    handlers[sub](args, root)
+
+
+# ---------------------------------------------------------------------------
+# `tessctl log` subcommand handlers
+# ---------------------------------------------------------------------------
+
+def _cmd_log_append(args, root: Path) -> None:
+    try:
+        record = _log_append_event(
+            root, origin=args.origin, event=args.event, summary=args.summary,
+            harness=args.harness or args.origin, model=args.model, session=args.session,
+            persona=args.persona, task=args.task, mission=args.mission,
+        )
+    except LedgerError as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"tessctl log append — {record['event']} @ {record['ts']} (hash {record['hash'][:12]}...)")
+        print(f"  {record['summary']}")
+
+
+def _cmd_log_view(args, root: Path) -> None:
+    entries = []
+    for shard in _iter_ledger_shards(root, args.origin):
+        with open(shard, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if args.task and obj.get("refs", {}).get("task") != args.task:
+                    continue
+                if args.mission and obj.get("refs", {}).get("mission") != args.mission:
+                    continue
+                if args.since and obj.get("ts", "") < args.since:
+                    continue
+                entries.append(obj)
+    entries.sort(key=lambda e: e.get("ts", ""))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(entries, indent=2))
+        return
+    if not entries:
+        print("tessctl log view: no matching events")
+        return
+    for e in entries:
+        actor = e.get("actor", {})
+        refs = e.get("refs", {})
+        ref_bits = " ".join(f"{k}={v}" for k, v in refs.items() if v)
+        print(f"[{e['ts']}] {e['event']:<16} actor={actor.get('harness')} {ref_bits}  {e['summary']}")
+
+
+def _cmd_log_verify(args, root: Path) -> None:
+    any_bad = False
+    checked = 0
+    for shard in _iter_ledger_shards(root, args.origin):
+        ok, problems = _ledger_verify_shard(shard)
+        checked += 1
+        if ok:
+            print(f"OK        {shard.name}")
+        else:
+            any_bad = True
+            print(f"TAMPERED  {shard.name}")
+            for p in problems:
+                print(f"  {p}")
+    if checked == 0:
+        print("tessctl log verify: no ledger shards found — nothing to verify")
+    sys.exit(1 if any_bad else 0)
+
+
+def cmd_log(args, root: Path) -> None:
+    sub = getattr(args, "log_sub", None)
+    if sub is None:
+        sys.exit("tessctl log: a subcommand is required (append | view | verify)")
+    handlers = {"append": _cmd_log_append, "view": _cmd_log_view, "verify": _cmd_log_verify}
+    handlers[sub](args, root)
+
+
+# ---------------------------------------------------------------------------
 # Goal #9 — `tessctl mcp serve`: the gate as an MCP server (MCP region).
 # Spec: Model Context Protocol 2025-06-18 — JSON-RPC 2.0 over stdio, newline-
 # delimited framing, no embedded newlines per message
@@ -15487,6 +16477,136 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--by", help="override the recorded actor for retry/escalation records (default: current OS user)")
     p_run.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
 
+    # tasks — Phase 0.2: the cross-harness TASK STORE (TASK LEDGER region,
+    # directly below the RUN region — a sibling of `mission`/`retry` above).
+    p_tasks = sub.add_parser(
+        "tasks",
+        help="cross-harness task store: file-per-task JSON under .tess/state/tasks/ "
+             "(new | set | claim | release | pull | render)",
+    )
+    tasks_sub = p_tasks.add_subparsers(dest="tasks_sub", metavar="SUBCOMMAND")
+
+    p_tasks_new = tasks_sub.add_parser("new", help="create a new task")
+    p_tasks_new.add_argument("title", help="human-readable task title")
+    p_tasks_new.add_argument("--status", choices=list(TASK_STATUSES), help="initial status (default: backlog)")
+    p_tasks_new.add_argument("--owner", help="human/team owner")
+    p_tasks_new.add_argument("--assignee", help="agent/persona currently assigned")
+    p_tasks_new.add_argument(
+        "--depends-on", dest="depends_on", metavar="ID[,ID...]",
+        help="comma-separated task ids this task depends on",
+    )
+    p_tasks_new.add_argument(
+        "--harness", required=True,
+        help="the harness creating this task (e.g. claude-code, codex) — recorded in "
+             "created_by AND as the ledger actor for the implicit creation event",
+    )
+    p_tasks_new.add_argument("--session", help="harness session id (optional)")
+    p_tasks_new.add_argument("--json", action="store_true", dest="json_out")
+
+    p_tasks_set = tasks_sub.add_parser("set", help="mutate an existing task (optimistic-concurrency CAS write)")
+    p_tasks_set.add_argument("task_id", metavar="ID")
+    p_tasks_set.add_argument("--status", choices=list(TASK_STATUSES))
+    p_tasks_set.add_argument("--owner", help="pass '' to clear")
+    p_tasks_set.add_argument("--assignee", help="pass '' to clear")
+    p_tasks_set.add_argument("--add-depends", dest="add_depends", action="append", metavar="ID")
+    p_tasks_set.add_argument("--add-evidence", dest="add_evidence", action="append", metavar="PATH")
+    p_tasks_set.add_argument("--add-note", dest="add_note", metavar="TEXT")
+    p_tasks_set.add_argument(
+        "--heartbeat", action="store_true",
+        help="refresh claim.heartbeat_at without changing anything else about the claim "
+             "(refuses if the task is not currently claimed)",
+    )
+    p_tasks_set.add_argument(
+        "--expected-rev", dest="expected_rev", type=int, metavar="N",
+        help="CAS precondition: refuse with TASK_CAS_CONFLICT (no mutation) if the "
+             "on-disk rev is not exactly N — reload and retry on conflict",
+    )
+    p_tasks_set.add_argument("--harness", required=True)
+    p_tasks_set.add_argument("--session")
+    p_tasks_set.add_argument("--by", help="who/what is recorded as the note author (default: OS user)")
+    p_tasks_set.add_argument("--json", action="store_true", dest="json_out")
+
+    p_tasks_claim = tasks_sub.add_parser("claim", help="claim a task (claim-lease + heartbeat)")
+    p_tasks_claim.add_argument("task_id", metavar="ID")
+    p_tasks_claim.add_argument("--host", required=True)
+    p_tasks_claim.add_argument("--pid", required=True, type=int)
+    p_tasks_claim.add_argument(
+        "--uuid", dest="claim_uuid", help="claimant instance uuid (default: a fresh uuid4)",
+    )
+    p_tasks_claim.add_argument("--harness", required=True)
+    p_tasks_claim.add_argument("--session")
+    p_tasks_claim.add_argument("--persona")
+    p_tasks_claim.add_argument(
+        "--stale-after", dest="stale_after", type=int, metavar="SECONDS",
+        help=f"seconds of quiet heartbeat before an existing claim by a DIFFERENT "
+             f"claimant is treated as abandoned (default: {DEFAULT_CLAIM_STALE_SECONDS})",
+    )
+    p_tasks_claim.add_argument("--force", action="store_true", help="steal a live (non-stale) claim anyway")
+    p_tasks_claim.add_argument("--json", action="store_true", dest="json_out")
+
+    p_tasks_release = tasks_sub.add_parser("release", help="release a claimed task")
+    p_tasks_release.add_argument("task_id", metavar="ID")
+    p_tasks_release.add_argument("--host", required=True)
+    p_tasks_release.add_argument("--pid", required=True, type=int)
+    p_tasks_release.add_argument("--uuid", dest="claim_uuid", required=True)
+    p_tasks_release.add_argument(
+        "--status", choices=list(TASK_STATUSES), help="status to set on release (default: unchanged)",
+    )
+    p_tasks_release.add_argument(
+        "--reason", choices=["completed", "crashed", "released"],
+        help="ledger event classification (default: released)",
+    )
+    p_tasks_release.add_argument("--harness", required=True)
+    p_tasks_release.add_argument("--session")
+    p_tasks_release.add_argument(
+        "--force", action="store_true", help="release even if the claim belongs to a different host/pid/uuid",
+    )
+    p_tasks_release.add_argument("--json", action="store_true", dest="json_out")
+
+    p_tasks_pull = tasks_sub.add_parser("pull", help="list tasks matching filters (read-only)")
+    p_tasks_pull.add_argument("--status", choices=list(TASK_STATUSES), action="append")
+    p_tasks_pull.add_argument("--owner")
+    p_tasks_pull.add_argument("--unclaimed", action="store_true")
+    p_tasks_pull.add_argument("--limit", type=int)
+    p_tasks_pull.add_argument("--json", action="store_true", dest="json_out")
+
+    tasks_sub.add_parser("render", help="regenerate .tess/state/tasks/BOARD.md (derived kanban view)")
+
+    # log — Phase 0.2: the hash-chained ACCOUNTABILITY LEDGER (sibling region).
+    p_log = sub.add_parser(
+        "log",
+        help="hash-chained accountability ledger under .tess/state/ledger/ (append | view | verify)",
+    )
+    log_sub = p_log.add_subparsers(dest="log_sub", metavar="SUBCOMMAND")
+
+    p_log_append = log_sub.add_parser("append", help="append one tamper-evident event to a ledger shard")
+    p_log_append.add_argument(
+        "--origin", required=True,
+        help="shard key (usually the harness/persona identifier) — "
+             ".tess/state/ledger/<YYYY-MM>.<origin>.jsonl",
+    )
+    p_log_append.add_argument("--event", required=True, choices=list(LEDGER_EVENTS))
+    p_log_append.add_argument("--summary", required=True)
+    p_log_append.add_argument("--task", help="task id this event refers to")
+    p_log_append.add_argument("--mission", help="mission id this event refers to")
+    p_log_append.add_argument("--harness", help="actor harness (default: --origin)")
+    p_log_append.add_argument("--model")
+    p_log_append.add_argument("--session")
+    p_log_append.add_argument("--persona")
+    p_log_append.add_argument("--json", action="store_true", dest="json_out")
+
+    p_log_view = log_sub.add_parser("view", help="read-only view across ledger shard(s), sorted by ts")
+    p_log_view.add_argument("--origin")
+    p_log_view.add_argument("--task")
+    p_log_view.add_argument("--mission")
+    p_log_view.add_argument("--since", help="ISO-8601 timestamp lower bound (string-compared)")
+    p_log_view.add_argument("--json", action="store_true", dest="json_out")
+
+    p_log_verify = log_sub.add_parser(
+        "verify", help="walk each shard's hash chain; exit 1 if any is tampered/broken",
+    )
+    p_log_verify.add_argument("--origin")
+
     # mcp (Goal #9) — the gate as an MCP server
     p_mcp = sub.add_parser(
         "mcp",
@@ -15585,6 +16705,11 @@ def main() -> None:
         # Goal #9: `tessctl mcp serve` — the gate as an MCP server (MCP
         # region, directly below the RUN region).
         "mcp":          cmd_mcp,
+        # Phase 0.2: the cross-harness TASK STORE + ACCOUNTABILITY LEDGER
+        # (TASK LEDGER region, directly below the RUN region — a sibling of
+        # the MISSION LEDGER region above).
+        "tasks":        cmd_tasks,
+        "log":          cmd_log,
     }
 
     fn = dispatch.get(args.command)
@@ -15604,9 +16729,12 @@ def main() -> None:
     # already catches it locally too; this is the defense-in-depth backstop.
     # RunError (Goal #6, RUN region) mirrors the same pattern — cmd_run
     # already catches it locally too; this is the defense-in-depth backstop.
+    # TaskError/LedgerError (Phase 0.2, TASK LEDGER region) mirror the same
+    # pattern again — every cmd_tasks_*/cmd_log_* entrypoint already catches
+    # them locally too; this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except (GateError, MissionError, RunError) as e:
+    except (GateError, MissionError, RunError, TaskError, LedgerError) as e:
         sys.exit(str(e))
 
 
