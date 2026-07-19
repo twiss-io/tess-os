@@ -130,6 +130,19 @@ channels/
 .tess/update.lock
 
 # ─────────────────────────────────────────────────────────────
+# Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md).
+# .tess/state/** as a whole is instance DATA (tess.manifest.json never_touch
+# + the publish-clean deny set already block it from ever reaching a commit
+# regardless of this file). locks/ specifically is also gitignored outright
+# here: pure ephemeral runtime lock state (same rationale as .tess/update.lock
+# above), never worth tracking. memory/tasks/ledger content-tracking policy
+# is deferred to Phase 0.2+ (memory-adopt symlink / tasks CLI / ledger
+# schema) — Phase 0.1 relies on the publish-clean gate alone for those three.
+# ─────────────────────────────────────────────────────────────
+.tess/state/locks/*
+!.tess/state/locks/.gitkeep
+
+# ─────────────────────────────────────────────────────────────
 # Knowledge base content is operator/client data — keep structure, ignore content
 # ─────────────────────────────────────────────────────────────
 kb/raw/*

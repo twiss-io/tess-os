@@ -57,6 +57,11 @@ GATE_CASES = [
     (".env", DENY, "never_touch .env"),
     (".env.production", DENY, "never_touch .env.*"),
     (".claude/settings.local.json", DENY, "never_touch settings.local.json"),
+    # Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md)
+    (".tess/state/memory/note.md", DENY, "never_touch .tess/state/** (memory)"),
+    (".tess/state/tasks/graph.json", DENY, "never_touch .tess/state/** (tasks)"),
+    (".tess/state/ledger/entry.md", DENY, "never_touch .tess/state/** (ledger)"),
+    (".tess/state/locks/task.lock", DENY, "never_touch .tess/state/** (locks)"),
     # .local.md hard guard — canonical lowercase
     ("conductor/guardrails.local.md", DENY, "canonical .local.md in owned conductor/**"),
     ("clients/ExampleClient/x.local.md", DENY, ".local.md in non-owned path"),

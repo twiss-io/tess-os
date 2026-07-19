@@ -145,6 +145,12 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.git/config',
     'node_modules/x/index.js',
     'create-tess/src/index.js',
+    // Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md):
+    // real instance data under .tess/state/** must never leak into a scaffold.
+    '.tess/state/memory/real-memory.json',
+    '.tess/state/tasks/graph.json',
+    '.tess/state/ledger/entry.md',
+    '.tess/state/locks/task.lock',
   ]) {
     assert.equal(isExcludedRel(p), true, `${p} must be excluded`);
   }
@@ -162,6 +168,11 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     'agents/leah/README.md',
     '.gitignore',
     '.github/workflows/tess-gate.yml',
+    // Phase 0.1 — the empty scaffold structure itself must survive.
+    '.tess/state/memory/.gitkeep',
+    '.tess/state/tasks/.gitkeep',
+    '.tess/state/ledger/.gitkeep',
+    '.tess/state/locks/.gitkeep',
   ]) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);
   }
@@ -277,6 +288,11 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.tess/snapshots/.gitkeep', '');
   w('.tess/staging/.gitkeep', '');
   w('agents/leah/README.md');
+  // Phase 0.1 — the empty .tess/state/** scaffold structure (must survive).
+  w('.tess/state/memory/.gitkeep', '');
+  w('.tess/state/tasks/.gitkeep', '');
+  w('.tess/state/ledger/.gitkeep', '');
+  w('.tess/state/locks/.gitkeep', '');
 
   // The author's secret + operator-state material (must NOT leak).
   w('.claude/vault/vault.age', 'CIPHERTEXT\n');
@@ -292,6 +308,14 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('__pycache__/mod.pyc', 'bytecode\n');
   w('.git/config', '[core]\n');
   w('node_modules/dep/index.js', 'module.exports={}\n');
+  // The author's REAL .tess/state/** instance data (must NOT leak) — the
+  // exact scenario Phase 0.1 exists to prevent: a local --template-source
+  // dragging a live instance's real memory/tasks/ledger/locks into a
+  // freshly produced adopter instance.
+  w('.tess/state/memory/real-memory.json', '{"author":"real memory"}\n');
+  w('.tess/state/tasks/graph.json', '{"author":"real tasks"}\n');
+  w('.tess/state/ledger/entry.md', 'author real ledger entry\n');
+  w('.tess/state/locks/task.lock', 'author real lock\n');
 
   try {
     fetchTemplate(src, staging);
@@ -314,6 +338,11 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     gone('__pycache__');
     gone('.git');
     gone('node_modules');
+    // Phase 0.1 — real .tess/state/** instance data must never leak.
+    gone('.tess/state/memory/real-memory.json');
+    gone('.tess/state/tasks/graph.json');
+    gone('.tess/state/ledger/entry.md');
+    gone('.tess/state/locks/task.lock');
 
     // Legit structure preserved.
     kept('README.md');
@@ -324,6 +353,12 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     kept('.tess/snapshots/.gitkeep');
     kept('.tess/staging/.gitkeep');
     kept('agents/leah/README.md');
+    // Phase 0.1 — the empty structure itself must survive (adopters inherit
+    // structure, never data).
+    kept('.tess/state/memory/.gitkeep');
+    kept('.tess/state/tasks/.gitkeep');
+    kept('.tess/state/ledger/.gitkeep');
+    kept('.tess/state/locks/.gitkeep');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
