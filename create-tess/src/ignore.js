@@ -120,6 +120,16 @@ export const EXCLUDE_REL_PATHS = new Set([
 // SAME treatment for the SAME reason — adopters inherit the empty
 // drafts/ STRUCTURE, never a source instance's actual generated skill
 // drafts.
+//
+// PR-2 (Agent Receipt EMIT wiring, tools/receipt-emit/): .tess/state/receipts
+// gets the SAME treatment for the SAME reason. This is the #132/#105/#111
+// leak-class applied to a SIXTH `.tess/state/**` subsystem: the ship-gate's
+// auto-emitted Agent Receipt chain (.tess/state/receipts/chain.jsonl) is
+// real, per-instance governance/audit data the moment the gate appends its
+// first receipt (actor, policy_decision, the embedded signed verdict/
+// sign-off) — a `--template-source` local copy must inherit the empty
+// STRUCTURE only, never the template author's own real receipt chain,
+// exactly like every other `.tess/state/**` subdir above.
 export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/snapshots',
   '.tess/staging',
@@ -128,6 +138,7 @@ export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/state/ledger',
   '.tess/state/locks',
   '.tess/state/skills',
+  '.tess/state/receipts',
 ];
 
 // Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).

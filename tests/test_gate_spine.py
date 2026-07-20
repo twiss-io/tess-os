@@ -653,17 +653,19 @@ def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
         "rationale": "x",
         "authorized_at": "2026-07-07T00:00:00Z",
     }))
-    ok, reason = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
+    ok, reason, data = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
     assert ok is False
     assert "does not match" in reason
+    assert data is None
 
 
 def test_signoff_missing_field_is_rejected(engine, tmp_path):
     signoff = tmp_path / "money.signoff.json"
     signoff.write_text(json.dumps({"rule_id": "money", "category": "money_movement"}))
-    ok, reason = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
+    ok, reason, data = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
     assert ok is False
     assert "missing required field" in reason
+    assert data is None
 
 
 # ---------------------------------------------------------------------------

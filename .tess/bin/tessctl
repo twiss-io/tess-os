@@ -231,6 +231,60 @@ POLICY_INSTANCE_CANDIDATES = ("policy.yaml", "policy.yml", "policy.json")
 # client-external-claims are NEVER satisfiable by a verifier's verdict alone).
 GATE_SIGNOFF_DIR = ".tess/gate/signoffs"
 
+# PR-2 (Agent Receipt EMIT wiring, tools/receipt-emit/) — where the ship-gate
+# auto-appends one Agent Receipt per governed decision it accepts as
+# clearing a rule. A SIXTH `.tess/state/**` subsystem (memory/tasks/ledger/
+# locks/skills already exist — docs/STATE_LAYER.md), NOT a sibling
+# `.tess/receipts/**`: this is auto-generated, machine-local, high-frequency
+# evidence produced on every gate run (much closer in kind to
+# `.tess/state/ledger/**`'s own hash-chained append log than to a
+# deliberately-authored, committed artifact like a verdict or sign-off), so
+# it inherits the EXISTING `.tess/state/**` umbrella fence — tess.manifest.json
+# never_touch and `_PUBLISH_CLEAN_PRIVATE_GLOBS` already cover
+# `.tess/state/**` as a whole, for free, with zero new glob entries needed
+# here. Only the two PER-SUBSYSTEM additions #111 and #132 each already made
+# when extending this same fence are needed for THIS subsystem too: a
+# content-level `.gitignore` entry (`.tess/state/receipts/*` +
+# `!.tess/state/receipts/.gitkeep`) and a `create-tess/src/ignore.js`
+# `EXCLUDE_CONTENT_PREFIXES` entry — both added alongside this constant. A
+# receipt's own evidentiary value (GPG signature + hash chain,
+# `tools/receipt-verify/receipt_verify.py verify-chain`) is a property of the
+# FILE, independent of git-tracking status — same operating model as
+# `.tess/state/ledger/**`, verified via `tessctl log verify` with no git
+# involvement at all. Persisting a CI runner's locally-emitted receipts back
+# into the remote repo's git history (an authenticated commit-back step) is
+# a deliberate, disclosed, OUT-OF-SCOPE follow-on for this PR — see
+# docs/AGENT_RECEIPT_SPEC.md and this PR's own description; auto-committing
+# from CI is a separate, later, explicitly-authorized design decision, not
+# something this wiring silently assumes.
+GATE_RECEIPT_CHAIN_REL = ".tess/state/receipts/chain.jsonl"
+
+# Repo-relative path to the EMIT CLI this gate invokes as a subprocess (never
+# imported in-process — see `_gate_emit_receipts_on_clear`'s own docstring
+# for why). Resolved against the OPERATING root (the project being gated),
+# the same way `core/contracts/**`/`core/policy/**` already are — an adopter
+# project's own `tools/receipt-emit/` copy (shipped by `create-tess`'s
+# whole-tree-minus-exclusions scaffold, same as `core/contracts/`), never
+# this tessctl script's own install location.
+RECEIPT_EMIT_CLI_REL = "tools/receipt-emit/receipt_emit.py"
+
+# PR-2 (Agent Receipt EMIT wiring) — printed once whenever `tessctl gate
+# pre-push|ci` auto-emits at least one receipt, deliberately in the SAME
+# spirit as `tools/receipt-emit/receipt_emit.py`'s own HONEST_LABEL constant
+# (never imported directly — this process never imports that tool's Python
+# module, only invokes its CLI as a subprocess — kept in matching wording by
+# hand instead). Gate wiring does NOT change what a receipt proves: a gate
+# PASS plus a minted receipt means this decision was validly, genuinely
+# signed — it does NOT mean the gate is running under an enforced,
+# trust-anchored key registry. Do not let 'the gate emitted a receipt' read
+# as 'the gate is enforced/trusted.'
+GATE_RECEIPT_HONEST_NOTE = (
+    "  NOTE: every receipt above is genuinely GPG-signed and tamper/chain-evident, but is NOT\n"
+    "  trust-anchored until the signer's key is registered in core/policy/policy.yaml. A gate\n"
+    "  PASS plus a minted receipt means this specific decision was validly, genuinely signed —\n"
+    "  it does NOT by itself mean the gate is running under an enforced, trust-anchored registry."
+)
+
 # verification-routing.md's six named mandatory verifiers — verbatim as the
 # `verdict.verifier` / `policy.rules[].allowed_verifiers` schema enum. Phase
 # 2b's `policy.verifier_keys` map is keyed by these SAME names, but a plain
@@ -9466,6 +9520,14 @@ _DECISION_MESSAGES = {
     "BASE_REQUIRED": "an immutable BASE commit is required",
     "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
+    # PR-2 (Agent Receipt EMIT wiring) — NEVER a block reason (this code is
+    # never present in `result["reasons"]`/`blocked`, only in the separate,
+    # explicitly non-blocking `receipt_gaps` list — see
+    # `_gate_emit_receipts_on_clear`'s own docstring); classified through
+    # this SAME allowlist only so the trace log's `reasons` projection can
+    # surface it via the one redaction pipeline every other decision signal
+    # already goes through, never a second, parallel one.
+    "RECEIPT_EMIT_FAILED": "an Agent Receipt could not be auto-emitted for a cleared governance decision",
 }
 
 
@@ -9490,6 +9552,8 @@ def _decision_reason_code(raw_reason: object) -> str:
             text = text[len(wrapper):]
             break
     lower = text.lower()
+    if text.startswith("RECEIPT_EMIT_FAILED:"):
+        return "RECEIPT_EMIT_FAILED"
     if text.startswith("BASE_REQUIRED:"):
         return "BASE_REQUIRED"
     if text.startswith("CONTRACT_INVALID:"):
@@ -9529,6 +9593,32 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
         "reasons": [_safe_decision_reason(r) for r in result.get("reasons", [])],
         "changed_paths_count": len(result.get("changed_paths", []) or []),
     }
+    # PR-2 (Agent Receipt EMIT wiring) — present only on an overall PASS
+    # (`_gate_run_ship_check` only sets these keys once `blocked` is
+    # already final and False). Both lists are already closed-vocabulary
+    # structured records — no free text — but this is still an EXPLICIT
+    # field allowlist, the same re-projection discipline every other value
+    # here already gets, never a blind passthrough of `result`'s own shape.
+    if "receipts_emitted" in result or "receipt_gaps" in result:
+        # `trust_status` is re-checked against the ONE literal value
+        # `tools/receipt-emit/receipt_emit.py` ever returns today
+        # (`"signed_not_trust_anchored"` — HONEST LABEL, PR-1) rather than
+        # passed through blindly — defense in depth so a future change to
+        # that tool can never smuggle an unexpected string through this
+        # projection unnoticed; anything else redacts to "unknown" rather
+        # than propagating verbatim.
+        safe["receipts_emitted"] = [
+            {
+                "rule_id": e.get("rule_id"), "decision_kind": e.get("decision_kind"),
+                "receipt_id": e.get("receipt_id"), "sequence": e.get("sequence"),
+                "trust_status": e.get("trust_status") if e.get("trust_status") == "signed_not_trust_anchored" else "unknown",
+            }
+            for e in (result.get("receipts_emitted") or []) if isinstance(e, dict)
+        ]
+        safe["receipt_gaps"] = [
+            {"rule_id": e.get("rule_id"), "decision_kind": e.get("decision_kind"), "reason_code": "RECEIPT_EMIT_FAILED"}
+            for e in (result.get("receipt_gaps") or []) if isinstance(e, dict)
+        ]
     if phase is not None:
         safe = {"phase": phase, **safe}
     return safe
@@ -10295,12 +10385,23 @@ def _gate_path_covering_status(
          SHA (HIGH-1(a) — binds coverage to the reviewed content, not just
          the path shape; `current_shas` is the set of blob SHAs `rel_path`
          actually has at the pushed head).
-    Returns (covered: bool, reason: str | None) — reason is one of
-    "no-glob-match", "unsigned", "wrong-verifier", "stale-content", set only
-    on the strongest failure reached across all candidate verdicts (a later,
-    weaker failure for one verdict does not downgrade an earlier, stronger
-    pass reached by a different verdict — but since `covered=True` short-
-    circuits, `reason` is only ever read when covered is False)."""
+    Returns (covered: bool, reason: str | None, covering: tuple | None) —
+    reason is one of "no-glob-match", "unsigned", "wrong-verifier",
+    "stale-content", set only on the strongest failure reached across all
+    candidate verdicts (a later, weaker failure for one verdict does not
+    downgrade an earlier, stronger pass reached by a different verdict — but
+    since `covered=True` short-circuits, `reason` is only ever read when
+    covered is False). `covering` is `(verdict_rel, instance)` — the ACTUAL
+    covering verdict that cleared `rel_path`, VERBATIM — when covered is
+    True, else None. PR-2 (Agent Receipt EMIT wiring): the caller
+    (`_gate_covering_gap_report`) needs this to know WHICH already-validated
+    decision to hand to `tools/receipt-emit/` — re-deriving it a second time
+    from `approved_verdicts` after the fact would either re-run the same
+    signature/allowed-verifier/artifact-hash checks a second time (wasteful
+    and a second place those checks could drift) or require a second,
+    parallel bookkeeping pass; returning it from the one loop that already
+    computes it is simpler and cannot disagree with the coverage decision
+    itself by construction."""
     reason = "no-glob-match"
     for verdict_rel, instance in approved_verdicts:
         if not path_matches_globs(rel_path, instance.get("covers_paths") or []):
@@ -10325,8 +10426,8 @@ def _gate_path_covering_status(
             reason = "stale-content"
         reviewed_sha = (instance.get("artifact_hashes") or {}).get(rel_path)
         if reviewed_sha is not None and reviewed_sha in current_shas:
-            return True, None
-    return False, reason
+            return True, None, (verdict_rel, instance)
+    return False, reason, None
 
 
 def _gate_covering_gap_report(
@@ -10334,17 +10435,40 @@ def _gate_covering_gap_report(
     root: Path, policy_instance: dict,
     trusted_verifier_key_blobs: dict[str, bytes] | None = None,
     trusted_verifier_key_errors: dict[str, str] | None = None,
-) -> list:
+) -> tuple[list, list]:
+    """Returns (reasons, cleared). `reasons` is unchanged from before PR-2 —
+    one block-reason string per uncovered (rel_path, rules) match. `cleared`
+    is PR-2's own addition (Agent Receipt EMIT wiring): one entry per unique
+    (rule_id, covering verdict) pair actually accepted as satisfying at
+    least one changed path, deduped by that pair so ten files covered by the
+    SAME verdict under the SAME rule become ONE entry (one governance
+    decision, one receipt — not one per file). Deliberately mirrors the
+    gate's OWN existing pass/fail granularity exactly: `_gate_path_covering_
+    status` is a per-(rel_path, matched-rules) check, not a per-single-rule
+    check (a path matching two rules is cleared as a whole once ANY matched
+    rule's allowed_verifiers accepts the covering verdict's verifier — see
+    that function's own docstring) — every rule_id in `rules` for a covered
+    rel_path is credited here for exactly the same reason `reasons` charges
+    NONE of them on a block; this is not new semantics, just a faithful,
+    consistent extension of what 'cleared' already means in this engine."""
     reasons = []
+    cleared: dict = {}
     sig_cache: dict = {}
     for rel_path in sorted(path_rule_matches):
         rules = path_rule_matches[rel_path]
         current_shas = tree_index.get(rel_path) or set()
-        covered, why = _gate_path_covering_status(
+        covered, why, covering = _gate_path_covering_status(
             rel_path, rules, approved_verdicts, current_shas, root, policy_instance, sig_cache,
             trusted_verifier_key_blobs, trusted_verifier_key_errors,
         )
         if covered:
+            verdict_rel, instance = covering
+            for rule in rules:
+                rule_id = rule.get("id")
+                cleared.setdefault(
+                    (rule_id, verdict_rel),
+                    {"rule_id": rule_id, "decision_kind": "verdict", "verdict_rel": verdict_rel, "decision": instance},
+                )
             continue
         rule_ids = ", ".join(sorted({r.get("id", "?") for r in rules}))
         classes = sorted({c for r in rules for c in (r.get("classification") or [])})
@@ -10408,7 +10532,7 @@ def _gate_covering_gap_report(
                 f"disposition: APPROVE and a covers_paths entry matching this path"
                 f"{baseline_note}"
             )
-    return reasons
+    return reasons, list(cleared.values())
 
 
 # ---------------------------------------------------------------------------
@@ -10421,11 +10545,19 @@ def _gate_validate_signoff(
     trusted_signoff_key_blobs: dict[str, bytes] | None = None,
     trusted_signoff_key_errors: dict[str, str] | None = None,
 ):
-    """Returns (True, 'ok') if `path` is a well-formed, AUTHENTICATED
-    sign-off artifact for `rule_id`; otherwise (False, reason). Deliberately
-    NOT a `tessctl validate` contract type (see policy.schema.json's
-    top-level description) — this is a small, fixed, ad hoc shape, not a
-    fifth thing the roster dispatches or the render pipeline touches.
+    """Returns (True, 'ok', data) if `path` is a well-formed, AUTHENTICATED
+    sign-off artifact for `rule_id`; otherwise (False, reason, None).
+    `data` (PR-2, Agent Receipt EMIT wiring) is the already-parsed sign-off
+    dict on success — returned so a caller that needs the sign-off's own
+    content (`_gate_hard_floor_gap_report`, to hand a CLEARED sign-off to
+    `tools/receipt-emit/`) never has to re-open and re-parse the same file a
+    second time; a second read/parse could in principle observe a different
+    file than the one this function just validated (however narrow that
+    window), which the single-parse-and-return shape below rules out by
+    construction. Deliberately NOT a `tessctl validate` contract type (see
+    policy.schema.json's top-level description) — this is a small, fixed,
+    ad hoc shape, not a fifth thing the roster dispatches or the render
+    pipeline touches.
 
     honesty-capstone-audit-2026-07-08 §3-d FIX: shape-only validation (five
     non-empty JSON fields, checked below) used to be SUFFICIENT to clear a
@@ -10446,22 +10578,22 @@ def _gate_validate_signoff(
             f"no human sign-off artifact at {path} — guardrails.md Rule 18 hard-floor "
             f"categories are never satisfiable by a verifier's verdict alone; requires an "
             f"explicit operator sign-off artifact (see README.md 'tessctl gate')"
-        )
+        ), None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}"
+        return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}", None
     if not isinstance(data, dict):
-        return False, f"sign-off artifact at {path} is not a JSON object"
+        return False, f"sign-off artifact at {path} is not a JSON object", None
     required = ("rule_id", "category", "authorized_by", "rationale", "authorized_at")
     missing = [k for k in required if not data.get(k)]
     if missing:
-        return False, f"sign-off artifact at {path} missing required field(s): {missing}"
+        return False, f"sign-off artifact at {path} missing required field(s): {missing}", None
     if data.get("rule_id") != rule_id:
         return False, (
             f"sign-off artifact at {path} rule_id {data.get('rule_id')!r} does not match "
             f"rule '{rule_id}'"
-        )
+        ), None
     sig_ok, sig_reason = _gate_verify_signoff_signature(
         root, policy_instance, data,
         trusted_signoff_key_blobs=trusted_signoff_key_blobs,
@@ -10473,16 +10605,21 @@ def _gate_validate_signoff(
             f"honesty-capstone-audit-2026-07-08 §3-d fix: a hard-floor sign-off must be "
             f"cryptographically signed by a registered operator key "
             f"(policy.signoff_keys); shape-valid JSON alone can never clear a hard floor"
-        )
-    return True, "ok"
+        ), None
+    return True, "ok", data
 
 
 def _gate_hard_floor_gap_report(
     root: Path, hard_floor_matches: dict, policy_instance: dict,
     trusted_signoff_key_blobs: dict[str, bytes] | None = None,
     trusted_signoff_key_errors: dict[str, str] | None = None,
-) -> list:
+) -> tuple[list, list]:
+    """Returns (reasons, cleared). `cleared` (PR-2, Agent Receipt EMIT
+    wiring) is one entry per hard-floor rule_id whose sign-off validated —
+    `{"rule_id", "decision_kind": "signoff", "signoff_path", "decision"}` —
+    for `_gate_run_ship_check` to hand to `tools/receipt-emit/`."""
     reasons = []
+    cleared = []
     rule_by_id = {}
     for rules in hard_floor_matches.values():
         for rule in rules:
@@ -10491,7 +10628,7 @@ def _gate_hard_floor_gap_report(
     for rule_id in sorted(rule_by_id):
         rule = rule_by_id[rule_id]
         signoff_path = signoffs_dir / f"{rule_id}.signoff.json"
-        ok, reason = _gate_validate_signoff(
+        ok, reason, data = _gate_validate_signoff(
             signoff_path, rule_id, root, policy_instance,
             trusted_signoff_key_blobs, trusted_signoff_key_errors,
         )
@@ -10506,7 +10643,305 @@ def _gate_hard_floor_gap_report(
                 if rule.get("_gate_baseline_only") else ""
             )
             reasons.append(f"HARD FLOOR [{rule.get('category')}] rule '{rule_id}': {reason}{baseline_note}")
-    return reasons
+        else:
+            cleared.append({
+                "rule_id": rule_id, "decision_kind": "signoff",
+                "signoff_path": signoff_path, "decision": data,
+            })
+    return reasons, cleared
+
+
+# ---------------------------------------------------------------------------
+# PR-2 — Agent Receipt EMIT wiring (tools/receipt-emit/, PR-1). Called ONLY
+# from `_gate_run_ship_check`, ONLY once the ship-check as a whole has
+# already reached PASS — see that function's own comment for why a
+# partially-cleared, overall-BLOCKED push never triggers this. Every
+# function below invokes `tools/receipt-emit/receipt_emit.py` as a
+# SUBPROCESS — never imported in-process — the same isolation
+# `receipt_emit.py`'s own `_self_verify` already uses to call
+# `tools/receipt-verify/receipt_verify.py`: two independently-runnable CLI
+# tools, never merged into one shared import graph inside this already
+# 20000-line engine file. This module NEVER reimplements any of
+# receipt-emit's own assemble/sign/atomic-append/self-verify logic — see
+# `tools/receipt-emit/README.md`.
+# ---------------------------------------------------------------------------
+
+RECEIPT_EMIT_TIMEOUT_S = 30
+
+_FINGERPRINT_STRIP_RE = re.compile(r"\s+")
+
+
+def _gate_receipt_fingerprint_for_identity(
+    effective_policy_instance: dict | None, keys_field: str, identity: str,
+) -> str | None:
+    """The registered fingerprint for `identity` in `effective_policy_instance
+    ["policy"][keys_field]` (`"verifier_keys"` or `"signoff_keys"`) — the
+    SAME baseline-trusted map `_gate_verify_verdict_signature`/
+    `_gate_verify_signoff_signature` already used to authenticate the
+    decision this receipt wraps, normalized the same way that verification
+    already does (strip whitespace, uppercase — mirrors
+    `_gate_verify_verdict_signature`'s own `.replace(' ', '').upper()`) so
+    `--key-id` matches exactly what `gpg --list-keys` reports. Returns None
+    on anything missing/malformed — the caller folds that into a
+    non-blocking receipt gap, never a crash; this function never raises."""
+    if not isinstance(effective_policy_instance, dict):
+        return None
+    keys_map = (effective_policy_instance.get("policy") or {}).get(keys_field)
+    if not isinstance(keys_map, dict):
+        return None
+    entry = keys_map.get(identity)
+    if not isinstance(entry, dict):
+        return None
+    fingerprint = _FINGERPRINT_STRIP_RE.sub("", str(entry.get("fingerprint") or "")).upper()
+    return fingerprint or None
+
+
+def _gate_emit_one_receipt(
+    root: Path, *, rule_id: str, decision_kind: str, decision: dict,
+    fingerprint: str, policy_path: Path, head_shas: list,
+    trust_entries: list[tuple[str, str, bytes]],
+) -> tuple[dict | None, bool]:
+    """Invoke `tools/receipt-emit/receipt_emit.py emit` for exactly one
+    cleared (rule_id, decision) pair. Returns (payload, ok): `payload` is
+    the tool's own parsed `--json` result on a genuine, self-verified
+    (`CHAIN INTACT`) emit; `ok` is True only in that case. NEVER raises —
+    every failure mode (the tool missing from this checkout, gpg
+    unavailable, no private key for `fingerprint` in the ambient keyring, a
+    self-verify failure, a timeout) is reported back as `(None, False)` for
+    the caller to fold into a non-blocking, VISIBLE receipt gap. This
+    function is deliberately never on the gate's own block/pass path — see
+    `_gate_emit_receipts_on_clear`'s own docstring for the full fail-closed
+    (the SHIP decision) vs. non-silent (the RECEIPT gap) split this
+    implements.
+
+    `trust_entries` (name, fingerprint, public-key-bytes) — receipt-emit's
+    own self-verify step (`tools/receipt-verify/... verify-chain` run
+    against the CANDIDATE chain, BEFORE it is ever committed) always trusts
+    the CURRENT signer automatically, but a chain with more than one
+    receipt almost always has EARLIER receipts signed by a DIFFERENT
+    identity (a verdict's verifier, a sign-off's authorized_by — different
+    registries, different people) — without a `--trust` entry for each of
+    those, self-verify would (correctly) refuse to vouch for a receipt it
+    has no key for, and this emit would be reported as a gap even though
+    the NEW receipt itself is perfectly valid. `_gate_emit_receipts_on_clear`
+    builds this list from the SAME immutable BASE-tree key bytes
+    (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`) the gate's
+    own signature verification already trusted — never re-derived from the
+    (potentially same-push-tampered) working tree — see this module's A3/
+    honesty-capstone-audit-2026-07-08 §3-d comments for why that distinction
+    matters. `--trust` is used ONLY for this emit's own self-verify
+    subprocess call — never embedded in the receipt itself (receipt_emit.py
+    README's own documented, deliberate flag)."""
+    emit_cli = root / RECEIPT_EMIT_CLI_REL
+    if not emit_cli.exists():
+        return None, False
+
+    head_sha = head_shas[0] if head_shas else None
+    kind_phrase = "a covering APPROVE verdict" if decision_kind == "verdict" else "a hard-floor sign-off"
+    summary = (
+        f"tessctl gate auto-emit: policy rule '{rule_id}' cleared by {kind_phrase}"
+        f"{f' at {head_sha[:12]}' if head_sha else ''}."
+    )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="tessctl-gate-receipt-") as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            decision_path = tmp_dir_path / "decision.json"
+            decision_path.write_text(json.dumps(decision, sort_keys=True), encoding="utf-8")
+            chain_path = root / GATE_RECEIPT_CHAIN_REL
+            args = [
+                sys.executable, str(emit_cli), "emit",
+                "--decision", str(decision_path),
+                "--rule-id", rule_id,
+                "--policy", str(policy_path),
+                "--actor", "tessctl gate (auto-emit on ship-gate clear)",
+                "--summary", summary,
+                "--key-id", fingerprint,
+                "--chain", str(chain_path),
+                "--json",
+            ]
+            for i, (name, fpr, key_bytes) in enumerate(trust_entries):
+                key_path = tmp_dir_path / f"trust-{i}.asc"
+                key_path.write_bytes(key_bytes)
+                args += ["--trust", name, fpr, str(key_path)]
+            proc = subprocess.run(
+                args, capture_output=True, text=True, cwd=str(root),
+                timeout=RECEIPT_EMIT_TIMEOUT_S,
+            )
+    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
+        return None, False
+
+    if proc.returncode != 0:
+        return None, False
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None, False
+    if not payload.get("emitted"):
+        return None, False
+    return payload, True
+
+
+def _gate_receipt_trust_entries(
+    effective_policy_instance: dict | None, trusted_verifier_key_blobs: dict[str, bytes] | None,
+    effective_policy_instance_for_signoffs: dict | None, trusted_signoff_key_blobs: dict[str, bytes] | None,
+) -> list[tuple[str, str, bytes]]:
+    """Every REGISTERED verifier + sign-off identity's (name, fingerprint,
+    public-key-bytes), from the SAME baseline-trusted, immutable BASE-tree
+    key material (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`)
+    the gate's own signature verification already used — so
+    `_gate_emit_one_receipt`'s `--trust` list can vouch for ANY earlier
+    receipt in the chain, however many DIFFERENT identities signed earlier
+    entries, without ever re-deriving key material from the (potentially
+    same-push-tampered) working tree. An identity present in the effective
+    policy view but whose blob failed to load (`errors`, not `blobs`) is
+    simply absent here — `_gate_emit_one_receipt`'s self-verify then
+    correctly reports a gap for any receipt that specific identity would
+    have needed to vouch for, exactly the same fail-closed posture the
+    gate's own verification already has for that same failure."""
+    entries: list[tuple[str, str, bytes]] = []
+    for keys_field, key_blobs in (
+        ("verifier_keys", trusted_verifier_key_blobs),
+        ("signoff_keys", trusted_signoff_key_blobs),
+    ):
+        policy_view = effective_policy_instance if keys_field == "verifier_keys" else effective_policy_instance_for_signoffs
+        for name, key_bytes in (key_blobs or {}).items():
+            fingerprint = _gate_receipt_fingerprint_for_identity(policy_view, keys_field, name)
+            if fingerprint and isinstance(key_bytes, (bytes, bytearray)):
+                entries.append((name, fingerprint, bytes(key_bytes)))
+    return entries
+
+
+def _gate_emit_receipts_on_clear(
+    root: Path, cov_cleared: list, hf_cleared: list,
+    effective_policy_instance: dict | None, effective_policy_instance_for_signoffs: dict | None,
+    policy_path: Path | None, head_shas: list,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_signoff_key_blobs: dict[str, bytes] | None = None,
+) -> tuple[list, list]:
+    """For every rule the ship-gate just accepted as CLEARED — a covering
+    signed APPROVE verdict (`cov_cleared`), or a hard-floor signed sign-off
+    (`hf_cleared`) — auto-emit one Agent Receipt via `tools/receipt-emit/`,
+    chained into `.tess/state/receipts/chain.jsonl`. Closes DoD B.9
+    further: a receipt now exists for every governed approval the LIVE gate
+    itself accepts, not only ones a human/agent minted by hand with the
+    standalone tool. Returns (receipts_emitted, receipt_gaps) — both
+    structured, closed-vocabulary lists (never free text — same redaction
+    discipline `_safe_decision_reason`'s allowlist already applies to every
+    OTHER gate decision output that crosses a trust boundary: CLI JSON,
+    trace export, MCP).
+
+    ★ FAIL-CLOSED + NON-SILENT — deliberately NOT the same shape as the
+    ship decision itself: a receipt-emit failure here NEVER flips
+    `blocked` (see `_gate_run_ship_check`'s call site — this function only
+    runs after `blocked` is already final). The policy question ('is this
+    push allowed to ship') was already correctly, fail-closed answered by
+    the covering, signed decision itself; a receipt is EVIDENCE of that
+    answer, not the answer — docs/AGENT_RECEIPT_SPEC.md's own 'Distinct
+    from the proposed execution receipt' section and the invariant it
+    inherits from docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md ('receipts are
+    evidence, not verdicts... does not itself authorize'). Coupling gate
+    PASS/FAIL to receipt-mint success would make the ship-gate's own
+    availability depend on a private signing key being present in whatever
+    keyring `tessctl gate ci`/`pre-push` happens to run under — routinely
+    true on an operator's own machine, essentially never true on an
+    unattended CI runner (the six named verifiers' private keys are
+    deliberately never staged onto CI; key custody stays with whoever
+    actually holds them — docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md). Making
+    that unavailability a hard SHIP block would turn a bookkeeping/evidence
+    gap into a universal CI outage the instant `gpg` or a private key is
+    merely absent, for a change that is otherwise fully, correctly
+    governed — a materially worse operational failure mode than the gap it
+    would 'fix'. Instead: every gap is reported back as a structured
+    `{"rule_id", "decision_kind", "reason_code": "RECEIPT_EMIT_FAILED"}`
+    entry in `receipt_gaps` (never silently dropped — the whole reason this
+    function returns two lists, not one) — deliberately NEVER folded into
+    `result["reasons"]` itself (that field's `blocked = bool(reasons)`
+    invariant must never be touched by a non-blocking signal). The gate's
+    two CLI entrypoints (`_cmd_gate_pre_push`/`_cmd_gate_ci`) surface
+    `receipt_gaps` three ways: `_safe_gate_result`'s own `receipt_gaps`/
+    `receipts_emitted` JSON fields (both closed-vocabulary structured
+    records, projected the same way every other gate output is),
+    `_gate_print_result`'s human-readable text-mode summary, and a
+    `RECEIPT_EMIT_FAILED: ...`-prefixed line folded into the SEPARATE list
+    they pass `_trace_record` (classified through the SAME
+    `_decision_reason_code`/`_DECISION_MESSAGES` allowlist as every other
+    decision signal, never a second parallel redaction path) — so 'this
+    push cleared but is missing a receipt' is always VISIBLE, in the local
+    operator's own terminal, CI's machine-readable JSON, and the durable
+    local trace log, never a silent no-op that lets the gate read as if a
+    receipt exists when it does not."""
+    receipts_emitted: list = []
+    receipt_gaps: list = []
+
+    if policy_path is None:
+        # `_gate_run_ship_check` already requires a loadable policy to reach
+        # this point at all (an unloadable/invalid policy is fail-closed
+        # BLOCKED long before this function is ever called, per
+        # `_gate_load_policy`'s own contract) — this branch is unreachable
+        # in practice today; kept so a future refactor that loosens that
+        # invariant fails into a reported gap, never a crash.
+        for entry in cov_cleared + hf_cleared:
+            receipt_gaps.append({
+                "rule_id": entry["rule_id"], "decision_kind": entry["decision_kind"],
+                "reason_code": "RECEIPT_EMIT_FAILED",
+            })
+        return receipts_emitted, receipt_gaps
+
+    trust_entries = _gate_receipt_trust_entries(
+        effective_policy_instance, trusted_verifier_key_blobs,
+        effective_policy_instance_for_signoffs, trusted_signoff_key_blobs,
+    )
+
+    for entry in cov_cleared:
+        rule_id, decision = entry["rule_id"], entry["decision"]
+        identity = decision.get("verifier")
+        fingerprint = (
+            _gate_receipt_fingerprint_for_identity(effective_policy_instance, "verifier_keys", identity)
+            if isinstance(identity, str) else None
+        )
+        if not fingerprint:
+            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
+            continue
+        payload, ok = _gate_emit_one_receipt(
+            root, rule_id=rule_id, decision_kind="verdict", decision=decision,
+            fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
+            trust_entries=trust_entries,
+        )
+        if ok:
+            receipts_emitted.append({
+                "rule_id": rule_id, "decision_kind": "verdict",
+                "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
+                "trust_status": payload.get("trust_status"),
+            })
+        else:
+            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
+
+    for entry in hf_cleared:
+        rule_id, decision = entry["rule_id"], entry["decision"]
+        identity = decision.get("authorized_by")
+        fingerprint = (
+            _gate_receipt_fingerprint_for_identity(effective_policy_instance_for_signoffs, "signoff_keys", identity)
+            if isinstance(identity, str) else None
+        )
+        if not fingerprint:
+            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
+            continue
+        payload, ok = _gate_emit_one_receipt(
+            root, rule_id=rule_id, decision_kind="signoff", decision=decision,
+            fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
+            trust_entries=trust_entries,
+        )
+        if ok:
+            receipts_emitted.append({
+                "rule_id": rule_id, "decision_kind": "signoff",
+                "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
+                "trust_status": payload.get("trust_status"),
+            })
+        else:
+            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
+
+    return receipts_emitted, receipt_gaps
 
 
 # ---------------------------------------------------------------------------
@@ -10546,26 +10981,60 @@ def _gate_run_ship_check(
     if baseline_policy_instance is not None:
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
 
+    # Signature verification trusts only verifier/sign-off registrations
+    # present at BASE. Candidate-added keys cannot authorize their own PR;
+    # with an empty baseline registry, normal APPROVE remains impossible
+    # (verifier_keys) / a hard floor remains unsatisfiable (signoff_keys).
+    #
+    # PR-2 (Agent Receipt EMIT wiring): these two views + their blob loads
+    # are now computed UNCONDITIONALLY — previously only inside their
+    # respective `if hard_floor_matches:`/`if path_rule_matches:` block,
+    # which is fine for the SIGNATURE-VERIFICATION use those blocks still
+    # make of them, but too narrow for a SECOND consumer this PR adds:
+    # `_gate_emit_receipts_on_clear`'s `--trust` list has to vouch for
+    # EVERY identity that may already appear EARLIER in
+    # `.tess/state/receipts/chain.jsonl` from a COMPLETELY DIFFERENT,
+    # unrelated prior push — not just identities relevant to what TODAY's
+    # specific changed paths happen to match. Both functions are pure
+    # w.r.t. `policy_instance`/`baseline_policy_instance`/`baseline_policy_
+    # ref` — hoisting them out changes no existing decision, only removes
+    # the "an unrelated earlier push's receipt can no longer be vouched for
+    # by a later, narrower push" gap; the two immutable git-blob reads this
+    # costs on every gate invocation are never security-relevant and never
+    # on a hot path.
+    effective_policy_instance = _gate_verifier_keys_from_trusted_baseline(
+        policy_instance, baseline_policy_instance,
+    )
+    trusted_verifier_key_blobs, trusted_verifier_key_errors = (
+        _gate_load_baseline_verifier_key_blobs(root, baseline_policy_instance, baseline_policy_ref)
+    )
+    # honesty-capstone-audit-2026-07-08 §3-d (chained-variant closure, same
+    # discipline as verifier_keys just above): sign-off signature
+    # verification uses a baseline-signoff_keys-first merged view AND
+    # immutable BASE-tree key bytes — a registered sign-off authorizer's key
+    # cannot be swapped/rolled back and then used to self-sign a forged
+    # 'clearance' sign-off, all in the same push.
+    effective_policy_instance_for_signoffs = _gate_merge_signoff_keys_baseline_first(
+        policy_instance, baseline_policy_instance,
+    )
+    trusted_signoff_key_blobs, trusted_signoff_key_errors = (
+        _gate_load_baseline_signoff_key_blobs(root, baseline_policy_instance, baseline_policy_ref)
+    )
+
+    # PR-2 — `hf_cleared`/`cov_cleared` carry the decision that actually
+    # cleared each rule (verbatim) forward so a receipt can be emitted from
+    # the exact signed artifact + registered fingerprint the gate itself
+    # just trusted — never re-derived independently, which could only ever
+    # disagree with (never strengthen) what the gate already decided.
+    hf_cleared: list = []
     if hard_floor_matches:
-        # honesty-capstone-audit-2026-07-08 §3-d (chained-variant closure,
-        # same discipline as verifier_keys just above): sign-off signature
-        # verification uses a baseline-signoff_keys-first merged view AND
-        # immutable BASE-tree key bytes — a registered sign-off authorizer's
-        # key cannot be swapped/rolled back and then used to self-sign a
-        # forged 'clearance' sign-off, all in the same push.
-        effective_policy_instance_for_signoffs = _gate_merge_signoff_keys_baseline_first(
-            policy_instance, baseline_policy_instance,
-        )
-        trusted_signoff_key_blobs, trusted_signoff_key_errors = (
-            _gate_load_baseline_signoff_key_blobs(
-                root, baseline_policy_instance, baseline_policy_ref,
-            )
-        )
-        reasons += _gate_hard_floor_gap_report(
+        hf_reasons, hf_cleared = _gate_hard_floor_gap_report(
             root, hard_floor_matches, effective_policy_instance_for_signoffs,
             trusted_signoff_key_blobs, trusted_signoff_key_errors,
         )
+        reasons += hf_reasons
 
+    cov_cleared: list = []
     if path_rule_matches:
         # HIGH-1(c): covering-verdict discovery + current-content lookups
         # are resolved against the COMMITTED tree at the actual pushed
@@ -10575,24 +11044,34 @@ def _gate_run_ship_check(
         except GateSpineError as e:
             reasons.append(f"[gate] {e}")
             return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
-        # Signature verification trusts only verifier registrations present
-        # at BASE. Candidate-added keys cannot authorize their own PR; with
-        # an empty baseline registry, normal APPROVE remains impossible.
-        effective_policy_instance = _gate_verifier_keys_from_trusted_baseline(
-            policy_instance, baseline_policy_instance,
-        )
-        trusted_verifier_key_blobs, trusted_verifier_key_errors = (
-            _gate_load_baseline_verifier_key_blobs(
-                root, baseline_policy_instance, baseline_policy_ref,
-            )
-        )
         approved = _gate_find_covering_approved_verdicts(root, tree_index, verdict_dirs)
-        reasons += _gate_covering_gap_report(
+        cov_reasons, cov_cleared = _gate_covering_gap_report(
             path_rule_matches, approved, tree_index, root, effective_policy_instance,
             trusted_verifier_key_blobs, trusted_verifier_key_errors,
         )
+        reasons += cov_reasons
 
-    return {"blocked": bool(reasons), "reasons": reasons, "changed_paths": changed_paths}
+    blocked = bool(reasons)
+    result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
+
+    # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
+    # push (some rules cleared, others not) is still a BLOCKED push overall
+    # — nothing in it ships — so emitting a receipt for one rule's partial
+    # clearance while the push as a whole is refused would read as "this
+    # was approved" when it was not; see this PR's own description for the
+    # full "gate CLEARS a change" framing this mirrors exactly.
+    if not blocked:
+        policy_path = _gate_find_policy_instance_path(root)
+        receipts_emitted, receipt_gaps = _gate_emit_receipts_on_clear(
+            root, cov_cleared, hf_cleared,
+            effective_policy_instance, effective_policy_instance_for_signoffs,
+            policy_path, head_shas or [],
+            trusted_verifier_key_blobs, trusted_signoff_key_blobs,
+        )
+        result["receipts_emitted"] = receipts_emitted
+        result["receipt_gaps"] = receipt_gaps
+
+    return result
 
 
 def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
@@ -10610,6 +11089,48 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
             "  refusing (fail-closed) — see README.md 'tessctl gate', "
             "conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6"
         )
+    # PR-2 (Agent Receipt EMIT wiring) — only present on a PASS. A gap is
+    # printed LOUDLY (never silently) but never flips `status` above — see
+    # `_gate_emit_receipts_on_clear`'s own docstring for the fail-closed
+    # (the SHIP decision) vs. non-silent (the RECEIPT gap) split this prints.
+    if "receipts_emitted" in safe:
+        for r in safe["receipts_emitted"]:
+            print(
+                f"  receipt emitted: rule '{r['rule_id']}' ({r['decision_kind']}) -> "
+                f"{r['receipt_id']} (sequence {r['sequence']}, trust_status: {r['trust_status']})"
+            )
+        if safe["receipts_emitted"]:
+            print(GATE_RECEIPT_HONEST_NOTE)
+        for g in safe["receipt_gaps"]:
+            print(
+                f"  ACCOUNTABILITY GAP — receipt NOT emitted: rule '{g['rule_id']}' "
+                f"({g['decision_kind']}) cleared the gate but no Agent Receipt could be "
+                f"minted for it ({g['reason_code']}) — this push still shipped; the receipt "
+                f"is missing evidence, not a blocked decision. Re-run "
+                f"`tools/receipt-emit/receipt_emit.py emit` by hand for the full reason."
+            )
+
+
+def _gate_trace_reasons_and_counts(result: dict) -> tuple[list, dict]:
+    """PR-2 (Agent Receipt EMIT wiring) — build the `reasons`/`extra_counts`
+    the trace log gets for one gate invocation, WITHOUT ever touching
+    `result["reasons"]`/`result["blocked"]` themselves (those two remain
+    exactly what `_gate_run_ship_check` decided — this function only reads
+    them). One `RECEIPT_EMIT_FAILED: rule '<id>' (<kind>)` line is appended
+    PER `receipt_gaps` entry, classified through the SAME
+    `_decision_reason_code`/`_DECISION_MESSAGES` allowlist as every other
+    trace reason (never a raw/free-text line) — so a gap is durably
+    queryable in the local trace log, not just printed once to a console
+    that may never be read."""
+    reasons = list(result.get("reasons") or [])
+    for gap in result.get("receipt_gaps") or []:
+        reasons.append(f"RECEIPT_EMIT_FAILED: rule {gap.get('rule_id')!r} ({gap.get('decision_kind')})")
+    extra_counts: dict = {}
+    if "receipts_emitted" in result:
+        extra_counts["receipts_emitted"] = len(result.get("receipts_emitted") or [])
+    if "receipt_gaps" in result:
+        extra_counts["receipt_gaps"] = len(result.get("receipt_gaps") or [])
+    return reasons, extra_counts
 
 
 # ---------------------------------------------------------------------------
@@ -10672,10 +11193,12 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         sys.exit(1)
 
     result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas, base_shas)
+    trace_reasons, trace_extra_counts = _gate_trace_reasons_and_counts(result)  # PR-2: receipt-gap visibility
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-push",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
-        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=result["reasons"],
+        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=trace_reasons,
+        extra_counts=trace_extra_counts,
     )
     _gate_print_result("pre-push", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
@@ -10697,10 +11220,12 @@ def _cmd_gate_ci(args, root: Path) -> None:
         sys.exit(1)
 
     result = _gate_run_ship_check(root, changed, verdict_dirs, [args.head], [args.base])
+    trace_reasons, trace_extra_counts = _gate_trace_reasons_and_counts(result)  # PR-2: receipt-gap visibility
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.ci",
         outcome="block" if result["blocked"] else "pass", exit_code=1 if result["blocked"] else 0,
-        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=result["reasons"],
+        duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=trace_reasons,
+        extra_counts=trace_extra_counts,
     )
     _gate_print_result("ci", result, as_json)
     sys.exit(1 if result["blocked"] else 0)
@@ -11357,7 +11882,7 @@ def _cmd_gate_signoff_verify(args, root: Path) -> None:
         _print_verdict_verify_result(result, as_json)
         sys.exit(1)
 
-    ok, reason = _gate_validate_signoff(file_path, rule_id, root, policy_instance)
+    ok, reason, _data = _gate_validate_signoff(file_path, rule_id, root, policy_instance)
     result = {"valid": ok, "file": str(file_path), "reason": reason}
     _print_verdict_verify_result(result, as_json)
     sys.exit(0 if ok else 1)
@@ -11622,7 +12147,8 @@ def _trace_append_event(root: Path, event: dict) -> Path:
 def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_code: int,
                    duration_s: float, changed_paths: list | None = None,
                    file_path: str | None = None, contract_type: str | None = None,
-                   violations_count: int | None = None, reasons: list | None = None) -> None:
+                   violations_count: int | None = None, reasons: list | None = None,
+                   extra_counts: dict | None = None) -> None:
     """Best-effort trace-event recorder for one gate/validate invocation.
 
     Deliberately NEVER raises out of this function: a trace-log write
@@ -11647,7 +12173,15 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
     call that trips it ends up — including future code added AFTER the
     local `_trace_append_event` call succeeds (e.g. a hypothetical "also
     mirror this event to a remote collector" step), which is exactly the
-    call-graph shape a purely-Exception-rooted guard signal used to miss."""
+    call-graph shape a purely-Exception-rooted guard signal used to miss.
+
+    `extra_counts` (PR-2, Agent Receipt EMIT wiring): an optional caller-
+    supplied dict merged into the event's own `counts` — e.g.
+    `{"receipts_emitted": 1, "receipt_gaps": 0}` — filtered through the
+    SAME `str key / non-negative int value` shape `_trace_safe_event`'s own
+    `counts` sanitizer already enforces downstream, applied here too so
+    this function's own local invariant does not rely solely on that
+    second, later filter."""
     try:
         mission_paths = list(changed_paths) if changed_paths is not None else ([file_path] if file_path else [])
         mission_id = _trace_safe_mission_id(_trace_infer_mission_id(mission_paths))
@@ -11663,6 +12197,9 @@ def _trace_record(root: Path, *, phase: str, action: str, outcome: str, exit_cod
             counts["changed_paths"] = len(changed_paths)
         if violations_count is not None:
             counts["violations"] = violations_count
+        for key, value in (extra_counts or {}).items():
+            if isinstance(key, str) and isinstance(value, int) and value >= 0:
+                counts[key] = value
         event = _trace_build_event(
             phase=phase, action=action, outcome=outcome, exit_code=exit_code,
             duration_ms=duration_s * 1000.0, mission_id=mission_id,

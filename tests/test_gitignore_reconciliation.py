@@ -80,6 +80,10 @@ def _tracked(rel: str) -> bool:
     # subsystem, same content-level ignore.
     ".tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md",
     ".tess/state/skills/drafts/fix-login-bug-9c1e/provenance.json",
+    # PR-2 (Agent Receipt EMIT wiring) — a SIXTH .tess/state/** subsystem,
+    # same content-level ignore.
+    ".tess/state/receipts/chain.jsonl",
+    ".tess/state/receipts/nested/other-chain.jsonl",
 ])
 def test_private_path_is_ignored(rel):
     assert _check_ignore(rel), f"{rel} must be gitignored (private overlay data)"
@@ -110,6 +114,9 @@ def test_private_path_is_ignored(rel):
     ".tess/state/locks/.gitkeep",
     # issue #131 (Phase 0.6) — same for the skills/drafts scaffold structure.
     ".tess/state/skills/.gitkeep",
+    # PR-2 (Agent Receipt EMIT wiring) — same for the receipts chain-store
+    # structure.
+    ".tess/state/receipts/.gitkeep",
 ])
 def test_shipped_template_is_not_ignored_and_is_tracked(rel):
     assert not _check_ignore(rel), f"{rel} is a shipped template and must stay committable"
