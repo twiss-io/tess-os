@@ -43,6 +43,15 @@ Coverage:
     ledger event verbatim, traceable back to the live ledger
     (`tessctl log view --task <id>` reproduces the identical event list).
   * Schema/lint coverage for the new `skill_generated` ledger event class.
+  * Issue #133 (Cyra LOW, PR #132 review follow-up): an operator-explicit
+    `--out` that resolves under `.claude/skills/` (the live skill set) is
+    refused — as the literal path, as the forbidden root itself, via a
+    `..` traversal, and via a symlink whose target resolves there — and the
+    refusal is unconditional (`--force` does not clear it). Nothing is
+    written to disk once it fires.
+  * Issue #133 (Reid LOW): doc-accuracy regression pinning the REAL
+    `--help` flag set (`--out`/`--force`/`--harness`/`--session`/
+    `--persona`/`--json`) — no `--slug` flag exists.
 """
 
 from __future__ import annotations
@@ -319,6 +328,90 @@ def test_generation_never_touches_claude_skills(sroot):
 
 
 # ---------------------------------------------------------------------------
+# `--out` under `.claude/skills/` is refused (issue #133, Cyra LOW — PR #132
+# review follow-up). An operator-explicit `--out .claude/skills/<x>`
+# previously bypassed the drafts-only/human-review boundary this command is
+# architected around (`_atomic_write_bytes` writes unconditionally and never
+# routed through `check_manifest_write_gate`). Path-normalized FIRST: a
+# literal path, the root itself, a `..` traversal, and a symlink that
+# resolves there are all caught the same way — refusal is unconditional,
+# `--force` does not clear it, and nothing is ever written to disk once it
+# fires.
+# ---------------------------------------------------------------------------
+
+def test_out_under_claude_skills_refused_literal(sroot):
+    task_id = _new_task(sroot, "Literal --out under .claude/skills")
+    target = sroot / ".claude" / "skills" / "sneaky-skill"
+    r = _from_task(sroot, task_id, "--out", str(target))
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+    assert not target.exists()
+    assert not (sroot / ".claude" / "skills").exists(), (
+        "the refusal must fire BEFORE anything (even the parent dir) is created on disk"
+    )
+
+
+def test_out_exactly_claude_skills_root_refused(sroot):
+    """`--out` pointing AT `.claude/skills` itself (no subdirectory) is
+    refused the same way — the check must catch the forbidden root itself,
+    not only paths strictly beneath it."""
+    task_id = _new_task(sroot, "Out is the skills root itself")
+    target = sroot / ".claude" / "skills"
+    r = _from_task(sroot, task_id, "--out", str(target))
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+
+
+def test_out_under_claude_skills_refused_via_dotdot_traversal(sroot):
+    """A `--out` string that never literally contains `.claude/skills` as a
+    clean prefix but RESOLVES there via `..` components must be refused
+    identically — proves the check compares the RESOLVED path, never a raw
+    substring/prefix match against the operator's original argument."""
+    task_id = _new_task(sroot, "Dotdot traversal into .claude/skills")
+    sibling = sroot.parent / "elsewhere"
+    sibling.mkdir(exist_ok=True)
+    traversal_out = sibling / ".." / sroot.name / ".claude" / "skills" / "via-dotdot"
+    assert ".." in traversal_out.parts  # sanity: this really is a traversal string
+    r = _from_task(sroot, task_id, "--out", str(traversal_out))
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+    assert not (sroot / ".claude" / "skills").exists()
+
+
+def test_out_under_claude_skills_refused_via_symlink(sroot):
+    """A `--out` reached through a symlink whose target resolves under
+    `.claude/skills/` must be refused identically to the literal path —
+    proves the check dereferences symlinks (`Path.resolve()`) before
+    comparing, never just the literal `--out` string (C1-style containment,
+    same discipline `check_manifest_write_gate` already applies elsewhere in
+    this file)."""
+    task_id = _new_task(sroot, "Symlink into .claude/skills")
+    (sroot / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    link_parent = sroot / "elsewhere"
+    link_parent.mkdir(exist_ok=True)
+    link = link_parent / "sneaky-link"
+    link.symlink_to(sroot / ".claude" / "skills")
+
+    r = _from_task(sroot, task_id, "--out", str(link / "via-symlink"))
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+    assert not any((sroot / ".claude" / "skills").iterdir()), (
+        "nothing must land in the live skill set even reached through the symlink"
+    )
+
+
+def test_out_under_claude_skills_refused_even_with_force(sroot):
+    """`--force` governs the SEPARATE non-empty-target-directory conflict
+    only (below) — it must never clear the `.claude/skills/` boundary
+    refusal."""
+    task_id = _new_task(sroot, "Force does not override the boundary")
+    target = sroot / ".claude" / "skills" / "sneaky-skill"
+    r = _from_task(sroot, task_id, "--out", str(target), "--force")
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+
+
+# ---------------------------------------------------------------------------
 # --out / --force conflict handling (mirrors `audit export`'s own precedent).
 # ---------------------------------------------------------------------------
 
@@ -369,6 +462,24 @@ def test_harness_flag_is_required(sroot):
     task_id = _new_task(sroot, "Requires harness")
     r = _run(sroot, "skill", "from-task", task_id)
     assert r.returncode == 2  # argparse required= usage error
+
+
+# ---------------------------------------------------------------------------
+# Doc-accuracy regression (issue #133, Reid LOW): docs/STATE_LAYER.md used to
+# reference a `--slug` flag that never existed on this command — `<slug>` is
+# always a placeholder for the auto-derived output directory name, never an
+# operator-supplied CLI parameter. Pins the REAL flag set directly against
+# `--help` output, so a future doc claiming a flag that isn't here is caught
+# by test drift, not just prose review.
+# ---------------------------------------------------------------------------
+
+def test_help_lists_exactly_the_real_flags_no_phantom_slug(sroot):
+    r = _run(sroot, "skill", "from-task", "--help")
+    assert r.returncode == 0, r.stdout + r.stderr
+    help_text = r.stdout
+    assert "--slug" not in help_text, "no --slug flag exists — the slug is always auto-derived"
+    for flag in ("--out", "--force", "--harness", "--session", "--persona", "--json"):
+        assert flag in help_text, f"expected real flag {flag!r} missing from --help output"
 
 
 # ---------------------------------------------------------------------------

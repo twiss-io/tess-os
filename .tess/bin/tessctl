@@ -15421,13 +15421,27 @@ LEDGER_DIR = f"{STATE_DIR}/ledger"
 STATE_LOCKS_DIR = f"{STATE_DIR}/locks"
 # Issue #131 — SKILL DRAFT SCAFFOLD region (below cmd_audit(), a sibling of
 # AUDIT PACK): the DEFAULT output root for `tessctl skill from-task`, a
-# FIFTH `.tess/state/**` subsystem alongside memory/tasks/ledger/locks —
-# same instance-data fence (never_touch, publish-clean, gitignore content-
-# ignore, create-tess scaffold-strip; docs/STATE_LAYER.md). Deliberately
-# NOT under `.claude/skills/` (the LIVE, core-managed, host-loaded skill
-# set) — a generated draft must never be auto-activated unattended.
+# FIFTH `.tess/state/**` subsystem alongside memory/tasks/ledger/locks — the
+# SAME four-layer instance-data fence coverage those subsystems get
+# (docs/STATE_LAYER.md), though only two of the four layers needed an actual
+# edit for this subsystem: `never_touch` (tess.manifest.json) and
+# publish-clean's `_PUBLISH_CLEAN_PRIVATE_GLOBS` already list
+# `.tess/state/**` recursively, so they auto-cover `.tess/state/skills/**`
+# for free; the `.gitignore` content-ignore entry and the `create-tess`
+# scaffold-strip exclusion (`EXCLUDE_CONTENT_PREFIXES`) were the two newly
+# added for `skills/`. Deliberately NOT under `.claude/skills/` (the LIVE,
+# core-managed, host-loaded skill set, `CLAUDE_SKILLS_LIVE_DIR` below) — a
+# generated draft must never be auto-activated unattended, and `--out`
+# itself refuses any target that resolves there (issue #133).
 SKILLS_DIR = f"{STATE_DIR}/skills"
 SKILL_DRAFTS_DIR = f"{SKILLS_DIR}/drafts"
+# The ONE directory `tessctl skill from-task` must never write into, even
+# with an operator-explicit `--out` (issue #133, Cyra LOW — PR #132 review):
+# the LIVE, core-managed, host-loaded skill set the Claude Code host itself
+# loads skills from. Defined once here and reused by
+# `_skill_reject_out_under_claude_skills` (SKILL DRAFT SCAFFOLD region,
+# below) rather than re-spelling the literal string at each call site.
+CLAUDE_SKILLS_LIVE_DIR = ".claude/skills"
 BOARD_FILENAME = "BOARD.md"
 
 TASK_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "done", "cancelled")
@@ -17958,9 +17972,61 @@ SKILL_SCAFFOLD_SCHEMA = "tess-os.skill-scaffold/1"
 
 class SkillError(Exception):
     """Raised for any `tessctl skill` refusal or read failure — an unknown
-    task id, or an `--out` target that already exists and is non-empty
-    without `--force`. Mirrors AuditError's/MemoryAdoptError's typed-
-    refusal convention."""
+    task id, an `--out` target that resolves under `.claude/skills/` (the
+    LIVE, core-managed, host-loaded skill set — refused regardless of
+    `--force`; see `_skill_reject_out_under_claude_skills`, issue #133), or
+    an `--out` target that already exists and is non-empty without
+    `--force`. Mirrors AuditError's/MemoryAdoptError's typed-refusal
+    convention."""
+
+
+def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> None:
+    """Issue #133 (Cyra LOW, PR #132 review follow-up): refuse an `--out`
+    target that resolves under `.claude/skills/` — `CLAUDE_SKILLS_LIVE_DIR`,
+    the LIVE, core-managed, host-loaded skill set. Before this check
+    existed, an operator-explicit `--out .claude/skills/<x>` bypassed the
+    drafts-only/human-review boundary this whole command is architected
+    around: `_atomic_write_bytes` writes unconditionally and does not route
+    through `check_manifest_write_gate` (that gate only ever fires on the
+    RESTORE/render code paths, never on a caller-supplied `--out`) — so an
+    operator who typed that exact path would have gotten a `status: draft`
+    `SKILL.md` written straight into the live, host-loaded skill set. Same
+    operator-explicit, not-autonomous shape `audit export --out` already has
+    (no new capability is granted by that path existing), but `.claude/
+    skills/` is the ONE directory this command must never write into,
+    regardless of who asked.
+
+    Path-normalized FIRST, exactly like C1 containment elsewhere in this
+    file (`check_manifest_write_gate`, `_gate_*`'s own symlink guards):
+    `Path.resolve()` dereferences symlinks and collapses `..` components
+    even for a path that does not yet exist (it resolves the longest
+    existing prefix and normalizes the rest), so a raw string check against
+    the literal `--out` argument would be trivially bypassed by either
+    `--out ../<reponame>/.claude/skills/x` (a `..` traversal that lands in
+    the same place) or a pre-planted symlink whose target is under
+    `.claude/skills/` — both are caught here exactly the same as the
+    literal path, because the comparison is done on the RESOLVED target,
+    never the operator's original string.
+
+    Refused unconditionally — `--force` does not override this; `--force`
+    only ever governs the SEPARATE "non-empty existing directory" conflict
+    (`_cmd_skill_from_task`, below), never this boundary."""
+    forbidden = (root / CLAUDE_SKILLS_LIVE_DIR).resolve()
+    try:
+        resolved = out_dir.resolve()
+    except Exception as e:
+        raise SkillError(f"tessctl skill from-task: --out path resolution error for {out_dir}: {e}")
+    if resolved.is_relative_to(forbidden):  # True for forbidden itself too — Path.is_relative_to is reflexive
+        raise SkillError(
+            f"tessctl skill from-task: --out {out_dir} resolves to {resolved}, which is "
+            f"{CLAUDE_SKILLS_LIVE_DIR}/ or a path under it — the LIVE, core-managed, "
+            f"host-loaded skill set. Refused (path-normalized: this check catches '..' "
+            f"traversal and symlinks that resolve here too, not just the literal path). "
+            f"A generated DRAFT must never be written into the live skill set — that is "
+            f"the one directory `tessctl skill from-task` is architected to never touch, "
+            f"drafts stay drafts until a human promotes them. Pass a different --out, or "
+            f"omit it to use the default ({SKILL_DRAFTS_DIR}/<slug>)."
+        )
 
 
 def _skill_load_task_or_raise(root: Path, task_id: str) -> dict:
@@ -18253,6 +18319,10 @@ def _cmd_skill_from_task(args, root: Path) -> None:
         out_dir = Path(args.out) if args.out else (root / SKILL_DRAFTS_DIR / scaffold["skill"]["slug"])
         if not out_dir.is_absolute():
             out_dir = Path.cwd() / out_dir
+        # Issue #133: this is the ONE directory `--out` must never resolve
+        # into, unconditionally — checked BEFORE the exists/--force conflict
+        # check below, and BEFORE anything on disk is touched.
+        _skill_reject_out_under_claude_skills(root, out_dir)
         if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
             raise SkillError(
                 f"tessctl skill from-task: {out_dir} already exists and is not empty — pass --force to overwrite"
@@ -20705,7 +20775,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_skill_from_task.add_argument("task_id", metavar="ID")
     p_skill_from_task.add_argument(
         "--out", metavar="DIR",
-        help=f"output directory (default: {SKILL_DRAFTS_DIR}/<slug>, derived from the task title)",
+        help=f"output directory (default: {SKILL_DRAFTS_DIR}/<slug>, derived from the task "
+             f"title); refused if it resolves under {CLAUDE_SKILLS_LIVE_DIR}/ (the live "
+             f"skill set), including via '..' traversal or a symlink",
     )
     p_skill_from_task.add_argument("--force", action="store_true", help="overwrite a non-empty --out directory")
     p_skill_from_task.add_argument("--harness", required=True, help="acting harness (ledger actor)")

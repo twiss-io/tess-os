@@ -100,8 +100,18 @@ All notable changes to Tess OS are documented here. This project adheres to
     `provenance.json` sidecar (the SAME "one generator, two
     serializations" precedent the audit pack's `manifest.json`+
     `SUMMARY.md` already established) to `.tess/state/skills/drafts/
-    <slug>/` — a FIFTH `.tess/state/**` subsystem, fenced the same
-    four-layer way as memory/tasks/ledger/locks.
+    <slug>/` — a FIFTH `.tess/state/**` subsystem, given the SAME
+    four-layer coverage memory/tasks/ledger/locks already get. Only two of
+    the four layers needed an actual edit: `.gitignore`'s content-ignore
+    entry and the `create-tess` scaffold-strip exclusion
+    (`EXCLUDE_CONTENT_PREFIXES`) were newly added. The other two —
+    `tess.manifest.json`'s `never_touch` and publish-clean's
+    `_PUBLISH_CLEAN_PRIVATE_GLOBS` — already list `.tess/state/**`
+    recursively, so `.tess/state/skills/**` is auto-covered by that
+    existing glob, with no edit required. (Corrected 2026-07-20, issue
+    #133 — the wording above previously read as if all four layers were
+    edited; coverage was always complete and correct, only the phrasing
+    was imprecise.)
   - **Honesty is the point, again.** A THIN trail (no matched ledger
     events, or events with no recorded notes) produces a THIN scaffold:
     explicit `gap_flags` naming exactly what a human must fill in, never
@@ -117,7 +127,19 @@ All notable changes to Tess OS are documented here. This project adheres to
     fork of the chain algorithm, same pattern `earmarked`/`handoff`/
     `blocked` already established. Generation is read-only against the
     task record itself.
-  - `tests/test_skill_from_task.py` (25 tests): narrated vs.
+  - **PR review fix (Cyra LOW, issue #133, 2026-07-20):** an
+    operator-explicit `--out` under `.claude/skills/` (the LIVE,
+    host-loaded skill set) previously bypassed the drafts-only/
+    human-review boundary this whole command is architected around —
+    `_atomic_write_bytes` writes unconditionally and never routed through
+    `check_manifest_write_gate`. `--out` now refuses (`SkillError`,
+    unconditional — `--force` does not override it) any target that
+    path-normalize-resolves under `.claude/skills/`
+    (`_skill_reject_out_under_claude_skills`), including via a `..`
+    traversal or a pre-planted symlink whose resolved target lands there
+    — `Path.resolve()` dereferences both before the comparison, never a
+    raw string match against the operator's literal argument.
+  - `tests/test_skill_from_task.py` (31 tests): narrated vs.
     mechanical-only vs. empty-trail scaffolds → frontmatter/loadable-format
     checks → the auto-activation scope-boundary guarantee →
     `--out`/`--force` conflict handling → unknown-task refusal →
