@@ -78,14 +78,22 @@ Coverage:
     revert of `_skill_reject_out_under_claude_skills` back to a string
     comparison). Asserts the MECHANISM: the refusal genuinely invokes
     `os.path.samefile`, not just that it produces the right answer today.
-
-    NOTE (out of scope for this file, tracked separately): #141 also raised
-    a [LOW, Cyra] boundary note — the refusal only covers the in-repo
-    `root / ".claude/skills"`, not a hypothetical global `~/.claude/skills`
-    the host might also load from. Cyra's own issue text frames that as
-    "worth tracking separately if/when the host also loads a global skill
-    directory" — deliberately not implemented here; see the #141 issue
-    thread for the split-out rationale.
+  * Issue #141 (LOW, Cyra — the other half of the same issue, resolved
+    2026-07-21): the refusal now ALSO covers the operator's GLOBAL, per-
+    machine `~/.claude/skills` (`CLAUDE_SKILLS_LIVE_DIR` resolved against
+    `Path.home()`, not just `root`) — confirmed empirically that the host
+    loads skills from there too, a distinct directory from any repo's
+    local `.claude/skills/`. Covered with the SAME rigor as the repo-local
+    boundary: a literal `--out` under a controlled fake `$HOME` is refused
+    (never touching the real operator machine); an FS-independent,
+    same-inode/differently-spelled alias (constructed via symlink, holding
+    on every POSIX filesystem regardless of case-folding) is refused via
+    `_skill_global_claude_skills_root`/`_path_is_prefix` directly; a
+    legitimate default drafts write still succeeds with the global check
+    active; `--force` does not override the global refusal either; and
+    `_skill_global_claude_skills_root()` itself returns `None` (never
+    raises, never silently permits) when `Path.home()` cannot determine a
+    home directory at all — proven by forcing that exact `RuntimeError`.
 """
 
 from __future__ import annotations
@@ -131,6 +139,21 @@ def sroot(tmp_path):
 
 def _run(root, *args):
     env = {**os.environ, "TESS_ROOT": str(root)}
+    return subprocess.run(
+        [sys.executable, str(root / ".tess" / "bin" / "tessctl"), *args],
+        cwd=str(root), env=env, capture_output=True, text=True,
+    )
+
+
+def _run_with_home(root, home, *args):
+    """Same as `_run` but with `$HOME` overridden for the subprocess —
+    issue #141 (Cyra) global `~/.claude/skills` coverage below. Never
+    touches the real operator machine's actual home directory: `home` is
+    always a throwaway `tmp_path` subdirectory the test itself controls,
+    and `Path.home()` (POSIX) resolves via the `HOME` env var first, so
+    overriding it here is a genuine, faithful simulation of "a different
+    operator's global skills dir", not a mock of the check itself."""
+    env = {**os.environ, "TESS_ROOT": str(root), "HOME": str(home)}
     return subprocess.run(
         [sys.executable, str(root / ".tess" / "bin" / "tessctl"), *args],
         cwd=str(root), env=env, capture_output=True, text=True,
@@ -612,6 +635,184 @@ def test_out_under_claude_skills_refused_via_real_case_fold_when_fs_supports_it(
     assert not any((sroot / ".claude" / "skills").iterdir()), (
         "nothing must land in the real live skill set via the case-folded path"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #141 (Cyra LOW, resolved 2026-07-21) — the SECOND forbidden root:
+# the operator's GLOBAL, per-machine `~/.claude/skills`, not just the
+# in-repo `root / ".claude/skills"` covered above. Confirmed empirically
+# that the Claude Code host ALSO loads skills from there — a real,
+# populated directory distinct from any repo's local `.claude/skills/`.
+# Every test below is FS-independent: none of it relies on the test
+# runner's own filesystem happening to case-fold (unlike the opportunistic
+# real-case-fold test above, which is deliberately runtime-gated and skips
+# on a case-sensitive runner) — and none of it ever touches the real
+# operator machine's actual `$HOME`; `HOME` is always overridden to a
+# throwaway `tmp_path` subdirectory the test itself owns.
+# ---------------------------------------------------------------------------
+
+def test_out_under_global_claude_skills_refused_literal(sroot, tmp_path):
+    """A literal `--out` resolving under a (fake, controlled) `~/.claude/
+    skills` is refused via the full CLI end-to-end path — mirrors
+    `test_out_under_claude_skills_refused_literal` exactly, but for the
+    GLOBAL root instead of the in-repo one."""
+    fake_home = tmp_path / "fake-home-literal"
+    fake_home.mkdir()
+    task_id = _new_task(sroot, "Literal --out under global ~/.claude/skills")
+    target = fake_home / ".claude" / "skills" / "sneaky-skill"
+
+    r = _run_with_home(
+        sroot, fake_home, "skill", "from-task", task_id, "--harness", "ada", "--out", str(target),
+    )
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+    assert not target.exists()
+    assert not (fake_home / ".claude" / "skills").exists(), (
+        "the refusal must fire BEFORE anything (even the parent dir) is created on disk"
+    )
+
+
+def test_out_under_global_claude_skills_refused_even_with_force(sroot, tmp_path):
+    """`--force` governs the non-empty-target-directory conflict only — it
+    must not clear the GLOBAL boundary refusal either, mirroring the
+    in-repo root's own `--force` test."""
+    fake_home = tmp_path / "fake-home-force"
+    fake_home.mkdir()
+    task_id = _new_task(sroot, "Force does not override the global boundary")
+    target = fake_home / ".claude" / "skills" / "sneaky-skill"
+
+    r = _run_with_home(
+        sroot, fake_home, "skill", "from-task", task_id, "--harness", "ada",
+        "--out", str(target), "--force",
+    )
+    assert r.returncode != 0
+    assert "claude/skills" in (r.stdout + r.stderr)
+
+
+def test_out_under_global_claude_skills_refused_via_inode_identity_case_variant(engine, tmp_path, monkeypatch):
+    """FS-INDEPENDENT case-variant regression for the GLOBAL root — mirrors
+    `test_inode_identity_catches_same_location_naive_string_check_would_miss`
+    exactly, but proves the GLOBAL `~/.claude/skills` boundary specifically
+    (a `fake_root` with NO `.claude/skills` anywhere under it is used, so
+    the in-repo check above cannot be what fires here — only the global
+    one can be responsible for the refusal). Constructs a same-INODE,
+    differently-spelled alias via a symlink — the portable stand-in for "a
+    case-insensitive filesystem treats these two spellings as the same
+    directory natively" that holds on EVERY POSIX filesystem, ext4
+    (this repo's Linux CI) included, never relying on the runner's own
+    case-folding the way a literal `.CLAUDE` vs `.claude` variant would."""
+    fake_home = tmp_path / "fake-home-inode"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    real_global_skills = fake_home / ".claude" / "skills"
+    real_global_skills.mkdir(parents=True)
+    forbidden = real_global_skills.resolve()
+
+    alias_parent = tmp_path / "sneaky-global-alias-parent"
+    alias_parent.mkdir()
+    alias = alias_parent / "alias-for-global-skills"
+    alias.symlink_to(real_global_skills)
+    raw_child = alias / "evil-skill"  # NOT .resolve()d — pre-normalization view
+
+    # Sanity: the naive STRING check the repo-local fix already replaced
+    # would MISS this too — same bug class, same proof shape.
+    assert raw_child.is_relative_to(forbidden) is False, (
+        "sanity: the raw alias path must not look like a string-prefix match"
+    )
+
+    # The primitive layer catches it (reused verbatim, not re-forked):
+    assert engine._paths_are_same_location(forbidden, alias) is True
+    assert engine._path_is_prefix(forbidden, raw_child) is True
+
+    # `_skill_global_claude_skills_root()` resolves to the SAME real
+    # location `HOME` was pointed at.
+    assert engine._skill_global_claude_skills_root() == forbidden
+
+    # Full-integration: a `fake_root` that has NO `.claude/skills` anywhere
+    # under it — proves the GLOBAL check alone is what refuses this, not
+    # the in-repo one, which has nothing to match here.
+    fake_root = tmp_path / "unrelated-repo-root"
+    fake_root.mkdir()
+    with pytest.raises(engine.SkillError, match="claude/skills"):
+        engine._skill_reject_out_under_claude_skills(fake_root, raw_child)
+
+
+def test_default_out_dir_still_succeeds_with_global_check_active(sroot, tmp_path):
+    """The legitimate default drafts write (no `--out` at all — lands under
+    `.tess/state/skills/drafts/<slug>`) still succeeds once the global
+    `~/.claude/skills` check is active — proves the new boundary doesn't
+    accidentally reject an ordinary, non-conflicting write just because a
+    (fake, controlled, otherwise-unrelated) `$HOME` now resolves and gets
+    checked on every call."""
+    fake_home = tmp_path / "fake-home-legit-write"
+    fake_home.mkdir()
+    task_id = _new_task(sroot, "Legit drafts write with global check active")
+
+    r = _run_with_home(sroot, fake_home, "skill", "from-task", task_id, "--harness", "ada")
+    assert r.returncode == 0, r.stdout + r.stderr
+    out_dir = Path(r.stdout.splitlines()[0].split("->")[-1].strip())
+    assert out_dir.parent.parent == sroot / ".tess" / "state" / "skills"
+    assert out_dir.parent.name == "drafts"
+    assert (out_dir / "SKILL.md").is_file()
+    assert (out_dir / "provenance.json").is_file()
+
+
+def test_custom_out_dir_outside_both_roots_still_succeeds_with_global_check_active(sroot, tmp_path):
+    """A legitimate CUSTOM `--out` (outside both the in-repo AND the global
+    forbidden roots) still succeeds — the global check must not over-reject
+    a target that merely happens to share no relationship with either
+    boundary."""
+    fake_home = tmp_path / "fake-home-custom"
+    fake_home.mkdir()
+    task_id = _new_task(sroot, "Custom --out with global check active")
+    custom = tmp_path / "my-custom-drafts" / "widget-skill"
+
+    r = _run_with_home(sroot, fake_home, "skill", "from-task", task_id, "--harness", "ada", "--out", str(custom))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (custom / "SKILL.md").is_file()
+    assert (custom / "provenance.json").is_file()
+
+
+def test_skill_global_claude_skills_root_returns_none_when_home_undeterminable(engine, monkeypatch):
+    """`_skill_global_claude_skills_root()`'s ONE `None`-returning branch:
+    `Path.home()`'s own documented failure mode (`RuntimeError('Could not
+    determine home directory.')` — no `HOME` env var and no password-
+    database entry). Forced directly (rather than relying on actually
+    unsetting `HOME` in this process, which on POSIX usually still resolves
+    via the `pwd` module and would NOT reliably reproduce the failure) —
+    proving the helper degrades to `None`, never raises out to the caller,
+    and never fabricates a fake forbidden root."""
+    def _raise_no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(engine.Path, "home", staticmethod(_raise_no_home))
+    assert engine._skill_global_claude_skills_root() is None
+
+
+def test_reject_out_check_does_not_crash_when_home_undeterminable(engine, tmp_path, monkeypatch):
+    """When the global-root helper returns `None`, `_skill_reject_out_
+    under_claude_skills` must not crash and must still enforce the
+    in-repo boundary correctly — the global check degrading to "nothing to
+    check" must never take the whole function down with it, and must never
+    accidentally suppress the repo-local check either."""
+    def _raise_no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(engine.Path, "home", staticmethod(_raise_no_home))
+
+    fake_root = tmp_path / "repo-root"
+    (fake_root / ".claude" / "skills").mkdir(parents=True)
+
+    # The in-repo boundary still fires correctly.
+    with pytest.raises(engine.SkillError, match="claude/skills"):
+        engine._skill_reject_out_under_claude_skills(fake_root, fake_root / ".claude" / "skills" / "sneaky")
+
+    # An ordinary, unrelated --out still resolves cleanly (no crash, no
+    # spurious refusal) even though the global helper can't determine home.
+    legit = fake_root / "drafts" / "some-skill"
+    resolved = engine._skill_reject_out_under_claude_skills(fake_root, legit)
+    assert resolved == legit.resolve()
 
 
 def test_relative_out_dir_anchored_to_root_not_cwd(sroot, tmp_path):
