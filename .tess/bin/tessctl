@@ -87,6 +87,17 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               adopt's own recorded manifest, restoring exactly the files
               that manifest recorded, never the store's current full
               contents
+  audit       Goal I1: the exportable, independently-verifiable AUDITOR
+              PACK — `export` selects a scope (--task ID | --since/--until |
+              --all), reads the matching accountability-ledger events
+              (+ any caller-supplied, already-signed Agent Receipts via
+              --receipt) and writes a self-contained manifest.json +
+              human-readable SUMMARY.md; `verify` re-walks the hash chain
+              and re-checks embedded-receipt content-hash self-consistency
+              using ONLY the pack's own bytes (no live .tess/state/ access).
+              Every pack embeds a `trust_boundary` block stating plainly
+              that it is tamper-evident (unsigned hash chain), not
+              cryptographically non-repudiable — see docs/AUDIT_PACK_SPEC.md
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -16163,6 +16174,789 @@ def cmd_log(args, root: Path) -> None:
     handlers[sub](args, root)
 
 
+# ===========================================================================
+# AUDIT PACK — Goal I1: `tessctl audit export` + `tessctl audit verify`.
+#
+# The exportable, independently-verifiable "auditor pack" — the commercial/
+# governance deliverable a third party (insurer, client, auditor) accepts as
+# evidence of what agents did and who approved it. Builds on two primitives
+# this file already ships, wired together for the first time here:
+#   - the ACCOUNTABILITY LEDGER (TASK LEDGER region above, `tessctl log`) —
+#     hash-chained, append-only, UNSIGNED events: who (self-reported actor)
+#     did what (event class) when, cross-checked tamper-evident by
+#     `_ledger_event_hash`.
+#   - the Agent Receipt (core/contracts/agent-receipt.schema.json,
+#     docs/AGENT_RECEIPT_SPEC.md) — a GPG-SIGNED propose -> approve -> sign
+#     envelope. There is no on-disk receipt store in this repository (see
+#     that spec's "Producing a receipt" — deliberately out of scope for that
+#     change); a receipt is embedded here only when the caller supplies one
+#     via `--receipt`.
+#
+# `tessctl audit export` selects a SCOPE (one task id / a time-range / every
+# event) and writes a self-contained bundle: `manifest.json` (the machine-
+# checkable pack — every field `tessctl audit verify` needs is embedded
+# verbatim, no live .tess/state/ access required to re-check it) plus a
+# human-readable `SUMMARY.md` companion, the SAME two-serializations-of-one-
+# record convention `tessctl mission new` already uses for mission.md +
+# mission.json.
+#
+# HONESTY IS THE POINT (Xavier's own framing for this build): this pack is
+# TAMPER-EVIDENT (the ledger's hash chain, re-walked from the pack's own
+# bytes) but NOT cryptographically NON-REPUDIABLE — that requires the
+# Xavier-gated key ceremony (verifier_keys/signoff_keys registration,
+# conductor/verdict-signing.md), which has not happened. Every export embeds
+# a `trust_boundary` block stating this plainly, in the machine-checkable
+# manifest itself, not just in prose docs a reader might skip. See
+# docs/AUDIT_PACK_SPEC.md for the full "what this proves and does not
+# prove" boundary and docs/STATUS.md's claim-label table.
+# ===========================================================================
+
+AUDIT_PACK_SCHEMA = "tess-os.audit-pack/1"
+AUDIT_RECEIPT_SCHEMA_FILE = "agent-receipt.schema.json"
+
+
+class AuditError(Exception):
+    """Raised for any AUDIT PACK refusal or read failure — an ambiguous or
+    missing scope, an unreadable/invalid --receipt file, an --out target
+    that already exists without --force, or a pack file that is not valid
+    JSON / not this file's own pack_schema at verify time. Mirrors
+    TaskError/LedgerError's same typed-refusal convention; every
+    `_cmd_audit_*` entrypoint catches this and converts it to
+    sys.exit(str(e)) — also caught centrally in main() as a defense-in-depth
+    backstop."""
+
+
+def _audit_canonical_bytes(obj: dict, exclude_key: str) -> bytes:
+    """Compact, key-sorted JSON bytes of `obj` minus `exclude_key` — the
+    IDENTICAL canonicalization idiom `verdict_canonical_bytes` /
+    `signoff_canonical_bytes` already use in this file, and
+    tools/receipt-verify/canonical.py's own independent, dependency-free
+    reimplementation for the SAME purpose. Used here only to re-check an
+    embedded Agent Receipt's `signed_content_sha256` self-consistency (a
+    tamper check) — never to perform or verify a GPG signature itself; see
+    the AUDIT PACK region banner above for why that step is deliberately
+    delegated to tools/receipt-verify instead of duplicated here."""
+    payload = {k: v for k, v in obj.items() if k != exclude_key}
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _audit_origin_from_shard_name(name: str) -> str:
+    """Recover the origin slug from a ledger shard's filename
+    (`<YYYY-MM>.<origin>.jsonl` — see `_ledger_shard_path`). Ledger events
+    themselves carry no `origin` field (it is purely a sharding key, not
+    part of the event record), so a pack that groups events BY shard must
+    derive origin from the filename the same way the live ledger does."""
+    stem = name[:-len(".jsonl")] if name.endswith(".jsonl") else name
+    if "." in stem:
+        _month, origin = stem.split(".", 1)
+        return origin
+    return stem
+
+
+def _audit_collect_events_by_shard(root: Path, *, origin: str = None, task: str = None,
+                                    since: str = None, until: str = None) -> list:
+    """Returns an ordered list of (shard_path, events) — `events` is every
+    VERBATIM ledger-event dict (hash/prev_hash/seq untouched, exactly as
+    persisted) matching the given filters, sorted by `seq` ascending. A
+    shard with zero matching events is omitted entirely — an empty shard
+    group would carry no accountability information for this scope (same
+    'never empty' spirit ledger-event.schema.json's own `summary` field
+    already enforces per-event)."""
+    groups = []
+    for shard_path in _iter_ledger_shards(root, origin):
+        matched = []
+        with open(shard_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if task and (obj.get("refs") or {}).get("task") != task:
+                    continue
+                if since and obj.get("ts", "") < since:
+                    continue
+                if until and obj.get("ts", "") > until:
+                    continue
+                matched.append(obj)
+        if matched:
+            matched.sort(key=lambda e: e.get("seq", 0))
+            groups.append((shard_path, matched))
+    return groups
+
+
+def _audit_git_head(root: Path) -> str:
+    """Best-effort HEAD commit of the live checkout, for the pack's own
+    `exported_by.tess_os_commit` provenance field. Never required: a
+    missing/unavailable git binary, or a root that is not a git working
+    tree, yields None rather than failing the export — export must work
+    from a plain (non-git) instance tree the same way `tessctl doctor`/
+    `verify` already do not hard-require git either."""
+    if shutil.which("git") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    head = result.stdout.strip()
+    return head or None
+
+
+def _audit_load_receipt(root: Path, path: Path) -> dict:
+    """Load a caller-supplied Agent Receipt file and validate its SHAPE
+    against the real core/contracts/agent-receipt.schema.json (deliberately
+    NOT registered in CONTRACT_SCHEMAS — docs/AGENT_RECEIPT_SPEC.md's own
+    "not wired into tessctl... policy.yaml" boundary for that change is
+    preserved here: this loads the schema FILE directly, the same primitive
+    `load_contract_schema` uses internally, without adding "agent-receipt"
+    to the generic `tessctl validate <type>` registry). Schema-shape only —
+    no GPG call, no chain-link check against any other receipt; those are
+    `tools/receipt-verify`'s job, not this loader's.
+
+    Path hygiene (Reid LOW, PR #128 review — closing the asymmetry with
+    `_task_path`/`_validate_evidence_path` elsewhere in this file): NOT
+    root-containment — a receipt is an explicitly PORTABLE, external
+    artifact per docs/AGENT_RECEIPT_SPEC.md ("Why an open spec"; routinely
+    produced OUTSIDE this repo, e.g. examples/receipt-demo/'s own output —
+    confining `--receipt` to the repo root would break the format's own
+    stated purpose). What DOES apply regardless of location, the same
+    fail-closed discipline every other path this file touches already
+    gets: refuse a symlink outright — never silently dereferenced, the
+    same refusal `tessctl memory adopt` already applies to a symlinked
+    source entry — and require a real, existing, non-empty regular file
+    (mirrors `_validate_evidence_path`'s own is_file()/non-empty checks)
+    rather than handing a directory or a special file to json.loads/
+    read_text and letting it raise an unhandled OSError."""
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if path.is_symlink():
+        raise AuditError(
+            f"tessctl audit export: --receipt {path} is a symlink — refused outright, "
+            f"never silently dereferenced (fail-closed)"
+        )
+    if not path.exists():
+        raise AuditError(f"tessctl audit export: --receipt {path} does not exist")
+    if not path.is_file():
+        raise AuditError(
+            f"tessctl audit export: --receipt {path} is not a regular file — directories, "
+            f"/dev/null, and other special files are refused outright"
+        )
+    if path.stat().st_size == 0:
+        raise AuditError(f"tessctl audit export: --receipt {path} is an empty file (0 bytes)")
+    try:
+        instance = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise AuditError(f"tessctl audit export: --receipt {path} is not valid JSON: {e}")
+    if not isinstance(instance, dict):
+        raise AuditError(f"tessctl audit export: --receipt {path} is not a JSON object")
+    try:
+        schema = _load_schema_file(root / CONTRACTS_DIR / AUDIT_RECEIPT_SCHEMA_FILE)
+    except ContractError as e:
+        raise AuditError(f"internal error: could not load {AUDIT_RECEIPT_SCHEMA_FILE} — {e}")
+    base_dir = root / CONTRACTS_DIR
+    violations = schema_validate(instance, schema, schema, base_dir, path="$")
+    if violations:
+        raise AuditError(
+            f"tessctl audit export: --receipt {path} does not pass agent-receipt.schema.json — "
+            + "; ".join(violations)
+        )
+    return instance
+
+
+def _audit_expected_trust_boundary(receipt_count: int) -> dict:
+    """The SINGLE source of truth for the pack's `trust_boundary` disclosure
+    text — called by BOTH `_audit_build_manifest` (to embed it) and
+    `_audit_verify_pack` (to assert it is still present, unaltered — Cyra
+    LOW, PR #128 review closing the "delete the block and the pack still
+    verifies OK" gap). The only input that legitimately varies this text
+    between two exports is the receipt count; everything else is fixed
+    prose, so two exports of the same scope over unchanged state embed
+    BYTE-IDENTICAL trust_boundary text (see the determinism test)."""
+    return {
+        "ledger_integrity": (
+            "tessctl audit verify recomputes every included event's hash from THIS "
+            "pack's own bytes, cross-checks prev_hash linkage between seq-adjacent "
+            "included events, and — for an export_kind: full shard with an embedded "
+            "tail anchor (`tip`) — asserts that anchor's {count, hash} against the "
+            "events actually included, so silently dropping event(s) from the END of "
+            "a full shard is detected too (Cyra MEDIUM, PR #128 review). A pair of "
+            "included events where either one predates Phase 0.2's `seq` field (a "
+            "legacy, pre-#115 line) is still hash-chain-checked but not seq-gap-"
+            "checked — reported as an informational LEGACY note, never as a false "
+            "'missing event' (Cyra LOW-MED, PR #128 review). All of this runs against "
+            "ONLY this pack's own bytes — no live .tess/state/ledger/ access is used "
+            "or required. What it does NOT detect: a determined adversary who edits "
+            "an event (or drops a tail event) and consistently recomputes every "
+            "downstream hash — and, for the tail anchor, the embedded `tip` value "
+            "itself — to match; such a fully-coordinated forgery would still verify "
+            "OK. The chain (and the tip) are UNSIGNED: they carry no signer identity "
+            "and make no non-repudiation claim (docs/STATE_LAYER.md 'Trust "
+            "boundary')."
+        ),
+        "actor_identity": (
+            "Each event's actor.harness/model/session/persona is SELF-REPORTED by "
+            "the writing process at append time, not cryptographically attested. "
+            "The hash chain proves a recorded claim was not altered after the fact; "
+            "it does not prove the claim was true when made."
+        ),
+        "completeness": (
+            "This pack proves that what IS included here was not altered after being "
+            "recorded, and — for an export_kind: full shard whose tail anchor was "
+            "available at export time — that no event was silently dropped from its "
+            "END either. It does NOT prove that every ledger event matching a task/"
+            "range-scoped (partial) export was included — a party controlling that "
+            "export could omit real interior events with no detectable trace, since "
+            "a partial scope makes no completeness claim at all. A full-scope shard "
+            "with NO tail anchor available (only possible for one untouched since "
+            "before the #113 hardening) is disclosed per-shard as an informational "
+            "note rather than silently assumed complete. Cross-check against "
+            "`tessctl log verify` on the live instance, or request a --all export, "
+            "for the strongest available assurance."
+        ),
+        "receipts": (
+            "0 Agent Receipt(s) embedded — no signed approval was supplied for this "
+            "export." if not receipt_count else
+            f"{receipt_count} Agent Receipt(s) embedded verbatim, each independently "
+            "GPG-signed when produced. `tessctl audit verify` checks each receipt's "
+            "schema shape and its signed_content_sha256 self-consistency (tamper-"
+            "evidence only) but does NOT perform GPG signature verification — that "
+            "requires a trusted public key the auditor supplies out of band via "
+            "`tools/receipt-verify/receipt_verify.py verify --trust <name> <fpr> "
+            "<pubkey>` (see docs/AGENT_RECEIPT_SPEC.md)."
+        ),
+        "key_ceremony": (
+            "This repository ships with empty verifier_keys/signoff_keys registries "
+            "by design (conductor/verdict-signing.md). No receipt in this bundle, "
+            "even one whose signature independently verifies, should be treated as "
+            "tied to an operator-registered trust anchor unless that registration is "
+            "independently confirmed out of band."
+        ),
+        "exported_by": (
+            "`exported_by.user` is the SELF-REPORTED local OS username of whoever ran "
+            "`tessctl audit export` — not a cryptographic identity, carries no "
+            "signature, and is embedded even though a pack is meant for EXTERNAL "
+            "distribution (Reid LOW, PR #128 review). Redact or replace it before "
+            "sharing outside this instance's operator if that is a concern."
+        ),
+    }
+
+
+def _audit_build_manifest(root: Path, *, scope_kind: str, task: str = None, since: str = None,
+                           until: str = None, origin: str = None, receipt_paths: list = None) -> dict:
+    is_all_scope = scope_kind == "all"
+    shard_groups = _audit_collect_events_by_shard(root, origin=origin, task=task, since=since, until=until)
+
+    shards = []
+    task_refs, mission_refs = set(), set()
+    for shard_path, events in shard_groups:
+        for e in events:
+            refs = e.get("refs") or {}
+            if refs.get("task"):
+                task_refs.add(refs["task"])
+            if refs.get("mission"):
+                mission_refs.add(refs["mission"])
+        # "full" means every event this shard has EVER recorded (subject
+        # only to an --origin filter, which selects WHICH shards, never
+        # WHICH events within one) is included — true only for scope: all.
+        # A --task or time-range scope is conservatively always "partial",
+        # even on the rare occasion a time window happens to span a
+        # shard's entire history — never overclaim completeness.
+        export_kind = "full" if is_all_scope else "partial"
+        # Cyra MEDIUM (PR #128 review, the important fix): embed the
+        # shard's own `.tip` sidecar — the SAME {seq, count, hash} tail
+        # anchor `tessctl log verify` cross-checks against — so a "full"
+        # pack that has had its LAST event(s) silently dropped is
+        # DETECTABLE from the pack alone (`_audit_verify_pack` asserts
+        # it), not just genesis-start + interior-no-gap. Only meaningful
+        # for a "full" shard (a "partial" export never claims completeness
+        # in the first place, so a tip would be irrelevant noise there —
+        # deliberately left None). `None` here for a "full" shard is
+        # itself an honest, disclosed state: only reachable for a shard
+        # untouched since before the #113 hardening ever wrote a `.tip`
+        # at all — `_audit_verify_pack` reports this per-shard as an
+        # informational note, never silently treated as a clean tail.
+        tip = None
+        if export_kind == "full":
+            raw_tip = _ledger_read_tip(shard_path)
+            if (
+                isinstance(raw_tip, dict)
+                and isinstance(raw_tip.get("count"), int)
+                and isinstance(raw_tip.get("hash"), str)
+            ):
+                tip = {"seq": raw_tip.get("seq"), "count": raw_tip["count"], "hash": raw_tip["hash"]}
+        shards.append({
+            "origin": _audit_origin_from_shard_name(shard_path.name),
+            "shard": shard_path.name,
+            "export_kind": export_kind,
+            "event_count": len(events),
+            "tip": tip,
+            "events": events,
+        })
+
+    receipts = [_audit_load_receipt(root, Path(p)) for p in (receipt_paths or [])]
+
+    task_evidence = []
+    if scope_kind == "task" and task:
+        try:
+            trecord_path = _task_path(root, task)
+            if trecord_path.exists():
+                task_evidence = list(_task_read(trecord_path).get("evidence") or [])
+        except (TaskError, OSError, json.JSONDecodeError):
+            pass  # best-effort enrichment only — see task_record_evidence_note below
+
+    artifacts = {
+        "tasks": sorted(task_refs),
+        "missions": sorted(mission_refs),
+        "receipt_actions": [
+            {
+                "receipt_id": r.get("receipt_id"),
+                "repo": (r.get("proposed_action") or {}).get("repo"),
+                "ref": (r.get("proposed_action") or {}).get("ref"),
+                "paths": (r.get("proposed_action") or {}).get("paths") or [],
+            }
+            for r in receipts
+        ],
+        "task_record_evidence": task_evidence,
+        "task_record_evidence_note": (
+            "Best-effort: the CURRENT `evidence` list of the scoped task's live record "
+            "(.tess/state/tasks/<id>.json) at export time, if it still exists on this "
+            "instance — not a historical claim of the ledger, and empty if the task "
+            "record is unavailable or this scope is not task-scoped."
+        ),
+    }
+
+    event_count = sum(len(s["events"]) for s in shards)
+    manifest = {
+        "pack_schema": AUDIT_PACK_SCHEMA,
+        "pack_id": uuid.uuid4().hex,
+        "exported_at": _utc_now_iso(),
+        "exported_by": {
+            "user": getpass.getuser(),
+            "tess_os_commit": _audit_git_head(root),
+        },
+        "scope": {
+            "kind": scope_kind,
+            "task": task,
+            "since": since,
+            "until": until,
+            "origin": origin,
+        },
+        "trust_boundary": _audit_expected_trust_boundary(len(receipts)),
+        "shards": shards,
+        "receipts": receipts,
+        "artifacts": artifacts,
+        "counts": {
+            "events": event_count,
+            "receipts": len(receipts),
+            "shards": len(shards),
+        },
+    }
+    return manifest
+
+
+def _audit_render_summary_md(manifest: dict) -> str:
+    lines = []
+    lines.append(f"# Tess OS Auditor Pack — {manifest['pack_id']}")
+    lines.append("")
+    lines.append(f"Exported: {manifest['exported_at']} by {manifest['exported_by'].get('user')}")
+    commit = manifest["exported_by"].get("tess_os_commit")
+    if commit:
+        lines.append(f"Instance commit: `{commit}`")
+    scope = manifest["scope"]
+    if scope["kind"] == "task":
+        lines.append(f"Scope: task `{scope['task']}`" + (f" (origin: {scope['origin']})" if scope["origin"] else ""))
+    elif scope["kind"] == "range":
+        lines.append(
+            f"Scope: time range {scope['since'] or '(no lower bound)'} .. {scope['until'] or '(no upper bound)'}"
+            + (f" (origin: {scope['origin']})" if scope["origin"] else "")
+        )
+    else:
+        lines.append("Scope: all ledger events" + (f" (origin: {scope['origin']})" if scope["origin"] else ""))
+    lines.append("")
+
+    lines.append("## What this pack proves — and does not")
+    lines.append("")
+    for key in ("ledger_integrity", "actor_identity", "completeness", "receipts", "key_ceremony", "exported_by"):
+        lines.append(f"- **{key.replace('_', ' ')}:** {manifest['trust_boundary'][key]}")
+    lines.append("")
+
+    counts = manifest["counts"]
+    lines.append(
+        f"## Ledger events ({counts['events']} across {counts['shards']} shard(s), "
+        f"self-reported, hash-chain integrity re-verified by `tessctl audit verify`)"
+    )
+    lines.append("")
+    if counts["events"] == 0:
+        lines.append("No ledger events matched this scope.")
+    else:
+        lines.append("| Timestamp | Actor (harness) | Event | Task | Mission | Summary |")
+        lines.append("|---|---|---|---|---|---|")
+        rows = []
+        for shard in manifest["shards"]:
+            for e in shard["events"]:
+                actor = e.get("actor") or {}
+                refs = e.get("refs") or {}
+                rows.append((
+                    e.get("ts", ""), actor.get("harness", ""), e.get("event", ""),
+                    refs.get("task") or "", refs.get("mission") or "",
+                    (e.get("summary") or "").replace("|", "\\|"),
+                ))
+        rows.sort(key=lambda r: r[0])
+        for ts, harness, event, task_id, mission_id, summary in rows:
+            lines.append(f"| {ts} | {harness} | {event} | {task_id} | {mission_id} | {summary} |")
+    lines.append("")
+
+    lines.append(f"## Signed approvals in this pack ({counts['receipts']} Agent Receipt(s))")
+    lines.append("")
+    if counts["receipts"] == 0:
+        lines.append("No Agent Receipts were supplied for this export.")
+    else:
+        lines.append("| Receipt id | Decision | Identity | Disposition/Category | Policy rule | Repo/ref |")
+        lines.append("|---|---|---|---|---|---|")
+        for r in manifest["receipts"]:
+            decision = r.get("decision") or {}
+            decision_kind = r.get("decision_kind")
+            identity = decision.get("verifier") if decision_kind == "verdict" else decision.get("authorized_by")
+            disp = decision.get("disposition") if decision_kind == "verdict" else decision.get("category")
+            policy = (r.get("policy_decision") or {}).get("rule_id", "")
+            pa = r.get("proposed_action") or {}
+            repo_ref = " ".join(x for x in (pa.get("repo"), pa.get("ref")) if x)
+            lines.append(
+                f"| {r.get('receipt_id', '')} | {decision_kind} | {identity} | {disp} | {policy} | {repo_ref} |"
+            )
+        lines.append("")
+        lines.append(
+            "GPG signature authenticity was NOT independently verified by this export — "
+            "see 'receipts' above. Correlate a receipt with the ledger events table via "
+            "a matching repo/ref/task id where present in both; this tool performs no "
+            "automatic cross-referencing between the two accountability trails."
+        )
+    lines.append("")
+
+    artifacts = manifest["artifacts"]
+    lines.append("## Artifacts referenced")
+    lines.append("")
+    lines.append(f"- Task id(s): {', '.join(artifacts['tasks']) or '(none)'}")
+    lines.append(f"- Mission id(s): {', '.join(artifacts['missions']) or '(none)'}")
+    if artifacts["task_record_evidence"]:
+        lines.append(f"- Task record evidence (current state): {', '.join(artifacts['task_record_evidence'])}")
+    for ra in artifacts["receipt_actions"]:
+        bits = [f"receipt {ra['receipt_id']}"]
+        if ra["repo"]:
+            bits.append(f"repo={ra['repo']}")
+        if ra["ref"]:
+            bits.append(f"ref={ra['ref']}")
+        if ra["paths"]:
+            bits.append("paths=" + ",".join(ra["paths"]))
+        lines.append(f"- {' '.join(bits)}")
+    lines.append("")
+
+    lines.append("## Verify")
+    lines.append("")
+    lines.append("```")
+    lines.append("tessctl audit verify <this-pack-directory>")
+    lines.append("```")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_audit_export(args, root: Path) -> None:
+    try:
+        scope_selectors = [bool(args.task), bool(args.all), bool(args.since or args.until)]
+        if sum(scope_selectors) != 1:
+            raise AuditError(
+                "tessctl audit export: choose exactly one scope — --task ID, "
+                "--since/--until (a time range), or --all"
+            )
+        scope_kind = "task" if args.task else ("all" if args.all else "range")
+
+        manifest = _audit_build_manifest(
+            root, scope_kind=scope_kind, task=args.task, since=args.since, until=args.until,
+            origin=args.origin, receipt_paths=args.receipts or [],
+        )
+
+        out_dir = Path(args.out)
+        if not out_dir.is_absolute():
+            out_dir = Path.cwd() / out_dir
+        if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
+            raise AuditError(
+                f"tessctl audit export: {out_dir} already exists and is not empty — pass --force to overwrite"
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest_path = out_dir / "manifest.json"
+        summary_path = out_dir / "SUMMARY.md"
+        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+        _atomic_write_bytes(manifest_path, manifest_bytes)
+        _atomic_write_bytes(summary_path, _audit_render_summary_md(manifest).encode("utf-8"))
+    except AuditError as e:
+        sys.exit(str(e))
+
+    counts = manifest["counts"]
+    print(f"tessctl audit export — pack {manifest['pack_id']} (scope: {scope_kind})")
+    print(f"  events: {counts['events']}  receipts: {counts['receipts']}  shards: {counts['shards']}")
+    print(f"  -> {manifest_path}")
+    print(f"  -> {summary_path}")
+    print(f"  verify with: tessctl audit verify {out_dir}")
+
+
+def _audit_check_trust_boundary(manifest: dict) -> list:
+    """Cyra LOW (PR #128 review) — the `trust_boundary` disclosure block is
+    not self-enforcing on its own: nothing else in the pack format stops a
+    party from deleting it (or reworking its wording) before handing the
+    pack to an auditor, and every OTHER check in `_audit_verify_pack` would
+    still report OK. This asserts the block is present and matches, field
+    for field, the canonical text `tessctl audit export` itself would have
+    produced for this pack's own receipt count (`_audit_expected_trust_
+    boundary` — the single generator both build and verify call, so a
+    genuine export can never fail its own verify over text drift). Any
+    deviation — missing, reworded, truncated, or an extra/removed field —
+    is reported as tamper, so the disclosure meant to travel WITH the pack
+    cannot be silently stripped out from under it."""
+    expected = _audit_expected_trust_boundary(len(manifest.get("receipts", []) or []))
+    if manifest.get("trust_boundary") != expected:
+        return [
+            "trust_boundary: missing or does not match the canonical disclosure text "
+            "this pack's own receipt count would have produced — the honesty "
+            "disclosure meant to travel with this pack was stripped or altered "
+            "(fail-closed, Cyra LOW, PR #128 review)"
+        ]
+    return []
+
+
+def _audit_verify_pack(root: Path, manifest: dict) -> tuple:
+    """Pure check: returns (problems, notes). `problems` is a list of
+    fail-closed reasons (non-empty => TAMPERED, exit 1); `notes` is a list
+    of non-fatal, informational disclosures — a legacy (seq-absent) event
+    pair, or a `full` shard with no tail anchor available — that are always
+    surfaced but never fail verification on their own. Mirrors the SAME
+    OK-vs-LEGACY-vs-TAMPERED three-way `_ledger_verify_shard`/`_cmd_log_
+    verify` already use, adapted to a pack that may hold several shards and
+    receipts at once. Split out from `_cmd_audit_verify` so tests can
+    exercise it directly against an in-memory manifest dict."""
+    problems = []
+    notes = []
+    for shard in manifest.get("shards", []):
+        shard_name = shard.get("shard", "<unknown shard>")
+        export_kind = shard.get("export_kind")
+        events = shard.get("events", [])
+        legacy_pairs = 0
+        prev_event = None
+        for e in events:
+            recorded_hash = e.get("hash")
+            recomputed = _ledger_event_hash({k: v for k, v in e.items() if k != "hash"})
+            if recomputed != recorded_hash:
+                problems.append(
+                    f"{shard_name} seq={e.get('seq')}: hash mismatch — recorded "
+                    f"{recorded_hash!r}, recomputed {recomputed!r} (content tamper detected)"
+                )
+                prev_event = e
+                continue
+            if prev_event is None:
+                if export_kind == "full" and e.get("prev_hash") != LEDGER_GENESIS_HASH:
+                    problems.append(
+                        f"{shard_name}: export_kind is 'full' but the first included "
+                        f"event's prev_hash is not genesis — this was not exported from "
+                        f"the shard's own start"
+                    )
+            elif "seq" not in prev_event or "seq" not in e:
+                # A LEGACY pair (Cyra LOW-MED, PR #128 review): either side
+                # predates Phase 0.2's `seq` field (a pre-#115 on-disk
+                # shape, docs/STATE_LAYER.md's "Migration note" — the SAME
+                # honestly-old shape `_ledger_verify_shard` already treats
+                # as LEGACY, never TAMPERED). There is no seq to compare,
+                # so an expected-vs-actual gap can never be computed for
+                # this pair — asserting a "missing event" without a seq to
+                # compare against would be exactly the false-positive
+                # TAMPERED report this fix closes. The prev_hash link is
+                # still fully checked regardless — a REAL chain break
+                # between two legacy lines is caught exactly as before.
+                legacy_pairs += 1
+                if e.get("prev_hash") != prev_event.get("hash"):
+                    problems.append(
+                        f"{shard_name}: prev_hash does not match the immediately "
+                        f"preceding INCLUDED event's hash (chain break) — a legacy "
+                        f"(seq-absent) pair, but the hash link is still checked"
+                    )
+            else:
+                prev_seq, this_seq = prev_event.get("seq"), e.get("seq")
+                contiguous = (
+                    isinstance(prev_seq, int) and isinstance(this_seq, int) and this_seq == prev_seq + 1
+                )
+                if contiguous:
+                    if e.get("prev_hash") != prev_event.get("hash"):
+                        problems.append(
+                            f"{shard_name} seq={this_seq}: prev_hash does not match the "
+                            f"immediately preceding INCLUDED event's hash (chain break)"
+                        )
+                elif export_kind == "full":
+                    problems.append(
+                        f"{shard_name}: seq gap between {prev_seq} and {this_seq} in a "
+                        f"'full' shard export — an event is missing"
+                    )
+                # A seq gap in a 'partial' (task/range-scoped) export is
+                # EXPECTED — excluded, out-of-scope events sit in the gap —
+                # informational only, never reported as a problem.
+            prev_event = e
+
+        if legacy_pairs:
+            notes.append(
+                f"{shard_name}: {legacy_pairs} legacy (seq-absent) event pair(s) — "
+                f"pre-#115 on-disk shape (hash chain still checked where present); "
+                f"reported as LEGACY, not TAMPERED (docs/STATE_LAYER.md 'Migration note')"
+            )
+
+        # Cyra MEDIUM (PR #128 review, the important fix): for a shard
+        # claiming export_kind: full, assert its embedded tail anchor
+        # (`tip` — the SAME {count, hash} `tessctl log verify` cross-checks
+        # a live shard against) against the events actually included here.
+        # A mismatch means event(s) were dropped from the END of the shard
+        # without leaving an interior chain-break trace — exactly the gap
+        # genesis-start + no-interior-gap alone could never close.
+        if export_kind == "full":
+            tip = shard.get("tip")
+            if (
+                isinstance(tip, dict)
+                and isinstance(tip.get("count"), int)
+                and isinstance(tip.get("hash"), str)
+            ):
+                actual_count = len(events)
+                last_hash = events[-1].get("hash") if events else None
+                if tip["count"] != actual_count or (actual_count > 0 and tip["hash"] != last_hash):
+                    problems.append(
+                        f"{shard_name}: tail anchor mismatch — the shard's own .tip "
+                        f"recorded {tip['count']} event(s) ending in hash {tip['hash']!r} "
+                        f"at export time, but this pack contains {actual_count} event(s)"
+                        + (f" ending in hash {last_hash!r}" if actual_count else " (empty)")
+                        + " — tail-truncation detected (event(s) dropped from the end "
+                          "without leaving a chain-break trace, Cyra MEDIUM, PR #128 review)"
+                    )
+            else:
+                notes.append(
+                    f"{shard_name}: export_kind is 'full' but no tail anchor (.tip) was "
+                    f"available at export time — tail-truncation beyond the last included "
+                    f"event cannot be ruled out from this pack alone for this shard (only "
+                    f"possible for a shard untouched since before the #113 hardening)"
+                )
+
+    problems += _audit_check_trust_boundary(manifest)
+
+    schema = None
+    base_dir = root / CONTRACTS_DIR
+    for idx, r in enumerate(manifest.get("receipts", [])):
+        rid = r.get("receipt_id", f"#{idx}")
+        if schema is None:
+            try:
+                schema = _load_schema_file(root / CONTRACTS_DIR / AUDIT_RECEIPT_SCHEMA_FILE)
+            except ContractError as e:
+                problems.append(f"receipt[{rid}]: could not load agent-receipt.schema.json — {e}")
+                break
+        violations = schema_validate(r, schema, schema, base_dir, path="$")
+        if violations:
+            problems.append(f"receipt[{rid}]: schema violation(s) — " + "; ".join(violations))
+            continue
+        sig = r.get("receipt_signature") or {}
+        recomputed = hashlib.sha256(_audit_canonical_bytes(r, "receipt_signature")).hexdigest()
+        if sig.get("signed_content_sha256") != recomputed:
+            problems.append(
+                f"receipt[{rid}]: receipt_signature.signed_content_sha256 does not match "
+                f"recomputed content — the receipt envelope was edited after signing "
+                f"(fail-closed)"
+            )
+        decision = r.get("decision") or {}
+        dsig = decision.get("signature") or {}
+        if dsig:
+            drecomputed = hashlib.sha256(_audit_canonical_bytes(decision, "signature")).hexdigest()
+            if dsig.get("signed_content_sha256") != drecomputed:
+                problems.append(
+                    f"receipt[{rid}]: decision.signature.signed_content_sha256 does not "
+                    f"match recomputed content — the embedded decision was edited after "
+                    f"signing (fail-closed)"
+                )
+    return problems, notes
+
+
+def _cmd_audit_verify(args, root: Path) -> None:
+    try:
+        pack_arg = Path(args.pack)
+        if not pack_arg.is_absolute():
+            pack_arg = Path.cwd() / pack_arg
+        manifest_path = (pack_arg / "manifest.json") if pack_arg.is_dir() else pack_arg
+        if not manifest_path.exists():
+            raise AuditError(f"tessctl audit verify: {manifest_path} does not exist")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise AuditError(f"tessctl audit verify: {manifest_path} is not valid JSON: {e}")
+        if not isinstance(manifest, dict):
+            raise AuditError(f"tessctl audit verify: {manifest_path} is not a JSON object")
+        if manifest.get("pack_schema") != AUDIT_PACK_SCHEMA:
+            raise AuditError(
+                f"tessctl audit verify: {manifest_path} has pack_schema "
+                f"{manifest.get('pack_schema')!r}, expected {AUDIT_PACK_SCHEMA!r}"
+            )
+        problems, notes = _audit_verify_pack(root, manifest)
+    except AuditError as e:
+        sys.exit(str(e))
+
+    event_total = sum(len(s.get("events", [])) for s in manifest.get("shards", []))
+    receipt_total = len(manifest.get("receipts", []))
+    ok = not problems
+    if getattr(args, "json_out", False):
+        print(json.dumps(
+            {
+                "ok": ok, "events_checked": event_total, "receipts_checked": receipt_total,
+                "problems": problems, "notes": notes,
+            },
+            indent=2,
+        ))
+    elif ok and not notes:
+        print(f"OK        {manifest_path}")
+        print(
+            f"  {event_total} ledger event(s) and {receipt_total} receipt(s) checked — no "
+            f"tamper detected (hash-chain integrity only; see manifest.trust_boundary for "
+            f"what this does and does not prove)"
+        )
+    elif ok:
+        # Mirrors `tessctl log verify`'s own three-way OK/LEGACY/TAMPERED
+        # vocabulary (Cyra LOW-MED, PR #128 review): no tamper, but at
+        # least one shard carries an informational disclosure (a legacy
+        # seq-absent pair, or a 'full' shard with no tail anchor
+        # available) — surfaced plainly, never silently folded into a bare
+        # "OK".
+        print(f"LEGACY    {manifest_path}")
+        print(
+            f"  {event_total} ledger event(s) and {receipt_total} receipt(s) checked — no "
+            f"tamper detected, but see the note(s) below"
+        )
+        for n in notes:
+            print(f"  {n}")
+    else:
+        print(f"TAMPERED  {manifest_path}")
+        for p in problems:
+            print(f"  {p}")
+        for n in notes:
+            print(f"  NOTE: {n}")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_audit(args, root: Path) -> None:
+    sub = getattr(args, "audit_sub", None)
+    handlers = {"export": _cmd_audit_export, "verify": _cmd_audit_verify}
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl audit: choose a subcommand — export | verify")
+    fn(args, root)
+
+
 # ---------------------------------------------------------------------------
 # Phase 0.3 — `tessctl memory adopt`: the cross-harness MEMORY LINK (MEMORY
 # ADOPT region, a sibling of TASK LEDGER above). docs/STATE_LAYER.md:
@@ -18474,6 +19268,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_log_verify.add_argument("--origin")
 
+    # audit — Goal I1: the exportable, independently-verifiable auditor pack
+    # (AUDIT PACK region, a sibling of TASK LEDGER/`log` above).
+    p_audit = sub.add_parser(
+        "audit",
+        help="exportable auditor pack: accountability ledger events + agent "
+             "receipts for a scope, independently verifiable offline (export | verify)",
+    )
+    audit_sub = p_audit.add_subparsers(dest="audit_sub", metavar="SUBCOMMAND")
+
+    p_audit_export = audit_sub.add_parser(
+        "export",
+        help="export the accountability record for a scope (--task | --since/--until | --all) "
+             "as a self-contained pack (manifest.json + SUMMARY.md)",
+    )
+    p_audit_export.add_argument("--task", metavar="ID", help="scope: one task id's ledger events")
+    p_audit_export.add_argument("--since", metavar="TS", help="scope: time-range lower bound (ISO-8601, inclusive)")
+    p_audit_export.add_argument("--until", metavar="TS", help="scope: time-range upper bound (ISO-8601, inclusive)")
+    p_audit_export.add_argument("--all", action="store_true", help="scope: every event in every ledger shard")
+    p_audit_export.add_argument(
+        "--origin", metavar="ORIGIN", help="restrict to one shard origin (combinable with any scope)",
+    )
+    p_audit_export.add_argument(
+        "--receipt", action="append", dest="receipts", metavar="PATH",
+        help="embed an already-signed Agent Receipt JSON file verbatim (repeatable). There is "
+             "no on-disk receipt store in this repository today (docs/AGENT_RECEIPT_SPEC.md) — "
+             "receipts are supplied explicitly by the caller.",
+    )
+    p_audit_export.add_argument("--out", required=True, metavar="DIR", help="output directory for the pack")
+    p_audit_export.add_argument("--force", action="store_true", help="overwrite a non-empty --out directory")
+
+    p_audit_verify = audit_sub.add_parser(
+        "verify",
+        help="re-check an exported pack's hash-chain + embedded-receipt content-hash integrity "
+             "using ONLY the pack's own contents — no live .tess/state/ access",
+    )
+    p_audit_verify.add_argument(
+        "pack", metavar="PACK", help="pack directory (containing manifest.json) or a manifest.json path directly",
+    )
+    p_audit_verify.add_argument("--json", action="store_true", dest="json_out")
+
     # memory — Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region,
     # a sibling of `tasks`/`log` above).
     p_memory = sub.add_parser(
@@ -18626,6 +19460,9 @@ def main() -> None:
         # the MISSION LEDGER region above).
         "tasks":        cmd_tasks,
         "log":          cmd_log,
+        # Goal I1: the exportable, independently-verifiable auditor pack
+        # (AUDIT PACK region, a sibling of TASK LEDGER/`log` above).
+        "audit":        cmd_audit,
         # Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region, a
         # sibling of TASK LEDGER above).
         "memory":       cmd_memory,
@@ -18656,7 +19493,7 @@ def main() -> None:
     # this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except (GateError, MissionError, RunError, TaskError, LedgerError, MemoryAdoptError) as e:
+    except (GateError, MissionError, RunError, TaskError, LedgerError, MemoryAdoptError, AuditError) as e:
         sys.exit(str(e))
 
 

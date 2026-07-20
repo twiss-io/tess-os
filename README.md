@@ -128,6 +128,10 @@ reproducible release rehearsal and the production prerequisites are complete.
   approve → sign accountability envelope, its standalone verifier
   (`tools/receipt-verify/`), and a runnable demo with test-only keys
   (`make receipt-demo`).
+- [The Auditor Pack](docs/AUDIT_PACK_SPEC.md) — `tessctl audit export`/
+  `verify`: an exportable, offline-verifiable bundle of accountability
+  ledger events and Agent Receipts for a scope, with an explicit,
+  self-describing tamper-evident-vs-non-repudiable boundary.
 - [Adapters](adapters/README.md) — render targets and their limits.
 - [Mission and orchestration model](missions/README.md) — current conductor
   contracts and evidence model.
