@@ -18733,6 +18733,14 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     # 1. Idempotency: --from is ALREADY a symlink resolving to --to -> no-op,
     #    regardless of --yes/dry-run. A symlink resolving somewhere ELSE is
     #    refused outright — never silently repointed.
+    #    Issue #147 consistency migration: compared by INODE IDENTITY
+    #    (`_paths_are_same_location`), not raw `==`, so an already-adopted
+    #    symlink whose target differs only by case/normalization from
+    #    `to_dir_resolved` is still correctly recognized as the no-op case.
+    #    This check gates two non-mutating outcomes either way (return
+    #    no-op, or raise a refusal) — it was already fail-closed (a missed
+    #    match only produced a spurious refusal, never a delete); the
+    #    migration additionally fixes that spurious-refusal edge case.
     if from_dir.is_symlink():
         try:
             resolved = from_dir.resolve()
@@ -18740,7 +18748,7 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
             raise MemoryAdoptError(
                 f"tessctl memory adopt: {from_dir} is a symlink but could not be resolved: {e}"
             )
-        if resolved == to_dir_resolved:
+        if _paths_are_same_location(resolved, to_dir_resolved):
             return {
                 "action": "noop", "reason": "already_adopted", "harness": harness,
                 "from": str(from_dir), "to": str(to_dir_resolved), "dry_run": dry_run,
@@ -19084,7 +19092,35 @@ def _memory_adopt_other_live_source_files(to_dir: Path, exclude_manifest_path: P
     unconditionally moved out of the store. This function makes the
     check symmetric: a file is protected from removal whenever ANY other
     live harness's manifest references it, regardless of which harness
-    happens to "own" the copy."""
+    happens to "own" the copy.
+
+    HOLE 3 (issue #147, inode-vs-string audit sweep — same class as #117
+    HOLE 1 / #140 / #145): the "is this other manifest's harness still
+    LIVE" test below used to be `other_from.resolve() != to_dir_resolved`
+    — a raw `Path`/string comparison, not an inode-identity check. Exactly
+    like #117 HOLE 1, `.resolve()` preserves as-typed case, and macOS APFS
+    / Windows NTFS (both the real deployment filesystems for
+    `.tess/state/memory` and `~/.claude/projects/.../memory`, both
+    case-insensitive by default) treat `.../STORE` and `.../store` as the
+    SAME directory on disk yet compare unequal as strings. A false
+    "not equal" here means the OTHER harness's `source_files` are silently
+    NOT added to `others` — i.e. NOT protected — so a file that harness
+    still depends on can be `shutil.move()`d out of the store by THIS
+    revert the moment it also happens to be in this harness's own
+    `newly_copied_files`. This is the exploitable direction (default
+    outcome of a missed match is "allow the delete to proceed"), so it is
+    fixed for real: routed through `_paths_are_same_location` ->
+    `os.path.samefile` (inode identity), mirroring #117's proven fix
+    rather than reinventing it.
+
+    The self-exclusion check just above it (skipping THIS revert's own
+    manifest so it never counts itself as an "other" live harness) is
+    migrated to the same helper for consistency, though it was already
+    fail-safe in the opposite sense: missing that match does not enable a
+    delete, it only causes THIS manifest to be (harmlessly) evaluated a
+    second time as if it were an "other" harness, which — if its own
+    `from_path` is still a live symlink to `to_dir` — makes MORE files
+    protected, never fewer."""
     others: set = set()
     try:
         to_dir_resolved = to_dir.resolve()
@@ -19097,7 +19133,12 @@ def _memory_adopt_other_live_source_files(to_dir: Path, exclude_manifest_path: P
         pass
     for path in sorted(to_dir.glob(MEMORY_ADOPT_MANIFEST_GLOB)):
         try:
-            if exclude_resolved is not None and path.resolve() == exclude_resolved:
+            # Short-circuited exactly as before the migration: path.resolve()
+            # is only ever invoked when exclude_resolved is not None (never
+            # unconditionally), so a manifest is never skipped over a
+            # resolve() failure in the exclude_resolved-is-None case, same
+            # as pre-migration behavior.
+            if exclude_resolved is not None and _paths_are_same_location(path.resolve(), exclude_resolved):
                 continue
         except OSError:
             continue
@@ -19109,9 +19150,10 @@ def _memory_adopt_other_live_source_files(to_dir: Path, exclude_manifest_path: P
         try:
             if not other_from.is_symlink():
                 continue
-            if other_from.resolve() != to_dir_resolved:
-                continue
+            other_from_resolved = other_from.resolve()
         except OSError:
+            continue
+        if not _paths_are_same_location(other_from_resolved, to_dir_resolved):
             continue
         others.update(other.get("source_files", []))
     return others
@@ -19229,7 +19271,13 @@ def _memory_adopt_revert(root: Path, to_dir: Path, *,
         raise MemoryAdoptError(
             f"tessctl memory adopt --revert: {from_path} could not be resolved: {e}"
         )
-    if resolved != to_dir.resolve():
+    # Issue #147 consistency migration: INODE IDENTITY
+    # (`_paths_are_same_location`), not raw `!=` — a drifted-symlink refusal
+    # here is already fail-closed (a missed match only ever REFUSES the
+    # revert, never mutates), so this migration only fixes a spurious
+    # refusal on a case/normalization-divergent `to_dir`, never changes the
+    # refuse/proceed direction.
+    if not _paths_are_same_location(resolved, to_dir.resolve()):
         raise MemoryAdoptError(
             f"tessctl memory adopt --revert: {from_path} is a symlink but resolves to "
             f"{resolved}, not the recorded {to_dir.resolve()} — refusing to touch an "
@@ -19464,7 +19512,13 @@ def _check_memory_link(root: Path) -> list:
             report["symlink_present"] = True
             try:
                 resolved = from_path.resolve()
-                if resolved == to_path.resolve():
+                # Issue #147 consistency migration: INODE IDENTITY
+                # (`_paths_are_same_location`), not raw `==` — purely
+                # informational (this report never drives a mutation or
+                # doctor's exit code either way), migrated only so a
+                # case/normalization-divergent but otherwise-healthy
+                # symlink is not misreported as broken.
+                if _paths_are_same_location(resolved, to_path.resolve()):
                     report["symlink_resolves"] = True
                 else:
                     report["issues"].append(

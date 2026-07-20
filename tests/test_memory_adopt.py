@@ -79,6 +79,22 @@ round (see this file's "Cyra re-verification of 18a3fea" section below):
     harness's manifest also references that filename in its own
     `source_files`; if so, it is copied back but left in the store, same
     as the already-established M1 invariant.
+
+Issue #147 (inode-vs-string audit sweep, same class as #117/#140/#145):
+  * HOLE 3/MEDIUM-HIGH: `_memory_adopt_other_live_source_files`'s own
+    "is this OTHER manifest's harness still live" test used a raw
+    `other_from.resolve() != to_dir_resolved` string comparison — the
+    exact same bug SHAPE as HOLE 1 above, just in a different call site
+    the #117 fix never reached. A case/normalization-divergent but
+    otherwise identical store path (`.../STORE` vs `.../store`, the real
+    macOS APFS / Windows NTFS deployment case) was wrongly judged
+    "not live", so that harness's shared file was silently deleted by a
+    second harness's `--revert`. Fixed the same way as HOLE 1: routed
+    through `_paths_are_same_location` (inode identity). See
+    `test_revert_other_harness_case_divergent_live_file_not_deleted`
+    below — deliberately FS-INDEPENDENT (does not rely on the test
+    runner's filesystem actually being case-insensitive, unlike the
+    HOLE 1 tests above, which skip on a case-sensitive host).
 """
 
 from __future__ import annotations
@@ -1094,3 +1110,140 @@ def test_revert_reverse_direction_two_harnesses_shared_file_preserved(troot, tmp
     assert harness_b.is_dir() and not harness_b.is_symlink()
     assert (harness_b / "shared.md").read_text(encoding="utf-8") == "shared content\n"
     assert (harness_b / "b_only.md").read_text(encoding="utf-8") == "only B\n"
+
+
+# ---------------------------------------------------------------------------
+# HOLE 3 — MEDIUM-HIGH (issue #147, inode-vs-string audit sweep) — an OTHER
+# harness's manifest is wrongly judged "not live" on a case-divergent
+# store spelling, so its shared file is deleted out from under it
+# ---------------------------------------------------------------------------
+
+def test_revert_other_harness_case_divergent_live_file_not_deleted(engine, tmp_path):
+    """FS-INDEPENDENT reproduction of issue #147 — no monkeypatching of
+    `os.path.samefile` needed, no dependency on the test runner's actual
+    case-sensitivity in EITHER direction:
+      * on a case-SENSITIVE host (this repo's own Linux/ext4 CI runners),
+        harness A's symlink target below (`store`'s own name, upper-
+        cased) genuinely does not exist as a separate directory, so
+        `_paths_are_same_location`'s own EXISTING fallback — a
+        case-fold string compare, used precisely because `os.path.
+        samefile` requires both sides to exist — kicks in and correctly
+        recognizes the two spellings as the same location;
+      * on a case-INSENSITIVE host (macOS/APFS, default — also a real
+        `tessctl` dev/CI target), that same upper-cased path IS already
+        the identical real directory as `store` (case-insensitive
+        lookup), so `_paths_are_same_location`'s PRIMARY path —
+        `os.path.samefile` itself, unmocked — correctly recognizes it
+        directly.
+    Either way, deterministically, the FIX (`_paths_are_same_location`)
+    recognizes the two spellings as one location, while the PRE-#147 raw
+    `other_from.resolve() != to_dir_resolved` string comparison never
+    would — `.resolve()` preserves the as-typed case of a symlink's
+    recorded target (proven by the HOLE 1 tests above), so it returns the
+    literal upper-cased string regardless of which host this runs on.
+
+    Scenario, matching the issue exactly: ONE physical canonical store
+    (`store`) that TWO harnesses' adopt manifests are co-located in — the
+    real-world precondition for `_memory_adopt_other_live_source_files`
+    to even consider a manifest as an "other" candidate at all (it globs
+    manifests FROM `to_dir` itself, so both harnesses' manifests living
+    in the identical physical directory is not a test artifact, it is
+    exactly what happens on a real case-insensitive filesystem when two
+    harnesses' `--to` arguments differ only by case). Harness B holds a
+    REAL, full adopt (via the actual engine call: symlink, manifest, and
+    copied content are all genuine). Harness A is a still-LIVE harness
+    whose manifest is (as it always is on the real deployment
+    filesystems) co-located in that same physical store, but whose
+    recorded `from_path` symlink resolves to a spelling that differs from
+    `store` ONLY in case — `_memory_adopt_other_live_source_files` never
+    reads content from the OTHER harness's own directory (only its
+    manifest JSON's `source_files` list), so this reproduces the exact
+    liveness-check divergence without needing harness A's own directory
+    to itself be a second real, separately-populated store.
+
+    Harness B then reverts. Pre-#147, `shared.md` — recorded in B's OWN
+    `newly_copied_files` (B's store started out empty) — would be
+    `shutil.move()`d out of the store because harness A's still-live
+    manifest was wrongly excluded from `other_live_source_files`, silently
+    breaking harness A, which is still live-symlinked and reads shared.md
+    through it. Post-#147, `shared.md` is copied back into B's restored
+    directory but correctly LEFT in the store."""
+    root = tmp_path / "os"
+    root.mkdir()
+
+    store = root / ".tess" / "state" / "store"
+
+    # --- Harness B: a REAL, full adopt (the harness under revert) -------
+    from_b = tmp_path / "harness-b-home" / "memory"
+    from_b.mkdir(parents=True)
+    (from_b / "shared.md").write_text("shared content\n", encoding="utf-8")
+    (from_b / "b_only.md").write_text("only B\n", encoding="utf-8")
+    result_b = engine._memory_adopt(
+        root, from_dir=from_b, to_dir=store, harness="harness-b",
+        merge=False, dry_run=False,
+    )
+    assert result_b["action"] == "adopt"
+    assert sorted(result_b["newly_copied_files"]) == ["b_only.md", "shared.md"]
+    assert from_b.is_symlink()
+    assert (store / "shared.md").exists()
+
+    # --- Harness A: still-live, case-divergent recorded from_path -------
+    # from_a itself must NOT be a real directory — it becomes the symlink
+    # directly (mirroring the real post-adopt state: from_dir is replaced
+    # BY the symlink, never coexists with one).
+    from_a = tmp_path / "harness-a-home" / "memory"
+    from_a.parent.mkdir(parents=True)
+    case_divergent_target = store.parent / store.name.upper()
+    assert str(case_divergent_target) != str(store)  # genuinely different STRINGS
+    from_a.symlink_to(case_divergent_target)
+    assert from_a.is_symlink()
+
+    manifest_a_path = engine._memory_adopt_manifest_path(store, "harness-a", from_a)
+    manifest_a_path.write_text(json.dumps({
+        "harness": "harness-a",
+        "from_path": str(from_a),
+        "to_path": str(case_divergent_target),
+        "adopted_at": "2026-01-01T00:00:00.000000Z",
+        "source_files": ["shared.md"],
+        "newly_copied_files": ["shared.md"],
+    }, indent=2), encoding="utf-8")
+    assert manifest_a_path.exists()
+
+    manifest_b_path = next(store.glob(".tess-memory-adopt.harness-b.*.json"))
+    assert manifest_b_path != manifest_a_path
+
+    # The function directly responsible for the bug: with the fix, harness
+    # A's still-live, case-divergent manifest must protect shared.md.
+    protected = engine._memory_adopt_other_live_source_files(store, manifest_b_path)
+    assert "shared.md" in protected, (
+        "harness A's still-live shared.md must be protected from removal "
+        "by harness B's revert — a case-divergent store spelling must not "
+        "defeat the liveness check (issue #147)"
+    )
+
+    # Full revert of B, end to end — proves the outer guarantee actually
+    # holds, not just the inner helper's return value.
+    dry = engine._memory_adopt_revert(root, store, harness="harness-b", dry_run=True)
+    assert "shared.md" in dry["would_copy_back"]
+    assert "shared.md" not in dry["would_move"]
+    assert "b_only.md" in dry["would_move"]
+
+    result = engine._memory_adopt_revert(root, store, harness="harness-b", dry_run=False)
+    assert sorted(result["restored_files"]) == ["b_only.md", "shared.md"]
+
+    # THE assertion this test exists for: harness A's live shared file
+    # survives in the store — it is NOT deleted by B's revert.
+    assert (store / "shared.md").exists()
+    assert (store / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+    # b_only.md, uniquely B's own, is correctly removed from the store.
+    assert not (store / "b_only.md").exists()
+
+    # Harness A's own manifest and symlink are completely untouched by B's
+    # revert.
+    assert manifest_a_path.exists()
+    assert from_a.is_symlink()
+
+    # Harness B's own directory is restored with both files back.
+    assert from_b.is_dir() and not from_b.is_symlink()
+    assert (from_b / "shared.md").read_text(encoding="utf-8") == "shared content\n"
+    assert (from_b / "b_only.md").read_text(encoding="utf-8") == "only B\n"
