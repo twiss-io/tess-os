@@ -90,6 +90,21 @@ a partial file tree. See `generate_app()`, `_write_generated_app_tree()`,
 and `_publish_staged_app()` for the full mechanism, and
 `tests/spec_engine/test_codegen_atomic_staging.py` for the kill-proof
 proof.
+
+Publishing OVER pre-existing `target_dir` content needs a second rename
+in addition to the first (see `_publish_staged_app()`'s docstring for
+why) — a kill exactly between those two renames would, left unhandled,
+leave that prior content orphaned in an untracked sibling with nothing
+pointing back to it, then PERMANENTLY and SILENTLY destroyed by the very
+next regeneration (the natural post-crash "just re-run it" recovery
+action), since that next run would see `target_dir` absent and treat it
+as a first-ever generation. `generate_app()` closes this window itself:
+on EVERY call, before it decides whether `target_dir` has existing
+content, it first checks for and repairs exactly this interrupted-swap
+state (`_recover_interrupted_publish()`) — so any orphaned prior content
+is restored before this run ever gets a chance to treat `target_dir` as
+empty. This check runs unconditionally on every call, not just after a
+known crash.
 """
 
 from __future__ import annotations
@@ -304,7 +319,12 @@ def generate_app(
     `target_dir` with exactly one `os.replace()` only after every file —
     including the manifest — has been written. A process killed at any
     point leaves `target_dir` either exactly as found or the complete,
-    `codegen_status: "generated"` tree; never a partial mix."""
+    `codegen_status: "generated"` tree; never a partial mix. Every call
+    also first repairs any interrupted rename-aside-swap left behind by a
+    PRIOR killed call before doing anything else (see
+    `_recover_interrupted_publish()`) — so a kill between
+    `_publish_staged_app()`'s two renames never causes the next call to
+    silently discard real prior `target_dir` content."""
     if target_stack not in SUPPORTED_TARGET_STACKS:
         raise SpecEngineError(
             f"generate_app: target_stack {target_stack!r} is not supported "
@@ -321,15 +341,24 @@ def generate_app(
         )
 
     final_root = Path(target_dir)
+    final_root.parent.mkdir(parents=True, exist_ok=True)
+    # MUST run before `has_existing_content` is decided below: repairs any
+    # rename-aside-swap a PRIOR call left interrupted (see
+    # `_recover_interrupted_publish()`'s docstring) so that leftover state
+    # is never mistaken for "target_dir has always been empty" by this
+    # call. Unconditional — cheap (two `Path.exists()` checks) on the
+    # overwhelmingly common case where there is nothing to recover.
+    _recover_interrupted_publish(final_root)
     # "Has real content to preserve" is NOT the same as `.exists()`: every
     # real caller today (orchestrator/pipeline.py, and pytest's own
     # `tmp_path` fixture in every test in this suite) hands generate_app()
     # a directory that already EXISTS but is EMPTY — and POSIX `rename(2)`
     # is perfectly happy replacing an empty directory (see
     # `_publish_staged_app()`), so only a genuinely NON-empty `target_dir`
-    # needs the slower preserve-and-swap path.
+    # needs the slower preserve-and-swap path. Evaluated AFTER recovery
+    # above, so a just-restored prior tree is correctly seen as existing
+    # content, not as an empty/absent `target_dir`.
     has_existing_content = final_root.exists() and any(final_root.iterdir())
-    final_root.parent.mkdir(parents=True, exist_ok=True)
     stage_root = Path(
         tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-stage-", dir=str(final_root.parent))
     )
@@ -341,14 +370,24 @@ def generate_app(
             # it — staging must start from a real copy of `target_dir`'s
             # current content for that merge to see the same state it
             # would have seen writing into `target_dir` directly, not an
-            # empty directory.
-            shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
+            # empty directory. `symlinks=True` preserves any symlink in
+            # pre-existing content as a symlink in the staged copy rather
+            # than silently dereferencing it into the target's content.
+            shutil.copytree(final_root, stage_root, dirs_exist_ok=True, symlinks=True)
         result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
+        # Publishing is inside this same try/except: an exception raised
+        # by `_publish_staged_app()` itself (its own internal
+        # restore-on-exception handling notwithstanding) must still clean
+        # up `stage_root` here — `_publish_staged_app()` only ever
+        # consumes `stage_root` (renames it away) on the success path, so
+        # this cleanup is always safe to attempt, and a no-op
+        # (`ignore_errors=True`) on that success path since the path no
+        # longer exists under its staging name by then.
+        _publish_staged_app(stage_root, final_root, has_existing_content=has_existing_content)
     except BaseException:
         shutil.rmtree(stage_root, ignore_errors=True)
         raise
 
-    _publish_staged_app(stage_root, final_root, has_existing_content=has_existing_content)
     # `result.written`'s Path values were built against `stage_root`
     # (renamed away by the publish above — that inode now IS
     # `final_root`); rebind them so callers see real, live paths under
@@ -678,6 +717,82 @@ def _write_file(root: Path, rel_path: str, content: str) -> Path:
     return path
 
 
+def _swap_aside_path(final_root: Path) -> Path:
+    """The ONE, deterministic sibling path `_publish_staged_app()` ever
+    renames `final_root`'s prior content aside to, for the duration of the
+    two-rename swap described in its docstring below. Deterministic (not
+    a `tempfile.mkdtemp()`-style random suffix) is the point: it lets
+    `_recover_interrupted_publish()` find — unambiguously, on ANY later
+    call — whether THIS `target_dir`'s swap was left interrupted, without
+    having to guess which of possibly-several random-suffixed siblings
+    might be the one that matters. A random name is exactly what let the
+    original data-loss bug happen: nothing pointed back to it."""
+    return final_root.parent / f".{final_root.name}.codegen-prev"
+
+
+def _recover_interrupted_publish(final_root: Path) -> None:
+    """Called unconditionally at the very start of every `generate_app()`
+    call, before `has_existing_content` is decided — repairs the ONE
+    state a hard kill between `_publish_staged_app()`'s two `os.replace()`
+    calls (the `has_existing_content=True` branch) can leave behind:
+    `final_root` swapped aside to `_swap_aside_path(final_root)` but never
+    swapped back, because the process died before the second rename ran.
+
+    Left unrepaired, the NEXT call against the same `target_dir` — the
+    natural "just re-run it" recovery action after a crash — would see
+    `final_root` absent, treat this as a first-ever generation, and
+    silently publish fresh content straight over it: the real prior
+    content sitting in the aside directory would never be looked at
+    again, and is destroyed the moment this run's own publish succeeds.
+    This function closes that window by restoring the aside BEFORE this
+    run (or any run) gets a chance to draw that wrong conclusion; once
+    restored, `generate_app()`'s normal `has_existing_content` handling
+    takes back over and re-does the swap correctly.
+
+    The other interrupted-cleanup case — the second rename succeeded (so
+    `final_root` already holds the complete, correct new content) but the
+    final `shutil.rmtree(aside, ...)` never ran — is also repaired here:
+    the aside is stale prior content at that point, safe to discard.
+
+    Any state this function cannot safely reconcile — concretely, the
+    aside path existing but not being a directory, which nothing in this
+    module ever creates — is a genuinely ambiguous situation (something
+    outside `_publish_staged_app()`'s own two-rename sequence put
+    something there) and is never silently guessed at: this raises
+    `SpecEngineError` rather than risk restoring, or discarding, the
+    wrong thing."""
+    aside = _swap_aside_path(final_root)
+    if not aside.exists():
+        # The overwhelmingly common case: no prior swap was ever
+        # interrupted (either none was ever attempted against this
+        # `target_dir`, or the last one that was ran to completion,
+        # cleanup included). Nothing to reconcile.
+        return
+
+    if not aside.is_dir():
+        raise SpecEngineError(
+            f"generate_app: {aside} exists but is not a directory. This path is reserved for "
+            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+            "creates it as anything else — refusing to guess whether it is safe to restore into "
+            f"{final_root} or delete outright. Move or remove {aside} by hand (after confirming "
+            "what it actually is) before regenerating."
+        )
+
+    if not final_root.exists():
+        # Interrupted between the two os.replace() calls: the original
+        # content is intact in `aside`; `final_root` is absent. Restore
+        # it FIRST so this run — and every check `generate_app()` makes
+        # after this one returns — sees the real, pre-crash state.
+        os.replace(aside, final_root)
+        return
+
+    # `final_root` exists AND `aside` exists: the second rename already
+    # completed (`final_root` holds the fully-published new content) but
+    # the trailing `shutil.rmtree(aside, ...)` cleanup step never ran.
+    # `aside` is stale prior content now — safe to discard.
+    shutil.rmtree(aside, ignore_errors=True)
+
+
 def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_content: bool) -> None:
     """The ONE moment `generate_app()` ever touches `final_root` (the
     caller's real `target_dir`): a same-filesystem `os.replace()` — a
@@ -695,21 +810,53 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
     POSIX `rename(2)` only replaces a directory target that is missing or
     EMPTY, never a non-empty one (verified empirically on this repo's
     target platforms: `os.replace()` onto an existing non-empty directory
-    raises `OSError: [Errno 66] Directory not empty` on both Linux and
-    macOS) — so the prior tree is first atomically renamed aside to a
-    throwaway sibling (still exactly one atomic rename), `stage_root`
-    then takes `final_root`'s place, and the sibling is removed. Between
-    those two renames `final_root` is briefly ABSENT — the same allowed
-    post-kill state a first-ever generation is in before this function
-    ever runs, never a partial mix of old and new content."""
+    raises `OSError: [Errno 66] Directory not empty` on macOS/BSD, or
+    `OSError: [Errno 39] Directory not empty` on Linux — the code below
+    does not branch on the errno value either way, since the safe
+    two-rename path is always taken whenever `has_existing_content` is
+    true, regardless of platform) — so the prior tree is first atomically
+    renamed aside to `_swap_aside_path(final_root)` (still exactly one
+    atomic rename; a DETERMINISTIC path, not a random one — see that
+    function's docstring for why), `stage_root` then takes `final_root`'s
+    place, and the aside is removed.
+
+    Between those two renames `final_root` is briefly ABSENT. UNLIKE a
+    first-ever generation's absence, this is not a state with nothing to
+    lose: real, previously-committed `target_dir` content is, at that
+    instant, sitting only in the aside directory. A kill exactly here
+    does not corrupt or partially-mix anything (`final_root` is cleanly
+    absent, never a mix of old and new), but it DOES leave that real
+    content orphaned — recoverable only because `generate_app()`
+    unconditionally checks for and repairs exactly this state on every
+    call, before this function ever runs again (see
+    `_recover_interrupted_publish()`). This function does not, and
+    structurally cannot, defend against that kill window by itself — it
+    is two syscalls with nothing to catch a `SIGKILL` between them; the
+    recovery guarantee lives one level up, in `generate_app()`, by
+    design."""
     if not has_existing_content:
         os.replace(stage_root, final_root)
         return
 
-    backup_root = Path(
-        tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-prev-", dir=str(final_root.parent))
-    )
-    os.replace(final_root, backup_root)
+    aside = _swap_aside_path(final_root)
+    if aside.exists():
+        # `_recover_interrupted_publish()` unconditionally reconciles or
+        # clears this exact path at the start of every `generate_app()`
+        # call, before staging even begins — by construction, it should
+        # never exist here. If it does anyway (e.g. a second
+        # `generate_app()` call racing this one against the same
+        # `target_dir` — concurrent calls are not a supported use of this
+        # function), fail loud rather than silently clobber whatever is
+        # in it or lose track of `final_root`'s current content.
+        raise SpecEngineError(
+            f"_publish_staged_app: {aside} already exists immediately before the rename-aside-swap "
+            "it is reserved for. generate_app()'s _recover_interrupted_publish() should already "
+            "have reconciled or cleared this path — its unexpected presence here most likely means "
+            "a concurrent generate_app() call is racing this one against the same target_dir "
+            "(not supported); refusing to publish rather than risk clobbering or losing content."
+        )
+
+    os.replace(final_root, aside)
     try:
         os.replace(stage_root, final_root)
     except BaseException:
@@ -717,9 +864,9 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
         # the first one runs; nothing in this module can make the second
         # one fail after the first succeeds. Restore rather than leave
         # `final_root` absent if it somehow does anyway.
-        os.replace(backup_root, final_root)
+        os.replace(aside, final_root)
         raise
-    shutil.rmtree(backup_root, ignore_errors=True)
+    shutil.rmtree(aside, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------

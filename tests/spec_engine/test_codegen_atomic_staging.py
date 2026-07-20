@@ -3,24 +3,39 @@
 file tree — or, worse, a tree whose `.spec-engine/codegen-manifest.json`
 already claims `codegen_status: "generated"` while other generated files
 are still missing — sitting in `target_dir` if the process is killed
-mid-generation.
+mid-generation. Also covers the rename-aside-swap recovery mechanism
+(PR #156 review round 2, both reviewers HIGH): a kill between
+`_publish_staged_app()`'s two `os.replace()` calls must not let the
+NEXT `generate_app()` call silently destroy the orphaned original
+`target_dir` content.
 
-Two classes of proof:
+Three classes of proof:
 
   - **SIGKILL tests** (`test_kill_*`): spawn `generate_app()` in a real
     child process, instrumented to pause (via `time.sleep`) right after a
-    specific file write completes, `SIGKILL` it in that window (a signal
-    Python cannot catch or clean up after), then assert `target_dir` is
-    exactly as it was before the call — never a partial mix. One test
-    kills right after the VERY FIRST file write; the other kills right
-    after `.spec-engine/codegen-manifest.json` is written but BEFORE
+    specific file write (or rename) completes, `SIGKILL` it in that
+    window (a signal Python cannot catch or clean up after), then assert
+    on the resulting state — never a partial mix, and (for the
+    rename-aside-swap window specifically) that the orphaned original
+    content is RECOVERED, not destroyed, by the very next call. One test
+    kills right after the VERY FIRST file write; one kills right after
+    `.spec-engine/codegen-manifest.json` is written but BEFORE
     `write_scaffold_stub()`'s own writes (`SPEC.md`/`CLAUDE.md`/...) run
     — the precise historical bug scenario, where a manifest already
     claiming completeness could previously survive in `target_dir`
-    alongside a missing rest-of-the-tree.
+    alongside a missing rest-of-the-tree; one kills between
+    `_publish_staged_app()`'s two renames when publishing over
+    pre-existing `target_dir` content — the window both reviewers flagged
+    HIGH on the first round of this PR.
   - **Clean-exception-path test**: a mid-generation `raise` (catchable,
     unlike SIGKILL) must ALSO leave `target_dir` untouched, and must not
     leave an orphaned staging directory behind either.
+  - **Direct unit tests on `_recover_interrupted_publish()`**: the other
+    interrupted-cleanup case (second rename succeeded, trailing
+    `shutil.rmtree(aside, ...)` never ran) and the fail-loud path for a
+    genuinely ambiguous aside state, exercised directly rather than via a
+    subprocess kill (nothing about either case needs a real kill to
+    reproduce).
 
 Plus two smaller regression tests for the staging mechanism itself: that
 `generate_app()` called against an already-populated `target_dir` (the
@@ -44,6 +59,7 @@ import pytest
 
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap; COMPONENT_ROOT used below
 
+import spec_engine.codegen as codegen_module
 from spec_engine.codegen import generate_app
 from spec_engine.connector_resolver import resolve_connectors
 from spec_engine.content import (
@@ -54,6 +70,7 @@ from spec_engine.content import (
     HowItWorks,
     KeyFlow,
     KeyScreen,
+    SpecEngineError,
     WhatItDoes,
     new_id,
     utc_now_iso,
@@ -283,6 +300,198 @@ def test_kill_right_after_manifest_write_leaves_target_dir_absent_never_partial(
 
 
 # --------------------------------------------------------------------------
+# SIGKILL test — the rename-aside-swap window (_publish_staged_app()'s
+# has_existing_content=True branch). PR #156 review round 2, both
+# reviewers HIGH: a kill between the two os.replace() calls must not let
+# the NEXT generate_app() call silently destroy the orphaned original
+# target_dir content.
+# --------------------------------------------------------------------------
+
+_SWAP_WINDOW_CHILD_SCRIPT = r'''
+import os
+import sys
+import time
+import tempfile
+from pathlib import Path
+
+target_dir = sys.argv[1]
+target_path = Path(target_dir)
+
+os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", tempfile.mkdtemp(prefix="codegen-kill-test-identity-"))
+sys.path.insert(0, "__COMPONENT_ROOT__")
+
+from spec_engine.gate_approval import sign_local_approval
+from spec_engine.content import (
+    DataModel, Entity, EntityField, HowItLooks, HowItWorks, KeyFlow, KeyScreen, WhatItDoes, new_id, utc_now_iso,
+)
+from spec_engine.connector_resolver import resolve_connectors
+from spec_engine.types import Plan
+from spec_engine.spec_builder import build_spec
+import spec_engine.codegen as codegen_module
+
+plan = Plan(
+    plan_id=new_id("plan"),
+    mission_id=None,
+    created_at=utc_now_iso(),
+    source_type="structured_brief",
+    input_excerpt="Rename-aside-swap kill-window fixture",
+    what_it_does=WhatItDoes(summary="Exercises the rename-aside-swap kill window."),
+    how_it_looks=HowItLooks(description="One screen.", key_screens=[KeyScreen(name="Screen", description="A screen.")]),
+    how_it_works=HowItWorks(description="One flow.", key_flows=[KeyFlow(name="Flow", steps=["Step one"])], integrations=[]),
+    data_model=DataModel(entities=[Entity(name="Item", fields=[EntityField(name="value")])]),
+    acceptance_criteria=["Baseline acceptance criterion"],
+    summary_for_approval="summary",
+    resolved_connectors=resolve_connectors([]),
+)
+approval = sign_local_approval(plan, approved_by="Xavier")
+spec = build_spec(plan, approval)
+
+_orig_replace = os.replace
+
+
+def _instrumented_replace(src, dst):
+    result = _orig_replace(src, dst)
+    # Fires ONLY for the swap's FIRST rename (final_root -> aside): src is
+    # target_dir itself. The swap's SECOND rename's src is stage_root, not
+    # target_dir, so this match is unambiguous — it can only be the
+    # window between the two renames, never before or after it.
+    if str(src) == str(target_path):
+        print("REACHED_SWAP_ASIDE", flush=True)
+        # SIGKILL from the parent lands somewhere in here — unblockable,
+        # un-catchable, no Python-level cleanup ever runs. target_dir is
+        # absent and the original content is sitting only in the aside
+        # sibling at exactly this instant.
+        time.sleep(30)
+    return result
+
+
+os.replace = _instrumented_replace
+
+codegen_module.generate_app(spec, target_dir)
+print("COMPLETED", flush=True)
+'''
+
+
+def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_next_run(tmp_path):
+    """The exact window both reviewers flagged HIGH on PR #156's first
+    review round: a kill between `_publish_staged_app()`'s two
+    `os.replace()` calls (the `has_existing_content=True` branch).
+    Pre-populates `target_dir` with sentinel content, SIGKILLs the child
+    exactly after the first rename (`target_dir` swapped aside) but
+    before the second (`stage_root` swapped in), then runs
+    `generate_app()` again — normally, uninstrumented, exactly the
+    natural "just re-run it" post-crash recovery action — and asserts the
+    ORIGINAL sentinel content is RECOVERED (not destroyed) and the final
+    tree is valid.
+
+    Before the fix: this second call would see `target_dir` absent, take
+    the `has_existing_content=False` fast path, and silently publish
+    fresh content straight over the orphaned original — CLAUDE.md's
+    sentinel line and README_HUMAN.txt gone forever, no error, no
+    warning. After the fix: `_recover_interrupted_publish()` restores the
+    aside into `target_dir` before this call ever decides
+    `has_existing_content`, so it correctly takes the merge-and-swap path
+    and the sentinel content survives."""
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+    sentinel_claude_md = "# Human-authored project notes\n\nDo not delete this.\n"
+    (target_dir / "CLAUDE.md").write_text(sentinel_claude_md, encoding="utf-8")
+    (target_dir / "README_HUMAN.txt").write_text("pre-existing unrelated file", encoding="utf-8")
+
+    script_path = tmp_path / "_child_swap_window.py"
+    script_path.write_text(
+        _SWAP_WINDOW_CHILD_SCRIPT.replace("__COMPONENT_ROOT__", str(_spec_engine_paths.COMPONENT_ROOT)),
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(script_path), str(target_dir)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    deadline = time.monotonic() + 30
+    marker = None
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                out = proc.stdout.read()
+                err = proc.stderr.read()
+                raise AssertionError(
+                    f"child exited early (code {proc.returncode}) before reaching the swap-aside "
+                    f"rename it was instrumented to pause at.\nstdout={out!r}\nstderr={err!r}"
+                )
+            line = proc.stdout.readline()
+            if not line:
+                time.sleep(0.02)
+                continue
+            if line.startswith("REACHED_SWAP_ASIDE"):
+                marker = line.strip()
+                break
+        if marker is None:
+            raise AssertionError("child never reached the swap-aside rename within the deadline")
+
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=10)
+        assert proc.returncode != 0, "child should have been killed, not exited cleanly"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    # Post-kill, pre-recovery: this is the exact orphaned state both
+    # reviewers independently reproduced — target_dir absent, original
+    # content sitting in the deterministic aside sibling, fresh content in
+    # a separate stage sibling.
+    assert not target_dir.exists(), (
+        "sanity: the child was killed between the two renames, so target_dir must be absent "
+        "(it was renamed aside, and the second rename never ran)"
+    )
+    aside = codegen_module._swap_aside_path(target_dir)
+    assert aside.is_dir(), "sanity: the original content must be sitting in the deterministic aside path"
+    assert (aside / "CLAUDE.md").read_text(encoding="utf-8") == sentinel_claude_md
+    assert (aside / "README_HUMAN.txt").read_text(encoding="utf-8") == "pre-existing unrelated file"
+
+    # The natural post-crash recovery action: just re-run it, uninstrumented.
+    spec = _rich_spec()
+    result = generate_app(spec, target_dir)
+
+    assert result.scaffold_plan.codegen_status == "generated"
+    recovered_claude_md = (target_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Do not delete this." in recovered_claude_md, (
+        "the sentinel line from the pre-existing CLAUDE.md must survive the recover-then-merge — "
+        f"got: {recovered_claude_md!r}"
+    )
+    assert "Human-authored project notes" in recovered_claude_md
+    assert (target_dir / "README_HUMAN.txt").read_text(encoding="utf-8") == "pre-existing unrelated file", (
+        "the pre-existing unrelated file must survive the recover-then-merge, not be silently dropped"
+    )
+
+    # The final tree is a valid, complete generated app — recovery doesn't
+    # just preserve the old content, the regeneration on top of it is
+    # fully correct too.
+    assert (target_dir / "src" / "server.js").is_file()
+    manifest_path = target_dir / ".spec-engine" / "codegen-manifest.json"
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["codegen_status"] == "generated"
+
+    # Exactly one leftover dir remains: the KILLED run's own orphaned stage
+    # dir (it held the killed run's fully-generated-but-never-swapped-in
+    # content; nothing in generate_app()'s contract cleans up a killed
+    # process's own staging directory — same accepted disk-litter-but-
+    # zero-data-loss outcome the other two SIGKILL tests above assert on
+    # for their own leftover stage dirs). Critically, the aside/backup
+    # path itself is gone — the recovery run's own publish cleaned it up
+    # after a successful swap, exactly like any other successful publish.
+    remaining = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert len(remaining) == 1, f"expected exactly the killed run's own orphaned stage dir, found {remaining}"
+    assert remaining[0].name.startswith(".app.codegen-stage-"), (
+        f"the one remaining dir should be the killed run's stage dir, not the aside/backup path: {remaining}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Clean-exception-path test — a catchable, in-process failure.
 # --------------------------------------------------------------------------
 
@@ -317,6 +526,71 @@ def test_exception_mid_generation_leaves_target_dir_untouched_and_no_orphan_stag
     result = codegen_module.generate_app(spec, target_dir)
     assert result.scaffold_plan.codegen_status == "generated"
     assert (target_dir / ".spec-engine" / "codegen-manifest.json").is_file()
+
+
+# --------------------------------------------------------------------------
+# Rename-aside-swap recovery — direct unit tests on
+# `_recover_interrupted_publish()` for the two states it must reconcile
+# without a real kill, and the one it must refuse to guess about.
+# --------------------------------------------------------------------------
+
+
+def test_recover_interrupted_publish_restores_orphaned_aside_when_target_dir_absent(tmp_path):
+    """The primary recovery case, exercised directly rather than via a
+    subprocess kill: `target_dir` absent, its real prior content sitting
+    in the deterministic aside path (as the SIGKILL test above proves a
+    real interrupted swap leaves behind) — recovery must restore it into
+    `target_dir` rather than leave it to be silently overwritten by
+    whatever calls `generate_app()` next."""
+    target_dir = tmp_path / "app"
+    assert not target_dir.exists()
+
+    aside = codegen_module._swap_aside_path(target_dir)
+    aside.mkdir()
+    (aside / "CLAUDE.md").write_text("Do not delete this.\n", encoding="utf-8")
+
+    codegen_module._recover_interrupted_publish(target_dir)
+
+    assert target_dir.is_dir(), "the orphaned aside must be restored into target_dir"
+    assert (target_dir / "CLAUDE.md").read_text(encoding="utf-8") == "Do not delete this.\n"
+    assert not aside.exists(), "the aside path is consumed by the restore, not left behind too"
+
+
+def test_recover_interrupted_publish_cleans_up_stale_aside_when_target_dir_already_correct(tmp_path):
+    """The other interrupted-cleanup case: the swap's second rename
+    already succeeded (`target_dir` holds the correct, complete new
+    content) but the trailing `shutil.rmtree(aside, ...)` never ran. The
+    stale aside must be discarded — never restored over the
+    already-correct `target_dir`, and never left behind forever either."""
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+    (target_dir / "current.txt").write_text("real, already-published content", encoding="utf-8")
+
+    aside = codegen_module._swap_aside_path(target_dir)
+    aside.mkdir()
+    (aside / "stale.txt").write_text("stale prior content that must be discarded", encoding="utf-8")
+
+    codegen_module._recover_interrupted_publish(target_dir)
+
+    assert not aside.exists(), "the stale aside must be cleaned up"
+    assert (target_dir / "current.txt").read_text(encoding="utf-8") == "real, already-published content", (
+        "target_dir's already-correct content must be left untouched"
+    )
+
+
+def test_recover_interrupted_publish_fails_loud_on_non_directory_aside(tmp_path):
+    """If the reserved aside path exists but is not a directory — a state
+    nothing in this module ever creates — recovery must fail loud
+    (`SpecEngineError`) rather than guess whether it is safe to restore
+    into `target_dir` or delete outright."""
+    target_dir = tmp_path / "app"
+    aside = codegen_module._swap_aside_path(target_dir)
+    aside.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(SpecEngineError, match="not a directory"):
+        codegen_module._recover_interrupted_publish(target_dir)
+
+    assert aside.is_file(), "a genuinely ambiguous state must be left exactly as found, never touched"
 
 
 # --------------------------------------------------------------------------
