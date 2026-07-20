@@ -105,6 +105,22 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               Every pack embeds a `trust_boundary` block stating plainly
               that it is tamper-evident (unsigned hash chain), not
               cryptographically non-repudiable — see docs/AUDIT_PACK_SPEC.md
+  skill       Issue #131: demo-to-skill — `from-task <id>` reads a completed
+              task's record + its REAL ledger trail (task-scoped, reusing
+              the audit region's own `_audit_collect_events_by_shard`) and
+              scaffolds a DRAFT skill fitting the existing `.claude/skills/*/
+              SKILL.md` progressive-disclosure format: a step sequence
+              derived from the actual ledger events (never invented text),
+              a reusable-instructions section built from the task's own
+              recorded notes/evidence (verbatim, gap-flagged when thin —
+              e.g. mechanical status-transitions with no notes), plus a
+              self-contained `provenance.json` sidecar (mirrors the audit
+              pack's manifest.json convention) traceable back to the source
+              task/ledger. Writes to `.tess/state/skills/drafts/<slug>/` —
+              deliberately NOT `.claude/skills/` (the live, core-managed
+              skill set) — so a generated draft is never auto-activated
+              unattended; a human/curator reviews and promotes it manually.
+              Logs its own `skill_generated` ledger event for accountability.
 
 Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 """
@@ -14637,6 +14653,15 @@ STATE_DIR = ".tess/state"
 TASKS_DIR = f"{STATE_DIR}/tasks"
 LEDGER_DIR = f"{STATE_DIR}/ledger"
 STATE_LOCKS_DIR = f"{STATE_DIR}/locks"
+# Issue #131 — SKILL DRAFT SCAFFOLD region (below cmd_audit(), a sibling of
+# AUDIT PACK): the DEFAULT output root for `tessctl skill from-task`, a
+# FIFTH `.tess/state/**` subsystem alongside memory/tasks/ledger/locks —
+# same instance-data fence (never_touch, publish-clean, gitignore content-
+# ignore, create-tess scaffold-strip; docs/STATE_LAYER.md). Deliberately
+# NOT under `.claude/skills/` (the LIVE, core-managed, host-loaded skill
+# set) — a generated draft must never be auto-activated unattended.
+SKILLS_DIR = f"{STATE_DIR}/skills"
+SKILL_DRAFTS_DIR = f"{SKILLS_DIR}/drafts"
 BOARD_FILENAME = "BOARD.md"
 
 TASK_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "done", "cancelled")
@@ -14674,18 +14699,20 @@ TASK_BLOCK_REASONS = ("required_input", "failed_dependency", "gate", "decision_n
 LEDGER_EVENTS = (
     "dispatch", "task_transition", "claim", "heartbeat", "release",
     "completed", "crashed", "reclaimed", "session_open", "session_close",
-    "earmarked", "handoff", "blocked",
+    "earmarked", "handoff", "blocked", "skill_generated",
 )
 # Event classes `_lint_ledger_event` requires a non-null `refs.task` for —
 # every class that is inherently ABOUT one task record. `dispatch` and
 # `session_open`/`session_close` are broader harness-lifecycle bookkeeping
 # and may legitimately carry a null task ref. `earmarked`/`handoff` (Phase
-# 0.4, issue #125) and `blocked` (Phase 0.5, issue #129) are always about
-# one task, same as `claim`/`heartbeat`.
+# 0.4, issue #125), `blocked` (Phase 0.5, issue #129), and `skill_generated`
+# (issue #131 — SKILL DRAFT SCAFFOLD region, below cmd_audit()) are always
+# about one task, same as `claim`/`heartbeat`.
 LEDGER_TASK_SCOPED_EVENTS = frozenset(
     {
         "task_transition", "claim", "heartbeat", "release", "completed",
         "crashed", "reclaimed", "earmarked", "handoff", "blocked",
+        "skill_generated",
     }
 )
 LEDGER_GENESIS_HASH = "0" * 64
@@ -17107,6 +17134,406 @@ def cmd_audit(args, root: Path) -> None:
     fn(args, root)
 
 
+# ===========================================================================
+# SKILL DRAFT SCAFFOLD — Issue #131: `tessctl skill from-task <id>`.
+#
+# The "gets smarter from your work" pattern — the third of this line's demo-
+# teardown builds, after the auditor pack (#128, above) and the structured
+# stuck-packet (#129/#130, TASK LEDGER region). A completed task + its REAL
+# ledger trail becomes a scaffolded, DRAFT, human-reviewed reusable skill.
+#
+# ★ Inspection finding this build is grounded in (see the dispatch brief):
+# `.claude/skills/*/SKILL.md` (mirrored core-managed at
+# `.tess/core/skills/*/SKILL.md` — `status: core-managed` lock entries) IS a
+# real skill format: YAML frontmatter (`name`/`description`, optionally
+# `allowed-tools`/`source`/`triggers` — the seven shipped skills use a loose,
+# non-schema'd superset) + a progressive-disclosure markdown body, consumed
+# NATIVELY by the Claude Code host's own skill loader (description always in
+# context, full body loaded on demand) — there is no in-repo loader/parser
+# for this format anywhere in `.tess/bin/tessctl` (a repo-wide `grep -i
+# skill` outside `agents/**`/`.claude/skills/**` themselves turns up nothing
+# beyond incidental prose mentions). So: the format + loader are REAL
+# (host-native), but there is NO in-repo curator/validator/generator for it
+# today. This region builds INTO that existing real format — it does not
+# invent a new one.
+#
+# What this scaffolds, reusing primitives this file already ships (no forked
+# read/derive/write logic):
+#   - the task record (`_task_path`/`_task_read`, TASK LEDGER region) — the
+#     "what was accomplished" snapshot (title/status/owner/notes/evidence).
+#   - the task's REAL ledger trail (`_audit_collect_events_by_shard`, AUDIT
+#     PACK region above, task-scoped) — the step sequence is built ONLY from
+#     these actually-recorded events, verbatim; nothing is invented.
+#   - `SKILL.md` (real progressive-disclosure format, `status: draft`) +
+#     `provenance.json` (a self-contained, machine-readable sidecar
+#     embedding the verbatim source-task snapshot + every matched ledger
+#     event — mirrors the audit pack's own `manifest.json` convention,
+#     traceable back to the ledger without a live re-query).
+#
+# HONESTY IS THE POINT (same framing the audit pack region already applies):
+# a THIN trail — a task with no recorded notes/evidence, only the mechanical
+# status-transition events every `tasks new`/`set`/`claim` call auto-logs —
+# produces a THIN scaffold that explicitly FLAGS what a human must fill in
+# (`reusable_instructions.gap_flags`), never fabricated procedural prose.
+#
+# SCOPE FENCE (Xavier's own dispatch brief for this build):
+#   - generates a DRAFT scaffold from a real demo ONLY.
+#   - writes to `.tess/state/skills/drafts/<slug>/` — a FIFTH `.tess/state/**`
+#     subsystem, fenced the SAME four-layer way as memory/tasks/ledger/locks
+#     (docs/STATE_LAYER.md) — deliberately NEVER `.claude/skills/` (the LIVE,
+#     core-managed, host-loaded skill set). A generated draft is never
+#     auto-activated into the live skill set unattended.
+#   - no autonomous curator-loop, no auto-promotion — a human/curator reviews
+#     and promotes a draft manually (out of scope for this region entirely).
+# ===========================================================================
+
+SKILL_SCAFFOLD_SCHEMA = "tess-os.skill-scaffold/1"
+
+
+class SkillError(Exception):
+    """Raised for any `tessctl skill` refusal or read failure — an unknown
+    task id, or an `--out` target that already exists and is non-empty
+    without `--force`. Mirrors AuditError's/MemoryAdoptError's typed-
+    refusal convention."""
+
+
+def _skill_load_task_or_raise(root: Path, task_id: str) -> dict:
+    """Read the source task record, or raise SkillError with a clear
+    message — never a bare traceback. Reuses `_task_path` (C1 path
+    containment) and `_task_read` (legacy-record healing) verbatim, no
+    forked lookup logic."""
+    try:
+        path = _task_path(root, task_id)
+    except TaskError as e:
+        raise SkillError(str(e))
+    if not path.exists():
+        raise SkillError(f"tessctl skill from-task: no such task {task_id!r} ({path} does not exist)")
+    try:
+        return _task_read(path)
+    except TaskError as e:
+        raise SkillError(str(e))
+
+
+def _skill_collect_task_events(root: Path, task_id: str) -> list:
+    """Every ledger event referencing `task_id`, across every shard/origin,
+    in chronological order — the REAL, unfabricated trail this scaffold is
+    derived from. Reuses `_audit_collect_events_by_shard` (AUDIT PACK
+    region above — already filters by task across every shard) rather than
+    forking a second task-scoped ledger scan; that function returns
+    (shard_path, events) groups sorted by `seq` WITHIN each shard, so this
+    flattens across shards and re-sorts by `ts` (mirrors `_cmd_log_view`'s
+    own cross-shard chronological merge) since two different shards' `seq`
+    counters are independent and not comparable to each other."""
+    groups = _audit_collect_events_by_shard(root, task=task_id)
+    events = []
+    for _shard_path, matched in groups:
+        events.extend(matched)
+    events.sort(key=lambda e: (e.get("ts", ""), e.get("seq", 0)))
+    return events
+
+
+def _skill_slug_for_task(record: dict) -> str:
+    """A kebab-slug directory/skill name derived from the task's own title,
+    disambiguated with the task id's OWN trailing 4-hex uniqueness suffix
+    (task.schema.json's id pattern: `...-[0-9a-f]{4}$` IS the collision
+    guarantee already baked into every task id — reused here rather than
+    inventing a second one, same idiom `_memory_adopt_manifest_path` uses
+    for its own per-source disambiguating suffix). Deterministic: the same
+    task always slugs to the same directory name, so a re-run without
+    `--out` naturally targets the same draft (refused without `--force`,
+    never silently overwritten)."""
+    title_slug = _slugify(record.get("title") or "")[:48].rstrip("-") or "skill"
+    suffix = record["id"].rsplit("-", 1)[-1]
+    return f"{title_slug}-{suffix}"
+
+
+def _skill_trail_completeness(record: dict, events: list) -> str:
+    """Classifies how much of a REAL narrative this trail actually carries
+    — never a judgment about whether the underlying work was good, only
+    about how much can be honestly derived from it:
+      - 'empty'            — no ledger events matched this task at all (in
+        practice unreachable through the normal CLI, since `tasks new`
+        itself always auto-logs one `task_transition` event — but a task
+        record can still exist with no matching events, e.g. after a
+        ledger shard was pruned/rotated outside this engine, so this branch
+        stays a real, tested case, not a dead one).
+      - 'mechanical-only'  — events exist (status transitions, claims,
+        etc.) but the task record carries NO human-authored notes — the
+        trail shows WHAT happened, not WHY or HOW.
+      - 'narrated'         — the task record has at least one recorded
+        note — real human-authored narrative to draw the reusable
+        procedure from.
+    """
+    if not events:
+        return "empty"
+    if not (record.get("notes") or []):
+        return "mechanical-only"
+    return "narrated"
+
+
+def _skill_step_lines(events: list) -> list:
+    """One line per REAL ledger event — verbatim `summary`, actor, and
+    timestamp, never invented text. This is the mechanical step sequence a
+    resuming agent can literally re-walk (WHAT fired, WHEN, by WHOM); WHY it
+    worked only ever comes from the task's own recorded notes (a separate,
+    human-authored channel — see `_skill_reusable_instructions`), never
+    synthesized from the event summaries themselves."""
+    lines = []
+    for i, e in enumerate(events, start=1):
+        actor = e.get("actor") or {}
+        who = actor.get("persona") or actor.get("harness") or "unknown"
+        lines.append(f"{i}. [{e.get('event')}] {e.get('summary')} — actor: {who} @ {e.get('ts')}")
+    return lines
+
+
+def _skill_reusable_instructions(record: dict, events: list) -> dict:
+    """The candidate 'how to do this again' content — built ONLY from
+    fields the task record itself already carries (`notes`/`evidence`,
+    both APPEND-ONLY, human-authored channels per task.schema.json), never
+    synthesized prose. When there is nothing to draw from, `gap_flags`
+    names EXACTLY what is missing (never silently thin) so a human/curator
+    knows precisely what to fill in before this draft is authoritative."""
+    notes = list(record.get("notes") or [])
+    evidence = list(record.get("evidence") or [])
+    gap_flags = []
+    if not notes:
+        gap_flags.append(
+            "No task notes were recorded — the ledger step sequence below shows WHAT "
+            "state transitions happened but not WHY or HOW the work was actually done. "
+            "A human must fill in the real reusable procedure before this skill is "
+            "authoritative."
+        )
+    if not evidence:
+        gap_flags.append(
+            "No evidence paths were recorded on the source task — nothing here points "
+            "at the actual artifacts/PRs/files this task produced."
+        )
+    if not events:
+        gap_flags.append(
+            "No ledger events matched this task at all — there is no derivable step "
+            "sequence. A human must reconstruct what actually happened before this "
+            "skill is usable."
+        )
+    return {"notes": notes, "evidence": evidence, "gap_flags": gap_flags}
+
+
+def _skill_build_scaffold(root: Path, record: dict, events: list, *, by_harness: str) -> dict:
+    """Assembles the full, self-contained scaffold dict — the SAME shape
+    written verbatim to `provenance.json` and rendered into `SKILL.md`
+    (`_skill_render_markdown`), so the two files can never independently
+    drift: one generator, two serializations, the exact
+    `_audit_build_manifest`/`manifest.json`+`SUMMARY.md` precedent."""
+    slug = _skill_slug_for_task(record)
+    completeness = _skill_trail_completeness(record, events)
+    instructions = _skill_reusable_instructions(record, events)
+    step_lines = _skill_step_lines(events)
+    title = record.get("title") or record["id"]
+    status = record.get("status")
+
+    completeness_note = {
+        "empty": "No ledger events were recorded against this task — nothing to derive a procedure from.",
+        "mechanical-only": (
+            "Only mechanical status-transition events were recorded — no human notes; "
+            "the reusable-instructions section below is a placeholder a human must fill in."
+        ),
+        "narrated": "Derived from the task's own recorded notes and real ledger trail.",
+    }[completeness]
+    description = (
+        f"DRAFT skill scaffolded from task {record['id']} ({title!r}). UNREVIEWED — "
+        f"verify before use. "
+        + (f"Source task status: {status!r}, NOT done — treat with extra caution. "
+           if status != "done" else "")
+        + completeness_note
+    )
+
+    return {
+        "scaffold_schema": SKILL_SCAFFOLD_SCHEMA,
+        "generated_at": _utc_now_iso(),
+        "generated_by": {"harness": by_harness, "tool": "tessctl skill from-task"},
+        "tess_os_commit": _audit_git_head(root),
+        "skill": {
+            "slug": slug,
+            "name": slug,
+            "description": description,
+            "status": "draft",
+        },
+        "source_task": {
+            "id": record["id"],
+            "title": title,
+            "status": status,
+            "owner": record.get("owner"),
+            "assignee": record.get("assignee"),
+            "created_by": record.get("created_by"),
+            "created_at": record.get("created_at"),
+            "updated_at": record.get("updated_at"),
+            "rev": record.get("rev"),
+        },
+        "trail": {
+            "completeness": completeness,
+            "event_count": len(events),
+            "events": events,
+            "step_sequence": step_lines,
+        },
+        "reusable_instructions": instructions,
+    }
+
+
+def _skill_render_markdown(scaffold: dict) -> str:
+    """Renders `scaffold` into a real `SKILL.md` — YAML frontmatter
+    (`name`/`description`, plus `status`/`source_task`/`generated_at`/
+    `generated_by` for provenance, matching the loose non-schema'd
+    frontmatter superset the seven shipped `.claude/skills/*/SKILL.md`
+    files already use — `source:`/`allowed-tools:`/`triggers:` all differ
+    file to file) followed by a progressive-disclosure body: what it
+    accomplished, the REAL step sequence, reusable instructions (gap-
+    flagged when thin), and a provenance trailer pointing back at
+    `provenance.json` + the live ledger for independent re-verification."""
+    skill = scaffold["skill"]
+    trail = scaffold["trail"]
+    src = scaffold["source_task"]
+    instructions = scaffold["reusable_instructions"]
+
+    front_matter = [
+        "---",
+        f"name: {skill['name']}",
+        f"description: {json.dumps(skill['description'], ensure_ascii=False)}",
+        "status: draft",
+        f"source_task: {src['id']}",
+        f"generated_at: {scaffold['generated_at']}",
+        "generated_by: tessctl skill from-task",
+        "---",
+        "",
+    ]
+
+    body = [f"# {src['title']} (DRAFT skill)", ""]
+    body.append(
+        "> **DRAFT — unreviewed.** Scaffolded automatically from one completed task's "
+        "real ledger trail. A human/curator must review and promote this before it is "
+        "treated as an authoritative, reusable skill — see `provenance.json` in this "
+        "same directory for the full machine-readable trail this was derived from."
+    )
+    body.append("")
+    if src["status"] != "done":
+        body.append(
+            f"> **WARNING:** source task status is `{src['status']}`, not `done` — "
+            f"this scaffold may describe unfinished or abandoned work."
+        )
+        body.append("")
+
+    body.append("## What this accomplished")
+    body.append("")
+    body.append(f"- Task: `{src['id']}` — {src['title']}")
+    body.append(f"- Status at generation time: `{src['status']}`")
+    if src.get("owner"):
+        body.append(f"- Owner: {src['owner']}")
+    body.append("")
+
+    body.append(f"## Step sequence (derived from {trail['event_count']} real ledger event(s))")
+    body.append("")
+    if trail["step_sequence"]:
+        body.extend(trail["step_sequence"])
+    else:
+        body.append(
+            "_No ledger events were recorded against this task — there is no derivable "
+            "step sequence. This is a GAP: a human must reconstruct what actually "
+            "happened before this skill is usable._"
+        )
+    body.append("")
+
+    body.append("## Reusable instructions")
+    body.append("")
+    if instructions["notes"]:
+        for n in instructions["notes"]:
+            body.append(f"- ({n.get('at')}, {n.get('by')}) {n.get('text')}")
+    else:
+        body.append("_No task notes were recorded — nothing here is invented._")
+    body.append("")
+    if instructions["evidence"]:
+        body.append("**Evidence / artifacts referenced:**")
+        body.append("")
+        for ev in instructions["evidence"]:
+            body.append(f"- {ev}")
+        body.append("")
+    if instructions["gap_flags"]:
+        body.append("**Gaps a human must fill in before this skill is authoritative:**")
+        body.append("")
+        for g in instructions["gap_flags"]:
+            body.append(f"- {g}")
+        body.append("")
+
+    body.append("## Provenance")
+    body.append("")
+    body.append(f"- Source task: `{src['id']}`")
+    body.append(f"- Generated: {scaffold['generated_at']}")
+    if scaffold.get("tess_os_commit"):
+        body.append(f"- tess-os commit: `{scaffold['tess_os_commit']}`")
+    body.append("- Full trail (verbatim ledger events + task snapshot): `provenance.json` in this directory")
+    body.append(
+        f"- Re-derive / cross-check against the LIVE ledger: "
+        f"`tessctl log view --task {src['id']}` or "
+        f"`tessctl audit export --task {src['id']} --out <dir>`"
+    )
+    body.append("")
+
+    return "\n".join(front_matter + body).rstrip() + "\n"
+
+
+def _cmd_skill_from_task(args, root: Path) -> None:
+    try:
+        record = _skill_load_task_or_raise(root, args.task_id)
+        events = _skill_collect_task_events(root, args.task_id)
+        scaffold = _skill_build_scaffold(root, record, events, by_harness=args.harness)
+
+        out_dir = Path(args.out) if args.out else (root / SKILL_DRAFTS_DIR / scaffold["skill"]["slug"])
+        if not out_dir.is_absolute():
+            out_dir = Path.cwd() / out_dir
+        if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
+            raise SkillError(
+                f"tessctl skill from-task: {out_dir} already exists and is not empty — pass --force to overwrite"
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        skill_path = out_dir / "SKILL.md"
+        provenance_path = out_dir / "provenance.json"
+        _atomic_write_bytes(skill_path, _skill_render_markdown(scaffold).encode("utf-8"))
+        _atomic_write_bytes(
+            provenance_path,
+            (json.dumps(scaffold, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"),
+        )
+    except SkillError as e:
+        sys.exit(str(e))
+
+    summary = (
+        f"draft skill '{scaffold['skill']['slug']}' scaffolded from task {args.task_id} "
+        f"({scaffold['trail']['event_count']} ledger event(s), trail: {scaffold['trail']['completeness']})"
+    )
+    try:
+        _ledger_auto_log(
+            root, harness=args.harness, event="skill_generated", task_id=args.task_id,
+            summary=summary, session=args.session, persona=args.persona,
+        )
+    except LedgerError as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps({"scaffold": scaffold, "out_dir": str(out_dir)}, indent=2))
+        return
+    print(f"tessctl skill from-task — {args.task_id} -> {out_dir}")
+    print(f"  {summary}")
+    print(f"  -> {skill_path}")
+    print(f"  -> {provenance_path}")
+    print("  DRAFT — unreviewed. A human/curator must review before this skill is authoritative.")
+
+
+def cmd_skill(args, root: Path) -> None:
+    sub = getattr(args, "skill_sub", None)
+    handlers = {"from-task": _cmd_skill_from_task}
+    fn = handlers.get(sub)
+    if fn is None:
+        sys.exit("tessctl skill: choose a subcommand — from-task")
+    fn(args, root)
+
+
 # ---------------------------------------------------------------------------
 # Phase 0.3 — `tessctl memory adopt`: the cross-harness MEMORY LINK (MEMORY
 # ADOPT region, a sibling of TASK LEDGER above). docs/STATE_LAYER.md:
@@ -19495,6 +19922,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit_verify.add_argument("--json", action="store_true", dest="json_out")
 
+    # skill — Issue #131: the SKILL DRAFT SCAFFOLD region (a sibling of
+    # `audit` above): `from-task` scaffolds a DRAFT skill from one
+    # completed task's real ledger trail.
+    p_skill = sub.add_parser(
+        "skill",
+        help="demo-to-skill: scaffold a reusable DRAFT skill from a task's real ledger trail (from-task)",
+    )
+    skill_sub = p_skill.add_subparsers(dest="skill_sub", metavar="SUBCOMMAND")
+
+    p_skill_from_task = skill_sub.add_parser(
+        "from-task",
+        help="scaffold a DRAFT SKILL.md (+ provenance.json) from one task's real ledger "
+             "trail — human-reviewed before it is authoritative, never auto-activated",
+    )
+    p_skill_from_task.add_argument("task_id", metavar="ID")
+    p_skill_from_task.add_argument(
+        "--out", metavar="DIR",
+        help=f"output directory (default: {SKILL_DRAFTS_DIR}/<slug>, derived from the task title)",
+    )
+    p_skill_from_task.add_argument("--force", action="store_true", help="overwrite a non-empty --out directory")
+    p_skill_from_task.add_argument("--harness", required=True, help="acting harness (ledger actor)")
+    p_skill_from_task.add_argument("--session")
+    p_skill_from_task.add_argument("--persona")
+    p_skill_from_task.add_argument("--json", action="store_true", dest="json_out")
+
     # memory — Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region,
     # a sibling of `tasks`/`log` above).
     p_memory = sub.add_parser(
@@ -19650,6 +20102,9 @@ def main() -> None:
         # Goal I1: the exportable, independently-verifiable auditor pack
         # (AUDIT PACK region, a sibling of TASK LEDGER/`log` above).
         "audit":        cmd_audit,
+        # Issue #131: demo-to-skill — the SKILL DRAFT SCAFFOLD region, a
+        # sibling of AUDIT PACK above.
+        "skill":        cmd_skill,
         # Phase 0.3: the cross-harness MEMORY LINK (MEMORY ADOPT region, a
         # sibling of TASK LEDGER above).
         "memory":       cmd_memory,
@@ -19678,9 +20133,15 @@ def main() -> None:
     # MemoryAdoptError (Phase 0.3, MEMORY ADOPT region) mirrors the same
     # pattern again — _cmd_memory_adopt already catches it locally too;
     # this is the defense-in-depth backstop.
+    # SkillError (Issue #131, SKILL DRAFT SCAFFOLD region) mirrors the same
+    # pattern again — _cmd_skill_from_task already catches it locally too;
+    # this is the defense-in-depth backstop.
     try:
         fn(args, root)
-    except (GateError, MissionError, RunError, TaskError, LedgerError, MemoryAdoptError, AuditError) as e:
+    except (
+        GateError, MissionError, RunError, TaskError, LedgerError,
+        MemoryAdoptError, AuditError, SkillError,
+    ) as e:
         sys.exit(str(e))
 
 

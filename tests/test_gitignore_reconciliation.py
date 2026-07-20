@@ -76,6 +76,10 @@ def _tracked(rel: str) -> bool:
     ".tess/state/tasks/graph.json",
     ".tess/state/ledger/entry.md",
     ".tess/state/locks/task.lock",
+    # issue #131 (Phase 0.6, SKILL DRAFT SCAFFOLD) — a FIFTH .tess/state/**
+    # subsystem, same content-level ignore.
+    ".tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md",
+    ".tess/state/skills/drafts/fix-login-bug-9c1e/provenance.json",
 ])
 def test_private_path_is_ignored(rel):
     assert _check_ignore(rel), f"{rel} must be gitignored (private overlay data)"
@@ -104,6 +108,8 @@ def test_private_path_is_ignored(rel):
     ".tess/state/tasks/.gitkeep",
     ".tess/state/ledger/.gitkeep",
     ".tess/state/locks/.gitkeep",
+    # issue #131 (Phase 0.6) — same for the skills/drafts scaffold structure.
+    ".tess/state/skills/.gitkeep",
 ])
 def test_shipped_template_is_not_ignored_and_is_tracked(rel):
     assert not _check_ignore(rel), f"{rel} is a shipped template and must stay committable"
@@ -187,7 +193,7 @@ def fresh_checkout(tmp_path):
     _git(tmp_path, "config", "user.email", "test@tess.test")
     _git(tmp_path, "config", "user.name", "Test")
     shutil.copy2(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")
-    for sub in ("memory", "tasks", "ledger", "locks"):
+    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
         d = tmp_path / ".tess" / "state" / sub
         d.mkdir(parents=True)
         (d / ".gitkeep").write_text("", encoding="utf-8")
@@ -201,7 +207,7 @@ def test_git_add_dash_a_never_stages_real_state_content_no_hook(fresh_checkout):
     (+ locks for parity), `git add -A` with NO pre-commit hook installed at
     all, then confirm none of them staged — only pre-existing .gitkeep stays
     tracked, and `git status` doesn't surface the new files either."""
-    for sub in ("memory", "tasks", "ledger", "locks"):
+    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
         (fresh_checkout / ".tess" / "state" / sub / "x.json").write_text(
             "data\n", encoding="utf-8"
         )
@@ -209,12 +215,12 @@ def test_git_add_dash_a_never_stages_real_state_content_no_hook(fresh_checkout):
     _git(fresh_checkout, "add", "-A")
 
     staged = _git(fresh_checkout, "diff", "--cached", "--name-only").stdout.split()
-    for sub in ("memory", "tasks", "ledger", "locks"):
+    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
         rel = f".tess/state/{sub}/x.json"
         assert rel not in staged, f"{rel} must NOT be staged by a bare `git add -A`"
 
     status = _git(fresh_checkout, "status", "--porcelain").stdout
-    for sub in ("memory", "tasks", "ledger", "locks"):
+    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
         assert f".tess/state/{sub}/x.json" not in status, (
             f".tess/state/{sub}/x.json must not surface in `git status` at all"
         )
@@ -222,5 +228,5 @@ def test_git_add_dash_a_never_stages_real_state_content_no_hook(fresh_checkout):
     # The .gitkeep placeholders remain the only tracked content in each dir.
     tracked = _git(fresh_checkout, "ls-files", ".tess/state/").stdout.split()
     assert sorted(tracked) == sorted(
-        f".tess/state/{sub}/.gitkeep" for sub in ("memory", "tasks", "ledger", "locks")
+        f".tess/state/{sub}/.gitkeep" for sub in ("memory", "tasks", "ledger", "locks", "skills")
     )

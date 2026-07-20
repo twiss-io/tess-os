@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-20T03:58:58.241413Z'
+  last_updated: '2026-07-20T04:48:41.423419Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -6059,6 +6059,6 @@ files:
   .tess/core/contracts/ledger-event.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:c7bd0d90306d234f59f4ef747d1e110e4b2942dc5ac0166f8aa04064336760d6
+    base_sha: sha256:95cf5c5b3d45121e153f3495c8c0439c1c904db2b8d905c93069ed6f4c5d7baf
     live_path: core/contracts/ledger-event.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'

@@ -6,6 +6,52 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 0.6 — the SKILL DRAFT SCAFFOLD (`tessctl skill from-task`, issue
+  #131)** — demo-to-skill, the "gets smarter from your work" pattern: a
+  completed task + its REAL ledger trail becomes a scaffolded, DRAFT,
+  human-reviewed reusable skill fitting the existing `.claude/skills/*/
+  SKILL.md` progressive-disclosure format.
+  - **Inspection grounding:** `.claude/skills/*/SKILL.md` (mirrored core-
+    managed at `.tess/core/skills/`) is a real skill format — YAML
+    frontmatter + a progressive-disclosure body — consumed natively by the
+    Claude Code host's own skill loader. There was no in-repo loader,
+    parser, or curator for this format anywhere in `.tess/bin/tessctl`
+    before this phase; this build generates INTO that existing real format,
+    never inventing a new one.
+  - **`tessctl skill from-task <id> --harness H [--out DIR] [--force]
+    [--session S] [--persona P] [--json]`** reads the task record plus
+    every ledger event referencing it (reusing the AUDIT PACK region's own
+    `_audit_collect_events_by_shard`, no forked scan) and writes
+    `SKILL.md` (`status: draft`, a step sequence built ONLY from the REAL
+    matched ledger events, a reusable-instructions section built ONLY from
+    the task's own recorded `notes`/`evidence`) plus a self-contained
+    `provenance.json` sidecar (the SAME "one generator, two
+    serializations" precedent the audit pack's `manifest.json`+
+    `SUMMARY.md` already established) to `.tess/state/skills/drafts/
+    <slug>/` — a FIFTH `.tess/state/**` subsystem, fenced the same
+    four-layer way as memory/tasks/ledger/locks.
+  - **Honesty is the point, again.** A THIN trail (no matched ledger
+    events, or events with no recorded notes) produces a THIN scaffold:
+    explicit `gap_flags` naming exactly what a human must fill in, never
+    fabricated procedural prose. A source task not marked `done` gets a
+    prominent warning banner.
+  - **Never auto-activated.** Writes only to `.tess/state/skills/drafts/`,
+    deliberately NEVER `.claude/skills/` (the LIVE, core-managed,
+    host-loaded skill set). No promotion command, curator, or autonomous
+    loop is built in this phase — a human/curator reviews and promotes a
+    draft manually.
+  - A `skill_generated` ledger event class, logged through the EXISTING
+    `_ledger_auto_log` → `_log_append_event` hash-chain append path — no
+    fork of the chain algorithm, same pattern `earmarked`/`handoff`/
+    `blocked` already established. Generation is read-only against the
+    task record itself.
+  - `tests/test_skill_from_task.py` (25 tests): narrated vs.
+    mechanical-only vs. empty-trail scaffolds → frontmatter/loadable-format
+    checks → the auto-activation scope-boundary guarantee →
+    `--out`/`--force` conflict handling → unknown-task refusal →
+    read-only-against-the-task-record proof → `skill_generated` ledger
+    accountability (including visibility to a subsequent `tessctl audit
+    export`) → schema/lint coverage for the new ledger event class.
 - **Phase 0.5 — the structured stuck-packet (`tessctl tasks block`, issue
   #129)**, `tasks handoff`'s sibling on top of the Phase 0.2 TASK STORE +
   ACCOUNTABILITY LEDGER: `handoff` routes a task forward ("here's a task,

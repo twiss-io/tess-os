@@ -1,33 +1,39 @@
 # The state layer: one canonical store, every harness mounts it
 
-> **Status: Phase 0.5 — the fenced store, the task store + accountability
-> ledger, the memory link, the external-harness-worker LANE, PLUS the
-> structured STUCK-PACKET.** Phase 0.1 built the four empty, fenced
-> directories and their leak-proofing. Phase 0.2 landed the first two real
-> subsystems on top of that store: `tessctl tasks` (the shared task graph,
-> `.tess/state/tasks/`) and `tessctl log` (the hash-chained accountability
-> ledger, `.tess/state/ledger/`). Phase 0.3 lands the third: `tessctl memory
-> adopt` (`.tess/state/memory/`) — the mechanism that moves an existing
-> harness-private memory directory's contents into the canonical store and
-> replaces the original with a symlink, so Claude Code and Codex (or any
-> other adopted harness) read and write the SAME memory. Phase 0.4 (issue
-> #125) lands the LANE: earmarking a task for a specific worker harness
-> (`target_harness`, `tessctl tasks new|set --lane`), filtering a pull to
-> that lane (`tasks pull --lane`), and `tessctl tasks handoff` — which
-> PREPARES, never spawns, an external worker invocation. Phase 0.5 (this
-> page's own next-next section, issue #129) lands the STUCK-PACKET:
-> `tessctl tasks block <id>` — `handoff`'s sibling ("here's a task, go do
-> it" vs. "I got stuck, here's everything you need to continue") —
-> transitions a task to `blocked` AND records a structured, resumable-by-
-> any-agent packet (why it stopped, last-known progress, what was already
-> tried, what's needed to unblock). Running an actual adopt against any
-> specific instance's live memory, and running an actual external-harness
-> process from a prepared handoff, are both separate, later, opt-in
-> operations this page documents the MECHANISM for, not the live execution
-> of. Any orphan-sweeper daemon (or Codex process-spawner/daemon) — INCLUDING
-> one that would auto-resume a stuck task the Phase 0.5 packet below makes
-> visible — remains NOT built; see "What's deliberately NOT built yet"
-> below.
+> **Status: Phase 0.6 — the fenced store, the task store + accountability
+> ledger, the memory link, the external-harness-worker LANE, the structured
+> STUCK-PACKET, PLUS the SKILL DRAFT SCAFFOLD.** Phase 0.1 built the four
+> empty, fenced directories and their leak-proofing. Phase 0.2 landed the
+> first two real subsystems on top of that store: `tessctl tasks` (the
+> shared task graph, `.tess/state/tasks/`) and `tessctl log` (the
+> hash-chained accountability ledger, `.tess/state/ledger/`). Phase 0.3
+> lands the third: `tessctl memory adopt` (`.tess/state/memory/`) — the
+> mechanism that moves an existing harness-private memory directory's
+> contents into the canonical store and replaces the original with a
+> symlink, so Claude Code and Codex (or any other adopted harness) read and
+> write the SAME memory. Phase 0.4 (issue #125) lands the LANE: earmarking a
+> task for a specific worker harness (`target_harness`, `tessctl tasks
+> new|set --lane`), filtering a pull to that lane (`tasks pull --lane`), and
+> `tessctl tasks handoff` — which PREPARES, never spawns, an external worker
+> invocation. Phase 0.5 (issue #129) lands the STUCK-PACKET: `tessctl tasks
+> block <id>` — `handoff`'s sibling ("here's a task, go do it" vs. "I got
+> stuck, here's everything you need to continue") — transitions a task to
+> `blocked` AND records a structured, resumable-by-any-agent packet (why it
+> stopped, last-known progress, what was already tried, what's needed to
+> unblock). Phase 0.6 (this page's own next section, issue #131) lands the
+> SKILL DRAFT SCAFFOLD: `tessctl skill from-task <id>` — the demo-to-skill
+> pattern — turns a completed task + its REAL ledger trail into a
+> scaffolded, DRAFT, human-reviewed reusable skill under a FIFTH
+> `.tess/state/**` subsystem (`.tess/state/skills/`), fenced the same way,
+> deliberately never `.claude/skills/` (the live skill set) — never
+> auto-activated. Running an actual adopt against any specific instance's
+> live memory, and running an actual external-harness process from a
+> prepared handoff, are both separate, later, opt-in operations this page
+> documents the MECHANISM for, not the live execution of. Any orphan-sweeper
+> daemon (or Codex process-spawner/daemon) — INCLUDING one that would
+> auto-resume a stuck task the Phase 0.5 packet makes visible, or a curator
+> that would auto-promote a Phase 0.6 draft into the live skill set —
+> remains NOT built; see "What's deliberately NOT built yet" below.
 
 ## The principle
 
@@ -52,7 +58,10 @@ private home directory.**
 ├── memory/     ← cross-harness memory (adopted, not duplicated — Phase 0.3)
 ├── tasks/      ← the shared task graph (Phase 0.2 CLI)
 ├── ledger/     ← mission/retry ledger, harness-neutral form (Phase 0.2+)
-└── locks/      ← coordination locks between concurrent harness sessions
+├── locks/      ← coordination locks between concurrent harness sessions
+└── skills/
+    └── drafts/ ← generated DRAFT skills (`tessctl skill from-task` — Phase
+                  0.6); never `.claude/skills/`, never auto-activated
 ```
 
 This sits inside `.tess/` (already the engine's own runtime-state root:
@@ -104,7 +113,7 @@ All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
 and `locks/` — none of the four subdirectories depends on the pre-commit
 hook (layer 3) being installed to stay off a fresh `git add -A`.
 
-## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3 + Phase 0.4 + Phase 0.5)
+## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3 + Phase 0.4 + Phase 0.5 + Phase 0.6)
 
 Phase 0.1 — the fenced store:
 
@@ -590,6 +599,83 @@ agent**":
   ledger entry, when a candidate `blocked` value fails validation) →
   schema/lint coverage for the new field, its `BlockedPacket` shape, and
   the new ledger event class.
+
+Phase 0.6 — the SKILL DRAFT SCAFFOLD (SKILL DRAFT SCAFFOLD region,
+`.tess/bin/tessctl`, a sibling of AUDIT PACK, issue #131): demo-to-skill —
+the "gets smarter from your work" pattern. `tessctl skill from-task <id>`
+turns a completed task + its REAL ledger trail into a scaffolded, DRAFT,
+human-reviewed reusable skill.
+
+- **Inspection grounding.** `.claude/skills/*/SKILL.md` (mirrored core-
+  managed at `.tess/core/skills/*/SKILL.md`) is a real skill format — YAML
+  frontmatter (`name`/`description`, optionally `allowed-tools`/`source`/
+  `triggers` — the shipped skills use a loose, non-schema'd superset) plus a
+  progressive-disclosure markdown body, consumed NATIVELY by the Claude Code
+  host's own skill loader. There is no in-repo loader/parser/curator for
+  this format anywhere in `.tess/bin/tessctl` prior to this phase. This
+  build generates INTO that existing real format — it does not invent a new
+  one, and it does not build a curator or a loader (neither exists in-repo
+  to build against; the host's own progressive disclosure IS the loader).
+- **`tessctl skill from-task <id> --harness H [--out DIR] [--force]
+  [--session S] [--persona P] [--json]`** reads the task record
+  (`.tess/state/tasks/<id>.json`) and every ledger event referencing it
+  (`_skill_collect_task_events`, reusing the AUDIT PACK region's own
+  `_audit_collect_events_by_shard` — no forked task-scoped ledger scan),
+  then writes two files to `.tess/state/skills/drafts/<slug>/` (default;
+  `--slug` is the task title's kebab-slug plus the task id's OWN trailing
+  4-hex uniqueness suffix — deterministic, collision-safe, no invented
+  second id):
+  - **`SKILL.md`** — real progressive-disclosure frontmatter/body,
+    `status: draft`, a `## Step sequence` built ONLY from the REAL matched
+    ledger events (event class, verbatim `summary`, actor, timestamp —
+    never invented text), a `## Reusable instructions` section built ONLY
+    from the task record's own `notes`/`evidence` (verbatim, both APPEND-
+    ONLY human-authored channels per `task.schema.json`), and a
+    `## Provenance` trailer pointing back at `provenance.json` plus the live
+    `tessctl log view --task <id>` / `tessctl audit export --task <id>` for
+    independent re-verification.
+  - **`provenance.json`** — the full generator input verbatim (source-task
+    snapshot + every matched ledger event), the SAME
+    "manifest.json+SUMMARY.md, one generator, two serializations" precedent
+    the AUDIT PACK region already established — traceable back to the
+    ledger without a live re-query.
+- **Honesty is the point, again.** `_skill_trail_completeness` classifies
+  every generated draft as `empty` (no matched ledger events — in practice
+  unreachable through the normal CLI, since `tasks new` itself always
+  auto-logs one creation event, but a real defensive/tested case), `
+  mechanical-only` (events exist, no task notes — the trail shows WHAT
+  happened, not WHY), or `narrated` (at least one recorded note). A THIN
+  trail (`empty`/`mechanical-only`) produces a THIN scaffold: no fabricated
+  procedural prose, only explicit `gap_flags` naming exactly what a human
+  must fill in before the draft is authoritative. A source task not marked
+  `done` gets a prominent `SKILL.md` warning banner too.
+- **Never auto-activated.** Writes to `.tess/state/skills/drafts/` — a
+  FIFTH `.tess/state/**` subsystem, fenced the SAME four-layer way as
+  memory/tasks/ledger/locks (never_touch, publish-clean, gitignore content-
+  ignore, create-tess scaffold-strip) — deliberately NEVER `.claude/skills/`
+  (the LIVE, core-managed, host-loaded skill set). No promotion command, no
+  curator, no autonomous loop exists in this phase; a human/curator reviews
+  a draft and promotes it manually, entirely outside this region.
+- **Accountability — one new ledger event class, the SAME append path.**
+  `skill_generated` (logged by `tessctl skill from-task`) goes through the
+  EXISTING `_ledger_auto_log` → `_log_append_event` hash-chain append path
+  — no fork of the chain algorithm, same pattern `earmarked`/`handoff`/
+  `blocked` already established. Generating a draft never mutates the
+  source task record itself — no `_tasks_write_locked` call, read-only
+  against the task store; the ledger line is the sole accountability
+  artifact of the generation.
+- `tests/test_skill_from_task.py` — a narrated (notes + evidence) task's
+  scaffold surfaces the real notes/evidence verbatim and a step sequence
+  matching the real ledger summaries exactly → a mechanical-only (no notes)
+  task's scaffold flags the gap and fabricates nothing → an engine-level
+  `empty`-trail case (a task record with zero matching ledger events)
+  produces the explicit "no derivable step sequence" gap, not silently
+  narrated content → frontmatter is valid YAML with `name`/`description`
+  present (the loadable-format proxy check) → `--out`/`--force` conflict
+  handling → an unknown task id is refused with a clear message → the
+  `skill_generated` ledger line is written, schema-accepted, and shows up
+  in a subsequent `tessctl audit export --task <id>` → generation never
+  touches `.claude/skills/` (the auto-activation scope-boundary check).
 
 ## What's deliberately NOT built yet
 
