@@ -18,3 +18,9 @@ Record progress back to the SAME shared board as you go — never a
 private, harness-only list: `tessctl tasks set <id> --status <status>
 --harness codex [--add-note TEXT]`, and `tessctl log append --origin
 codex --event <event> --summary TEXT` for the accountability trail.
+
+If you get stuck, do not just stop silently — record a resumable
+stuck-packet: `tessctl tasks block <id> --reason <...> --summary TEXT
+--progress TEXT --needed TEXT --harness codex`. Find stuck work with
+`tessctl tasks pull --status blocked`; moving status away from `blocked`
+clears the packet.

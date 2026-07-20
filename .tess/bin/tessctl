@@ -56,17 +56,24 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               verifier BLOCK
   tasks       Phase 0.2: the CROSS-HARNESS TASK STORE (TASK LEDGER region, a
               sibling of MISSION LEDGER) — file-per-task JSON under
-              .tess/state/tasks/<id>.json (new | set | claim | release | pull |
-              render | handoff); `claim` writes a claim-lease (host:pid:uuid) +
-              heartbeat, `set` uses rev-CAS optimistic concurrency, `render`
-              regenerates the DERIVED BOARD.md kanban view. Phase 0.4 (issue
-              #125) adds the target-harness LANE: `new|set --lane <codex|
-              claude-code|any>` earmarks a task (default `any` — unmarked,
-              zero behavior change), `pull --lane <harness>` filters to that
-              lane plus every unmarked task, and `handoff <id> --harness
-              <codex|claude-code>` earmarks + prints a copy-pasteable
-              invocation for an external worker session — it prepares, never
-              spawns, that harness
+              .tess/state/tasks/<id>.json (new | set | claim | release |
+              block | pull | render | handoff); `claim` writes a claim-lease
+              (host:pid:uuid) + heartbeat, `set` uses rev-CAS optimistic
+              concurrency, `render` regenerates the DERIVED BOARD.md kanban
+              view. Phase 0.4 (issue #125) adds the target-harness LANE:
+              `new|set --lane <codex|claude-code|any>` earmarks a task
+              (default `any` — unmarked, zero behavior change), `pull --lane
+              <harness>` filters to that lane plus every unmarked task, and
+              `handoff <id> --harness <codex|claude-code>` earmarks + prints
+              a copy-pasteable invocation for an external worker session —
+              it prepares, never spawns, that harness. Phase 0.5 (issue
+              #129) adds `block <id> --reason ... --summary ... --progress
+              ... --needed ...`: the STRUCTURED STUCK-PACKET — `handoff`'s
+              sibling ("here's a task, go do it" vs. "I got stuck, here's
+              everything you need to continue"), transitions status to
+              `blocked` AND records a resumable-by-any-agent packet;
+              `pull --status blocked` surfaces it, `set|release --status
+              <away-from-blocked>` clears it as a side effect
   log         Phase 0.2: the hash-chained, append-only ACCOUNTABILITY LEDGER
               under .tess/state/ledger/<YYYY-MM>.<origin>.jsonl (sharded per
               calendar month + per writer origin) — `append` a hash-chained
@@ -14601,7 +14608,12 @@ def cmd_run(args, root: Path) -> None:
 #     decision. This region builds ONLY the substrate a future sweeper would
 #     read: claim-lease + heartbeat fields on the task record, and
 #     claim/heartbeat/release/completed/crashed/reclaimed ledger events —
-#     never a daemon that acts on them.
+#     never a daemon that acts on them. Phase 0.5's own `blocked` field +
+#     event (below) is the SAME "substrate only" discipline applied to
+#     stuck work: `tasks block` makes it VISIBLE + RESUMABLE (a structured
+#     packet + `pull --status blocked`), never something that auto-resumes
+#     it — WHO/WHAT triggers a resume stays this same separate, later,
+#     gated decision.
 # ---------------------------------------------------------------------------
 
 
@@ -14649,20 +14661,31 @@ TASK_LANES = ("codex", "claude-code", "any")
 TASK_HANDOFF_LANES = ("codex", "claude-code")
 DEFAULT_TASK_LANE = "any"
 
+# Phase 0.5 (issue #129) — the STRUCTURED STUCK-PACKET. `tasks handoff`'s
+# sibling: `handoff` = "here's a task, go do it" (routes work FORWARD, no
+# record of what happened); `tasks block` = "I got stuck, here's everything
+# you need to continue" (captures a resumability packet at the point of
+# failure). Mirrors `task.schema.json`'s `BlockedPacket.reason` enum exactly
+# — kept as a Python constant here for the SAME reason `TASK_LANES` is: the
+# argparse `choices=` for `tasks block --reason` must reject an unknown
+# value at the CLI layer, before it ever reaches schema validation.
+TASK_BLOCK_REASONS = ("required_input", "failed_dependency", "gate", "decision_needed", "other")
+
 LEDGER_EVENTS = (
     "dispatch", "task_transition", "claim", "heartbeat", "release",
     "completed", "crashed", "reclaimed", "session_open", "session_close",
-    "earmarked", "handoff",
+    "earmarked", "handoff", "blocked",
 )
 # Event classes `_lint_ledger_event` requires a non-null `refs.task` for —
 # every class that is inherently ABOUT one task record. `dispatch` and
 # `session_open`/`session_close` are broader harness-lifecycle bookkeeping
 # and may legitimately carry a null task ref. `earmarked`/`handoff` (Phase
-# 0.4, issue #125) are always about one task, same as `claim`/`heartbeat`.
+# 0.4, issue #125) and `blocked` (Phase 0.5, issue #129) are always about
+# one task, same as `claim`/`heartbeat`.
 LEDGER_TASK_SCOPED_EVENTS = frozenset(
     {
         "task_transition", "claim", "heartbeat", "release", "completed",
-        "crashed", "reclaimed", "earmarked", "handoff",
+        "crashed", "reclaimed", "earmarked", "handoff", "blocked",
     }
 )
 LEDGER_GENESIS_HASH = "0" * 64
@@ -14885,6 +14908,7 @@ def _new_task_record(task_id, title, status, owner, assignee, depends_on,
         "depends_on": list(depends_on or []),
         "evidence": [],
         "notes": [],
+        "blocked": None,
     }
 
 
@@ -14909,8 +14933,15 @@ def _task_read(path: Path) -> dict:
     # format on its own next append. `_tasks_write_locked`'s next
     # successful write persists the backfilled value to disk as a side
     # effect of the mutation already happening.
+    #
+    # Phase 0.5 (issue #129): `blocked` gets the IDENTICAL treatment for the
+    # SAME reason — a task record written before this field existed has no
+    # such key either, and null (never blocked) is exactly its correct
+    # healed value, same as `target_harness` healing to the "no lane set"
+    # default.
     if isinstance(record, dict):
         record.setdefault("target_harness", DEFAULT_TASK_LANE)
+        record.setdefault("blocked", None)
     return record
 
 
@@ -14995,6 +15026,24 @@ def _lint_task(instance, root: Path = None) -> list:
     for i, note in enumerate(instance.get("notes") or []):
         if isinstance(note, dict) and not (note.get("text") or "").strip():
             errors.append(f"$.notes[{i}]: empty note text")
+
+    # Phase 0.5 (issue #129): a stuck-packet implies `status == "blocked"` —
+    # ONE-DIRECTIONAL only. The reverse does NOT hold: `status == "blocked"`
+    # with `blocked: null` is valid and pre-dates this feature (a bare
+    # `tessctl tasks set --status blocked` with no packet — see
+    # tests/test_task_store.py's `test_tasks_claim_auto_advances_status_
+    # only_from_backlog_or_ready`, unaffected by this PR). Only a packet
+    # present on a task NOT currently in `blocked` status is a genuine
+    # invariant violation (`tasks block`'s own mutate_fn always sets both
+    # together in the SAME write; this catches a hand-edited or
+    # otherwise-inconsistent record, plain JSON Schema cannot express a
+    # cross-field rule like this).
+    if instance.get("blocked") is not None and instance.get("status") != "blocked":
+        errors.append(
+            f"$.blocked: a stuck-packet is set but status is {instance.get('status')!r}, "
+            f"not 'blocked' — a packet must only be present while the task is in the "
+            f"'blocked' status"
+        )
 
     return errors
 
@@ -15513,6 +15562,36 @@ def _iter_ledger_shards(root: Path, origin: str = None):
         yield p
 
 
+def _clear_blocked_on_status_departure(record: dict, new_status) -> bool:
+    """Phase 0.5 (issue #129): if `record` is CURRENTLY `blocked` with a
+    stuck-packet set, and `new_status` (falsy/None means "no status change
+    requested") moves it AWAY from `blocked`, null the packet as a side
+    effect of that SAME write. Mutates `record` in place; returns True iff
+    it actually cleared something (so callers can fold that into their own
+    human-readable `changes` summary, same convention every other `mutate`
+    closure in this region already uses).
+
+    Mirrors `tasks claim`'s own "claiming a blocked task does not silently
+    un-block it — that is an explicit `tasks set --status` decision"
+    precedent (CLAIM_AUTO_ADVANCE_FROM's docstring), just applied to the
+    packet instead of the status enum itself: clearing a stuck-packet is
+    likewise never implicit UNLESS the caller is already making the
+    explicit status-departure decision this function is called from. Shared
+    by BOTH `_cmd_tasks_set` (`--status`) and `_cmd_tasks_release`
+    (`--status`) — release's own `if args.status: record["status"] = ...`
+    is a second, independent path that can move a task away from `blocked`,
+    and without this same clearing applied there too, `_lint_task`'s new
+    stuck-packet/status invariant (packet present implies status ==
+    'blocked') would refuse the resulting record — see that check's own
+    docstring."""
+    if not new_status or new_status == "blocked":
+        return False
+    if record.get("status") != "blocked" or record.get("blocked") is None:
+        return False
+    record["blocked"] = None
+    return True
+
+
 # ---------------------------------------------------------------------------
 # `tessctl tasks` subcommand handlers
 # ---------------------------------------------------------------------------
@@ -15598,6 +15677,12 @@ def _cmd_tasks_set(args, root: Path) -> None:
     def mutate(record):
         if args.status and args.status != record["status"]:
             changes.append(f"status: {record['status']} -> {args.status}")
+            # Phase 0.5 (issue #129): checked BEFORE record["status"] is
+            # overwritten below — _clear_blocked_on_status_departure reads
+            # the CURRENT (pre-mutation) status to decide whether this call
+            # is leaving `blocked`.
+            if _clear_blocked_on_status_departure(record, args.status):
+                changes.append("blocked: cleared")
             record["status"] = args.status
         if args.owner is not None and args.owner != (record.get("owner") or ""):
             changes.append(f"owner: {record.get('owner')!r} -> {args.owner!r}")
@@ -15801,6 +15886,12 @@ def _cmd_tasks_release(args, root: Path) -> None:
             )
         record["claim"] = {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None}
         if args.status:
+            # Phase 0.5 (issue #129): `release --status` is a SECOND path
+            # (besides `tasks set --status`) that can move a task away from
+            # `blocked` — clear a stale stuck-packet as the same side effect
+            # here too. See `_clear_blocked_on_status_departure`'s docstring.
+            if _clear_blocked_on_status_departure(record, args.status):
+                ledger["summary"] += " [blocked packet cleared]"
             record["status"] = args.status
         return record
 
@@ -15818,6 +15909,65 @@ def _cmd_tasks_release(args, root: Path) -> None:
     else:
         print(f"tessctl tasks release — {task_id} ({ledger['kind']})")
         print(f"  {ledger['summary']}")
+
+
+def _cmd_tasks_block(args, root: Path) -> None:
+    """`tessctl tasks block <id>` — Phase 0.5 (issue #129): the STRUCTURED
+    STUCK-PACKET. `tasks handoff`'s sibling: `handoff` routes a task
+    FORWARD ("here's a task, go do it"); `block` captures a resumability
+    packet at the point of failure ("I got stuck, here's everything you
+    need to continue"). Transitions `status` to `blocked` (a no-op if
+    already there) AND records a structured `blocked` packet — distinct
+    from the pre-existing bare `tessctl tasks set --status blocked`, which
+    still works exactly as before and leaves `blocked: null` (see
+    task.schema.json's own field description). Goes through the SAME
+    `_tasks_write_locked` CAS path every other mutator uses — no forked
+    write logic — and logs a `blocked` ledger event via the EXISTING
+    `_ledger_auto_log` append path — no forked chain algorithm."""
+    task_id = args.task_id
+    now = _utc_now_iso()
+    prior_status_holder = {}
+
+    def mutate(record):
+        prior_status_holder["status"] = record["status"]
+        record["status"] = "blocked"
+        record["blocked"] = {
+            "reason": args.reason,
+            "summary": args.summary,
+            "progress": args.progress,
+            "attempted": list(args.attempted or []),
+            "needed": args.needed,
+            "blocked_at": now,
+            "blocked_by": {"harness": args.harness, "session": args.session},
+        }
+        return record
+
+    try:
+        record = _tasks_write_locked(root, task_id, mutate)
+    except TaskError as e:
+        sys.exit(str(e))
+
+    prior_status = prior_status_holder.get("status")
+    summary = f"blocked ({args.reason}): {args.summary}"
+    if prior_status != "blocked":
+        summary += f" (status {prior_status} -> blocked)"
+
+    try:
+        _ledger_auto_log(
+            root, harness=args.harness, event="blocked", task_id=task_id,
+            summary=summary, session=args.session, persona=args.persona,
+        )
+    except LedgerError as e:
+        sys.exit(str(e))
+
+    if getattr(args, "json_out", False):
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"tessctl tasks block — {task_id} ({args.reason})")
+        print(f"  {summary}")
+        print(f"  needed: {args.needed}")
+        print(f"  resume: tessctl tasks pull --status blocked   (find it again)")
+        print(f"          tessctl tasks claim {task_id} --host <host> --pid <pid> --harness <harness>   (pick it up)")
 
 
 def _cmd_tasks_pull(args, root: Path) -> None:
@@ -16049,12 +16199,12 @@ def cmd_tasks(args, root: Path) -> None:
     if sub is None:
         sys.exit(
             "tessctl tasks: a subcommand is required "
-            "(new | set | claim | release | pull | render | handoff)"
+            "(new | set | claim | release | block | pull | render | handoff)"
         )
     handlers = {
         "new": _cmd_tasks_new, "set": _cmd_tasks_set, "claim": _cmd_tasks_claim,
-        "release": _cmd_tasks_release, "pull": _cmd_tasks_pull, "render": _cmd_tasks_render,
-        "handoff": _cmd_tasks_handoff,
+        "release": _cmd_tasks_release, "block": _cmd_tasks_block, "pull": _cmd_tasks_pull,
+        "render": _cmd_tasks_render, "handoff": _cmd_tasks_handoff,
     }
     handlers[sub](args, root)
 
@@ -19066,11 +19216,12 @@ def build_parser() -> argparse.ArgumentParser:
     # tasks — Phase 0.2: the cross-harness TASK STORE (TASK LEDGER region,
     # directly below the RUN region — a sibling of `mission`/`retry` above).
     # Phase 0.4 (issue #125) added the LANE (`--lane` on new/set/pull) and
-    # `handoff` — see that subcommand's own help/docstring below.
+    # `handoff`; Phase 0.5 (issue #129) added `block` (the structured
+    # stuck-packet) — see each subcommand's own help/docstring below.
     p_tasks = sub.add_parser(
         "tasks",
         help="cross-harness task store: file-per-task JSON under .tess/state/tasks/ "
-             "(new | set | claim | release | pull | render | handoff)",
+             "(new | set | claim | release | block | pull | render | handoff)",
     )
     tasks_sub = p_tasks.add_subparsers(dest="tasks_sub", metavar="SUBCOMMAND")
 
@@ -19189,6 +19340,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="release even if the claim belongs to a different host/pid/uuid",
     )
     p_tasks_release.add_argument("--json", action="store_true", dest="json_out")
+
+    # Phase 0.5 (issue #129): `block` — the STRUCTURED STUCK-PACKET. Sets
+    # status to `blocked` (like `set --status blocked` already could) AND
+    # records the structured context a resuming agent needs — distinct from
+    # the bare status transition, which stays exactly as it was.
+    p_tasks_block = tasks_sub.add_parser(
+        "block",
+        help="mark a task blocked/stuck AND record a structured, resumable-by-any-agent packet "
+             "(what blocked it, progress so far, what was tried, what's needed)",
+    )
+    p_tasks_block.add_argument("task_id", metavar="ID")
+    p_tasks_block.add_argument(
+        "--reason", required=True, choices=list(TASK_BLOCK_REASONS),
+        help="why this task stopped — required_input | failed_dependency | gate | "
+             "decision_needed | other",
+    )
+    p_tasks_block.add_argument(
+        "--summary", required=True, help="one-line statement of what blocked it",
+    )
+    p_tasks_block.add_argument(
+        "--progress", required=True,
+        help="last-known progress/state — what was accomplished before this stopped, and where",
+    )
+    p_tasks_block.add_argument(
+        "--needed", required=True, help="what is needed to unblock this task",
+    )
+    p_tasks_block.add_argument(
+        "--attempted", action="append", metavar="TEXT",
+        help="something already tried that did not resolve the block (repeatable; optional)",
+    )
+    p_tasks_block.add_argument(
+        "--harness", required=True, help="the harness recording this block (blocked_by.harness)",
+    )
+    p_tasks_block.add_argument("--session", help="harness session id (optional)")
+    p_tasks_block.add_argument("--persona", help="named persona/agent recording the block, if relevant")
+    p_tasks_block.add_argument("--json", action="store_true", dest="json_out")
 
     p_tasks_pull = tasks_sub.add_parser("pull", help="list tasks matching filters (read-only)")
     p_tasks_pull.add_argument("--status", choices=list(TASK_STATUSES), action="append")

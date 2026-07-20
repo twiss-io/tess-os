@@ -71,11 +71,18 @@
       "type": "array",
       "items": { "$ref": "#/$defs/Note" },
       "description": "Free-text progress notes, APPEND-ONLY (same discipline as `evidence` — `tessctl tasks set --add-note` only ever appends)."
+    },
+    "blocked": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/BlockedPacket" }
+      ],
+      "description": "The STRUCTURED STUCK-PACKET (Phase 0.5, issue #129) — null unless this task was blocked via `tessctl tasks block`. Distinct from the pre-existing `status: \"blocked\"` enum value: a task can still reach `blocked` status via a bare `tessctl tasks set --status blocked` (unchanged, pre-#129 behavior — this field stays null in that case), but `tasks block` additionally captures the resumable-by-any-agent context the bare status transition alone cannot: WHY it stopped, what state it was in, what was already tried, and what unblocks it. `tasks handoff`'s sibling: `handoff` = 'here's a task, go do it'; a `blocked` packet = 'I got stuck, here's everything you need to continue.' Set (a fresh packet, `blocked_at` always the CURRENT call's timestamp — a re-block is a genuine new event, not a heartbeat) by `tessctl tasks block <id>`; cleared to null as a side effect of `tessctl tasks set --status <anything other than blocked>` while the CURRENT status is `blocked` and a packet is present — an explicit accompanying decision, the same 'never silently un-block' discipline `claim` already applies to `status` itself, just applied here to the packet."
     }
   },
   "required": [
     "id", "title", "status", "owner", "assignee", "target_harness", "claim", "created_by",
-    "created_at", "updated_at", "rev", "depends_on", "evidence", "notes"
+    "created_at", "updated_at", "rev", "depends_on", "evidence", "notes", "blocked"
   ],
   "additionalProperties": false,
   "$defs": {
@@ -108,6 +115,47 @@
         "text": { "type": "string", "minLength": 1, "description": "The note body. Never empty — an empty note carries no accountability information." }
       },
       "required": ["at", "by", "text"],
+      "additionalProperties": false
+    },
+    "BlockedPacket": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["required_input", "failed_dependency", "gate", "decision_needed", "other"],
+          "description": "WHY this task stopped, classified so a resuming agent (or a `tasks pull --status blocked` sweep, human or otherwise) can triage without reading free text first: `required_input` (missing credential/config/decision input), `failed_dependency` (an upstream task/system this one needs is not ready or errored), `gate` (a doctrine/review/CI gate refused to clear), `decision_needed` (a human/founder call is required — the guardrails.md Rule 18 hard-floor class), `other` (doesn't fit the above — `summary` carries the real reason)."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One-line human-readable statement of what blocked it — the first thing a resuming agent reads, same spirit as a ledger event's own `summary`."
+        },
+        "progress": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Last-known progress/state — what was accomplished before this task stopped, and exactly where it stopped, so a resuming agent does not have to reverse-engineer that from `evidence`/`notes` alone."
+        },
+        "attempted": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "What was already tried (and did not resolve the block) — so a resuming agent does not repeat a dead end. May be empty (nothing was attempted yet before the block was recorded)."
+        },
+        "needed": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What is needed to unblock — a credential, a decision, an upstream fix, a re-run once a dependency clears, etc. The single most actionable field in the packet."
+        },
+        "blocked_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "UTC ISO-8601 timestamp this packet was recorded — set fresh on every `tessctl tasks block` call (a re-block, e.g. after a failed unblock attempt, is a genuinely NEW event, not a heartbeat refresh of the same one)."
+        },
+        "blocked_by": {
+          "$ref": "#/$defs/CreatedBy",
+          "description": "Which harness (and, optionally, which session of it) ran `tessctl tasks block` — reuses the SAME shape `created_by` already uses for the identical 'which harness, which session' provenance fact, applied here to who flagged the block instead of who created the task."
+        }
+      },
+      "required": ["reason", "summary", "progress", "attempted", "needed", "blocked_at", "blocked_by"],
       "additionalProperties": false
     }
   },

@@ -667,7 +667,7 @@ def test_task_schema_target_harness_enum_rejects_unknown_value(engine):
         "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
         "created_by": {"harness": "h", "session": None},
         "created_at": "2026-07-19T00:00:00Z", "updated_at": "2026-07-19T00:00:00Z",
-        "rev": 1, "depends_on": [], "evidence": [], "notes": [],
+        "rev": 1, "depends_on": [], "evidence": [], "notes": [], "blocked": None,
     }
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
@@ -682,7 +682,7 @@ def test_task_schema_full_valid_instance_including_target_harness_passes(engine)
         "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
         "created_by": {"harness": "h", "session": None},
         "created_at": "2026-07-19T00:00:00Z", "updated_at": "2026-07-19T00:00:00Z",
-        "rev": 1, "depends_on": [], "evidence": [], "notes": [],
+        "rev": 1, "depends_on": [], "evidence": [], "notes": [], "blocked": None,
     }
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
