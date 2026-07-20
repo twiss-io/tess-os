@@ -33,7 +33,21 @@ export const DEFAULT_TEMPLATE_SOURCE = 'https://github.com/twiss-io/tess-os.git'
 // create-tess/README.md's release-prep note for the one-command cut + tag
 // push, and conductor/release-process.md for how framework `v*` tags
 // (separately) get their release-key signature.
-export const DEFAULT_TEMPLATE_REF = 'create-tess-v0.1.2';
+//
+// OPERATIONAL CAVEAT (G-01 residual fix, 2026-07-21): bumping this constant
+// does NOT, by itself, make the default clone succeed — `git clone --branch
+// <ref>` needs the tag to actually exist on `origin`. Cutting/pushing
+// `create-tess-v*` tags is Xavier's credentialed action (see
+// create-tess/README.md's "Release" section: "maintainers — Xavier-owned;
+// never automated" — CHANGELOG documents the SAME split for the prior
+// 0.1.1 → 0.1.2 bump), so this file only keeps the pin's VALUE in lockstep
+// with `package.json`'s version; it does not, and must not, cut the tag as
+// a side effect. Verify with `git ls-remote --tags origin | grep
+// create-tess-v` before assuming the default `npm create tess` flow works —
+// as of this fix, NO `create-tess-v*` tag has ever been cut, so the default
+// git-clone path is broken until one is (tracked separately; do not let a
+// future version bump repeat this gap silently).
+export const DEFAULT_TEMPLATE_REF = 'create-tess-v0.1.3';
 
 // Resolve the git ref to pin a git-URL clone to. An explicit ref (CLI
 // `--template-ref` / env `TESS_TEMPLATE_REF`) always wins, for ANY source —

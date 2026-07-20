@@ -108,7 +108,7 @@ bootstrap shortcut.
 
 ## npm and source status
 
-The public `create-tess` package is currently **0.1.0** and lags repository
+The public `create-tess` package is currently **0.1.3** and lags repository
 `main`; it is not production onboarding for the signed gate. The package can
 still scaffold a local Tess OS instance, but it does not solve the custody or
 required-check prerequisites above.

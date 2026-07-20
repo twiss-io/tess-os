@@ -662,8 +662,8 @@ test('resolveTemplateRef: a custom --template-source is left unpinned (its own b
 
 test('buildCloneArgs: pins with --branch when a ref is resolved, omits it when unpinned', () => {
   assert.deepEqual(
-    buildCloneArgs('https://example.com/x.git', '/tmp/stage', 'create-tess-v0.1.2'),
-    ['clone', '--depth', '1', '--branch', 'create-tess-v0.1.2', '--', 'https://example.com/x.git', '/tmp/stage'],
+    buildCloneArgs('https://example.com/x.git', '/tmp/stage', 'create-tess-v0.1.3'),
+    ['clone', '--depth', '1', '--branch', 'create-tess-v0.1.3', '--', 'https://example.com/x.git', '/tmp/stage'],
   );
   assert.deepEqual(
     buildCloneArgs('https://example.com/x.git', '/tmp/stage', null),
