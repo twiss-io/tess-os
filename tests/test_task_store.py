@@ -621,6 +621,11 @@ def _valid_task_instance(task_id="T-20260719-x-aaaa"):
         "created_by": {"harness": "h", "session": None},
         "created_at": "2026-07-19T00:00:00Z", "updated_at": "2026-07-19T00:00:00Z",
         "rev": 1, "depends_on": [], "evidence": [], "notes": [],
+        # Phase 0.5 (issue #129): blocked is a required (nullable) field as
+        # of this schema version — see tests/test_task_stuck_packet.py for
+        # the stuck-packet's own dedicated coverage; null here keeps this
+        # fixture's pre-#129 semantics (never blocked) unchanged.
+        "blocked": None,
     }
 
 

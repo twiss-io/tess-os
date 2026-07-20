@@ -1,26 +1,33 @@
 # The state layer: one canonical store, every harness mounts it
 
-> **Status: Phase 0.4 — the fenced store, the task store + accountability
-> ledger, the memory link, PLUS the external-harness-worker LANE.** Phase
-> 0.1 built the four empty, fenced directories and their leak-proofing.
-> Phase 0.2 landed the first two real subsystems on top of that store:
-> `tessctl tasks` (the shared task graph, `.tess/state/tasks/`) and
-> `tessctl log` (the hash-chained accountability ledger,
-> `.tess/state/ledger/`). Phase 0.3 lands the third: `tessctl memory adopt`
-> (`.tess/state/memory/`) — the mechanism that moves an existing
+> **Status: Phase 0.5 — the fenced store, the task store + accountability
+> ledger, the memory link, the external-harness-worker LANE, PLUS the
+> structured STUCK-PACKET.** Phase 0.1 built the four empty, fenced
+> directories and their leak-proofing. Phase 0.2 landed the first two real
+> subsystems on top of that store: `tessctl tasks` (the shared task graph,
+> `.tess/state/tasks/`) and `tessctl log` (the hash-chained accountability
+> ledger, `.tess/state/ledger/`). Phase 0.3 lands the third: `tessctl memory
+> adopt` (`.tess/state/memory/`) — the mechanism that moves an existing
 > harness-private memory directory's contents into the canonical store and
 > replaces the original with a symlink, so Claude Code and Codex (or any
-> other adopted harness) read and write the SAME memory. Phase 0.4 (this
-> page's own next-next section, issue #125) lands the LANE: earmarking a
-> task for a specific worker harness (`target_harness`, `tessctl tasks
-> new|set --lane`), filtering a pull to that lane (`tasks pull --lane`), and
-> `tessctl tasks handoff` — which PREPARES, never spawns, an external
-> worker invocation. Running an actual adopt against any specific
-> instance's live memory, and running an actual external-harness process
-> from a prepared handoff, are both separate, later, opt-in operations this
-> page documents the MECHANISM for, not the live execution of. Any
-> orphan-sweeper daemon (or Codex process-spawner/daemon) remains NOT
-> built — see "What's deliberately NOT built yet" below.
+> other adopted harness) read and write the SAME memory. Phase 0.4 (issue
+> #125) lands the LANE: earmarking a task for a specific worker harness
+> (`target_harness`, `tessctl tasks new|set --lane`), filtering a pull to
+> that lane (`tasks pull --lane`), and `tessctl tasks handoff` — which
+> PREPARES, never spawns, an external worker invocation. Phase 0.5 (this
+> page's own next-next section, issue #129) lands the STUCK-PACKET:
+> `tessctl tasks block <id>` — `handoff`'s sibling ("here's a task, go do
+> it" vs. "I got stuck, here's everything you need to continue") —
+> transitions a task to `blocked` AND records a structured, resumable-by-
+> any-agent packet (why it stopped, last-known progress, what was already
+> tried, what's needed to unblock). Running an actual adopt against any
+> specific instance's live memory, and running an actual external-harness
+> process from a prepared handoff, are both separate, later, opt-in
+> operations this page documents the MECHANISM for, not the live execution
+> of. Any orphan-sweeper daemon (or Codex process-spawner/daemon) — INCLUDING
+> one that would auto-resume a stuck task the Phase 0.5 packet below makes
+> visible — remains NOT built; see "What's deliberately NOT built yet"
+> below.
 
 ## The principle
 
@@ -97,7 +104,7 @@ All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
 and `locks/` — none of the four subdirectories depends on the pre-commit
 hook (layer 3) being installed to stay off a fresh `git add -A`.
 
-## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3 + Phase 0.4)
+## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3 + Phase 0.4 + Phase 0.5)
 
 Phase 0.1 — the fenced store:
 
@@ -489,6 +496,101 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   work) — a live smoke test with an actual Codex session is a deferred
   follow-up, not claimed as done here.
 
+Phase 0.5 — the STRUCTURED STUCK-PACKET (TASK LEDGER region, issue #129):
+`tessctl tasks handoff`'s sibling — `handoff` routes a task FORWARD ("here's
+a task, go do it"); `tasks block` captures a resumability packet AT THE
+POINT OF FAILURE ("I got stuck, here's everything you need to continue").
+Directly serves the TASK LEDGER region's own header comment — quoting
+Xavier's re-aimed vision — "task list, updates, accountability list, whoever
+picked up a task and progress, cleared or **stuck, resumable by any
+agent**":
+
+- **`task.schema.json`'s new `blocked` field** — `null` unless the task was
+  blocked via `tessctl tasks block`, otherwise a `BlockedPacket`: `reason`
+  (enum — `required_input | failed_dependency | gate | decision_needed |
+  other`), `summary` (one-line), `progress` (last-known state — what was
+  accomplished, where it stopped), `attempted` (array — what was already
+  tried, may be empty), `needed` (what unblocks it), `blocked_at`
+  (timestamp), `blocked_by` (`{harness, session}`, the SAME shape
+  `created_by` already uses). Added as a REQUIRED (but nullable) field —
+  the exact same "new required field, healed on read" pattern
+  `target_harness` established in Phase 0.4, not a new convention.
+- **Distinct from the pre-existing `status: "blocked"` enum value.** A task
+  can still reach `blocked` status via a BARE `tessctl tasks set --status
+  blocked` — unchanged, fully supported, and leaves `blocked: null` (proven
+  by a dedicated backward-compat test, since Phase 0.5 adds a schema/lint
+  constraint that could plausibly have broken this pre-existing call
+  shape). `tessctl tasks block` is a richer, ADDITIVE way to reach the same
+  status: it captures the resumable context a bare status transition alone
+  cannot.
+- **`tessctl tasks block <id> --reason ... --summary ... --progress ...
+  --needed ... [--attempted ... ...] --harness ...`** — transitions
+  `status` to `blocked` (a no-op status-wise if already there) and writes a
+  FRESH packet through the SAME `_tasks_write_locked` CAS path every other
+  mutator uses (no forked write logic). `--reason`/`--summary`/
+  `--progress`/`--needed` are all required; `--attempted` is repeatable and
+  optional. A RE-block (calling `tasks block` again on an already-blocked
+  task) REPLACES the packet — `blocked_at` is always the current call's
+  timestamp, never preserved/merged like a claim heartbeat — because a
+  re-block is a genuinely NEW stuck event, not a liveness refresh of the
+  same one; each call logs its own `blocked` ledger line.
+- **Accountability — one new ledger event class, the SAME append path.**
+  `blocked` (logged by `tessctl tasks block`) goes through the EXISTING
+  `_ledger_auto_log` → `_log_append_event` hash-chain append path — no fork
+  of the chain algorithm, no new shard format, same pattern `earmarked`/
+  `handoff` already established in Phase 0.4. A packet being CLEARED is
+  NOT a separate event class — see the next bullet.
+- **Resumability — visibility + an explicit clearing decision, never
+  implicit.** `tessctl tasks pull --status blocked` (an EXISTING filter,
+  no new flag needed) surfaces every stuck task — the accountability-list
+  visibility Xavier's vision calls for, so nothing stuck is silently
+  stranded. `tessctl tasks claim` on a blocked task does NOT clear the
+  packet (mirrors the pre-existing "claiming a blocked task does not
+  silently un-block it — that is an explicit `tasks set --status`
+  decision" precedent, CLAIM_AUTO_ADVANCE_FROM's own docstring, applied
+  here to the packet too). `tessctl tasks set --status <away-from-blocked>`
+  and `tessctl tasks release --status <away-from-blocked>` (BOTH write
+  paths that can move a task's status — release's own `--status` flag is a
+  second, independent path from `set`) DO clear a present packet, as an
+  explicit side effect of that SAME write — logged under the status
+  change's own `task_transition` (or `earmarked`) event, never a separate
+  `unblocked` ledger class. Re-setting status to the SAME `blocked` value
+  is correctly recognized as NOT a departure and leaves the packet
+  untouched.
+- **`_lint_task`'s new relational invariant is ONE-DIRECTIONAL.** A packet
+  present implies `status == "blocked"` (catches a hand-edited or
+  otherwise-inconsistent record — plain JSON Schema cannot express a
+  cross-field rule like this). The REVERSE is explicitly NOT required —
+  `status == "blocked"` with `blocked: null` is valid, preserving the bare
+  `set --status blocked` path described above.
+- **Legacy-record backward compatibility** — the SAME pattern Phase 0.4
+  established for `target_harness`: a task record written before `blocked`
+  existed has no such key at all; `_task_read` heals it to `null` in
+  memory on first touch (no separate migration command), and `tasks
+  set|block` against such a record succeeds and heals + logs correctly —
+  no state/ledger divergence.
+- **Explicit scope boundary (Xavier's own fence, unchanged from Phase 0.2's
+  original one — see "What's deliberately NOT built yet" below).** This
+  phase builds the stuck-packet MECHANISM only: structured capture,
+  ledger accountability, and `pull`-based visibility/resumability. It does
+  NOT build an autonomous orphan-sweeper that would auto-resume a stuck
+  task unattended — WHO/WHAT triggers a resume of visible stuck work stays
+  a separate, later, Xavier-gated trust-boundary decision, exactly as it
+  already was for claim-lease staleness.
+- `tests/test_task_stuck_packet.py` — `block` basics (packet fields,
+  required flags, `--reason` enum, `--attempted` repeatable/optional,
+  human + JSON output, claim-independence) → re-blocking replaces the
+  packet and logs a second event → resumability (`pull --status blocked`,
+  claim does not clear, `set`/`release --status` away-from-blocked DOES
+  clear, re-setting to the same `blocked` value does not) → backward
+  compatibility (the bare `set --status blocked` path) → a dedicated
+  legacy-record section (`set`/`block`/`pull` all heal `blocked: null`
+  correctly against a record missing the field; an engine-level proof that
+  `_tasks_write_locked` leaves disk byte-for-byte untouched, with no
+  ledger entry, when a candidate `blocked` value fails validation) →
+  schema/lint coverage for the new field, its `BlockedPacket` shape, and
+  the new ledger event class.
+
 ## What's deliberately NOT built yet
 
 - **The orphan-sweeper** — a daemon/process that would scan
@@ -498,7 +600,12 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   heartbeat fields, and `claim`/`heartbeat`/`reclaimed`/`crashed` ledger
   events) — never a process that acts on them autonomously. Whether/how an
   autonomous sweeper is allowed to act is a separate Xavier trust-boundary
-  decision, not a technical one this store's existence resolves.
+  decision, not a technical one this store's existence resolves. Phase 0.5
+  (below) does not change this: `tessctl tasks pull --status blocked`
+  makes stuck work VISIBLE and `tasks claim` makes it RESUMABLE by any
+  agent, but nothing in this repository watches for a stuck task and
+  auto-dispatches an agent to pick it up — a human, or an explicitly
+  invoked agent, always initiates the resume.
 - **A Codex (or any other harness) process-spawner or daemon (Phase 0.4,
   issue #125).** `tessctl tasks handoff` PREPARES a handoff — it earmarks a
   task's lane, logs the accountability event, and prints the exact
@@ -511,7 +618,7 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   "mounted, not yet live-smoke-tested" framing).
 
 Do not assume an orphan-sweeper — or a harness process-spawner — exists
-because this directory does. Phase 0.1-0.4 built the fenced store, the task
-store + accountability ledger, the memory link, and the external-harness
-LANE + handoff-preparation mechanism, and the guarantee that none of the
-four can ever leak — nothing more.
+because this directory does. Phase 0.1-0.5 built the fenced store, the task
+store + accountability ledger, the memory link, the external-harness LANE +
+handoff-preparation mechanism, and the structured stuck-packet, and the
+guarantee that none of them can ever leak — nothing more.

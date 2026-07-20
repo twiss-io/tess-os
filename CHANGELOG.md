@@ -6,6 +6,42 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Phase 0.5 — the structured stuck-packet (`tessctl tasks block`, issue
+  #129)**, `tasks handoff`'s sibling on top of the Phase 0.2 TASK STORE +
+  ACCOUNTABILITY LEDGER: `handoff` routes a task forward ("here's a task,
+  go do it"); `block` captures a resumability packet at the point of
+  failure ("I got stuck, here's everything you need to continue").
+  - **`tessctl tasks block <id> --reason <required_input|failed_dependency|
+    gate|decision_needed|other> --summary TEXT --progress TEXT --needed
+    TEXT [--attempted TEXT ...] --harness HARNESS`** transitions `status`
+    to `blocked` and records a structured packet on the task record
+    (`task.schema.json`'s new, nullable `blocked` field) — distinct from
+    the pre-existing bare `tessctl tasks set --status blocked`, which still
+    works exactly as before and leaves `blocked: null`. Re-blocking an
+    already-blocked task replaces the packet with a fresh one (a genuinely
+    new stuck event, not a heartbeat).
+  - A `blocked` ledger event class, logged through the EXISTING
+    `_ledger_auto_log` → `_log_append_event` hash-chain append path — no
+    fork of the chain algorithm, same pattern `earmarked`/`handoff` (#125)
+    already established.
+  - Resumability: `tessctl tasks pull --status blocked` (an existing
+    filter) surfaces every stuck task; `tessctl tasks set|release --status
+    <away-from-blocked>` clears a present packet as an explicit side
+    effect of that write (never implicitly, never via `claim` — mirrors
+    the pre-existing "claiming a blocked task does not silently un-block
+    it" precedent applied to the packet too).
+  - Backward-compatible schema addition: `blocked` is a new required
+    (nullable) field, healed on read (`_task_read`) for any legacy record
+    missing it, validated BEFORE write (`_tasks_write_locked`) — the SAME
+    pattern `target_harness` established in #126, no write-then-validate
+    divergence reintroduced.
+  - Explicit non-goal: no autonomous orphan-sweeper that would auto-resume
+    a stuck task unattended — WHO/WHAT triggers a resume remains a
+    separate, later, Xavier-gated trust-boundary decision (see
+    docs/STATE_LAYER.md's "What's deliberately NOT built yet").
+  - `tests/test_task_stuck_packet.py` (36 tests) + updated fixtures in
+    `tests/test_task_store.py`/`tests/test_task_lane_handoff.py` for the
+    new required schema field.
 - **Goal I1 — the exportable auditor pack (`tessctl audit export`/
   `verify`)**, wiring the ACCOUNTABILITY LEDGER (#113/#115) and the Agent
   Receipt (docs/AGENT_RECEIPT_SPEC.md) into the commercial/governance
