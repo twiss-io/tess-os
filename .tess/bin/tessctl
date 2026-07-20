@@ -10714,24 +10714,37 @@ def _gate_emit_one_receipt(
     (the SHIP decision) vs. non-silent (the RECEIPT gap) split this
     implements.
 
-    `trust_entries` (name, fingerprint, public-key-bytes) — receipt-emit's
-    own self-verify step (`tools/receipt-verify/... verify-chain` run
-    against the CANDIDATE chain, BEFORE it is ever committed) always trusts
-    the CURRENT signer automatically, but a chain with more than one
-    receipt almost always has EARLIER receipts signed by a DIFFERENT
-    identity (a verdict's verifier, a sign-off's authorized_by — different
-    registries, different people) — without a `--trust` entry for each of
-    those, self-verify would (correctly) refuse to vouch for a receipt it
-    has no key for, and this emit would be reported as a gap even though
-    the NEW receipt itself is perfectly valid. `_gate_emit_receipts_on_clear`
-    builds this list from the SAME immutable BASE-tree key bytes
+    `trust_entries` (name, fingerprint, PUBLIC-key-bytes — NOT a secret;
+    every byte here is the ASCII-armored PUBLIC half of a GPG keypair,
+    `gpg --export` output, the exact same bytes already sitting in this
+    repo's own COMMITTED, world-readable `.tess/keys/verifiers/*.asc` /
+    `.tess/keys/signoffs/*.asc` files — tessctl never reads, transmits, or
+    stores any PRIVATE key material anywhere in this codebase; the private
+    half never leaves the operator's own ambient GPG keyring, touched only
+    by `gpg`'s own subprocess via `--local-user <fingerprint>` inside
+    `tools/receipt-emit/gpg_sign.py`) — receipt-emit's own self-verify step
+    (`tools/receipt-verify/... verify-chain` run against the CANDIDATE
+    chain, BEFORE it is ever committed) always trusts the CURRENT signer
+    automatically, but a chain with more than one receipt almost always has
+    EARLIER receipts signed by a DIFFERENT identity (a verdict's verifier,
+    a sign-off's authorized_by — different registries, different people) —
+    without a `--trust` entry for each of those, self-verify would
+    (correctly) refuse to vouch for a receipt it has no PUBLIC key for, and
+    this emit would be reported as a gap even though the NEW receipt itself
+    is perfectly valid. `_gate_emit_receipts_on_clear` builds this list
+    from the SAME immutable BASE-tree PUBLIC-key bytes
     (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`) the gate's
     own signature verification already trusted — never re-derived from the
     (potentially same-push-tampered) working tree — see this module's A3/
     honesty-capstone-audit-2026-07-08 §3-d comments for why that distinction
     matters. `--trust` is used ONLY for this emit's own self-verify
     subprocess call — never embedded in the receipt itself (receipt_emit.py
-    README's own documented, deliberate flag)."""
+    README's own documented, deliberate flag). Written to a fresh
+    process-local temp dir (auto-cleaned on exit) solely to hand a
+    filesystem path to the `receipt_verify.py` subprocess argument it
+    requires — the SAME PUBLIC-key-to-tempfile pattern
+    `tools/receipt-emit/receipt_emit.py`'s own `_self_verify` already uses
+    for its own signer's exported public key."""
     emit_cli = root / RECEIPT_EMIT_CLI_REL
     if not emit_cli.exists():
         return None, False
@@ -10760,10 +10773,18 @@ def _gate_emit_one_receipt(
                 "--chain", str(chain_path),
                 "--json",
             ]
-            for i, (name, fpr, key_bytes) in enumerate(trust_entries):
-                key_path = tmp_dir_path / f"trust-{i}.asc"
-                key_path.write_bytes(key_bytes)
-                args += ["--trust", name, fpr, str(key_path)]
+            # NOTE: `public_key_bytes` below is PUBLIC GPG key material only
+            # (see this function's own docstring) — the ASCII-armored bytes
+            # `gpg --export` (never `--export-secret-key`) already produces
+            # for a registered verifier/sign-off identity, identical in kind
+            # to the already-committed `.tess/keys/verifiers/*.asc` files in
+            # this repo's own git history. Writing it to a scratch temp file
+            # is not a credential-storage operation; it is the only way to
+            # hand `receipt_verify.py --trust` a filesystem path it requires.
+            for i, (name, fpr, public_key_bytes) in enumerate(trust_entries):
+                public_key_path = tmp_dir_path / f"trust-{i}-public.asc"
+                public_key_path.write_bytes(public_key_bytes)
+                args += ["--trust", name, fpr, str(public_key_path)]
             proc = subprocess.run(
                 args, capture_output=True, text=True, cwd=str(root),
                 timeout=RECEIPT_EMIT_TIMEOUT_S,
@@ -10787,28 +10808,32 @@ def _gate_receipt_trust_entries(
     effective_policy_instance_for_signoffs: dict | None, trusted_signoff_key_blobs: dict[str, bytes] | None,
 ) -> list[tuple[str, str, bytes]]:
     """Every REGISTERED verifier + sign-off identity's (name, fingerprint,
-    public-key-bytes), from the SAME baseline-trusted, immutable BASE-tree
-    key material (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`)
-    the gate's own signature verification already used — so
-    `_gate_emit_one_receipt`'s `--trust` list can vouch for ANY earlier
-    receipt in the chain, however many DIFFERENT identities signed earlier
-    entries, without ever re-deriving key material from the (potentially
-    same-push-tampered) working tree. An identity present in the effective
-    policy view but whose blob failed to load (`errors`, not `blobs`) is
-    simply absent here — `_gate_emit_one_receipt`'s self-verify then
-    correctly reports a gap for any receipt that specific identity would
-    have needed to vouch for, exactly the same fail-closed posture the
-    gate's own verification already has for that same failure."""
+    PUBLIC-key-bytes — NOT a secret; see `_gate_emit_one_receipt`'s own
+    docstring for the full "this is `gpg --export` output, identical in
+    kind to this repo's own committed `.tess/keys/**/*.asc` files, never
+    private key material" note, which applies equally here), from the SAME
+    baseline-trusted, immutable BASE-tree key material
+    (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`) the gate's
+    own signature verification already used — so `_gate_emit_one_receipt`'s
+    `--trust` list can vouch for ANY earlier receipt in the chain, however
+    many DIFFERENT identities signed earlier entries, without ever
+    re-deriving key material from the (potentially same-push-tampered)
+    working tree. An identity present in the effective policy view but
+    whose blob failed to load (`errors`, not `blobs`) is simply absent here
+    — `_gate_emit_one_receipt`'s self-verify then correctly reports a gap
+    for any receipt that specific identity would have needed to vouch for,
+    exactly the same fail-closed posture the gate's own verification
+    already has for that same failure."""
     entries: list[tuple[str, str, bytes]] = []
-    for keys_field, key_blobs in (
+    for keys_field, public_key_blobs in (
         ("verifier_keys", trusted_verifier_key_blobs),
         ("signoff_keys", trusted_signoff_key_blobs),
     ):
         policy_view = effective_policy_instance if keys_field == "verifier_keys" else effective_policy_instance_for_signoffs
-        for name, key_bytes in (key_blobs or {}).items():
+        for name, public_key_bytes in (public_key_blobs or {}).items():
             fingerprint = _gate_receipt_fingerprint_for_identity(policy_view, keys_field, name)
-            if fingerprint and isinstance(key_bytes, (bytes, bytearray)):
-                entries.append((name, fingerprint, bytes(key_bytes)))
+            if fingerprint and isinstance(public_key_bytes, (bytes, bytearray)):
+                entries.append((name, fingerprint, bytes(public_key_bytes)))
     return entries
 
 
