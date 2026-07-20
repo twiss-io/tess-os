@@ -69,12 +69,36 @@ fixed before this function runs). Given the SAME `spec` + `scaffold_plan`
 + `target_stack`, every generated file's content is byte-identical across
 runs — see `tests/spec_engine/test_codegen.py::
 test_generate_app_is_deterministic_given_a_fixed_plan`.
+
+## Atomicity
+
+`generate_app()` never writes into the caller's real `target_dir` while
+generation is in progress. Every file — every model/page/flow/
+integration/infrastructure file, `.spec-engine/codegen-manifest.json`,
+and `write_scaffold_stub()`'s own artifacts (`SPEC.md`, `spec.json`,
+`.spec-engine/scaffold-plan.json`, `CLAUDE.md`/`AGENTS.md`) — is written
+into a same-filesystem STAGING directory first; the complete result is
+then swapped into `target_dir` with exactly one atomic `os.replace()`.
+A process killed at ANY point — mid-write of a single file, or between
+the manifest write and `write_scaffold_stub()`'s own writes (the
+historical failure mode: a manifest claiming `codegen_status:
+"generated"` while `SPEC.md`/`CLAUDE.md` are still missing) — leaves
+`target_dir` either exactly as `generate_app()` found it (absent, empty,
+or its own prior content) or the complete, `codegen_status: "generated"`
+tree. There is no instant at which `target_dir` can be observed holding
+a partial file tree. See `generate_app()`, `_write_generated_app_tree()`,
+and `_publish_staged_app()` for the full mechanism, and
+`tests/spec_engine/test_codegen_atomic_staging.py` for the kill-proof
+proof.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -273,7 +297,14 @@ def generate_app(
     mismatch), or the plan's per-kind module counts don't match the
     spec's own lists (a stale/hand-edited plan) — see module docstring
     for the target-stack choice and the per-module generation-status
-    contract this function honors."""
+    contract this function honors.
+
+    Atomic (see module docstring's "Atomicity" section): the full tree is
+    staged in a same-filesystem sibling directory and swapped into
+    `target_dir` with exactly one `os.replace()` only after every file —
+    including the manifest — has been written. A process killed at any
+    point leaves `target_dir` either exactly as found or the complete,
+    `codegen_status: "generated"` tree; never a partial mix."""
     if target_stack not in SUPPORTED_TARGET_STACKS:
         raise SpecEngineError(
             f"generate_app: target_stack {target_stack!r} is not supported "
@@ -289,7 +320,55 @@ def generate_app(
             "regenerate the plan from this exact spec before generating code."
         )
 
-    root = Path(target_dir)
+    final_root = Path(target_dir)
+    # "Has real content to preserve" is NOT the same as `.exists()`: every
+    # real caller today (orchestrator/pipeline.py, and pytest's own
+    # `tmp_path` fixture in every test in this suite) hands generate_app()
+    # a directory that already EXISTS but is EMPTY — and POSIX `rename(2)`
+    # is perfectly happy replacing an empty directory (see
+    # `_publish_staged_app()`), so only a genuinely NON-empty `target_dir`
+    # needs the slower preserve-and-swap path.
+    has_existing_content = final_root.exists() and any(final_root.iterdir())
+    final_root.parent.mkdir(parents=True, exist_ok=True)
+    stage_root = Path(
+        tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-stage-", dir=str(final_root.parent))
+    )
+    try:
+        if has_existing_content:
+            # `write_scaffold_stub()` (called at the end of
+            # `_write_generated_app_tree()`) MERGES with an
+            # already-present CLAUDE.md/AGENTS.md rather than overwriting
+            # it — staging must start from a real copy of `target_dir`'s
+            # current content for that merge to see the same state it
+            # would have seen writing into `target_dir` directly, not an
+            # empty directory.
+            shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
+        result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
+    except BaseException:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+    _publish_staged_app(stage_root, final_root, has_existing_content=has_existing_content)
+    # `result.written`'s Path values were built against `stage_root`
+    # (renamed away by the publish above — that inode now IS
+    # `final_root`); rebind them so callers see real, live paths under
+    # `target_dir`, exactly as if generation had written there directly.
+    result.written = {rel: final_root / rel for rel in result.written}
+    return result
+
+
+def _write_generated_app_tree(
+    root: Path, spec: SpecDocument, plan: ScaffoldPlan, target_stack: str
+) -> CodegenResult:
+    """The actual per-module/infrastructure/manifest generation — every
+    file this writes goes into `root`, which is ALWAYS a STAGING
+    directory (see `generate_app()`, the only caller); this function has
+    no awareness that `root` is not the caller's real `target_dir` and
+    does not need any — atomicity is entirely `generate_app()`'s
+    responsibility via `_publish_staged_app()`, not this one's. Unchanged
+    by the atomic-staging fix other than taking `root`/`plan`/
+    `target_stack` as explicit parameters instead of closing over
+    `target_dir`."""
     root.mkdir(parents=True, exist_ok=True)
 
     by_kind: Dict[str, List[ScaffoldModule]] = {}
@@ -597,6 +676,50 @@ def _write_file(root: Path, rel_path: str, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_content: bool) -> None:
+    """The ONE moment `generate_app()` ever touches `final_root` (the
+    caller's real `target_dir`): a same-filesystem `os.replace()` — a
+    single atomic rename syscall — swaps the fully-written `stage_root`
+    into `final_root`'s place. Nothing before this call has written
+    anything to `final_root` itself, so a process killed at any point up
+    to (but not including) this call leaves `final_root` exactly as
+    `generate_app()` found it — absent, empty, or its own prior content,
+    NEVER a codegen-produced partial file. The rename syscall cannot be
+    observed half-done: a reader of `final_root` sees either the old
+    state or the complete new tree, never a mix of the two.
+
+    When `final_root` already held real content (`has_existing_content`),
+    a direct `os.replace(stage_root, final_root)` is refused by the OS —
+    POSIX `rename(2)` only replaces a directory target that is missing or
+    EMPTY, never a non-empty one (verified empirically on this repo's
+    target platforms: `os.replace()` onto an existing non-empty directory
+    raises `OSError: [Errno 66] Directory not empty` on both Linux and
+    macOS) — so the prior tree is first atomically renamed aside to a
+    throwaway sibling (still exactly one atomic rename), `stage_root`
+    then takes `final_root`'s place, and the sibling is removed. Between
+    those two renames `final_root` is briefly ABSENT — the same allowed
+    post-kill state a first-ever generation is in before this function
+    ever runs, never a partial mix of old and new content."""
+    if not has_existing_content:
+        os.replace(stage_root, final_root)
+        return
+
+    backup_root = Path(
+        tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-prev-", dir=str(final_root.parent))
+    )
+    os.replace(final_root, backup_root)
+    try:
+        os.replace(stage_root, final_root)
+    except BaseException:
+        # Both renames' preconditions are already satisfied by the time
+        # the first one runs; nothing in this module can make the second
+        # one fail after the first succeeds. Restore rather than leave
+        # `final_root` absent if it somehow does anyway.
+        os.replace(backup_root, final_root)
+        raise
+    shutil.rmtree(backup_root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
