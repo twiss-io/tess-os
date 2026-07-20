@@ -57,9 +57,16 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
   tasks       Phase 0.2: the CROSS-HARNESS TASK STORE (TASK LEDGER region, a
               sibling of MISSION LEDGER) — file-per-task JSON under
               .tess/state/tasks/<id>.json (new | set | claim | release | pull |
-              render); `claim` writes a claim-lease (host:pid:uuid) + heartbeat,
-              `set` uses rev-CAS optimistic concurrency, `render` regenerates the
-              DERIVED BOARD.md kanban view
+              render | handoff); `claim` writes a claim-lease (host:pid:uuid) +
+              heartbeat, `set` uses rev-CAS optimistic concurrency, `render`
+              regenerates the DERIVED BOARD.md kanban view. Phase 0.4 (issue
+              #125) adds the target-harness LANE: `new|set --lane <codex|
+              claude-code|any>` earmarks a task (default `any` — unmarked,
+              zero behavior change), `pull --lane <harness>` filters to that
+              lane plus every unmarked task, and `handoff <id> --harness
+              <codex|claude-code>` earmarks + prints a copy-pasteable
+              invocation for an external worker session — it prepares, never
+              spawns, that harness
   log         Phase 0.2: the hash-chained, append-only ACCOUNTABILITY LEDGER
               under .tess/state/ledger/<YYYY-MM>.<origin>.jsonl (sharded per
               calendar month + per writer origin) — `append` a hash-chained
@@ -14618,16 +14625,34 @@ TASK_STATUSES = ("backlog", "ready", "in_progress", "blocked", "review", "done",
 # un-block it — that is an explicit `tasks set --status` decision).
 CLAIM_AUTO_ADVANCE_FROM = ("backlog", "ready")
 
+# Phase 0.4 (issue #125) — the external-harness-worker LANE. `target_harness`
+# is a task-record field distinct from `--harness` everywhere ELSE in this
+# region (which always means the ACTING harness — who created/claimed/
+# mutated a task, recorded in `created_by`/the ledger's `actor.harness`):
+# this is the harness the task is EARMARKED for, i.e. routing, not identity.
+# "any" (the default `tessctl tasks new` seeds when `--lane` is omitted) is
+# eligible-for-everyone — the exact pre-lane behavior for a task nobody
+# explicitly earmarks. `TASK_HANDOFF_LANES` excludes "any": a `tasks
+# handoff` is inherently addressed to ONE specific worker, never "whoever."
+TASK_LANES = ("codex", "claude-code", "any")
+TASK_HANDOFF_LANES = ("codex", "claude-code")
+DEFAULT_TASK_LANE = "any"
+
 LEDGER_EVENTS = (
     "dispatch", "task_transition", "claim", "heartbeat", "release",
     "completed", "crashed", "reclaimed", "session_open", "session_close",
+    "earmarked", "handoff",
 )
 # Event classes `_lint_ledger_event` requires a non-null `refs.task` for —
 # every class that is inherently ABOUT one task record. `dispatch` and
 # `session_open`/`session_close` are broader harness-lifecycle bookkeeping
-# and may legitimately carry a null task ref.
+# and may legitimately carry a null task ref. `earmarked`/`handoff` (Phase
+# 0.4, issue #125) are always about one task, same as `claim`/`heartbeat`.
 LEDGER_TASK_SCOPED_EVENTS = frozenset(
-    {"task_transition", "claim", "heartbeat", "release", "completed", "crashed", "reclaimed"}
+    {
+        "task_transition", "claim", "heartbeat", "release", "completed",
+        "crashed", "reclaimed", "earmarked", "handoff",
+    }
 )
 LEDGER_GENESIS_HASH = "0" * 64
 
@@ -14832,13 +14857,15 @@ def _prune_stale_locks(root: Path, ttl_seconds: int = LOCK_STALE_SECONDS) -> int
 # ---------------------------------------------------------------------------
 
 def _new_task_record(task_id, title, status, owner, assignee, depends_on,
-                      created_by_harness, created_by_session, now_iso) -> dict:
+                      created_by_harness, created_by_session, now_iso,
+                      target_harness=DEFAULT_TASK_LANE) -> dict:
     return {
         "id": task_id,
         "title": title,
         "status": status,
         "owner": owner,
         "assignee": assignee,
+        "target_harness": target_harness or DEFAULT_TASK_LANE,
         "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
         "created_by": {"harness": created_by_harness, "session": created_by_session},
         "created_at": now_iso,
@@ -14852,9 +14879,28 @@ def _new_task_record(task_id, title, status, owner, assignee, depends_on,
 
 def _task_read(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise TaskError(f"tessctl tasks: {path} is not valid JSON: {e}")
+    # Phase 0.4 legacy-record healing (Cyra/Reid, PR #126 review): a task
+    # written before `target_harness` existed (every task on disk before
+    # this field's schema version — .tess/state/tasks/** is gitignored
+    # instance data, so a real deployed instance can genuinely have these)
+    # has no such key at all. That is an OLDER ON-DISK SHAPE this same
+    # engine produced honestly, not corruption or tampering — the exact
+    # same "legacy, not tampered" framing this region already applies to a
+    # seq-absent ledger shard line (`_ledger_tail_state`/
+    # `_ledger_verify_shard`, docs/STATE_LAYER.md's "Migration note").
+    # Backfilling it here, in the ONE shared read path every write (via
+    # `_tasks_write_locked`), `pull`, and `render` call goes through, heals
+    # it in memory on first touch, no separate migration command required
+    # — mirrors a legacy ledger shard silently upgrading to the seq-aware
+    # format on its own next append. `_tasks_write_locked`'s next
+    # successful write persists the backfilled value to disk as a side
+    # effect of the mutation already happening.
+    if isinstance(record, dict):
+        record.setdefault("target_harness", DEFAULT_TASK_LANE)
+    return record
 
 
 def _task_atomic_write(path: Path, record: dict) -> None:
@@ -14862,23 +14908,40 @@ def _task_atomic_write(path: Path, record: dict) -> None:
     _atomic_write_bytes(path, data)
 
 
-def _self_validate_task_or_raise(root: Path, path: Path) -> None:
-    """Dogfood check: whatever this region just wrote to `path` must itself
-    pass `tessctl validate task <path>` — mirrors `_self_validate_or_raise`
-    (MISSION LEDGER region) exactly, adapted to the "task" contract type. A
-    failure here is an internal bug in THIS region, never a caller-visible
-    degraded_output."""
+def _validate_task_instance_or_raise(root: Path, instance: dict, *, context: str) -> None:
+    """Dogfood check on the IN-MEMORY task record dict, BEFORE it is ever
+    written to disk (Cyra/Reid, PR #126 review — replaces the earlier
+    `_self_validate_task_or_raise(root, path)`, which re-read the file
+    AFTER `_task_atomic_write` had already committed a candidate mutation:
+    a validation failure there left a genuinely mutated record on disk with
+    NO corresponding ledger event, since every caller's `_ledger_auto_log`
+    call only runs after its write helper returns successfully — a silent
+    state/ledger divergence, exactly the failure mode a legacy record
+    missing `target_harness` used to trigger on its very next `set`/
+    `claim`/`release`/`handoff`). Validating the CANDIDATE record before any
+    write commits means a validation failure now aborts cleanly: nothing on
+    disk changes, so there is nothing for the ledger to have missed. Mirrors
+    `_ledger_self_validate_or_raise`'s own already-correct ordering — that
+    function has always validated the in-memory ledger-event dict before
+    `_log_append_event` ever appends it to a shard; this brings the TASK
+    STORE's own write path into the same discipline, no longer a
+    write-then-validate outlier. Round-tripping a plain-data dict (only
+    str/int/None/list/dict of those — task records never contain floats,
+    datetimes, or other lossy-under-JSON types) through `json.dumps`/
+    `json.loads` is lossless, so validating pre-write is exactly equivalent
+    to the old post-write disk re-read, not a weaker check. `context` is a
+    human-readable label (a task id or path) used only in the raised error
+    message."""
     try:
         schema = load_contract_schema(root, "task")
-        instance = load_contract_instance(path)
     except ContractError as e:
-        raise TaskError(f"internal error: {path} failed to load for its own dogfood check — {e}")
+        raise TaskError(f"internal error: could not load the task schema for {context} — {e}")
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
     violations += _lint_contract("task", instance, root)
     if violations:
         raise TaskError(
-            f"internal error: {path} does not pass its own schema (task) — " + "; ".join(violations)
+            f"internal error: {context} does not pass its own schema (task) — " + "; ".join(violations)
         )
 
 
@@ -14930,27 +14993,42 @@ def _tasks_write_locked(root: Path, task_id: str, mutate_fn, *, expected_rev: in
     exclusive advisory flock scoped to THIS SINGLE task id
     (.tess/state/locks/task-<id>.lock — contention is scoped to writers of
     the same task, per this region's own header comment), read the CURRENT
-    on-disk record, optionally assert a caller-supplied `expected_rev`
-    precondition (a hard TASK_CAS_CONFLICT if it no longer holds — the
-    caller read a stale rev and must reload + retry itself, an explicit
-    ETag-style optimistic-concurrency workflow rather than a silent auto-
-    retry that could paper over a real conflict), hand the record to
-    `mutate_fn` for the actual field changes, bump `rev`/`updated_at`,
-    atomically replace the file, and dogfood-validate the result before
-    returning it. `mutate_fn` receives a fresh COPY of the current record and
-    must return the full desired next record (it may raise TaskError itself,
-    e.g. `tasks claim`'s TASK_ALREADY_CLAIMED refusal — the lock is still
-    held at that point, and is released via `finally` either way).
+    on-disk record (via `_task_read`, which heals a legacy record missing a
+    since-added required field — see its own docstring), optionally assert
+    a caller-supplied `expected_rev` precondition (a hard TASK_CAS_CONFLICT
+    if it no longer holds — the caller read a stale rev and must reload +
+    retry itself, an explicit ETag-style optimistic-concurrency workflow
+    rather than a silent auto-retry that could paper over a real conflict),
+    hand the record to `mutate_fn` for the actual field changes, bump
+    `rev`/`updated_at`, dogfood-validate the CANDIDATE record, and ONLY THEN
+    atomically replace the file. `mutate_fn` receives a fresh COPY of the
+    current record and must return the full desired next record (it may
+    raise TaskError itself, e.g. `tasks claim`'s TASK_ALREADY_CLAIMED
+    refusal — the lock is still held at that point, and is released via
+    `finally` either way).
+
+    Validate-BEFORE-write, never the reverse (Cyra/Reid, PR #126 review): a
+    validation failure now aborts with NOTHING written to disk — no
+    mutated-but-unlogged task record ever exists, because the state that
+    would need a ledger entry never lands. The earlier ordering (write,
+    THEN dogfood-validate the file just written) let a validation failure
+    leave a genuinely mutated record committed to disk with no ledger event
+    at all (every caller's `_ledger_auto_log` runs only after this function
+    returns successfully) — a silent state/ledger divergence, first
+    reproduced against a legacy record missing `target_harness` (now healed
+    by `_task_read` regardless, so this specific trigger cannot recur, but
+    the ordering fix closes the whole CLASS of failure, not just this one
+    field). See `_validate_task_instance_or_raise`'s own docstring.
 
     If `mutate_fn`'s returned record is field-for-field IDENTICAL to
     `current` (e.g. `tasks set --add-depends X` where X is already present —
     every mutation this region's handlers perform is itself a no-op guard
     against re-applying an unchanged value), this is a genuine no-op: no
-    file write, no `rev` bump, no `updated_at` touch, and `current` is
-    returned as-is. This matters beyond just avoiding a wasted write — a
-    caller (e.g. `_cmd_tasks_set`) uses "did rev actually change" to decide
-    whether to append a ledger event at all, so a no-op mutation never
-    produces an empty-summary ledger-append attempt."""
+    validation, no file write, no `rev` bump, no `updated_at` touch, and
+    `current` is returned as-is. This matters beyond just avoiding a wasted
+    write — a caller (e.g. `_cmd_tasks_set`) uses "did rev actually change"
+    to decide whether to append a ledger event at all, so a no-op mutation
+    never produces an empty-summary ledger-append attempt."""
     path = _task_path(root, task_id)
     if not path.exists():
         raise TaskError(f"tessctl tasks: no such task {task_id!r} ({TASKS_DIR}/{task_id}.json)")
@@ -14979,8 +15057,8 @@ def _tasks_write_locked(root: Path, task_id: str, mutate_fn, *, expected_rev: in
                 return current
             next_record["rev"] = current_rev + 1
             next_record["updated_at"] = _utc_now_iso()
+            _validate_task_instance_or_raise(root, next_record, context=f"{TASKS_DIR}/{task_id}.json")
             _task_atomic_write(path, next_record)
-            _self_validate_task_or_raise(root, path)
             return next_record
         finally:
             if fcntl is not None:
@@ -15208,9 +15286,14 @@ def _lint_ledger_event(instance) -> list:
 
 def _ledger_self_validate_or_raise(root: Path, record: dict) -> None:
     """Dogfood check on the IN-MEMORY event dict, before it is ever appended
-    to a shard — the append-only twin of `_self_validate_task_or_raise` (that
-    one re-reads a file it just wrote; this one validates a value that is
-    about to become one JSONL line and is never rewritten afterward)."""
+    to a shard — the append-only twin of `_validate_task_instance_or_raise`
+    (that one validates a task record before `_task_atomic_write` commits
+    it; this one validates a value that is about to become one JSONL line
+    and is never rewritten afterward). Both now share the SAME
+    validate-before-persist ordering — the TASK STORE side used to validate
+    the file AFTER writing it (`_self_validate_task_or_raise`, removed in
+    the PR #126 review fix), an outlier this function's OWN ordering never
+    had."""
     try:
         schema = load_contract_schema(root, "ledger-event")
     except ContractError as e:
@@ -15428,21 +15511,42 @@ def _cmd_tasks_new(args, root: Path) -> None:
     if args.depends_on:
         depends_on = [d.strip() for d in args.depends_on.split(",") if d.strip()]
     status = args.status or "backlog"
+    lane = args.lane or DEFAULT_TASK_LANE
     try:
         task_id = _new_task_id(root, args.title)
         now = _utc_now_iso()
         record = _new_task_record(
             task_id, args.title, status, args.owner, args.assignee,
             depends_on, args.harness, args.session, now,
+            target_harness=lane,
         )
         path = _task_path(root, task_id)
+        # Validate BEFORE write (Cyra/Reid, PR #126 review — same ordering
+        # fix as `_tasks_write_locked`): a validation failure here must
+        # never leave a task FILE on disk with no corresponding ledger
+        # entry (`_ledger_auto_log` below only runs after this succeeds).
+        _validate_task_instance_or_raise(root, record, context=f"{TASKS_DIR}/{task_id}.json")
         path.parent.mkdir(parents=True, exist_ok=True)
         _task_atomic_write(path, record)
-        _self_validate_task_or_raise(root, path)
         _ledger_auto_log(
             root, harness=args.harness, event="task_transition", task_id=task_id,
             summary=f"created: (none) -> {status} — {args.title!r}", session=args.session,
         )
+        # Phase 0.4 (issue #125): a task earmarked for a specific lane AT
+        # CREATION TIME gets its own `earmarked` ledger line, distinct from
+        # the generic `task_transition` creation event above — the SAME
+        # append path (`_ledger_auto_log`), never a second write to the task
+        # record itself (the lane is already correct in `record` from
+        # `_new_task_record` above; this is bookkeeping only). Silent for
+        # the default `any` — earmarking "for anyone" is not a routing
+        # decision worth its own ledger line, and keeps a plain `tasks new`
+        # with no `--lane` byte-for-byte unchanged in the ledger trail.
+        if lane != DEFAULT_TASK_LANE:
+            _ledger_auto_log(
+                root, harness=args.harness, event="earmarked", task_id=task_id,
+                summary=f"earmarked for {lane} by {args.harness} (at creation)",
+                session=args.session,
+            )
     except (TaskError, LedgerError) as e:
         sys.exit(str(e))
 
@@ -15463,14 +15567,21 @@ def _cmd_tasks_set(args, root: Path) -> None:
     # `_cmd_tasks_claim`'s own `ledger = {}` out-of-closure capture pattern
     # a few functions down).
     heartbeat_meta = {}
+    # Phase 0.4 (issue #125): the SAME structural-flag pattern as
+    # `heartbeat_meta` above, for `--lane` — lets the ledger-classification
+    # block below distinguish "the only change this call made was earmarking
+    # the lane" (-> `earmarked`) from every other mutation (-> generic
+    # `task_transition`), without string-matching `changes`' own text.
+    lane_meta = {}
 
     if not any([
         args.status, args.owner is not None, args.assignee is not None,
         args.add_depends, args.add_evidence, args.add_note, args.heartbeat,
+        args.lane,
     ]):
         sys.exit(
             "tessctl tasks set: no changes specified — pass at least one of "
-            "--status/--owner/--assignee/--add-depends/--add-evidence/--add-note/--heartbeat"
+            "--status/--owner/--assignee/--add-depends/--add-evidence/--add-note/--heartbeat/--lane"
         )
 
     def mutate(record):
@@ -15483,6 +15594,10 @@ def _cmd_tasks_set(args, root: Path) -> None:
         if args.assignee is not None and args.assignee != (record.get("assignee") or ""):
             changes.append(f"assignee: {record.get('assignee')!r} -> {args.assignee!r}")
             record["assignee"] = args.assignee or None
+        if args.lane and args.lane != record.get("target_harness"):
+            changes.append(f"target_harness: {record.get('target_harness')!r} -> {args.lane!r}")
+            record["target_harness"] = args.lane
+            lane_meta["changed"] = True
         for dep in (args.add_depends or []):
             if dep not in record["depends_on"]:
                 record["depends_on"].append(dep)
@@ -15556,7 +15671,17 @@ def _cmd_tasks_set(args, root: Path) -> None:
             only_heartbeat_changed = bool(args.heartbeat) and len(changes) == 1
             is_clean_heartbeat = only_heartbeat_changed and heartbeat_meta.get("same_claimant") is True
             is_forced_heartbeat = only_heartbeat_changed and heartbeat_meta.get("same_claimant") is False
-            event = "heartbeat" if (is_clean_heartbeat or is_forced_heartbeat) else "task_transition"
+            # Phase 0.4 (issue #125): same structural check as the heartbeat
+            # classification just above — was `--lane` the ONLY change this
+            # call produced (`mutate()`'s lane branch is the only branch
+            # `args.lane` gates, mirroring `only_heartbeat_changed`).
+            only_lane_changed = lane_meta.get("changed") is True and len(changes) == 1
+            if is_clean_heartbeat or is_forced_heartbeat:
+                event = "heartbeat"
+            elif only_lane_changed:
+                event = "earmarked"
+            else:
+                event = "task_transition"
             _ledger_auto_log(
                 root, harness=args.harness, event=event, task_id=task_id,
                 summary="; ".join(changes), session=args.session,
@@ -15699,6 +15824,16 @@ def _cmd_tasks_pull(args, root: Path) -> None:
                 continue
             if args.unclaimed and (rec.get("claim") or {}).get("host"):
                 continue
+            # Phase 0.4 (issue #125): a `--lane` filter matches a task
+            # earmarked for EXACTLY that lane, OR earmarked `any` — "a Codex
+            # worker pulls its lane" also means it sees every unmarked task,
+            # not just ones explicitly earmarked `codex`. Legacy records
+            # written before this field existed have no `target_harness` key
+            # at all; treat that the same as an explicit `any` rather than
+            # excluding them (same tolerant-of-older-on-disk-shapes spirit
+            # the ledger's own seq-absent "legacy line" handling uses).
+            if args.lane and rec.get("target_harness", DEFAULT_TASK_LANE) not in (args.lane, DEFAULT_TASK_LANE):
+                continue
             results.append(rec)
     results.sort(key=lambda r: r.get("created_at", ""))
     if args.limit:
@@ -15714,7 +15849,11 @@ def _cmd_tasks_pull(args, root: Path) -> None:
         claim = r.get("claim") or {}
         holder = f"{claim['host']}:{claim['pid']}" if claim.get("host") else "-"
         owner = r.get("owner") or "-"
-        print(f"{r['id']}  [{r['status']:<11}]  owner={owner:<12} claim={holder:<22} {r['title']}")
+        lane = r.get("target_harness") or DEFAULT_TASK_LANE
+        print(
+            f"{r['id']}  [{r['status']:<11}]  owner={owner:<12} lane={lane:<11} "
+            f"claim={holder:<22} {r['title']}"
+        )
 
 
 _BOARD_STATUS_LABELS = {
@@ -15754,7 +15893,14 @@ def _cmd_tasks_render(args, root: Path) -> None:
             claim = r.get("claim") or {}
             holder = f" — claimed by `{claim['host']}:{claim['pid']}`" if claim.get("host") else ""
             owner = f" (owner: {r['owner']})" if r.get("owner") else ""
-            lines.append(f"- `{r['id']}` — {r['title']}{owner}{holder}")
+            # Phase 0.4 (issue #125): only render a `[lane: ...]` marker for a
+            # task actually earmarked to ONE harness — an unmarked (`any`)
+            # task's board line stays exactly what it rendered as before this
+            # field existed, so a board with no earmarked tasks at all is
+            # byte-for-byte unchanged.
+            target_harness = r.get("target_harness")
+            lane = f" [lane: {target_harness}]" if target_harness not in (None, DEFAULT_TASK_LANE) else ""
+            lines.append(f"- `{r['id']}` — {r['title']}{owner}{lane}{holder}")
         lines.append("")
 
     board_path = root / TASKS_DIR / BOARD_FILENAME
@@ -15762,13 +15908,142 @@ def _cmd_tasks_render(args, root: Path) -> None:
     print(f"tessctl tasks render — wrote {TASKS_DIR}/{BOARD_FILENAME} ({total} task(s))")
 
 
+def _render_handoff_invocation(record: dict, target: str) -> str:
+    """The exact copy-pasteable text `tessctl tasks handoff` prints (Phase
+    0.4, issue #125) — pure string formatting off an already-written task
+    `record` + the resolved `target` lane, no filesystem/network/subprocess
+    access, so it is trivially deterministic for a given (record, target)
+    pair (see tests/test_task_lane_handoff.py's determinism check). Mirrors
+    the EXACT command shapes `.tess/core/templates/agents-md/shared-tasks.md`
+    already documents for a worker harness joining the shared board — this
+    is that same recipe, addressed at ONE task and ONE harness instead of
+    "whatever's unclaimed," never a new/parallel command vocabulary. This
+    function only builds TEXT for a human/orchestrator to hand to a fresh
+    session of `target` — it does not start, exec, or fork any process of
+    that harness (no such runtime exists inside THIS process; see
+    docs/STATE_LAYER.md's 'What's deliberately NOT built yet').
+
+    Reid LOW (PR #126 review): the FIRST version of this text had `claim`
+    rely on `tasks claim`'s own implicit default `--uuid` (a stable value
+    tessctl derives internally from `--host`+`--pid` — see
+    `_default_claim_uuid`), then told `release` to pass "<same --uuid claim
+    used>" — a placeholder with no actual value ever surfaced to the
+    worker, so the block was not literally copy-paste-runnable end to end.
+    Fixed by capturing `HOST`/`PID`/`UUID` into shell variables ONCE at the
+    top and reusing them in every subsequent command — the SAME identity
+    threads through claim -> set -> release, and the whole block now runs
+    as a single copy-pasted shell script with no placeholder left to fill
+    in by hand. `uuidgen` is the common case; the `python3` fallback covers
+    a minimal environment that lacks it (this repo's own Python dependency
+    is otherwise irrelevant to whatever `target` harness/shell will run
+    this — the fallback avoids assuming `uuidgen` specifically, not tessctl
+    itself)."""
+    task_id = record["id"]
+    title = record["title"]
+    lines = [
+        f"--- tessctl tasks handoff: {task_id} -> {target} ---",
+        f'Task: {title!r} (lane: {target})',
+        "",
+        f"1. Start a fresh {target} session in this repo — it mounts the SAME shared",
+        "   brain via the rendered AGENTS.md (.tess/state/tasks/, .tess/state/memory/;",
+        "   docs/STATE_LAYER.md). This step is manual: there is no runtime here to",
+        f"   launch a {target} process on your behalf.",
+        "",
+        "2. Capture your claimant identity ONCE — reused by every command below so",
+        "   claim -> set -> release all agree on who holds this task:",
+        "",
+        "     HOST=$(hostname)",
+        "     PID=$$",
+        "     UUID=$(uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())')",
+        "",
+        "3. Claim this task with THAT identity before working it (never start on a",
+        "   task claimed by someone else):",
+        "",
+        f"     tessctl tasks claim {task_id} --host \"$HOST\" --pid \"$PID\" --uuid \"$UUID\" "
+        f"--harness {target}",
+        "",
+        "4. Record progress back to the SAME shared board as you go — never a",
+        "   private, harness-only list:",
+        "",
+        f"     tessctl tasks set {task_id} --status in_progress --harness {target}",
+        f"     tessctl log append --origin {target} --event dispatch "
+        f"--summary \"handoff accepted\" --harness {target}",
+        f'     tessctl tasks set {task_id} --status review --harness {target} '
+        f'--add-note "<what changed>" --add-evidence "<path or PR URL>"',
+        "",
+        "5. Release the claim when done (or if you have to stop) — SAME $HOST/$PID/$UUID:",
+        "",
+        f"     tessctl tasks release {task_id} --host \"$HOST\" --pid \"$PID\" --uuid \"$UUID\" "
+        f"--harness {target} --reason completed",
+        "",
+        f"See AGENTS.md's 'Shared Tasks' section for the full shared-board convention "
+        f"{target} reads on session start.",
+    ]
+    return "\n".join(lines)
+
+
+def _cmd_tasks_handoff(args, root: Path) -> None:
+    """`tessctl tasks handoff <id> --harness <codex|claude-code>` — Phase 0.4
+    (issue #125): PREPARES (never spawns) a handoff of one task to an
+    external worker harness. Earmarks the task's `target_harness` lane for
+    `target` (the SAME CAS-write mutation path `tasks set --lane` uses —
+    `_tasks_write_locked`, no forked write logic), a no-op if it is already
+    earmarked that way; logs a `handoff` event to the EXISTING hash-chained
+    accountability ledger via the EXISTING append path (`_ledger_auto_log`,
+    no forked chain algorithm); and prints the exact copy-pasteable
+    invocation an operator hands to a fresh session of `target`
+    (`_render_handoff_invocation`)."""
+    task_id = args.task_id
+    target = args.harness
+    by_harness = args.by_harness or "orchestrator"
+    lane_meta = {}
+
+    def mutate(record):
+        if record.get("target_harness") != target:
+            record["target_harness"] = target
+            lane_meta["changed"] = True
+        return record
+
+    try:
+        record = _tasks_write_locked(root, task_id, mutate)
+    except TaskError as e:
+        sys.exit(str(e))
+
+    if lane_meta.get("changed"):
+        summary = f"handoff prepared for {target} by {by_harness} (lane earmarked {target})"
+    else:
+        summary = f"handoff prepared for {target} by {by_harness} (already earmarked {target})"
+
+    try:
+        _ledger_auto_log(
+            root, harness=by_harness, event="handoff", task_id=task_id,
+            summary=summary, session=args.session, persona=args.persona,
+        )
+    except LedgerError as e:
+        sys.exit(str(e))
+
+    invocation = _render_handoff_invocation(record, target)
+
+    if getattr(args, "json_out", False):
+        print(json.dumps({"task": record, "invocation": invocation}, indent=2))
+        return
+    print(f"tessctl tasks handoff — {task_id} -> {target}")
+    print(f"  {summary}")
+    print()
+    print(invocation)
+
+
 def cmd_tasks(args, root: Path) -> None:
     sub = getattr(args, "tasks_sub", None)
     if sub is None:
-        sys.exit("tessctl tasks: a subcommand is required (new | set | claim | release | pull | render)")
+        sys.exit(
+            "tessctl tasks: a subcommand is required "
+            "(new | set | claim | release | pull | render | handoff)"
+        )
     handlers = {
         "new": _cmd_tasks_new, "set": _cmd_tasks_set, "claim": _cmd_tasks_claim,
         "release": _cmd_tasks_release, "pull": _cmd_tasks_pull, "render": _cmd_tasks_render,
+        "handoff": _cmd_tasks_handoff,
     }
     handlers[sub](args, root)
 
@@ -17996,10 +18271,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # tasks — Phase 0.2: the cross-harness TASK STORE (TASK LEDGER region,
     # directly below the RUN region — a sibling of `mission`/`retry` above).
+    # Phase 0.4 (issue #125) added the LANE (`--lane` on new/set/pull) and
+    # `handoff` — see that subcommand's own help/docstring below.
     p_tasks = sub.add_parser(
         "tasks",
         help="cross-harness task store: file-per-task JSON under .tess/state/tasks/ "
-             "(new | set | claim | release | pull | render)",
+             "(new | set | claim | release | pull | render | handoff)",
     )
     tasks_sub = p_tasks.add_subparsers(dest="tasks_sub", metavar="SUBCOMMAND")
 
@@ -18017,6 +18294,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="the harness creating this task (e.g. claude-code, codex) — recorded in "
              "created_by AND as the ledger actor for the implicit creation event",
     )
+    p_tasks_new.add_argument(
+        "--lane", choices=list(TASK_LANES),
+        help=f"earmark this task's routing lane — which harness SHOULD pick it up "
+             f"(distinct from --harness above, the CREATOR's identity). Default: "
+             f"{DEFAULT_TASK_LANE!r} (eligible for every harness — omitting --lane "
+             f"is byte-for-byte the pre-lane behavior). `tessctl tasks pull --lane "
+             f"<harness>` filters to a task's own lane plus any {DEFAULT_TASK_LANE!r} "
+             f"task.",
+    )
     p_tasks_new.add_argument("--session", help="harness session id (optional)")
     p_tasks_new.add_argument("--json", action="store_true", dest="json_out")
 
@@ -18025,6 +18311,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_tasks_set.add_argument("--status", choices=list(TASK_STATUSES))
     p_tasks_set.add_argument("--owner", help="pass '' to clear")
     p_tasks_set.add_argument("--assignee", help="pass '' to clear")
+    p_tasks_set.add_argument(
+        "--lane", choices=list(TASK_LANES),
+        help="re-earmark this task's routing lane (see `tasks new --lane`'s own help); "
+             "logged as a distinct `earmarked` ledger event when it is the ONLY change "
+             "this call makes, `task_transition` otherwise",
+    )
     p_tasks_set.add_argument("--add-depends", dest="add_depends", action="append", metavar="ID")
     p_tasks_set.add_argument("--add-evidence", dest="add_evidence", action="append", metavar="PATH")
     p_tasks_set.add_argument("--add-note", dest="add_note", metavar="TEXT")
@@ -18108,10 +18400,44 @@ def build_parser() -> argparse.ArgumentParser:
     p_tasks_pull.add_argument("--status", choices=list(TASK_STATUSES), action="append")
     p_tasks_pull.add_argument("--owner")
     p_tasks_pull.add_argument("--unclaimed", action="store_true")
+    p_tasks_pull.add_argument(
+        "--lane", choices=list(TASK_LANES),
+        help=f"only tasks earmarked for this harness, PLUS every task earmarked "
+             f"{DEFAULT_TASK_LANE!r} (a worker's own lane pull: e.g. a Codex worker "
+             f"runs `tasks pull --unclaimed --lane codex` to see its earmarked work "
+             f"plus every unmarked task). Omitting --lane entirely (the default) "
+             f"applies no lane filter at all — every existing `pull` invocation "
+             f"keeps returning exactly what it always did.",
+    )
     p_tasks_pull.add_argument("--limit", type=int)
     p_tasks_pull.add_argument("--json", action="store_true", dest="json_out")
 
     tasks_sub.add_parser("render", help="regenerate .tess/state/tasks/BOARD.md (derived kanban view)")
+
+    # Phase 0.4 (issue #125): `handoff` — earmark + emit a copy-pasteable
+    # invocation for an external worker harness. PREPARES a handoff; never
+    # spawns a process of `--harness` (no such runtime available here).
+    p_tasks_handoff = tasks_sub.add_parser(
+        "handoff",
+        help="prepare (not spawn) a handoff of a task to an external worker harness — "
+             "earmarks its lane + prints a copy-pasteable invocation",
+    )
+    p_tasks_handoff.add_argument("task_id", metavar="ID")
+    p_tasks_handoff.add_argument(
+        "--harness", required=True, choices=list(TASK_HANDOFF_LANES),
+        help="the harness to hand this task off to (codex or claude-code — 'any' is "
+             "not a valid handoff target: a handoff is inherently addressed to ONE "
+             "specific worker, never 'whoever'). Idempotent: earmarks target_harness "
+             "to this value if it is not already set that way.",
+    )
+    p_tasks_handoff.add_argument(
+        "--by-harness", dest="by_harness", metavar="HARNESS",
+        help="which harness/process is PREPARING this handoff — the ledger actor "
+             "recorded for the 'handoff' event (default: 'orchestrator')",
+    )
+    p_tasks_handoff.add_argument("--session", help="harness session id of the PREPARING side (optional)")
+    p_tasks_handoff.add_argument("--persona", help="named persona/agent preparing the handoff, if relevant")
+    p_tasks_handoff.add_argument("--json", action="store_true", dest="json_out")
 
     # log — Phase 0.2: the hash-chained ACCOUNTABILITY LEDGER (sibling region).
     p_log = sub.add_parser(

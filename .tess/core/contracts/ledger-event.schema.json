@@ -18,9 +18,10 @@
       "type": "string",
       "enum": [
         "dispatch", "task_transition", "claim", "heartbeat", "release",
-        "completed", "crashed", "reclaimed", "session_open", "session_close"
+        "completed", "crashed", "reclaimed", "session_open", "session_close",
+        "earmarked", "handoff"
       ],
-      "description": "Event classification. `task_transition` covers any tracked change to a task record via `tessctl tasks new|set` (including creation itself, logged as '(none) -> <initial status>'); `claim`/`heartbeat`/`release`/`completed`/`crashed`/`reclaimed` are `tessctl tasks claim|release`'s own five-way claim-lifecycle classification (Hermes' 'claimed/completed/crashed/reclaimed' vocabulary, verbatim); `dispatch`/`session_open`/`session_close` are broader harness-lifecycle bookkeeping events logged directly via `tessctl log append`, not tied to any one task."
+      "description": "Event classification. `task_transition` covers any tracked change to a task record via `tessctl tasks new|set` (including creation itself, logged as '(none) -> <initial status>'); `claim`/`heartbeat`/`release`/`completed`/`crashed`/`reclaimed` are `tessctl tasks claim|release`'s own five-way claim-lifecycle classification (Hermes' 'claimed/completed/crashed/reclaimed' vocabulary, verbatim); `dispatch`/`session_open`/`session_close` are broader harness-lifecycle bookkeeping events logged directly via `tessctl log append`, not tied to any one task. `earmarked` (Phase 0.4, issue #125) is logged when `tessctl tasks new|set --lane` sets a task's `target_harness` to a value OTHER than the pre-existing one — the 'who earmarked, target harness' accountability fact the LANE mechanism adds, kept distinct from the generic `task_transition` bucket the same way `heartbeat` already is; `handoff` is logged by `tessctl tasks handoff` when it prepares (never spawns) an external worker harness invocation for a task — its own `summary` states whether preparing the handoff also earmarked the lane (idempotent: a no-op if the task was already earmarked for that harness), so the earmark fact is never lost even though `handoff` does not additionally emit a separate `earmarked` line for the SAME write."
     },
     "refs": {
       "$ref": "#/$defs/Refs",

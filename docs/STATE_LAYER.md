@@ -1,20 +1,26 @@
 # The state layer: one canonical store, every harness mounts it
 
-> **Status: Phase 0.3 — the fenced store, the task store + accountability
-> ledger, PLUS the memory link.** Phase 0.1 built the four empty, fenced
-> directories and their leak-proofing. Phase 0.2 landed the first two real
-> subsystems on top of that store: `tessctl tasks` (the shared task graph,
-> `.tess/state/tasks/`) and `tessctl log` (the hash-chained accountability
-> ledger, `.tess/state/ledger/`). Phase 0.3 (this page's own next-next
-> section) lands the third: `tessctl memory adopt` (`.tess/state/memory/`) —
-> the mechanism that moves an existing harness-private memory directory's
-> contents into the canonical store and replaces the original with a
-> symlink, so Claude Code and Codex (or any other adopted harness) read and
-> write the SAME memory. Running an actual adopt against any specific
-> instance's live memory is a separate, later, opt-in operation — this page
-> documents the mechanism itself. Any orphan-sweeper daemon remains NOT
-> built — see "What's deliberately NOT built yet" below, now scoped to just
-> that.
+> **Status: Phase 0.4 — the fenced store, the task store + accountability
+> ledger, the memory link, PLUS the external-harness-worker LANE.** Phase
+> 0.1 built the four empty, fenced directories and their leak-proofing.
+> Phase 0.2 landed the first two real subsystems on top of that store:
+> `tessctl tasks` (the shared task graph, `.tess/state/tasks/`) and
+> `tessctl log` (the hash-chained accountability ledger,
+> `.tess/state/ledger/`). Phase 0.3 lands the third: `tessctl memory adopt`
+> (`.tess/state/memory/`) — the mechanism that moves an existing
+> harness-private memory directory's contents into the canonical store and
+> replaces the original with a symlink, so Claude Code and Codex (or any
+> other adopted harness) read and write the SAME memory. Phase 0.4 (this
+> page's own next-next section, issue #125) lands the LANE: earmarking a
+> task for a specific worker harness (`target_harness`, `tessctl tasks
+> new|set --lane`), filtering a pull to that lane (`tasks pull --lane`), and
+> `tessctl tasks handoff` — which PREPARES, never spawns, an external
+> worker invocation. Running an actual adopt against any specific
+> instance's live memory, and running an actual external-harness process
+> from a prepared handoff, are both separate, later, opt-in operations this
+> page documents the MECHANISM for, not the live execution of. Any
+> orphan-sweeper daemon (or Codex process-spawner/daemon) remains NOT
+> built — see "What's deliberately NOT built yet" below.
 
 ## The principle
 
@@ -91,7 +97,7 @@ All four layers now apply symmetrically to `memory/`, `tasks/`, `ledger/`,
 and `locks/` — none of the four subdirectories depends on the pre-commit
 hook (layer 3) being installed to stay off a fresh `git add -A`.
 
-## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3)
+## What's built today (Phase 0.1 + Phase 0.2 + Phase 0.3 + Phase 0.4)
 
 Phase 0.1 — the fenced store:
 
@@ -351,6 +357,138 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   harness home-directory layout) — plus the AGENTS.md render assertions
   above.
 
+Phase 0.4 — the external-harness-worker LANE (TASK LEDGER region, issue
+#125): making a worker harness (first: Codex) a first-class ROUTING target
+on top of the Phase 0.2 task store, not a new subsystem of its own.
+
+- **`target_harness` — a task-record field, not a label/tag.** Adds one new
+  required, enum-constrained field to `task.schema.json`
+  (`codex | claude-code | any`), the minimal representation that fits the
+  existing schema: a scalar field gets `enum` validation for free and reads
+  identically to every other structured task field (`status`, `owner`), a
+  free-text label/tag would need its own ad hoc "exactly one routing tag"
+  convention layered on top of a facility (`evidence`, generic `notes`)
+  this store doesn't have. Named `target_harness`, deliberately NOT
+  `harness` — that name is already taken on `tasks new|set|claim|release`
+  (required, meaning the ACTING harness — who created/claimed/mutated a
+  task, recorded in `created_by`/the ledger's `actor.harness`); reusing it
+  for a routing lane would collide with that established meaning on the
+  very same subcommands. `any` (`DEFAULT_TASK_LANE` in `.tess/bin/tessctl`)
+  is the default `tessctl tasks new` seeds when `--lane` is omitted —
+  eligible for every harness, i.e. the exact PRE-LANE behavior: a task
+  nobody explicitly earmarks is filtered and claimed identically to before
+  this field existed.
+- **Legacy-record backward compatibility (Cyra + Reid, PR #126 review,
+  independently reproduced).** A task written before this field existed —
+  `.tess/state/tasks/**` is gitignored instance data, so a real deployed
+  install genuinely has these — has no `target_harness` key on disk at
+  all. `_task_read` (the ONE shared read path every write, `pull`, and
+  `render` call goes through) now does
+  `record.setdefault("target_harness", DEFAULT_TASK_LANE)`, healing it in
+  memory on first touch — the exact same "legacy, not tampered; heal on
+  next write, no manual migration" discipline this region's own ledger
+  side already established for a seq-absent shard line (see the Phase 0.2
+  hardening's "Migration note" above). `tessctl tasks set|claim|release|
+  handoff` against a legacy record now succeed and heal the field to `any`
+  on disk as a side effect of the mutation already happening; `pull`/
+  `render` heal it in memory only (read-only commands never write back).
+  The standalone `tessctl validate task <path>` command is a deliberate
+  exception — it still flags a missing `target_harness` on an arbitrary
+  file, since its whole purpose is surfacing a genuine schema deviation,
+  not silently patching its input.
+- **Validate-before-write, never the reverse.** The FIRST version of this
+  region's write path (`_tasks_write_locked`, and `_cmd_tasks_new`) wrote
+  the candidate record to disk, THEN dogfood-validated the file it had
+  just written — so a validation failure left a genuinely mutated record
+  committed to disk with NO corresponding ledger event (every caller's
+  `_ledger_auto_log` runs only after the write helper returns
+  successfully), a silent state/ledger divergence first reproduced against
+  a legacy record missing `target_harness`. Both write paths now validate
+  the CANDIDATE record BEFORE `_task_atomic_write` ever commits it
+  (`_validate_task_instance_or_raise`) — a failure now aborts with nothing
+  persisted, closing the whole CLASS of write-then-fail divergence, not
+  just this one field's trigger. This brings the TASK STORE's own write
+  path into the SAME already-correct ordering `_ledger_self_validate_or_
+  raise` has always used for ledger events (validate the in-memory value,
+  then append) — the task side was the outlier, not the ledger side.
+- **`tessctl tasks new|set --lane <codex|claude-code|any>`** sets it (the
+  CLI flag is `--lane`, not `--harness`, on both subcommands — `new`/`set`
+  already require `--harness` for the ACTOR; `--lane` avoids the collision
+  and matches the vocabulary this whole feature is scoped under). `set
+  --lane` is a rev-CAS write through the SAME `_tasks_write_locked` path
+  every other `tasks set` mutation uses — no forked write logic.
+- **`tessctl tasks pull --lane <codex|claude-code>`** filters to a task
+  earmarked for that harness PLUS every task earmarked `any` — "a Codex
+  worker pulls its lane" also means it sees every unmarked task, not just
+  ones explicitly earmarked `codex`. Omitting `--lane` (the default)
+  applies no lane filter at all; every existing `pull` invocation keeps
+  returning exactly what it always did.
+- **`tessctl tasks claim` is UNCHANGED — the lane is advisory routing, not
+  claim-time enforcement.** A task earmarked `codex` can still be claimed
+  by a `claude-code` actor; `claim` records whichever `--harness` the
+  claimant supplies, same trust-boundary class the existing claim-lease
+  documentation above already states (a cooperative bookkeeping
+  convention, not authentication).
+- **`tessctl tasks handoff <id> --harness <codex|claude-code>`** — PREPARES
+  (never spawns) a handoff to an external worker harness: earmarks the
+  lane (idempotent — a no-op if already earmarked that way, via the SAME
+  CAS-write path `set --lane` uses), logs a `handoff` ledger event, and
+  prints the exact copy-pasteable invocation (`tasks claim` →
+  `tasks set --status in_progress` → `tasks set --status review` →
+  `tasks release`) an operator hands to a fresh session of that harness,
+  pointing it at the SAME shared brain (`.tess/state/tasks/`,
+  `.tess/state/memory/`) the render-target mounts. `--harness` here means
+  the TARGET (`TASK_HANDOFF_LANES` — `codex`/`claude-code`, `any` excluded:
+  a handoff is inherently addressed to ONE specific worker); a separate
+  `--by-harness` (default `orchestrator`) records who is PREPARING it, kept
+  distinct from `--harness` so `handoff`'s literal invocation shape needs
+  no second required flag. This command has NO process-spawning
+  capability — see "What's deliberately NOT built yet" below. The printed
+  invocation captures `$HOST`/`$PID`/`$UUID` into shell variables ONCE and
+  threads the SAME identity through `claim` and `release` (Reid LOW, PR
+  #126 review — the first version had `release` reference a
+  "<same --uuid claim used>" placeholder `claim` never actually surfaced,
+  so the block was not literally copy-paste-runnable end to end).
+- **Accountability — two new ledger event classes, the SAME append path.**
+  `earmarked` (logged by `tasks new --lane`/`tasks set --lane` when the
+  lane is the ONLY thing that changed — the SAME structural
+  only-this-changed classification `--heartbeat` already uses, not a
+  string match) and `handoff` (logged by `tasks handoff`) both go through
+  the EXISTING `_ledger_auto_log` → `_log_append_event` hash-chain append
+  path — no fork of the chain algorithm, no new shard format. "Who
+  earmarked, target harness" is the `earmarked`/`handoff` event's own
+  actor + summary; "who claimed, which harness" is the pre-existing
+  `claim` event, unchanged.
+- **`BOARD.md` / `tasks pull`** — `tasks render` adds a `[lane: <harness>]`
+  marker to a board line ONLY for a task actually earmarked to one
+  harness (an unmarked task's line is byte-for-byte what it rendered as
+  before this field existed); `tasks pull`'s human-readable output gains a
+  `lane=<harness|any>` column.
+- `tests/test_task_lane_handoff.py` — earmark (at creation and via `set`)
+  → `pull` lane filtering (including combined with `--unclaimed`, and the
+  "no --lane at all" no-op-filter case) → `claim` still records whichever
+  harness actually claims a task, lane mismatch or not → `handoff`
+  (idempotent earmark, rejects `any` as a target, unknown-task refusal,
+  the printed invocation's exact command shapes including `$HOST`/`$PID`/
+  `$UUID` threading between `claim` and `release`, JSON output) →
+  `_render_handoff_invocation` pure-function determinism → `BOARD.md`
+  lane marker → full `log verify` chain integrity after
+  `earmarked`/`handoff` events → schema/lint coverage for the new field
+  and the two new ledger event classes → a dedicated legacy-record section
+  (`set`/`claim`/`release`/`handoff` all heal + log correctly against a
+  record missing `target_harness`; `pull`/`render` heal in memory without
+  writing back; the standalone `validate task` command still flags it by
+  design; an engine-level proof that `_tasks_write_locked` leaves disk
+  byte-for-byte untouched, with no ledger entry, when a candidate record
+  fails validation for ANY reason).
+- **Honest constraint (mirrors #121's own framing):** no live Codex-runtime
+  end-to-end run is possible in the environment this was built in — there
+  is no Codex runtime to spawn or drive here. This verifies the LANE
+  MECHANISM + wiring (a real Codex worker reading its earmarked lane via
+  `pull --lane codex`, or acting on a prepared handoff, WOULD pick up the
+  work) — a live smoke test with an actual Codex session is a deferred
+  follow-up, not claimed as done here.
+
 ## What's deliberately NOT built yet
 
 - **The orphan-sweeper** — a daemon/process that would scan
@@ -361,8 +499,19 @@ a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.
   events) — never a process that acts on them autonomously. Whether/how an
   autonomous sweeper is allowed to act is a separate Xavier trust-boundary
   decision, not a technical one this store's existence resolves.
+- **A Codex (or any other harness) process-spawner or daemon (Phase 0.4,
+  issue #125).** `tessctl tasks handoff` PREPARES a handoff — it earmarks a
+  task's lane, logs the accountability event, and prints the exact
+  invocation text an operator hands to a fresh session of the target
+  harness. It never starts, execs, or forks a process of that harness
+  itself; there is no such runtime available inside `tessctl`'s own
+  process, and building one is explicitly out of scope for the PR that
+  built the lane mechanism. A live Codex session actually reading its
+  earmarked lane end-to-end is a deferred follow-up (mirrors #121's own
+  "mounted, not yet live-smoke-tested" framing).
 
-Do not assume an orphan-sweeper exists because this directory does. Phase
-0.1-0.3 built the fenced store, the task store + accountability ledger, and
-the memory link, and the guarantee that none of the three can ever leak —
-nothing more.
+Do not assume an orphan-sweeper — or a harness process-spawner — exists
+because this directory does. Phase 0.1-0.4 built the fenced store, the task
+store + accountability ledger, the memory link, and the external-harness
+LANE + handoff-preparation mechanism, and the guarantee that none of the
+four can ever leak — nothing more.

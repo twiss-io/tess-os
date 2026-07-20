@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-19T22:51:02.779665Z'
+  last_updated: '2026-07-20T00:18:44.383582Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5793,7 +5793,7 @@ files:
   .tess/core/templates/agents-md/shared-tasks.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8013bcaf676d13d580b093e4178ebcaf30e450c5a43f6bea97b3270dfe2f3776
+    base_sha: sha256:73ea76539e869649f0ddf7c47b5645ff5c05440a262a8486af8eecbc7bbfa947
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6053,12 +6053,12 @@ files:
   .tess/core/contracts/task.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:14549c65f6fc47d77fcb0554ebcc881785dc850ca7744ba8b60c8dd99c47ea6c
+    base_sha: sha256:009b9af43460c813fec546535050cefa5685509ef512c9aa2c050f93b6d34150
     live_path: core/contracts/task.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'
   .tess/core/contracts/ledger-event.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:22ada26f09e5586efcb4691b0ca506567dc30acd6011a695afc86725c3cbd85b
+    base_sha: sha256:e1053e1504eec4d651cab677b98f50a009ab9cc607839c2faa11c671d8c409de
     live_path: core/contracts/ledger-event.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'

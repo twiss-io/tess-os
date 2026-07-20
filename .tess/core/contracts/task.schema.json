@@ -29,6 +29,11 @@
       "type": ["string", "null"],
       "description": "Agent/persona currently assigned to this task (may be set before an actual claim-lease exists, e.g. during planning). null when not yet assigned."
     },
+    "target_harness": {
+      "type": "string",
+      "enum": ["codex", "claude-code", "any"],
+      "description": "The routing LANE this task is earmarked for (Phase 0.4, issue #125 — the external-harness-worker lane): which harness SHOULD pick this task up, distinct from `created_by.harness` (who created it) and `claim`/the ledger `claim` event's `actor.harness` (who actually claimed it) — three separate facts this schema deliberately keeps separate rather than overloading one field for. Set via `tessctl tasks new|set --lane` (or implicitly by `tessctl tasks handoff --harness`); read via `tessctl tasks pull --lane`, which matches a task earmarked for the requested lane OR earmarked `any`. `any` — the default `tessctl tasks new` seeds when `--lane` is omitted — means eligible for every harness, i.e. the exact pre-lane behavior: a task nobody explicitly earmarks is filtered and claimed identically to before this field existed. This is advisory routing, not enforcement — the same trust-boundary class `claim` already documents in docs/STATE_LAYER.md — `tessctl tasks claim` does not refuse a claim whose `--harness` differs from a task's `target_harness`."
+    },
     "claim": {
       "$ref": "#/$defs/Claim",
       "description": "The live claim-lease — who currently holds this task, cross-harness-resumable. All five fields are null together (unclaimed) or all five are set together (claimed); `_lint_task` flags a partially-set claim as a violation `tessctl validate` catches even though plain JSON Schema cannot express the all-or-nothing cross-field rule (same class of relational check `_lint_mission`/`_lint_crew_plan` already perform for their own schemas)."
@@ -69,7 +74,7 @@
     }
   },
   "required": [
-    "id", "title", "status", "owner", "assignee", "claim", "created_by",
+    "id", "title", "status", "owner", "assignee", "target_harness", "claim", "created_by",
     "created_at", "updated_at", "rev", "depends_on", "evidence", "notes"
   ],
   "additionalProperties": false,
