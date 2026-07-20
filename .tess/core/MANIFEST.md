@@ -313,7 +313,13 @@ also had to be fixed to stop skipping every `live_path: null` entry
 unconditionally — it now runs Check A the same way `doctor`/`verify`
 already did), on top of the worker-profile denylist scan
 (`_check_worker_profile_denylist`) and the rendered-output drift check
-above, which already covered this subtree.
+above, which already covered this subtree. Issue #124 closed the matching
+gap for DELETION of a `live_path: null` core file (this file included —
+`.tess/core/MANIFEST.md` has no live path): `lock --check` used to treat a
+core file's hash tamper and its outright deletion as two different
+questions, catching only the former; both are now caught the same way, by
+gating on the shared `_doctor_result_is_error` classifier `doctor` already
+used for its own exit code.
 
 | Core file | Live path | Tier |
 |---|---|---|
