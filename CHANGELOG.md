@@ -5,6 +5,58 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **Phase 0.4 — the external-harness-worker LANE + `tessctl tasks handoff`
+  (issue #125)**, built on top of the Phase 0.2 TASK STORE + ACCOUNTABILITY
+  LEDGER and #121's Codex render-target mount: makes an external harness
+  (first: Codex) a first-class task WORKER lane, not just a session that
+  can read the shared board.
+  - **`target_harness` (task.schema.json)** — a new required, enum-
+    constrained field (`codex | claude-code | any`) recording which harness
+    a task is EARMARKED for, distinct from `created_by.harness` (who
+    created it) and `claim`/the ledger `claim` event's `actor.harness` (who
+    actually claimed it). Named `target_harness`, not `harness` — that name
+    is already taken (the ACTOR's identity) on `tasks new|set|claim|
+    release`. Default `any` (eligible for every harness) — a task nobody
+    explicitly earmarks behaves byte-for-byte as it did before this field
+    existed.
+  - **`tessctl tasks new|set --lane <codex|claude-code|any>`** sets it;
+    **`tessctl tasks pull --lane <codex|claude-code>`** filters to a task's
+    own lane PLUS every unmarked (`any`) task — omitting `--lane` applies
+    no filter at all, so every existing `pull` call is unaffected.
+    `tessctl tasks claim` is UNCHANGED: the lane is advisory routing via
+    `pull`, never claim-time enforcement — a task earmarked `codex` can
+    still be claimed by a `claude-code` actor.
+  - **`tessctl tasks handoff <id> --harness <codex|claude-code>`** —
+    PREPARES (never spawns) a handoff: earmarks the lane (idempotent),
+    logs a `handoff` ledger event, and prints the exact copy-pasteable
+    invocation (`tasks claim` → `tasks set` → `tasks release`) an operator
+    hands to a fresh session of that harness, pointing it at the same
+    shared brain the render-target mounts. `any` is not a valid handoff
+    target (a handoff is addressed to ONE specific worker).
+  - **Accountability** — two new ledger event classes, `earmarked` and
+    `handoff`, both logged through the EXISTING `_ledger_auto_log` →
+    `_log_append_event` hash-chain append path (no fork of the chain
+    algorithm, no new shard format). `earmarked` uses the same
+    only-this-changed structural classification `--heartbeat` already
+    established, not a string match.
+  - **`BOARD.md` / `tasks pull`** surface the lane (`[lane: <harness>]` on
+    an earmarked board line, a `lane=<harness|any>` pull column) — an
+    unmarked task's board line is unchanged from before this field
+    existed.
+  - **Honest constraint (mirrors #121):** no live Codex-runtime end-to-end
+    run is possible in the environment this was built in. This verifies the
+    LANE MECHANISM + wiring; a live Codex smoke test is a deferred
+    follow-up. No Codex process-spawner or daemon was built — `handoff`
+    prints an invocation, it does not execute one.
+  - `tests/test_task_lane_handoff.py` — 30 tests: earmark at creation/via
+    `set`, `pull` filtering (incl. combined with `--unclaimed`, and the
+    no-`--lane`-at-all no-op case), `claim` lane-mismatch tolerance,
+    `handoff` (idempotency, `any`-target rejection, unknown-task refusal,
+    exact printed invocation shapes, JSON output), `_render_handoff_
+    invocation` determinism, `BOARD.md` marker, full `log verify` chain
+    integrity after the two new event classes, and schema/lint coverage.
+
 ### Security
 - **HIGH — `templates/agents-md/*` core fragments had no `tess.lock` entry;
   core-tamper Check A never ran against them (issue #122, Cyra PoC)** —

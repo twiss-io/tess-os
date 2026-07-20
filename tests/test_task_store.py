@@ -612,6 +612,11 @@ def test_task_id_containment_rejects_traversal(troot, bad_id):
 def _valid_task_instance(task_id="T-20260719-x-aaaa"):
     return {
         "id": task_id, "title": "x", "status": "backlog", "owner": None, "assignee": None,
+        # Phase 0.4 (issue #125): target_harness is a required field as of
+        # this schema version — see tests/test_task_lane_handoff.py for the
+        # lane's own dedicated coverage; "any" here keeps this fixture's
+        # pre-lane semantics (eligible for every harness) unchanged.
+        "target_harness": "any",
         "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
         "created_by": {"harness": "h", "session": None},
         "created_at": "2026-07-19T00:00:00Z", "updated_at": "2026-07-19T00:00:00Z",
