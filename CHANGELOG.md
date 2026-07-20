@@ -6,6 +6,73 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Goal I1 — the exportable auditor pack (`tessctl audit export`/
+  `verify`)**, wiring the ACCOUNTABILITY LEDGER (#113/#115) and the Agent
+  Receipt (docs/AGENT_RECEIPT_SPEC.md) into the commercial/governance
+  deliverable an insurer, client, or external auditor accepts as evidence
+  of what agents did and who approved it.
+  - **`tessctl audit export`** selects exactly one scope — `--task ID`, a
+    `--since`/`--until` time range, or `--all` — and writes a
+    self-contained bundle: `manifest.json` (machine-checkable; every field
+    `audit verify` needs is embedded verbatim, byte-identical to the live
+    ledger event/receipt shape) plus a human-readable `SUMMARY.md`
+    companion, the same two-serializations-of-one-record convention
+    `tessctl mission new` already uses for mission.md + mission.json.
+    `--origin` narrows to one shard, combinable with any scope.
+    `--receipt PATH` (repeatable) embeds an already-signed Agent Receipt
+    file verbatim after schema-validating it — there is no on-disk receipt
+    store in this repository, so receipts are supplied explicitly by the
+    caller, never auto-discovered. `--out` refuses to silently clobber a
+    non-empty existing directory without `--force`.
+  - **`export_kind: full | partial`** per shard: `full` (scope `--all`
+    only) is a completeness claim `audit verify` actively checks (genesis
+    start, no seq gap); `partial` (`--task`/range scope) makes no
+    completeness claim — a seq gap between two included events (an
+    out-of-scope event sits there) is expected and reported informational,
+    never as tamper.
+  - **`artifacts`** is built only from already-structured fields (ledger
+    `refs.task`/`refs.mission`, a receipt's own `proposed_action.repo`/
+    `ref`/`paths`, and — best-effort, `--task` scope only — the live task
+    record's current `evidence` list) — never free-text pattern-matching
+    over `summary`, which would be fragile and could mislead.
+  - **`tessctl audit verify <pack>`** re-checks a pack using ONLY its own
+    bytes — no live `.tess/state/` access at all (proven by a test that
+    deletes the source ledger after export and re-verifies against the
+    pack alone): recomputes every event's hash, cross-checks `prev_hash`
+    linkage between seq-adjacent included events, and (for `full` shards
+    only) refuses a seq gap or a non-genesis start as a missing event. For
+    an embedded receipt: schema-validates its shape and recomputes its
+    `signed_content_sha256` (both the envelope's and the embedded
+    decision's) for tamper-evidence — deliberately does NOT perform GPG
+    signature verification itself (delegated to the already-shipped
+    `tools/receipt-verify/`, avoiding a duplicate canonicalization/crypto
+    implementation) and does NOT verify multi-receipt chain links (same
+    tool's `verify-chain`). Fail-closed throughout; `--json` for
+    automation.
+  - **Honesty is the point (Xavier's own framing for this build):** every
+    exported pack embeds a `trust_boundary` object, and `SUMMARY.md`
+    surfaces it at the top, stating plainly — in the pack itself, not just
+    in prose docs a reader might skip — that the pack is tamper-evident
+    (the ledger's unsigned hash chain) but NOT cryptographically
+    non-repudiable (the verifier/sign-off key ceremony is Xavier-gated and
+    not done); that actor identity is self-reported, not attested; that a
+    receipt's GPG signature is not verified by this command; and that the
+    pack cannot prove no matching event was omitted by the exporter.
+  - **New:** `docs/AUDIT_PACK_SPEC.md` (the full spec, mirroring
+    `docs/AGENT_RECEIPT_SPEC.md`'s "what this proves and does not prove"
+    discipline); `tests/test_audit_pack.py` (33 wiring-level tests —
+    scope selection, attribution, artifact-backing, receipt embedding,
+    clean-pass verify, standalone-after-source-deleted verify, expected-
+    gap-in-partial-scope verify, and fail-closed tamper detection across
+    events, chain links, full-shard gaps, and both receipt signature
+    layers). `docs/STATUS.md`, `README.md`, and
+    `docs/AGENT_RECEIPT_SPEC.md`'s reference table cross-link the new
+    capability with the same claim-boundary discipline as every other
+    entry.
+  - Explicitly out of scope for this change (Xavier-gated, not built here):
+    any new signing/key-provisioning command, GPG verification inside
+    `tessctl audit verify` itself, and wiring the pack into `tessctl gate`.
+
 - **Phase 0.4 — the external-harness-worker LANE + `tessctl tasks handoff`
   (issue #125)**, built on top of the Phase 0.2 TASK STORE + ACCOUNTABILITY
   LEDGER and #121's Codex render-target mount: makes an external harness

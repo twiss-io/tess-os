@@ -310,3 +310,4 @@ implementation, not a claim that any other project has adopted it yet.
 | Existing verdict-signing doctrine this builds on | `conductor/verdict-signing.md` |
 | Existing policy/rule contract this builds on | `core/contracts/policy.schema.json`, `core/policy/policy.yaml` |
 | Disambiguation from the unrelated, deferred future receipt proposal | `docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md` |
+| Exportable auditor pack that can embed this receipt for a scope | `docs/AUDIT_PACK_SPEC.md` (`tessctl audit export --receipt <path>`) |
