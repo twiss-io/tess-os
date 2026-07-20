@@ -70,6 +70,22 @@ Coverage:
   * LOW (Reid): a relative `--out` is anchored to `root` (TESS_ROOT), never
     the caller's `Path.cwd()` — proven by invoking from a cwd that is
     deliberately not `root`.
+  * Issue #141 (LOW, Reid — follow-up from PR #140's re-review of commit
+    `0b9e860`): a CI regression-net guard that fires on EVERY CI run,
+    regardless of the runner's OS/filesystem — unlike the opportunistic
+    real-case-fold test (which SKIPS on a case-sensitive runner) or the
+    FS-independent primitive test (which, on its own, would not catch a
+    revert of `_skill_reject_out_under_claude_skills` back to a string
+    comparison). Asserts the MECHANISM: the refusal genuinely invokes
+    `os.path.samefile`, not just that it produces the right answer today.
+
+    NOTE (out of scope for this file, tracked separately): #141 also raised
+    a [LOW, Cyra] boundary note — the refusal only covers the in-repo
+    `root / ".claude/skills"`, not a hypothetical global `~/.claude/skills`
+    the host might also load from. Cyra's own issue text frames that as
+    "worth tracking separately if/when the host also loads a global skill
+    directory" — deliberately not implemented here; see the #141 issue
+    thread for the split-out rationale.
 """
 
 from __future__ import annotations
@@ -515,6 +531,55 @@ def test_inode_identity_catches_same_location_naive_string_check_would_miss(engi
     fake_root = tmp_path  # only `root / CLAUDE_SKILLS_LIVE_DIR` is read
     with pytest.raises(engine.SkillError, match="claude/skills"):
         engine._skill_reject_out_under_claude_skills(fake_root, raw_child)
+
+
+def test_out_under_claude_skills_refusal_routes_through_os_path_samefile(engine, tmp_path, monkeypatch):
+    """CI regression-net guard (issue #141, Reid LOW — re-review of commit
+    `0b9e860`): asserts the MECHANISM, not just the FS behavior. On Linux CI
+    the real case-fold test below SKIPS (a case-sensitive filesystem cannot
+    construct the scenario at all), and the FS-independent primitive test
+    above passes against BOTH the fixed code and the OLD, vulnerable
+    `Path.is_relative_to()` string-compare code (it exercises the
+    primitives directly via a symlink alias, never the actual
+    `_skill_reject_out_under_claude_skills` comparison path for an ordinary,
+    non-symlinked target). Net effect before this test existed: a future
+    revert of `_skill_reject_out_under_claude_skills` back to
+    `Path.is_relative_to()` would NOT be caught by anything that runs on
+    Linux CI — the regression would only ever surface on a developer's
+    macOS/Windows machine.
+
+    Fixed by monkeypatching `os.path.samefile` — the one syscall the
+    inode-identity fix routes through (`_paths_are_same_location` ->
+    `os.path.samefile`) — and asserting `_skill_reject_out_under_claude_skills`
+    genuinely invokes it for an ordinary refused `--out`. This proves the
+    refusal routes through inode identity, not a string comparison, and
+    fires on every CI run regardless of the runner's own filesystem
+    case-(in)sensitivity."""
+    real_skills = tmp_path / ".claude" / "skills"
+    real_skills.mkdir(parents=True)
+
+    calls = []
+    real_samefile = os.path.samefile
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real_samefile(a, b)
+
+    monkeypatch.setattr(os.path, "samefile", spy)
+
+    target = tmp_path / ".claude" / "skills" / "sneaky-skill"
+    with pytest.raises(engine.SkillError, match="claude/skills"):
+        engine._skill_reject_out_under_claude_skills(tmp_path, target)
+
+    assert calls, (
+        "_skill_reject_out_under_claude_skills did not call os.path.samefile "
+        "at all while refusing this --out target. If this assertion ever "
+        "fires, the refusal has been reverted to a string comparison (e.g. "
+        "Path.is_relative_to()) and the case-fold/inode-identity bug class "
+        "(#133 / PR #140's CRITICAL re-review fix) has silently regressed — "
+        "this guard exists specifically to catch that on Linux CI, where "
+        "the case-fold class of test below cannot even run."
+    )
 
 
 def test_out_under_claude_skills_refused_via_real_case_fold_when_fs_supports_it(sroot, tmp_path):
