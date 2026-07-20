@@ -705,10 +705,19 @@ human-reviewed reusable skill.
   any target that path-normalize-resolves under `.claude/skills/`, catching
   a `..` traversal or a pre-planted symlink the same way as the literal
   path (`_skill_reject_out_under_claude_skills`) — closing the one
-  remaining operator-explicit path into the live skill set. No promotion
-  command, no curator, no autonomous loop exists in this phase; a
-  human/curator reviews a draft and promotes it manually, entirely outside
-  this region.
+  remaining operator-explicit path into the live skill set. **★ CRITICAL
+  hardened (Cyra, live-reproduced on macOS, PR #140 re-review):** the
+  refusal is INODE-IDENTITY based (`os.path.samefile`, reusing
+  `_path_is_prefix`/`_paths_are_same_location` from `tessctl memory
+  adopt`'s own PR #117 fix verbatim), never a case-sensitive string
+  comparison — the first version compared `Path.resolve()` output with
+  `Path.is_relative_to()`, which macOS APFS/Windows NTFS's case-
+  insensitivity bypassed (`--out .CLAUDE/skills/evil-skill` resolved to a
+  different STRING than the real, same-inode `.claude/skills`) while
+  Linux CI's case-sensitive filesystem never exercised the path, letting
+  it ship green. No promotion command, no curator, no autonomous loop
+  exists in this phase; a human/curator reviews a draft and promotes it
+  manually, entirely outside this region.
 - **Accountability — one new ledger event class, the SAME append path.**
   `skill_generated` (logged by `tessctl skill from-task`) goes through the
   EXISTING `_ledger_auto_log` → `_log_append_event` hash-chain append path
@@ -732,7 +741,15 @@ human-reviewed reusable skill.
   (issue #133) an `--out` target under `.claude/skills/` is refused,
   including via a literal path, a `..` traversal, and a symlink whose
   resolved target lands there, and refusal is unconditional (`--force`
-  does not clear it).
+  does not clear it) → an FS-independent regression test of the
+  INODE-IDENTITY comparison itself (a same-inode, differently-spelled
+  pair constructed via symlink — holds on case-sensitive AND
+  case-insensitive filesystems, never relying on which one the test
+  runner happens to be) plus an opportunistic, runtime-gated test of the
+  real macOS/Windows case-fold scenario end to end via the CLI whenever
+  the runner's own filesystem actually supports it → the `skill_generated`
+  ledger event recording the resolved `--out` target → a relative `--out`
+  resolving against `root`, not the caller's cwd.
 
 ## What's deliberately NOT built yet
 

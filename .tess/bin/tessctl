@@ -17980,7 +17980,7 @@ class SkillError(Exception):
     convention."""
 
 
-def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> None:
+def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> Path:
     """Issue #133 (Cyra LOW, PR #132 review follow-up): refuse an `--out`
     target that resolves under `.claude/skills/` — `CLAUDE_SKILLS_LIVE_DIR`,
     the LIVE, core-managed, host-loaded skill set. Before this check
@@ -17996,6 +17996,30 @@ def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> None:
     skills/` is the ONE directory this command must never write into,
     regardless of who asked.
 
+    ★ CRITICAL fix (Cyra, live-reproduced on macOS, PR #140 re-review — the
+    SAME bug class as PR #117's Cyra HOLE 1, `tessctl memory adopt`): the
+    first version of this check compared `Path.resolve()` output with
+    `Path.is_relative_to()` — a case-SENSITIVE STRING comparison. macOS
+    APFS and Windows NTFS (both the real default deployment filesystems)
+    are case-INSENSITIVE, so `--out .CLAUDE/skills/evil-skill` resolves to
+    a DIFFERENT string than `.claude/skills` even though it is THE SAME
+    DIRECTORY on disk — the string check silently passed and the write
+    landed in the real live skill set. CI (Linux, case-sensitive) never
+    exercised this path, so it shipped green. Fixed by mirroring #117's
+    PROVEN fix exactly rather than reinventing it: `_path_is_prefix`
+    (MEMORY ADOPT region, below) walks every ancestor of the resolved
+    `--out` target and asks the FILESYSTEM ITSELF, via
+    `_paths_are_same_location` -> `os.path.samefile` (`(st_dev, st_ino)`
+    inode identity), whether it is the SAME location as `.claude/skills` —
+    never a string/case comparison. Correct regardless of case-folding AND
+    NFC/NFD unicode normalization (both are filesystem-resolution
+    properties `os.path.samefile` handles natively, not string properties
+    this engine would have to reimplement). When either side does not yet
+    exist, `_paths_are_same_location` falls back to a case-fold string
+    compare rather than assuming "different" — fail-closed (a false
+    refusal, never a false pass) for exactly the same reason #117 chose
+    that fallback.
+
     Path-normalized FIRST, exactly like C1 containment elsewhere in this
     file (`check_manifest_write_gate`, `_gate_*`'s own symlink guards):
     `Path.resolve()` dereferences symlinks and collapses `..` components
@@ -18010,23 +18034,34 @@ def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> None:
 
     Refused unconditionally — `--force` does not override this; `--force`
     only ever governs the SEPARATE "non-empty existing directory" conflict
-    (`_cmd_skill_from_task`, below), never this boundary."""
+    (`_cmd_skill_from_task`, below), never this boundary.
+
+    Returns the RESOLVED `out_dir` (MED, Cyra PR #140 re-review) so the
+    caller can record the canonical, symlink-dereferenced path this call
+    actually validated in the `skill_generated` ledger event — re-resolving
+    a second time in the caller would just repeat this same stat work and,
+    in principle, could observe a different filesystem state between the
+    two calls (TOCTOU); returning the value this function already computed
+    and checked is both cheaper and tighter."""
     forbidden = (root / CLAUDE_SKILLS_LIVE_DIR).resolve()
     try:
         resolved = out_dir.resolve()
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         raise SkillError(f"tessctl skill from-task: --out path resolution error for {out_dir}: {e}")
-    if resolved.is_relative_to(forbidden):  # True for forbidden itself too — Path.is_relative_to is reflexive
+    if _path_is_prefix(forbidden, resolved):
         raise SkillError(
             f"tessctl skill from-task: --out {out_dir} resolves to {resolved}, which is "
             f"{CLAUDE_SKILLS_LIVE_DIR}/ or a path under it — the LIVE, core-managed, "
-            f"host-loaded skill set. Refused (path-normalized: this check catches '..' "
-            f"traversal and symlinks that resolve here too, not just the literal path). "
-            f"A generated DRAFT must never be written into the live skill set — that is "
+            f"host-loaded skill set. Refused (path-normalized AND inode-identity checked: "
+            f"this catches '..' traversal, a symlink, or a case-folded/differently-cased "
+            f"path that resolves here too — e.g. '.CLAUDE/skills' on a case-insensitive "
+            f"filesystem — never just a literal-string or case-sensitive match). A "
+            f"generated DRAFT must never be written into the live skill set — that is "
             f"the one directory `tessctl skill from-task` is architected to never touch, "
             f"drafts stay drafts until a human promotes them. Pass a different --out, or "
             f"omit it to use the default ({SKILL_DRAFTS_DIR}/<slug>)."
         )
+    return resolved
 
 
 def _skill_load_task_or_raise(root: Path, task_id: str) -> dict:
@@ -18318,11 +18353,24 @@ def _cmd_skill_from_task(args, root: Path) -> None:
 
         out_dir = Path(args.out) if args.out else (root / SKILL_DRAFTS_DIR / scaffold["skill"]["slug"])
         if not out_dir.is_absolute():
-            out_dir = Path.cwd() / out_dir
-        # Issue #133: this is the ONE directory `--out` must never resolve
-        # into, unconditionally — checked BEFORE the exists/--force conflict
-        # check below, and BEFORE anything on disk is touched.
-        _skill_reject_out_under_claude_skills(root, out_dir)
+            # LOW (Reid, PR #140 re-review): a relative --out is anchored
+            # to ROOT, never `Path.cwd()`. The forbidden-root check just
+            # below is itself anchored to `root` — anchoring the candidate
+            # to whatever the caller's shell cwd happens to be (which need
+            # not equal `root`; TESS_ROOT is an independent env var) made
+            # the two sides of that comparison rest on different, only-
+            # sometimes-equal reference frames. Every test in this suite
+            # already runs with cwd == root (subprocess `cwd=str(root)`),
+            # so this is a robustness fix with no test-visible behavior
+            # change, not a functional regression.
+            out_dir = root / out_dir
+        # Issue #133 (CRITICAL hardened, PR #140 re-review): this is the
+        # ONE directory `--out` must never resolve into, unconditionally —
+        # checked BEFORE the exists/--force conflict check below, and
+        # BEFORE anything on disk is touched. Reuse the RESOLVED path this
+        # call returns (not out_dir itself) for everything downstream that
+        # wants the canonical target — see its own docstring for why.
+        resolved_out_dir = _skill_reject_out_under_claude_skills(root, out_dir)
         if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
             raise SkillError(
                 f"tessctl skill from-task: {out_dir} already exists and is not empty — pass --force to overwrite"
@@ -18339,9 +18387,17 @@ def _cmd_skill_from_task(args, root: Path) -> None:
     except SkillError as e:
         sys.exit(str(e))
 
+    # MED (Cyra, PR #140 re-review): the resolved --out target is now part
+    # of the ledger `summary` — without it, a later ledger/audit review has
+    # no way to detect (after the fact) that a generation landed somewhere
+    # unexpected; the accountability trail previously recorded THAT a draft
+    # was scaffolded but not WHERE. `resolved_out_dir` (not the possibly-
+    # relative/un-normalized `out_dir`) so the recorded value is always the
+    # canonical, symlink-dereferenced path actually written to.
     summary = (
         f"draft skill '{scaffold['skill']['slug']}' scaffolded from task {args.task_id} "
-        f"({scaffold['trail']['event_count']} ledger event(s), trail: {scaffold['trail']['completeness']})"
+        f"({scaffold['trail']['event_count']} ledger event(s), trail: {scaffold['trail']['completeness']}) "
+        f"-> {resolved_out_dir}"
     )
     try:
         _ledger_auto_log(
@@ -18532,7 +18588,12 @@ def _paths_are_same_location(a: Path, b: Path) -> bool:
     """True if `a` and `b` refer to the SAME filesystem location — by
     INODE IDENTITY (`os.path.samefile`, i.e. `(st_dev, st_ino)`), never by
     string equality (Cyra HOLE 1, PR #117 re-verify — reopened the
-    H1/CRITICAL self-destruct class). `Path.resolve()` preserves
+    H1/CRITICAL self-destruct class). Reused verbatim (not re-forked) by
+    `_skill_reject_out_under_claude_skills` (SKILL DRAFT SCAFFOLD region,
+    above — issue #133, Cyra CRITICAL re-review) for the exact same
+    class of bug: a `Path.is_relative_to()` STRING comparison there missed
+    a case-folded `--out` on a case-insensitive filesystem the same way an
+    `==` comparison missed one here. `Path.resolve()` preserves
     as-typed case, but macOS APFS (default) and Windows NTFS (default)
     are case-INSENSITIVE — the real deployment filesystem for both
     `.tess/state/memory` and `~/.claude/projects/<flattened>/memory` — so
@@ -18570,7 +18631,13 @@ def _path_is_prefix(parent: Path, child: Path) -> bool:
     location that is about to be deleted, or deleting a location that is
     about to be copied from). Walks every ancestor of `child` (not just a
     string-prefix match against `parent`) so the nesting case is caught
-    with the same inode-identity rigor as the direct-equality case."""
+    with the same inode-identity rigor as the direct-equality case. Also
+    used by `_skill_reject_out_under_claude_skills` (SKILL DRAFT SCAFFOLD
+    region, above — issue #133): `parent=` the resolved `.claude/skills/`
+    live-skill-set root, `child=` the resolved `--out` target — refuses
+    when `--out` IS that root, or resolves to anything nested under it,
+    with the same case-insensitive/inode-identity correctness this
+    function already gives the memory-adopt self-destruct guard."""
     if _paths_are_same_location(parent, child):
         return True
     for ancestor in child.parents:
@@ -20777,7 +20844,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--out", metavar="DIR",
         help=f"output directory (default: {SKILL_DRAFTS_DIR}/<slug>, derived from the task "
              f"title); refused if it resolves under {CLAUDE_SKILLS_LIVE_DIR}/ (the live "
-             f"skill set), including via '..' traversal or a symlink",
+             f"skill set) by inode identity, including via '..' traversal, a symlink, or a "
+             f"differently-cased path on a case-insensitive filesystem",
     )
     p_skill_from_task.add_argument("--force", action="store_true", help="overwrite a non-empty --out directory")
     p_skill_from_task.add_argument("--harness", required=True, help="acting harness (ledger actor)")

@@ -139,13 +139,42 @@ All notable changes to Tess OS are documented here. This project adheres to
     traversal or a pre-planted symlink whose resolved target lands there
     — `Path.resolve()` dereferences both before the comparison, never a
     raw string match against the operator's literal argument.
-  - `tests/test_skill_from_task.py` (31 tests): narrated vs.
+  - **★ CRITICAL PR review fix (Cyra, live-reproduced on macOS, PR #140
+    re-review, 2026-07-20):** the fix directly above was itself broken —
+    the RE-verified bypass class PR #117 (`tessctl memory adopt`, Cyra HOLE
+    1) already found once. `_skill_reject_out_under_claude_skills` compared
+    `Path.resolve()` output with `Path.is_relative_to()` — a case-SENSITIVE
+    STRING comparison. macOS APFS and Windows NTFS (the real default
+    deployment filesystems) are case-INSENSITIVE, so `--out
+    .CLAUDE/skills/evil-skill` resolved to a DIFFERENT string than
+    `.claude/skills` even though it was THE SAME DIRECTORY on disk — the
+    write landed in the real live skill set with exit 0. CI (Linux,
+    case-sensitive) never exercised this path, which is exactly why it
+    shipped green. Fixed by mirroring #117's PROVEN fix exactly instead of
+    reinventing it: reuses `_path_is_prefix`/`_paths_are_same_location`
+    (MEMORY ADOPT region) verbatim — INODE IDENTITY (`os.path.samefile`,
+    `(st_dev, st_ino)`), never a string/case comparison; correct regardless
+    of case-folding AND NFC/NFD unicode normalization. Also (MED, Cyra):
+    the `skill_generated` ledger event now records the RESOLVED `--out`
+    target, so a ledger/audit review can detect an out-of-bounds write
+    after the fact. Also (LOW, Reid ×2): the `except Exception` around
+    `Path.resolve()` narrowed to `(OSError, RuntimeError)`; a relative
+    `--out` is now anchored to `root` (matching the forbidden-root check's
+    own anchor), never the caller's `Path.cwd()`.
+  - `tests/test_skill_from_task.py` (35 tests): narrated vs.
     mechanical-only vs. empty-trail scaffolds → frontmatter/loadable-format
     checks → the auto-activation scope-boundary guarantee →
     `--out`/`--force` conflict handling → unknown-task refusal →
     read-only-against-the-task-record proof → `skill_generated` ledger
     accountability (including visibility to a subsequent `tessctl audit
-    export`) → schema/lint coverage for the new ledger event class.
+    export`) → schema/lint coverage for the new ledger event class → the
+    `.claude/skills/` `--out` refusal (literal/root/`..`/symlink/`--force`)
+    → an FS-independent inode-identity regression test of the case-fold
+    bypass (constructed via symlink so it holds on case-sensitive AND
+    case-insensitive filesystems, not just whichever one CI happens to
+    run on) plus an opportunistic, runtime-gated test of the exact
+    real-world case-fold scenario end to end whenever the test runner's
+    own filesystem actually supports it.
 - **Phase 0.5 — the structured stuck-packet (`tessctl tasks block`, issue
   #129)**, `tasks handoff`'s sibling on top of the Phase 0.2 TASK STORE +
   ACCOUNTABILITY LEDGER: `handoff` routes a task forward ("here's a task,

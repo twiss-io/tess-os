@@ -52,6 +52,24 @@ Coverage:
   * Issue #133 (Reid LOW): doc-accuracy regression pinning the REAL
     `--help` flag set (`--out`/`--force`/`--harness`/`--session`/
     `--persona`/`--json`) — no `--slug` flag exists.
+  * ★ CRITICAL (Cyra, live-reproduced on macOS, PR #140 re-review): the
+    `.claude/skills/` refusal is INODE-IDENTITY based (`os.path.samefile`,
+    mirroring PR #117's proven `tessctl memory adopt` fix verbatim), never
+    a case-sensitive string comparison — a `Path.is_relative_to()` string
+    check missed a case-folded `--out .CLAUDE/skills/x` on macOS APFS/
+    Windows NTFS (both case-insensitive) while CI (Linux, case-sensitive)
+    stayed green. Covered two ways: an unconditional, FS-independent test
+    of the comparison PRIMITIVES directly (a same-inode, differently-typed
+    pair constructed via symlink, so it holds on ext4 too, not just an
+    opportunistically case-insensitive runner) and an opportunistic,
+    runtime-gated test of the exact real-world scenario end-to-end via the
+    CLI, whenever the runner's OWN filesystem actually case-folds.
+  * MED (Cyra): the `skill_generated` ledger event records the RESOLVED
+    `--out` target, so a later ledger/audit review can detect an
+    out-of-bounds write after the fact.
+  * LOW (Reid): a relative `--out` is anchored to `root` (TESS_ROOT), never
+    the caller's `Path.cwd()` — proven by invoking from a cwd that is
+    deliberately not `root`.
 """
 
 from __future__ import annotations
@@ -138,6 +156,19 @@ def _frontmatter(text: str) -> dict:
     end = text.index("\n---\n", 4)
     fm_text = text[4:end]
     return yaml.safe_load(fm_text)
+
+
+def _fs_is_case_insensitive(tmp_path) -> bool:
+    """Runtime detection (never a hardcoded platform-name guess) of whether
+    the ACTUAL filesystem backing `tmp_path` folds case — macOS APFS and
+    Windows NTFS do by default; Linux ext4/overlay (this repo's CI runner)
+    does not. Used to gate the opportunistic real-case-fold CLI test below
+    (PR #140 re-review, Cyra CRITICAL): writes a probe file under one
+    spelling and checks whether a DIFFERENTLY-cased spelling reads it back."""
+    probe_dir = tmp_path / f"_case_probe_{os.getpid()}"
+    probe_dir.mkdir(exist_ok=True)
+    (probe_dir / "CaseProbeFile").write_text("x", encoding="utf-8")
+    return (probe_dir / "caseprobefile").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +443,140 @@ def test_out_under_claude_skills_refused_even_with_force(sroot):
 
 
 # ---------------------------------------------------------------------------
+# ★ CRITICAL regression (Cyra, live-reproduced on macOS APFS, PR #140
+# re-review — the SAME bug class as PR #117's Cyra HOLE 1): the first
+# version of the `.claude/skills/` refusal above compared `Path.resolve()`
+# output with `Path.is_relative_to()` — a case-SENSITIVE STRING comparison.
+# macOS APFS (and Windows NTFS) are case-INSENSITIVE, so `--out
+# .CLAUDE/skills/evil-skill` resolved to a DIFFERENT string than
+# `.claude/skills` even though it is THE SAME DIRECTORY on disk — the
+# string check silently passed and the write landed in the real live skill
+# set. CI (Linux, case-sensitive) never exercised this path, which is
+# EXACTLY why it shipped green — so these tests are written to hold
+# regardless of the runner's own filesystem case-(in)sensitivity, never by
+# relying on it.
+# ---------------------------------------------------------------------------
+
+def test_inode_identity_catches_same_location_naive_string_check_would_miss(engine, tmp_path):
+    """FS-INDEPENDENT regression test — exercises the comparison PRIMITIVES
+    directly (`_paths_are_same_location` / `_path_is_prefix`,
+    `.tess/bin/tessctl`, reused verbatim from PR #117's own proven
+    `tessctl memory adopt` fix), not just the CLI on whatever filesystem
+    happens to be under the test runner. Native case-folding itself can
+    only be reproduced on an actually case-insensitive filesystem (see the
+    opportunistic test below) — but the ROOT CAUSE this regression guards
+    against is broader than case-folding alone: it is ANY same-inode pair
+    of paths whose STRINGS differ, which a symlink reproduces identically
+    on every POSIX filesystem (ext4, APFS, ...), independent of case rules.
+    Deliberately calls the comparison with a RAW, NOT-`.resolve()`d child
+    path — proving the safety property holds at the primitive layer itself,
+    not only because `Path.resolve()` happens to normalize it away first.
+    """
+    real_skills = tmp_path / ".claude" / "skills"
+    real_skills.mkdir(parents=True)
+    forbidden = real_skills.resolve()
+
+    # A same-INODE, differently-SPELLED alias — the portable stand-in for
+    # "macOS/Windows treat these two spellings as the same directory
+    # natively." Deliberately a DISTINCT name (not a literal case-variant
+    # of `.claude`) so this construction itself works identically whether
+    # the underlying filesystem case-folds or not (a literal `.CLAUDE`
+    # symlink next to an existing `.claude` would collide/fail to even
+    # create on a case-insensitive filesystem, since the OS would see them
+    # as the same path already).
+    alias_parent = tmp_path / "sneaky-alias-parent"
+    alias_parent.mkdir()
+    alias = alias_parent / "alias-for-skills"
+    alias.symlink_to(real_skills)
+    raw_child = alias / "evil-skill"  # NOT .resolve()d — simulates a pre-normalization view
+
+    # The naive STRING check this replaced would MISS it (this is the bug):
+    assert raw_child.is_relative_to(forbidden) is False, (
+        "sanity: the raw alias path must NOT look like a string-prefix match — "
+        "otherwise this test isn't proving anything about inode vs. string identity"
+    )
+    # The INODE-based check (the fix) catches it:
+    assert engine._paths_are_same_location(forbidden, alias) is True
+    assert engine._path_is_prefix(forbidden, raw_child) is True
+    assert engine._path_is_prefix(forbidden, alias) is True
+
+    # Negative control — a genuinely unrelated location (no shared inode
+    # anywhere in its ancestry) must NOT be flagged; this isn't a blanket
+    # false-positive machine.
+    unrelated = tmp_path / "totally-unrelated" / "skills" / "fine-skill"
+    unrelated.parent.mkdir(parents=True)
+    assert engine._path_is_prefix(forbidden, unrelated) is False
+
+    # Full-integration bonus (still FS-independent): the actual production
+    # entrypoint, called with the RAW alias path, also refuses — locking in
+    # that `_skill_reject_out_under_claude_skills` really does route through
+    # `_path_is_prefix`/`_paths_are_same_location` end to end, not just that
+    # those primitives are independently correct in isolation.
+    fake_root = tmp_path  # only `root / CLAUDE_SKILLS_LIVE_DIR` is read
+    with pytest.raises(engine.SkillError, match="claude/skills"):
+        engine._skill_reject_out_under_claude_skills(fake_root, raw_child)
+
+
+def test_out_under_claude_skills_refused_via_real_case_fold_when_fs_supports_it(sroot, tmp_path):
+    """Opportunistic, runtime-gated (never hardcoded by platform name) proof
+    of the EXACT scenario Cyra reproduced live: `--out .CLAUDE/skills/
+    evil-skill` (upper-case) against a real, existing lower-case
+    `.claude/skills`, through the FULL CLI end-to-end path. Only runs when
+    the test runner's OWN filesystem is actually case-insensitive (macOS
+    APFS, Windows NTFS — both real deployment targets); cleanly skipped
+    (never silently "passed") on a case-sensitive runner such as this
+    repo's Linux CI, where a native case-fold literally cannot be
+    constructed at all — see the unconditional, FS-independent primitive
+    test above for the guarantee that holds regardless."""
+    if not _fs_is_case_insensitive(tmp_path):
+        pytest.skip(
+            "this filesystem is case-sensitive (no native case-fold to reproduce here) — "
+            "see test_inode_identity_catches_same_location_naive_string_check_would_miss "
+            "for the FS-independent guarantee"
+        )
+    (sroot / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    task_id = _new_task(sroot, "Real case-fold bypass probe")
+    case_variant_target = sroot / ".CLAUDE" / "skills" / "evil-skill"
+
+    r = _from_task(sroot, task_id, "--out", str(case_variant_target))
+    assert r.returncode != 0, (
+        "CRITICAL: a case-folded --out must be refused — "
+        f"got exit 0, stdout={r.stdout!r}"
+    )
+    assert "claude/skills" in (r.stdout + r.stderr).lower()
+    assert not any((sroot / ".claude" / "skills").iterdir()), (
+        "nothing must land in the real live skill set via the case-folded path"
+    )
+
+
+def test_relative_out_dir_anchored_to_root_not_cwd(sroot, tmp_path):
+    """LOW (Reid, PR #140 re-review): a relative `--out` is anchored to
+    ROOT, never the caller's `Path.cwd()`. The forbidden-root check itself
+    is anchored to `root` — anchoring the candidate `--out` to whatever
+    the shell's cwd happens to be (which need not equal `root`; `TESS_ROOT`
+    is an independent env var) rested the two sides of that comparison on
+    different, only-sometimes-equal reference frames. Invokes from a cwd
+    that is deliberately NOT `root` to prove the anchor is now correct."""
+    task_id = _new_task(sroot, "Relative --out anchor check")
+    elsewhere_cwd = tmp_path / "elsewhere-cwd"
+    elsewhere_cwd.mkdir()
+    env = {**os.environ, "TESS_ROOT": str(sroot)}
+    r = subprocess.run(
+        [sys.executable, str(sroot / ".tess" / "bin" / "tessctl"), "skill", "from-task", task_id,
+         "--harness", "ada", "--out", "relative-drafts/my-skill"],
+        cwd=str(elsewhere_cwd), env=env, capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    out_dir = Path(r.stdout.splitlines()[0].split("->")[-1].strip())
+    assert out_dir == sroot / "relative-drafts" / "my-skill", (
+        "a relative --out must resolve against TESS_ROOT, not the caller's shell cwd"
+    )
+    assert not (elsewhere_cwd / "relative-drafts").exists(), (
+        "must NOT have landed relative to the caller's cwd"
+    )
+
+
+# ---------------------------------------------------------------------------
 # --out / --force conflict handling (mirrors `audit export`'s own precedent).
 # ---------------------------------------------------------------------------
 
@@ -519,6 +684,25 @@ def test_skill_generated_ledger_event_is_logged(sroot):
     assert new_event["actor"]["harness"] == "ada"
     assert "draft skill" in new_event["summary"]
     assert task_id in new_event["summary"]
+
+
+def test_skill_generated_ledger_event_records_resolved_out_dir(sroot):
+    """MED (Cyra, PR #140 re-review): the `skill_generated` ledger event
+    must record the RESOLVED `--out` target — without it, a later ledger/
+    audit review has no way to detect (after the fact) that a generation
+    landed somewhere unexpected; the event previously recorded only THAT a
+    draft was scaffolded, never WHERE."""
+    task_id = _new_task(sroot, "Ledger records out_dir")
+    r = _from_task(sroot, task_id, harness="ada")
+    assert r.returncode == 0, r.stdout + r.stderr
+    out_dir = Path(r.stdout.splitlines()[0].split("->")[-1].strip())
+
+    events = _events(sroot, task_id)
+    skill_events = [e for e in events if e["event"] == "skill_generated"]
+    assert len(skill_events) == 1
+    assert str(out_dir.resolve()) in skill_events[0]["summary"], (
+        "the resolved --out target must appear in the ledger summary"
+    )
 
 
 def test_skill_generated_event_visible_to_subsequent_audit_export(sroot, tmp_path):
