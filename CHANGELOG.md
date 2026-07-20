@@ -5,7 +5,699 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **`tools/receipt-emit/` — the Agent Receipt EMIT CLI**, closing the gap
+  `tools/receipt-verify/` left open: the verifier could confirm a receipt
+  was genuine, but nothing in this repository actually PRODUCED one. This
+  is the write-side counterpart.
+  - **Attaches to System B, never System A.** Wraps an already-signed
+    `verdict.schema.json` instance (`disposition: APPROVE`) or hard-floor
+    sign-off artifact — the GPG verdict/sign-off loop
+    `tools/receipt-verify/` already verifies standalone. It is explicitly
+    NOT a wrapper for the `run_pipeline` HMAC approval, which is not a
+    receipt `decision_kind` this schema recognizes; a `--decision` shaped
+    like anything else is refused before any file is touched
+    (`assemble.infer_decision_kind`).
+  - **`receipt_emit.py emit --decision ... --rule-id ... --policy ...
+    --actor ... --summary ... --key-id ... --chain ... [--gnupg-home ...]
+    [--trust NAME FINGERPRINT KEYFILE ...] [--json]`** assembles the
+    envelope, copies the fired `core/policy/policy.yaml` rule VERBATIM
+    (READ-ONLY — `policy_lookup.py` never writes the policy file),
+    GPG-signs it, atomically appends it to `--chain`, and self-verifies
+    the CANDIDATE chain by invoking the real, independent
+    `tools/receipt-verify/receipt_verify.py verify-chain` as a
+    subprocess BEFORE the candidate ever becomes the committed file —
+    only a `CHAIN INTACT` result is ever persisted.
+  - **Fail-closed:** a non-`APPROVE` verdict or an incomplete/unsigned
+    signoff is refused with nothing written; `receipt_signature.signed_by`
+    is always derived from the decision's own identity (never
+    independently supplied), with a defense-in-depth re-check
+    (`tools/receipt-verify/checks.py`'s own `check_identity_consistency`,
+    reused, not reimplemented) proving the guard actually fires on a
+    forced mismatch; a simulated crash between the candidate write and
+    the atomic rename leaves the chain file byte-for-byte unchanged with
+    no orphaned temp file (`chain_atomic.py`).
+  - **Reuses, never reimplements:** `tools/receipt-verify/canonical.py`
+    for canonicalization and `tools/receipt-verify/checks.py` for
+    decision-shape, identity, and guardrails.md Rule 18 pairing checks —
+    the same checks the verifier itself runs, so emit and verify can
+    never silently drift apart on what counts as valid.
+  - **Honest label on every successful emit:** genuinely GPG-signed and
+    tamper/chain-evident, but NOT trust-anchored until the signer's key is
+    registered in `core/policy/policy.yaml` (`verifier_keys`/
+    `signoff_keys`, still empty by design) — key-ceremony registration
+    remains a separate, Xavier-gated decision this tool does not perform.
+  - **Known limitation, disclosed not hidden:** no advisory lock against
+    two concurrent emitters racing the same `--chain` file
+    (last-writer-wins on the rename, not corruption) — a natural,
+    explicitly out-of-scope follow-on; a single-writer-at-a-time model is
+    safe today.
+  - `tests/test_receipt_emit_semantics.py` (unit-level: policy lookup,
+    decision-kind inference, identity/pairing checks, atomic-append
+    crash-safety) + `tests/test_receipt_emit_cli.py` (subprocess, real GPG
+    keys, real self-verify subprocess, including a two-emit
+    verdict-then-signoff chain-continuity round trip).
+  - **PR review fix (Reid CRITICAL, reproduced end-to-end):**
+    `gpg_sign.resolve_fingerprint` originally collected EVERY `fpr:` line
+    from `gpg --with-colons --list-keys <key-id>` — but GPG emits one
+    `fpr:` per key COMPONENT, not one per certificate, so any normal key
+    with a default encryption subkey (the standard `gpg
+    --quick-generate-key` / `--full-generate-key` shape) has at least two
+    `fpr:` lines, tripping the "matches more than one distinct key"
+    refusal BEFORE signing — the tool refused essentially every real
+    operator key. Fixed by only accepting an `fpr:` line that immediately
+    follows a `pub:` (primary) record, never one following a `sub:`
+    record. Every other GPG identity anywhere in this test suite is
+    deliberately sign-only/subkey-less, which is why this was never
+    caught by CI; a new regression fixture
+    (`tests/_receipt_emit_fixtures.py`'s `subkey_bearing_gpg_key`)
+    generates a REALISTIC key with a default encryption subkey and proves
+    both `resolve_fingerprint` and a full end-to-end `emit` succeed with
+    it — verified to FAIL on the pre-fix code and PASS after. Also (Reid
+    LOW): the `gpg`-on-`PATH` friendly pre-check in `receipt_emit.py` now
+    runs regardless of `--gnupg-home` (it was previously skipped whenever
+    `--gnupg-home` was set, relying on a less-friendly downstream error
+    instead).
+- **Phase 0.6 — the SKILL DRAFT SCAFFOLD (`tessctl skill from-task`, issue
+  #131)** — demo-to-skill, the "gets smarter from your work" pattern: a
+  completed task + its REAL ledger trail becomes a scaffolded, DRAFT,
+  human-reviewed reusable skill fitting the existing `.claude/skills/*/
+  SKILL.md` progressive-disclosure format.
+  - **Inspection grounding:** `.claude/skills/*/SKILL.md` (mirrored core-
+    managed at `.tess/core/skills/`) is a real skill format — YAML
+    frontmatter + a progressive-disclosure body — consumed natively by the
+    Claude Code host's own skill loader. There was no in-repo loader,
+    parser, or curator for this format anywhere in `.tess/bin/tessctl`
+    before this phase; this build generates INTO that existing real format,
+    never inventing a new one.
+  - **`tessctl skill from-task <id> --harness H [--out DIR] [--force]
+    [--session S] [--persona P] [--json]`** reads the task record plus
+    every ledger event referencing it (reusing the AUDIT PACK region's own
+    `_audit_collect_events_by_shard`, no forked scan) and writes
+    `SKILL.md` (`status: draft`, a step sequence built ONLY from the REAL
+    matched ledger events, a reusable-instructions section built ONLY from
+    the task's own recorded `notes`/`evidence`) plus a self-contained
+    `provenance.json` sidecar (the SAME "one generator, two
+    serializations" precedent the audit pack's `manifest.json`+
+    `SUMMARY.md` already established) to `.tess/state/skills/drafts/
+    <slug>/` — a FIFTH `.tess/state/**` subsystem, fenced the same
+    four-layer way as memory/tasks/ledger/locks.
+  - **Honesty is the point, again.** A THIN trail (no matched ledger
+    events, or events with no recorded notes) produces a THIN scaffold:
+    explicit `gap_flags` naming exactly what a human must fill in, never
+    fabricated procedural prose. A source task not marked `done` gets a
+    prominent warning banner.
+  - **Never auto-activated.** Writes only to `.tess/state/skills/drafts/`,
+    deliberately NEVER `.claude/skills/` (the LIVE, core-managed,
+    host-loaded skill set). No promotion command, curator, or autonomous
+    loop is built in this phase — a human/curator reviews and promotes a
+    draft manually.
+  - A `skill_generated` ledger event class, logged through the EXISTING
+    `_ledger_auto_log` → `_log_append_event` hash-chain append path — no
+    fork of the chain algorithm, same pattern `earmarked`/`handoff`/
+    `blocked` already established. Generation is read-only against the
+    task record itself.
+  - `tests/test_skill_from_task.py` (25 tests): narrated vs.
+    mechanical-only vs. empty-trail scaffolds → frontmatter/loadable-format
+    checks → the auto-activation scope-boundary guarantee →
+    `--out`/`--force` conflict handling → unknown-task refusal →
+    read-only-against-the-task-record proof → `skill_generated` ledger
+    accountability (including visibility to a subsequent `tessctl audit
+    export`) → schema/lint coverage for the new ledger event class.
+- **Phase 0.5 — the structured stuck-packet (`tessctl tasks block`, issue
+  #129)**, `tasks handoff`'s sibling on top of the Phase 0.2 TASK STORE +
+  ACCOUNTABILITY LEDGER: `handoff` routes a task forward ("here's a task,
+  go do it"); `block` captures a resumability packet at the point of
+  failure ("I got stuck, here's everything you need to continue").
+  - **`tessctl tasks block <id> --reason <required_input|failed_dependency|
+    gate|decision_needed|other> --summary TEXT --progress TEXT --needed
+    TEXT [--attempted TEXT ...] --harness HARNESS`** transitions `status`
+    to `blocked` and records a structured packet on the task record
+    (`task.schema.json`'s new, nullable `blocked` field) — distinct from
+    the pre-existing bare `tessctl tasks set --status blocked`, which still
+    works exactly as before and leaves `blocked: null`. Re-blocking an
+    already-blocked task replaces the packet with a fresh one (a genuinely
+    new stuck event, not a heartbeat).
+  - A `blocked` ledger event class, logged through the EXISTING
+    `_ledger_auto_log` → `_log_append_event` hash-chain append path — no
+    fork of the chain algorithm, same pattern `earmarked`/`handoff` (#125)
+    already established.
+  - Resumability: `tessctl tasks pull --status blocked` (an existing
+    filter) surfaces every stuck task; `tessctl tasks set|release --status
+    <away-from-blocked>` clears a present packet as an explicit side
+    effect of that write (never implicitly, never via `claim` — mirrors
+    the pre-existing "claiming a blocked task does not silently un-block
+    it" precedent applied to the packet too).
+  - Backward-compatible schema addition: `blocked` is a new required
+    (nullable) field, healed on read (`_task_read`) for any legacy record
+    missing it, validated BEFORE write (`_tasks_write_locked`) — the SAME
+    pattern `target_harness` established in #126, no write-then-validate
+    divergence reintroduced.
+  - Explicit non-goal: no autonomous orphan-sweeper that would auto-resume
+    a stuck task unattended — WHO/WHAT triggers a resume remains a
+    separate, later, Xavier-gated trust-boundary decision (see
+    docs/STATE_LAYER.md's "What's deliberately NOT built yet").
+  - `tests/test_task_stuck_packet.py` (36 tests) + updated fixtures in
+    `tests/test_task_store.py`/`tests/test_task_lane_handoff.py` for the
+    new required schema field.
+- **Goal I1 — the exportable auditor pack (`tessctl audit export`/
+  `verify`)**, wiring the ACCOUNTABILITY LEDGER (#113/#115) and the Agent
+  Receipt (docs/AGENT_RECEIPT_SPEC.md) into the commercial/governance
+  deliverable an insurer, client, or external auditor accepts as evidence
+  of what agents did and who approved it.
+  - **`tessctl audit export`** selects exactly one scope — `--task ID`, a
+    `--since`/`--until` time range, or `--all` — and writes a
+    self-contained bundle: `manifest.json` (machine-checkable; every field
+    `audit verify` needs is embedded verbatim, byte-identical to the live
+    ledger event/receipt shape) plus a human-readable `SUMMARY.md`
+    companion, the same two-serializations-of-one-record convention
+    `tessctl mission new` already uses for mission.md + mission.json.
+    `--origin` narrows to one shard, combinable with any scope.
+    `--receipt PATH` (repeatable) embeds an already-signed Agent Receipt
+    file verbatim after schema-validating it — there is no on-disk receipt
+    store in this repository, so receipts are supplied explicitly by the
+    caller, never auto-discovered. `--out` refuses to silently clobber a
+    non-empty existing directory without `--force`.
+  - **`export_kind: full | partial`** per shard: `full` (scope `--all`
+    only) is a completeness claim `audit verify` actively checks (genesis
+    start, no seq gap); `partial` (`--task`/range scope) makes no
+    completeness claim — a seq gap between two included events (an
+    out-of-scope event sits there) is expected and reported informational,
+    never as tamper.
+  - **`artifacts`** is built only from already-structured fields (ledger
+    `refs.task`/`refs.mission`, a receipt's own `proposed_action.repo`/
+    `ref`/`paths`, and — best-effort, `--task` scope only — the live task
+    record's current `evidence` list) — never free-text pattern-matching
+    over `summary`, which would be fragile and could mislead.
+  - **`tessctl audit verify <pack>`** re-checks a pack using ONLY its own
+    bytes — no live `.tess/state/` access at all (proven by a test that
+    deletes the source ledger after export and re-verifies against the
+    pack alone): recomputes every event's hash, cross-checks `prev_hash`
+    linkage between seq-adjacent included events, and (for `full` shards
+    only) refuses a seq gap or a non-genesis start as a missing event. For
+    an embedded receipt: schema-validates its shape and recomputes its
+    `signed_content_sha256` (both the envelope's and the embedded
+    decision's) for tamper-evidence — deliberately does NOT perform GPG
+    signature verification itself (delegated to the already-shipped
+    `tools/receipt-verify/`, avoiding a duplicate canonicalization/crypto
+    implementation) and does NOT verify multi-receipt chain links (same
+    tool's `verify-chain`). Fail-closed throughout; `--json` for
+    automation.
+  - **Honesty is the point (Xavier's own framing for this build):** every
+    exported pack embeds a `trust_boundary` object, and `SUMMARY.md`
+    surfaces it at the top, stating plainly — in the pack itself, not just
+    in prose docs a reader might skip — that the pack is tamper-evident
+    (the ledger's unsigned hash chain) but NOT cryptographically
+    non-repudiable (the verifier/sign-off key ceremony is Xavier-gated and
+    not done); that actor identity is self-reported, not attested; that a
+    receipt's GPG signature is not verified by this command; and that the
+    pack cannot prove no matching event was omitted by the exporter.
+  - **New:** `docs/AUDIT_PACK_SPEC.md` (the full spec, mirroring
+    `docs/AGENT_RECEIPT_SPEC.md`'s "what this proves and does not prove"
+    discipline); `tests/test_audit_pack.py` (48 wiring-level tests —
+    scope selection, attribution, artifact-backing, receipt embedding,
+    clean-pass verify, standalone-after-source-deleted verify, expected-
+    gap-in-partial-scope verify, and fail-closed tamper detection across
+    events, chain links, full-shard gaps, tail truncation, a stripped
+    trust_boundary, and both receipt signature layers). `docs/STATUS.md`,
+    `README.md`, and `docs/AGENT_RECEIPT_SPEC.md`'s reference table
+    cross-link the new capability with the same claim-boundary discipline
+    as every other entry.
+  - Explicitly out of scope for this change (Xavier-gated, not built here):
+    any new signing/key-provisioning command, GPG verification inside
+    `tessctl audit verify` itself, and wiring the pack into `tessctl gate`.
+  - **Fixed pre-merge (PR #128 review — Cyra 1 MEDIUM + 2 LOW, Reid 2 LOW,
+    all honesty/credibility, closed before merge since honesty IS this
+    brick's whole value):**
+    - **Cyra MEDIUM (the important one) — tail-truncation of a `full`
+      pack's LAST event(s) used to still verify OK** (genesis-start +
+      no-interior-gap alone can't see a missing tail; the tool text and
+      `docs/AUDIT_PACK_SPEC.md` overstated "full-shard assurance"/"nothing
+      excluded" as a result). Fixed at the root, not just reworded: every
+      `export_kind: full` shard now embeds its own `.tip` sidecar (the
+      SAME `{count, hash}` tail anchor `tessctl log verify` already
+      cross-checks a live shard against), and `audit verify` asserts it —
+      dropping the tail now fails closed with an itemized "tail anchor
+      mismatch" reason. A `full` shard with no `.tip` available at all
+      (only possible pre-#113) is disclosed as an informational note
+      instead of silently assumed complete — never a false pass, never a
+      hard crash on an honestly-old install either.
+    - **Cyra LOW-MED — a pre-#115 seq-absent LEGACY shard used to
+      false-positive `TAMPERED`** ("missing event") even though live
+      `tessctl log verify` correctly calls the identical on-disk shape
+      LEGACY/OK. Fixed by mirroring `_ledger_verify_shard`'s own handling:
+      a pair of included events where either lacks `seq` is still
+      hash-chain-checked (a real tamper is still caught) but never
+      seq-gap-checked; `audit verify` now prints a distinct `LEGACY`
+      status (exit 0, same OK/LEGACY/TAMPERED vocabulary `log verify`
+      already uses), not TAMPERED.
+    - **Cyra LOW — `trust_boundary` was not self-enforcing**: deleting it
+      (or rewording it) still left the rest of the pack verifying OK,
+      silently detaching the disclosure that is meant to travel WITH the
+      pack. Fixed by generating the block from one canonical function
+      shared by both export and verify, and having `audit verify` assert
+      the embedded block matches it byte-for-byte — missing, reworded, or
+      an added/removed field is now reported as tamper.
+    - **Reid LOW — `exported_by.user` (the raw local OS username) was
+      embedded into an externally-distributed pack undocumented.** Fixed
+      by disclosing it in `trust_boundary` as exactly what it is:
+      self-reported, not a cryptographic identity, redact before external
+      sharing if that is a concern — the honest-minimal fix over adding a
+      new redaction flag.
+    - **Reid LOW — `--receipt PATH` lacked the path-hygiene discipline
+      `_task_path`/`_validate_evidence_path` apply elsewhere.** Fixed by
+      refusing a symlink outright (never silently dereferenced, mirroring
+      `tessctl memory adopt`'s own refusal), and requiring a real,
+      existing, non-empty regular file — deliberately NOT root-containment
+      (a receipt is an explicitly portable, external artifact per
+      `docs/AGENT_RECEIPT_SPEC.md`, so confining it to the repo root would
+      break the format's own stated purpose).
+
+- **Phase 0.4 — the external-harness-worker LANE + `tessctl tasks handoff`
+  (issue #125)**, built on top of the Phase 0.2 TASK STORE + ACCOUNTABILITY
+  LEDGER and #121's Codex render-target mount: makes an external harness
+  (first: Codex) a first-class task WORKER lane, not just a session that
+  can read the shared board.
+  - **`target_harness` (task.schema.json)** — a new required, enum-
+    constrained field (`codex | claude-code | any`) recording which harness
+    a task is EARMARKED for, distinct from `created_by.harness` (who
+    created it) and `claim`/the ledger `claim` event's `actor.harness` (who
+    actually claimed it). Named `target_harness`, not `harness` — that name
+    is already taken (the ACTOR's identity) on `tasks new|set|claim|
+    release`. Default `any` (eligible for every harness) — a task nobody
+    explicitly earmarks behaves byte-for-byte as it did before this field
+    existed. A LEGACY task record (written before this field existed —
+    `.tess/state/tasks/**` is gitignored instance data, so a real deployed
+    install genuinely has these) heals to `any` on its next touch:
+    `_task_read` backfills the missing key in memory (same "legacy, not
+    tampered" discipline the ledger's own seq-absent shard handling already
+    uses), and `set`/`claim`/`release`/`handoff` persist the healed value
+    to disk as a side effect of the mutation already happening.
+  - **`tessctl tasks new|set --lane <codex|claude-code|any>`** sets it;
+    **`tessctl tasks pull --lane <codex|claude-code>`** filters to a task's
+    own lane PLUS every unmarked (`any`) task — omitting `--lane` applies
+    no filter at all, so every existing `pull` call is unaffected.
+    `tessctl tasks claim` is UNCHANGED: the lane is advisory routing via
+    `pull`, never claim-time enforcement — a task earmarked `codex` can
+    still be claimed by a `claude-code` actor.
+  - **`tessctl tasks handoff <id> --harness <codex|claude-code>`** —
+    PREPARES (never spawns) a handoff: earmarks the lane (idempotent),
+    logs a `handoff` ledger event, and prints the exact copy-pasteable
+    invocation (`tasks claim` → `tasks set` → `tasks release`) an operator
+    hands to a fresh session of that harness, pointing it at the same
+    shared brain the render-target mounts. `any` is not a valid handoff
+    target (a handoff is addressed to ONE specific worker). The printed
+    invocation captures `$HOST`/`$PID`/`$UUID` once and threads the SAME
+    identity through `claim` and `release`, so the block is actually
+    runnable end to end as a single copy-pasted shell script.
+  - **Accountability** — two new ledger event classes, `earmarked` and
+    `handoff`, both logged through the EXISTING `_ledger_auto_log` →
+    `_log_append_event` hash-chain append path (no fork of the chain
+    algorithm, no new shard format). `earmarked` uses the same
+    only-this-changed structural classification `--heartbeat` already
+    established, not a string match. The task-record write path
+    (`_tasks_write_locked`, `tasks new`) now validates a mutation's
+    CANDIDATE record BEFORE committing it to disk, never after — a
+    validation failure leaves nothing on disk and produces no ledger entry,
+    matching the ordering `_ledger_self_validate_or_raise` has always used
+    on the ledger side.
+  - **`BOARD.md` / `tasks pull`** surface the lane (`[lane: <harness>]` on
+    an earmarked board line, a `lane=<harness|any>` pull column) — an
+    unmarked task's board line is unchanged from before this field
+    existed.
+  - **Honest constraint (mirrors #121):** no live Codex-runtime end-to-end
+    run is possible in the environment this was built in. This verifies the
+    LANE MECHANISM + wiring; a live Codex smoke test is a deferred
+    follow-up. No Codex process-spawner or daemon was built — `handoff`
+    prints an invocation, it does not execute one.
+  - `tests/test_task_lane_handoff.py` — 39 tests: earmark at creation/via
+    `set`, `pull` filtering (incl. combined with `--unclaimed`, and the
+    no-`--lane`-at-all no-op case), `claim` lane-mismatch tolerance,
+    `handoff` (idempotency, `any`-target rejection, unknown-task refusal,
+    exact printed invocation shapes including `$HOST`/`$PID`/`$UUID`
+    threading, JSON output), `_render_handoff_invocation` determinism,
+    `BOARD.md` marker, full `log verify` chain integrity after the two new
+    event classes, schema/lint coverage, and a dedicated legacy-record
+    section (all four mutating verbs heal + log correctly against a record
+    missing `target_harness`; `pull`/`render` heal in memory without
+    writing back; the standalone `validate task` command still flags it by
+    design; an engine-level proof that a validation failure of ANY kind
+    now leaves the on-disk record byte-for-byte untouched with zero ledger
+    entries).
+
 ### Security
+- **HIGH — `templates/agents-md/*` core fragments had no `tess.lock` entry;
+  core-tamper Check A never ran against them (issue #122, Cyra PoC)** —
+  the 7 files composing `AGENTS.md` (`AGENTS.md.tpl`, `worker-hard-floor.md`,
+  `gate-compliance.md`, `harness-note.md`, `session-memory.md`,
+  `shared-tasks.md`, `codex-config.toml.tpl`) had no `base_sha` pinned in
+  `.tess/tess.lock`, so tampering the SOURCE fragment, then re-rendering
+  (`tessctl render --target codex`) so the live `AGENTS.md` became
+  self-consistent with the tamper, went completely undetected by
+  `doctor`/`verify`/`lock --check` — `.tess/core/MANIFEST.md` self-disclosed
+  the gap. #121 just made `codex` an enabled-by-default render target for
+  every `npm create tess` scaffold, so this stopped being an opt-in edge
+  case and became the default path for new installs.
+  - **`.tess/tess.lock`** — added a `base_sha`-pinned, `live_path: null`
+    entry per file (the same R1 core-internal pattern `personas/*.md`
+    already uses), generated via `tessctl lock --regen --only <path> --yes`
+    (the repo's own re-pin mechanism, not hand-edited hashes).
+  - **`cmd_lock`'s `--check` loop (a second, independent bug this same fix
+    closes)** — it unconditionally skipped EVERY entry with `live_path:
+    null`, even pre-existing ones with a `base_sha` (the 6 `personas/*.md`
+    entries), so `lock --check` was never actually "equivalent to running
+    doctor in fail-fast mode" (its own docstring's claim) for this whole
+    class of file. Now mirrors `doctor`/`verify`'s own R1 branch — skips
+    only when there is truly nothing to check.
+  - **`MANIFEST.md`** — removed the self-disclosed "Known gap" caveat.
+  - Acceptance: the exact PoC (tamper `shared-tasks.md`, re-render, check)
+    now fails closed — `doctor`/`verify`/`lock --check` all report CORE
+    TAMPER named at the fragment. Reverting restores a clean pass on all
+    three.
+
+### Added
+- **Phase 0.2 — the cross-harness TASK STORE + ACCOUNTABILITY LEDGER
+  (`tessctl tasks`/`log`)**, ported from Hermes' kanban design
+  (`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md`) onto the
+  `.tess/state/` store PR #105 + #111 fenced: "task list, updates,
+  accountability list, whoever picked up a task and progress, cleared or
+  stuck, resumable by any agent." A sibling of the existing MISSION LEDGER
+  region (`tessctl mission`/`gate-status`/`retry`) — reuses the same
+  contracts-as-code + dogfood-validate + atomic-write discipline that
+  region already proved out, applied to a much more granular unit (one task,
+  not one mission).
+  - **`tessctl tasks new|set|claim|release|pull|render`** — file-per-task
+    JSON at `.tess/state/tasks/<id>.json` (`core/contracts/task.schema.json`,
+    id `T-<YYYYMMDD>-<slug>-<4hex>`, status enum
+    `backlog|ready|in_progress|blocked|review|done|cancelled`). `set` is a
+    rev-CAS optimistic-concurrency write — `--expected-rev N` refuses with
+    `TASK_CAS_CONFLICT` (no mutation) if the on-disk rev has moved past N,
+    the caller reloads and retries itself (an ETag-style workflow, not a
+    silent auto-retry that could paper over a real conflict). `claim` writes
+    a claim-lease (`host:pid:uuid` + `claimed_at`/`heartbeat_at`) and
+    auto-advances `backlog`/`ready` to `in_progress`; a live claim held by a
+    DIFFERENT claimant is refused unless it is stale (`--stale-after`,
+    default 900s) or `--force`d, in which case it is a `reclaimed` event, not
+    a silent overwrite. `render` regenerates `.tess/state/tasks/BOARD.md`, a
+    DERIVED, GENERATED-marked kanban view — never a source of truth. Every
+    mutation is serialized by a per-task advisory flock
+    (`.tess/state/locks/task-<id>.lock`, stale-pruned on the same `find
+    -mmin +N -delete` precedent `.claude/hooks/task-lock-set.sh` already
+    uses) — contention is scoped to writers of the SAME task, never a global
+    lock. A real two-OS-process concurrency test proves no lost update.
+  - **`tessctl log append|view|verify`** — a hash-chained, append-only JSONL
+    ledger at `.tess/state/ledger/<YYYY-MM>.<origin>.jsonl`
+    (`core/contracts/ledger-event.schema.json`), sharded per calendar month
+    AND per writer origin so two machines/harnesses writing concurrently
+    never contend on the same file at all. `append` computes
+    `hash = sha256(prev_hash + canonical_json(event minus hash))` (the same
+    "canonical bytes minus the field being computed" construction
+    `verdict_canonical_bytes` already uses, applied to a hash chain instead
+    of a signature); `verify` walks a shard's chain and reports the first
+    tamper or `prev_hash` break it finds. `tasks new|set|claim|release`
+    auto-log the corresponding
+    `task_transition|claim|heartbeat|release|completed|crashed|reclaimed`
+    event on every real (non-no-op) write, so the accountability trail can
+    never be silently skipped by a caller who mutated a task but forgot a
+    separate logging step.
+  - **`core/contracts/task.schema.json` + `core/contracts/ledger-event.schema.json`**
+    (the eighth and ninth contracts, keystone-tracked in `.tess/tess.lock`
+    the same way `mission.schema.json`/`retry.schema.json` already are — see
+    `core/contracts/README.md`).
+  - **Fence held, not weakened**: `.tess/state/**` was already in
+    `tess.manifest.json`'s `never_touch`, `.gitignore`'s content-ignore rules
+    (#111), and `_PUBLISH_CLEAN_PRIVATE_GLOBS` (#93) before this PR — no
+    change needed to any of the three. `tests/test_task_ledger_fence.py`
+    proves the SAME fence blocks a genuinely CLI-produced task file and
+    ledger shard (not just a synthetic placeholder): invisible to `git add
+    -A`, and still refused by `tessctl doctor --publish-clean` if
+    force-added.
+  - **Deliberately NOT built here** (separate, later PRs — Xavier's own
+    scope fence): memory-adopt (`.tess/state/memory/**`) and the
+    orphan-sweeper that would scan claim-leases for dead-PID claims and
+    auto-resume/re-dispatch abandoned work. This PR builds only the
+    substrate a future sweeper would read (claim-lease + heartbeat fields,
+    `claim`/`heartbeat`/`reclaimed`/`crashed` ledger events) — never a
+    daemon that acts on them.
+  - **Tests**: `tests/test_task_store.py` (36 tests — CRUD, CAS conflict +
+    reload-and-retry, claim/heartbeat/reclaim/force, release reason
+    classification, pull filters, render, a REAL two-process concurrency
+    proof, C1 containment, schema/lint), `tests/test_accountability_ledger.py`
+    (25 tests — genesis + chaining, sharding, view filters/sort, verify
+    clean/tamper/reorder, schema/lint), `tests/test_task_ledger_fence.py` (5
+    tests — the data-leak fence against real CLI-produced content).
+
+- **Phase 0.3 — the cross-harness MEMORY LINK (`tessctl memory adopt`)**,
+  closing the memory half of the shared-brain build (the task/ledger half
+  landed as Phase 0.2 above). A sibling of the TASK LEDGER region — same
+  `.tess/state/` store, same fail-closed discipline — but memory is
+  different from tasks/ledger in one respect: Claude Code (and, eventually,
+  other harnesses) already had a WORKING harness-private memory convention
+  before this region existed, so the job here is "adopt" (move + symlink an
+  existing directory into the canonical store), not "invent a new format."
+  - **`tessctl memory adopt`** — moves an existing harness memory
+    directory's contents into `.tess/state/memory/` and replaces the
+    original with a symlink pointing at it, so that harness's own native
+    memory reads/writes transparently land in the ONE canonical store every
+    harness mounts. Dry-run by default (`--yes` to mutate; the entire
+    planning phase — idempotency check, source/target enumeration,
+    per-file conflict detection — is read-only, so even a refused call
+    never touches disk); refuses `--from`/`--to` resolving to the same path
+    or one nested inside the other, before any mutation, by INODE IDENTITY
+    (`os.path.samefile`) rather than string equality — a self-targeted
+    adopt would otherwise treat the source's own content as "already
+    present," copy nothing elsewhere, then delete the only copy, and a
+    string compare alone is bypassable on the real deployment filesystems
+    (macOS APFS, Windows NTFS), which are case-insensitive and treat
+    differently-cased spellings of the same directory as one and the same
+    file even though `Path.resolve()` preserves as-typed case; refuses a
+    non-empty target without `--merge` (bootstrap calls with no source
+    content are exempt — nothing is being merged); refuses a source entry
+    that is a symlink (never silently dereferenced); refuses any real
+    filename+content conflict outright, with zero partial writes;
+    idempotent against an already-adopted source (a clean no-op); every
+    `OSError` reachable from planning or the mutate-for-real path —
+    including the rmtree → symlink → manifest-write swap, made crash-safe
+    via a manifest written before the source is ever touched and a
+    verified temporary-sibling symlink created before the original
+    directory is removed — is converted to a typed `MemoryAdoptError`,
+    never a raw traceback, and a failure anywhere in that swap leaves the
+    source fully intact rather than half-deleted; a post-adopt round-trip
+    read/write check through the new symlink triggers an automatic full
+    rollback (via the same revert path) if it ever fails, so no
+    half-adopted state can survive. `--harness` defaults to Claude Code's
+    own well-known per-project path
+    (`~/.claude/projects/<flattened-root>/memory/`) but any path is
+    supported via `--from`.
+  - **`tessctl memory adopt --revert`** — dry-run by default, symmetric
+    with forward-adopt (`--yes` required to mutate) — undoes an adopt from
+    THAT adopt's own recorded manifest
+    (`.tess/state/memory/.tess-memory-adopt.<harness-slug>.<source-path-hash>.json`
+    — one per adopted (harness, source-path) pair; the hash keeps two
+    differently-spelled `--harness` names that slugify identically, e.g.
+    `Claude-Code`/`claude_code`, from clobbering each other's manifest),
+    restoring exactly the files that manifest recorded — never the store's
+    current full contents, which may since have grown from a different
+    harness's own adopt or ordinary shared writes. Of those files, only the
+    ones THIS adopt itself copied in are CANDIDATES for removal from the
+    store; a file that was already present (byte-identical) before this
+    adopt ran is copied back into the restored directory but left in the
+    store, since another still-adopted harness may depend on it — and that
+    protection is symmetric: a file THIS adopt itself copied in is ALSO
+    copied-back-but-left-in-store, not removed, if any OTHER still-live
+    harness's manifest references the same filename in its own
+    `source_files` (the reverse case — this harness was the original
+    owner, and a second harness later deduped against it). Refuses (no
+    mutation, no guessing) if the recorded source path has drifted since
+    adopt (already reverted, or manually altered).
+  - **`tessctl doctor` memory-link check** — non-fatal, informational only,
+    in every case (not-adopted, adopted-and-clean, or adopted-but-broken
+    never affect doctor's errors/warnings/exit code): per adopted harness,
+    symlink present + resolving, store writable, and
+    `.tess/state/memory/MEMORY.md`'s own index coherence against what is
+    actually on disk (broken links, unindexed files).
+  - **Codex/generic AGENTS.md pointer** —
+    `.tess/core/templates/agents-md/AGENTS.md.tpl` gains a "Session Memory
+    (Shared)" section (`{{WORKER_SESSION_MEMORY}}`,
+    `.tess/core/templates/agents-md/session-memory.md`) telling a
+    worker-profile harness to read `.tess/state/memory/MEMORY.md` at
+    session start and write durable learnings back to the same store —
+    Claude Code needs no equivalent (its own harness already auto-reads
+    its memory index natively). A pure repo/state fact, not orchestration
+    doctrine — verified clean against the G3 worker-profile
+    doctrine-denylist.
+  - **Fence held, not weakened**: `.tess/state/memory/**` was already in
+    `tess.manifest.json`'s `never_touch`, `.gitignore`'s content-ignore
+    rules (#111), and `_PUBLISH_CLEAN_PRIVATE_GLOBS` (#93) before this PR —
+    no change needed to any of the three. `tests/test_memory_adopt_fence.py`
+    proves the SAME fence blocks a genuinely CLI-adopted memory file and
+    its adopt manifest (source directory deliberately outside the git
+    working tree, mirroring a real harness home-directory layout):
+    invisible to `git add -A`, and still refused by `tessctl doctor
+    --publish-clean` if force-added.
+  - **Running an actual adopt against any specific instance's own live
+    memory remains a separate, later, opt-in operation** — this PR ships
+    only the mechanism, exercised entirely against disposable `tmp_path`
+    fixtures.
+  - **Tests**: `tests/test_memory_adopt.py` (41 tests — dry-run purity,
+    bootstrap + real adopt, idempotency, every refusal (including a
+    symlinked source entry and `--from`/`--to` self-collision/nesting),
+    `--merge` skip-on-identical-content, `--revert` (dry-run-by-default +
+    `--yes` gate, multi-harness disambiguation including the
+    harness-slug-collision case, drifted-state refusal, and the
+    two-harness shared-file preservation case in BOTH directions),
+    automatic rollback on a simulated round-trip failure, crash-safety of
+    the rmtree → symlink → manifest-write swap under injected `OSError`
+    failures, a guarded `read_bytes()` failure during planning, the
+    doctor memory-link check's four states, the `--from`/`--to`
+    self-destruct guard's inode-identity check on a case-insensitive
+    filesystem (exact-same-dir and nested variants), and the
+    reverse-direction two-harness shared-file preservation case),
+    `tests/test_memory_adopt_fence.py` (8 tests — the data-leak fence
+    against real CLI-adopted content, plus the AGENTS.md render
+    assertions). **49 tests total** (15 added responding to PR #117's
+    two-reviewer REJECT — Cyra/security found the `--from`==`--to`
+    self-destruct (H1) and the revert over-removal of a second harness's
+    shared file (M1); Reid/quality independently found the same
+    self-destruct as CRITICAL plus the unguarded rmtree → symlink →
+    manifest-write region (HIGH), the harness-slug manifest collision, the
+    missing revert dry-run/`--yes` gate, and an unguarded `read_bytes()`
+    during planning — all fixed and regression-tested. Cyra's
+    re-verification of that fix (commit `18a3fea`) then found two more
+    holes: HOLE 1/HIGH — the self-destruct guard compared resolved path
+    STRINGS, bypassable on a case-insensitive filesystem (macOS APFS /
+    Windows NTFS, this project's real deployment FS), fixed with inode
+    identity (`os.path.samefile`); HOLE 2/MEDIUM — the shared-file revert
+    protection only held in one direction, fixed by making it symmetric —
+    both fixed and regression-tested before this PR ships).
+
+### Security
+- **MEDIUM — `.tess/state/{memory,tasks,ledger}/` missing content-level
+  `.gitignore` fence (issue #110, found reviewing #105)** — PR #105's
+  `.gitignore` reconciliation only content-ignored `.tess/state/locks/*`;
+  `memory/`, `tasks/`, and `ledger/` were left un-gitignored at the content
+  level, relying solely on the `tessctl doctor --publish-clean` pre-commit
+  hook (`tessctl gate install-hooks`) — opt-in, not guaranteed installed on
+  every clone/re-init. On an instance without the hook, a plain
+  `git add -A` would silently STAGE real memory/task/ledger data;
+  `docs/STATE_LAYER.md`'s "can never leak regardless of gitignore state"
+  claim overclaimed for those three subdirs.
+  - **`.gitignore`** — added `.tess/state/memory/*` / `.tess/state/tasks/*`
+    / `.tess/state/ledger/*` (each with a `!.../.gitkeep` re-include),
+    mirroring the existing `.tess/state/locks/*` pattern and the
+    `kb/wiki/**` / `missions/**` / `operator/**` precedent buckets. New
+    files under any of the four subdirs are now structurally invisible to
+    `git add`, independent of whether the pre-commit hook is installed.
+  - **`docs/STATE_LAYER.md`** — reconciled the fence description from a
+    "three-part fence + gitignore only for locks/" framing to the accurate
+    four-part fence (never_touch, gitignore, publish-clean, scaffold-empty)
+    now applying symmetrically to all four subdirectories.
+  - **`tests/test_gitignore_reconciliation.py`** — extended with
+    `.tess/state/{memory,tasks,ledger,locks}` cases (ignored-content +
+    tracked-`.gitkeep` parametrizations) and a new
+    `test_git_add_dash_a_never_stages_real_state_content_no_hook` — a real
+    fresh git repo, no pre-commit hook installed, real files written under
+    all four subdirs, `git add -A`, asserts none staged (`git diff --cached
+    --name-only`) and none surfaced in `git status`, while each `.gitkeep`
+    stays the only tracked entry.
+
+- **HIGH+MEDIUM+LOW×4 — TASK STORE + ACCOUNTABILITY LEDGER hardening
+  (issue #114, found reviewing #113; fixed in #115)** — a consolidated fix
+  for all six findings from #113's two-reviewer gate (Reid + Cyra), before
+  any consumer — in particular the future orphan-sweeper — trusts
+  `claim.heartbeat_at` or the ledger's integrity guarantees:
+  1. **[Reid HIGH]** `tessctl tasks set --heartbeat` had no claimant-identity
+     check — a forgeable liveness signal; anyone who merely knew a task id
+     could renew a DIFFERENT claimant's claim. Now requires
+     `--host`/`--pid`/`--uuid` matching the current claim
+     (`TASK_NOT_CLAIMANT` otherwise, or `--force`).
+  2. **[Reid MEDIUM]** `tessctl tasks claim`'s default `--uuid` was a fresh
+     `uuid4()` per call, so a same-process re-claim (e.g. after a restart)
+     was never recognized as itself. Now a stable `uuid5` derived from
+     `(host, pid)`.
+  3. **[Cyra M1]** The ledger's pure `prev_hash` chain walk was blind to a
+     removed TAIL line or a whole shard deleted outright — neither leaves a
+     chain-break trace. Added a per-event monotonic `seq`, a per-shard
+     `.tip` sidecar, and a ledger-wide `.registry.json`; `log verify`
+     cross-checks all three.
+  4. **[Cyra M2]** `_prune_stale_locks` had a TOCTOU window (check-then-
+     unlink) and a safety comment incorrectly claiming that unlinking a
+     lock file can never disturb a live holder. Fixed with a
+     non-blocking-flock-then-inode-recheck gate before any unlink; the
+     comment is corrected.
+  5. **[Cyra L1]** Reworded "tamper-evident"/"instead of a signature"
+     overclaims in the ledger-event schema, engine comments, and
+     `docs/STATE_LAYER.md` — an unsigned hash chain detects non-re-chained
+     edits, not an adversary who also rewrites the `.tip`/registry
+     consistently with a shortened chain, and it is not a signature.
+  6. **[Cyra L2]** Documented the trust boundary explicitly: claim-leases
+     are advisory coordination (filesystem write access is the real
+     boundary), not authentication.
+  - Full suite green (1555 passed) at the time, `doctor`/`verify`/`lock
+    --check` green. Closes #114.
+  - **Follow-up LOWs from the same #115 review, closed in a later
+    consolidated PR:** a shard written before this hardening (no `seq` on
+    any line) false-reported `TAMPERED` under `log verify` and hard-refused
+    `log append` — now read as `LEGACY` and backfilled, not refused
+    (Cyra-LOW/Reid-MED); a `--force`/non-claimant heartbeat's ledger event
+    was misclassified as `task_transition` by exact string-equality on
+    `changes` — now classified by an explicit structural boolean, so it
+    still logs under `heartbeat` (Reid-LOW).
+
+- **P0 G-01 — npm scaffold key-leak (readiness audit, 2026-07-19)** — the
+  published `create-tess` 0.1.0 (npm, 2026-06-28) clones `twiss-io/tess-os`
+  main HEAD **UNPINNED**, and every `main` commit since PR #91 (which
+  registers this repo's own verifier, Cyra, so this repo's gate can accept
+  her verdicts on its OWN doctrine changes) carries the real bundled PUBLIC
+  key file `.tess/keys/verifiers/cyra.asc`. Neither the scaffold copy filter
+  (`create-tess/src/ignore.js`) nor the policy reset (`create-tess/src/
+  policy-reset.js`, which only rewrites the two `policy.yaml` YAML maps back
+  to `{}`, never a raw key FILE) ever stripped that file, so every
+  `npm create tess` run shipped a scaffolded project trusting the Twiss
+  maintainer's own verifier key as if it were the scaffolded project's OWN
+  trust root — public-key-only, ~zero adoption, so low realized risk, but the
+  exact "governance vendor leaks its scaffold" launch landmine.
+  - **`create-tess/src/ignore.js`** — `.tess/keys/verifiers` and
+    `.tess/keys/signoffs` added as whole-subtree `EXCLUDE_DIR_PREFIXES`
+    (mirroring the existing `.claude/tess-secrets` / `.claude/channels`
+    treatment). The unrelated, intentionally-bundled release-verification key
+    (`.tess/keys/twiss-release-key.asc`, used by `tessctl update` to verify an
+    upstream fetch) is deliberately NOT excluded — this is a targeted fix, not
+    a blanket "never copy `.tess/keys/`" hammer.
+  - **`create-tess/test/scaffold-key-guard.test.js` (new, permanent CI
+    guard)** — a real, non-interactive, end-to-end scaffold run whose output
+    is scanned for (a) ANY PGP key-block marker or the registered Cyra
+    fingerprint ANYWHERE in the produced tree (not just the two known paths —
+    catches a future leak wherever it recurs) and (b) confirms
+    `.tess/keys/verifiers`/`.tess/keys/signoffs` do not exist at all while
+    `.tess/keys/twiss-release-key.asc` still ships intact. Wired into the
+    existing `create-tess` CI job (node 18/24) automatically — Node's test
+    runner discovers any `test/*.test.js`.
+  - **Pinned clone (reproducibility)** — `create-tess/src/scaffold.js`'s
+    git-clone path previously had NO ref at all (`git clone --depth 1
+    <source>`, whatever the default branch's HEAD tip happened to be at the
+    exact moment a user ran the wizard). Added `DEFAULT_TEMPLATE_REF`
+    (`create-tess-v0.1.2` — create-tess's own tag namespace, per
+    `.github/workflows/publish-npm.yml`, decoupled from the framework's own
+    `v*` release tags) plus `resolveTemplateRef()`/`buildCloneArgs()`: the
+    default source now clones a pinned, tagged release — the exact same
+    tess-os commit every time, one that has already passed this repo's own
+    CI (including the new guard test) — never an in-flight main tip. New
+    `--template-ref` flag / `TESS_TEMPLATE_REF` env var let an operator
+    override to a different ref; a custom `--template-source` is left
+    unpinned (its own branch tip) unless a ref is explicitly given, so a
+    fork/mirror/CI-fixture source is unaffected.
+  - **`create-tess` bumped 0.1.1 → 0.1.2** (package.json was already
+    unpublished-bumped to 0.1.1 by an earlier merge-train; this fix bumps it
+    further since the earlier bump was never published). npm publish itself
+    is NOT run by this change — remains Xavier's credentialed action (`git
+    tag create-tess-v0.1.2 && git push origin create-tess-v0.1.2`, or
+    `workflow_dispatch` with `confirm_version: 0.1.2`, per
+    `.github/workflows/publish-npm.yml`).
+  - **8 new / extended tests** (units.test.js: key-exclusion unit coverage +
+    ref-pinning unit coverage; scaffold-key-guard.test.js: the end-to-end
+    regression lock). Full create-tess suite: **33 passed**, zero
+    regressions; `tessctl doctor`/`verify` clean on every produced scaffold.
 - **DATA-LEAK-SAFETY (issue #92)** — the write-gate (`check_manifest_write_gate`
   / `guarded_write`) was solid: `tessctl` itself already refuses to write to a
   `never_touch` path. The COMMIT boundary (`.gitignore`) had drifted from it —

@@ -168,13 +168,18 @@ are enabled for this install — without rendering.
   `adapters/codex/README.md`) plus a plain `prompts/*.md` mirror, for any
   other AGENTS.md-reading agent. See `adapters/generic/README.md`.
 
-Neither `codex` nor `generic` is in `tess.manifest.json`'s
-`render_targets.enabled` default (`["claude-code"]`) — registering a target
-in `RENDER_TARGETS` is not the same as enabling it for every install; see
-that key's own `_doc` field for the rollout reasoning (the future
-harness-select wizard axis, not a hardcoded global default, is meant to make
-this call per-install). Preview either with `tessctl render --target codex`
-/ `--target generic`, or opt in permanently via `render_targets.enabled`.
+`codex` is now in this repo's own `tess.manifest.json`
+`render_targets.enabled` list (`["claude-code", "codex"]` — issue #118, a
+deliberate, reviewed manifest edit, not the engine auto-enabling a
+newly-registered target); `generic` remains un-enabled. Registering a target
+in `RENDER_TARGETS` is still never, by itself, the same as enabling it for
+every install — see `render_targets`'s own `_doc` field for the rollout
+reasoning (the future harness-select wizard axis, not a hardcoded global
+default, is meant to make this call per-install; until it exists, this
+manifest doubles as `create-tess`'s scaffold template, so this edit is also
+this repo's own new scaffold default — see `create-tess/README.md`). Preview
+`generic` with `tessctl render --target generic`, or opt it in permanently
+via `render_targets.enabled`.
 
 ## Adding a target (steps this phase actually followed)
 

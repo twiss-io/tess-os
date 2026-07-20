@@ -51,6 +51,47 @@ assumed).
 These are optional — read one only if invoked by name; this digest does not
 reproduce their contents (see the banner above for why it stays lean).
 
+## Session Memory (Shared)
+
+This project keeps ONE memory shared across every harness, at
+`.tess/state/memory/` (`tessctl memory adopt`, docs/STATE_LAYER.md). At the
+start of a session, read `.tess/state/memory/MEMORY.md` — the index — and
+follow a linked file only when it is relevant to the current task; do not
+read the whole store up front.
+
+Write durable, reusable learnings back to `.tess/state/memory/` only (a new
+file plus an index line in `MEMORY.md`) — never to a private, harness-only
+copy, and never anywhere outside this project's fenced state root.
+
+## Shared Tasks
+
+This project keeps ONE task board shared across every harness, at
+`.tess/state/tasks/` (`tessctl tasks`, docs/STATE_LAYER.md). Run
+`tessctl tasks pull --unclaimed` (or `--status ready`) to see what is
+available before starting new work.
+
+Some tasks are earmarked for a specific harness (`target_harness`, set via
+`tasks new|set --lane`). Pull your OWN lane plus every unmarked task with
+`tessctl tasks pull --unclaimed --lane codex` — a task with no lane (the
+default) is open to any harness, including yours.
+
+Claim a task with your OWN `--host`/`--pid`/`--uuid` identity before
+working it — `tessctl tasks claim <id> --host <hostname> --pid <pid>
+--harness codex` (a stable `--uuid` is derived from `--host`+`--pid` if you
+omit it) — rather than starting on something nobody has claimed, or a task
+someone else already holds.
+
+Record progress back to the SAME shared board as you go — never a
+private, harness-only list: `tessctl tasks set <id> --status <status>
+--harness codex [--add-note TEXT]`, and `tessctl log append --origin
+codex --event <event> --summary TEXT` for the accountability trail.
+
+If you get stuck, do not just stop silently — record a resumable
+stuck-packet: `tessctl tasks block <id> --reason <...> --summary TEXT
+--progress TEXT --needed TEXT --harness codex`. Find stuck work with
+`tessctl tasks pull --status blocked`; moving status away from `blocked`
+clears the packet.
+
 ---
 
 Full orchestration doctrine (Claude Code as Tess) lives in

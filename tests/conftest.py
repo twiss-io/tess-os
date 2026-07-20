@@ -134,6 +134,24 @@ class Project:
 
     def write(self):
         shutil.copy2(MANIFEST_SRC, self.root / "tess.manifest.json")
+        # issue #118: MANIFEST_SRC's own render_targets.enabled is this
+        # repo's LIVE, evolving default (["claude-code", "codex"] as of
+        # #118) — copying it verbatim would make every synthetic project's
+        # enabled-target list silently track whatever this repo currently
+        # enables, which is not what most of this suite wants (most fixtures
+        # here don't seed codex/generic's own core inputs — AGENTS.md.tpl,
+        # its fragments — at all, so a target enabled-by-inheritance fails
+        # loud with "template not found" the moment anything renders). Pin
+        # every synthetic project back to the historically-stable
+        # ["claude-code"] baseline right after the copy; a test that
+        # actually wants codex/generic enabled opts in explicitly (see
+        # test_render_targets_codex_generic.py's `_set_enabled` helper),
+        # exactly like it already seeds that target's own core inputs
+        # explicitly rather than inheriting them from this repo's real core.
+        manifest_path = self.root / "tess.manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.setdefault("render_targets", {})["enabled"] = ["claude-code"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         lock = {"schema": 1, "framework": self.framework, "files": self.files}
         self.mod.save_lock(self.root, lock)
         return self.mod.load_lock(self.root)

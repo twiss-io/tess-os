@@ -150,6 +150,11 @@ def _stage(root, rel, content="x"):
     "missions/m1/mission.md",
     "UPGRADE-NOTES.md",
     ".mcp.json",
+    # Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md)
+    ".tess/state/memory/note.md",
+    ".tess/state/tasks/graph.json",
+    ".tess/state/ledger/entry.md",
+    ".tess/state/locks/task.lock",
 ])
 def test_blocks_each_private_path(engine, priv_repo, rel):
     _stage(priv_repo, rel)
@@ -248,6 +253,88 @@ def test_owned_globs_wins_clients_template(engine, priv_repo):
     manifest = engine.load_manifest(priv_repo)
     violations = engine._publish_clean_violations(priv_repo, manifest, scope="staged")
     assert violations == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.1 — .tess/state/** (memory/tasks/ledger/locks), the canonical
+# cross-harness shared-brain state root (docs/STATE_LAYER.md). Same family
+# as the create-tess scaffold-strip tests (Quinn-MED, units.test.js) and
+# tests/test_patch_no_clobber.py: prove data can never survive ANY of the
+# write paths that could otherwise carry it into a public/shared place, not
+# just one of them.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subdir", ["memory", "tasks", "ledger", "locks", "skills"])
+def test_state_never_publishable(engine, priv_repo, subdir):
+    """Three independent guarantees, proven together for each subdir:
+
+    1. `.tess/state/**` is declared in the manifest's never_touch (so the
+       write-gate — `check_manifest_write_gate` — refuses any tessctl write
+       there; ported explicitly in tests/test_write_gate.py's GATE_CASES).
+    2. The publish-clean commit gate flags real content staged under it as
+       a violation, regardless of scope.
+    3. The curated `_PUBLISH_CLEAN_PRIVATE_GLOBS` set — the thing that
+       actually implements #2 — is not silently missing the glob (would
+       make #2 pass here for the wrong reason: manifest says never_touch,
+       but the commit-side gate forgot to look).
+    """
+    never_touch = _real_manifest()["never_touch"]
+    assert ".tess/state/**" in never_touch
+
+    assert any(
+        engine.path_matches_globs(f".tess/state/{subdir}", [g])
+        for g in engine._PUBLISH_CLEAN_PRIVATE_GLOBS
+    ), f".tess/state/{subdir}/** is not covered by _PUBLISH_CLEAN_PRIVATE_GLOBS"
+
+    _stage(priv_repo, f".tess/state/{subdir}/real-instance-data.md", "real data")
+    manifest = engine.load_manifest(priv_repo)
+    violations = engine._publish_clean_violations(priv_repo, manifest, scope="staged")
+    flagged = {v[0] for v in violations}
+    assert f".tess/state/{subdir}/real-instance-data.md" in flagged
+
+
+def test_state_write_gate_denies_every_subdir(engine, gate_root_with_state_manifest):
+    """The write-gate half of the guarantee (`check_manifest_write_gate`,
+    the mechanism `.tess/bin/tessctl` itself uses before ANY write) — proven
+    directly here rather than only via the parametrized GATE_CASES table in
+    tests/test_write_gate.py, so this file's own guard does not silently
+    depend on that other file staying in sync."""
+    manifest = engine.load_manifest(gate_root_with_state_manifest)
+    for subdir, name in (
+        ("memory", "note.md"), ("tasks", "graph.json"),
+        ("ledger", "entry.md"), ("locks", "task.lock"),
+        ("skills", "drafts/x/SKILL.md"),
+    ):
+        with pytest.raises(engine.GateError):
+            engine.check_manifest_write_gate(
+                gate_root_with_state_manifest, manifest,
+                f".tess/state/{subdir}/{name}", op="test",
+            )
+
+
+def test_state_scaffold_ships_empty():
+    """The repo's own checked-in `.tess/state/**` tree (what create-tess's
+    local-source scaffold path would copy verbatim before ignore.js's
+    EXCLUDE_CONTENT_PREFIXES strips it — see create-tess/test/units.test.js
+    for that strip proven end-to-end) contains ONLY `.gitkeep` placeholders
+    today. Adopters inherit the structure, never data — this is the static
+    half of that guarantee; the dynamic half (a local source WITH real
+    content in it) is proven in create-tess's own test suite."""
+    state_root = REPO_ROOT / ".tess" / "state"
+    assert state_root.is_dir(), ".tess/state/ must exist in the repo"
+    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
+        subdir = state_root / sub
+        assert subdir.is_dir(), f".tess/state/{sub}/ must exist"
+        entries = [p for p in subdir.rglob("*") if p.is_file()]
+        assert entries == [subdir / ".gitkeep"], (
+            f".tess/state/{sub}/ must ship with ONLY .gitkeep, found: {entries}"
+        )
+
+
+@pytest.fixture
+def gate_root_with_state_manifest(tmp_path):
+    shutil.copy2(MANIFEST_SRC, tmp_path / "tess.manifest.json")
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------

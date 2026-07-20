@@ -16,7 +16,14 @@ import { SIGILS, NEUTRAL } from '../src/content/sigils.js';
 import { parseArgs } from '../src/args.js';
 import { validateName } from '../src/validate.js';
 import { isExcludedRel } from '../src/ignore.js';
-import { fetchTemplate, promote } from '../src/scaffold.js';
+import {
+  fetchTemplate,
+  promote,
+  resolveTemplateRef,
+  buildCloneArgs,
+  DEFAULT_TEMPLATE_SOURCE,
+  DEFAULT_TEMPLATE_REF,
+} from '../src/scaffold.js';
 import { resetKeyToEmptyInline, resetPolicyKeyRegistries } from '../src/policy-reset.js';
 
 // This test file's own directory — used below to read the FROZEN golden
@@ -138,6 +145,16 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.git/config',
     'node_modules/x/index.js',
     'create-tess/src/index.js',
+    // Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md):
+    // real instance data under .tess/state/** must never leak into a scaffold.
+    '.tess/state/memory/real-memory.json',
+    '.tess/state/tasks/graph.json',
+    '.tess/state/ledger/entry.md',
+    '.tess/state/locks/task.lock',
+    // Phase 0.6 (issue #131, SKILL DRAFT SCAFFOLD) — a FIFTH .tess/state/**
+    // subsystem, same treatment: real generated draft skills must never
+    // leak into a scaffold.
+    '.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md',
   ]) {
     assert.equal(isExcludedRel(p), true, `${p} must be excluded`);
   }
@@ -155,9 +172,41 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     'agents/leah/README.md',
     '.gitignore',
     '.github/workflows/tess-gate.yml',
+    // Phase 0.1 — the empty scaffold structure itself must survive.
+    '.tess/state/memory/.gitkeep',
+    '.tess/state/tasks/.gitkeep',
+    '.tess/state/ledger/.gitkeep',
+    '.tess/state/locks/.gitkeep',
+    // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+    '.tess/state/skills/.gitkeep',
   ]) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);
   }
+});
+
+// P0 G-01 (npm scaffold key-leak audit, 2026-07) — a scaffolded project must
+// never receive this repo's OWN registered verifier/sign-off PUBLIC key
+// files (`.tess/keys/verifiers/**`, `.tess/keys/signoffs/**`): those are this
+// repo's own trust anchor material (see ignore.js's EXCLUDE_DIR_PREFIXES
+// header for the full incident writeup). The unrelated, intentionally
+// bundled release-verification key (`.tess/keys/twiss-release-key.asc`) must
+// still ship — this is NOT a blanket "never copy anything under .tess/keys/"
+// rule, so the positive case is asserted too, not just the negative one.
+test('P0 G-01: verifier/signoff key material is excluded from scaffold; the release key is not', () => {
+  for (const p of [
+    '.tess/keys/verifiers/cyra.asc',
+    '.tess/keys/verifiers/README.md',
+    '.tess/keys/verifiers',
+    '.tess/keys/signoffs/xavier.asc',
+    '.tess/keys/signoffs',
+  ]) {
+    assert.equal(isExcludedRel(p), true, `${p} must be excluded from the scaffold`);
+  }
+  assert.equal(
+    isExcludedRel('.tess/keys/twiss-release-key.asc'),
+    false,
+    'the bundled release-verification key must still ship — it is not a per-project trust anchor',
+  );
 });
 
 // B3 (gap-loop R2) — the scaffold copies `.github/workflows/` verbatim, so
@@ -245,6 +294,13 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.tess/snapshots/.gitkeep', '');
   w('.tess/staging/.gitkeep', '');
   w('agents/leah/README.md');
+  // Phase 0.1 — the empty .tess/state/** scaffold structure (must survive).
+  w('.tess/state/memory/.gitkeep', '');
+  w('.tess/state/tasks/.gitkeep', '');
+  w('.tess/state/ledger/.gitkeep', '');
+  w('.tess/state/locks/.gitkeep', '');
+  // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+  w('.tess/state/skills/.gitkeep', '');
 
   // The author's secret + operator-state material (must NOT leak).
   w('.claude/vault/vault.age', 'CIPHERTEXT\n');
@@ -260,6 +316,17 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('__pycache__/mod.pyc', 'bytecode\n');
   w('.git/config', '[core]\n');
   w('node_modules/dep/index.js', 'module.exports={}\n');
+  // The author's REAL .tess/state/** instance data (must NOT leak) — the
+  // exact scenario Phase 0.1 exists to prevent: a local --template-source
+  // dragging a live instance's real memory/tasks/ledger/locks into a
+  // freshly produced adopter instance.
+  w('.tess/state/memory/real-memory.json', '{"author":"real memory"}\n');
+  w('.tess/state/tasks/graph.json', '{"author":"real tasks"}\n');
+  w('.tess/state/ledger/entry.md', 'author real ledger entry\n');
+  w('.tess/state/locks/task.lock', 'author real lock\n');
+  // The author's REAL generated draft skill (Phase 0.6, issue #131) — same
+  // leak scenario, one subsystem later.
+  w('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md', 'author real draft skill\n');
 
   try {
     fetchTemplate(src, staging);
@@ -282,6 +349,13 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     gone('__pycache__');
     gone('.git');
     gone('node_modules');
+    // Phase 0.1 — real .tess/state/** instance data must never leak.
+    gone('.tess/state/memory/real-memory.json');
+    gone('.tess/state/tasks/graph.json');
+    gone('.tess/state/ledger/entry.md');
+    gone('.tess/state/locks/task.lock');
+    // Phase 0.6 (issue #131) — real generated draft skills must never leak.
+    gone('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md');
 
     // Legit structure preserved.
     kept('README.md');
@@ -292,6 +366,14 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     kept('.tess/snapshots/.gitkeep');
     kept('.tess/staging/.gitkeep');
     kept('agents/leah/README.md');
+    // Phase 0.1 — the empty structure itself must survive (adopters inherit
+    // structure, never data).
+    kept('.tess/state/memory/.gitkeep');
+    kept('.tess/state/tasks/.gitkeep');
+    kept('.tess/state/ledger/.gitkeep');
+    kept('.tess/state/locks/.gitkeep');
+    // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+    kept('.tess/state/skills/.gitkeep');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -529,6 +611,77 @@ test('scaffold reset: a source with a REAL comment-heavy multi-entry registratio
     // The SOURCE itself must be untouched — promote() must never write back
     // into staging/source, only into the target.
     assert.match(readFileSync(join(src, 'core', 'policy', 'policy.yaml'), 'utf8'), new RegExp(CYRA_FINGERPRINT));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ── Pinned clone (P0 G-01 item 3) — reproducibility, never an unpinned main
+// HEAD tip ─────────────────────────────────────────────────────────────────
+// buildCloneArgs/resolveTemplateRef are pure, dependency-free functions
+// (no execFileSync / network / git involved) precisely so this pinning
+// behavior is unit-testable without a real clone — see scaffold.js.
+
+test('resolveTemplateRef: explicit ref always wins, for any source', () => {
+  assert.equal(resolveTemplateRef(DEFAULT_TEMPLATE_SOURCE, 'main'), 'main');
+  assert.equal(resolveTemplateRef('https://github.com/someone/fork.git', 'v9.9.9'), 'v9.9.9');
+  assert.equal(resolveTemplateRef('/local/path', 'deadbeef'), 'deadbeef');
+});
+
+test('resolveTemplateRef: the default source pins to DEFAULT_TEMPLATE_REF when no explicit ref is given', () => {
+  assert.equal(resolveTemplateRef(DEFAULT_TEMPLATE_SOURCE, undefined), DEFAULT_TEMPLATE_REF);
+  assert.equal(resolveTemplateRef(DEFAULT_TEMPLATE_SOURCE, null), DEFAULT_TEMPLATE_REF);
+  assert.ok(
+    typeof DEFAULT_TEMPLATE_REF === 'string' && DEFAULT_TEMPLATE_REF.length > 0,
+    'DEFAULT_TEMPLATE_REF must be a real, non-empty ref — never an unpinned default',
+  );
+});
+
+test('resolveTemplateRef: a custom --template-source is left unpinned (its own branch tip) unless a ref is explicitly given', () => {
+  assert.equal(resolveTemplateRef('https://github.com/someone/fork.git', undefined), null);
+  assert.equal(resolveTemplateRef('git@github.com:someone/fork.git', null), null);
+});
+
+test('buildCloneArgs: pins with --branch when a ref is resolved, omits it when unpinned', () => {
+  assert.deepEqual(
+    buildCloneArgs('https://example.com/x.git', '/tmp/stage', 'create-tess-v0.1.2'),
+    ['clone', '--depth', '1', '--branch', 'create-tess-v0.1.2', '--', 'https://example.com/x.git', '/tmp/stage'],
+  );
+  assert.deepEqual(
+    buildCloneArgs('https://example.com/x.git', '/tmp/stage', null),
+    ['clone', '--depth', '1', '--', 'https://example.com/x.git', '/tmp/stage'],
+  );
+});
+
+test('args: --template-ref parses, and TESS_TEMPLATE_REF env var is honored as the default', () => {
+  assert.equal(parseArgs(['--template-ref=v1.2.3']).templateRef, 'v1.2.3');
+  assert.equal(parseArgs(['--template-ref', 'main']).templateRef, 'main');
+  const prev = process.env.TESS_TEMPLATE_REF;
+  try {
+    process.env.TESS_TEMPLATE_REF = 'env-pinned-ref';
+    assert.equal(parseArgs([]).templateRef, 'env-pinned-ref');
+    // An explicit flag still overrides the env var.
+    assert.equal(parseArgs(['--template-ref=flag-ref']).templateRef, 'flag-ref');
+  } finally {
+    if (prev === undefined) delete process.env.TESS_TEMPLATE_REF;
+    else process.env.TESS_TEMPLATE_REF = prev;
+  }
+});
+
+// fetchTemplate's `ref` parameter is a no-op for a LOCAL source (nothing to
+// pin — the directory is copied as-is), so a ref passed alongside a local
+// --template-source (as tests throughout this file already do implicitly by
+// omitting it) must never throw or change behavior.
+test('fetchTemplate: a ref argument is a no-op for a local source', () => {
+  const base = mkdtempSync(join(tmpdir(), 'tess-ref-noop-test-'));
+  const src = join(base, 'source');
+  const staging = join(base, 'staging');
+  try {
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'README.md'), 'hi\n');
+    const result = fetchTemplate(src, staging, 'some-ref-that-does-not-apply-locally');
+    assert.equal(result.mode, 'local');
+    assert.ok(existsSync(join(staging, 'README.md')), 'local fetch must still stage files with a ref argument present');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

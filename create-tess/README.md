@@ -99,7 +99,8 @@ npm create tess my-os -- --yes \
 
 Flags: `--operator`/`--name`, `--conductor`/`--assistant`, `--vibe`, `--path`,
 `--pathway`, `--telegram`, `--target`/`--dir` (or first positional),
-`--template-source` (env `TESS_TEMPLATE_SOURCE`), `--force`, `--no-doctor`,
+`--template-source` (env `TESS_TEMPLATE_SOURCE`), `--template-ref` (env
+`TESS_TEMPLATE_REF`), `--force`, `--no-doctor`,
 `--no-verify`, `--no-git-init`, `--no-gate-hooks`, `--yes`. A flags-mode
 validation violation is a hard non-zero exit (no re-prompt). A non-TTY stdin
 auto-enables non-interactive mode.
@@ -119,6 +120,18 @@ operator space (`operator/**`) and other non-managed files are preserved.
 **`--template-source` safety.** A source that begins with `-` is rejected unless
 it is a real local directory, and the git clone uses a `--` end-of-options guard
 — a flag-shaped source can never be read as a `git` option.
+
+**The default source is pinned, not `main` HEAD.** A git-URL clone of the
+default `--template-source` is pinned to a tagged release
+(`DEFAULT_TEMPLATE_REF` in `src/scaffold.js`, in create-tess's own
+`create-tess-v*` tag namespace — see the Release section below) rather than
+whatever commit happens to be `main`'s tip at the moment you run the wizard.
+This is what makes a given `create-tess` version reproducible: the same
+version always scaffolds from the same, already-CI-passed tess-os commit.
+Override with `--template-ref`/`TESS_TEMPLATE_REF` to pin to a different
+tag/branch/SHA. A custom `--template-source` (your own fork/mirror) is cloned
+at its own branch tip and is NOT force-pinned to `DEFAULT_TEMPLATE_REF` unless
+you pass `--template-ref` yourself.
 
 Point `--template-source` at a local path to test offline:
 
@@ -142,3 +155,26 @@ doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 All seven journey beats from the brief are present; the only design-doc
 divergence is the path/conductor pairing, chosen because it makes the C3 check
 implementable at conductor-naming time.
+
+## Release (maintainers — Xavier-owned; never automated)
+
+1. Bump `create-tess/package.json`'s `version` (and re-run `npm install` in
+   `create-tess/` so `package-lock.json` picks it up) and update the
+   `DEFAULT_TEMPLATE_REF` pin in `src/scaffold.js` if a new release tag should
+   become the default pinned clone target. Confirm `npm test` is green.
+2. Cut and push the tag (create-tess's OWN namespace, `create-tess-v*` —
+   never the framework's own `v*` tags):
+   ```bash
+   git tag create-tess-vX.Y.Z && git push origin create-tess-vX.Y.Z
+   ```
+   This fires `.github/workflows/publish-npm.yml`, which gates on the tag
+   matching `package.json`'s version, runs the full test suite again, then
+   publishes via npm Trusted Publishing (OIDC — no token). If npm's Trusted
+   Publisher isn't configured yet for this exact repo + workflow
+   (npmjs.com package settings), that final step fails closed with an auth
+   error until it is — see the workflow file's header for the current state.
+3. **Manual fallback** (if Trusted Publishing isn't live yet): from
+   `create-tess/`, checked out at the tag, run `npm publish --access public`
+   as an npm-authenticated maintainer.
+4. **Deprecating a bad published version** (e.g. one later found to leak
+   secrets): `npm deprecate create-tess@X.Y.Z "reason — upgrade to X.Y.Z+"`.
