@@ -21,7 +21,14 @@
 // `.claude/settings.local.json` local override, `*.env.json` files (e.g.
 // prod.env.json), `operator/secrets` + `operator/*.secret`, and any file under a
 // `clients/*/.vault/` subtree. Keep this in lockstep with that block when it changes.
-import { sep, relative, resolve } from 'node:path';
+import { sep, relative, resolve, join } from 'node:path';
+import { statSync } from 'node:fs';
+import { normalizeComponent, normalizePath, basenameMatchesGlob } from './pathnorm.js';
+
+// Re-exported for backward compat — was this module's own export before the
+// pathnorm.js extraction (PR #145 LOW item); test/secrets-casefold-bypass.test.js
+// still imports it from here.
+export { normalizeComponent };
 
 // Basenames that are ALWAYS kept even when a broader pattern would drop them.
 // `.env.example` is a committed template; `.gitkeep` preserves shipped empty dirs
@@ -147,8 +154,31 @@ export const EXCLUDE_CONTENT_PREFIXES = [
 // `*.secret` mirrors `operator/*.secret`.
 export const EXCLUDE_BASENAME_GLOBS = ['*.pem', '*.key', '*.pyc', '*.env.json', '*.secret'];
 
-function basenameMatchesGlob(base, glob) {
-  return glob.startsWith('*') ? base.endsWith(glob.slice(1)) : base === glob;
+// Case/Unicode-robust normalization primitives (`normalizeComponent`,
+// `normalizePath`, `basenameMatchesGlob`) — the CRITICAL case-fold-bypass
+// fix plus the HIGH empty-component fix (PR #145) — live in ./pathnorm.js
+// (LOW item, PR #145: extracted cleanly, this file was over the 300-line
+// gate). See pathnorm.js's header + test/pathnorm.test.js for the details.
+
+const EXCLUDE_NAMES_NORM = new Set([...EXCLUDE_NAMES].map(normalizeComponent));
+const EXCLUDE_DIR_PREFIXES_NORM = EXCLUDE_DIR_PREFIXES.map(normalizePath);
+const EXCLUDE_CONTENT_PREFIXES_NORM = EXCLUDE_CONTENT_PREFIXES.map(normalizePath);
+const EXCLUDE_REL_PATHS_NORM = new Set([...EXCLUDE_REL_PATHS].map(normalizePath));
+const EXCLUDE_BASENAME_GLOBS_NORM = EXCLUDE_BASENAME_GLOBS.map(normalizeComponent);
+
+// `statSync`, returning `null` (fail-closed — "not proven to exist by this
+// arm", never "safe") on any stat error, instead of throwing. Split out of
+// the earlier two-argument `sameFsLocation(a, b)` shape so `makeCopyFilter`'s
+// memoized ancestor walk (below) can cache each SIDE's stat independently,
+// with the `dev`/`ino` INODE IDENTITY comparison (tessctl's
+// `_paths_are_same_location` / `os.path.samefile`, JS analogue) done inline
+// against the two cached results.
+function statOrNull(p) {
+  try {
+    return statSync(p);
+  } catch {
+    return null;
+  }
 }
 
 // Decide whether a path RELATIVE to the copy root must be excluded.
@@ -159,27 +189,39 @@ export function isExcludedRel(rel) {
   if (parts.length === 0) return false;
   const base = parts[parts.length - 1];
 
-  // Explicit keeps win over every exclude pattern.
+  // Explicit keeps win over every exclude pattern — checked against the RAW
+  // (not case/NFC-normalized) basename, deliberately. This is an ALLOWLIST
+  // punched through a denylist scanner, so it must never be loosened by
+  // normalization: a mis-cased `.ENV.EXAMPLE` does NOT get the exemption —
+  // it falls through to the (normalized) `.env` exclusion below and is
+  // excluded. That is the correct, fail-safe direction (over-exclusion of a
+  // template file, never under-exclusion of a secret).
   if (KEEP_BASENAMES.has(base)) return false;
+
+  const normFold = normalizePath(norm);
+  const partsFold = normFold.split('/').filter(Boolean);
+  const baseFold = partsFold.length > 0 ? partsFold[partsFold.length - 1] : '';
 
   // Exact relative-path excludes (framework-internal files under an
   // otherwise-kept directory — see EXCLUDE_REL_PATHS above).
-  if (EXCLUDE_REL_PATHS.has(norm)) return true;
+  if (EXCLUDE_REL_PATHS_NORM.has(normFold)) return true;
 
   // Name/component excludes (anywhere in the path).
-  if (parts.some((p) => EXCLUDE_NAMES.has(p))) return true;
+  if (partsFold.some((p) => EXCLUDE_NAMES_NORM.has(p))) return true;
 
   // Basename suffix globs.
-  if (EXCLUDE_BASENAME_GLOBS.some((g) => basenameMatchesGlob(base, g))) return true;
+  if (EXCLUDE_BASENAME_GLOBS_NORM.some((g) => basenameMatchesGlob(baseFold, g))) return true;
 
   // .env and any .env.<suffix> (`.env.example` already kept above).
-  if (base === '.env' || base.startsWith('.env.')) return true;
+  if (baseFold === '.env' || baseFold.startsWith('.env.')) return true;
 
-  // Whole-subtree dir prefixes.
-  if (EXCLUDE_DIR_PREFIXES.some((p) => norm === p || norm.startsWith(p + '/'))) return true;
+  // Whole-subtree dir prefixes (string/casefold/NFC fallback; makeCopyFilter
+  // layers a memoized inode-identity check on top of this for candidates
+  // that actually exist on disk — see `statOrNull` and `makeCopyFilter` below).
+  if (EXCLUDE_DIR_PREFIXES_NORM.some((p) => normFold === p || normFold.startsWith(p + '/'))) return true;
 
   // Content under snapshot/staging dirs (dir + its .gitkeep kept above).
-  if (EXCLUDE_CONTENT_PREFIXES.some((p) => norm.startsWith(p + '/'))) return true;
+  if (EXCLUDE_CONTENT_PREFIXES_NORM.some((p) => normFold.startsWith(p + '/'))) return true;
 
   return false;
 }
@@ -187,12 +229,72 @@ export function isExcludedRel(rel) {
 // Build a cpSync filter bound to a source root. The filter receives ABSOLUTE
 // source paths; we resolve them back to a root-relative path so multi-component
 // and glob patterns work (the old component-only filter could not).
+//
+// Layers TWO checks (both must pass for a path to be copied): (1)
+// `isExcludedRel` — the case/NFC-normalized string fallback (above), correct
+// even for a candidate that doesn't exist on disk under the forbidden root's
+// OWN spelling; (2) inode-identity (memoized `dev`/`ino` comparison, below)
+// against every resolved EXCLUDE_DIR_PREFIXES root — the ground-truth arm
+// for the CRITICAL secrets-exclusion case-fold bypass: even if a future edge
+// case slipped past the string fallback, this asks the filesystem itself
+// whether `src` IS, or resolves under, a fixed secret-dir root (tessctl's
+// `_path_is_prefix`/`_paths_are_same_location`, JS analogue). Walks `src`'s
+// own ancestors up to the root (not just direct equality) so a secret
+// reached via a case-divergent PARENT alias is also caught — belt-and-
+// suspenders on top of `fs.cpSync`'s own subtree-pruning behavior.
+//
+// ★ MEDIUM (Reid, PR #145 perf review) — memoize the ancestor walk. Pre-fix,
+// every ancestor level of every candidate re-`statSync`'d each of the 4
+// fixed forbidden roots from scratch AND re-`statSync`'d the SAME shared
+// ancestor directory once per sibling underneath it — Reid measured 56,690
+// statSync calls / +55% wall-clock (504ms -> ~780ms) on a 2,669-file repo;
+// this repo's benchmark fixture (2,548 entries) reproduced the shape:
+// 54,684 stat attempts pre-fix, ~751ms average. Fix, scoped to THIS
+// `makeCopyFilter(srcRoot)` call (one CLI copy pass — a fresh call gets a
+// fresh cache, never shared across copies): (1) stat the 4 forbidden roots
+// ONCE, up front — a source with no secret dirs (the common case) now skips
+// the whole ancestor-walk loop below, since `forbiddenStats` is empty; (2)
+// memoize each ancestor path's own stat on first encounter
+// (`ancestorStatCache`) — many files share parents, collapsing a fresh
+// `statSync` per sibling into one per unique ancestor.
 export function makeCopyFilter(srcRoot) {
   const rootAbs = resolve(srcRoot);
+
+  // Resolve + stat every EXCLUDE_DIR_PREFIXES entry ONCE, up front (not once
+  // per ancestor level per candidate). A prefix that doesn't exist under
+  // this source (the common case) is dropped here rather than re-attempted
+  // per file; `isExcludedRel`'s string fallback still covers it regardless.
+  const forbiddenStats = EXCLUDE_DIR_PREFIXES.map((p) => resolve(rootAbs, p))
+    .map(statOrNull)
+    .filter(Boolean);
+
+  // Per-copy-pass memo of ancestor-path stats.
+  const ancestorStatCache = new Map();
+  const statCached = (p) => {
+    if (ancestorStatCache.has(p)) return ancestorStatCache.get(p);
+    const s = statOrNull(p);
+    ancestorStatCache.set(p, s);
+    return s;
+  };
+
   return (src) => {
     const rel = relative(rootAbs, src);
     // The root itself (rel === "") and anything outside the root is copied.
     if (!rel || rel.startsWith('..')) return true;
-    return !isExcludedRel(rel);
+    if (isExcludedRel(rel)) return false;
+    // No forbidden root exists under this source at all (the common case) —
+    // no ancestor of any candidate can possibly match one, so skip the walk.
+    if (forbiddenStats.length === 0) return true;
+
+    const segments = rel.split(sep).filter(Boolean);
+    for (let i = segments.length; i >= 1; i--) {
+      const ancestorAbs = join(rootAbs, ...segments.slice(0, i));
+      const ancestorStat = statCached(ancestorAbs);
+      if (!ancestorStat) continue;
+      for (const forbiddenStat of forbiddenStats) {
+        if (ancestorStat.dev === forbiddenStat.dev && ancestorStat.ino === forbiddenStat.ino) return false;
+      }
+    }
+    return true;
   };
 }
