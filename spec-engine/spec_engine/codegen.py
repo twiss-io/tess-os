@@ -370,10 +370,27 @@ def generate_app(
             # it — staging must start from a real copy of `target_dir`'s
             # current content for that merge to see the same state it
             # would have seen writing into `target_dir` directly, not an
-            # empty directory. `symlinks=True` preserves any symlink in
-            # pre-existing content as a symlink in the staged copy rather
-            # than silently dereferencing it into the target's content.
-            shutil.copytree(final_root, stage_root, dirs_exist_ok=True, symlinks=True)
+            # empty directory. Deliberately the DEFAULT `symlinks=False`:
+            # a prior revision of this fix set `symlinks=True` here to
+            # "preserve" any symlink in pre-existing content, but every
+            # write below (`_write_file()` -> `Path.write_text()`) follows
+            # symlinks unconditionally and always writes to the SAME
+            # fixed, generated-content relative paths (e.g.
+            # `.spec-engine/codegen-manifest.json`) on every call — so a
+            # symlink planted at one of those paths inside `target_dir`
+            # let an ordinary regeneration write generated content
+            # straight THROUGH it to wherever it pointed, including
+            # outside `target_dir` entirely (PR #156 review round 2,
+            # Cyra, CRITICAL — verified working exploit against the
+            # `symlinks=True` revision). `symlinks=False` (the default)
+            # dereferences any such symlink into a plain file at
+            # `copytree` time, so the later write lands harmlessly inside
+            # the disposable `stage_root`, never escaping to whatever the
+            # symlink pointed at — the safe behavior this module had
+            # before that revision, and scope this fix should never have
+            # carried in the first place. See
+            # `test_regenerate_over_existing_symlink_write_through_is_blocked`.
+            shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
         result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
         # Publishing is inside this same try/except: an exception raised
         # by `_publish_staged_app()` itself (its own internal
@@ -755,13 +772,41 @@ def _recover_interrupted_publish(final_root: Path) -> None:
     the aside is stale prior content at that point, safe to discard.
 
     Any state this function cannot safely reconcile — concretely, the
-    aside path existing but not being a directory, which nothing in this
+    aside path existing but not being a directory (including a symlink,
+    whether it resolves to a directory or not), which nothing in this
     module ever creates — is a genuinely ambiguous situation (something
     outside `_publish_staged_app()`'s own two-rename sequence put
     something there) and is never silently guessed at: this raises
     `SpecEngineError` rather than risk restoring, or discarding, the
     wrong thing."""
     aside = _swap_aside_path(final_root)
+
+    # Symlink check FIRST, via `os.path.islink()` (an `os.lstat()`-based
+    # check that does NOT follow the link) — before anything below that
+    # WOULD follow it (`Path.exists()` and `Path.is_dir()` both resolve
+    # through symlinks). `_publish_staged_app()`'s two `os.replace()`
+    # calls only ever move a real directory into/out of this exact path,
+    # so a symlink here is never something this module itself created;
+    # its presence is genuinely ambiguous and must fail loud rather than
+    # be silently followed (PR #156 review round 2, Cyra, MEDIUM: the
+    # prior `aside.is_dir()` check would have let a planted symlink either
+    # bypass the stale-aside `rmtree` below — `rmtree` refuses to operate
+    # on a top-level symlink and `ignore_errors=True` swallows that
+    # refusal — or, worse, get renamed onto `final_root` by the restore
+    # branch, making `target_dir` itself become a symlink to wherever the
+    # symlink pointed). `os.path.islink()` returns False for a
+    # non-existent path, so this is safe to check unconditionally, before
+    # the existence check below.
+    if os.path.islink(aside):
+        raise SpecEngineError(
+            f"generate_app: {aside} exists and is a symlink. This path is reserved for "
+            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+            "creates it as a symlink — refusing to follow it (which could restore a symlink onto "
+            f"{final_root} or silently no-op past it during stale-aside cleanup) or guess whether it "
+            f"is safe to remove outright. Move or remove {aside} by hand (after confirming what it "
+            "actually is) before regenerating."
+        )
+
     if not aside.exists():
         # The overwhelmingly common case: no prior swap was ever
         # interrupted (either none was ever attempted against this

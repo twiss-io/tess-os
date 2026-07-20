@@ -32,18 +32,30 @@ Three classes of proof:
     leave an orphaned staging directory behind either.
   - **Direct unit tests on `_recover_interrupted_publish()`**: the other
     interrupted-cleanup case (second rename succeeded, trailing
-    `shutil.rmtree(aside, ...)` never ran) and the fail-loud path for a
-    genuinely ambiguous aside state, exercised directly rather than via a
-    subprocess kill (nothing about either case needs a real kill to
-    reproduce).
+    `shutil.rmtree(aside, ...)` never ran), the fail-loud path for a
+    genuinely ambiguous non-directory aside state, and the fail-loud path
+    for a symlink planted at the aside path (PR #156 review round 2,
+    Cyra, MEDIUM — a symlink there must never be followed), exercised
+    directly rather than via a subprocess kill (nothing about any of
+    these cases needs a real kill to reproduce).
+  - **Direct unit test on `_publish_staged_app()`'s concurrent-call
+    guard** (PR #156 review round 2, Reid, LOW — coverage symmetry with
+    the `_recover_interrupted_publish()` unit tests above): the aside
+    path unexpectedly already existing right before the swap must refuse
+    to publish rather than clobber it.
 
-Plus two smaller regression tests for the staging mechanism itself: that
-`generate_app()` called against an already-populated `target_dir` (the
-"regenerate on top of a hand-seeded starter template" case
+Plus three smaller regression tests for the staging mechanism itself:
+that `generate_app()` called against an already-populated `target_dir`
+(the "regenerate on top of a hand-seeded starter template" case
 `spec_engine.scaffold.write_scaffold_stub()`'s CLAUDE.md/AGENTS.md-merge
-logic exists for) still swaps in atomically and preserves/merges correctly,
-and that `CodegenResult.written`'s returned paths are real, live paths
-under `target_dir` after publish (not stale staging-directory paths).
+logic exists for) still swaps in atomically and preserves/merges
+correctly; that a symlink planted at a generated path inside a
+pre-existing `target_dir` can never be used as a write-through primitive
+to a file outside `target_dir` during that same regenerate-over-existing
+path (PR #156 review round 2, Cyra, CRITICAL — the `symlinks=True`
+`copytree` regression this fix reverts); and that
+`CodegenResult.written`'s returned paths are real, live paths under
+`target_dir` after publish (not stale staging-directory paths).
 """
 
 from __future__ import annotations
@@ -593,6 +605,82 @@ def test_recover_interrupted_publish_fails_loud_on_non_directory_aside(tmp_path)
     assert aside.is_file(), "a genuinely ambiguous state must be left exactly as found, never touched"
 
 
+def test_recover_interrupted_publish_fails_loud_on_symlink_aside(tmp_path):
+    """PR #156 review round 2, Cyra, MEDIUM: a symlink planted at the
+    deterministic aside path must never be followed by
+    `_recover_interrupted_publish()`. `Path.exists()`/`Path.is_dir()` both
+    resolve through symlinks, which would have let a planted symlink
+    either bypass the stale-aside `rmtree` cleanup (`rmtree` refuses to
+    operate on a top-level symlink and `ignore_errors=True` swallows that
+    refusal) or — the more dangerous case exercised here, `target_dir`
+    absent — get renamed straight onto `final_root` by the restore
+    branch, making `target_dir` itself become a symlink to wherever the
+    planted symlink pointed. A symlink at this exact, reserved path is
+    never something `_publish_staged_app()` itself creates (its two
+    `os.replace()` calls only ever move a real directory); recovery must
+    treat it as the genuinely ambiguous state it is and fail loud,
+    leaving both the symlink and `target_dir` untouched."""
+    target_dir = tmp_path / "app"
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "secret.txt").write_text("do not expose this", encoding="utf-8")
+
+    aside = codegen_module._swap_aside_path(target_dir)
+    os.symlink(str(outside_dir), str(aside))
+
+    with pytest.raises(SpecEngineError, match="symlink"):
+        codegen_module._recover_interrupted_publish(target_dir)
+
+    assert os.path.islink(aside), "the planted symlink must be left exactly as found, never touched"
+    assert not target_dir.exists(), "recovery must never restore/rename a symlink onto target_dir"
+
+
+# --------------------------------------------------------------------------
+# Concurrent-call guard — direct unit test on `_publish_staged_app()`
+# itself (PR #156 review round 2, Reid, LOW: coverage symmetry with the
+# three direct `_recover_interrupted_publish()` tests above). The branch
+# exercised here is provably unreachable within a single `generate_app()`
+# call — `_recover_interrupted_publish()` always clears/consumes the
+# aside before `_publish_staged_app()` is ever reached — but it is
+# `_publish_staged_app()`'s own last line of defense against a
+# concurrent `generate_app()` call racing against the same `target_dir`
+# (not a supported use of this function), and deserves its own direct
+# test rather than relying on that reachability argument alone.
+# --------------------------------------------------------------------------
+
+
+def test_publish_staged_app_fails_loud_when_aside_already_exists(tmp_path):
+    """If the reserved aside path unexpectedly already exists right
+    before the rename-aside-swap — most likely a concurrent
+    `generate_app()` call racing this one against the same `target_dir`
+    — `_publish_staged_app()` must refuse to publish rather than risk
+    clobbering the in-flight aside or losing track of `final_root`'s
+    current content. Both `final_root` and the pre-existing aside must be
+    left exactly as found."""
+    final_root = tmp_path / "app"
+    final_root.mkdir()
+    (final_root / "current.txt").write_text("real, already-published content", encoding="utf-8")
+
+    stage_root = tmp_path / "stage"
+    stage_root.mkdir()
+    (stage_root / "new.txt").write_text("freshly staged content", encoding="utf-8")
+
+    aside = codegen_module._swap_aside_path(final_root)
+    aside.mkdir()
+    (aside / "racer.txt").write_text("another call's in-flight aside content", encoding="utf-8")
+
+    with pytest.raises(SpecEngineError, match="already exists"):
+        codegen_module._publish_staged_app(stage_root, final_root, has_existing_content=True)
+
+    assert (final_root / "current.txt").read_text(encoding="utf-8") == "real, already-published content", (
+        "final_root's current content must be left untouched by a refused publish"
+    )
+    assert (aside / "racer.txt").read_text(encoding="utf-8") == "another call's in-flight aside content", (
+        "the pre-existing (racing) aside must be left untouched, not clobbered"
+    )
+    assert (stage_root / "new.txt").is_file(), "stage_root itself is left as found — nothing consumed it"
+
+
 # --------------------------------------------------------------------------
 # Staging-mechanism regression tests (non-kill) — the two branches
 # `_publish_staged_app()` / `generate_app()` add.
@@ -623,6 +711,53 @@ def test_regenerate_over_existing_populated_dir_merges_and_swaps_atomically(tmp_
 
     leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
     assert leftovers == [], f"leftover staging/backup dirs after a successful publish: {leftovers}"
+
+
+def test_regenerate_over_existing_symlink_write_through_is_blocked(tmp_path):
+    """PR #156 review round 2, Cyra, CRITICAL: a prior revision of this
+    fix set `shutil.copytree(..., symlinks=True)` when staging a
+    regenerate-over-existing `target_dir`, intended to "preserve" any
+    symlink in pre-existing content — but every generated-content write
+    (`_write_file()` -> `Path.write_text()`) follows symlinks
+    unconditionally and always targets the SAME fixed relative paths
+    (e.g. `.spec-engine/codegen-manifest.json`) on every call. A symlink
+    planted at one of those exact paths inside `target_dir`, pointing
+    OUTSIDE `target_dir`, let an ordinary (no kill involved) regeneration
+    write generated content straight THROUGH it, overwriting whatever
+    file the symlink pointed at — verified working exploit against the
+    `symlinks=True` revision. This is `target_dir`'s own documented,
+    supported workflow (human-edited/pre-seeded content merged on
+    regenerate), not a privileged position, so any actor who can place a
+    file in `target_dir` before a regenerate call could otherwise
+    overwrite any path the codegen process can write to. Reverting to
+    the default `symlinks=False` dereferences the symlink into a plain
+    file at `copytree` time, so the later write lands harmlessly inside
+    the disposable `stage_root`, never escaping to the external path."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+
+    outside_file = tmp_path / "outside_secret.txt"
+    outside_file.write_text("original sensitive content -- must not be overwritten", encoding="utf-8")
+
+    manifest_path = target_dir / ".spec-engine" / "codegen-manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    os.symlink(str(outside_file), str(manifest_path))
+    assert os.path.islink(manifest_path), "sanity: the planted path must actually be a symlink"
+
+    result = generate_app(spec, target_dir)
+
+    assert result.scaffold_plan.codegen_status == "generated", "sanity: the regeneration itself must still succeed"
+    assert outside_file.read_text(encoding="utf-8") == "original sensitive content -- must not be overwritten", (
+        "a symlink planted at a generated path inside target_dir must never let an ordinary "
+        "regeneration write generated content through it to a file outside target_dir"
+    )
+    # The published tree gets a real, freshly-generated manifest file at
+    # this path (the symlink is dereferenced away at copytree time, same
+    # as any other pre-existing file at a generated path) — it must NOT
+    # still be a symlink pointing back out.
+    assert not manifest_path.is_symlink(), "the published manifest path must be a real file, not a symlink"
+    assert manifest_path.is_file()
 
 
 def test_result_written_paths_are_real_live_paths_under_target_dir_after_publish(tmp_path):
