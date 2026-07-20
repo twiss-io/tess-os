@@ -59,9 +59,23 @@ private home directory.**
 ├── tasks/      ← the shared task graph (Phase 0.2 CLI)
 ├── ledger/     ← mission/retry ledger, harness-neutral form (Phase 0.2+)
 ├── locks/      ← coordination locks between concurrent harness sessions
-└── skills/
-    └── drafts/ ← generated DRAFT skills (`tessctl skill from-task` — Phase
-                  0.6); never `.claude/skills/`, never auto-activated
+├── skills/
+│   └── drafts/ ← generated DRAFT skills (`tessctl skill from-task` — Phase
+│                 0.6); never `.claude/skills/`, never auto-activated
+└── receipts/
+    └── chain.jsonl ← the ship-gate's own auto-emitted Agent Receipt chain
+                       (PR-2, `_gate_emit_receipts_on_clear` in .tess/bin/
+                       tessctl, wrapping `tools/receipt-emit/`): one hash-
+                       chained, GPG-signed receipt per policy rule the gate
+                       accepts as CLEARED (a covering signed APPROVE
+                       verdict, or a hard-floor signed sign-off), appended
+                       automatically on every `tessctl gate pre-push|ci`
+                       PASS. A SIXTH `.tess/state/**` subsystem — same
+                       fence, same "auto-generated, machine-local, verified
+                       independently of git" operating model as `ledger/`
+                       immediately above, not a deliberately-authored
+                       committed artifact like a verdict or sign-off (see
+                       "Classification" below).
 ```
 
 This sits inside `.tess/` (already the engine's own runtime-state root:
@@ -239,6 +253,28 @@ Two precise scope notes (Cyra L1/L2, closing the #113 review gate):
   signature: it carries no signer identity and makes no non-repudiation
   claim (contrast with `verdict.schema.json`'s actual GPG-signed
   verdicts, which do).
+- **`.tess/state/receipts/chain.jsonl` (PR-2) does NOT share the ledger's
+  "unsigned" limitation above — but it inherits `tools/receipt-emit/`'s own
+  documented one: EVERY receipt carries a real GPG signature (the embedded
+  decision's own signature PLUS a second, envelope-level `receipt_signature`
+  — `core/contracts/agent-receipt.schema.json`), independently verifiable
+  via `tools/receipt-verify/receipt_verify.py verify-chain` with no
+  dependency on `.tess/state/**`, git, or this repo's own policy.yaml at
+  all. What it is NOT is trust-anchored: `core/policy/policy.yaml`'s
+  `verifier_keys`/`signoff_keys` ship empty by design, so "this receipt's
+  signature verifies" never by itself means "a trusted party's approval is
+  enforced by policy" until a real key-ceremony registration happens
+  (Xavier-gated, not performed by any automation in this repository) — see
+  `tools/receipt-emit/README.md`'s "Honest label" and
+  `docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md`. A receipt-emit FAILURE (no
+  matching private key in the ambient keyring — routinely true on an
+  unattended CI runner, since the six named verifiers' private keys are
+  deliberately never staged there) is deliberately NON-BLOCKING for the
+  ship-gate's own PASS/BLOCK decision, but is never silent either — see
+  `_gate_emit_receipts_on_clear`'s own docstring in `.tess/bin/tessctl` for
+  the full fail-closed-the-SHIP-decision vs. non-silent-the-RECEIPT-gap
+  split, surfaced as a structured `receipt_gaps` entry in `tessctl gate`'s
+  own output and trace log.
 
 Phase 0.3 — `tessctl memory adopt` (MEMORY ADOPT region, `.tess/bin/tessctl`,
 a sibling of the TASK LEDGER region): the cross-harness MEMORY LINK.

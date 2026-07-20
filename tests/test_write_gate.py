@@ -62,6 +62,9 @@ GATE_CASES = [
     (".tess/state/tasks/graph.json", DENY, "never_touch .tess/state/** (tasks)"),
     (".tess/state/ledger/entry.md", DENY, "never_touch .tess/state/** (ledger)"),
     (".tess/state/locks/task.lock", DENY, "never_touch .tess/state/** (locks)"),
+    # PR-2 (Agent Receipt EMIT wiring) — a SIXTH .tess/state/** subsystem,
+    # covered by the same umbrella never_touch glob for free.
+    (".tess/state/receipts/chain.jsonl", DENY, "never_touch .tess/state/** (receipts)"),
     # .local.md hard guard — canonical lowercase
     ("conductor/guardrails.local.md", DENY, "canonical .local.md in owned conductor/**"),
     ("clients/ExampleClient/x.local.md", DENY, ".local.md in non-owned path"),

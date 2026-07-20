@@ -50,7 +50,9 @@ def test_ci_dependency_change_without_verdict_is_denied(engine):
     matches, hard_floor = engine._gate_classify_paths(policy, [REQUIREMENTS_REL])
     assert hard_floor == {}
     assert REQUIREMENTS_REL in matches
-    reasons = engine._gate_covering_gap_report(
+    # PR-2 (Agent Receipt EMIT wiring, #137) — `_gate_covering_gap_report`
+    # now returns (reasons, cleared); this test only asserts on `reasons`.
+    reasons, _cleared = engine._gate_covering_gap_report(
         matches,
         [],
         {REQUIREMENTS_REL: {"candidate-blob"}},

@@ -7,6 +7,23 @@ ALREADY-SIGNED verdict or hard-floor sign-off, and closes the gap that tool
 left open: `tools/receipt-verify` can confirm a receipt is genuine, but
 until this tool existed nothing in this repository actually EMITTED one.
 
+## Two callers, one tool
+
+This CLI is invoked two ways, never reimplemented for either:
+
+1. **By hand** — an operator or agent runs `emit` directly, exactly as
+   documented below.
+2. **Automatically, by `tessctl gate pre-push`/`tessctl gate ci`** (PR-2) —
+   `_gate_emit_receipts_on_clear` in `.tess/bin/tessctl` invokes this exact
+   CLI as a subprocess for every policy rule the ship-gate accepts as
+   CLEARED, appending into `.tess/state/receipts/chain.jsonl`. The gate
+   never imports this tool's Python modules and never reimplements its
+   assemble/sign/atomic-append/self-verify logic — see that function's own
+   docstring for the full fail-closed-the-ship-decision vs.
+   non-silent-the-receipt-gap design this second caller adds. This tool's
+   own behavior, fail-closed guarantees, and honest label below are
+   IDENTICAL regardless of which caller invokes it.
+
 ## Architecture — attaches to System B, never System A
 
 This tool wraps a REAL, GPG-signed verdict
