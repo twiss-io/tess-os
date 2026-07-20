@@ -715,9 +715,19 @@ human-reviewed reusable skill.
   insensitivity bypassed (`--out .CLAUDE/skills/evil-skill` resolved to a
   different STRING than the real, same-inode `.claude/skills`) while
   Linux CI's case-sensitive filesystem never exercised the path, letting
-  it ship green. No promotion command, no curator, no autonomous loop
-  exists in this phase; a human/curator reviews a draft and promotes it
-  manually, entirely outside this region.
+  it ship green. **Extended (issue #141, Cyra LOW, resolved 2026-07-21) to
+  ALSO cover the operator's GLOBAL, per-machine `~/.claude/skills`** —
+  confirmed empirically that the Claude Code host loads skills from there
+  too, a real, populated directory distinct from any repo's local
+  `.claude/skills/`, not merely a hypothetical the original #133 fix
+  deferred (`_skill_global_claude_skills_root` resolves it via
+  `Path.home()`, degrading to "nothing to check" — never a crash, never a
+  silent pass — only in the one case a home directory genuinely cannot be
+  determined at all). Checked with the identical inode-identity mechanism
+  as the in-repo root, never a second, re-forked comparison. No promotion
+  command, no curator, no autonomous loop exists in this phase; a
+  human/curator reviews a draft and promotes it manually, entirely outside
+  this region.
 - **Accountability — one new ledger event class, the SAME append path.**
   `skill_generated` (logged by `tessctl skill from-task`) goes through the
   EXISTING `_ledger_auto_log` → `_log_append_event` hash-chain append path
@@ -749,7 +759,15 @@ human-reviewed reusable skill.
   real macOS/Windows case-fold scenario end to end via the CLI whenever
   the runner's own filesystem actually supports it → the `skill_generated`
   ledger event recording the resolved `--out` target → a relative `--out`
-  resolving against `root`, not the caller's cwd.
+  resolving against `root`, not the caller's cwd → (issue #141) the SAME
+  boundary now ALSO covers the operator's GLOBAL `~/.claude/skills`: a
+  literal `--out` under a controlled fake `$HOME` is refused end to end via
+  the CLI, an FS-independent same-inode/differently-spelled alias is
+  refused via the primitives directly, `--force` does not override the
+  global refusal either, a legitimate default/custom write still succeeds
+  with the global check active, and `_skill_global_claude_skills_root()`
+  degrades to `None` (never crashes, never silently permits) when
+  `Path.home()` cannot determine a home directory at all.
 
 ## What's deliberately NOT built yet
 

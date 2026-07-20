@@ -15531,12 +15531,22 @@ STATE_LOCKS_DIR = f"{STATE_DIR}/locks"
 # itself refuses any target that resolves there (issue #133).
 SKILLS_DIR = f"{STATE_DIR}/skills"
 SKILL_DRAFTS_DIR = f"{SKILLS_DIR}/drafts"
-# The ONE directory `tessctl skill from-task` must never write into, even
+# The relative path `tessctl skill from-task` must never write into, even
 # with an operator-explicit `--out` (issue #133, Cyra LOW — PR #132 review):
 # the LIVE, core-managed, host-loaded skill set the Claude Code host itself
 # loads skills from. Defined once here and reused by
 # `_skill_reject_out_under_claude_skills` (SKILL DRAFT SCAFFOLD region,
 # below) rather than re-spelling the literal string at each call site.
+#
+# TWO distinct forbidden roots share this one relative path, both checked by
+# `_skill_reject_out_under_claude_skills` (issue #141, Cyra LOW — split from
+# #133/#140, resolved 2026-07-21): `root / CLAUDE_SKILLS_LIVE_DIR` (the
+# in-repo, project-local skill set) AND `Path.home() / CLAUDE_SKILLS_LIVE_DIR`
+# (the operator's GLOBAL, per-machine skill set, `~/.claude/skills`) — the
+# host was confirmed (empirically, not merely theorized — a real, populated
+# directory distinct from any repo's local `.claude/skills/`) to ALSO load
+# skills from there, so an `--out` reaching either one must be refused
+# identically.
 CLAUDE_SKILLS_LIVE_DIR = ".claude/skills"
 BOARD_FILENAME = "BOARD.md"
 
@@ -18068,29 +18078,99 @@ SKILL_SCAFFOLD_SCHEMA = "tess-os.skill-scaffold/1"
 
 class SkillError(Exception):
     """Raised for any `tessctl skill` refusal or read failure — an unknown
-    task id, an `--out` target that resolves under `.claude/skills/` (the
-    LIVE, core-managed, host-loaded skill set — refused regardless of
-    `--force`; see `_skill_reject_out_under_claude_skills`, issue #133), or
-    an `--out` target that already exists and is non-empty without
-    `--force`. Mirrors AuditError's/MemoryAdoptError's typed-refusal
-    convention."""
+    task id, an `--out` target that resolves under `.claude/skills/` EITHER
+    the in-repo, project-local one OR the operator's GLOBAL `~/.claude/
+    skills` (both LIVE, core-managed, host-loaded skill sets — refused
+    regardless of `--force`; see `_skill_reject_out_under_claude_skills`,
+    issues #133 and #141), or an `--out` target that already exists and is
+    non-empty without `--force`. Mirrors AuditError's/MemoryAdoptError's
+    typed-refusal convention."""
+
+
+def _skill_global_claude_skills_root() -> Path | None:
+    """Issue #141 (Cyra LOW, split from #133/#140's re-review — resolved
+    2026-07-21): the SECOND forbidden root `_skill_reject_out_under_claude_
+    skills` must cover, alongside the in-repo `root / CLAUDE_SKILLS_LIVE_DIR`
+    — the operator's GLOBAL, per-machine `~/.claude/skills`. Confirmed
+    empirically (not a hypothetical — a real, populated directory, distinct
+    from any repo's local `.claude/skills/`) that the Claude Code host DOES
+    also load skills from there. An `--out` resolving under EITHER root must
+    be refused identically; this helper resolves the global one, the exact
+    same way `_skill_reject_out_under_claude_skills` already resolves the
+    repo-local one, so the caller can run the SAME `_path_is_prefix` /
+    `_paths_are_same_location` inode-identity check against both.
+
+    Returns `None` (never raises) in the one case a "global home" concept
+    genuinely does not exist for this process: `Path.home()`'s own
+    documented failure mode — no `HOME` env var AND no password-database
+    entry for the current user — raises `RuntimeError('Could not determine
+    home directory.')`. That is not a fail-open hole in the boundary this
+    function guards: if this process has no notion of "home" at all, there
+    is no `~/.claude/skills` it could possibly resolve an `--out` into
+    either — nothing exists here to bypass. (This is the ONLY branch that
+    returns `None`; a home directory that simply doesn't have a `.claude/
+    skills` subdirectory YET still returns a real, resolved `Path` — see
+    below.)
+
+    Every OTHER ambiguity resolves to a real `Path`, checked by the caller
+    with the same fail-closed rigor as the repo-local root — this whole
+    check is a DENYLIST (reject writes to protected roots): on ambiguity,
+    the caller must refuse, never silently pass through. In particular,
+    `Path.resolve()` (used here exactly like the repo-local root's own
+    resolution, and like the caller's own `out_dir.resolve()`) normalizes
+    the longest EXISTING prefix and appends whatever tail doesn't exist yet
+    — it does not require `~/.claude/skills` to already exist on disk. A
+    global skills dir that hasn't been created yet on this machine simply
+    means nothing can be "inside" it — `_path_is_prefix` already handles
+    that correctly (no ancestor of a resolved `--out` target matches a
+    location nothing has ever been placed under), so this deliberately does
+    NOT special-case "doesn't exist" into an early `None` — that would
+    narrow the check, not widen it, and a DENYLIST narrows only when the
+    location provably cannot exist at all (the `RuntimeError` case above),
+    never merely because it doesn't exist YET."""
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return None
+    return (home / CLAUDE_SKILLS_LIVE_DIR).resolve()
 
 
 def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> Path:
-    """Issue #133 (Cyra LOW, PR #132 review follow-up): refuse an `--out`
-    target that resolves under `.claude/skills/` — `CLAUDE_SKILLS_LIVE_DIR`,
-    the LIVE, core-managed, host-loaded skill set. Before this check
-    existed, an operator-explicit `--out .claude/skills/<x>` bypassed the
-    drafts-only/human-review boundary this whole command is architected
-    around: `_atomic_write_bytes` writes unconditionally and does not route
-    through `check_manifest_write_gate` (that gate only ever fires on the
+    """Issue #133 (Cyra LOW, PR #132 review follow-up); extended by issue
+    #141 (Cyra LOW, resolved 2026-07-21) to ALSO cover the global scope —
+    see that section below. Refuse an `--out` target that resolves under
+    `.claude/skills/` — `CLAUDE_SKILLS_LIVE_DIR`, the LIVE, core-managed,
+    host-loaded skill set. Before this check existed, an operator-explicit
+    `--out .claude/skills/<x>` bypassed the drafts-only/human-review
+    boundary this whole command is architected around: `_atomic_write_bytes`
+    writes unconditionally and does not route through
+    `check_manifest_write_gate` (that gate only ever fires on the
     RESTORE/render code paths, never on a caller-supplied `--out`) — so an
     operator who typed that exact path would have gotten a `status: draft`
     `SKILL.md` written straight into the live, host-loaded skill set. Same
     operator-explicit, not-autonomous shape `audit export --out` already has
     (no new capability is granted by that path existing), but `.claude/
-    skills/` is the ONE directory this command must never write into,
-    regardless of who asked.
+    skills/` is a directory this command must never write into, regardless
+    of who asked — repo-local or global.
+
+    Issue #141 (Cyra LOW, split off #133/#140's re-review, resolved
+    2026-07-21): the boundary above only ever anchored to the in-repo
+    `root / CLAUDE_SKILLS_LIVE_DIR`. Confirmed empirically that the host
+    (Claude Code) ALSO loads skills from a GLOBAL, per-operator `~/.claude/
+    skills` — a real, populated directory on the operator's machine, distinct
+    from any repo's local `.claude/skills/`, not merely a hypothetical the
+    original #133 fix deferred. An `--out` resolving under `~/.claude/skills`
+    is therefore checked here too (`_skill_global_claude_skills_root`,
+    above), with the EXACT SAME inode-identity mechanism proven for the
+    repo-local root — never a second, re-forked comparison. `~`/home is
+    resolved safely: `Path.home()` can raise if this process has no
+    determinable home directory at all, handled by returning `None` from
+    that helper (nothing to check against, not a bypass — see its own
+    docstring); every other ambiguity (the directory not existing yet, a
+    case-divergent spelling, a symlink alias) is still checked, and — since
+    this is a DENYLIST — any ambiguity in that check resolves to REFUSE,
+    fail-safe, exactly like the repo-local root already does via
+    `_paths_are_same_location`'s own case-fold fallback.
 
     ★ CRITICAL fix (Cyra, live-reproduced on macOS, PR #140 re-review — the
     SAME bug class as PR #117's Cyra HOLE 1, `tessctl memory adopt`): the
@@ -18153,9 +18233,33 @@ def _skill_reject_out_under_claude_skills(root: Path, out_dir: Path) -> Path:
             f"path that resolves here too — e.g. '.CLAUDE/skills' on a case-insensitive "
             f"filesystem — never just a literal-string or case-sensitive match). A "
             f"generated DRAFT must never be written into the live skill set — that is "
-            f"the one directory `tessctl skill from-task` is architected to never touch, "
+            f"a directory `tessctl skill from-task` is architected to never touch, "
             f"drafts stay drafts until a human promotes them. Pass a different --out, or "
             f"omit it to use the default ({SKILL_DRAFTS_DIR}/<slug>)."
+        )
+    # Issue #141 (Cyra LOW, resolved 2026-07-21): the SECOND forbidden root —
+    # the operator's GLOBAL, per-machine ~/.claude/skills, confirmed to be
+    # ALSO host-loaded, not just the in-repo one checked above. `None` means
+    # this process has no determinable home directory at all (see the
+    # helper's own docstring) — nothing exists there to bypass, so there is
+    # nothing further to check; every other case yields a real, resolved
+    # `Path` checked with the identical `_path_is_prefix` inode-identity
+    # mechanism as the repo-local root just above — never a second,
+    # re-forked comparison.
+    global_forbidden = _skill_global_claude_skills_root()
+    if global_forbidden is not None and _path_is_prefix(global_forbidden, resolved):
+        raise SkillError(
+            f"tessctl skill from-task: --out {out_dir} resolves to {resolved}, which is "
+            f"{global_forbidden} or a path under it — the operator's GLOBAL, host-loaded "
+            f"~/{CLAUDE_SKILLS_LIVE_DIR} skill set (issue #141: confirmed host-loaded "
+            f"alongside the in-repo one). Refused (path-normalized AND inode-identity "
+            f"checked, the SAME mechanism as the in-repo .claude/skills/ boundary: this "
+            f"catches '..' traversal, a symlink, or a case-folded/differently-cased path "
+            f"that resolves here too — never just a literal-string or case-sensitive "
+            f"match). A generated DRAFT must never be written into a live skill set — "
+            f"that is a directory `tessctl skill from-task` is architected to never "
+            f"touch, drafts stay drafts until a human promotes them. Pass a different "
+            f"--out, or omit it to use the default ({SKILL_DRAFTS_DIR}/<slug>)."
         )
     return resolved
 
