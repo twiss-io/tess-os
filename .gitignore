@@ -162,6 +162,22 @@ channels/
 .tess/state/skills/*
 !.tess/state/skills/.gitkeep
 
+# PR-2 (Agent Receipt EMIT wiring, tools/receipt-emit/) — a SIXTH
+# `.tess/state/**` subsystem, same fence as the five above.
+# `.tess/state/receipts/chain.jsonl` is the ship-gate's own auto-emitted
+# Agent Receipt chain (`_gate_emit_receipts_on_clear` in .tess/bin/tessctl):
+# auto-generated, machine-local, high-frequency evidence produced on every
+# gate run — closer in kind to `.tess/state/ledger/**`'s own hash-chained
+# append log (verified locally via `tools/receipt-verify/`, independent of
+# git entirely) than to a deliberately-authored, committed artifact like a
+# verdict or sign-off — so it gets the SAME content-ignore treatment: keep
+# the structure, never let a plain `git add -A` silently stage one
+# instance's real governance/audit trail (actor names, policy decisions,
+# signed decisions) into a shared repo's history (the #132/#105/#111
+# leak-class).
+.tess/state/receipts/*
+!.tess/state/receipts/.gitkeep
+
 # ─────────────────────────────────────────────────────────────
 # Knowledge base content is operator/client data — keep structure, ignore content
 # ─────────────────────────────────────────────────────────────

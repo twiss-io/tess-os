@@ -155,6 +155,10 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     // subsystem, same treatment: real generated draft skills must never
     // leak into a scaffold.
     '.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md',
+    // PR-2 (Agent Receipt EMIT wiring) — a SIXTH .tess/state/** subsystem,
+    // same treatment: a real, auto-emitted Agent Receipt chain must never
+    // leak into a scaffold.
+    '.tess/state/receipts/chain.jsonl',
   ]) {
     assert.equal(isExcludedRel(p), true, `${p} must be excluded`);
   }
@@ -179,6 +183,9 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.tess/state/locks/.gitkeep',
     // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
     '.tess/state/skills/.gitkeep',
+    // PR-2 (Agent Receipt EMIT wiring) — same for the receipts chain-store
+    // scaffold structure.
+    '.tess/state/receipts/.gitkeep',
   ]) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);
   }
@@ -301,6 +308,9 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.tess/state/locks/.gitkeep', '');
   // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
   w('.tess/state/skills/.gitkeep', '');
+  // PR-2 (Agent Receipt EMIT wiring) — same for the receipts chain-store
+  // scaffold structure.
+  w('.tess/state/receipts/.gitkeep', '');
 
   // The author's secret + operator-state material (must NOT leak).
   w('.claude/vault/vault.age', 'CIPHERTEXT\n');
@@ -327,6 +337,9 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   // The author's REAL generated draft skill (Phase 0.6, issue #131) — same
   // leak scenario, one subsystem later.
   w('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md', 'author real draft skill\n');
+  // The author's REAL auto-emitted Agent Receipt chain (PR-2) — same leak
+  // scenario, one subsystem later still.
+  w('.tess/state/receipts/chain.jsonl', '{"author":"real receipt"}\n');
 
   try {
     fetchTemplate(src, staging);
@@ -356,6 +369,8 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     gone('.tess/state/locks/task.lock');
     // Phase 0.6 (issue #131) — real generated draft skills must never leak.
     gone('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md');
+    // PR-2 (Agent Receipt EMIT wiring) — a real receipt chain must never leak.
+    gone('.tess/state/receipts/chain.jsonl');
 
     // Legit structure preserved.
     kept('README.md');
@@ -374,6 +389,9 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     kept('.tess/state/locks/.gitkeep');
     // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
     kept('.tess/state/skills/.gitkeep');
+    // PR-2 (Agent Receipt EMIT wiring) — same for the receipts chain-store
+    // scaffold structure.
+    kept('.tess/state/receipts/.gitkeep');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

@@ -264,7 +264,7 @@ def test_owned_globs_wins_clients_template(engine, priv_repo):
 # just one of them.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("subdir", ["memory", "tasks", "ledger", "locks", "skills"])
+@pytest.mark.parametrize("subdir", ["memory", "tasks", "ledger", "locks", "skills", "receipts"])
 def test_state_never_publishable(engine, priv_repo, subdir):
     """Three independent guarantees, proven together for each subdir:
 
@@ -304,6 +304,7 @@ def test_state_write_gate_denies_every_subdir(engine, gate_root_with_state_manif
         ("memory", "note.md"), ("tasks", "graph.json"),
         ("ledger", "entry.md"), ("locks", "task.lock"),
         ("skills", "drafts/x/SKILL.md"),
+        ("receipts", "chain.jsonl"),
     ):
         with pytest.raises(engine.GateError):
             engine.check_manifest_write_gate(
@@ -322,7 +323,7 @@ def test_state_scaffold_ships_empty():
     content in it) is proven in create-tess's own test suite."""
     state_root = REPO_ROOT / ".tess" / "state"
     assert state_root.is_dir(), ".tess/state/ must exist in the repo"
-    for sub in ("memory", "tasks", "ledger", "locks", "skills"):
+    for sub in ("memory", "tasks", "ledger", "locks", "skills", "receipts"):
         subdir = state_root / sub
         assert subdir.is_dir(), f".tess/state/{sub}/ must exist"
         entries = [p for p in subdir.rglob("*") if p.is_file()]
