@@ -231,17 +231,27 @@ skipped.
 
 ## Producing a receipt
 
-There is no `tessctl receipt sign` command in this repository (see "What
-this is not" — signing infrastructure for this new envelope is deliberately
-scoped out of this change). Producing a receipt today means: build the
-`proposed_action`/`policy_decision`/`chain` fields, embed the
-already-produced `tessctl verdict sign` or hard-floor sign-off artifact
-verbatim as `decision`, then sign the receipt's own signing-canonical bytes
-with the SAME identity's key using a plain `gpg --detach-sign --armor`
-invocation (see the reference recipe in
-[`examples/receipt-demo/`](../examples/receipt-demo/README.md), which runs
-this exact sequence end to end with **test-only, ephemeral GPG keys never
-committed to this repository**).
+There is no `tessctl receipt` command in this repository (see "What this
+is not" — signing infrastructure for this new envelope is deliberately
+scoped out of `.tess/bin/tessctl` itself). What DOES exist is
+[`tools/receipt-emit/`](../tools/receipt-emit/README.md) — a standalone
+CLI, separate from `tessctl`, that takes an already-produced `tessctl
+verdict sign` or hard-floor sign-off artifact, builds the
+`proposed_action`/`policy_decision`/`chain` fields (copying the fired
+`core/policy/policy.yaml` rule verbatim), signs the receipt's own
+signing-canonical bytes with the SAME identity's key (a plain `gpg
+--detach-sign --armor` invocation), atomically appends it to a chain file,
+and self-verifies the result against `tools/receipt-verify` before
+committing — refusing, with nothing written, on a non-`APPROVE` verdict, an
+incomplete sign-off, an identity mismatch, or a failed self-verify. It
+attaches only to the GPG verdict/sign-off loop above (never to the
+`run_pipeline` HMAC approval, which is not a receipt `decision_kind`), and
+prints the same "genuinely signed, not trust-anchored" honest label every
+successful emit — see that tool's own README for its exact fail-closed
+behavior. `examples/receipt-demo/` still exists alongside it as the
+illustrative, ephemeral-key, end-to-end walkthrough (never real keys, never
+committed output); `tools/receipt-emit/` is the tool an operator would
+actually run against a real (if still unregistered) key.
 
 ## Third-party verification
 
@@ -288,10 +298,13 @@ implementation, not a claim that any other project has adopted it yet.
 - **Not new signing infrastructure.** There is no new key type, no new
   `tessctl` subcommand, and no change to `.tess/bin/tessctl`,
   `core/policy/policy.yaml`, or any file this repository's own
-  `tess-os-security-tier-doctrine` policy rule already protects. This change
-  adds a new, independent contract + tool + docs + example only.
-  Verdict/sign-off signing and their trust boundary are unchanged.
-  See `conductor/verdict-signing.md`.
+  `tess-os-security-tier-doctrine` policy rule already protects — including
+  `tools/receipt-emit/` (the emit CLI): it reads `core/policy/policy.yaml`
+  READ-ONLY, signs with a key the operator already holds, and is a
+  standalone tool alongside `tessctl`, not a change to it. This change adds
+  a new, independent contract + tools + docs + example only. Verdict/
+  sign-off signing and their trust boundary are unchanged. See
+  `conductor/verdict-signing.md`.
 - **Not a claim of external adoption.** "Open spec" means the license and the
   design allow adoption; it does not mean any other project uses this format
   today.
@@ -305,8 +318,9 @@ implementation, not a claim that any other project has adopted it yet.
 |---|---|
 | JSON Schema | `core/contracts/agent-receipt.schema.json` |
 | Standalone verifier | `tools/receipt-verify/` |
+| Emit CLI (produces a real receipt from an already-signed decision) | `tools/receipt-emit/` |
 | Runnable demo (test keys only) | `examples/receipt-demo/` |
-| Contract tests | `tests/test_agent_receipt_schema.py`, `tests/test_receipt_verify_tool.py` |
+| Contract tests | `tests/test_agent_receipt_schema.py`, `tests/test_receipt_verify_cli.py`, `tests/test_receipt_verify_semantics.py`, `tests/test_receipt_emit_cli.py`, `tests/test_receipt_emit_semantics.py` |
 | Existing verdict-signing doctrine this builds on | `conductor/verdict-signing.md` |
 | Existing policy/rule contract this builds on | `core/contracts/policy.schema.json`, `core/policy/policy.yaml` |
 | Disambiguation from the unrelated, deferred future receipt proposal | `docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md` |

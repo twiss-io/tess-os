@@ -6,6 +6,78 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`tools/receipt-emit/` — the Agent Receipt EMIT CLI**, closing the gap
+  `tools/receipt-verify/` left open: the verifier could confirm a receipt
+  was genuine, but nothing in this repository actually PRODUCED one. This
+  is the write-side counterpart.
+  - **Attaches to System B, never System A.** Wraps an already-signed
+    `verdict.schema.json` instance (`disposition: APPROVE`) or hard-floor
+    sign-off artifact — the GPG verdict/sign-off loop
+    `tools/receipt-verify/` already verifies standalone. It is explicitly
+    NOT a wrapper for the `run_pipeline` HMAC approval, which is not a
+    receipt `decision_kind` this schema recognizes; a `--decision` shaped
+    like anything else is refused before any file is touched
+    (`assemble.infer_decision_kind`).
+  - **`receipt_emit.py emit --decision ... --rule-id ... --policy ...
+    --actor ... --summary ... --key-id ... --chain ... [--gnupg-home ...]
+    [--trust NAME FINGERPRINT KEYFILE ...] [--json]`** assembles the
+    envelope, copies the fired `core/policy/policy.yaml` rule VERBATIM
+    (READ-ONLY — `policy_lookup.py` never writes the policy file),
+    GPG-signs it, atomically appends it to `--chain`, and self-verifies
+    the CANDIDATE chain by invoking the real, independent
+    `tools/receipt-verify/receipt_verify.py verify-chain` as a
+    subprocess BEFORE the candidate ever becomes the committed file —
+    only a `CHAIN INTACT` result is ever persisted.
+  - **Fail-closed:** a non-`APPROVE` verdict or an incomplete/unsigned
+    signoff is refused with nothing written; `receipt_signature.signed_by`
+    is always derived from the decision's own identity (never
+    independently supplied), with a defense-in-depth re-check
+    (`tools/receipt-verify/checks.py`'s own `check_identity_consistency`,
+    reused, not reimplemented) proving the guard actually fires on a
+    forced mismatch; a simulated crash between the candidate write and
+    the atomic rename leaves the chain file byte-for-byte unchanged with
+    no orphaned temp file (`chain_atomic.py`).
+  - **Reuses, never reimplements:** `tools/receipt-verify/canonical.py`
+    for canonicalization and `tools/receipt-verify/checks.py` for
+    decision-shape, identity, and guardrails.md Rule 18 pairing checks —
+    the same checks the verifier itself runs, so emit and verify can
+    never silently drift apart on what counts as valid.
+  - **Honest label on every successful emit:** genuinely GPG-signed and
+    tamper/chain-evident, but NOT trust-anchored until the signer's key is
+    registered in `core/policy/policy.yaml` (`verifier_keys`/
+    `signoff_keys`, still empty by design) — key-ceremony registration
+    remains a separate, Xavier-gated decision this tool does not perform.
+  - **Known limitation, disclosed not hidden:** no advisory lock against
+    two concurrent emitters racing the same `--chain` file
+    (last-writer-wins on the rename, not corruption) — a natural,
+    explicitly out-of-scope follow-on; a single-writer-at-a-time model is
+    safe today.
+  - `tests/test_receipt_emit_semantics.py` (unit-level: policy lookup,
+    decision-kind inference, identity/pairing checks, atomic-append
+    crash-safety) + `tests/test_receipt_emit_cli.py` (subprocess, real GPG
+    keys, real self-verify subprocess, including a two-emit
+    verdict-then-signoff chain-continuity round trip).
+  - **PR review fix (Reid CRITICAL, reproduced end-to-end):**
+    `gpg_sign.resolve_fingerprint` originally collected EVERY `fpr:` line
+    from `gpg --with-colons --list-keys <key-id>` — but GPG emits one
+    `fpr:` per key COMPONENT, not one per certificate, so any normal key
+    with a default encryption subkey (the standard `gpg
+    --quick-generate-key` / `--full-generate-key` shape) has at least two
+    `fpr:` lines, tripping the "matches more than one distinct key"
+    refusal BEFORE signing — the tool refused essentially every real
+    operator key. Fixed by only accepting an `fpr:` line that immediately
+    follows a `pub:` (primary) record, never one following a `sub:`
+    record. Every other GPG identity anywhere in this test suite is
+    deliberately sign-only/subkey-less, which is why this was never
+    caught by CI; a new regression fixture
+    (`tests/_receipt_emit_fixtures.py`'s `subkey_bearing_gpg_key`)
+    generates a REALISTIC key with a default encryption subkey and proves
+    both `resolve_fingerprint` and a full end-to-end `emit` succeed with
+    it — verified to FAIL on the pre-fix code and PASS after. Also (Reid
+    LOW): the `gpg`-on-`PATH` friendly pre-check in `receipt_emit.py` now
+    runs regardless of `--gnupg-home` (it was previously skipped whenever
+    `--gnupg-home` was set, relying on a less-friendly downstream error
+    instead).
 - **Phase 0.6 — the SKILL DRAFT SCAFFOLD (`tessctl skill from-task`, issue
   #131)** — demo-to-skill, the "gets smarter from your work" pattern: a
   completed task + its REAL ledger trail becomes a scaffolded, DRAFT,
