@@ -14879,9 +14879,28 @@ def _new_task_record(task_id, title, status, owner, assignee, depends_on,
 
 def _task_read(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise TaskError(f"tessctl tasks: {path} is not valid JSON: {e}")
+    # Phase 0.4 legacy-record healing (Cyra/Reid, PR #126 review): a task
+    # written before `target_harness` existed (every task on disk before
+    # this field's schema version — .tess/state/tasks/** is gitignored
+    # instance data, so a real deployed instance can genuinely have these)
+    # has no such key at all. That is an OLDER ON-DISK SHAPE this same
+    # engine produced honestly, not corruption or tampering — the exact
+    # same "legacy, not tampered" framing this region already applies to a
+    # seq-absent ledger shard line (`_ledger_tail_state`/
+    # `_ledger_verify_shard`, docs/STATE_LAYER.md's "Migration note").
+    # Backfilling it here, in the ONE shared read path every write (via
+    # `_tasks_write_locked`), `pull`, and `render` call goes through, heals
+    # it in memory on first touch, no separate migration command required
+    # — mirrors a legacy ledger shard silently upgrading to the seq-aware
+    # format on its own next append. `_tasks_write_locked`'s next
+    # successful write persists the backfilled value to disk as a side
+    # effect of the mutation already happening.
+    if isinstance(record, dict):
+        record.setdefault("target_harness", DEFAULT_TASK_LANE)
+    return record
 
 
 def _task_atomic_write(path: Path, record: dict) -> None:
@@ -14889,23 +14908,40 @@ def _task_atomic_write(path: Path, record: dict) -> None:
     _atomic_write_bytes(path, data)
 
 
-def _self_validate_task_or_raise(root: Path, path: Path) -> None:
-    """Dogfood check: whatever this region just wrote to `path` must itself
-    pass `tessctl validate task <path>` — mirrors `_self_validate_or_raise`
-    (MISSION LEDGER region) exactly, adapted to the "task" contract type. A
-    failure here is an internal bug in THIS region, never a caller-visible
-    degraded_output."""
+def _validate_task_instance_or_raise(root: Path, instance: dict, *, context: str) -> None:
+    """Dogfood check on the IN-MEMORY task record dict, BEFORE it is ever
+    written to disk (Cyra/Reid, PR #126 review — replaces the earlier
+    `_self_validate_task_or_raise(root, path)`, which re-read the file
+    AFTER `_task_atomic_write` had already committed a candidate mutation:
+    a validation failure there left a genuinely mutated record on disk with
+    NO corresponding ledger event, since every caller's `_ledger_auto_log`
+    call only runs after its write helper returns successfully — a silent
+    state/ledger divergence, exactly the failure mode a legacy record
+    missing `target_harness` used to trigger on its very next `set`/
+    `claim`/`release`/`handoff`). Validating the CANDIDATE record before any
+    write commits means a validation failure now aborts cleanly: nothing on
+    disk changes, so there is nothing for the ledger to have missed. Mirrors
+    `_ledger_self_validate_or_raise`'s own already-correct ordering — that
+    function has always validated the in-memory ledger-event dict before
+    `_log_append_event` ever appends it to a shard; this brings the TASK
+    STORE's own write path into the same discipline, no longer a
+    write-then-validate outlier. Round-tripping a plain-data dict (only
+    str/int/None/list/dict of those — task records never contain floats,
+    datetimes, or other lossy-under-JSON types) through `json.dumps`/
+    `json.loads` is lossless, so validating pre-write is exactly equivalent
+    to the old post-write disk re-read, not a weaker check. `context` is a
+    human-readable label (a task id or path) used only in the raised error
+    message."""
     try:
         schema = load_contract_schema(root, "task")
-        instance = load_contract_instance(path)
     except ContractError as e:
-        raise TaskError(f"internal error: {path} failed to load for its own dogfood check — {e}")
+        raise TaskError(f"internal error: could not load the task schema for {context} — {e}")
     base_dir = root / CONTRACTS_DIR
     violations = schema_validate(instance, schema, schema, base_dir, path="$")
     violations += _lint_contract("task", instance, root)
     if violations:
         raise TaskError(
-            f"internal error: {path} does not pass its own schema (task) — " + "; ".join(violations)
+            f"internal error: {context} does not pass its own schema (task) — " + "; ".join(violations)
         )
 
 
@@ -14957,27 +14993,42 @@ def _tasks_write_locked(root: Path, task_id: str, mutate_fn, *, expected_rev: in
     exclusive advisory flock scoped to THIS SINGLE task id
     (.tess/state/locks/task-<id>.lock — contention is scoped to writers of
     the same task, per this region's own header comment), read the CURRENT
-    on-disk record, optionally assert a caller-supplied `expected_rev`
-    precondition (a hard TASK_CAS_CONFLICT if it no longer holds — the
-    caller read a stale rev and must reload + retry itself, an explicit
-    ETag-style optimistic-concurrency workflow rather than a silent auto-
-    retry that could paper over a real conflict), hand the record to
-    `mutate_fn` for the actual field changes, bump `rev`/`updated_at`,
-    atomically replace the file, and dogfood-validate the result before
-    returning it. `mutate_fn` receives a fresh COPY of the current record and
-    must return the full desired next record (it may raise TaskError itself,
-    e.g. `tasks claim`'s TASK_ALREADY_CLAIMED refusal — the lock is still
-    held at that point, and is released via `finally` either way).
+    on-disk record (via `_task_read`, which heals a legacy record missing a
+    since-added required field — see its own docstring), optionally assert
+    a caller-supplied `expected_rev` precondition (a hard TASK_CAS_CONFLICT
+    if it no longer holds — the caller read a stale rev and must reload +
+    retry itself, an explicit ETag-style optimistic-concurrency workflow
+    rather than a silent auto-retry that could paper over a real conflict),
+    hand the record to `mutate_fn` for the actual field changes, bump
+    `rev`/`updated_at`, dogfood-validate the CANDIDATE record, and ONLY THEN
+    atomically replace the file. `mutate_fn` receives a fresh COPY of the
+    current record and must return the full desired next record (it may
+    raise TaskError itself, e.g. `tasks claim`'s TASK_ALREADY_CLAIMED
+    refusal — the lock is still held at that point, and is released via
+    `finally` either way).
+
+    Validate-BEFORE-write, never the reverse (Cyra/Reid, PR #126 review): a
+    validation failure now aborts with NOTHING written to disk — no
+    mutated-but-unlogged task record ever exists, because the state that
+    would need a ledger entry never lands. The earlier ordering (write,
+    THEN dogfood-validate the file just written) let a validation failure
+    leave a genuinely mutated record committed to disk with no ledger event
+    at all (every caller's `_ledger_auto_log` runs only after this function
+    returns successfully) — a silent state/ledger divergence, first
+    reproduced against a legacy record missing `target_harness` (now healed
+    by `_task_read` regardless, so this specific trigger cannot recur, but
+    the ordering fix closes the whole CLASS of failure, not just this one
+    field). See `_validate_task_instance_or_raise`'s own docstring.
 
     If `mutate_fn`'s returned record is field-for-field IDENTICAL to
     `current` (e.g. `tasks set --add-depends X` where X is already present —
     every mutation this region's handlers perform is itself a no-op guard
     against re-applying an unchanged value), this is a genuine no-op: no
-    file write, no `rev` bump, no `updated_at` touch, and `current` is
-    returned as-is. This matters beyond just avoiding a wasted write — a
-    caller (e.g. `_cmd_tasks_set`) uses "did rev actually change" to decide
-    whether to append a ledger event at all, so a no-op mutation never
-    produces an empty-summary ledger-append attempt."""
+    validation, no file write, no `rev` bump, no `updated_at` touch, and
+    `current` is returned as-is. This matters beyond just avoiding a wasted
+    write — a caller (e.g. `_cmd_tasks_set`) uses "did rev actually change"
+    to decide whether to append a ledger event at all, so a no-op mutation
+    never produces an empty-summary ledger-append attempt."""
     path = _task_path(root, task_id)
     if not path.exists():
         raise TaskError(f"tessctl tasks: no such task {task_id!r} ({TASKS_DIR}/{task_id}.json)")
@@ -15006,8 +15057,8 @@ def _tasks_write_locked(root: Path, task_id: str, mutate_fn, *, expected_rev: in
                 return current
             next_record["rev"] = current_rev + 1
             next_record["updated_at"] = _utc_now_iso()
+            _validate_task_instance_or_raise(root, next_record, context=f"{TASKS_DIR}/{task_id}.json")
             _task_atomic_write(path, next_record)
-            _self_validate_task_or_raise(root, path)
             return next_record
         finally:
             if fcntl is not None:
@@ -15235,9 +15286,14 @@ def _lint_ledger_event(instance) -> list:
 
 def _ledger_self_validate_or_raise(root: Path, record: dict) -> None:
     """Dogfood check on the IN-MEMORY event dict, before it is ever appended
-    to a shard — the append-only twin of `_self_validate_task_or_raise` (that
-    one re-reads a file it just wrote; this one validates a value that is
-    about to become one JSONL line and is never rewritten afterward)."""
+    to a shard — the append-only twin of `_validate_task_instance_or_raise`
+    (that one validates a task record before `_task_atomic_write` commits
+    it; this one validates a value that is about to become one JSONL line
+    and is never rewritten afterward). Both now share the SAME
+    validate-before-persist ordering — the TASK STORE side used to validate
+    the file AFTER writing it (`_self_validate_task_or_raise`, removed in
+    the PR #126 review fix), an outlier this function's OWN ordering never
+    had."""
     try:
         schema = load_contract_schema(root, "ledger-event")
     except ContractError as e:
@@ -15465,9 +15521,13 @@ def _cmd_tasks_new(args, root: Path) -> None:
             target_harness=lane,
         )
         path = _task_path(root, task_id)
+        # Validate BEFORE write (Cyra/Reid, PR #126 review — same ordering
+        # fix as `_tasks_write_locked`): a validation failure here must
+        # never leave a task FILE on disk with no corresponding ledger
+        # entry (`_ledger_auto_log` below only runs after this succeeds).
+        _validate_task_instance_or_raise(root, record, context=f"{TASKS_DIR}/{task_id}.json")
         path.parent.mkdir(parents=True, exist_ok=True)
         _task_atomic_write(path, record)
-        _self_validate_task_or_raise(root, path)
         _ledger_auto_log(
             root, harness=args.harness, event="task_transition", task_id=task_id,
             summary=f"created: (none) -> {status} — {args.title!r}", session=args.session,
@@ -15861,7 +15921,23 @@ def _render_handoff_invocation(record: dict, target: str) -> str:
     function only builds TEXT for a human/orchestrator to hand to a fresh
     session of `target` — it does not start, exec, or fork any process of
     that harness (no such runtime exists inside THIS process; see
-    docs/STATE_LAYER.md's 'What's deliberately NOT built yet')."""
+    docs/STATE_LAYER.md's 'What's deliberately NOT built yet').
+
+    Reid LOW (PR #126 review): the FIRST version of this text had `claim`
+    rely on `tasks claim`'s own implicit default `--uuid` (a stable value
+    tessctl derives internally from `--host`+`--pid` — see
+    `_default_claim_uuid`), then told `release` to pass "<same --uuid claim
+    used>" — a placeholder with no actual value ever surfaced to the
+    worker, so the block was not literally copy-paste-runnable end to end.
+    Fixed by capturing `HOST`/`PID`/`UUID` into shell variables ONCE at the
+    top and reusing them in every subsequent command — the SAME identity
+    threads through claim -> set -> release, and the whole block now runs
+    as a single copy-pasted shell script with no placeholder left to fill
+    in by hand. `uuidgen` is the common case; the `python3` fallback covers
+    a minimal environment that lacks it (this repo's own Python dependency
+    is otherwise irrelevant to whatever `target` harness/shell will run
+    this — the fallback avoids assuming `uuidgen` specifically, not tessctl
+    itself)."""
     task_id = record["id"]
     title = record["title"]
     lines = [
@@ -15873,12 +15949,20 @@ def _render_handoff_invocation(record: dict, target: str) -> str:
         "   docs/STATE_LAYER.md). This step is manual: there is no runtime here to",
         f"   launch a {target} process on your behalf.",
         "",
-        "2. Inside that session, claim this task with ITS OWN identity before working",
-        "   it (never start on a task claimed by someone else):",
+        "2. Capture your claimant identity ONCE — reused by every command below so",
+        "   claim -> set -> release all agree on who holds this task:",
         "",
-        f"     tessctl tasks claim {task_id} --host $(hostname) --pid $$ --harness {target}",
+        "     HOST=$(hostname)",
+        "     PID=$$",
+        "     UUID=$(uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())')",
         "",
-        "3. Record progress back to the SAME shared board as you go — never a",
+        "3. Claim this task with THAT identity before working it (never start on a",
+        "   task claimed by someone else):",
+        "",
+        f"     tessctl tasks claim {task_id} --host \"$HOST\" --pid \"$PID\" --uuid \"$UUID\" "
+        f"--harness {target}",
+        "",
+        "4. Record progress back to the SAME shared board as you go — never a",
         "   private, harness-only list:",
         "",
         f"     tessctl tasks set {task_id} --status in_progress --harness {target}",
@@ -15887,10 +15971,10 @@ def _render_handoff_invocation(record: dict, target: str) -> str:
         f'     tessctl tasks set {task_id} --status review --harness {target} '
         f'--add-note "<what changed>" --add-evidence "<path or PR URL>"',
         "",
-        "4. Release the claim when done (or if you have to stop):",
+        "5. Release the claim when done (or if you have to stop) — SAME $HOST/$PID/$UUID:",
         "",
-        f"     tessctl tasks release {task_id} --host $(hostname) --pid $$ --uuid "
-        f"<same --uuid claim used> --harness {target} --reason completed",
+        f"     tessctl tasks release {task_id} --host \"$HOST\" --pid \"$PID\" --uuid \"$UUID\" "
+        f"--harness {target} --reason completed",
         "",
         f"See AGENTS.md's 'Shared Tasks' section for the full shared-board convention "
         f"{target} reads on session start.",

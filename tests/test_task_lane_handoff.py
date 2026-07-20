@@ -35,6 +35,20 @@ Coverage:
   * The full ledger hash chain (`log verify`) still verifies clean after
     `earmarked`/`handoff` events are appended — no fork of the chain
     algorithm.
+
+PR #126 review fixes (Cyra + Reid, independently reproduced):
+  * CRITICAL — a legacy task record (written before `target_harness`
+    existed) must heal to the default lane on `set`/`claim`/`release`/
+    `handoff`, and each of those must still log its ledger event — no
+    state/ledger divergence. Covered by the dedicated "Legacy-record
+    backward compatibility" section below, including an engine-level proof
+    that `_tasks_write_locked` now validates BEFORE writing (so ANY
+    validation failure, not just this one field, leaves disk untouched and
+    produces no ledger entry).
+  * LOW — the printed `handoff` invocation captures $HOST/$PID/$UUID once
+    and threads the SAME identity through `claim` and `release`, so the
+    block is actually copy-paste-runnable end to end (the original text
+    had `release` reference a value `claim` never surfaced).
 """
 
 from __future__ import annotations
@@ -340,6 +354,39 @@ def test_handoff_prints_copy_pasteable_invocation(troot):
     assert "AGENTS.md" in out
 
 
+def test_handoff_invocation_claim_and_release_share_the_same_captured_identity(troot):
+    """Reid LOW (PR #126 review): the emitted invocation must be literally
+    copy-paste-runnable end to end. The ORIGINAL bug: `claim` relied on
+    `tasks claim`'s own implicit default `--uuid` (derived internally from
+    `--host`+`--pid`, never printed), while `release` referenced a
+    "<same --uuid claim used>" placeholder with no actual value the worker
+    could see or copy — the block was not runnable as printed. Fixed by
+    capturing $HOST/$PID/$UUID into shell variables ONCE, ahead of `claim`,
+    and reusing them verbatim in `release`."""
+    task_id = _new(troot, "Ship the widget")
+    r = _run(troot, "tasks", "handoff", task_id, "--harness", "codex")
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = r.stdout
+
+    # No leftover "you must fill this in yourself" placeholder.
+    assert "<same" not in out
+
+    # An identity is captured ONCE, strictly before claim, and release comes
+    # after claim — the natural read-then-use-then-use-again order.
+    capture_idx = out.index("UUID=")
+    claim_idx = out.index(f"tasks claim {task_id}")
+    release_idx = out.index(f"tasks release {task_id}")
+    assert capture_idx < claim_idx < release_idx
+
+    # claim and release both reference the SAME shell variables, not two
+    # different literal/placeholder identities.
+    claim_line = next(line for line in out.splitlines() if f"tasks claim {task_id}" in line)
+    release_line = next(line for line in out.splitlines() if f"tasks release {task_id}" in line)
+    for var in ("$HOST", "$PID", "$UUID"):
+        assert var in claim_line, f"{var} missing from claim line: {claim_line!r}"
+        assert var in release_line, f"{var} missing from release line: {release_line!r}"
+
+
 def test_handoff_json_output_includes_task_and_invocation(troot):
     task_id = _new(troot)
     r = _run(troot, "tasks", "handoff", task_id, "--harness", "claude-code", "--json")
@@ -407,6 +454,205 @@ def test_log_verify_clean_after_earmark_and_handoff_events(troot):
     r = _run(troot, "log", "verify")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "TAMPERED" not in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL (Cyra + Reid, PR #126 review, independently reproduced): a task
+# record written before `target_harness` existed — every task on disk
+# before this schema version; `.tess/state/tasks/**` is gitignored instance
+# data, so a real deployed install can genuinely have these — must not
+# silently diverge state from the ledger the first time it is touched.
+#
+# THE BUG: `target_harness` was added as a REQUIRED schema field, but
+# `_tasks_write_locked` (and `_cmd_tasks_new`) wrote the mutated record to
+# disk BEFORE dogfood-validating it. Against a legacy record, the mutation
+# (status/rev bump) PERSISTED, validation THEN raised TaskError, and the
+# caller's `_ledger_auto_log` — which only runs after the write helper
+# returns successfully — never ran. Net effect: the task file changed, the
+# accountability ledger has zero record of it.
+#
+# THE FIX (two independent layers, both proven below):
+#   (a) READ-HEAL — `_task_read` (~L14880) now does
+#       `record.setdefault("target_harness", DEFAULT_TASK_LANE)`, mirroring
+#       the ledger's OWN existing "legacy shard -> silent backfill on next
+#       write, no manual migration" precedent (`_ledger_tail_state`'s
+#       seq-absent handling; see docs/STATE_LAYER.md's "Migration note",
+#       proven by `test_append_to_legacy_shard_backfills_seq_instead_of_
+#       erroring` in tests/test_accountability_ledger.py). This alone fully
+#       heals the missing-field case: `current` already carries the field
+#       by the time `mutate_fn` runs, so `next_record` does too, and
+#       validation never fails for this reason again.
+#   (b) VALIDATE-BEFORE-WRITE — `_tasks_write_locked` and `_cmd_tasks_new`
+#       now validate the CANDIDATE record BEFORE `_task_atomic_write` ever
+#       commits it (`_validate_task_instance_or_raise`), closing the whole
+#       CLASS of write-then-fail divergence, not just this one field's
+#       trigger — mirrors `_ledger_self_validate_or_raise`'s own
+#       already-correct in-memory-before-append ordering.
+# ---------------------------------------------------------------------------
+
+def _legacy_task_record(task_id="T-20260601-legacy-task-abcd", **overrides) -> dict:
+    """A task record in the EXACT pre-Phase-0.4 on-disk shape — every field
+    `_new_task_record` wrote before `target_harness` was added, and
+    crucially NOT that field itself. Mirrors `test_task_store.py`'s own
+    `_valid_task_instance()` fixture, minus the one field this PR added."""
+    record = {
+        "id": task_id, "title": "Pre-existing legacy task", "status": "ready",
+        "owner": "Xavier", "assignee": None,
+        "claim": {"host": None, "pid": None, "uuid": None, "claimed_at": None, "heartbeat_at": None},
+        "created_by": {"harness": "claude-code", "session": None},
+        "created_at": "2026-06-01T00:00:00Z", "updated_at": "2026-06-01T00:00:00Z",
+        "rev": 1, "depends_on": [], "evidence": [], "notes": [],
+    }
+    record.update(overrides)
+    return record
+
+
+def _write_legacy_task(troot, task_id="T-20260601-legacy-task-abcd", **overrides) -> str:
+    path = _task_path(troot, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = _legacy_task_record(task_id, **overrides)
+    assert "target_harness" not in record, "fixture bug: this must be the PRE-lane shape"
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return task_id
+
+
+def test_legacy_record_on_disk_has_no_target_harness_key(troot):
+    """Sanity check on the fixture itself — proves the reproduction is
+    real: a legacy record on disk genuinely lacks the key, not just an
+    empty/null value for it."""
+    task_id = _write_legacy_task(troot)
+    raw = json.loads(_task_path(troot, task_id).read_text())
+    assert "target_harness" not in raw
+
+
+def test_legacy_record_set_heals_field_and_logs_ledger_event(troot):
+    task_id = _write_legacy_task(troot)
+    r = _run(troot, "tasks", "set", task_id, "--status", "in_progress", "--harness", "h")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    obj = json.loads(_task_path(troot, task_id).read_text())
+    assert obj["target_harness"] == "any", "legacy record must heal to the default lane"
+    assert obj["status"] == "in_progress"
+    assert obj["rev"] == 2
+
+    events = _events(troot, task_id)
+    assert len(events) == 1, "the mutation must be logged — no state/ledger divergence"
+    assert events[0]["event"] == "task_transition"
+
+
+def test_legacy_record_claim_heals_field_and_logs_ledger_event(troot):
+    task_id = _write_legacy_task(troot)
+    r = _run(troot, "tasks", "claim", task_id, "--host", "h1", "--pid", "1", "--uuid", "u1", "--harness", "codex")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    obj = json.loads(_task_path(troot, task_id).read_text())
+    assert obj["target_harness"] == "any"
+    assert obj["claim"]["host"] == "h1"
+
+    events = _events(troot, task_id)
+    assert len(events) == 1
+    assert events[0]["event"] == "claim"
+
+
+def test_legacy_record_release_heals_field_and_logs_ledger_event(troot):
+    task_id = _write_legacy_task(troot, status="in_progress", claim={
+        "host": "h1", "pid": 1, "uuid": "u1",
+        "claimed_at": "2026-06-01T00:00:00Z", "heartbeat_at": "2026-06-01T00:00:00Z",
+    })
+    r = _run(troot, "tasks", "release", task_id, "--host", "h1", "--pid", "1", "--uuid", "u1",
+             "--harness", "codex", "--reason", "completed")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    obj = json.loads(_task_path(troot, task_id).read_text())
+    assert obj["target_harness"] == "any"
+    assert obj["claim"]["host"] is None
+
+    events = _events(troot, task_id)
+    assert len(events) == 1
+    assert events[0]["event"] == "completed"
+
+
+def test_legacy_record_handoff_heals_field_and_logs_ledger_event(troot):
+    task_id = _write_legacy_task(troot)
+    r = _run(troot, "tasks", "handoff", task_id, "--harness", "codex")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    obj = json.loads(_task_path(troot, task_id).read_text())
+    assert obj["target_harness"] == "codex", "handoff earmarks the healed-then-set lane directly"
+
+    events = _events(troot, task_id)
+    assert len(events) == 1
+    assert events[0]["event"] == "handoff"
+
+
+def test_legacy_record_pull_and_render_tolerate_missing_field_without_healing_on_disk(troot):
+    """`pull`/`render` are READ-ONLY — they must see a legacy record fine
+    (via the SAME `_task_read` heal, in memory only) without ever writing
+    anything back, unlike `set`/`claim`/`release`/`handoff`."""
+    task_id = _write_legacy_task(troot)
+    before = _task_path(troot, task_id).read_text()
+
+    r = _run(troot, "tasks", "pull", "--json")
+    assert r.returncode == 0, r.stdout + r.stderr
+    ids = {t["id"] for t in json.loads(r.stdout)}
+    assert task_id in ids
+
+    r2 = _run(troot, "tasks", "pull", "--lane", "codex", "--json")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    ids2 = {t["id"] for t in json.loads(r2.stdout)}
+    assert task_id in ids2, "a legacy (fieldless) record must be treated as lane 'any' -> visible to every lane filter"
+
+    r3 = _run(troot, "tasks", "render")
+    assert r3.returncode == 0, r3.stdout + r3.stderr
+
+    after = _task_path(troot, task_id).read_text()
+    assert after == before, "pull/render must never write back to a task record"
+
+
+def test_legacy_record_validate_cli_still_flags_missing_field(troot):
+    """Deliberate scope boundary: `tessctl validate task <path>` — the
+    explicit, standalone contract-check command applied to an arbitrary
+    file — is NOT healed. It exists to surface a genuine schema deviation;
+    silently patching its input would defeat that purpose. Only the
+    ENGINE's own internal read/write paths (`_task_read`, feeding
+    `_tasks_write_locked`/`pull`/`render`) heal a legacy record — this is a
+    deliberate, narrow scope, proven here so it does not silently drift."""
+    task_id = _write_legacy_task(troot)
+    r = _run(troot, "validate", "task", str(_task_path(troot, task_id)))
+    assert r.returncode != 0
+    assert "target_harness" in (r.stdout + r.stderr)
+
+
+def test_write_locked_validate_before_write_leaves_disk_untouched_on_failure(engine, troot):
+    """Engine-level proof of fix (b) independent of the target_harness
+    trigger: ANY mutate_fn that produces an invalid candidate record must
+    be refused with NOTHING persisted to disk — the general write-then-fail
+    divergence class the reorder closes, not just the one field-presence
+    case (a) already eliminates as a live trigger."""
+    task_id = _new(troot, "Ordering check")
+    path = _task_path(troot, task_id)
+    before_bytes = path.read_bytes()
+
+    def bad_mutate(record):
+        record["status"] = "not-a-real-status"  # violates the status enum
+        return record
+
+    root = troot
+    with pytest.raises(engine.TaskError):
+        engine._tasks_write_locked(root, task_id, bad_mutate)
+
+    after_bytes = path.read_bytes()
+    assert after_bytes == before_bytes, (
+        "a validation failure must leave the on-disk record byte-for-byte "
+        "unchanged — no mutated-but-unlogged state may ever be committed"
+    )
+
+    events = _events(troot, task_id)
+    assert len(events) == 1 and events[0]["event"] == "task_transition", (
+        "only the original `tasks new` creation event may exist — the "
+        "failed mutation attempt must not have produced any ledger entry, "
+        "because nothing about the task actually changed"
+    )
 
 
 # ---------------------------------------------------------------------------

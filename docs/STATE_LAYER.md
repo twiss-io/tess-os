@@ -378,6 +378,39 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   eligible for every harness, i.e. the exact PRE-LANE behavior: a task
   nobody explicitly earmarks is filtered and claimed identically to before
   this field existed.
+- **Legacy-record backward compatibility (Cyra + Reid, PR #126 review,
+  independently reproduced).** A task written before this field existed —
+  `.tess/state/tasks/**` is gitignored instance data, so a real deployed
+  install genuinely has these — has no `target_harness` key on disk at
+  all. `_task_read` (the ONE shared read path every write, `pull`, and
+  `render` call goes through) now does
+  `record.setdefault("target_harness", DEFAULT_TASK_LANE)`, healing it in
+  memory on first touch — the exact same "legacy, not tampered; heal on
+  next write, no manual migration" discipline this region's own ledger
+  side already established for a seq-absent shard line (see the Phase 0.2
+  hardening's "Migration note" above). `tessctl tasks set|claim|release|
+  handoff` against a legacy record now succeed and heal the field to `any`
+  on disk as a side effect of the mutation already happening; `pull`/
+  `render` heal it in memory only (read-only commands never write back).
+  The standalone `tessctl validate task <path>` command is a deliberate
+  exception — it still flags a missing `target_harness` on an arbitrary
+  file, since its whole purpose is surfacing a genuine schema deviation,
+  not silently patching its input.
+- **Validate-before-write, never the reverse.** The FIRST version of this
+  region's write path (`_tasks_write_locked`, and `_cmd_tasks_new`) wrote
+  the candidate record to disk, THEN dogfood-validated the file it had
+  just written — so a validation failure left a genuinely mutated record
+  committed to disk with NO corresponding ledger event (every caller's
+  `_ledger_auto_log` runs only after the write helper returns
+  successfully), a silent state/ledger divergence first reproduced against
+  a legacy record missing `target_harness`. Both write paths now validate
+  the CANDIDATE record BEFORE `_task_atomic_write` ever commits it
+  (`_validate_task_instance_or_raise`) — a failure now aborts with nothing
+  persisted, closing the whole CLASS of write-then-fail divergence, not
+  just this one field's trigger. This brings the TASK STORE's own write
+  path into the SAME already-correct ordering `_ledger_self_validate_or_
+  raise` has always used for ledger events (validate the in-memory value,
+  then append) — the task side was the outlier, not the ledger side.
 - **`tessctl tasks new|set --lane <codex|claude-code|any>`** sets it (the
   CLI flag is `--lane`, not `--harness`, on both subcommands — `new`/`set`
   already require `--harness` for the ACTOR; `--lane` avoids the collision
@@ -410,7 +443,12 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   `--by-harness` (default `orchestrator`) records who is PREPARING it, kept
   distinct from `--harness` so `handoff`'s literal invocation shape needs
   no second required flag. This command has NO process-spawning
-  capability — see "What's deliberately NOT built yet" below.
+  capability — see "What's deliberately NOT built yet" below. The printed
+  invocation captures `$HOST`/`$PID`/`$UUID` into shell variables ONCE and
+  threads the SAME identity through `claim` and `release` (Reid LOW, PR
+  #126 review — the first version had `release` reference a
+  "<same --uuid claim used>" placeholder `claim` never actually surfaced,
+  so the block was not literally copy-paste-runnable end to end).
 - **Accountability — two new ledger event classes, the SAME append path.**
   `earmarked` (logged by `tasks new --lane`/`tasks set --lane` when the
   lane is the ONLY thing that changed — the SAME structural
@@ -431,11 +469,18 @@ on top of the Phase 0.2 task store, not a new subsystem of its own.
   "no --lane at all" no-op-filter case) → `claim` still records whichever
   harness actually claims a task, lane mismatch or not → `handoff`
   (idempotent earmark, rejects `any` as a target, unknown-task refusal,
-  the printed invocation's exact command shapes, JSON output) →
+  the printed invocation's exact command shapes including `$HOST`/`$PID`/
+  `$UUID` threading between `claim` and `release`, JSON output) →
   `_render_handoff_invocation` pure-function determinism → `BOARD.md`
   lane marker → full `log verify` chain integrity after
   `earmarked`/`handoff` events → schema/lint coverage for the new field
-  and the two new ledger event classes.
+  and the two new ledger event classes → a dedicated legacy-record section
+  (`set`/`claim`/`release`/`handoff` all heal + log correctly against a
+  record missing `target_harness`; `pull`/`render` heal in memory without
+  writing back; the standalone `validate task` command still flags it by
+  design; an engine-level proof that `_tasks_write_locked` leaves disk
+  byte-for-byte untouched, with no ledger entry, when a candidate record
+  fails validation for ANY reason).
 - **Honest constraint (mirrors #121's own framing):** no live Codex-runtime
   end-to-end run is possible in the environment this was built in — there
   is no Codex runtime to spawn or drive here. This verifies the LANE

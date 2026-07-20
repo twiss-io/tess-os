@@ -19,7 +19,13 @@ All notable changes to Tess OS are documented here. This project adheres to
     is already taken (the ACTOR's identity) on `tasks new|set|claim|
     release`. Default `any` (eligible for every harness) — a task nobody
     explicitly earmarks behaves byte-for-byte as it did before this field
-    existed.
+    existed. A LEGACY task record (written before this field existed —
+    `.tess/state/tasks/**` is gitignored instance data, so a real deployed
+    install genuinely has these) heals to `any` on its next touch:
+    `_task_read` backfills the missing key in memory (same "legacy, not
+    tampered" discipline the ledger's own seq-absent shard handling already
+    uses), and `set`/`claim`/`release`/`handoff` persist the healed value
+    to disk as a side effect of the mutation already happening.
   - **`tessctl tasks new|set --lane <codex|claude-code|any>`** sets it;
     **`tessctl tasks pull --lane <codex|claude-code>`** filters to a task's
     own lane PLUS every unmarked (`any`) task — omitting `--lane` applies
@@ -33,13 +39,21 @@ All notable changes to Tess OS are documented here. This project adheres to
     invocation (`tasks claim` → `tasks set` → `tasks release`) an operator
     hands to a fresh session of that harness, pointing it at the same
     shared brain the render-target mounts. `any` is not a valid handoff
-    target (a handoff is addressed to ONE specific worker).
+    target (a handoff is addressed to ONE specific worker). The printed
+    invocation captures `$HOST`/`$PID`/`$UUID` once and threads the SAME
+    identity through `claim` and `release`, so the block is actually
+    runnable end to end as a single copy-pasted shell script.
   - **Accountability** — two new ledger event classes, `earmarked` and
     `handoff`, both logged through the EXISTING `_ledger_auto_log` →
     `_log_append_event` hash-chain append path (no fork of the chain
     algorithm, no new shard format). `earmarked` uses the same
     only-this-changed structural classification `--heartbeat` already
-    established, not a string match.
+    established, not a string match. The task-record write path
+    (`_tasks_write_locked`, `tasks new`) now validates a mutation's
+    CANDIDATE record BEFORE committing it to disk, never after — a
+    validation failure leaves nothing on disk and produces no ledger entry,
+    matching the ordering `_ledger_self_validate_or_raise` has always used
+    on the ledger side.
   - **`BOARD.md` / `tasks pull`** surface the lane (`[lane: <harness>]` on
     an earmarked board line, a `lane=<harness|any>` pull column) — an
     unmarked task's board line is unchanged from before this field
@@ -49,13 +63,20 @@ All notable changes to Tess OS are documented here. This project adheres to
     LANE MECHANISM + wiring; a live Codex smoke test is a deferred
     follow-up. No Codex process-spawner or daemon was built — `handoff`
     prints an invocation, it does not execute one.
-  - `tests/test_task_lane_handoff.py` — 30 tests: earmark at creation/via
+  - `tests/test_task_lane_handoff.py` — 39 tests: earmark at creation/via
     `set`, `pull` filtering (incl. combined with `--unclaimed`, and the
     no-`--lane`-at-all no-op case), `claim` lane-mismatch tolerance,
     `handoff` (idempotency, `any`-target rejection, unknown-task refusal,
-    exact printed invocation shapes, JSON output), `_render_handoff_
-    invocation` determinism, `BOARD.md` marker, full `log verify` chain
-    integrity after the two new event classes, and schema/lint coverage.
+    exact printed invocation shapes including `$HOST`/`$PID`/`$UUID`
+    threading, JSON output), `_render_handoff_invocation` determinism,
+    `BOARD.md` marker, full `log verify` chain integrity after the two new
+    event classes, schema/lint coverage, and a dedicated legacy-record
+    section (all four mutating verbs heal + log correctly against a record
+    missing `target_harness`; `pull`/`render` heal in memory without
+    writing back; the standalone `validate task` command still flags it by
+    design; an engine-level proof that a validation failure of ANY kind
+    now leaves the on-disk record byte-for-byte untouched with zero ledger
+    entries).
 
 ### Security
 - **HIGH — `templates/agents-md/*` core fragments had no `tess.lock` entry;
