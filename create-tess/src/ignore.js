@@ -116,6 +116,10 @@ export const EXCLUDE_REL_PATHS = new Set([
 // ever capturing real content there; this closes the THIRD path (a local
 // `--template-source` copying the author's working tree verbatim, same gap
 // Quinn's MEDIUM finding closed for .tess/snapshots/.tess/staging above).
+// Phase 0.6 (issue #131, SKILL DRAFT SCAFFOLD): .tess/state/skills gets the
+// SAME treatment for the SAME reason — adopters inherit the empty
+// drafts/ STRUCTURE, never a source instance's actual generated skill
+// drafts.
 export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/snapshots',
   '.tess/staging',
@@ -123,6 +127,7 @@ export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/state/tasks',
   '.tess/state/ledger',
   '.tess/state/locks',
+  '.tess/state/skills',
 ];
 
 // Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).

@@ -154,6 +154,14 @@ channels/
 .tess/state/ledger/*
 !.tess/state/ledger/.gitkeep
 
+# Issue #131 — SKILL DRAFT SCAFFOLD (a FIFTH `.tess/state/**` subsystem,
+# same fence as the four above). `.tess/state/skills/*` matches the
+# `drafts/` directory as a single top-level entry, which ignores its
+# entire subtree (every generated `<slug>/SKILL.md` + `provenance.json`)
+# without a nested per-file pattern.
+.tess/state/skills/*
+!.tess/state/skills/.gitkeep
+
 # ─────────────────────────────────────────────────────────────
 # Knowledge base content is operator/client data — keep structure, ignore content
 # ─────────────────────────────────────────────────────────────

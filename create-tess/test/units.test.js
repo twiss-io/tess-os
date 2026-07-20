@@ -151,6 +151,10 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.tess/state/tasks/graph.json',
     '.tess/state/ledger/entry.md',
     '.tess/state/locks/task.lock',
+    // Phase 0.6 (issue #131, SKILL DRAFT SCAFFOLD) — a FIFTH .tess/state/**
+    // subsystem, same treatment: real generated draft skills must never
+    // leak into a scaffold.
+    '.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md',
   ]) {
     assert.equal(isExcludedRel(p), true, `${p} must be excluded`);
   }
@@ -173,6 +177,8 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.tess/state/tasks/.gitkeep',
     '.tess/state/ledger/.gitkeep',
     '.tess/state/locks/.gitkeep',
+    // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+    '.tess/state/skills/.gitkeep',
   ]) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);
   }
@@ -293,6 +299,8 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.tess/state/tasks/.gitkeep', '');
   w('.tess/state/ledger/.gitkeep', '');
   w('.tess/state/locks/.gitkeep', '');
+  // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+  w('.tess/state/skills/.gitkeep', '');
 
   // The author's secret + operator-state material (must NOT leak).
   w('.claude/vault/vault.age', 'CIPHERTEXT\n');
@@ -316,6 +324,9 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.tess/state/tasks/graph.json', '{"author":"real tasks"}\n');
   w('.tess/state/ledger/entry.md', 'author real ledger entry\n');
   w('.tess/state/locks/task.lock', 'author real lock\n');
+  // The author's REAL generated draft skill (Phase 0.6, issue #131) — same
+  // leak scenario, one subsystem later.
+  w('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md', 'author real draft skill\n');
 
   try {
     fetchTemplate(src, staging);
@@ -343,6 +354,8 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     gone('.tess/state/tasks/graph.json');
     gone('.tess/state/ledger/entry.md');
     gone('.tess/state/locks/task.lock');
+    // Phase 0.6 (issue #131) — real generated draft skills must never leak.
+    gone('.tess/state/skills/drafts/fix-login-bug-9c1e/SKILL.md');
 
     // Legit structure preserved.
     kept('README.md');
@@ -359,6 +372,8 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     kept('.tess/state/tasks/.gitkeep');
     kept('.tess/state/ledger/.gitkeep');
     kept('.tess/state/locks/.gitkeep');
+    // Phase 0.6 (issue #131) — same for the skills/drafts scaffold structure.
+    kept('.tess/state/skills/.gitkeep');
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
