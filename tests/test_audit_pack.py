@@ -41,6 +41,26 @@ Coverage:
   * Determinism: two exports of the identical scope over unchanged ledger
     state produce identical `shards`/`events`/`artifacts` content (modulo
     the necessarily-unique `pack_id`/`exported_at`).
+
+PR #128 review fixes (Cyra 1 MEDIUM + 2 LOW, Reid 2 LOW — honesty/
+credibility, fixed pre-merge since honesty IS this brick's whole value):
+  * Cyra MEDIUM — tail-truncation of a `full`-scope shard's LAST event(s)
+    is now DETECTED: each `full` shard embeds its own `.tip` sidecar (the
+    same {count, hash} tail anchor `tessctl log verify` cross-checks a live
+    shard against), and `audit verify` asserts it — dropping the tail
+    without also forging a consistent `.tip` now fails closed.
+  * Cyra LOW-MED — a pre-#115 seq-absent LEGACY event pair no longer false-
+    positives as a "missing event"/TAMPERED; it verifies LEGACY/OK (hash
+    chain still checked), mirroring `_ledger_verify_shard`'s own handling.
+  * Cyra LOW — the `trust_boundary` disclosure block is no longer
+    strippable: `audit verify` asserts it is present and matches the
+    canonical text this pack's own receipt count would have produced.
+  * Reid LOW — `exported_by.user` (the self-reported local OS username) is
+    now disclosed in `trust_boundary` as exactly that: self-reported, not
+    a cryptographic identity, redact before external sharing if a concern.
+  * Reid LOW — `--receipt PATH` now refuses a symlink, a non-regular file
+    (directory, device), or an empty file outright, closing the asymmetry
+    with `_task_path`'s/`_validate_evidence_path`'s own path hygiene.
 """
 
 from __future__ import annotations
@@ -644,3 +664,267 @@ def test_export_is_deterministic_modulo_pack_id_and_timestamp(aroot, tmp_path):
     for key in ("pack_id", "exported_at", "exported_by"):
         del m1[key], m2[key]
     assert m1 == m2
+
+
+# ---------------------------------------------------------------------------
+# PR #128 review — Cyra MEDIUM: tail anchor (.tip) makes 'full' genuinely
+# complete, not just genesis-start + no-interior-gap.
+# ---------------------------------------------------------------------------
+
+def test_full_scope_shard_embeds_tip_tail_anchor(aroot, tmp_path):
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    _append(aroot, event="dispatch", summary="e2", harness="ada")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all")
+    assert r.returncode == 0, r.stdout + r.stderr
+    manifest = _manifest(pack)
+    shard = manifest["shards"][0]
+    assert shard["export_kind"] == "full"
+    assert shard["tip"]["count"] == 2
+    assert shard["tip"]["hash"] == shard["events"][-1]["hash"]
+
+
+def test_partial_scope_shard_does_not_embed_tip(aroot, tmp_path):
+    tid = _new_task(aroot, "Build I1")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--task", tid)
+    assert r.returncode == 0, r.stdout + r.stderr
+    manifest = _manifest(pack)
+    assert manifest["shards"][0]["export_kind"] == "partial"
+    assert manifest["shards"][0]["tip"] is None
+
+
+def test_verify_fails_on_tail_truncation_of_a_full_scope_shard(aroot, tmp_path):
+    """The MEDIUM fix, directly: dropping the LAST event(s) from a
+    'full'-claimed shard used to still verify OK (genesis-start +
+    no-interior-gap alone can't see a missing tail). The embedded tail
+    anchor closes it."""
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    _append(aroot, event="dispatch", summary="e2", harness="ada")
+    _append(aroot, event="dispatch", summary="e3", harness="ada")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    manifest = _manifest(pack)
+    manifest["shards"][0]["events"].pop()  # drop the LAST event — tail truncation
+    manifest["shards"][0]["event_count"] = len(manifest["shards"][0]["events"])
+    _write_manifest(pack, manifest)
+
+    r = _verify(aroot, pack)
+    assert r.returncode == 1
+    assert "TAMPERED" in r.stdout
+    assert "tail anchor mismatch" in r.stdout
+    assert "tail-truncation detected" in r.stdout
+
+
+def test_verify_fails_on_tail_truncation_via_json_output(aroot, tmp_path):
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    _append(aroot, event="dispatch", summary="e2", harness="ada")
+    pack = tmp_path / "pack"
+    _export(aroot, pack, "--all")
+    manifest = _manifest(pack)
+    manifest["shards"][0]["events"].pop()
+    _write_manifest(pack, manifest)
+
+    r = _verify(aroot, pack, json_out=True)
+    assert r.returncode == 1
+    body = json.loads(r.stdout)
+    assert body["ok"] is False
+    assert any("tail anchor mismatch" in p for p in body["problems"])
+
+
+def test_verify_still_passes_when_no_events_are_dropped_from_a_tip_anchored_shard(aroot, tmp_path):
+    """Sanity: the tail-anchor check must not false-positive on an
+    untampered full-scope export."""
+    for i in range(3):
+        _append(aroot, event="dispatch", summary=f"e{i}", harness="ada")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _verify(aroot, pack)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "OK" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# PR #128 review — Cyra LOW-MED: a pre-#115 seq-absent LEGACY shard must
+# verify LEGACY/OK, never a false-positive TAMPERED.
+# ---------------------------------------------------------------------------
+
+def _hand_craft_legacy_shard(root, engine, origin="legacy"):
+    """A coherent 2-line shard (valid prev_hash/hash chain, exactly as
+    `_log_append_event` would have produced it before `seq` existed) with
+    NO `seq` key on either line and NO `.tip` sidecar — the exact pre-#113/
+    #115 on-disk shape. Mirrors tests/test_accountability_ledger.py's own
+    `_hand_craft_legacy_shard` helper."""
+    shard = root / ".tess" / "state" / "ledger" / f"2026-06.{origin}.jsonl"
+    shard.parent.mkdir(parents=True, exist_ok=True)
+    ev0 = {
+        "ts": "2026-06-01T00:00:00Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "pre-#115 event one", "prev_hash": "0" * 64,
+    }
+    ev0["hash"] = engine._ledger_event_hash(ev0)
+    ev1 = {
+        "ts": "2026-06-01T00:00:01Z",
+        "actor": {"harness": "h", "model": None, "session": None, "persona": None},
+        "event": "dispatch", "refs": {"task": None, "mission": None},
+        "summary": "pre-#115 event two", "prev_hash": ev0["hash"],
+    }
+    ev1["hash"] = engine._ledger_event_hash(ev1)
+    shard.write_text(json.dumps(ev0) + "\n" + json.dumps(ev1) + "\n", encoding="utf-8")
+    return shard
+
+
+def test_verify_reports_legacy_full_shard_as_legacy_not_tampered(aroot, tmp_path, engine):
+    _hand_craft_legacy_shard(aroot, engine, origin="legacy")
+
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", origin="legacy")
+    assert r.returncode == 0, r.stdout + r.stderr
+    manifest = _manifest(pack)
+    assert manifest["shards"][0]["export_kind"] == "full"
+    assert "seq" not in manifest["shards"][0]["events"][0]
+
+    r = _verify(aroot, pack)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # the STATUS line (first line) must be LEGACY, never TAMPERED — the
+    # word "TAMPERED" legitimately appears later, inside the explanatory
+    # "reported as LEGACY, not TAMPERED" note text itself.
+    assert r.stdout.splitlines()[0].startswith("LEGACY")
+    assert "legacy (seq-absent)" in r.stdout
+
+
+def test_verify_legacy_shard_still_catches_a_real_hash_tamper(aroot, tmp_path, engine):
+    """Legacy handling must not become a blanket exemption — a genuinely
+    tampered legacy line is still caught."""
+    _hand_craft_legacy_shard(aroot, engine, origin="legacy")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", origin="legacy")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    manifest = _manifest(pack)
+    manifest["shards"][0]["events"][0]["summary"] = "TAMPERED"
+    _write_manifest(pack, manifest)
+
+    r = _verify(aroot, pack)
+    assert r.returncode == 1
+    assert "TAMPERED" in r.stdout
+    assert "hash mismatch" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# PR #128 review — Cyra LOW: `trust_boundary` must not be strippable.
+# ---------------------------------------------------------------------------
+
+def test_verify_fails_when_trust_boundary_is_deleted(aroot, tmp_path):
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    pack = tmp_path / "pack"
+    _export(aroot, pack, "--all")
+
+    manifest = _manifest(pack)
+    del manifest["trust_boundary"]
+    _write_manifest(pack, manifest)
+
+    r = _verify(aroot, pack)
+    assert r.returncode == 1
+    assert "trust_boundary" in r.stdout
+    assert "stripped or altered" in r.stdout
+
+
+def test_verify_fails_when_trust_boundary_text_is_reworded(aroot, tmp_path):
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    pack = tmp_path / "pack"
+    _export(aroot, pack, "--all")
+
+    manifest = _manifest(pack)
+    manifest["trust_boundary"]["completeness"] = "This pack proves everything, always."
+    _write_manifest(pack, manifest)
+
+    r = _verify(aroot, pack)
+    assert r.returncode == 1
+    assert "trust_boundary" in r.stdout
+
+
+def test_export_trust_boundary_matches_canonical_generator_for_receipt_count(aroot, tmp_path):
+    """Build-time and verify-time text must be generated from the SAME
+    function — proven by exporting with a receipt embedded (a different
+    receipt count changes the 'receipts' field) and confirming a clean
+    verify still passes."""
+    receipt = _build_fixture_receipt()
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", receipts=[receipt_path])
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = _verify(aroot, pack)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# PR #128 review — Reid LOW: exported_by.user disclosure.
+# ---------------------------------------------------------------------------
+
+def test_trust_boundary_discloses_exported_by_is_self_reported(aroot, tmp_path):
+    _append(aroot, event="dispatch", summary="e1", harness="ada")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all")
+    assert r.returncode == 0, r.stdout + r.stderr
+    manifest = _manifest(pack)
+    assert "exported_by" in manifest["trust_boundary"]
+    note = manifest["trust_boundary"]["exported_by"]
+    assert "SELF-REPORTED" in note
+    assert "exported_by.user" in note
+    assert "EXTERNAL distribution" in note
+
+
+# ---------------------------------------------------------------------------
+# PR #128 review — Reid LOW: --receipt path hygiene (mirrors _task_path /
+# _validate_evidence_path's own containment discipline).
+# ---------------------------------------------------------------------------
+
+def test_export_refuses_a_symlink_receipt(aroot, tmp_path):
+    real = tmp_path / "receipt.json"
+    real.write_text(json.dumps(_build_fixture_receipt()), encoding="utf-8")
+    link = tmp_path / "receipt-link.json"
+    link.symlink_to(real)
+
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", receipts=[link])
+    assert r.returncode != 0
+    assert "is a symlink" in (r.stdout + r.stderr)
+    assert not pack.exists()
+
+
+def test_export_refuses_a_directory_as_receipt(aroot, tmp_path):
+    a_dir = tmp_path / "not-a-file"
+    a_dir.mkdir()
+
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", receipts=[a_dir])
+    assert r.returncode != 0
+    assert "not a regular file" in (r.stdout + r.stderr)
+    assert not pack.exists()
+
+
+def test_export_refuses_an_empty_receipt_file(aroot, tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", receipts=[empty])
+    assert r.returncode != 0
+    assert "empty file" in (r.stdout + r.stderr)
+    assert not pack.exists()
+
+
+def test_export_still_accepts_a_valid_non_symlink_receipt_file(aroot, tmp_path):
+    """Sanity: the new hygiene checks must not reject a perfectly normal
+    receipt file."""
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(_build_fixture_receipt()), encoding="utf-8")
+    pack = tmp_path / "pack"
+    r = _export(aroot, pack, "--all", receipts=[receipt_path])
+    assert r.returncode == 0, r.stdout + r.stderr

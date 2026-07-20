@@ -60,18 +60,64 @@ All notable changes to Tess OS are documented here. This project adheres to
     pack cannot prove no matching event was omitted by the exporter.
   - **New:** `docs/AUDIT_PACK_SPEC.md` (the full spec, mirroring
     `docs/AGENT_RECEIPT_SPEC.md`'s "what this proves and does not prove"
-    discipline); `tests/test_audit_pack.py` (33 wiring-level tests —
+    discipline); `tests/test_audit_pack.py` (48 wiring-level tests —
     scope selection, attribution, artifact-backing, receipt embedding,
     clean-pass verify, standalone-after-source-deleted verify, expected-
     gap-in-partial-scope verify, and fail-closed tamper detection across
-    events, chain links, full-shard gaps, and both receipt signature
-    layers). `docs/STATUS.md`, `README.md`, and
-    `docs/AGENT_RECEIPT_SPEC.md`'s reference table cross-link the new
-    capability with the same claim-boundary discipline as every other
-    entry.
+    events, chain links, full-shard gaps, tail truncation, a stripped
+    trust_boundary, and both receipt signature layers). `docs/STATUS.md`,
+    `README.md`, and `docs/AGENT_RECEIPT_SPEC.md`'s reference table
+    cross-link the new capability with the same claim-boundary discipline
+    as every other entry.
   - Explicitly out of scope for this change (Xavier-gated, not built here):
     any new signing/key-provisioning command, GPG verification inside
     `tessctl audit verify` itself, and wiring the pack into `tessctl gate`.
+  - **Fixed pre-merge (PR #128 review — Cyra 1 MEDIUM + 2 LOW, Reid 2 LOW,
+    all honesty/credibility, closed before merge since honesty IS this
+    brick's whole value):**
+    - **Cyra MEDIUM (the important one) — tail-truncation of a `full`
+      pack's LAST event(s) used to still verify OK** (genesis-start +
+      no-interior-gap alone can't see a missing tail; the tool text and
+      `docs/AUDIT_PACK_SPEC.md` overstated "full-shard assurance"/"nothing
+      excluded" as a result). Fixed at the root, not just reworded: every
+      `export_kind: full` shard now embeds its own `.tip` sidecar (the
+      SAME `{count, hash}` tail anchor `tessctl log verify` already
+      cross-checks a live shard against), and `audit verify` asserts it —
+      dropping the tail now fails closed with an itemized "tail anchor
+      mismatch" reason. A `full` shard with no `.tip` available at all
+      (only possible pre-#113) is disclosed as an informational note
+      instead of silently assumed complete — never a false pass, never a
+      hard crash on an honestly-old install either.
+    - **Cyra LOW-MED — a pre-#115 seq-absent LEGACY shard used to
+      false-positive `TAMPERED`** ("missing event") even though live
+      `tessctl log verify` correctly calls the identical on-disk shape
+      LEGACY/OK. Fixed by mirroring `_ledger_verify_shard`'s own handling:
+      a pair of included events where either lacks `seq` is still
+      hash-chain-checked (a real tamper is still caught) but never
+      seq-gap-checked; `audit verify` now prints a distinct `LEGACY`
+      status (exit 0, same OK/LEGACY/TAMPERED vocabulary `log verify`
+      already uses), not TAMPERED.
+    - **Cyra LOW — `trust_boundary` was not self-enforcing**: deleting it
+      (or rewording it) still left the rest of the pack verifying OK,
+      silently detaching the disclosure that is meant to travel WITH the
+      pack. Fixed by generating the block from one canonical function
+      shared by both export and verify, and having `audit verify` assert
+      the embedded block matches it byte-for-byte — missing, reworded, or
+      an added/removed field is now reported as tamper.
+    - **Reid LOW — `exported_by.user` (the raw local OS username) was
+      embedded into an externally-distributed pack undocumented.** Fixed
+      by disclosing it in `trust_boundary` as exactly what it is:
+      self-reported, not a cryptographic identity, redact before external
+      sharing if that is a concern — the honest-minimal fix over adding a
+      new redaction flag.
+    - **Reid LOW — `--receipt PATH` lacked the path-hygiene discipline
+      `_task_path`/`_validate_evidence_path` apply elsewhere.** Fixed by
+      refusing a symlink outright (never silently dereferenced, mirroring
+      `tessctl memory adopt`'s own refusal), and requiring a real,
+      existing, non-empty regular file — deliberately NOT root-containment
+      (a receipt is an explicitly portable, external artifact per
+      `docs/AGENT_RECEIPT_SPEC.md`, so confining it to the repo root would
+      break the format's own stated purpose).
 
 - **Phase 0.4 — the external-harness-worker LANE + `tessctl tasks handoff`
   (issue #125)**, built on top of the Phase 0.2 TASK STORE + ACCOUNTABILITY
