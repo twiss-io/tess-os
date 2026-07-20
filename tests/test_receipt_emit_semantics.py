@@ -27,6 +27,11 @@ Coverage:
     chained sequencing; a verify_fn refusal and a simulated crash between
     the candidate write and the atomic rename BOTH leave the target file
     untouched and no temp file behind (FAIL-CLOSED item 3).
+  * gpg_sign.resolve_fingerprint — PR #135 review regression (Reid
+    CRITICAL, reproduced end-to-end): a REALISTIC, subkey-bearing key
+    (unlike every other test key in this suite, which is deliberately
+    sign-only/subkey-less) must resolve to exactly its PRIMARY
+    fingerprint, not be refused as "matches more than one distinct key".
 """
 
 from __future__ import annotations
@@ -40,7 +45,9 @@ from _receipt_emit_fixtures import (
     EmitRefused,
     assemble,
     chain_atomic,
+    gpg_sign,
     policy_lookup,
+    subkey_bearing_gpg_key,  # noqa: F401  (pytest fixture, requested by name below)
     write_test_policy,
 )
 from _agent_receipt_fixtures import base_signoff, base_verdict
@@ -395,3 +402,28 @@ def test_build_envelope_signing_bytes_exclude_receipt_signature(tmp_path):
     assert b"receipt_signature" not in canon
     # sanity: a deep copy produces byte-identical canonical bytes (pure function)
     assert canonical.receipt_signing_bytes(copy.deepcopy(receipt)) == canon
+
+
+# ---------------------------------------------------------------------------
+# gpg_sign.resolve_fingerprint — PR #135 review regression (Reid CRITICAL)
+#
+# Every OTHER GPG identity anywhere in this test suite is deliberately
+# sign-only / subkey-less (see _receipt_emit_fixtures.py's own header
+# comment on `subkey_bearing_gpg_key`), so the original bug — collecting
+# EVERY `fpr:` line from `gpg --with-colons --list-keys`, including the
+# ones that belong to subkeys, not just the primary — never had a second
+# `fpr:` line to trip over anywhere else in this suite. This test uses a
+# REALISTIC key (a default encryption subkey present, the actual
+# `gpg --quick-generate-key` / `--full-generate-key` shape) specifically
+# so it exercises the exact key shape the original bug refused.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_fingerprint_returns_exactly_the_primary_for_a_subkey_bearing_key(subkey_bearing_gpg_key):
+    key = subkey_bearing_gpg_key
+    resolved = gpg_sign.resolve_fingerprint(key.email, str(key.home))
+    assert resolved == key.fpr
+    # Also resolvable by the full fingerprint itself, not just the email —
+    # the review's own reproduction noted "passing the full primary
+    # fingerprint doesn't help" on the buggy version.
+    assert gpg_sign.resolve_fingerprint(key.fpr, str(key.home)) == key.fpr

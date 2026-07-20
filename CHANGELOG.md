@@ -57,6 +57,27 @@ All notable changes to Tess OS are documented here. This project adheres to
     crash-safety) + `tests/test_receipt_emit_cli.py` (subprocess, real GPG
     keys, real self-verify subprocess, including a two-emit
     verdict-then-signoff chain-continuity round trip).
+  - **PR review fix (Reid CRITICAL, reproduced end-to-end):**
+    `gpg_sign.resolve_fingerprint` originally collected EVERY `fpr:` line
+    from `gpg --with-colons --list-keys <key-id>` — but GPG emits one
+    `fpr:` per key COMPONENT, not one per certificate, so any normal key
+    with a default encryption subkey (the standard `gpg
+    --quick-generate-key` / `--full-generate-key` shape) has at least two
+    `fpr:` lines, tripping the "matches more than one distinct key"
+    refusal BEFORE signing — the tool refused essentially every real
+    operator key. Fixed by only accepting an `fpr:` line that immediately
+    follows a `pub:` (primary) record, never one following a `sub:`
+    record. Every other GPG identity anywhere in this test suite is
+    deliberately sign-only/subkey-less, which is why this was never
+    caught by CI; a new regression fixture
+    (`tests/_receipt_emit_fixtures.py`'s `subkey_bearing_gpg_key`)
+    generates a REALISTIC key with a default encryption subkey and proves
+    both `resolve_fingerprint` and a full end-to-end `emit` succeed with
+    it — verified to FAIL on the pre-fix code and PASS after. Also (Reid
+    LOW): the `gpg`-on-`PATH` friendly pre-check in `receipt_emit.py` now
+    runs regardless of `--gnupg-home` (it was previously skipped whenever
+    `--gnupg-home` was set, relying on a less-friendly downstream error
+    instead).
 - **Phase 0.6 — the SKILL DRAFT SCAFFOLD (`tessctl skill from-task`, issue
   #131)** — demo-to-skill, the "gets smarter from your work" pattern: a
   completed task + its REAL ledger trail becomes a scaffolded, DRAFT,

@@ -18,7 +18,9 @@ import json
 from _agent_receipt_fixtures import base_signoff, base_verdict
 from _receipt_emit_fixtures import (
     canonical,
+    destroy_subkey_bearing_key,
     export_public_key,
+    generate_subkey_bearing_key,
     run_emit_cli,
     write_decision,
     write_test_policy,
@@ -224,3 +226,42 @@ def test_emit_refuses_a_decision_shaped_like_neither_verdict_nor_signoff(tmp_pat
     assert payload["emitted"] is False
     assert any("does not structurally match" in r for r in payload["reasons"])
     assert not chain_path.exists()
+
+
+def test_happy_emit_with_a_realistic_subkey_bearing_key_reports_chain_intact(tmp_path, engine):
+    """PR #135 review regression (Reid CRITICAL, reproduced end-to-end):
+    every OTHER key anywhere in this test suite is deliberately sign-only /
+    subkey-less (see _receipt_emit_fixtures.py's own header comment), so
+    this is the ONE test that exercises `emit` end to end — including a
+    real `--key-id` resolution, a real signature, and a real self-verify
+    subprocess call — with a REALISTIC key that has a default encryption
+    subkey (the actual `gpg --quick-generate-key` / `--full-generate-key`
+    shape). This must FAIL on the pre-fix `gpg_sign.resolve_fingerprint`
+    (which refused such a key as "matches more than one distinct key"
+    before ever attempting to sign) and PASS after the fix."""
+    key = generate_subkey_bearing_key("Realistic", "realistic-cli@receipt-emit.test")
+    try:
+        verdict = base_verdict(key.name)
+        verdict["signature"] = sign_verdict_for_test(engine, verdict, key)
+        decision_path = write_decision(tmp_path, "verdict.json", verdict)
+        policy_path = write_test_policy(tmp_path)
+        chain_path = tmp_path / "chain.jsonl"
+
+        result = run_emit_cli(*_emit_args(
+            decision_path=decision_path, rule_id="demo-docs-review", policy_path=policy_path,
+            actor="Ada", summary="Proposed a doc change (subkey-bearing key regression)",
+            key=key, chain_path=chain_path,
+        ))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["emitted"] is True
+        assert payload["fingerprint"] == key.fpr  # the PRIMARY, not a subkey
+        assert payload["signed_by"] == key.name
+
+        lines = chain_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        receipt = json.loads(lines[0])
+        assert receipt["receipt_signature"]["signature_armored"]  # a real signature was produced
+    finally:
+        destroy_subkey_bearing_key(key)

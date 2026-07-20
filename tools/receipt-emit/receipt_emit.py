@@ -170,7 +170,14 @@ def run_emit(args: argparse.Namespace) -> dict:
     policy_decision = policy_lookup.load_policy_rule(args.policy, args.rule_id)
     assemble.validate_policy_pairing_or_refuse(policy_decision, decision_kind)
 
-    if args.gnupg_home is None and gpg_sign.which_gpg() is None:
+    if gpg_sign.which_gpg() is None:
+        # Reid LOW (PR #135 review): run this friendly early check
+        # regardless of --gnupg-home. `shutil.which("gpg")` looks up the
+        # binary on PATH, which is independent of which GNUPGHOME a found
+        # binary would then be pointed at with --homedir — a caller can
+        # pass --gnupg-home with no 'gpg' on PATH at all, and every
+        # downstream gpg_sign call would still fail (just with a less
+        # immediate, less friendly message) without this check.
         raise EmitRefused(["the 'gpg' binary is not installed or not on PATH"])
     fingerprint = gpg_sign.resolve_fingerprint(args.key_id, args.gnupg_home)
     pubkey_armored = gpg_sign.export_public_key_armored(fingerprint, args.gnupg_home)
