@@ -13795,7 +13795,24 @@ def _gate_run_ship_check(
     root: Path, changed_paths: list, verdict_dirs: list = None,
     head_shas: list = None, base_shas: list = None,
     admission_source=None, attestation_head_shas: list = None,
+    emit_receipts: bool = False,
 ) -> dict:
+    # `emit_receipts` (Reid CRITICAL, gate-overlap re-reconciliation review)
+    # — ★ defaults to False, the SAFE non-emitting value. This function is
+    # shared by FOUR callers: `gate pre-push`/`gate ci` are genuine ship
+    # authorization (a PASS here is a real admission decision, so a receipt
+    # SHOULD be minted) — those two explicitly pass `emit_receipts=True`
+    # below. `_cmd_gate_post_merge_audit` and the MCP `gate_check_paths`
+    # tool are documented, non-authoritative diagnostic/evidence paths
+    # ("Diagnostic preview only; never a ship authorization result" —
+    # `_mcp_tool_gate_check_paths`'s own docstring); they take the default
+    # and therefore never trigger `tools/receipt-emit/` or write to
+    # `.tess/state/receipts/chain.jsonl`, however many changed paths they
+    # evaluate. Fail-safe by construction: any FUTURE caller of this
+    # function that forgets to think about receipt-emit at all gets the
+    # non-emitting behavior automatically, never a silent, unintended mint
+    # from what may be a read-only preview.
+    #
     # Renderer admission is intentionally evaluated before the ordinary
     # empty-diff fast path.  The generic gate diff omits deletions; a deleted
     # renderer input/lock row/output is itself a security-relevant change and
@@ -13934,13 +13951,19 @@ def _gate_run_ship_check(
     blocked = bool(reasons)
     result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
 
-    # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
-    # push (some rules cleared, others not) is still a BLOCKED push overall
-    # — nothing in it ships — so emitting a receipt for one rule's partial
-    # clearance while the push as a whole is refused would read as "this
-    # was approved" when it was not; see this PR's own description for the
-    # full "gate CLEARS a change" framing this mirrors exactly.
-    if not blocked:
+    # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS, AND ONLY
+    # when `emit_receipts` marks this call as genuine ship authorization
+    # (see this function's own top-of-body comment). A mixed push (some
+    # rules cleared, others not) is still a BLOCKED push overall — nothing
+    # in it ships — so emitting a receipt for one rule's partial clearance
+    # while the push as a whole is refused would read as "this was
+    # approved" when it was not; see this PR's own description for the
+    # full "gate CLEARS a change" framing this mirrors exactly. A PASS from
+    # a non-authoritative diagnostic/evidence caller is not a ship decision
+    # at all, so it must never mint a receipt either — same "receipt only
+    # follows a REAL admission" principle, just gated on the caller's own
+    # declared authority instead of on `blocked`.
+    if not blocked and emit_receipts:
         policy_path = _gate_find_policy_instance_path(root)
         receipts_emitted, receipt_gaps = _gate_emit_receipts_on_clear(
             root, cov_cleared, hf_cleared,
@@ -14084,9 +14107,10 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         _gate_print_result("pre-push", result, as_json)
         sys.exit(1)
 
+    # `gate pre-push` is genuine ship authorization -> opts in to receipt-emit.
     result = _gate_run_ship_check(
         root, changed, verdict_dirs, head_shas, base_shas, admission_source,
-        head_shas,
+        head_shas, emit_receipts=True,
     )
     trace_reasons, trace_extra_counts = _gate_trace_reasons_and_counts(result)  # PR-2: receipt-gap visibility
     _trace_record(  # Goal #8: mission trace log
@@ -14655,10 +14679,16 @@ def _cmd_gate_ci(args, root: Path) -> None:
         if authoritative and isinstance(topology, dict)
         else args.head
     )
+    # `gate ci` is genuine ship authorization -> opts in to receipt-emit,
+    # regardless of its OWN `authoritative` (CI-event-provenance) flag above
+    # — that flag governs renderer-admission trust, a separate concern from
+    # whether this invocation is a real ship decision (it always is: `gate
+    # ci` is never called by a read-only preview/evidence path the way
+    # `_cmd_gate_post_merge_audit`/MCP `gate_check_paths` are).
     result = _gate_run_ship_check(
         root, changed, verdict_dirs, [args.head], [args.base],
         _GATE_ADMISSION_SOURCE_CI_EVENT if authoritative else None,
-        [attestation_head],
+        [attestation_head], emit_receipts=True,
     )
     result["authoritative"] = authoritative
     if not authoritative:
@@ -14753,10 +14783,18 @@ def _cmd_gate_post_merge_audit(args, root: Path) -> None:
         _gate_print_post_merge_audit(result, as_json)
         sys.exit(1)
 
+    # `authoritative: false, prevented_merge: false` below is exactly why
+    # this evidence-only re-audit of an ALREADY-LANDED merge must never mint
+    # a receipt (`emit_receipts` explicit False — the safe default, spelled
+    # out here since a re-audit's PASS/BLOCKED result can look identical to
+    # a real ship decision at a glance): this is a read-only check on
+    # history, not the admission event itself; that receipt (if any) was
+    # already emitted, or correctly gapped, by the ORIGINAL `gate ci` that
+    # actually authorized this merge.
     ship_result = _gate_run_ship_check(
         root, changed, verdict_dirs, [args.head], [args.base],
         _GATE_ADMISSION_SOURCE_CI_EVENT,
-        [topology["attestation_head_sha"]],
+        [topology["attestation_head_sha"]], emit_receipts=False,
     )
     result = {
         "audit_passed": not ship_result["blocked"],
@@ -23072,8 +23110,14 @@ def _mcp_tool_gate_check_paths(root: Path, arguments: dict) -> dict:
             "changed_paths": authoritative_paths,
         })
     try:
+        # `emit_receipts` explicit False (the safe default, spelled out
+        # here): this tool's own docstring is "Diagnostic preview only;
+        # never a ship authorization result" — an MCP caller previewing
+        # "would this pass" must never, as a side effect, execute
+        # tools/receipt-emit/ or mint a real chained receipt.
         result = _gate_run_ship_check(
             root, authoritative_paths, verdict_dirs, [head], [base],
+            emit_receipts=False,
         )
     except GateSpineError as e:
         return _diagnostic({

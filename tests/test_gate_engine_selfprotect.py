@@ -62,12 +62,18 @@ _COPY_IGNORE = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycac
 _NEUTER_MARKER = "def _gate_run_ship_check("
 _NEUTER_INJECTION = (
     "def _gate_run_ship_check(\n"
-    "    root, changed_paths, verdict_dirs=None, head_shas=None, base_shas=None,\n"
-    "    admission_source=None, attestation_head_shas=None,\n"
+    # `**_kwargs` (not a hand-copied positional list) tolerates whatever
+    # keyword arguments the real callers currently pass (e.g. `gate ci`'s
+    # `emit_receipts=True` — the emit_receipts gate-overlap fix) without
+    # this fixture needing to track this function's own signature drift —
+    # the point of this stub is "an attacker's always-pass replacement
+    # still gets CALLED the same way the real one is," not an exact
+    # parameter-list replica.
+    "    *_args, **_kwargs,\n"
     "):\n"
     "    # SAME-PUSH ENGINE TAMPER (honesty-capstone-audit-2026-07-08 §3-c fixture):\n"
     "    # an attacker-inserted early return that self-attests clean, unconditionally.\n"
-    "    return {\"blocked\": False, \"reasons\": [], \"changed_paths\": changed_paths}\n"
+    "    return {\"blocked\": False, \"reasons\": [], \"changed_paths\": _args[1] if len(_args) > 1 else []}\n"
     "\n"
     "\n"
     "def _gate_run_ship_check_ORIGINAL_UNREACHABLE(\n"

@@ -552,7 +552,11 @@ def test_post_merge_audit_output_never_claims_merge_prevention(
     monkeypatch.setattr(engine, "_gate_diff_paths", lambda *_: ["docs/note.md"])
     monkeypatch.setattr(
         engine, "_gate_run_ship_check",
-        lambda *_: {"blocked": False, "reasons": [], "changed_paths": ["docs/note.md"]},
+        # `**_` tolerates `_cmd_gate_post_merge_audit`'s own `emit_receipts=`
+        # keyword arg (the emit_receipts gate-overlap fix) — this stub isn't
+        # testing that wiring, only output projection, so it accepts and
+        # discards any keyword the real function signature might carry.
+        lambda *_, **__: {"blocked": False, "reasons": [], "changed_paths": ["docs/note.md"]},
     )
     monkeypatch.setattr(engine, "_trace_record", lambda *args, **kwargs: None)
 

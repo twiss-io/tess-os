@@ -51,6 +51,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -605,3 +606,145 @@ def test_malformed_emit_json_output_is_a_gap_never_a_crash(engine, tmp_path, stu
     )
     assert payload is None
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# 9) ★ `emit_receipts` gate-overlap re-reconciliation fix — `_gate_run_ship_
+#    check` is shared by FOUR callers: `gate pre-push`/`gate ci` (genuine
+#    ship authorization, opt in with `emit_receipts=True`) AND
+#    `_cmd_gate_post_merge_audit`/MCP `gate_check_paths` (documented,
+#    non-authoritative diagnostic/evidence paths — "Diagnostic preview
+#    only; never a ship authorization result" — that take the ★SAFE
+#    DEFAULT, `emit_receipts=False`, and must therefore never execute
+#    tools/receipt-emit/ or write to .tess/state/receipts/chain.jsonl,
+#    however cleanly the underlying change would otherwise clear).
+# ---------------------------------------------------------------------------
+
+def _covering_verdict_scenario(root, engine, verifier_gpg_keys):
+    """The SAME base/head/changed-paths covering-verdict clearance already
+    proven (test 1 above) to make `_gate_covering_gap_report` return a
+    non-empty `cleared` — reused here to prove `emit_receipts` gating
+    itself, not the underlying clearance mechanism (already covered)."""
+    base = _base_sha(root)
+    (root / "src" / "prod").mkdir(parents=True)
+    (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(root, "src/prod/app.py")
+    _write_verdict(
+        root, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
+    )
+    head = _commit_all(root, "add prod change + covering verdict")
+    changed = engine._gate_diff_paths(root, base, head)
+    return base, head, changed
+
+
+def test_emit_receipts_parameter_is_the_only_switch_for_the_side_effect(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch,
+):
+    """Direct proof of the fix's actual mechanism, at the function that owns
+    it: same genuinely-clearing covering-verdict scenario, called twice with
+    everything else held constant — only `emit_receipts` differs."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    # `emit_receipts` omitted entirely -> the ★SAFE DEFAULT (False), exactly
+    # mirroring a caller that never thought about receipt-emit at all.
+    result_default = engine._gate_run_ship_check(
+        root, changed, None, [head], [base],
+        engine._GATE_ADMISSION_SOURCE_CI_EVENT, [head],
+    )
+    assert result_default["blocked"] is False
+    assert "receipts_emitted" not in result_default
+    assert "receipt_gaps" not in result_default
+    assert not _chain_path(root).exists()
+
+    # Identical scenario, only difference: `emit_receipts=True` (what `gate
+    # pre-push`/`gate ci` now explicitly opt in with) -> a receipt IS minted.
+    result_authorized = engine._gate_run_ship_check(
+        root, changed, None, [head], [base],
+        engine._GATE_ADMISSION_SOURCE_CI_EVENT, [head], emit_receipts=True,
+    )
+    assert result_authorized["blocked"] is False
+    assert result_authorized["receipt_gaps"] == []
+    assert len(result_authorized["receipts_emitted"]) == 1
+    assert _chain_path(root).exists()
+
+
+def test_post_merge_audit_pass_mints_no_receipt(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch, capsys,
+):
+    """★ THE FIX — `_cmd_gate_post_merge_audit` is a read-only re-audit of an
+    ALREADY-LANDED merge (its own output: authoritative:false,
+    prevented_merge:false); it must never mint a receipt even when the
+    underlying evaluator genuinely clears a rule. `_gate_post_merge_event_
+    provenance` (GitHub-Actions-env + exact two-parent merge topology) is
+    monkeypatched to a valid result — that function's own correctness is
+    already covered extensively by test_gate_merge_topology.py, orthogonal
+    to what this test proves. This test's only job: `_cmd_gate_post_merge_
+    audit`'s REAL, UNMOCKED call into `_gate_run_ship_check` (with its
+    actual, hardcoded `emit_receipts=False`) never writes to
+    .tess/state/receipts/chain.jsonl — the ground-truth side effect, since
+    `_safe_post_merge_audit_result`'s own projected JSON never even
+    surfaces receipts_emitted/receipt_gaps fields either way."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, _changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    monkeypatch.setattr(
+        engine, "_gate_post_merge_event_provenance",
+        lambda _root, _base, _head: (
+            True, None,
+            {"base_sha": base, "attestation_head_sha": head, "evaluation_head_sha": head},
+        ),
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        engine._cmd_gate_post_merge_audit(
+            SimpleNamespace(base=base, head=head, verdict_dirs=None, json_out=True),
+            root,
+        )
+    assert stopped.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["audit_passed"] is True
+    assert payload["authoritative"] is False
+    assert payload["prevented_merge"] is False
+
+    # THE FIX: a genuinely-cleared covering verdict still mints NOTHING from
+    # this read-only re-audit.
+    assert not _chain_path(root).exists()
+
+
+def test_mcp_gate_check_paths_pass_mints_no_receipt(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch,
+):
+    """★ THE FIX — the MCP `gate_check_paths` tool's own docstring:
+    "Diagnostic preview only; never a ship authorization result." Prove the
+    REAL, unmocked tool function — which still runs the full clearing/
+    decision machinery internally via `_gate_run_ship_check` — never writes
+    to .tess/state/receipts/chain.jsonl, even though the underlying
+    evaluator genuinely clears a rule. The tool's own OUTPUT always
+    redacts to blocked:true/authoritative:false regardless (this file's own
+    `_diagnostic()` wrapper, unaffected by this fix) — the printed answer
+    alone would never reveal a receipt had been minted; the chain file is
+    the only reliable, ground-truth signal, which is exactly why this bug
+    was a real, EXTERNALLY INVISIBLE side effect before the fix."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    result = engine._mcp_tool_gate_check_paths(
+        root, {"paths": changed, "base": base, "head": head},
+    )
+
+    # The tool's own documented, unconditional redaction — unaffected by
+    # this fix, exactly what it always was.
+    assert result["authoritative"] is False
+    assert result["blocked"] is True
+    assert result["diagnostic_would_block"] is False  # the shared evaluator DID clear it
+
+    # THE FIX: no receipt was minted as a side effect of this "preview."
+    assert not _chain_path(root).exists()
