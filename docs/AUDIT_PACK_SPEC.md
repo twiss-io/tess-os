@@ -26,8 +26,9 @@ This pack is **tamper-evident**, not **cryptographically non-repudiable**.
 Those are different claims, and conflating them is exactly the kind of
 overstatement this spec exists to avoid. (PR #128 review — Cyra flagged 1
 MEDIUM + 2 LOW and Reid 2 LOW, all honesty/credibility issues, fixed
-pre-merge: three of the six points below were tightened, closed, or added
-as a direct result.)
+pre-merge: several of the points below were tightened, closed, or added as
+a direct result — the tail-truncation close, the new legacy-shard point,
+and the `exported_by` disclosure.)
 
 - The ledger events it exports carry an **unsigned hash chain**
   (`ledger-event.schema.json`, `docs/STATE_LAYER.md` "Trust boundary"). It
