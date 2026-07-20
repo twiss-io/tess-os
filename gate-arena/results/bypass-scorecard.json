@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-18T17:32:17.766217+00:00",
+  "generated_at": "2026-07-20T12:45:34.568123+00:00",
   "total_attacks": 12,
   "blocked": 12,
   "slipped_through": 0,
@@ -48,6 +48,14 @@
           "blocked": false,
           "reasons": [],
           "changed_paths_count": 3,
+          "receipts_emitted": [],
+          "receipt_gaps": [
+            {
+              "rule_id": "credentials",
+              "decision_kind": "signoff",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            }
+          ],
           "authoritative": false,
           "diagnostic_only": true
         },
@@ -266,6 +274,14 @@
           "blocked": false,
           "reasons": [],
           "changed_paths_count": 2,
+          "receipts_emitted": [],
+          "receipt_gaps": [
+            {
+              "rule_id": "credentials",
+              "decision_kind": "signoff",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            }
+          ],
           "authoritative": false,
           "diagnostic_only": true
         }
