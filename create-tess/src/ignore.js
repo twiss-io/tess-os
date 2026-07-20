@@ -23,6 +23,12 @@
 // `clients/*/.vault/` subtree. Keep this in lockstep with that block when it changes.
 import { sep, relative, resolve, join } from 'node:path';
 import { statSync } from 'node:fs';
+import { normalizeComponent, normalizePath, basenameMatchesGlob } from './pathnorm.js';
+
+// Re-exported for backward compat — was this module's own export before the
+// pathnorm.js extraction (PR #145 LOW item); test/secrets-casefold-bypass.test.js
+// still imports it from here.
+export { normalizeComponent };
 
 // Basenames that are ALWAYS kept even when a broader pattern would drop them.
 // `.env.example` is a committed template; `.gitkeep` preserves shipped empty dirs
@@ -148,84 +154,11 @@ export const EXCLUDE_CONTENT_PREFIXES = [
 // `*.secret` mirrors `operator/*.secret`.
 export const EXCLUDE_BASENAME_GLOBS = ['*.pem', '*.key', '*.pyc', '*.env.json', '*.secret'];
 
-function basenameMatchesGlob(base, glob) {
-  return glob.startsWith('*') ? base.endsWith(glob.slice(1)) : base === glob;
-}
-
-// ---------------------------------------------------------------------------
-// Case/Unicode-robust normalization (CRITICAL, secrets-exclusion case-fold
-// bypass — 2026-07 security audit, live-reproduced on macOS). Every string
-// comparison below used to be a plain JS `===`/`.startsWith()`/`Set.has()`
-// against the path exactly as written. macOS (APFS, default) and Windows
-// (NTFS, default) — the two documented default deployment filesystems — are
-// case-INSENSITIVE, so a secret dir under non-canonical case, e.g.
-// `.Claude/Tess-Secrets/`, is the SAME INODE as `.claude/tess-secrets/` but a
-// DIFFERENT STRING: every check here silently returned false and the
-// scaffolder COPIED the secret tree verbatim into produced instances —
-// `vault.age`, `identity.age`, live `.claude/tess-secrets/*` tokens, the
-// PRIVATE `.tess/keys/verifiers/**`/`signoffs/**` trust-anchor keys, and real
-// `.tess/state/memory/**` operator data. Reproduced: `isExcludedRel` returned
-// `false` for `.Claude/Tess-Secrets/token.env` despite it being the same
-// inode as `.claude/tess-secrets/token.env`. This is the SAME bug CLASS as
-// #117/#140 (fixed on the Python `tessctl` side with inode-identity —
-// `_paths_are_same_location`/`_path_is_prefix`, `.tess/bin/tessctl`) landing
-// again in the JS scaffolder — and it silently defeats the #108/0.1.2
-// npm-hazard scaffold-key-strip, since that strip only ever runs on paths
-// this filter decided to actually look at.
-//
-// Fix, mirroring tessctl's OWN two-layer pattern rather than reinventing it:
-//
-//   1. `normalizeComponent` — the string-level fallback, always available
-//      even when the candidate path does not (yet) exist on disk. NFC-
-//      normalizes (so an NFD-decomposed component compares equal to its
-//      NFC-composed form — both encode "the same grapheme" as different
-//      UTF-8 byte sequences), THEN casefolds via `toLowerCase()`, THEN strips
-//      trailing dots/spaces — mirrors tessctl's write-gate per-component
-//      normalization (`check_manifest_write_gate`'s `.rstrip('. ').lower()`,
-//      `.tess/bin/tessctl`), extended with NFC since this filter, unlike
-//      that Python gate, also has to cope with a case-insensitive
-//      filesystem's Unicode-equivalence edge cases. Applied to every path
-//      component compared against EXCLUDE_NAMES/EXCLUDE_DIR_PREFIXES/
-//      EXCLUDE_CONTENT_PREFIXES/EXCLUDE_REL_PATHS/the basename globs/the
-//      `.env` check below.
-//
-//   2. `sameFsLocation` (used by `makeCopyFilter`, below) — the JS analogue
-//      of tessctl's `_paths_are_same_location` (`os.path.samefile` /
-//      `(st_dev, st_ino)` inode identity): when BOTH paths exist, ask the
-//      filesystem itself whether they are the SAME inode — correct
-//      regardless of case-folding AND NFC/NFD, because inode identity is a
-//      filesystem-resolution property, not a string property this module
-//      would otherwise have to reimplement. Reserved for the DIR-prefix
-//      secret exclusions (EXCLUDE_DIR_PREFIXES) — the only exclusion tier
-//      anchored to a single, fixed, resolvable path under the copy root
-//      (EXCLUDE_NAMES matches a bare component at ANY depth, with no single
-//      fixed root to stat against).
-//
-// ★ This is a DENYLIST (default-allow): any case/normalization ambiguity —
-// a stat failure, a partial match, anything the fallback can't resolve
-// cleanly — must resolve to EXCLUDE, never to "copy it anyway". Every helper
-// below is written fail-closed: the risky branch always returns `true`
-// (excluded)/`false` (not-a-safe-match), never the reverse.
-//
-// Exported (like scaffold.js's buildCloneArgs/resolveTemplateRef) as a pure,
-// dependency-free primitive so the NFC-then-casefold ordering is directly
-// unit-testable: lower-casing an NFD-decomposed grapheme (e.g. "e" plus a
-// COMBINING ACUTE ACCENT codepoint, U+0065 U+0301) WITHOUT normalizing
-// first does NOT converge with the lower-cased form of its NFC-precomposed
-// counterpart (U+00C9 lower-cases to U+00E9, a single codepoint) -- the two
-// stay different byte sequences. Only NFC-normalizing FIRST makes them
-// compare equal, so that step is load-bearing, not redundant with
-// casefolding alone. See test/secrets-casefold-bypass.test.js for the
-// regression lock (deliberately avoids a literal accented character in
-// this comment itself, so the source file's own bytes can't silently drift
-// between NFC/NFD depending on the editor that touched it last).
-export function normalizeComponent(c) {
-  return c.normalize('NFC').toLowerCase().replace(/[. ]+$/, '');
-}
-
-function normalizePath(relForward) {
-  return relForward.split('/').filter(Boolean).map(normalizeComponent).join('/');
-}
+// Case/Unicode-robust normalization primitives (`normalizeComponent`,
+// `normalizePath`, `basenameMatchesGlob`) — the CRITICAL case-fold-bypass
+// fix plus the HIGH empty-component fix (PR #145) — live in ./pathnorm.js
+// (LOW item, PR #145: extracted cleanly, this file was over the 300-line
+// gate). See pathnorm.js's header + test/pathnorm.test.js for the details.
 
 const EXCLUDE_NAMES_NORM = new Set([...EXCLUDE_NAMES].map(normalizeComponent));
 const EXCLUDE_DIR_PREFIXES_NORM = EXCLUDE_DIR_PREFIXES.map(normalizePath);
@@ -233,23 +166,18 @@ const EXCLUDE_CONTENT_PREFIXES_NORM = EXCLUDE_CONTENT_PREFIXES.map(normalizePath
 const EXCLUDE_REL_PATHS_NORM = new Set([...EXCLUDE_REL_PATHS].map(normalizePath));
 const EXCLUDE_BASENAME_GLOBS_NORM = EXCLUDE_BASENAME_GLOBS.map(normalizeComponent);
 
-// True if `a` and `b` refer to the SAME filesystem location, by INODE
-// IDENTITY (`fs.statSync` -> compare `dev`+`ino`) — the JS analogue of
-// tessctl's `_paths_are_same_location` (`os.path.samefile`). Fails CLOSED
-// (returns false — "not proven to be the same location by this arm") on any
-// stat error: either path not (yet) existing, a permission error, or a race.
-// This is the supplementary GROUND-TRUTH layer, not the sole line of
-// defense — the case/NFC string fallback in `isExcludedRel` above already
-// covers the "doesn't exist yet" case, so this helper never needs to guess;
-// an inconclusive stat here simply means this arm didn't fire, never that
-// the path is safe.
-function sameFsLocation(a, b) {
+// `statSync`, returning `null` (fail-closed — "not proven to exist by this
+// arm", never "safe") on any stat error, instead of throwing. Split out of
+// the earlier two-argument `sameFsLocation(a, b)` shape so `makeCopyFilter`'s
+// memoized ancestor walk (below) can cache each SIDE's stat independently,
+// with the `dev`/`ino` INODE IDENTITY comparison (tessctl's
+// `_paths_are_same_location` / `os.path.samefile`, JS analogue) done inline
+// against the two cached results.
+function statOrNull(p) {
   try {
-    const sa = statSync(a);
-    const sb = statSync(b);
-    return sa.dev === sb.dev && sa.ino === sb.ino;
+    return statSync(p);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -288,8 +216,8 @@ export function isExcludedRel(rel) {
   if (baseFold === '.env' || baseFold.startsWith('.env.')) return true;
 
   // Whole-subtree dir prefixes (string/casefold/NFC fallback; makeCopyFilter
-  // layers an inode-identity check on top of this for candidates that
-  // actually exist on disk — see sameFsLocation above).
+  // layers a memoized inode-identity check on top of this for candidates
+  // that actually exist on disk — see `statOrNull` and `makeCopyFilter` below).
   if (EXCLUDE_DIR_PREFIXES_NORM.some((p) => normFold === p || normFold.startsWith(p + '/'))) return true;
 
   // Content under snapshot/staging dirs (dir + its .gitkeep kept above).
@@ -302,46 +230,69 @@ export function isExcludedRel(rel) {
 // source paths; we resolve them back to a root-relative path so multi-component
 // and glob patterns work (the old component-only filter could not).
 //
-// Layers TWO checks (both must pass for a path to be copied):
-//   1. `isExcludedRel` — the case/NFC-normalized string fallback (above),
-//      correct even for a candidate that doesn't exist on disk under the
-//      forbidden root's OWN spelling.
-//   2. Inode-identity (`sameFsLocation`) against every resolved
-//      EXCLUDE_DIR_PREFIXES root — the ground-truth arm for the CRITICAL
-//      secrets-exclusion case-fold bypass: even if a future edge case (an
-//      exotic Unicode equivalence, an OS-specific folding rule) slipped past
-//      the string fallback, this asks the filesystem itself whether `src`
-//      IS, or resolves under, one of the fixed secret-dir roots — the JS
-//      analogue of tessctl's `_path_is_prefix`/`_paths_are_same_location`.
-//      Walks `src`'s own ancestors up to the root (not just a direct-equality
-//      check) so a secret reached via a case-divergent PARENT alias is also
-//      caught, mirroring `_path_is_prefix`'s ancestor walk — belt-and-
-//      suspenders on top of `fs.cpSync`'s own documented subtree pruning
-//      (once a directory's filter returns false, its descendants are never
-//      visited at all), so this still holds even if that pruning behavior
-//      ever changes.
+// Layers TWO checks (both must pass for a path to be copied): (1)
+// `isExcludedRel` — the case/NFC-normalized string fallback (above), correct
+// even for a candidate that doesn't exist on disk under the forbidden root's
+// OWN spelling; (2) inode-identity (memoized `dev`/`ino` comparison, below)
+// against every resolved EXCLUDE_DIR_PREFIXES root — the ground-truth arm
+// for the CRITICAL secrets-exclusion case-fold bypass: even if a future edge
+// case slipped past the string fallback, this asks the filesystem itself
+// whether `src` IS, or resolves under, a fixed secret-dir root (tessctl's
+// `_path_is_prefix`/`_paths_are_same_location`, JS analogue). Walks `src`'s
+// own ancestors up to the root (not just direct equality) so a secret
+// reached via a case-divergent PARENT alias is also caught — belt-and-
+// suspenders on top of `fs.cpSync`'s own subtree-pruning behavior.
+//
+// ★ MEDIUM (Reid, PR #145 perf review) — memoize the ancestor walk. Pre-fix,
+// every ancestor level of every candidate re-`statSync`'d each of the 4
+// fixed forbidden roots from scratch AND re-`statSync`'d the SAME shared
+// ancestor directory once per sibling underneath it — Reid measured 56,690
+// statSync calls / +55% wall-clock (504ms -> ~780ms) on a 2,669-file repo;
+// this repo's benchmark fixture (2,548 entries) reproduced the shape:
+// 54,684 stat attempts pre-fix, ~751ms average. Fix, scoped to THIS
+// `makeCopyFilter(srcRoot)` call (one CLI copy pass — a fresh call gets a
+// fresh cache, never shared across copies): (1) stat the 4 forbidden roots
+// ONCE, up front — a source with no secret dirs (the common case) now skips
+// the whole ancestor-walk loop below, since `forbiddenStats` is empty; (2)
+// memoize each ancestor path's own stat on first encounter
+// (`ancestorStatCache`) — many files share parents, collapsing a fresh
+// `statSync` per sibling into one per unique ancestor.
 export function makeCopyFilter(srcRoot) {
   const rootAbs = resolve(srcRoot);
 
-  // Resolve every EXCLUDE_DIR_PREFIXES entry ONCE, up front, to its absolute
-  // path under THIS root. A prefix that doesn't exist under this particular
-  // source (the common case — most template sources ship no secret dirs at
-  // all) simply never matches on this arm; `isExcludedRel`'s string fallback
-  // still covers it regardless.
-  const forbiddenDirRoots = EXCLUDE_DIR_PREFIXES.map((p) => resolve(rootAbs, p));
+  // Resolve + stat every EXCLUDE_DIR_PREFIXES entry ONCE, up front (not once
+  // per ancestor level per candidate). A prefix that doesn't exist under
+  // this source (the common case) is dropped here rather than re-attempted
+  // per file; `isExcludedRel`'s string fallback still covers it regardless.
+  const forbiddenStats = EXCLUDE_DIR_PREFIXES.map((p) => resolve(rootAbs, p))
+    .map(statOrNull)
+    .filter(Boolean);
+
+  // Per-copy-pass memo of ancestor-path stats.
+  const ancestorStatCache = new Map();
+  const statCached = (p) => {
+    if (ancestorStatCache.has(p)) return ancestorStatCache.get(p);
+    const s = statOrNull(p);
+    ancestorStatCache.set(p, s);
+    return s;
+  };
 
   return (src) => {
     const rel = relative(rootAbs, src);
     // The root itself (rel === "") and anything outside the root is copied.
     if (!rel || rel.startsWith('..')) return true;
     if (isExcludedRel(rel)) return false;
-    if (forbiddenDirRoots.length === 0) return true;
+    // No forbidden root exists under this source at all (the common case) —
+    // no ancestor of any candidate can possibly match one, so skip the walk.
+    if (forbiddenStats.length === 0) return true;
 
     const segments = rel.split(sep).filter(Boolean);
     for (let i = segments.length; i >= 1; i--) {
       const ancestorAbs = join(rootAbs, ...segments.slice(0, i));
-      for (const forbidden of forbiddenDirRoots) {
-        if (sameFsLocation(forbidden, ancestorAbs)) return false;
+      const ancestorStat = statCached(ancestorAbs);
+      if (!ancestorStat) continue;
+      for (const forbiddenStat of forbiddenStats) {
+        if (ancestorStat.dev === forbiddenStat.dev && ancestorStat.ino === forbiddenStat.ino) return false;
       }
     }
     return true;

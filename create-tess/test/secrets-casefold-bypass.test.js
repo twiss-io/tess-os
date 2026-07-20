@@ -95,7 +95,16 @@ test('CRITICAL case-fold bypass: a case-variant spelling of every secret pattern
     ['secrets/api-key.txt', 'SECRETS/api-key.txt'],
     ['tess-secrets/token.json', 'Tess-Secrets/token.json'],
     ['nested/dir/secrets/leaked.txt', 'nested/Dir/SECRETS/leaked.txt'],
-    ['clients/Acme/.vault/vault.age', 'clients/Acme/.VAULT/vault.age'],
+    // ★ LOW fix (Reid, PR #145 review): the leaf filename must ALSO vary
+    // case here, not just the parent dir — `vault.age` is already an EXACT
+    // EXCLUDE_NAMES match independent of `.vault`/`.VAULT` casing, so a row
+    // that leaves the leaf untouched provides no discriminating power (it
+    // "passes" even against a pre-fix module, proving nothing about the
+    // `.vault` directory-name case-fold this row is meant to exercise).
+    // Verified directly: all 24 original pairs run against the pre-fix
+    // module — 23/24 genuinely failed pre-fix/passed post-fix; this row was
+    // the one exception. Varying the leaf too makes it discriminate.
+    ['clients/Acme/.vault/vault.age', 'clients/Acme/.VAULT/Vault.AGE'],
     ['node_modules/x/index.js', 'NODE_MODULES/x/index.js'],
     // Basename suffix globs.
     ['server.pem', 'SERVER.PEM'],
@@ -124,6 +133,70 @@ test('CRITICAL case-fold bypass: a case-variant spelling of every secret pattern
         `default deployment targets), a plain string comparison misses it`,
     );
   }
+});
+
+// ★★ HIGH regression lock (Reid, PR #145 review) — empty-normalized-component
+// join corruption. `normalizeComponent` strips a component that is ENTIRELY
+// dots/spaces (a literal `...` directory — legal `mkdir`, no special
+// filesystem meaning; a leading `.` from a `./`-prefixed relative path; or a
+// whitespace-only component) down to `''`. Pre-fix, joining that empty
+// string back into the path (rather than dropping it) corrupted the string
+// used for prefix matching — either a double `//` or a leading `/` — and
+// NEITHER `startsWith` its intended EXCLUDE_DIR_PREFIXES/
+// EXCLUDE_CONTENT_PREFIXES entry anymore, so a secret nested under a noise
+// component silently slipped through as KEPT instead of EXCLUDED. This
+// directly violates the fix's own stated invariant ("any case/normalization
+// ambiguity … must resolve to EXCLUDE, never to copy it anyway … fail-closed
+// … never the reverse") — the exact same DIRECTION of failure (a leak) as
+// the CRITICAL bug this file otherwise guards, just via a narrower vector.
+//
+// Empirically verified (not by reasoning alone) against the actual pre-fix
+// PR-branch blob before writing the fix: all three vectors below returned
+// `false` (BUG) pre-fix and `true` (correct) post-fix.
+//
+// ★ Reid's own suggested one-liner (`stripped || norm` — fall back to the
+// UN-stripped, casefolded component instead of collapsing to empty) and
+// Cyra's independently-flagged LOW-1 finding on the SAME root cause
+// (suggesting "re-filter empties *after* normalization") diverge in
+// behavior: Reid's fallback merely PRESERVES the noise component literally
+// in the joined path (avoiding the corrupting empty-string artifact) but
+// does NOT remove it — so `.tess/.../keys/verifiers/cyra.asc` normalizes to
+// `.tess/.../keys/verifiers/cyra.asc` (unchanged) and still does not
+// `startsWith('.tess/keys/verifiers/')`, i.e. it does NOT actually restore
+// exclusion (verified directly, in isolation, against his exact snippet).
+// Cyra's direction — DROP the empty component entirely, so the noise
+// component vanishes from the matched path and the secret's canonical
+// prefix lines back up — is the one implemented here (ignore.js's
+// `normalizePath`: a second `.filter(Boolean)` after the `.map`). This is
+// the deliberate, fail-safe DENYLIST choice: over-EXCLUDING an ordinary path
+// that happens to collapse onto a forbidden prefix this way is acceptable;
+// under-excluding a secret is not.
+test('★★ HIGH regression lock: an empty-after-normalization noise component (all-dots, leading ./, all-space) does not defeat prefix-based exclusion', () => {
+  const vectors = [
+    ['.tess/.../keys/verifiers/cyra.asc', 'a literal "..." directory component (legal mkdir, no special FS meaning)'],
+    ['./.tess/keys/verifiers/cyra.asc', 'a leading "./" producing a leading empty component (Cyra LOW-1)'],
+    ['.tess/.  /keys/verifiers/cyra.asc', 'a whitespace-only component (". ", two trailing spaces)'],
+    // EXCLUDE_CONTENT_PREFIXES is affected by the identical root cause, not
+    // just EXCLUDE_DIR_PREFIXES — Reid's second reproduction.
+    ['.tess/state/.../memory/real.json', 'the same noise-component bug against EXCLUDE_CONTENT_PREFIXES, not just EXCLUDE_DIR_PREFIXES'],
+  ];
+  for (const [p, label] of vectors) {
+    assert.equal(isExcludedRel(p), true, `HIGH: ${label} must not defeat exclusion — isExcludedRel(${JSON.stringify(p)})`);
+  }
+  // Sanity: the canonical (noise-free) forms are excluded too, as a baseline.
+  assert.equal(isExcludedRel('.tess/keys/verifiers/cyra.asc'), true, 'sanity: canonical form must be excluded');
+  assert.equal(isExcludedRel('.tess/state/memory/real.json'), true, 'sanity: canonical form must be excluded');
+});
+
+// Negative control for the HIGH fix: an ORDINARY (non-secret) path that
+// happens to contain a noise component must still be handled — the fix's
+// over-exclusion direction is acceptable (per the denylist fail-safe
+// design) but should not be mistaken for "the fix breaks all paths with
+// dots in them"; a ordinary all-dots component that does NOT collapse onto
+// any forbidden prefix stays kept, same as before the fix.
+test('negative control (HIGH fix): a noise component NOT adjacent to any forbidden prefix does not spuriously exclude an ordinary file', () => {
+  assert.equal(isExcludedRel('docs/.../notes/README.md'), false, 'an ordinary nested path with a noise component must still be kept');
+  assert.equal(isExcludedRel('./README.md'), false, 'an ordinary leading-./ path must still be kept');
 });
 
 // The denylist's fail-safe direction, made explicit: a case ambiguity must
