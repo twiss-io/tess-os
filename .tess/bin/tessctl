@@ -19021,7 +19021,16 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     try:
         from_dir.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(str(to_dir_resolved), str(tmp_link))
-        if tmp_link.resolve() != to_dir_resolved:
+        # Issue #149 consistency migration (the 6th raw `resolve() !=` site,
+        # missed by #147's audit sweep, found independently by both PR #148
+        # reviewers): INODE IDENTITY (`_paths_are_same_location`), not raw
+        # `!=`. Both operands already derive from the same `to_dir_resolved`
+        # string, so this is non-exploitable / already fail-closed either way
+        # (a missed match here only ever REFUSES — raises before from_dir is
+        # touched — never mutates); this migration is for completeness only,
+        # bringing the memory-adopt region to zero raw path-string
+        # comparisons.
+        if not _paths_are_same_location(tmp_link.resolve(), to_dir_resolved):
             raise OSError(f"temporary symlink {tmp_link} did not resolve to {to_dir_resolved}")
     except OSError as e:
         try:
