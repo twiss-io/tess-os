@@ -653,14 +653,16 @@ human-reviewed reusable skill.
   one, and it does not build a curator or a loader (neither exists in-repo
   to build against; the host's own progressive disclosure IS the loader).
 - **`tessctl skill from-task <id> --harness H [--out DIR] [--force]
-  [--session S] [--persona P] [--json]`** reads the task record
-  (`.tess/state/tasks/<id>.json`) and every ledger event referencing it
-  (`_skill_collect_task_events`, reusing the AUDIT PACK region's own
-  `_audit_collect_events_by_shard` — no forked task-scoped ledger scan),
-  then writes two files to `.tess/state/skills/drafts/<slug>/` (default;
-  `--slug` is the task title's kebab-slug plus the task id's OWN trailing
-  4-hex uniqueness suffix — deterministic, collision-safe, no invented
-  second id):
+  [--session S] [--persona P] [--json]`** — the full, real flag set; there
+  is no `--slug` flag. Reads the task record (`.tess/state/tasks/<id>.json`)
+  and every ledger event referencing it (`_skill_collect_task_events`,
+  reusing the AUDIT PACK region's own `_audit_collect_events_by_shard` — no
+  forked task-scoped ledger scan), then writes two files to
+  `.tess/state/skills/drafts/<slug>/` by default — `<slug>` (here and in
+  `--out`'s own help text) is a PLACEHOLDER for the auto-derived directory
+  name, not a CLI parameter: the task title's kebab-slug plus the task id's
+  OWN trailing 4-hex uniqueness suffix, deterministic and collision-safe,
+  no invented second id, no operator input:
   - **`SKILL.md`** — real progressive-disclosure frontmatter/body,
     `status: draft`, a `## Step sequence` built ONLY from the REAL matched
     ledger events (event class, verbatim `summary`, actor, timestamp —
@@ -686,12 +688,36 @@ human-reviewed reusable skill.
   must fill in before the draft is authoritative. A source task not marked
   `done` gets a prominent `SKILL.md` warning banner too.
 - **Never auto-activated.** Writes to `.tess/state/skills/drafts/` — a
-  FIFTH `.tess/state/**` subsystem, fenced the SAME four-layer way as
-  memory/tasks/ledger/locks (never_touch, publish-clean, gitignore content-
-  ignore, create-tess scaffold-strip) — deliberately NEVER `.claude/skills/`
-  (the LIVE, core-managed, host-loaded skill set). No promotion command, no
-  curator, no autonomous loop exists in this phase; a human/curator reviews
-  a draft and promotes it manually, entirely outside this region.
+  FIFTH `.tess/state/**` subsystem, with the SAME four-layer coverage
+  memory/tasks/ledger/locks already get — but only TWO of the four layers
+  needed an actual edit for this subsystem: `never_touch`
+  (`tess.manifest.json`) and publish-clean's own
+  `_PUBLISH_CLEAN_PRIVATE_GLOBS` already list `.tess/state/**` recursively,
+  so both AUTO-COVER `.tess/state/skills/**` via that existing glob, with
+  zero new entries required. The `.gitignore` content-ignore entry and the
+  `create-tess` scaffold-strip exclusion (`EXCLUDE_CONTENT_PREFIXES`) are
+  the two that ARE per-subsystem and were NEWLY ADDED for `skills/` in this
+  phase. Coverage across all four layers is complete and correct either
+  way — the distinction is only which ones needed a code change.
+  Deliberately NEVER `.claude/skills/` (the LIVE, core-managed, host-loaded
+  skill set) — and as of issue #133, `tessctl skill from-task --out` itself
+  refuses (`SkillError`, unconditionally, `--force` does not override it)
+  any target that path-normalize-resolves under `.claude/skills/`, catching
+  a `..` traversal or a pre-planted symlink the same way as the literal
+  path (`_skill_reject_out_under_claude_skills`) — closing the one
+  remaining operator-explicit path into the live skill set. **★ CRITICAL
+  hardened (Cyra, live-reproduced on macOS, PR #140 re-review):** the
+  refusal is INODE-IDENTITY based (`os.path.samefile`, reusing
+  `_path_is_prefix`/`_paths_are_same_location` from `tessctl memory
+  adopt`'s own PR #117 fix verbatim), never a case-sensitive string
+  comparison — the first version compared `Path.resolve()` output with
+  `Path.is_relative_to()`, which macOS APFS/Windows NTFS's case-
+  insensitivity bypassed (`--out .CLAUDE/skills/evil-skill` resolved to a
+  different STRING than the real, same-inode `.claude/skills`) while
+  Linux CI's case-sensitive filesystem never exercised the path, letting
+  it ship green. No promotion command, no curator, no autonomous loop
+  exists in this phase; a human/curator reviews a draft and promotes it
+  manually, entirely outside this region.
 - **Accountability — one new ledger event class, the SAME append path.**
   `skill_generated` (logged by `tessctl skill from-task`) goes through the
   EXISTING `_ledger_auto_log` → `_log_append_event` hash-chain append path
@@ -711,7 +737,19 @@ human-reviewed reusable skill.
   handling → an unknown task id is refused with a clear message → the
   `skill_generated` ledger line is written, schema-accepted, and shows up
   in a subsequent `tessctl audit export --task <id>` → generation never
-  touches `.claude/skills/` (the auto-activation scope-boundary check).
+  touches `.claude/skills/` (the auto-activation scope-boundary check) →
+  (issue #133) an `--out` target under `.claude/skills/` is refused,
+  including via a literal path, a `..` traversal, and a symlink whose
+  resolved target lands there, and refusal is unconditional (`--force`
+  does not clear it) → an FS-independent regression test of the
+  INODE-IDENTITY comparison itself (a same-inode, differently-spelled
+  pair constructed via symlink — holds on case-sensitive AND
+  case-insensitive filesystems, never relying on which one the test
+  runner happens to be) plus an opportunistic, runtime-gated test of the
+  real macOS/Windows case-fold scenario end to end via the CLI whenever
+  the runner's own filesystem actually supports it → the `skill_generated`
+  ledger event recording the resolved `--out` target → a relative `--out`
+  resolving against `root`, not the caller's cwd.
 
 ## What's deliberately NOT built yet
 
