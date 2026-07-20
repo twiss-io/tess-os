@@ -6150,10 +6150,18 @@ def cmd_lock(args, root: Path) -> None:
     """
     Lock file operations.
 
-    --check: strict CI gate — exits non-zero if any core tamper, uncaptured
-             drift, or quarantined file is found.  Equivalent to running
-             `tessctl doctor` in fail-fast mode.  Reference this in CI
-             instead of relying on exit codes from the more verbose `doctor`.
+    --check: strict CI gate — exits non-zero on the SAME blocking-condition
+             set `doctor`/`verify` fail on: core tamper, quarantined files,
+             uncaptured drift, a missing core or live file (issue #124 —
+             deletion of a managed file, e.g. `.tess/core/MANIFEST.md`, used
+             to fail-open here even though `doctor`/`verify` both fail on
+             it), and worker-profile doctrine leaks — see the shared
+             classifier `_doctor_result_is_error` all three commands call
+             for the authoritative definition. This is NOT a byte-identical
+             replay of `doctor`'s human-readable report (no --fix, --json,
+             or pristine/staged breakdown) — a lighter, CI-friendly gate
+             over the same failure surface.  Reference this in CI instead of
+             relying on exit codes from the more verbose `doctor`.
 
     --regen: MAINTAINER re-baseline — re-pin every base_sha to sha256 of the
              current .tess/core/<core_key> file, blessing the present core as
@@ -6189,6 +6197,7 @@ def cmd_lock(args, root: Path) -> None:
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
+        file_status_pre = attrs.get("status", "core-managed")
         # R1 (issue #122): core-internal entries (live_path: null, e.g. the
         # templates/agents-md/* fragments and personas/*.md) still get Check A
         # (base_sha core-integrity) here if a base_sha is pinned — this used to
@@ -6201,17 +6210,61 @@ def cmd_lock(args, root: Path) -> None:
         # fragment with no live_path could pass CI clean. Mirror doctor's own
         # gate (see cmd_doctor's `has_base_sha` fallthrough) instead of a bare
         # live_path check; skip only when there is truly nothing to verify.
-        if not live_rel and not attrs.get("base_sha", ""):
-            continue
+        #
+        # #124 (LOW #2, Reid): the skip predicate below must structurally
+        # mirror cmd_doctor's OWN skip predicate, not just approximate its
+        # outcome. cmd_doctor falls through to doctor_check_file (instead of
+        # skipping) whenever status == "staged", REGARDLESS of base_sha —
+        # doctor_check_file's staged/no-live_path branch is what produces the
+        # non-failing STAGED-WARN for that case. This loop used to skip a
+        # staged, no-base_sha, no-live_path entry outright (`continue`,
+        # never calling doctor_check_file at all) — harmless today (0 such
+        # entries exist in this repo; see
+        # test_lock_check_staged_no_base_sha_falls_through_to_doctor_check_file
+        # in tests/test_lock_check_deletion_parity.py) since doctor_check_file's
+        # own staged branch never fails either way, but a
+        # silent structural divergence between the two loops is exactly the
+        # class of gap #122's fix above closed for the base_sha case: a
+        # future change to the staged branch's failure semantics would apply
+        # to `doctor` and silently NOT apply to `lock --check`.
+        if not live_rel:
+            has_base_sha = bool(attrs.get("base_sha", ""))
+            if file_status_pre != "staged" and not has_base_sha:
+                continue
+            # Fall through: doctor_check_file handles staged_warn
+            # (non-blocking) and core-internal Check A (base_sha tamper).
         r = doctor_check_file(core_key, attrs, root)
         status = r.get("lock_status", "core-managed")
         report_path = live_rel or core_key
+        # #124 (LOW #3): annotate a null-live_path report the same way
+        # `verify` does (cmd_verify's own "(core-internal — no live path)"
+        # print) — a bare core_key with no live path reads ambiguously in CI
+        # output otherwise (easy to mistake for a live tree path).
+        annotation = "" if live_rel else " (core-internal — no live path)"
         if r.get("core_tamper"):
-            issues.append(("CORE-TAMPER", report_path))
+            issues.append(("CORE-TAMPER", report_path + annotation))
         elif status == "quarantined":
             issues.append(("QUARANTINED", report_path))
         elif r.get("drift") and status == "core-managed":
             issues.append(("DRIFT", report_path))
+        elif _doctor_result_is_error(r):
+            # #124 (MEDIUM, Cyra) — THE deletion-tamper fail-open this issue
+            # exists to close. `doctor_check_file` records a deleted core or
+            # live file as a plain issue string ("core file missing: ..." /
+            # "live file missing: ...") rather than core_tamper / drift —
+            # today the ONLY blocking condition that reaches this branch.
+            # `doctor` counts it via its own `missing_count` and FAILS
+            # (cmd_doctor); `verify` treats a missing managed core file as a
+            # CORE TAMPER and FAILS (cmd_verify). Pre-fix, this loop only
+            # ever inspected core_tamper / lock_status == "quarantined" /
+            # drift, so a deleted file matched none of the three and fell
+            # through silently to "OK, no issues" — `lock --check` OK, `exit
+            # 0`, while `doctor`/`verify` both FAILed on the exact same
+            # tree. Gating on the SAME shared classifier `cmd_doctor` itself
+            # uses for its own --json exit code means this class of
+            # blocking condition can never again silently drift out of sync
+            # between the two commands.
+            issues.append(("MISSING", report_path + annotation))
 
     # Phase 2 (Codex + generic targets): see _check_untracked_render_generated's
     # docstring — an ENABLED target's compiled artifacts with no individual
