@@ -174,6 +174,18 @@ def _new_history(tmp_path: Path, engine, *, admission: bool = True):
     shutil.copy2(repo_root / REGISTRY, registry_path)
     registry_path.chmod(0o755)
     shutil.copy2(repo_root / TARGET_CONFIG, root / TARGET_CONFIG)
+    # issue #118 / see tests/conftest.py Project.write(): TARGET_CONFIG's own
+    # render_targets.enabled is this repo's LIVE, evolving default (grew to
+    # include "codex" post-#76) — copying it verbatim makes this synthetic
+    # history's enabled-target list silently track whatever this repo
+    # currently enables, and this fixture never seeds codex/generic's own
+    # core inputs, so it fails loud with "template not found" the moment
+    # anything renders. Pin back to the historically-stable ["claude-code"]
+    # baseline right after the copy, exactly like conftest.py already does.
+    target_config_path = root / TARGET_CONFIG
+    target_config = json.loads(target_config_path.read_text(encoding="utf-8"))
+    target_config.setdefault("render_targets", {})["enabled"] = ["claude-code"]
+    target_config_path.write_text(json.dumps(target_config), encoding="utf-8")
     _write_policy(root, admission=admission)
     _write_lock(root, engine, source)
     base = _commit(root, "BASE")
