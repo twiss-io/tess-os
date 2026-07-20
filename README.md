@@ -126,8 +126,9 @@ reproducible release rehearsal and the production prerequisites are complete.
   the boundary around the human-owned key ceremony.
 - [The Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — the portable propose →
   approve → sign accountability envelope, its standalone verifier
-  (`tools/receipt-verify/`), and a runnable demo with test-only keys
-  (`make receipt-demo`).
+  (`tools/receipt-verify/`), the CLI that actually produces one from an
+  already-signed verdict or sign-off (`tools/receipt-emit/`), and a
+  runnable demo with test-only keys (`make receipt-demo`).
 - [The Auditor Pack](docs/AUDIT_PACK_SPEC.md) — `tessctl audit export`/
   `verify`: an exportable, offline-verifiable bundle of accountability
   ledger events and Agent Receipts for a scope, with an explicit,
