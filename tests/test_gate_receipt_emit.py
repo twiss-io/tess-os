@@ -29,6 +29,19 @@ Coverage (per the dispatch brief's explicit test list):
     tests/test_gitignore_reconciliation.py, tests/test_publish_clean_gate.py,
     tests/test_write_gate.py, create-tess/test/units.test.js) rather than a
     parallel copy here — this file focuses on the GATE <-> EMIT wiring itself.
+
+Reid CRITICAL (PR #137 review) closures, added after the initial build:
+  * a HOSTILE `tools/receipt-emit/receipt_emit.py` planted in the SAME push
+    as an otherwise-legitimate, fully-covered change is NEVER executed —
+    the gate runs the trusted BASE-ref extraction instead
+    (`_gate_extract_trusted_receipt_tooling`), proven both negatively (the
+    hostile script's own observable side effect never happens) and
+    positively (a REAL receipt, from the REAL tool, still gets emitted)
+  * a malformed (non-dict) emit-tool JSON payload degrades to a structured
+    gap, never an AttributeError crash (`payload.get(...)` bug fix)
+  * no immutable BASE ref available (bootstrap: the very first push
+    introducing policy.yaml) -> receipt emission fails closed as a gap,
+    never falls back to trusting the pushed tree's own tooling
 """
 
 from __future__ import annotations
@@ -425,3 +438,147 @@ def test_policy_yaml_untouched_by_receipt_emission(
     )
     assert r.returncode == 0
     assert policy_path.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# 7) ★ SECURITY (Reid CRITICAL, PR #137 review) — a HOSTILE receipt_emit.py
+#    planted in the SAME push as an otherwise-legitimate, fully-covered
+#    change must NEVER be executed. The gate must run the TRUSTED BASE-ref
+#    extraction instead (_gate_extract_trusted_receipt_tooling), mirroring
+#    the SAME "trusted base-ref engine, untrusted pushed tree" invariant
+#    .github/workflows/tess-gate.yml's own "Extract trusted gate engine"
+#    step already enforces for .tess/bin/tessctl itself
+#    (honesty-capstone-audit-2026-07-08 §3-c).
+# ---------------------------------------------------------------------------
+
+def test_hostile_pushed_receipt_emit_is_never_executed_base_ref_wins(
+    gate_repo_with_receipt_emit, run_cli, engine, verifier_gpg_keys, tmp_path,
+):
+    root = gate_repo_with_receipt_emit
+    base = _base_sha(root)  # base already has the REAL, good tools/receipt-emit/
+
+    # Plant a HOSTILE receipt_emit.py replacement in the SAME push as an
+    # otherwise-legitimate, fully covered change — exactly the attack
+    # Reid's review flagged: smuggle a modified tool alongside an unrelated,
+    # real clearance. If this ever runs, it writes an observable marker
+    # AND forges a fake "success" payload distinguishable from a real one.
+    marker_path = tmp_path / "HOSTILE_EXECUTED.marker"
+    hostile_script = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker_path)!r}).write_text('HOSTILE receipt_emit.py EXECUTED')\n"
+        "print('{\"emitted\": true, \"receipt_id\": \"HOSTILE-FORGED\", \"sequence\": 999, "
+        "\"trust_status\": \"signed_not_trust_anchored\"}')\n"
+        "sys.exit(0)\n"
+    )
+    (root / "tools" / "receipt-emit" / "receipt_emit.py").write_text(hostile_script, encoding="utf-8")
+
+    (root / "src" / "prod").mkdir(parents=True)
+    (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(root, "src/prod/app.py")
+    _write_verdict(
+        root, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
+    )
+    head = _commit_all(root, "legit covered change + HOSTILE receipt_emit.py in the SAME push")
+
+    r = run_cli(
+        root, "gate", "ci", "--base", base, "--head", head, "--json",
+        extra_env={"GNUPGHOME": str(verifier_gpg_keys["Reid"].home)},
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is False  # the underlying change is still legitimately governed
+
+    # The hostile code NEVER ran — the single most important assertion here.
+    assert not marker_path.exists(), (
+        "the hostile PUSHED-TREE receipt_emit.py was EXECUTED by the gate — "
+        "critical security regression (base-ref extraction did not hold)"
+    )
+
+    # The BASE-ref (real, trusted) tool ran instead: a REAL receipt was
+    # emitted, never the hostile forged payload.
+    assert payload["receipt_gaps"] == []
+    assert len(payload["receipts_emitted"]) == 1
+    emitted = payload["receipts_emitted"][0]
+    assert emitted["receipt_id"] != "HOSTILE-FORGED"
+    assert emitted["sequence"] == 0
+    assert emitted["trust_status"] == "signed_not_trust_anchored"
+
+    chain_path = _chain_path(root)
+    lines = [ln for ln in chain_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 1
+    receipt = json.loads(lines[0])
+    assert receipt["receipt_id"] != "HOSTILE-FORGED"
+    assert receipt["decision"]["verifier"] == "Reid"
+
+    # Independently verify the REAL emitted receipt via the standalone tool
+    # (from THIS repo's own real tools/receipt-verify/, never the fixture's).
+    pubkey = _export_pubkey(verifier_gpg_keys["Reid"], tmp_path, "reid.asc")
+    result = _independent_verify_chain(root, [("Reid", verifier_gpg_keys["Reid"].fpr, str(pubkey))])
+    assert result["chain_intact"] is True, result
+
+
+def test_extract_trusted_tooling_no_baseline_ref_fails_closed(engine, gate_repo_with_receipt_emit):
+    """Direct unit test of `_gate_extract_trusted_receipt_tooling`'s own
+    fail-closed branch. NOTE on reachability: today, `cov_cleared`/
+    `hf_cleared` can only ever be non-empty when a real baseline ref exists
+    in the first place — `_gate_verify_verdict_signature`/`_gate_verify_
+    signoff_signature` both require BASELINE key BYTES
+    (`trusted_verifier_key_blobs`/`trusted_signoff_key_blobs`), which
+    `_gate_load_baseline_{verifier,signoff}_key_blobs` return empty for
+    whenever `baseline_ref` is falsy — so NEITHER a covering verdict NOR a
+    hard-floor sign-off can ever actually clear anything with no baseline
+    at all, and `_gate_emit_receipts_on_clear` is never invoked with a
+    falsy `baseline_policy_ref` through the real end-to-end gate flow as it
+    exists today. This function's own `if not baseline_ref` branch is
+    therefore defense-in-depth for that invariant, not dead code exercised
+    only here — proven directly, in isolation, exactly like the CI
+    workflow's own "no trusted engine at BASE -> fail closed" bootstrap
+    branch is a deliberate safeguard even where today's callers are not
+    expected to reach it in practice."""
+    root = gate_repo_with_receipt_emit
+    tool_root, reason = engine._gate_extract_trusted_receipt_tooling(root, None)
+    assert tool_root is None
+    assert reason is not None and "no immutable BASE ref" in reason
+
+    tool_root2, reason2 = engine._gate_extract_trusted_receipt_tooling(root, "")
+    assert tool_root2 is None
+    assert reason2 is not None
+
+
+# ---------------------------------------------------------------------------
+# 8) ★ BUG FIX (PR #137 review) — payload.get(...) on non-dict JSON must
+#    never raise AttributeError. Direct unit test of _gate_emit_one_receipt
+#    against a stub "trusted" tool that returns valid-but-non-dict JSON —
+#    no git/gpg harness needed, this exercises the guard in isolation.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stub_stdout", [
+    "[1, 2, 3]",   # a JSON array
+    "null",        # JSON null
+    '"just a string"',
+    "42",
+])
+def test_malformed_emit_json_output_is_a_gap_never_a_crash(engine, tmp_path, stub_stdout):
+    trusted_tool_root = tmp_path / f"trusted-{hash(stub_stdout) & 0xffff}"
+    emit_dir = trusted_tool_root / "tools" / "receipt-emit"
+    emit_dir.mkdir(parents=True)
+    (emit_dir / "receipt_emit.py").write_text(
+        "import sys\n"
+        f"print({stub_stdout!r})\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    payload, ok = engine._gate_emit_one_receipt(
+        trusted_tool_root, rule_id="some-rule", decision_kind="verdict",
+        decision={"verifier": "Reid"}, fingerprint="DEADBEEF" * 5,
+        policy_path=tmp_path / "policy.yaml", head_shas=["abc123"],
+        chain_path=tmp_path / "chain.jsonl", trust_entries=[],
+    )
+    assert payload is None
+    assert ok is False

@@ -259,14 +259,49 @@ GATE_SIGNOFF_DIR = ".tess/gate/signoffs"
 # something this wiring silently assumes.
 GATE_RECEIPT_CHAIN_REL = ".tess/state/receipts/chain.jsonl"
 
-# Repo-relative path to the EMIT CLI this gate invokes as a subprocess (never
-# imported in-process — see `_gate_emit_receipts_on_clear`'s own docstring
-# for why). Resolved against the OPERATING root (the project being gated),
-# the same way `core/contracts/**`/`core/policy/**` already are — an adopter
-# project's own `tools/receipt-emit/` copy (shipped by `create-tess`'s
-# whole-tree-minus-exclusions scaffold, same as `core/contracts/`), never
-# this tessctl script's own install location.
+# ★ SECURITY (Reid CRITICAL, PR #137 review, honesty-capstone-audit-2026-07-08
+# §3-c — "same-push TOOLING tamper", the same class already fixed once for
+# the engine itself): `tools/receipt-emit/receipt_emit.py` and, transitively,
+# `tools/receipt-verify/*.py` are EXECUTED BY THE GATE as a subprocess. They
+# are NOT extracted from the trusted BASE ref by
+# `.github/workflows/tess-gate.yml`'s own "Extract trusted gate engine" step
+# (which pins ONLY `.tess/bin/tessctl` itself) and are not (yet) covered by
+# `tess-os-security-tier-doctrine`'s policy globs or `tess.lock` tracking —
+# so resolving these files against `root` (the PUSHED/candidate tree; on CI,
+# `TESS_ROOT=github.workspace`; on `pre-push`, the developer's own local
+# working tree) would let a single push smuggle a MODIFIED `receipt_emit.py`
+# alongside an unrelated, otherwise-legitimately-cleared rule — the
+# "trusted" (base-ref-pinned) engine would then auto-execute that modified
+# code, on CI, or worse on a maintainer's own machine with their LIVE GPG
+# signing keyring during `pre-push`. `RECEIPT_EMIT_CLI_REL`/
+# `RECEIPT_VERIFY_TOOLS_REL` below are therefore never joined directly onto
+# `root` — see `_gate_extract_trusted_receipt_tooling`, which mirrors the CI
+# workflow's own "extract from BASE ref, fail closed if unavailable, never
+# fall back to the pushed tree" discipline for exactly these ten files, the
+# ONLY point in this module that resolves them onto an actual filesystem
+# path an interpreter is asked to load.
 RECEIPT_EMIT_CLI_REL = "tools/receipt-emit/receipt_emit.py"
+
+# The full trust closure `receipt_emit.py` needs to run (imports, verified by
+# reading each file's own `import`/`from` statements) — `tools/receipt-emit/`
+# (its own package) plus `tools/receipt-verify/` (reused, never duplicated,
+# per that tool's own README) it imports directly AND separately re-invokes
+# as its own self-verify subprocess. Every one of these ten files, and ONLY
+# these ten, is extracted from the trusted BASE ref — nothing else under
+# `tools/**` (a README, `__pycache__`, a future unrelated file) is needed at
+# runtime, so nothing else is trusted or copied.
+RECEIPT_TOOL_TRUST_CLOSURE = (
+    ("tools/receipt-emit", "receipt_emit.py"),
+    ("tools/receipt-emit", "assemble.py"),
+    ("tools/receipt-emit", "chain_atomic.py"),
+    ("tools/receipt-emit", "errors.py"),
+    ("tools/receipt-emit", "gpg_sign.py"),
+    ("tools/receipt-emit", "policy_lookup.py"),
+    ("tools/receipt-verify", "receipt_verify.py"),
+    ("tools/receipt-verify", "canonical.py"),
+    ("tools/receipt-verify", "checks.py"),
+    ("tools/receipt-verify", "gpg_verify.py"),
+)
 
 # PR-2 (Agent Receipt EMIT wiring) — printed once whenever `tessctl gate
 # pre-push|ci` auto-emits at least one receipt, deliberately in the SAME
@@ -10696,9 +10731,76 @@ def _gate_receipt_fingerprint_for_identity(
     return fingerprint or None
 
 
+def _gate_extract_trusted_receipt_tooling(root: Path, baseline_ref: str | None) -> tuple[Path | None, str | None]:
+    """★ SECURITY (Reid CRITICAL, PR #137 review) — extract
+    `tools/receipt-emit/` + `tools/receipt-verify/` VERBATIM from the
+    immutable BASE ref into a FRESH, process-local temp directory mirroring
+    their real relative layout (`<tmp>/tools/receipt-emit/` and
+    `<tmp>/tools/receipt-verify/` as siblings, matching `receipt_emit.py`'s
+    own `_RECEIPT_VERIFY_DIR = _THIS_DIR.parent / "receipt-verify"`
+    bootstrap) — NEVER read from `root` (the pushed/candidate tree). Every
+    byte comes from `_gate_git_regular_blob_at_ref` (reused, not
+    reimplemented — the SAME primitive `_gate_load_baseline_verifier_key_
+    blobs`/`_gate_load_baseline_signoff_key_blobs` already use to pin
+    registered public keys to an immutable ref, rejecting a missing,
+    ambiguous, symlinked, or non-blob entry the exact same way).
+
+    This mirrors `.github/workflows/tess-gate.yml`'s own "Extract trusted
+    gate engine" step (honesty-capstone-audit-2026-07-08 §3-c): that step
+    already refuses to let `.tess/bin/tessctl` evaluate a same-push edit to
+    its OWN decision logic by pinning the engine to BASE. But the CI
+    workflow pins ONLY the engine — `tools/receipt-emit/receipt_emit.py`
+    (and everything it imports/re-invokes) is a SEPARATE, EXECUTED
+    subprocess dependency that was NOT covered by that fix, and is not
+    (yet) in `tess-os-security-tier-doctrine`'s policy globs or
+    `tess.lock` tracking either. A same-push-modified `receipt_emit.py`
+    would otherwise be auto-executed by the already-trusted engine — on a
+    CI runner, or worse on a maintainer's own machine, with their LIVE GPG
+    signing keyring, during `pre-push` (which has no CI-workflow wrapper at
+    all — this function is the ONLY compensating control for that path).
+    This function closes that gap at the ENGINE level, so it protects both
+    callers identically, regardless of whether a CI workflow wraps it.
+
+    Returns `(tool_root, None)` on success — the caller MUST resolve the
+    entry point as `tool_root / "tools" / "receipt-emit" / "receipt_emit.py"`,
+    NEVER `root / RECEIPT_EMIT_CLI_REL`. The caller owns `tool_root`'s
+    lifetime (a plain `tempfile.mkdtemp` result, not a context manager —
+    symmetric with the CI workflow's own bare `mktemp -d`) and MUST remove
+    it when done.
+
+    Returns `(None, reason)` — FAILS CLOSED, extracting nothing — if
+    `baseline_ref` is falsy (no push/no usable baseline: matches the CI
+    workflow's own bootstrap posture — a missing baseline means there is
+    nothing trusted to extract, so this refuses rather than ever falling
+    back to the pushed tree's own copy) or if ANY of the ten files in
+    `RECEIPT_TOOL_TRUST_CLOSURE` is missing, ambiguous, or not a regular
+    blob at that ref. The caller folds this into the SAME non-blocking,
+    VISIBLE `RECEIPT_EMIT_FAILED` gap every other emit failure already
+    produces — never a crash, never a silent fallback to executing
+    untrusted code."""
+    if not baseline_ref:
+        return None, "no immutable BASE ref available — refusing to trust the pushed tree's own receipt-emit/receipt-verify tooling"
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="tessctl-gate-trusted-receipt-tools-"))
+    try:
+        for subdir, filename in RECEIPT_TOOL_TRUST_CLOSURE:
+            rel_path = f"{subdir}/{filename}"
+            content, reason = _gate_git_regular_blob_at_ref(root, baseline_ref, rel_path)
+            if reason:
+                shutil.rmtree(str(tmp_root), ignore_errors=True)
+                return None, f"could not extract trusted {rel_path} at BASE ref {baseline_ref!r}: {reason}"
+            dest_dir = tmp_root / subdir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / filename).write_bytes(content)
+    except OSError as e:
+        shutil.rmtree(str(tmp_root), ignore_errors=True)
+        return None, f"could not materialize trusted receipt tooling in a temp dir: {e}"
+    return tmp_root, None
+
+
 def _gate_emit_one_receipt(
-    root: Path, *, rule_id: str, decision_kind: str, decision: dict,
-    fingerprint: str, policy_path: Path, head_shas: list,
+    trusted_tool_root: Path, *, rule_id: str, decision_kind: str, decision: dict,
+    fingerprint: str, policy_path: Path, head_shas: list, chain_path: Path,
     trust_entries: list[tuple[str, str, bytes]],
 ) -> tuple[dict | None, bool]:
     """Invoke `tools/receipt-emit/receipt_emit.py emit` for exactly one
@@ -10745,7 +10847,13 @@ def _gate_emit_one_receipt(
     requires — the SAME PUBLIC-key-to-tempfile pattern
     `tools/receipt-emit/receipt_emit.py`'s own `_self_verify` already uses
     for its own signer's exported public key."""
-    emit_cli = root / RECEIPT_EMIT_CLI_REL
+    # ★ SECURITY (Reid CRITICAL, PR #137 review) — `emit_cli` is resolved
+    # ONLY against `trusted_tool_root` (the caller's BASE-ref extraction,
+    # `_gate_extract_trusted_receipt_tooling`), NEVER `root`/the pushed
+    # tree. This is the one line in this module that actually decides which
+    # `receipt_emit.py` bytes get executed — see that function's own
+    # docstring for the full "same-push tooling tamper" threat this closes.
+    emit_cli = trusted_tool_root / "tools" / "receipt-emit" / "receipt_emit.py"
     if not emit_cli.exists():
         return None, False
 
@@ -10761,7 +10869,6 @@ def _gate_emit_one_receipt(
             tmp_dir_path = Path(tmp_dir)
             decision_path = tmp_dir_path / "decision.json"
             decision_path.write_text(json.dumps(decision, sort_keys=True), encoding="utf-8")
-            chain_path = root / GATE_RECEIPT_CHAIN_REL
             args = [
                 sys.executable, str(emit_cli), "emit",
                 "--decision", str(decision_path),
@@ -10785,8 +10892,15 @@ def _gate_emit_one_receipt(
                 public_key_path = tmp_dir_path / f"trust-{i}-public.asc"
                 public_key_path.write_bytes(public_key_bytes)
                 args += ["--trust", name, fpr, str(public_key_path)]
+            # `cwd` is the TRUSTED extraction, never `root` — defense in
+            # depth against any current or future relative-path resolution
+            # inside the subprocess (every argument above is already an
+            # absolute path, so this is belt-and-suspenders, not load
+            # bearing today; it costs nothing and never leaves the
+            # subprocess's ambient working directory sitting inside the
+            # untrusted pushed tree).
             proc = subprocess.run(
-                args, capture_output=True, text=True, cwd=str(root),
+                args, capture_output=True, text=True, cwd=str(trusted_tool_root),
                 timeout=RECEIPT_EMIT_TIMEOUT_S,
             )
     except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
@@ -10798,7 +10912,16 @@ def _gate_emit_one_receipt(
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None, False
-    if not payload.get("emitted"):
+    # ★ BUG FIX (PR #137 review) — `payload` is whatever `json.loads`
+    # returned, which for a malformed/adversarial emit tool is NOT
+    # guaranteed to be a dict (could be a list, string, number, null...).
+    # `payload.get(...)` would raise AttributeError on any of those,
+    # contradicting this function's own "NEVER raises" contract and (worse)
+    # this whole subsystem's non-silent guarantee — an uncaught exception
+    # here would propagate out of `_gate_emit_receipts_on_clear` and crash
+    # the ENTIRE gate invocation instead of reporting one structured,
+    # visible receipt gap. Guard the shape before ever calling `.get` on it.
+    if not isinstance(payload, dict) or not payload.get("emitted"):
         return None, False
     return payload, True
 
@@ -10840,7 +10963,7 @@ def _gate_receipt_trust_entries(
 def _gate_emit_receipts_on_clear(
     root: Path, cov_cleared: list, hf_cleared: list,
     effective_policy_instance: dict | None, effective_policy_instance_for_signoffs: dict | None,
-    policy_path: Path | None, head_shas: list,
+    policy_path: Path | None, head_shas: list, baseline_policy_ref: str | None,
     trusted_verifier_key_blobs: dict[str, bytes] | None = None,
     trusted_signoff_key_blobs: dict[str, bytes] | None = None,
 ) -> tuple[list, list]:
@@ -10895,7 +11018,19 @@ def _gate_emit_receipts_on_clear(
     push cleared but is missing a receipt' is always VISIBLE, in the local
     operator's own terminal, CI's machine-readable JSON, and the durable
     local trace log, never a silent no-op that lets the gate read as if a
-    receipt exists when it does not."""
+    receipt exists when it does not.
+
+    ★ SECURITY (Reid CRITICAL, PR #137 review) — `receipt_emit.py` (and
+    everything it imports/re-invokes) is EXECUTED, not just read. Before
+    emitting anything, this function extracts the WHOLE `tools/receipt-emit/`
+    + `tools/receipt-verify/` trust closure from `baseline_policy_ref` via
+    `_gate_extract_trusted_receipt_tooling` — see that function's own
+    docstring — and passes the resulting `trusted_tool_root` (never `root`)
+    to every `_gate_emit_one_receipt` call below. If extraction fails (no
+    baseline ref, or any of the ten needed files is missing/tampered at
+    BASE), EVERY cleared entry becomes a `RECEIPT_EMIT_FAILED` gap and
+    NOTHING is ever executed from the pushed tree — this function never
+    falls back to `root` under any circumstance."""
     receipts_emitted: list = []
     receipt_gaps: list = []
 
@@ -10913,58 +11048,74 @@ def _gate_emit_receipts_on_clear(
             })
         return receipts_emitted, receipt_gaps
 
-    trust_entries = _gate_receipt_trust_entries(
-        effective_policy_instance, trusted_verifier_key_blobs,
-        effective_policy_instance_for_signoffs, trusted_signoff_key_blobs,
-    )
+    if not cov_cleared and not hf_cleared:
+        return receipts_emitted, receipt_gaps
 
-    for entry in cov_cleared:
-        rule_id, decision = entry["rule_id"], entry["decision"]
-        identity = decision.get("verifier")
-        fingerprint = (
-            _gate_receipt_fingerprint_for_identity(effective_policy_instance, "verifier_keys", identity)
-            if isinstance(identity, str) else None
-        )
-        if not fingerprint:
-            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
-            continue
-        payload, ok = _gate_emit_one_receipt(
-            root, rule_id=rule_id, decision_kind="verdict", decision=decision,
-            fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
-            trust_entries=trust_entries,
-        )
-        if ok:
-            receipts_emitted.append({
-                "rule_id": rule_id, "decision_kind": "verdict",
-                "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
-                "trust_status": payload.get("trust_status"),
+    trusted_tool_root, extract_reason = _gate_extract_trusted_receipt_tooling(root, baseline_policy_ref)
+    if trusted_tool_root is None:
+        for entry in cov_cleared + hf_cleared:
+            receipt_gaps.append({
+                "rule_id": entry["rule_id"], "decision_kind": entry["decision_kind"],
+                "reason_code": "RECEIPT_EMIT_FAILED",
             })
-        else:
-            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
+        return receipts_emitted, receipt_gaps
 
-    for entry in hf_cleared:
-        rule_id, decision = entry["rule_id"], entry["decision"]
-        identity = decision.get("authorized_by")
-        fingerprint = (
-            _gate_receipt_fingerprint_for_identity(effective_policy_instance_for_signoffs, "signoff_keys", identity)
-            if isinstance(identity, str) else None
+    try:
+        trust_entries = _gate_receipt_trust_entries(
+            effective_policy_instance, trusted_verifier_key_blobs,
+            effective_policy_instance_for_signoffs, trusted_signoff_key_blobs,
         )
-        if not fingerprint:
-            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
-            continue
-        payload, ok = _gate_emit_one_receipt(
-            root, rule_id=rule_id, decision_kind="signoff", decision=decision,
-            fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
-            trust_entries=trust_entries,
-        )
-        if ok:
-            receipts_emitted.append({
-                "rule_id": rule_id, "decision_kind": "signoff",
-                "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
-                "trust_status": payload.get("trust_status"),
-            })
-        else:
-            receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
+        chain_path = root / GATE_RECEIPT_CHAIN_REL
+
+        for entry in cov_cleared:
+            rule_id, decision = entry["rule_id"], entry["decision"]
+            identity = decision.get("verifier")
+            fingerprint = (
+                _gate_receipt_fingerprint_for_identity(effective_policy_instance, "verifier_keys", identity)
+                if isinstance(identity, str) else None
+            )
+            if not fingerprint:
+                receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
+                continue
+            payload, ok = _gate_emit_one_receipt(
+                trusted_tool_root, rule_id=rule_id, decision_kind="verdict", decision=decision,
+                fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
+                chain_path=chain_path, trust_entries=trust_entries,
+            )
+            if ok:
+                receipts_emitted.append({
+                    "rule_id": rule_id, "decision_kind": "verdict",
+                    "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
+                    "trust_status": payload.get("trust_status"),
+                })
+            else:
+                receipt_gaps.append({"rule_id": rule_id, "decision_kind": "verdict", "reason_code": "RECEIPT_EMIT_FAILED"})
+
+        for entry in hf_cleared:
+            rule_id, decision = entry["rule_id"], entry["decision"]
+            identity = decision.get("authorized_by")
+            fingerprint = (
+                _gate_receipt_fingerprint_for_identity(effective_policy_instance_for_signoffs, "signoff_keys", identity)
+                if isinstance(identity, str) else None
+            )
+            if not fingerprint:
+                receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
+                continue
+            payload, ok = _gate_emit_one_receipt(
+                trusted_tool_root, rule_id=rule_id, decision_kind="signoff", decision=decision,
+                fingerprint=fingerprint, policy_path=policy_path, head_shas=head_shas,
+                chain_path=chain_path, trust_entries=trust_entries,
+            )
+            if ok:
+                receipts_emitted.append({
+                    "rule_id": rule_id, "decision_kind": "signoff",
+                    "receipt_id": payload.get("receipt_id"), "sequence": payload.get("sequence"),
+                    "trust_status": payload.get("trust_status"),
+                })
+            else:
+                receipt_gaps.append({"rule_id": rule_id, "decision_kind": "signoff", "reason_code": "RECEIPT_EMIT_FAILED"})
+    finally:
+        shutil.rmtree(str(trusted_tool_root), ignore_errors=True)
 
     return receipts_emitted, receipt_gaps
 
@@ -11090,7 +11241,7 @@ def _gate_run_ship_check(
         receipts_emitted, receipt_gaps = _gate_emit_receipts_on_clear(
             root, cov_cleared, hf_cleared,
             effective_policy_instance, effective_policy_instance_for_signoffs,
-            policy_path, head_shas or [],
+            policy_path, head_shas or [], baseline_policy_ref,
             trusted_verifier_key_blobs, trusted_signoff_key_blobs,
         )
         result["receipts_emitted"] = receipts_emitted
