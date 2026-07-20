@@ -5595,6 +5595,18 @@ def cmd_verify(args, root: Path) -> None:
         if file_status not in ("user-created", "staged"):
             live_path = root / live_rel
             if not live_path.exists():
+                # #143 nit (Reid, LOW): this re-hashes the core file — Check A
+                # above already did sha256_file(core_path) for this same
+                # core_key when base_sha was set. Intentional, not an
+                # oversight: doctor_check_file is the single shared
+                # classifier cmd_doctor and cmd_lock --check also call
+                # unconditionally, and re-deriving its result piecemeal here
+                # (skipping the re-hash) would re-fork the exact
+                # three-commands-drift-apart failure mode #124/#138/#139 all
+                # exist to close. The extra hash is cheap (one core file,
+                # only on the already-rare missing-live-file path) — traded
+                # deliberately for "verify can never again diverge from
+                # doctor/lock on what counts as a deletion."
                 _missing_r = doctor_check_file(core_key, attrs, root)
                 if _doctor_result_is_error(_missing_r):
                     badge = "[SECURITY]" if sec else ""
@@ -5604,6 +5616,19 @@ def cmd_verify(args, root: Path) -> None:
                         f"file deleted; restore from git or re-run `tessctl render`"
                     )
                 else:
+                    # #143 nit (Cyra, LOW): believed unreachable today —
+                    # doctor_check_file always returns an issue containing
+                    # "missing" (via _doctor_result_is_error's substring
+                    # match) for every non-(user-created/staged) entry
+                    # reached from this call site, whether the core file or
+                    # the live file is the one that's actually gone. Kept
+                    # (not removed) as a fail-safe: if a future change to
+                    # doctor_check_file's classification ever makes this
+                    # branch reachable, this falls back to the pre-#139
+                    # behavior (silently OK) rather than crashing — a
+                    # regression a test would catch, not a runtime crash in
+                    # the field. Not deleted precisely because "unreachable"
+                    # is a claim about today's code, not a guarantee.
                     ok_count += 1
                 continue
 
@@ -18996,7 +19021,16 @@ def _memory_adopt(root: Path, *, from_dir: Path, to_dir: Path, harness: str,
     try:
         from_dir.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(str(to_dir_resolved), str(tmp_link))
-        if tmp_link.resolve() != to_dir_resolved:
+        # Issue #149 consistency migration (the 6th raw `resolve() !=` site,
+        # missed by #147's audit sweep, found independently by both PR #148
+        # reviewers): INODE IDENTITY (`_paths_are_same_location`), not raw
+        # `!=`. Both operands already derive from the same `to_dir_resolved`
+        # string, so this is non-exploitable / already fail-closed either way
+        # (a missed match here only ever REFUSES — raises before from_dir is
+        # touched — never mutates); this migration is for completeness only,
+        # bringing the memory-adopt region to zero raw path-string
+        # comparisons.
+        if not _paths_are_same_location(tmp_link.resolve(), to_dir_resolved):
             raise OSError(f"temporary symlink {tmp_link} did not resolve to {to_dir_resolved}")
     except OSError as e:
         try:

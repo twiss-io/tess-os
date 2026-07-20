@@ -23,6 +23,23 @@ reviewers' recommendation).
      matching `verify`'s own wording for the identical case, instead of the
      generic `(core-internal — no live path)` annotation shared with the
      CORE-TAMPER (hash-mismatch) sub-case.
+
+Issue #143 — follow-up from #142's review (Cyra APPROVE-MERGE, Reid
+APPROVE-WITH-NITS on this file's own #139 fix):
+
+  4. [MEDIUM, Reid] No test pinned a `held` / `locally-modified` /
+     `user-published` entry with a DELETED live file — the coverage above
+     only exercised the default `core-managed` status. `cmd_verify` has had
+     3 sequential fail-open PRs on this exact class (#124/#138/#139); added
+     a parametrized regression test covering Check B2's actual exclusion-set
+     boundary (`("user-created", "staged")`, not just "core-managed") so
+     `verify` FAILing on a deleted live file for those three statuses too —
+     matching `doctor`/`lock --check` — is genuinely pinned, not just true
+     by accident of the exclusion-set code shape.
+
+The [LOW] Check B2 code nits from #143 (redundant re-hash comment, dead-code
+`else` branch comment) are documented inline at their call site in
+`cmd_verify` (`.tess/bin/tessctl`), not here.
 """
 
 from __future__ import annotations
@@ -115,6 +132,78 @@ def test_verify_still_fails_on_deleted_security_tier_live_file(project, run_cli)
     assert "LIVE MISSING" in v.stdout
     assert "[SECURITY]" in v.stdout
     assert "conductor/guardrails.md" in v.stdout
+
+
+# ---------------------------------------------------------------------------
+# Issue #143 (MEDIUM, Reid, follow-up from #142's review): Check B2's
+# exclusion set is `file_status not in ("user-created", "staged")` — every
+# OTHER status, including held / locally-modified / user-published, routes
+# through the shared classifier and should FAIL on a deleted live file. No
+# test pinned this boundary directly; the coverage above only exercises the
+# default "core-managed" status. `cmd_verify` has had 3 sequential fail-open
+# PRs on this exact live-file-deletion class (#124, #138, #139) — this closes
+# the gap by asserting all three of the non-default, non-excluded statuses
+# fail the same way `doctor` and `lock --check` already do.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("status", ["held", "locally-modified", "user-published"])
+def test_verify_fails_on_deleted_live_file_for_exclusion_set_boundary_statuses(
+    project, run_cli, status
+):
+    """held / locally-modified / user-published are NOT in Check B2's
+    ("user-created", "staged") exclusion set — a deleted live file for any
+    of them must FAIL verify, matching doctor and lock --check, exactly like
+    the default core-managed case already covered above."""
+    project.add(f"conductor/{status.replace('-', '_')}.md", "body v1\n", status=status)
+    project.write()
+
+    live_path = project.root / "conductor" / f"{status.replace('-', '_')}.md"
+
+    # Baseline — clean tree, all three surfaces green regardless of status.
+    assert run_cli(project.root, "doctor").returncode == 0, f"status={status}"
+    assert run_cli(project.root, "verify").returncode == 0, f"status={status}"
+    assert run_cli(project.root, "lock", "--check").returncode == 0, f"status={status}"
+
+    live_path.unlink()
+
+    d = run_cli(project.root, "doctor")
+    assert d.returncode == 1, (
+        f"doctor did not catch the deletion for status={status}:\n{d.stdout}{d.stderr}"
+    )
+
+    lk = run_cli(project.root, "lock", "--check")
+    assert lk.returncode == 1, (
+        f"lock --check did not catch the deletion for status={status}:\n{lk.stdout}{lk.stderr}"
+    )
+
+    v = run_cli(project.root, "verify")
+    assert v.returncode == 1, (
+        f"verify did NOT fail on a deleted live file for the exclusion-set "
+        f"boundary status={status} — Check B2's exclusion set is "
+        f"(\"user-created\", \"staged\") only, so this status must route "
+        f"through the shared classifier and fail, matching doctor + lock "
+        f"--check on the identical tree:\n{v.stdout}{v.stderr}"
+    )
+    assert "LIVE MISSING" in v.stdout, f"status={status}"
+
+
+def test_verify_does_not_fail_on_deleted_live_file_for_user_created_status(
+    project, run_cli
+):
+    """Non-regression boundary check: `user-created` IS in the exclusion set
+    (a user-created file is never materialized by tessctl in the first
+    place, so its absence is expected, not a deletion) — confirm it is
+    excluded even after the fix, distinguishing it from the three statuses
+    above that must fail."""
+    project.add(
+        "conductor/user_boundary.md", "user body\n",
+        status="user-created", render_live=False,
+    )
+    project.write()
+
+    r = run_cli(project.root, "verify")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "LIVE MISSING" not in r.stdout
 
 
 # ---------------------------------------------------------------------------
