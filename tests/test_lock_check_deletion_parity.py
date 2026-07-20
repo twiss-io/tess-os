@@ -73,9 +73,12 @@ def test_lock_check_fails_on_deleted_core_internal_file(project, run_cli):
     assert "FAIL" in lk.stdout
     assert "MISSING" in lk.stdout
     assert ".tess/core/personas/fixture.md" in lk.stdout
-    # #3: null-live-path annotation, matching `verify`'s own print for the
-    # same class of entry.
-    assert "(core-internal — no live path)" in lk.stdout
+    # #139 (was #3 pre-#139): the MISSING (deletion) sub-case gets its own
+    # annotation, matching `verify`'s own "(core-internal — file missing)"
+    # print for the same class of entry — the generic "no live path"
+    # annotation (still used for the CORE-TAMPER/hash-mismatch sub-case
+    # below) never actually matched verify's wording for a deletion.
+    assert "(core-internal — file missing)" in lk.stdout
 
 
 def test_lock_check_deletion_regression_is_the_only_new_failure_mode(project, run_cli):

@@ -5473,7 +5473,12 @@ def cmd_verify(args, root: Path) -> None:
     base_sha = sha256 of the RAW (un-substituted) .tess/core/<file> bytes
     at the pinned version (path-independent — spec defect #4).
 
-    Exits non-zero on any core tamper, security drift, or quarantined file.
+    Exits non-zero on any core tamper, security drift, quarantined file, or
+    (#139) a tracked live file that has been deleted outright — Check B2
+    below routes that specific sub-case through the shared classifier
+    `_doctor_result_is_error` (called by `doctor` and `lock --check` for the
+    same case) so all three commands agree on deletion by construction; every
+    other failure class above is this function's own independent detection.
     """
     lock = load_lock(root)
     files = lock.get("files", {})
@@ -5483,6 +5488,7 @@ def cmd_verify(args, root: Path) -> None:
     normal_drifts = []
     _normal_drift_seen: set[str] = set()  # LOW-2: dedupe by live_rel across multiple core keys
     quarantined_files = []
+    missing_live_files = []  # #139: deleted managed live file (Check C/D both fail-opened on this)
     staged_warns = []   # Non-failing WARN lines for un-recruitable staged entries
     ok_count = 0
     # HIGH-1: union of every ENABLED target's render-generated paths.
@@ -5562,6 +5568,44 @@ def cmd_verify(args, root: Path) -> None:
             quarantined_files.append(live_rel)
             print(f"  QUARANTINED [SECURITY]  {live_rel}  — awaiting tessctl approve")
             continue
+
+        # Check B2 (#139, Cyra + Reid on #138): live file missing for a tracked
+        # entry whose core file is intact. Check C below only runs `if sec`
+        # (security-tier) and Check D only runs when BOTH core_path AND
+        # live_path exist — a deleted live file satisfies neither guard, so a
+        # non-security-tier core-managed entry with an intact core file but a
+        # deleted live file fell through both checks untouched, straight to
+        # `ok_count += 1` below: a fail-open. `doctor` and `lock --check`
+        # already FAIL on this exact tree via `doctor_check_file`'s own
+        # live-missing branch + the shared `_doctor_result_is_error`
+        # classifier (#124/#138) — `verify` alone used independent inline
+        # Check C/D gating and missed it, making `lock --check` (post-#138)
+        # stricter than `verify` on the identical case.
+        #
+        # Route through `doctor_check_file` + `_doctor_result_is_error` — the
+        # SAME two calls `cmd_doctor` and `cmd_lock --check` make for every
+        # entry — instead of adding a fifth independent inline rule, so the
+        # three commands can never again silently drift on what counts as
+        # "deleted". Mirrors `doctor_check_file`'s own exclusion (user-created
+        # / staged are legitimately absent from live and already `continue`d
+        # above or handled earlier; every other status — including
+        # held/locally-modified/user-published — is a real failure when the
+        # tracked live file is simply gone, matching what `doctor`/`lock
+        # --check` already enforce for those statuses today).
+        if file_status not in ("user-created", "staged"):
+            live_path = root / live_rel
+            if not live_path.exists():
+                _missing_r = doctor_check_file(core_key, attrs, root)
+                if _doctor_result_is_error(_missing_r):
+                    badge = "[SECURITY]" if sec else ""
+                    missing_live_files.append(live_rel)
+                    print(
+                        f"  LIVE MISSING {badge}  {live_rel}  — managed live "
+                        f"file deleted; restore from git or re-run `tessctl render`"
+                    )
+                else:
+                    ok_count += 1
+                continue
 
         # Check C: security-tier drift (live modified without quarantine)
         if sec and file_status == "core-managed":
@@ -5645,10 +5689,12 @@ def cmd_verify(args, root: Path) -> None:
         f"ok: {ok_count}  |  staged warns: {len(staged_warns)}  |  "
         f"core tampers: {len(core_tampers)}  |  "
         f"security drifts: {len(security_drifts)}  |  live drifts: {len(normal_drifts)}  |  "
+        f"missing live files: {len(missing_live_files)}  |  "
         f"quarantined: {len(quarantined_files)}  |  doctrine leaks: {len(doctrine_leaks)}"
     )
 
-    if core_tampers or security_drifts or normal_drifts or quarantined_files or doctrine_leaks:
+    if (core_tampers or security_drifts or normal_drifts or missing_live_files
+            or quarantined_files or doctrine_leaks):
         print("\nverify: FAIL")
         if core_tampers:
             print(f"  {len(core_tampers)} core tamper(s) — restore .tess/core from git or `tessctl rollback`")
@@ -5664,6 +5710,10 @@ def cmd_verify(args, root: Path) -> None:
             if _he:
                 print(f"  {len(_he)} live drift(s) — live content differs from core; "
                       f"run `tessctl capture <path>`")
+        if missing_live_files:
+            # #139: deleted managed live file(s) — distinct from live DRIFT
+            # (content differs) above; the file is simply gone.
+            print(f"  {len(missing_live_files)} missing live file(s) — restore from git or re-run `tessctl render`")
         if quarantined_files:
             print(f"  {len(quarantined_files)} quarantined file(s) — run `tessctl approve <path> --rationale ...`")
         if doctrine_leaks:
@@ -6156,8 +6206,13 @@ def cmd_lock(args, root: Path) -> None:
              deletion of a managed file, e.g. `.tess/core/MANIFEST.md`, used
              to fail-open here even though `doctor`/`verify` both fail on
              it), and worker-profile doctrine leaks — see the shared
-             classifier `_doctor_result_is_error` all three commands call
-             for the authoritative definition. This is NOT a byte-identical
+             classifier `_doctor_result_is_error` (issue #139: as of this
+             fix, `doctor`, `verify`'s own live-file-deletion check, and
+             `lock --check` below all call it) for the authoritative
+             definition of what counts as a blocking deletion; `verify`'s
+             OTHER failure classes above (core tamper, security/live drift,
+             quarantine) remain its own independent inline detection, not
+             routed through this classifier. This is NOT a byte-identical
              replay of `doctor`'s human-readable report (no --fix, --json,
              or pristine/staged breakdown) — a lighter, CI-friendly gate
              over the same failure surface.  Reference this in CI instead of
@@ -6236,10 +6291,13 @@ def cmd_lock(args, root: Path) -> None:
         r = doctor_check_file(core_key, attrs, root)
         status = r.get("lock_status", "core-managed")
         report_path = live_rel or core_key
-        # #124 (LOW #3): annotate a null-live_path report the same way
-        # `verify` does (cmd_verify's own "(core-internal — no live path)"
-        # print) — a bare core_key with no live path reads ambiguously in CI
-        # output otherwise (easy to mistake for a live tree path).
+        # #124 (LOW #3): annotate a null-live_path CORE-TAMPER report the same
+        # way `verify` does (cmd_verify's own "(core-internal — no live path)"
+        # print for a hash-mismatch on a core-internal entry) — a bare
+        # core_key with no live path reads ambiguously in CI output otherwise
+        # (easy to mistake for a live tree path). #139: the MISSING
+        # (deletion) sub-case below uses its OWN `missing_annotation` instead
+        # — see that comment for why the wording differs.
         annotation = "" if live_rel else " (core-internal — no live path)"
         if r.get("core_tamper"):
             issues.append(("CORE-TAMPER", report_path + annotation))
@@ -6264,7 +6322,20 @@ def cmd_lock(args, root: Path) -> None:
             # uses for its own --json exit code means this class of
             # blocking condition can never again silently drift out of sync
             # between the two commands.
-            issues.append(("MISSING", report_path + annotation))
+            #
+            # #139 (LOW, Cyra): the MISSING (deletion) sub-case gets its OWN
+            # annotation for a null-live_path (core-internal) entry, matching
+            # `verify`'s own "(core-internal — file missing)" print for the
+            # identical case (cmd_verify's R1 branch) — the generic
+            # `annotation` above ("no live path") is accurate but was shared
+            # across BOTH the CORE-TAMPER and MISSING sub-cases, and only
+            # actually matched verify's wording for the former; verify uses a
+            # distinct string for a deleted (vs. merely tampered) core-internal
+            # file.
+            missing_annotation = (
+                " (core-internal — file missing)" if not live_rel else ""
+            )
+            issues.append(("MISSING", report_path + missing_annotation))
 
     # Phase 2 (Codex + generic targets): see _check_untracked_render_generated's
     # docstring — an ENABLED target's compiled artifacts with no individual
