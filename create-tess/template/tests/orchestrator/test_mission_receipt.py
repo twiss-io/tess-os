@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 
 import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
+from _orchestrator_paths import REPO_ROOT
 
 from orchestrator import mission_receipt
 from spec_engine.content import DataModel, HowItLooks, HowItWorks, WhatItDoes, utc_now_iso
@@ -19,8 +21,18 @@ from spec_engine.gate_approval import sign_local_approval
 from spec_engine.gate_identity import load_or_create_local_identity, read_current_key
 from spec_engine.types import Plan, Provenance, SpecDocument
 
-# tools/receipt-verify/ is already on sys.path (orchestrator/__init__.py's
-# own bootstrap, extended by the wedge-loop epic).
+# tess-os #162 (Reid MEDIUM): `orchestrator/__init__.py` no longer puts
+# `tools/receipt-verify/` on `sys.path` as a side effect of `import
+# orchestrator` (that process-wide insertion of a flat, generically-named
+# module directory was itself the bug — see that module's own docstring).
+# `mission_receipt.py`'s own `canonical.py` need is now met by a private,
+# namespaced `importlib` load instead. This test module still wants the
+# real, standalone `checks.py` (to independently re-verify a built
+# receipt against the SAME standalone verifier a real third party would
+# run), so it does its own narrow, explicit, test-scoped sys.path
+# insertion here — mirroring `examples/receipt-demo/demo_receipts.py`'s
+# own established pattern for the exact same directory.
+sys.path.insert(0, str(REPO_ROOT / "tools" / "receipt-verify"))
 import checks  # noqa: E402
 
 

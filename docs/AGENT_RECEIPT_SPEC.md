@@ -112,9 +112,21 @@ decision, not something this spec claims today.
 
 Authoritative machine-checkable form:
 [`core/contracts/agent-receipt.schema.json`](../core/contracts/agent-receipt.schema.json).
-Validate an instance against it (inside a full Tess OS checkout) with
-`tessctl validate agent-receipt path/to/receipt.json`. What follows is the
-same shape in prose, with the doctrine each field is grounded in.
+This schema is deliberately NOT wired into `tessctl validate`'s
+CONTRACT-TYPE choices (`{brief, crew-plan, ledger-event, mission, policy,
+retry, return-manifest, task, verdict}` — no `agent-receipt`; see "What
+this is not" below, "Not new GPG signing infrastructure... no change to
+`.tess/bin/tessctl`"), so there is no `tessctl validate agent-receipt`
+command. Validate an instance against it with the real, standalone
+verifier instead:
+`tools/receipt-verify/receipt_verify.py verify path/to/receipt.json
+--trust NAME FINGERPRINT KEY_FILE [--trust ...]` (structural + signature
+verification together — see "Verification algorithm" below), or, for
+structural-only checking against this schema directly (the same minimal
+draft-07 subset `tessctl validate` itself uses), `tests/
+test_agent_receipt_schema.py` exercises `schema_validate()` against it
+programmatically. What follows is the same shape in prose, with the
+doctrine each field is grounded in.
 
 ```jsonc
 {

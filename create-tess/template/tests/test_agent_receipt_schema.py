@@ -318,3 +318,44 @@ def test_pipeline_approval_gate_requires_no_classification_or_category(engine, s
     assert "classification" not in receipt["policy_decision"]
     assert "category" not in receipt["policy_decision"]
     assert engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR) == []
+
+
+# ---------------------------------------------------------------------------
+# tess-os #162 (Cyra LOW-2): signature_armored / signature_hex must be
+# mutually exclusive — additionalProperties: false alone only blocks
+# UNDEFINED keys, it never stopped the off-algorithm field ALSO being
+# present alongside the required one.
+# ---------------------------------------------------------------------------
+
+
+def test_gpg_receipt_signature_cannot_also_carry_signature_hex(engine, schema):
+    receipt = _base_receipt("verdict", _base_verdict())
+    assert receipt["receipt_signature"]["algorithm"] == "gpg-detached-armor"
+    receipt["receipt_signature"]["signature_hex"] = "f" * 64  # stray off-algorithm field
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert errors, "a gpg-detached-armor receipt_signature must never also carry signature_hex"
+
+
+def test_hmac_receipt_signature_cannot_also_carry_signature_armored(engine, schema):
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    assert receipt["receipt_signature"]["algorithm"] == "local-hmac-sha256-v1"
+    receipt["receipt_signature"]["signature_armored"] = (
+        "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n"
+    )  # stray off-algorithm field
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert errors, "a local-hmac-sha256-v1 receipt_signature must never also carry signature_armored"
+
+
+def test_valid_verdict_receipt_with_only_signature_armored_still_passes(engine, schema):
+    """Sanity check the oneOf mutual-exclusion rule doesn't reject a
+    genuinely valid, single-field receipt_signature — only a receipt that
+    carries BOTH fields."""
+    receipt = _base_receipt("verdict", _base_verdict())
+    assert "signature_hex" not in receipt["receipt_signature"]
+    assert engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR) == []
+
+
+def test_valid_local_approval_receipt_with_only_signature_hex_still_passes(engine, schema):
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    assert "signature_armored" not in receipt["receipt_signature"]
+    assert engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR) == []

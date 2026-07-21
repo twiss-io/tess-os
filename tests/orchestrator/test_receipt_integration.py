@@ -20,16 +20,24 @@ receipt" loop becoming something you can actually run.
 from __future__ import annotations
 
 import json
+import sys
 
 import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
-from _orchestrator_paths import EXAMPLE_ROUTING_TABLE
+from _orchestrator_paths import EXAMPLE_ROUTING_TABLE, REPO_ROOT
 
 from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
 from orchestrator.pipeline import run_pipeline
 
-# tools/receipt-verify/ is already on sys.path by the time this runs --
-# `orchestrator/__init__.py`'s own sys.path bootstrap (extended by the
-# wedge-loop epic) ran as a side effect of importing `orchestrator` above.
+# tess-os #162 (Reid MEDIUM): `orchestrator/__init__.py` no longer puts
+# `tools/receipt-verify/` on `sys.path` as a side effect of `import
+# orchestrator` (see that module's own docstring — the process-wide
+# insertion of a flat, generically-named module directory was itself the
+# bug this issue fixed). This test wants the real, standalone `checks.py`
+# to independently re-verify a receipt, so it does its own narrow,
+# explicit, test-scoped sys.path insertion here instead — mirroring
+# `examples/receipt-demo/demo_receipts.py`'s own established pattern for
+# this exact directory.
+sys.path.insert(0, str(REPO_ROOT / "tools" / "receipt-verify"))
 import checks  # noqa: E402
 
 CONFIDENT_INPUT = (
