@@ -370,26 +370,51 @@ def generate_app(
             # it — staging must start from a real copy of `target_dir`'s
             # current content for that merge to see the same state it
             # would have seen writing into `target_dir` directly, not an
-            # empty directory. Deliberately the DEFAULT `symlinks=False`:
-            # a prior revision of this fix set `symlinks=True` here to
-            # "preserve" any symlink in pre-existing content, but every
-            # write below (`_write_file()` -> `Path.write_text()`) follows
-            # symlinks unconditionally and always writes to the SAME
-            # fixed, generated-content relative paths (e.g.
-            # `.spec-engine/codegen-manifest.json`) on every call — so a
-            # symlink planted at one of those paths inside `target_dir`
-            # let an ordinary regeneration write generated content
-            # straight THROUGH it to wherever it pointed, including
-            # outside `target_dir` entirely (PR #156 review round 2,
-            # Cyra, CRITICAL — verified working exploit against the
-            # `symlinks=True` revision). `symlinks=False` (the default)
-            # dereferences any such symlink into a plain file at
-            # `copytree` time, so the later write lands harmlessly inside
-            # the disposable `stage_root`, never escaping to whatever the
-            # symlink pointed at — the safe behavior this module had
-            # before that revision, and scope this fix should never have
-            # carried in the first place. See
-            # `test_regenerate_over_existing_symlink_write_through_is_blocked`.
+            # empty directory.
+            #
+            # Neither `copytree(symlinks=True)` nor the default
+            # `symlinks=False` is safe alone for a tree this module must
+            # treat as coming from a less-trusted actor than the process
+            # calling `generate_app()` (planting a path in `target_dir`
+            # before a regenerate call is this module's own documented,
+            # supported workflow — human-edited CLAUDE.md/AGENTS.md,
+            # git-committed app trees — not a privileged position):
+            #
+            #   - `symlinks=True` PRESERVES symlinks in the staged copy,
+            #     but every write below (`_write_file()` ->
+            #     `Path.write_text()`) follows symlinks unconditionally and
+            #     always targets the SAME fixed, generated-content
+            #     relative paths (e.g. `.spec-engine/codegen-manifest.json`)
+            #     on every call — a symlink planted at one of those paths
+            #     let an ordinary regeneration write generated content
+            #     straight THROUGH it to wherever it pointed, including
+            #     outside `target_dir` entirely (PR #156 review round 2,
+            #     Cyra, CRITICAL — verified working exploit). WRITE-THROUGH.
+            #   - `symlinks=False` (the default) DEREFERENCES any symlink
+            #     it finds — which closes the write-through vector above
+            #     (the later write lands harmlessly on the dereferenced
+            #     plain-file copy inside the disposable `stage_root`) but
+            #     opens its mirror image: a symlink at ANY relative path
+            #     in the tree (not just the small set of fixed generated
+            #     ones) has its TARGET's file content copied into the
+            #     staged — and, for a relative path nothing downstream
+            #     ever overwrites, the PUBLISHED — tree: a disclosure
+            #     primitive (PR #156 review round 3, Cyra AND Reid,
+            #     independently reproduced with separate PoCs, HIGH).
+            #     READ-DEREFERENCE.
+            #
+            # The only answer that closes both at once, with one rule
+            # instead of two different ones for different classes of
+            # path, is to never copy a symlink at all: refuse outright
+            # and fail loud, before `copytree()` (or anything else) ever
+            # touches it — mirroring this exact module's own established
+            # "never silently guess" pattern already applied to the
+            # rename-aside path in `_recover_interrupted_publish()`. See
+            # `_refuse_symlinks_in_existing_content()`,
+            # `test_regenerate_over_existing_symlink_write_through_is_blocked`,
+            # and
+            # `test_regenerate_over_existing_symlink_read_dereference_is_blocked`.
+            _refuse_symlinks_in_existing_content(final_root)
             shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
         result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
         # Publishing is inside this same try/except: an exception raised
@@ -411,6 +436,53 @@ def generate_app(
     # `target_dir`, exactly as if generation had written there directly.
     result.written = {rel: final_root / rel for rel in result.written}
     return result
+
+
+def _refuse_symlinks_in_existing_content(root: Path) -> None:
+    """Called by `generate_app()` immediately before `shutil.copytree(root,
+    stage_root, ...)` in the `has_existing_content=True` branch — refuses
+    (fails loud) rather than copy through ANY symlink found anywhere in
+    `root` (the pre-existing `target_dir` content being staged for the
+    CLAUDE.md/AGENTS.md-merge regenerate-over-existing path; see
+    `generate_app()`'s call site for the full write-vs-read tradeoff this
+    closes).
+
+    Pre-walks `root` with `os.walk(..., followlinks=False)` — so a
+    symlinked directory is reported in `dirnames` but never descended
+    into, which matters here: without it, anything nested BELOW a
+    symlinked directory would silently never be visited by this check at
+    all — and `os.path.islink()` (an `os.lstat()`-based check that does
+    NOT itself follow the link, consistent with
+    `_recover_interrupted_publish()`'s own aside-path check) on `root`
+    itself and on every directory and file entry `os.walk` yields. Raises
+    `SpecEngineError` naming the offending path on the FIRST symlink
+    found — this function never dereferences (read-leak risk) or
+    recreates (write-through risk) a symlink; it only ever looks at it
+    long enough to name it in the error and stop."""
+    if os.path.islink(root):
+        raise SpecEngineError(
+            f"generate_app: {root} (target_dir) is itself a symlink. Regenerating over "
+            "pre-existing content requires target_dir to be a real directory — refusing to "
+            "stage through a symlinked target_dir, which could silently read from, or write "
+            "through to, wherever it points."
+        )
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in sorted(dirnames) + sorted(filenames):
+            candidate = os.path.join(dirpath, name)
+            if os.path.islink(candidate):
+                raise SpecEngineError(
+                    f"generate_app: {candidate} is a symlink inside pre-existing target_dir "
+                    f"content ({root}). Regenerating over existing content stages that content "
+                    "into a staging directory first (so write_scaffold_stub()'s "
+                    "CLAUDE.md/AGENTS.md-merge logic sees the same state it would have seen "
+                    "writing into target_dir directly) — a symlink anywhere in that tree is "
+                    "either silently DEREFERENCED by the copy (pulling whatever it points at, "
+                    "including files outside target_dir, into the staged and potentially "
+                    "published tree — a disclosure risk) or, if a later generated-content write "
+                    "follows it, an overwrite-through primitive to wherever it points (PR #156 "
+                    "review round 2, CRITICAL). Neither is safe to guess at: remove or replace "
+                    f"{candidate} with a real file or directory before regenerating."
+                )
 
 
 def _write_generated_app_tree(

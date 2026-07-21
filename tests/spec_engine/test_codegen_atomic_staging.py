@@ -44,18 +44,22 @@ Three classes of proof:
     path unexpectedly already existing right before the swap must refuse
     to publish rather than clobber it.
 
-Plus three smaller regression tests for the staging mechanism itself:
+Plus four smaller regression tests for the staging mechanism itself:
 that `generate_app()` called against an already-populated `target_dir`
 (the "regenerate on top of a hand-seeded starter template" case
 `spec_engine.scaffold.write_scaffold_stub()`'s CLAUDE.md/AGENTS.md-merge
 logic exists for) still swaps in atomically and preserves/merges
-correctly; that a symlink planted at a generated path inside a
-pre-existing `target_dir` can never be used as a write-through primitive
-to a file outside `target_dir` during that same regenerate-over-existing
-path (PR #156 review round 2, Cyra, CRITICAL — the `symlinks=True`
-`copytree` regression this fix reverts); and that
-`CodegenResult.written`'s returned paths are real, live paths under
-`target_dir` after publish (not stale staging-directory paths).
+correctly; that a symlink planted ANYWHERE inside a pre-existing
+`target_dir` — at one of the fixed generated-content paths (round 2,
+Cyra, CRITICAL: write-through — a `symlinks=True` `copytree` regression)
+or at any other, non-generated path (round 3, Cyra AND Reid,
+independently reproduced, HIGH: read-dereference/disclosure — the
+mirror-image gap in `symlinks=False`, the round-2 revert's own default)
+— is refused outright by `_refuse_symlinks_in_existing_content()` before
+`copytree()` ever runs, closing both vectors with one rule instead of a
+different mitigation for each; and that `CodegenResult.written`'s
+returned paths are real, live paths under `target_dir` after publish
+(not stale staging-directory paths).
 """
 
 from __future__ import annotations
@@ -725,14 +729,21 @@ def test_regenerate_over_existing_symlink_write_through_is_blocked(tmp_path):
     OUTSIDE `target_dir`, let an ordinary (no kill involved) regeneration
     write generated content straight THROUGH it, overwriting whatever
     file the symlink pointed at — verified working exploit against the
-    `symlinks=True` revision. This is `target_dir`'s own documented,
-    supported workflow (human-edited/pre-seeded content merged on
-    regenerate), not a privileged position, so any actor who can place a
-    file in `target_dir` before a regenerate call could otherwise
-    overwrite any path the codegen process can write to. Reverting to
-    the default `symlinks=False` dereferences the symlink into a plain
-    file at `copytree` time, so the later write lands harmlessly inside
-    the disposable `stage_root`, never escaping to the external path."""
+    `symlinks=True` revision.
+
+    Round 3 (PR #156 review round 3, Cyra AND Reid, independently
+    reproduced, HIGH) found that reverting to the default
+    `symlinks=False` closes THIS vector but silently opens its mirror
+    image on read (see
+    `test_regenerate_over_existing_symlink_read_dereference_is_blocked`
+    below). The holistic fix refuses ANY symlink found in pre-existing
+    `target_dir` content outright, before `copytree()` ever runs — so
+    this exact symlink, planted at a generated path, is now refused just
+    like a symlink at any other path, rather than silently dereferenced
+    and defanged. This test now asserts the refusal: a stronger
+    guarantee than "successfully dereferenced, never overwritten",
+    achieved by the same single rule that also closes the round-3
+    read/exfil HIGH below."""
     spec = _rich_spec()
     target_dir = tmp_path / "app"
     target_dir.mkdir()
@@ -745,19 +756,89 @@ def test_regenerate_over_existing_symlink_write_through_is_blocked(tmp_path):
     os.symlink(str(outside_file), str(manifest_path))
     assert os.path.islink(manifest_path), "sanity: the planted path must actually be a symlink"
 
-    result = generate_app(spec, target_dir)
+    with pytest.raises(SpecEngineError, match="symlink"):
+        generate_app(spec, target_dir)
 
-    assert result.scaffold_plan.codegen_status == "generated", "sanity: the regeneration itself must still succeed"
     assert outside_file.read_text(encoding="utf-8") == "original sensitive content -- must not be overwritten", (
-        "a symlink planted at a generated path inside target_dir must never let an ordinary "
-        "regeneration write generated content through it to a file outside target_dir"
+        "a symlink planted at a generated path inside target_dir must never let a regeneration "
+        "write generated content through it to a file outside target_dir — whether via refusal "
+        "(this fix) or via dereference-defanging (the round-3 behavior this test previously "
+        "covered, before the holistic refuse-symlinks fix)"
     )
-    # The published tree gets a real, freshly-generated manifest file at
-    # this path (the symlink is dereferenced away at copytree time, same
-    # as any other pre-existing file at a generated path) — it must NOT
-    # still be a symlink pointing back out.
-    assert not manifest_path.is_symlink(), "the published manifest path must be a real file, not a symlink"
-    assert manifest_path.is_file()
+    assert manifest_path.is_symlink(), "a refused regeneration must leave target_dir exactly as found"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
+
+
+def test_regenerate_over_existing_symlink_read_dereference_is_blocked(tmp_path):
+    """PR #156 review round 3, Cyra AND Reid, independently reproduced
+    with separate PoCs, HIGH — the mirror image of the round-2 CRITICAL
+    above. Reverting `copytree` back to its default `symlinks=False`
+    (round 3, `0f0a589`) closed the write-through vector but opened the
+    opposite one: `symlinks=False` DEREFERENCES any symlink it finds
+    anywhere in the tree being copied, at ANY relative path — not just
+    the small, fixed set of generated-content paths `_write_file()`
+    targets. A symlink at a NON-generated path (e.g. a file under
+    `notes/`, which codegen never writes to or overwrites afterward)
+    survives the copy as a plain file holding its target's content,
+    verbatim, in the staged AND — since nothing downstream ever
+    regenerates that path — the published tree: a disclosure primitive,
+    not a corruption one. Same actor, same trust boundary as the
+    write-through CRITICAL (planting a path in target_dir before a
+    regenerate call is this module's own documented, supported
+    workflow, not a privileged position); broader blast radius (any
+    path, not just the fixed generated ones).
+
+    `_refuse_symlinks_in_existing_content()` closes this by refusing ANY
+    symlink anywhere in pre-existing target_dir content, at ANY relative
+    path, before `copytree()` ever runs — the secret's content is never
+    read off disk by this module at all, let alone copied into an
+    output tree."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+
+    outside_secret = tmp_path / "outside_secret.txt"
+    secret_content = "TOP SECRET CREDENTIAL: sk-abc123-do-not-leak"
+    outside_secret.write_text(secret_content, encoding="utf-8")
+
+    # A NON-generated relative path — codegen never writes to `notes/`,
+    # so (before this fix) a dereferenced copy here would never be
+    # overwritten by a later generated-content write, unlike the
+    # manifest-path case above.
+    planted_link = target_dir / "notes" / "my-private-link.txt"
+    planted_link.parent.mkdir(parents=True)
+    os.symlink(str(outside_secret), str(planted_link))
+    assert os.path.islink(planted_link), "sanity: the planted path must actually be a symlink"
+
+    with pytest.raises(SpecEngineError, match="symlink"):
+        generate_app(spec, target_dir)
+
+    # The external secret itself must be unmodified — this is a
+    # read/exfiltration vector, not a corruption one, but assert it
+    # explicitly per the review's ask.
+    assert outside_secret.read_text(encoding="utf-8") == secret_content, (
+        "the external secret file must not be modified by a refused regeneration"
+    )
+    # target_dir must be left exactly as found by a refused regeneration
+    # — the symlink is never dereferenced, never copied, never published.
+    assert planted_link.is_symlink(), "a refused regeneration must leave target_dir exactly as found"
+    assert not (target_dir / "src").exists(), (
+        "a refused regeneration must not have generated or published anything at all"
+    )
+    # Defense-in-depth: the secret's content must not have been absorbed
+    # into ANY file anywhere under tmp_path (staged, published, or a
+    # leftover orphaned staging directory) — not just the two specific
+    # locations checked above.
+    for candidate in tmp_path.rglob("*"):
+        if candidate == outside_secret or candidate.is_symlink() or not candidate.is_file():
+            continue
+        assert secret_content not in candidate.read_text(encoding="utf-8", errors="ignore"), (
+            f"the external secret's content must not appear anywhere on disk under tmp_path "
+            f"OUTSIDE the original secret file itself, found in {candidate}"
+        )
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
 
 
 def test_result_written_paths_are_real_live_paths_under_target_dir_after_publish(tmp_path):
