@@ -290,9 +290,46 @@ Genesis-only, single-file, disclosed scope: this hop does not persist or
 extend a durable, multi-run receipt CHAIN the way `tools/receipt-emit/`
 atomically appends to one for GPG receipts — every emitted receipt is
 `chain.sequence: 0`, `prev_receipt_hash: "GENESIS"`. Durable cross-run
-chaining, and the full idea->route->approve->boots->receipt-verify (plus
-rejection and mid-kill unhappy-path) end-to-end proof, are a disclosed,
-scoped follow-up — see `docs/AGENT_RECEIPT_SPEC.md`.
+chaining is STILL a disclosed, scoped follow-up — see
+`docs/AGENT_RECEIPT_SPEC.md`.
+
+★ **DoD B.9 — the full idea->route->approve->boots->receipt-verify e2e
+now EXISTS and passes.** `tests/orchestrator/test_e2e_wedge_loop.py`
+composes Hop 7 (this section), codegen's atomic staging (#156), and the
+generated app actually booting (`tests/spec_engine/
+test_codegen_app_boots.py`'s own boot fixture, now shared via
+`tests/_node_server.py`) into one scripted proof, driven entirely through
+the real `run_pipeline()` — never a hand-assembled shortcut:
+
+- **Happy path:** a freeform idea (with one literal `<Name> entity
+  (field, ...)` declaration folded in — `spec_engine.intake`'s own "never
+  fabricate a data model from prose" rule means a pure, entity-free
+  freeform sentence legitimately produces zero entities and nothing to
+  CRUD against) is routed, approved by a real `LocalIdentityApprovalGate`,
+  and generates a Node app that BOOTS, serves one real CRUD round-trip
+  over HTTP, passes its own generated `node --test` acceptance suite, and
+  emits a `local_approval` Agent Receipt independently re-verified TWICE —
+  in-process (`checks.verify_receipt`) and via the actual standalone
+  `tools/receipt-verify/receipt_verify.py` CLI, run as a real subprocess
+  with a test-scoped key file, exactly as a genuinely independent third
+  party would run it.
+- **Rejection:** a rejected approval writes NO codegen artifacts and NO
+  receipt, even when `receipt_path` is supplied — mirroring
+  `test_receipt_integration.py`'s own rejection coverage, now proven
+  end to end through the full pipeline rather than the receipt hop alone.
+- **Mid-kill:** a real `SIGKILL` landing mid-`generate_app()` (reusing
+  `tests/spec_engine/test_codegen_atomic_staging.py`'s own proven
+  instrumented-pause-then-SIGKILL pattern, adapted to spawn
+  `run_pipeline()` instead of calling `generate_app()` directly) leaves
+  `target_dir` fully absent and writes NO receipt — zero partial trust
+  artifacts, proven with the full pipeline in the loop, not just a direct
+  codegen call.
+
+Node is HARD-REQUIRED for this e2e in CI (`.github/workflows/ci.yml`'s
+`test` job now sets up Node explicitly) — it deliberately does not
+`pytest.mark.skipif(not HAS_NODE, ...)` the way `test_codegen_app_boots.py`
+does for local-dev convenience; a flagship "show me the receipt" proof
+that silently skips would report green without ever having run.
 
 ## Handling ambiguous routing
 
@@ -344,6 +381,15 @@ Every orchestrator test that touches `LocalIdentityApprovalGate` passes
 an explicit `identity_dir=tmp_path/...` — none of this suite ever reads
 or writes the real `~/.tess-os/approval-identity/` on the machine running
 the tests.
+
+`test_e2e_wedge_loop.py` is the DoD B.9 flagship — see the "★ DoD B.9"
+callout above. It imports the shared `node_server` boot fixture from
+`tests/_node_server.py` (extracted from `tests/spec_engine/
+test_codegen_app_boots.py`, which still owns and uses it too) and HARD-
+REQUIRES a real `node` binary (fails loud, never skips — see that file's
+own module docstring) — running just this suite (`python -m pytest
+tests/orchestrator`) on a machine with no `node` on PATH will fail 3
+tests by design, not silently pass.
 
 ## Integration status — what this PR does and does not wire up
 
@@ -400,12 +446,12 @@ listed here rather than silently editing the historical claim above:
 - Durable, cross-run `local_approval` receipt CHAIN persistence (atomic
   JSONL append, mirroring `tools/receipt-emit/`'s own chain discipline) —
   Hop 7 always emits a single genesis receipt to one file.
-- The full idea -> route -> approve -> app-boots -> receipt-verify
-  end-to-end proof, INCLUDING the rejection and mid-kill unhappy paths —
-  this change's own tests prove the schema, the standalone verifier, and
-  `run_pipeline()` emitting one verifiable receipt on a successful run;
-  the complete DoD-level e2e (with its unhappy-path coverage) is a
-  separate, follow-up piece of work.
 - Wiring `tessctl gate`, `core/policy/policy.yaml`, or any other
   keystone/policy-owned path to require or consume a `local_approval`
   receipt — unchanged, same scope boundary the original PR already drew.
+
+**Built by the DoD B.9 follow-up (`tests/orchestrator/test_e2e_wedge_loop.py`,
+`tests/_node_server.py`):** the full idea -> route -> approve -> app-boots
+-> receipt-verify end-to-end proof, INCLUDING the rejection and mid-kill
+unhappy paths — see the "★ DoD B.9" callout above for exactly what it
+covers. This was previously listed here as not-yet-built; it now is.
