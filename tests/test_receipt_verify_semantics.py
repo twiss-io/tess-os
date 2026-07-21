@@ -347,3 +347,56 @@ def test_hard_floor_rule_paired_with_local_approval_is_rejected():
     trust = {identity: local_hmac_trust_entry(key)}
     errors = checks.verify_receipt(receipt, trust)
     assert any("guardrails.md Rule 18" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# tess-os #162 (Cyra LOW-1): explicit decision_kind <-> receipt_signature.
+# algorithm pairing in check_receipt_shape — must fire at the CHEAP,
+# structural stage, not merely fall out of the fingerprint-length
+# divergence between hmac_verify.LOCAL_FINGERPRINT_RE (16 hex) and
+# gpg_verify's 40-hex requirement (Cyra's ATTACK 5, #161 review).
+# ---------------------------------------------------------------------------
+
+
+def test_local_approval_decision_kind_with_gpg_algorithm_envelope_is_explicitly_rejected():
+    """ATTACK 5 (Cyra, #161 review): a genuinely local_approval decision
+    re-wrapped in a gpg-detached-armor envelope — even when the envelope
+    carries a (bogus) signature_armored field, so the field-presence
+    check alone would let it through. check_receipt_shape must now catch
+    this EXPLICITLY, by decision_kind, at the shape stage — before
+    verify_receipt ever reaches the (also still-correct) fingerprint-
+    length rejection deeper in verification."""
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+    receipt["receipt_signature"]["algorithm"] = "gpg-detached-armor"
+    receipt["receipt_signature"]["signature_armored"] = (
+        "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n"
+    )
+    errors = checks.check_receipt_shape(receipt)
+    assert any(
+        "decision_kind 'local_approval' requires receipt_signature.algorithm" in e for e in errors
+    ), errors
+    # The full verify_receipt() path must also still reject it, not just
+    # the isolated shape check.
+    trust = {identity: local_hmac_trust_entry(key)}
+    assert checks.verify_receipt(receipt, trust) != []
+
+
+def test_verdict_decision_kind_with_hmac_algorithm_envelope_is_explicitly_rejected(engine, verifier_gpg_keys):
+    """The reverse direction: a genuinely verdict-backed decision re-wrapped
+    in a local-hmac-sha256-v1 envelope — even when the envelope carries a
+    (bogus) signature_hex field, so the field-presence check alone would
+    let it through."""
+    reid = verifier_gpg_keys["Reid"]
+    verdict = base_verdict("Reid")
+    verdict["signature"] = sign_verdict_for_test(engine, verdict, reid)
+    receipt = build_signed_receipt("verdict", verdict, "Reid", reid)
+    receipt["receipt_signature"]["algorithm"] = "local-hmac-sha256-v1"
+    receipt["receipt_signature"]["signature_hex"] = "f" * 64
+    errors = checks.check_receipt_shape(receipt)
+    assert any(
+        "decision_kind 'verdict' requires receipt_signature.algorithm" in e for e in errors
+    ), errors
+    assert checks.verify_receipt(receipt, {"Reid": trust_entry(reid)}) != []

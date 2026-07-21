@@ -143,10 +143,13 @@ All notable changes to Tess OS are documented here. This project adheres to
     `verdict.schema.json` instance (`disposition: APPROVE`) or hard-floor
     sign-off artifact — the GPG verdict/sign-off loop
     `tools/receipt-verify/` already verifies standalone. It is explicitly
-    NOT a wrapper for the `run_pipeline` HMAC approval, which is not a
-    receipt `decision_kind` this schema recognizes; a `--decision` shaped
-    like anything else is refused before any file is touched
-    (`assemble.infer_decision_kind`).
+    NOT a wrapper for the `run_pipeline` HMAC approval (`decision_kind:
+    local_approval`) — **corrected 2026-07-21, issue #162:** as of #161
+    (below) the schema DOES recognize `local_approval` as a real
+    `decision_kind`; this tool's own `assemble.infer_decision_kind` still
+    refuses to emit it, unchanged, so a `--decision` shaped like a
+    `local_approval` Approval (or anything else outside `verdict`/
+    `signoff`) is still refused before any file is touched.
   - **`receipt_emit.py emit --decision ... --rule-id ... --policy ...
     --actor ... --summary ... --key-id ... --chain ... [--gnupg-home ...]
     [--trust NAME FINGERPRINT KEYFILE ...] [--json]`** assembles the
@@ -207,6 +210,29 @@ All notable changes to Tess OS are documented here. This project adheres to
     runs regardless of `--gnupg-home` (it was previously skipped whenever
     `--gnupg-home` was set, relying on a less-friendly downstream error
     instead).
+- **`decision_kind: local_approval` — the wedge-loop epic's own signing
+  primitive (issue #161)**, a THIRD Agent Receipt decision kind alongside
+  `verdict`/`signoff`: System A, local, symmetric HMAC-SHA256
+  (`spec_engine.gate_identity`), deliberately weaker than, and never
+  interchangeable with, System B (GPG). `core/contracts/
+  agent-receipt.schema.json` gained `$defs.LocalApprovalArtifact` (the
+  exact shape of a real `spec_engine.types.Approval`) and a matching
+  `receipt_signature.algorithm: "local-hmac-sha256-v1"` +
+  `policy_decision.rule_kind: "pipeline_approval_gate"`, structurally
+  paired 1:1 (never satisfiable by the other system). `orchestrator.
+  pipeline.run_pipeline()` gained an OPTIONAL Hop 7 (`orchestrator/
+  mission_receipt.py`): on a `receipt_path=` caller opt-in, builds +
+  locally HMAC-signs a genesis Agent Receipt embedding the real Hop-3
+  `ApprovalGate` decision verbatim, ONLY on a "generated" mission (never
+  a rejection), with emission failure downgraded to a non-fatal warning
+  that never un-completes an already-finished mission — mirrors Hop 6's
+  `TelemetryError` precedent exactly. `tools/receipt-verify/` gained
+  `hmac_verify.py` (the standalone `local-hmac-sha256-v1` verifier) and
+  `checks.py` grew matching `local_approval` shape/pairing checks.
+  `tools/receipt-emit/` itself is UNCHANGED and still refuses to emit
+  this decision_kind — see this file's own entry above, corrected to
+  note this schema-level distinction. Full disclosure:
+  `docs/AGENT_RECEIPT_SPEC.md`.
 - **Phase 0.6 — the SKILL DRAFT SCAFFOLD (`tessctl skill from-task`, issue
   #131)** — demo-to-skill, the "gets smarter from your work" pattern: a
   completed task + its REAL ledger trail becomes a scaffolded, DRAFT,

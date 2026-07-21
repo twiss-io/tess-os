@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import importlib.util
 import json
+import sys
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -56,11 +58,55 @@ from spec_engine.types import Approval, Plan, SpecDocument
 
 # tools/receipt-verify/canonical.py — reused, not reimplemented (the SAME
 # canonicalization scheme every other Agent Receipt envelope, GPG or HMAC,
-# already uses for signed_content_sha256/receipt_signature). Resolvable
-# because `orchestrator/__init__.py` already put `tools/receipt-verify`
-# onto sys.path before any submodule (this one included) is imported —
-# Python always fully executes a package's __init__.py first.
-import canonical  # noqa: E402
+# already uses for signed_content_sha256/receipt_signature).
+#
+# Loaded via an explicit `importlib.util` module spec, under a PRIVATE,
+# namespaced module name (`orchestrator._receipt_canonical`), rather than
+# a `sys.path` insertion of `tools/receipt-verify/` (tess-os #162, Reid
+# MEDIUM — post-#161 hardening). `tools/receipt-verify/` is a flat,
+# unpackaged directory of genuinely-generic top-level module names
+# (`checks.py`, `canonical.py`, ...); `orchestrator/__init__.py` used to
+# put that whole directory onto `sys.path[0]` for exactly this one import,
+# which would make `checks`/`canonical` importable, PROCESS-WIDE, for the
+# rest of any process that did `import orchestrator` — silently shadowing
+# any other module or installed package with those names, no error
+# raised. This loads exactly the one file this module needs, registered
+# under a name nothing else could plausibly collide with, with ZERO
+# process-wide `sys.path` mutation — the same narrow, opt-in footprint
+# this hop's own emission (genesis-only, never a durable chain append)
+# already keeps everywhere else. See `orchestrator/__init__.py`'s own
+# module docstring for the removed loop entry.
+_RECEIPT_CANONICAL_MODULE_NAME = "orchestrator._receipt_canonical"
+_RECEIPT_CANONICAL_PATH = Path(__file__).resolve().parent.parent / "tools" / "receipt-verify" / "canonical.py"
+
+
+def _load_receipt_canonical():
+    """Load `tools/receipt-verify/canonical.py` by explicit file path and
+    return it as a module — cached in `sys.modules` under
+    `_RECEIPT_CANONICAL_MODULE_NAME` (never the bare name `canonical`) so
+    a second import of this module (or a second call to this function) is
+    a cheap `sys.modules` lookup, not a re-exec. Raises `ImportError` if
+    the file cannot be found or loaded — the same failure a bare `import
+    canonical` would raise if `tools/receipt-verify/` were ever moved or
+    deleted, just against an explicit path instead of a name resolved off
+    `sys.path`."""
+    cached = sys.modules.get(_RECEIPT_CANONICAL_MODULE_NAME)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(_RECEIPT_CANONICAL_MODULE_NAME, _RECEIPT_CANONICAL_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load receipt canonicalization module from {_RECEIPT_CANONICAL_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_RECEIPT_CANONICAL_MODULE_NAME] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[_RECEIPT_CANONICAL_MODULE_NAME]
+        raise
+    return module
+
+
+canonical = _load_receipt_canonical()
 
 PathLike = Union[str, Path]
 

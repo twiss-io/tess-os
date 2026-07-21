@@ -60,10 +60,14 @@ from orchestrator.pipeline import run_pipeline
 
 from spec_engine.codegen import ACCEPTANCE_TEST_REL_PATH
 
-# tools/receipt-verify/ is already on sys.path by the time this runs --
-# orchestrator/__init__.py's own sys.path bootstrap (extended by the
-# wedge-loop epic) ran as a side effect of importing `orchestrator` above
-# (see test_receipt_integration.py for the same, already-proven pattern).
+# tess-os #162 (Reid MEDIUM): `orchestrator/__init__.py` no longer puts
+# `tools/receipt-verify/` on `sys.path` as a side effect of `import
+# orchestrator` (see that module's own docstring). This test wants the
+# real, standalone `checks.py` to independently re-verify the emitted
+# receipt, so it does its own narrow, explicit, test-scoped sys.path
+# insertion here instead (see test_receipt_integration.py for the same,
+# now-updated pattern).
+sys.path.insert(0, str(REPO_ROOT / "tools" / "receipt-verify"))
 import checks  # noqa: E402
 
 RECEIPT_VERIFY_CLI = REPO_ROOT / "tools" / "receipt-verify" / "receipt_verify.py"
@@ -307,8 +311,11 @@ os.environ.setdefault("TESS_OS_TELEMETRY_DIR", tempfile.mkdtemp(prefix="e2e-kill
 sys.path.insert(0, "__REPO_ROOT__")
 
 # Importing orchestrator.* runs orchestrator/__init__.py's own sys.path
-# bootstrap (adds intent-router/, spec-engine/, tools/receipt-verify/) --
-# spec_engine.codegen only becomes importable AFTER this line.
+# bootstrap (adds intent-router/, spec-engine/ -- NOT tools/receipt-verify/,
+# tess-os #162: that entry was removed, mission_receipt.py's own canonical.py
+# need is met by a private importlib load instead) --
+# spec_engine.codegen only becomes importable AFTER this line. This child
+# script never imports checks/canonical itself, so it is unaffected either way.
 from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
 from orchestrator.pipeline import run_pipeline
 

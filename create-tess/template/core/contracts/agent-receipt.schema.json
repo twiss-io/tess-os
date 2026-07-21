@@ -326,7 +326,22 @@
       },
       "else": {
         "required": ["signature_hex"]
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "algorithm": { "const": "gpg-detached-armor" },
+            "signature_hex": { "enum": [] }
+          }
+        },
+        {
+          "properties": {
+            "algorithm": { "const": "local-hmac-sha256-v1" },
+            "signature_armored": { "enum": [] }
+          }
+        }
+      ],
+      "$comment": "tess-os #162 (Cyra LOW-2): signature_armored and signature_hex must be MUTUALLY EXCLUSIVE, not merely 'the right one is required per algorithm' (the if/then/else above already covers that, but additionalProperties:false only blocks UNDEFINED keys — it does not stop the off-algorithm field ALSO being present alongside the required one). This validator's supported keyword subset (see this file's top-level $comment) has no `not`, so mutual exclusion is expressed with `oneOf` + an empty `enum: []` on the off-algorithm field instead: `instance not in []` is always true whenever that field IS present (so that oneOf branch fails), and the enum check is never evaluated when the field is absent — exactly one of the two branches below can ever match a valid instance. Not currently exploitable (the verifier dispatches strictly on `algorithm` and never consults the off-algorithm field; the `signed_content_sha256` tamper check + the actual HMAC/GPG verification still bind content either way), but this closes the defense-in-depth gap structurally rather than leaving it to convention."
     }
   }
 }

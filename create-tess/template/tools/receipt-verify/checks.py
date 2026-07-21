@@ -30,6 +30,26 @@ DECISION_KINDS = ("verdict", "signoff", "local_approval")
 RULE_KINDS = ("path_rule", "hard_floor_rule", "pipeline_approval_gate")
 HARD_FLOOR_CATEGORIES = ("credentials", "money_movement", "destructive_prod_data", "client_external_claims")
 
+# TRUST-LEVEL PAIRING (tess-os #162, Cyra LOW-1) — mirrors
+# core/contracts/agent-receipt.schema.json's top-level `allOf` rules
+# EXPLICITLY, decision_kind -> the one legal receipt_signature.algorithm:
+# 'verdict'/'signoff' (System B, GPG) can ONLY pair with
+# 'gpg-detached-armor'; 'local_approval' (System A, local HMAC) can ONLY
+# pair with 'local-hmac-sha256-v1'. Checked directly in
+# `check_receipt_shape` below, rather than left to fall out of the
+# fingerprint-length divergence between `hmac_verify.LOCAL_FINGERPRINT_RE`
+# (16 hex) and `gpg_verify`'s 40-hex GPG requirement — that divergence
+# still independently rejects a mismatched pairing at verification time
+# (Cyra's ATTACK 5, #161 review), but this schema's own guarantee should
+# never depend on a coincidence persisting; it belongs at the SAME cheap,
+# explicit, "fail fast before any expensive gpg subprocess runs" shape
+# stage as every other structural check in this module.
+DECISION_KIND_SIGNATURE_ALGORITHM = {
+    "verdict": "gpg-detached-armor",
+    "signoff": "gpg-detached-armor",
+    "local_approval": "local-hmac-sha256-v1",
+}
+
 REQUIRED_TOP_KEYS = (
     "receipt_schema", "receipt_id", "issued_at", "proposed_action",
     "policy_decision", "decision_kind", "decision", "chain", "receipt_signature",
@@ -66,10 +86,25 @@ def check_receipt_shape(receipt: dict) -> list[str]:
     sig = receipt.get("receipt_signature")
     if not isinstance(sig, dict) or not {"algorithm", "signed_by", "signed_content_sha256"} <= sig.keys():
         errors.append("receipt_signature is missing a required field")
-    elif sig.get("algorithm") == "gpg-detached-armor" and "signature_armored" not in sig:
-        errors.append("receipt_signature is missing signature_armored (required for algorithm gpg-detached-armor)")
-    elif sig.get("algorithm") == "local-hmac-sha256-v1" and "signature_hex" not in sig:
-        errors.append("receipt_signature is missing signature_hex (required for algorithm local-hmac-sha256-v1)")
+    else:
+        algorithm = sig.get("algorithm")
+        if algorithm == "gpg-detached-armor" and "signature_armored" not in sig:
+            errors.append("receipt_signature is missing signature_armored (required for algorithm gpg-detached-armor)")
+        elif algorithm == "local-hmac-sha256-v1" and "signature_hex" not in sig:
+            errors.append("receipt_signature is missing signature_hex (required for algorithm local-hmac-sha256-v1)")
+        # tess-os #162 (Cyra LOW-1) — explicit decision_kind <-> algorithm
+        # pairing, independent of the field-presence check above (a
+        # receipt can satisfy that check — e.g. a local_approval decision
+        # wrapped in a gpg-detached-armor envelope that DOES carry
+        # signature_armored — while still violating this pairing).
+        expected_algorithm = DECISION_KIND_SIGNATURE_ALGORITHM.get(receipt["decision_kind"])
+        if expected_algorithm is not None and algorithm != expected_algorithm:
+            errors.append(
+                f"decision_kind {receipt['decision_kind']!r} requires receipt_signature.algorithm "
+                f"{expected_algorithm!r} (agent-receipt.schema.json's top-level allOf trust-level "
+                f"pairing — a System A/System B decision can never be wrapped in the other "
+                f"system's envelope algorithm), got {algorithm!r}"
+            )
     return errors
 
 
