@@ -52,10 +52,43 @@ All notable changes to Tess OS are documented here. This project adheres to
     instance passes `tessctl doctor`/`verify`, and the packed tarball itself
     carries the bundled template with no secret-shaped paths.
   - `create-tess/package.json`'s `test` script now scopes `node --test` to
-    `test/` explicitly (`node --test test/`) — bundling the framework's own
+    `test/*.test.js` explicitly (an unquoted glob, expanded by the shell
+    before Node ever sees it — a quoted `test/` directory positional stopped
+    working on Node 24, and a quoted/recursive `test/**/*.test.js` isn't
+    supported by Node 18's `--test`) — bundling the framework's own
     `gui/tests/*.test.js` fixtures into `create-tess/template/` would
     otherwise have them picked up by `create-tess`'s own unscoped test
     auto-discovery.
+  - **Gap-loop fix (Reid HIGH, code review):** the committed
+    `create-tess/template/` had drifted from what `build-template.mjs`
+    actually produces — a fresh build carried this repo's own root
+    `operator/profile.json` and `kb/wiki/{index,log}.md` (this repo's own
+    live operator identity + internal wiki/mission-log state), invisible in
+    the reviewed diff because they were absent from the committed snapshot,
+    not merely stale within it. `src/ignore.js` now excludes
+    `operator/profile.json` (always regenerated fresh by `writeProfile()` at
+    real scaffold time regardless) and strips `kb/wiki/{index,log}.md`
+    content the same way every `.tess/state/**` subsystem already is (dir +
+    `.gitkeep` structure preserved, live content stripped) — scoped to the
+    repo root only, `clients/*/kb/wiki/**` untouched. Separately,
+    `create-tess/.gitignore`'s bare `*.log` rule was silently hiding the
+    legitimate `proving-ground/tasks/06-research-log-analysis/fixture/
+    access.log` test fixture from ever being committed at any depth under
+    `template/` — narrowed to `/npm-debug.log*` with an explicit
+    `!template/**/*.log` carve-out. New
+    `create-tess/test/template-drift-guard.test.js` builds the bundle fresh
+    into an isolated repo snapshot on every `npm test` run and fails if the
+    committed `template/` differs from that build by even one file or one
+    byte, plus asserts the specific operator/kb-wiki paths above are never
+    present in the bundle — closing the class of gap, not just this
+    instance of it.
+  - `create-tess/src/scaffold.js` (317 lines, over this repo's 300-line file
+    gate after the original bundle change) split cleanly: the self-contained
+    "git opt-in" cluster (`DEFAULT_TEMPLATE_SOURCE`, `DEFAULT_TEMPLATE_REF`,
+    `resolveTemplateRef`, `buildCloneArgs`, `isSafeTemplateSource`,
+    `assertSafeTemplateSource`, `isLocalSource`) moved to a new
+    `create-tess/src/git-template-source.js`, re-exported from `scaffold.js`
+    unchanged — zero import-path churn for existing callers.
 
 ### Added
 - **`tools/receipt-emit/` — the Agent Receipt EMIT CLI**, closing the gap

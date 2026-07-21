@@ -9,8 +9,10 @@
 >
 > **Status: Buildable-Now.** `orchestrator.pipeline.run_pipeline()` runs
 > `intent_router` -> `spec_engine` intake/plan -> a REAL, authenticated
-> approval gate -> `spec_engine.codegen.generate_app()` as one call.
-> `orchestrator.cli` is a thin manual-testing wrapper around it.
+> approval gate -> `spec_engine.codegen.generate_app()` -> OPTIONAL,
+> opt-in Agent Receipt emission (wedge-loop epic addition, see "Agent
+> Receipt" below) as one call. `orchestrator.cli` is a thin manual-testing
+> wrapper around it.
 
 ## What this is
 
@@ -50,11 +52,20 @@ spec_engine.pipeline.finalize_spec_with_approval()  REAL — build_spec()'s
      │                                               HARDENING" below)
      ▼
 spec_engine.codegen.generate_app()                  REAL codegen — see
-                                                      spec-engine/README.md
-                                                      for exactly what's
-                                                      generated vs. a
-                                                      labeled stub per
-                                                      module kind
+     │                                               spec-engine/README.md
+     │                                               for exactly what's
+     │                                               generated vs. a
+     │                                               labeled stub per
+     │                                               module kind
+     ▼
+   <<< telemetry.events.record_mission_completion() >>> OPT-IN, off by
+     │                                               default — see
+     │                                               "Telemetry" below
+     ▼
+   <<< orchestrator.mission_receipt (Hop 7) >>>       OPTIONAL, opt-in —
+                                                       see "Agent Receipt"
+                                                       below (wedge-loop
+                                                       epic addition)
 ```
 
 `orchestrator.pipeline.run_pipeline()` is the one function above the
@@ -246,6 +257,43 @@ locally, with no content, no PII, and no network call. See
 `docs/TELEMETRY.md` for the full privacy contract — what is/isn't
 captured, where it lives, and how to inspect/disable/delete it.
 
+## Agent Receipt (Hop 7, opt-in, off by default — wedge-loop epic addition)
+
+`run_pipeline()`'s final hop, right after Hop 6's telemetry, calls
+`_emit_governed_mission_receipt()` (`orchestrator/mission_receipt.py`) —
+OPTIONAL, off unless a caller supplies `receipt_path`. When given one, it
+assembles and locally HMAC-signs one `decision_kind: "local_approval"`
+[Agent Receipt](../docs/AGENT_RECEIPT_SPEC.md)
+(`core/contracts/agent-receipt.schema.json`) embedding the SAME `Approval`
+Hop 3/4 already authenticated and independently re-verified TWICE, signs
+the envelope with THIS install's real local approval-identity key
+(`spec_engine.gate_identity` — never demo/ephemeral keys), and writes it
+to `receipt_path` as a single JSON file. `PipelineResult.receipt` carries
+the result (`None` by default, and on any receipt-emission failure — a
+`mission_receipt.MissionReceiptError` is caught and downgraded to a
+non-fatal warning, exactly mirroring telemetry's own "an optional sidecar
+failing must never un-complete a governed mission" discipline).
+
+★ **TRUST LEVEL — read `docs/AGENT_RECEIPT_SPEC.md`'s "★ Trust levels are
+not interchangeable" before treating this like a GPG-backed receipt.**
+This is System A: local, symmetric HMAC-SHA256, verifiable only by an
+independent holder of the same secret key — deliberately WEAKER evidence
+than `tools/receipt-emit/`'s System B (GPG, `verdict`/`signoff`, publicly
+verifiable), which this hop never touches, never wraps, and never
+upgrades. `tools/receipt-verify/hmac_verify.py` is the standalone,
+dependency-free verifier a third party would run against a receipt this
+hop produced — see its own module docstring for the "verifying is not a
+lower-privilege operation than signing" disclosure before sharing a
+`local_approval` receipt's key material with anyone.
+
+Genesis-only, single-file, disclosed scope: this hop does not persist or
+extend a durable, multi-run receipt CHAIN the way `tools/receipt-emit/`
+atomically appends to one for GPG receipts — every emitted receipt is
+`chain.sequence: 0`, `prev_receipt_hash: "GENESIS"`. Durable cross-run
+chaining, and the full idea->route->approve->boots->receipt-verify (plus
+rejection and mid-kill unhappy-path) end-to-end proof, are a disclosed,
+scoped follow-up — see `docs/AGENT_RECEIPT_SPEC.md`.
+
 ## Handling ambiguous routing
 
 If `intent_router` returns `ambiguous=True` and no `clarification_answer`
@@ -320,3 +368,44 @@ themselves):
   generated apps — `spec_engine.codegen`'s own already-disclosed scope
   boundary (Phase 2 Epic E4's remaining deliverables), unaffected by this
   PR.
+
+## Wedge-loop epic addition — what THIS change does and does not wire up
+
+The line above ("Deliberately NOT touched by this PR") described the
+codegen-boundary hardening epic's own scope; the wedge-loop epic that adds
+Hop 7 is a LATER, separate change with a narrower, different footprint —
+listed here rather than silently editing the historical claim above:
+
+**Touched:**
+
+- `core/contracts/agent-receipt.schema.json` — added `decision_kind:
+  "local_approval"` (`$defs.LocalApprovalArtifact`), extended
+  `receipt_signature.algorithm` with `"local-hmac-sha256-v1"`, and added
+  `policy_decision.rule_kind: "pipeline_approval_gate"` — the FIRST and
+  ONLY change this schema has received since it shipped; see
+  `docs/AGENT_RECEIPT_SPEC.md` for the full trust-level disclosure this
+  addition carries.
+- `tools/receipt-verify/hmac_verify.py` (new file) and
+  `tools/receipt-verify/checks.py` (extended, not rewritten) — the
+  standalone verifier now handles `local_approval` receipts; `tools/
+  receipt-emit/` (the GPG emit CLI) is UNCHANGED and still refuses
+  anything Approval-shaped, by design.
+- `orchestrator/mission_receipt.py` (new file), `orchestrator/pipeline.py`
+  (`_emit_governed_mission_receipt()`, Hop 7, and a new opt-in
+  `receipt_path` parameter on `run_pipeline()`), `orchestrator/__init__.py`
+  (sys.path bootstrap extended to include `tools/receipt-verify/`).
+
+**Deliberately NOT built here (disclosed follow-up):**
+
+- Durable, cross-run `local_approval` receipt CHAIN persistence (atomic
+  JSONL append, mirroring `tools/receipt-emit/`'s own chain discipline) —
+  Hop 7 always emits a single genesis receipt to one file.
+- The full idea -> route -> approve -> app-boots -> receipt-verify
+  end-to-end proof, INCLUDING the rejection and mid-kill unhappy paths —
+  this change's own tests prove the schema, the standalone verifier, and
+  `run_pipeline()` emitting one verifiable receipt on a successful run;
+  the complete DoD-level e2e (with its unhappy-path coverage) is a
+  separate, follow-up piece of work.
+- Wiring `tessctl gate`, `core/policy/policy.yaml`, or any other
+  keystone/policy-owned path to require or consume a `local_approval`
+  receipt — unchanged, same scope boundary the original PR already drew.

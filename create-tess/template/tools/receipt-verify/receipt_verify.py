@@ -5,25 +5,43 @@
 
 Verifies an Agent Receipt (docs/AGENT_RECEIPT_SPEC.md,
 core/contracts/agent-receipt.schema.json) INDEPENDENTLY of the rest of the
-Tess OS install: no `tessctl` import, no `core/policy/policy.yaml`, no
-mission tree. All it needs is this directory (`canonical.py`, `gpg_verify.py`,
-`checks.py`, `receipt_verify.py`), the stdlib, and the system `gpg` binary.
+Tess OS install: no `tessctl` import, no `spec_engine` import, no
+`core/policy/policy.yaml`, no mission tree. All it needs is this directory
+(`canonical.py`, `gpg_verify.py`, `hmac_verify.py`, `checks.py`,
+`receipt_verify.py`), the stdlib, and (for `verdict`/`signoff` receipts
+only) the system `gpg` binary — a `local_approval` receipt verifies with
+pure Python, no `gpg` binary required.
 
 Usage:
     python3 receipt_verify.py verify RECEIPT.json \\
-        --trust NAME FINGERPRINT PUBLIC_KEY.asc [--trust ...] \\
+        --trust NAME FINGERPRINT KEY_FILE [--trust ...] \\
         [--prev PREV_RECEIPT.json] [--json]
 
     python3 receipt_verify.py verify-chain CHAIN.jsonl \\
-        --trust NAME FINGERPRINT PUBLIC_KEY.asc [--trust ...] \\
+        --trust NAME FINGERPRINT KEY_FILE [--trust ...] \\
         [--json]
 
 `--trust` is repeatable, one per identity the caller is willing to trust —
 mirroring core/contracts/policy.schema.json's `VerifierKeyEntry` shape
-(fingerprint + public key file) but supplied directly on the command line,
+(fingerprint + key file) but supplied directly on the command line,
 since a third party verifying a receipt has no reason to hold this
 project's core/policy/policy.yaml at all. A signature from an identity with
 no matching --trust entry never verifies — fail-closed, not fail-open.
+
+★ `--trust`'s KEYFILE argument means TWO DIFFERENT THINGS depending on the
+receipt's `decision_kind` — read this before treating it as always a safe
+public key: for a `verdict`/`signoff` decision it is a GPG PUBLIC key
+(safe to hand to anyone; that is the whole point of asymmetric signing).
+For a `local_approval` decision (wedge-loop epic addition) it is instead
+the SAME raw SECRET local approval-identity key that produced the
+signature in the first place (normally
+`~/.tess-os/approval-identity/<username>.key`) — there is no "public
+half" for an HMAC scheme. Anyone able to supply that file to `--trust`
+can also FORGE a new, equally-valid `local_approval` signature under that
+identity; verifying a `local_approval` receipt is NOT a lower-privilege
+operation than signing one. Treat a `local_approval` KEYFILE with the same
+care as any other secret credential. See `hmac_verify.py`'s module
+docstring and docs/AGENT_RECEIPT_SPEC.md for the full disclosure.
 
 Exit code 0 means every check passed (or, for verify-chain, the whole chain
 is intact). Any other exit code means at least one receipt failed at least
@@ -48,12 +66,16 @@ def _load_json(path: str) -> dict:
 
 def _load_trust(entries: list) -> dict:
     """entries: list of [NAME, FINGERPRINT, KEYFILE] triples from argparse.
-    Returns {NAME: {"fingerprint": FPR, "public_key_bytes": bytes}}."""
+    Returns {NAME: {"fingerprint": FPR, "key_bytes": bytes}}. `key_bytes`
+    is deliberately a neutral name (not `public_key_bytes`): for a
+    `verdict`/`signoff` identity KEYFILE is a GPG public key; for a
+    `local_approval` identity it is the local HMAC SECRET key instead —
+    see this module's own docstring "★" note and hmac_verify.py."""
     trust = {}
     for name, fingerprint, keyfile in entries or []:
         trust[name] = {
             "fingerprint": fingerprint,
-            "public_key_bytes": Path(keyfile).read_bytes(),
+            "key_bytes": Path(keyfile).read_bytes(),
         }
     return trust
 
@@ -121,8 +143,10 @@ def main(argv=None) -> int:
     verify_p.add_argument("receipt", help="path to the receipt JSON file")
     verify_p.add_argument("--prev", default=None, help="path to the previous receipt in the chain, if any")
     verify_p.add_argument(
-        "--trust", action="append", nargs=3, metavar=("NAME", "FINGERPRINT", "PUBLIC_KEY_FILE"),
-        help="a trusted identity's exact fingerprint + public key file (repeatable)",
+        "--trust", action="append", nargs=3, metavar=("NAME", "FINGERPRINT", "KEY_FILE"),
+        help="a trusted identity's exact fingerprint + key file (repeatable) — "
+             "a GPG PUBLIC key for a verdict/signoff identity, or the local "
+             "HMAC SECRET key for a local_approval identity (see module docstring)",
     )
     verify_p.add_argument("--json", dest="json_out", action="store_true", help="emit JSON instead of text")
     verify_p.set_defaults(func=cmd_verify)
@@ -130,8 +154,10 @@ def main(argv=None) -> int:
     chain_p = sub.add_parser("verify-chain", help="verify every receipt in a JSONL chain file, in order")
     chain_p.add_argument("chain", help="path to a JSONL file, one Agent Receipt per line, in sequence order")
     chain_p.add_argument(
-        "--trust", action="append", nargs=3, metavar=("NAME", "FINGERPRINT", "PUBLIC_KEY_FILE"),
-        help="a trusted identity's exact fingerprint + public key file (repeatable)",
+        "--trust", action="append", nargs=3, metavar=("NAME", "FINGERPRINT", "KEY_FILE"),
+        help="a trusted identity's exact fingerprint + key file (repeatable) — "
+             "a GPG PUBLIC key for a verdict/signoff identity, or the local "
+             "HMAC SECRET key for a local_approval identity (see module docstring)",
     )
     chain_p.add_argument("--json", dest="json_out", action="store_true", help="emit JSON instead of text")
     chain_p.set_defaults(func=cmd_verify_chain)

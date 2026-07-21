@@ -1,2 +1,14 @@
 node_modules/
-*.log
+
+# npm/debug logs at the create-tess package root only. A bare `*.log` (no
+# leading slash) matches at ANY depth, including inside the bundled
+# template/ tree — that silently gitignored the real, git-tracked fixture
+# `template/proving-ground/tasks/06-research-log-analysis/fixture/access.log`
+# on every commit (PR #160 gap-loop fix, Reid HIGH: root-caused the 4th
+# committed-vs-built drift file — not an ignore.js exclusion, a plain
+# gitignore footgun nobody could `git add` past). template/ is committed,
+# reviewable source content, generated fresh by `npm run build-template` /
+# the `prepack` hook — it must never be partially hidden from git by a
+# top-level debug-log pattern.
+/npm-debug.log*
+!template/**/*.log

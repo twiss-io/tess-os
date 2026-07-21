@@ -30,11 +30,15 @@ from __future__ import annotations
 import copy
 
 from _agent_receipt_fixtures import (
+    base_local_approval,
     base_signoff,
     base_verdict,
+    build_local_approval_signed_receipt,
     build_signed_receipt,
     canonical,
     checks,
+    generate_local_hmac_key,
+    local_hmac_trust_entry,
     trust_entry,
 )
 from conftest import sign_signoff_for_test, sign_verdict_for_test
@@ -231,3 +235,115 @@ def test_receipt_content_hash_includes_receipt_signature():
     receipt_without_sig = {"a": 1}
     receipt_with_sig = {"a": 1, "receipt_signature": {"x": "y"}}
     assert canonical.receipt_content_hash(receipt_without_sig) != canonical.receipt_content_hash(receipt_with_sig)
+
+
+# ---------------------------------------------------------------------------
+# decision_kind: local_approval (wedge-loop epic addition) — System A,
+# local HMAC-SHA256, genuinely signed/verified with real random keys (never
+# mocked), the same discipline this file already applies to GPG. See
+# docs/AGENT_RECEIPT_SPEC.md and core/contracts/agent-receipt.schema.json's
+# $defs.LocalApprovalArtifact for the trust-level this decision_kind
+# represents — DISTINCT FROM, and weaker than, verdict/signoff above.
+# ---------------------------------------------------------------------------
+
+
+def test_valid_local_approval_receipt_verifies():
+    key = generate_local_hmac_key()
+    decision = base_local_approval(approved_by="local:tester#" + key.fingerprint, key=key)
+    receipt = build_local_approval_signed_receipt(decision, decision["approved_by"], key)
+    trust = {decision["approved_by"]: local_hmac_trust_entry(key)}
+    assert checks.verify_receipt(receipt, trust) == []
+
+
+def test_local_approval_decision_tampered_after_signing_is_rejected():
+    key = generate_local_hmac_key()
+    decision = base_local_approval(approved_by="local:tester#" + key.fingerprint, key=key)
+    receipt = build_local_approval_signed_receipt(decision, decision["approved_by"], key)
+    receipt["decision"]["approved_at"] = "1999-01-01T00:00:00.000000Z"
+    trust = {decision["approved_by"]: local_hmac_trust_entry(key)}
+    errors = checks.verify_receipt(receipt, trust)
+    assert any("does not verify" in e or "invalid" in e for e in errors), errors
+
+
+def test_local_approval_envelope_tampered_after_signing_is_rejected():
+    key = generate_local_hmac_key()
+    decision = base_local_approval(approved_by="local:tester#" + key.fingerprint, key=key)
+    receipt = build_local_approval_signed_receipt(decision, decision["approved_by"], key)
+    receipt["proposed_action"]["summary"] = "TAMPERED envelope field"
+    trust = {decision["approved_by"]: local_hmac_trust_entry(key)}
+    errors = checks.verify_receipt(receipt, trust)
+    assert any("tampered" in e for e in errors), errors
+
+
+def test_local_approval_wrong_key_is_rejected():
+    """The receipt was genuinely HMAC-signed with `key`, but the caller
+    only supplies an UNRELATED key under the same identity name — must be
+    rejected (fingerprint pinning, not name-based trust, mirrors the GPG
+    wrong-key proof above)."""
+    key = generate_local_hmac_key()
+    wrong_key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+    # Supply the WRONG key, but (adversarially) claim it has the RIGHT
+    # fingerprint the receipt actually declares — the fingerprint-pinning
+    # check must catch the mismatch between the supplied key's OWN
+    # recomputed fingerprint and the one it's being asserted under.
+    wrong_trust = {identity: {"fingerprint": key.fingerprint, "key_bytes": wrong_key.key_bytes}}
+    errors = checks.verify_receipt(receipt, wrong_trust)
+    assert any("does NOT match" in e or "does not verify" in e for e in errors), errors
+
+
+def test_local_approval_no_trust_entry_is_rejected():
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+    errors = checks.verify_receipt(receipt, {})
+    assert any("no trusted local HMAC key" in e for e in errors), errors
+
+
+def test_local_approval_approved_false_is_rejected():
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key, approved=False)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+    trust = {identity: local_hmac_trust_entry(key)}
+    errors = checks.verify_receipt(receipt, trust)
+    assert any("not True" in e for e in errors), errors
+
+
+def test_local_approval_malformed_notes_is_rejected():
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    decision["notes"] = "not valid json"
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+    trust = {identity: local_hmac_trust_entry(key)}
+    errors = checks.verify_receipt(receipt, trust)
+    assert any("no valid embedded local-HMAC auth evidence" in e for e in errors), errors
+
+
+def test_pipeline_approval_gate_paired_with_verdict_is_rejected(engine, verifier_gpg_keys):
+    """guardrails.md Rule 18 discipline extended to System A: a
+    pipeline_approval_gate policy decision can ONLY pair with
+    decision_kind: local_approval — never a GPG verdict."""
+    reid = verifier_gpg_keys["Reid"]
+    verdict = base_verdict("Reid")
+    verdict["signature"] = sign_verdict_for_test(engine, verdict, reid)
+    receipt = build_signed_receipt("verdict", verdict, "Reid", reid, rule_kind="pipeline_approval_gate")
+    errors = checks.verify_receipt(receipt, {"Reid": trust_entry(reid)})
+    assert any("pipeline_approval_gate but decision_kind is not" in e for e in errors), errors
+
+
+def test_hard_floor_rule_paired_with_local_approval_is_rejected():
+    """guardrails.md Rule 18: a hard floor is NEVER satisfiable by a
+    local_approval, exactly as it is never satisfiable by a bare verdict —
+    System A is even weaker evidence than System B, so this must fail too."""
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key, rule_kind="hard_floor_rule")
+    trust = {identity: local_hmac_trust_entry(key)}
+    errors = checks.verify_receipt(receipt, trust)
+    assert any("guardrails.md Rule 18" in e for e in errors), errors
