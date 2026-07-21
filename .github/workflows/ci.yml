@@ -32,6 +32,20 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      # DoD B.9 wedge-loop e2e (tests/orchestrator/test_e2e_wedge_loop.py)
+      # HARD-REQUIRES a real `node` binary and deliberately does not
+      # `pytest.mark.skipif(not HAS_NODE, ...)` the way tests/spec_engine/
+      # test_codegen_app_boots.py's own, separate boot tests choose to for
+      # local-dev convenience — a flagship "show me the receipt" e2e proof
+      # that silently skips in CI would report green without ever actually
+      # running. This step makes that hard requirement explicit and
+      # verifiable rather than relying on whatever Node happens to be
+      # pre-baked into the runner image.
+      - name: Set up Node (required by tests/orchestrator/test_e2e_wedge_loop.py)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
@@ -39,6 +53,23 @@ jobs:
 
       - name: Run test suite (pytest)
         run: python -m pytest
+
+      # Independent, explicit proof (on top of the full-suite run above)
+      # that the DoD B.9 e2e genuinely EXECUTED its 3 cases in this CI run
+      # rather than silently skipping — fails the job loudly if it sees
+      # any SKIPPED report for this file, which should be structurally
+      # impossible given `_require_node`'s hard-fail-not-skip behavior,
+      # but this step makes that guarantee independently checkable from
+      # the CI log itself rather than only from the source.
+      - name: Verify DoD B.9 wedge-loop e2e actually ran (not skipped)
+        run: |
+          set -euo pipefail
+          python -m pytest tests/orchestrator/test_e2e_wedge_loop.py -v | tee /tmp/e2e-wedge-loop.log
+          if grep -q "SKIPPED" /tmp/e2e-wedge-loop.log; then
+            echo "::error::DoD B.9 wedge-loop e2e reported a SKIPPED case — this must never happen in CI (node is required, see the 'Set up Node' step above)."
+            exit 1
+          fi
+          grep -q "3 passed" /tmp/e2e-wedge-loop.log
 
       - name: tessctl doctor (SHA-integrity gate)
         env:

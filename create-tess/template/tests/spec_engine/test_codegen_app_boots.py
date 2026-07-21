@@ -16,21 +16,27 @@ Requires a real `node` binary on PATH (Node >=18, for `node:test` +
 built-in `fetch()` — see codegen.py's module docstring for why this
 target stack was chosen). Skips cleanly (does not fail) if `node` is
 unavailable in the environment running the suite.
+
+The `node_server` fixture (spawn the generated app's `src/server.js`,
+poll for its "listening on http://localhost:<port>" line, hand back
+`(proc, base_url)`) now lives in `tests/_node_server.py` — extracted so
+`tests/orchestrator/test_e2e_wedge_loop.py`'s DoD B.9 e2e can reuse the
+SAME boot mechanism rather than a second copy of it. Imported here under
+its original names (`_get`/`_post`) so the rest of this file, and every
+test below, is byte-for-byte unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
-import time
 import urllib.error
 import urllib.request
-from shutil import which
 
 import pytest
 
 import _spec_engine_paths  # sys.path bootstrap; EVAL_FIXTURES_DIR used below
+from _node_server import HAS_NODE, get_json as _get, node_server, post_json as _post
 
 from spec_engine.gate_approval import sign_local_approval
 from spec_engine.codegen import generate_app
@@ -38,11 +44,7 @@ from spec_engine.intake import harvest_intake
 from spec_engine.plan_builder import build_plan
 from spec_engine.spec_builder import build_spec
 
-HAS_NODE = which("node") is not None
 pytestmark = pytest.mark.skipif(not HAS_NODE, reason="node binary not found on PATH")
-
-BOOT_TIMEOUT_SECONDS = 10
-_LISTEN_RE = re.compile(r"listening on http://localhost:(\d+)")
 
 
 def _spec_from_fixture(filename: str):
@@ -55,85 +57,6 @@ def _spec_from_fixture(filename: str):
     plan = build_plan(harvest_intake(text, "structured_brief"))
     approval = sign_local_approval(plan, approved_by="Xavier")
     return build_spec(plan, approval)
-
-
-@pytest.fixture
-def node_server():
-    """Yields a `start(target_dir, extra_env=None) -> (proc, base_url)`
-    helper; always terminates the spawned process (and drains its pipes)
-    on teardown, even if the test body raises."""
-    import os
-
-    procs = []
-
-    def start(target_dir, extra_env=None):
-        env = {**os.environ, "PORT": "0"}
-        if extra_env:
-            env.update(extra_env)
-        proc = subprocess.Popen(
-            ["node", str(target_dir / "src" / "server.js")],
-            cwd=str(target_dir),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        procs.append(proc)
-        deadline = time.monotonic() + BOOT_TIMEOUT_SECONDS
-        port = None
-        stdout_so_far = ""
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                stderr_out = proc.stderr.read()
-                raise AssertionError(
-                    f"generated server exited early (code {proc.returncode}) before reporting "
-                    f"'listening'. stdout={stdout_so_far!r} stderr={stderr_out!r}"
-                )
-            line = proc.stdout.readline()
-            if not line:
-                time.sleep(0.05)
-                continue
-            stdout_so_far += line
-            match = _LISTEN_RE.search(line)
-            if match:
-                port = int(match.group(1))
-                break
-        if port is None:
-            proc.terminate()
-            raise AssertionError(
-                f"generated server did not report 'listening' within {BOOT_TIMEOUT_SECONDS}s. "
-                f"stdout so far: {stdout_so_far!r}"
-            )
-        return proc, f"http://localhost:{port}"
-
-    yield start
-
-    for proc in procs:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-
-
-def _get(url, timeout=5):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8"))
-
-
-def _post(url, payload, timeout=5):
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8"))
 
 
 # --------------------------------------------------------------------------

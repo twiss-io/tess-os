@@ -393,11 +393,16 @@ install's real local approval-identity key (`spec_engine.gate_identity`) —
 never the demo's ephemeral keys. Deliberately simpler than `tools/
 receipt-emit/`: it always writes a single genesis (`sequence: 0`) receipt
 to one JSON file, not an atomically-appended JSONL chain — durable,
-cross-run chain persistence for `local_approval` receipts (and the full
-idea→route→approve→boots→receipt-verify, plus rejection/mid-kill
-unhappy-path, end-to-end proof) is a disclosed, scoped follow-up, not built
-here. A receipt-emission failure is caught and downgraded to a non-fatal
-warning — it can never un-complete an already-finished mission.
+cross-run chain persistence for `local_approval` receipts is a disclosed,
+scoped follow-up, not built here. The full idea→route→approve→boots→
+receipt-verify (plus rejection/mid-kill unhappy-path) end-to-end proof
+DoD B.9 asks for now EXISTS and passes:
+[`tests/orchestrator/test_e2e_wedge_loop.py`](../tests/orchestrator/test_e2e_wedge_loop.py),
+driven entirely through `run_pipeline()`, Node hard-required (not
+silently skipped) in CI — see `orchestrator/README.md`'s "Wedge-loop
+epic addition" section. A receipt-emission failure is caught and
+downgraded to a non-fatal warning — it can never un-complete an
+already-finished mission.
 
 ## Third-party verification
 
@@ -475,9 +480,11 @@ implementation, not a claim that any other project has adopted it yet.
   `orchestrator/mission_receipt.py` always emits a single genesis receipt
   per `run_pipeline()` call, to one JSON file — atomic, cross-run
   JSONL-chain persistence for `local_approval` receipts (mirroring `tools/
-  receipt-emit/`'s own chain-append discipline for GPG receipts), and the
-  full idea→route→approve→boots→receipt-verify (+ rejection, + mid-kill
-  unhappy paths) end-to-end proof, are a disclosed, scoped follow-up.
+  receipt-emit/`'s own chain-append discipline for GPG receipts) is still
+  a disclosed, scoped follow-up. The full idea→route→approve→boots→
+  receipt-verify (+ rejection, + mid-kill unhappy paths) end-to-end proof
+  is no longer a follow-up — see `tests/orchestrator/test_e2e_wedge_loop.py`
+  and `orchestrator/README.md`'s "★ DoD B.9" callout.
 - **Not a claim of external adoption.** "Open spec" means the license and the
   design allow adoption; it does not mean any other project uses this format
   today.
