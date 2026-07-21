@@ -279,18 +279,23 @@ test(
 );
 
 test('a corrupted install (bundle missing) fails with a specific, actionable error — never a silent fallback', () => {
-  // Copy bin/+src/+node_modules/ (never template/) into a scratch "install",
-  // proving the missing-bundle guard in index.js main() fires with a clear
-  // message rather than falling through to isSafeTemplateSource's generic
-  // refusal or, worse, silently attempting something else. node_modules is
-  // included so the ONLY difference from a real install is the missing
-  // template/ — otherwise this would fail on an unrelated MODULE_NOT_FOUND
-  // for @clack/prompts before ever reaching the guard being tested.
+  // Copy bin/+src/+node_modules/+package.json (never template/) into a
+  // scratch "install", proving the missing-bundle guard in index.js main()
+  // fires with a clear message rather than falling through to
+  // isSafeTemplateSource's generic refusal or, worse, silently attempting
+  // something else. node_modules is included so the ONLY difference from a
+  // real install is the missing template/ — otherwise this would fail on an
+  // unrelated MODULE_NOT_FOUND for @clack/prompts before ever reaching the
+  // guard being tested. package.json is included so Node's ESM loader knows
+  // this tree is `"type": "module"` — without it, the bare `src/*.js` files
+  // fall back to being interpreted as CommonJS, and `export`/`import` syntax
+  // fails with an unrelated SyntaxError before the guard under test runs.
   const scratch = mkTemp('create-tess-corrupted-install-');
   for (const dir of ['bin', 'src', 'node_modules']) {
     const cp = spawnSync('cp', ['-R', join(PKG_DIR, dir), join(scratch, dir)], { encoding: 'utf8' });
     assert.equal(cp.status, 0, `failed to stage ${dir}/ for the corrupted-install fixture\nSTDERR:\n${cp.stderr}`);
   }
+  cpSync(join(PKG_DIR, 'package.json'), join(scratch, 'package.json'));
   const entry = join(scratch, 'bin', 'create-tess.mjs');
   assert.ok(existsSync(entry) && !existsSync(join(scratch, 'template')));
 

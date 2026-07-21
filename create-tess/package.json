@@ -21,7 +21,7 @@
   "scripts": {
     "start": "node bin/create-tess.mjs",
     "smoke": "node bin/create-tess.mjs",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "build-template": "node scripts/build-template.mjs",
     "prepack": "node scripts/build-template.mjs"
   },
