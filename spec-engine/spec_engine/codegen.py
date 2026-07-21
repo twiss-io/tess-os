@@ -69,12 +69,51 @@ fixed before this function runs). Given the SAME `spec` + `scaffold_plan`
 + `target_stack`, every generated file's content is byte-identical across
 runs — see `tests/spec_engine/test_codegen.py::
 test_generate_app_is_deterministic_given_a_fixed_plan`.
+
+## Atomicity
+
+`generate_app()` never writes into the caller's real `target_dir` while
+generation is in progress. Every file — every model/page/flow/
+integration/infrastructure file, `.spec-engine/codegen-manifest.json`,
+and `write_scaffold_stub()`'s own artifacts (`SPEC.md`, `spec.json`,
+`.spec-engine/scaffold-plan.json`, `CLAUDE.md`/`AGENTS.md`) — is written
+into a same-filesystem STAGING directory first; the complete result is
+then swapped into `target_dir` with exactly one atomic `os.replace()`.
+A process killed at ANY point — mid-write of a single file, or between
+the manifest write and `write_scaffold_stub()`'s own writes (the
+historical failure mode: a manifest claiming `codegen_status:
+"generated"` while `SPEC.md`/`CLAUDE.md` are still missing) — leaves
+`target_dir` either exactly as `generate_app()` found it (absent, empty,
+or its own prior content) or the complete, `codegen_status: "generated"`
+tree. There is no instant at which `target_dir` can be observed holding
+a partial file tree. See `generate_app()`, `_write_generated_app_tree()`,
+and `_publish_staged_app()` for the full mechanism, and
+`tests/spec_engine/test_codegen_atomic_staging.py` for the kill-proof
+proof.
+
+Publishing OVER pre-existing `target_dir` content needs a second rename
+in addition to the first (see `_publish_staged_app()`'s docstring for
+why) — a kill exactly between those two renames would, left unhandled,
+leave that prior content orphaned in an untracked sibling with nothing
+pointing back to it, then PERMANENTLY and SILENTLY destroyed by the very
+next regeneration (the natural post-crash "just re-run it" recovery
+action), since that next run would see `target_dir` absent and treat it
+as a first-ever generation. `generate_app()` closes this window itself:
+on EVERY call, before it decides whether `target_dir` has existing
+content, it first checks for and repairs exactly this interrupted-swap
+state (`_recover_interrupted_publish()`) — so any orphaned prior content
+is restored before this run ever gets a chance to treat `target_dir` as
+empty. This check runs unconditionally on every call, not just after a
+known crash.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -273,7 +312,19 @@ def generate_app(
     mismatch), or the plan's per-kind module counts don't match the
     spec's own lists (a stale/hand-edited plan) — see module docstring
     for the target-stack choice and the per-module generation-status
-    contract this function honors."""
+    contract this function honors.
+
+    Atomic (see module docstring's "Atomicity" section): the full tree is
+    staged in a same-filesystem sibling directory and swapped into
+    `target_dir` with exactly one `os.replace()` only after every file —
+    including the manifest — has been written. A process killed at any
+    point leaves `target_dir` either exactly as found or the complete,
+    `codegen_status: "generated"` tree; never a partial mix. Every call
+    also first repairs any interrupted rename-aside-swap left behind by a
+    PRIOR killed call before doing anything else (see
+    `_recover_interrupted_publish()`) — so a kill between
+    `_publish_staged_app()`'s two renames never causes the next call to
+    silently discard real prior `target_dir` content."""
     if target_stack not in SUPPORTED_TARGET_STACKS:
         raise SpecEngineError(
             f"generate_app: target_stack {target_stack!r} is not supported "
@@ -289,7 +340,163 @@ def generate_app(
             "regenerate the plan from this exact spec before generating code."
         )
 
-    root = Path(target_dir)
+    final_root = Path(target_dir)
+    final_root.parent.mkdir(parents=True, exist_ok=True)
+    # MUST run before `has_existing_content` is decided below: repairs any
+    # rename-aside-swap a PRIOR call left interrupted (see
+    # `_recover_interrupted_publish()`'s docstring) so that leftover state
+    # is never mistaken for "target_dir has always been empty" by this
+    # call. Unconditional — cheap (two `Path.exists()` checks) on the
+    # overwhelmingly common case where there is nothing to recover.
+    _recover_interrupted_publish(final_root)
+    # "Has real content to preserve" is NOT the same as `.exists()`: every
+    # real caller today (orchestrator/pipeline.py, and pytest's own
+    # `tmp_path` fixture in every test in this suite) hands generate_app()
+    # a directory that already EXISTS but is EMPTY — and POSIX `rename(2)`
+    # is perfectly happy replacing an empty directory (see
+    # `_publish_staged_app()`), so only a genuinely NON-empty `target_dir`
+    # needs the slower preserve-and-swap path. Evaluated AFTER recovery
+    # above, so a just-restored prior tree is correctly seen as existing
+    # content, not as an empty/absent `target_dir`.
+    has_existing_content = final_root.exists() and any(final_root.iterdir())
+    stage_root = Path(
+        tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-stage-", dir=str(final_root.parent))
+    )
+    try:
+        if has_existing_content:
+            # `write_scaffold_stub()` (called at the end of
+            # `_write_generated_app_tree()`) MERGES with an
+            # already-present CLAUDE.md/AGENTS.md rather than overwriting
+            # it — staging must start from a real copy of `target_dir`'s
+            # current content for that merge to see the same state it
+            # would have seen writing into `target_dir` directly, not an
+            # empty directory.
+            #
+            # Neither `copytree(symlinks=True)` nor the default
+            # `symlinks=False` is safe alone for a tree this module must
+            # treat as coming from a less-trusted actor than the process
+            # calling `generate_app()` (planting a path in `target_dir`
+            # before a regenerate call is this module's own documented,
+            # supported workflow — human-edited CLAUDE.md/AGENTS.md,
+            # git-committed app trees — not a privileged position):
+            #
+            #   - `symlinks=True` PRESERVES symlinks in the staged copy,
+            #     but every write below (`_write_file()` ->
+            #     `Path.write_text()`) follows symlinks unconditionally and
+            #     always targets the SAME fixed, generated-content
+            #     relative paths (e.g. `.spec-engine/codegen-manifest.json`)
+            #     on every call — a symlink planted at one of those paths
+            #     let an ordinary regeneration write generated content
+            #     straight THROUGH it to wherever it pointed, including
+            #     outside `target_dir` entirely (PR #156 review round 2,
+            #     Cyra, CRITICAL — verified working exploit). WRITE-THROUGH.
+            #   - `symlinks=False` (the default) DEREFERENCES any symlink
+            #     it finds — which closes the write-through vector above
+            #     (the later write lands harmlessly on the dereferenced
+            #     plain-file copy inside the disposable `stage_root`) but
+            #     opens its mirror image: a symlink at ANY relative path
+            #     in the tree (not just the small set of fixed generated
+            #     ones) has its TARGET's file content copied into the
+            #     staged — and, for a relative path nothing downstream
+            #     ever overwrites, the PUBLISHED — tree: a disclosure
+            #     primitive (PR #156 review round 3, Cyra AND Reid,
+            #     independently reproduced with separate PoCs, HIGH).
+            #     READ-DEREFERENCE.
+            #
+            # The only answer that closes both at once, with one rule
+            # instead of two different ones for different classes of
+            # path, is to never copy a symlink at all: refuse outright
+            # and fail loud, before `copytree()` (or anything else) ever
+            # touches it — mirroring this exact module's own established
+            # "never silently guess" pattern already applied to the
+            # rename-aside path in `_recover_interrupted_publish()`. See
+            # `_refuse_symlinks_in_existing_content()`,
+            # `test_regenerate_over_existing_symlink_write_through_is_blocked`,
+            # and
+            # `test_regenerate_over_existing_symlink_read_dereference_is_blocked`.
+            _refuse_symlinks_in_existing_content(final_root)
+            shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
+        result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
+        # Publishing is inside this same try/except: an exception raised
+        # by `_publish_staged_app()` itself (its own internal
+        # restore-on-exception handling notwithstanding) must still clean
+        # up `stage_root` here — `_publish_staged_app()` only ever
+        # consumes `stage_root` (renames it away) on the success path, so
+        # this cleanup is always safe to attempt, and a no-op
+        # (`ignore_errors=True`) on that success path since the path no
+        # longer exists under its staging name by then.
+        _publish_staged_app(stage_root, final_root, has_existing_content=has_existing_content)
+    except BaseException:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+    # `result.written`'s Path values were built against `stage_root`
+    # (renamed away by the publish above — that inode now IS
+    # `final_root`); rebind them so callers see real, live paths under
+    # `target_dir`, exactly as if generation had written there directly.
+    result.written = {rel: final_root / rel for rel in result.written}
+    return result
+
+
+def _refuse_symlinks_in_existing_content(root: Path) -> None:
+    """Called by `generate_app()` immediately before `shutil.copytree(root,
+    stage_root, ...)` in the `has_existing_content=True` branch — refuses
+    (fails loud) rather than copy through ANY symlink found anywhere in
+    `root` (the pre-existing `target_dir` content being staged for the
+    CLAUDE.md/AGENTS.md-merge regenerate-over-existing path; see
+    `generate_app()`'s call site for the full write-vs-read tradeoff this
+    closes).
+
+    Pre-walks `root` with `os.walk(..., followlinks=False)` — so a
+    symlinked directory is reported in `dirnames` but never descended
+    into, which matters here: without it, anything nested BELOW a
+    symlinked directory would silently never be visited by this check at
+    all — and `os.path.islink()` (an `os.lstat()`-based check that does
+    NOT itself follow the link, consistent with
+    `_recover_interrupted_publish()`'s own aside-path check) on `root`
+    itself and on every directory and file entry `os.walk` yields. Raises
+    `SpecEngineError` naming the offending path on the FIRST symlink
+    found — this function never dereferences (read-leak risk) or
+    recreates (write-through risk) a symlink; it only ever looks at it
+    long enough to name it in the error and stop."""
+    if os.path.islink(root):
+        raise SpecEngineError(
+            f"generate_app: {root} (target_dir) is itself a symlink. Regenerating over "
+            "pre-existing content requires target_dir to be a real directory — refusing to "
+            "stage through a symlinked target_dir, which could silently read from, or write "
+            "through to, wherever it points."
+        )
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in sorted(dirnames) + sorted(filenames):
+            candidate = os.path.join(dirpath, name)
+            if os.path.islink(candidate):
+                raise SpecEngineError(
+                    f"generate_app: {candidate} is a symlink inside pre-existing target_dir "
+                    f"content ({root}). Regenerating over existing content stages that content "
+                    "into a staging directory first (so write_scaffold_stub()'s "
+                    "CLAUDE.md/AGENTS.md-merge logic sees the same state it would have seen "
+                    "writing into target_dir directly) — a symlink anywhere in that tree is "
+                    "either silently DEREFERENCED by the copy (pulling whatever it points at, "
+                    "including files outside target_dir, into the staged and potentially "
+                    "published tree — a disclosure risk) or, if a later generated-content write "
+                    "follows it, an overwrite-through primitive to wherever it points (PR #156 "
+                    "review round 2, CRITICAL). Neither is safe to guess at: remove or replace "
+                    f"{candidate} with a real file or directory before regenerating."
+                )
+
+
+def _write_generated_app_tree(
+    root: Path, spec: SpecDocument, plan: ScaffoldPlan, target_stack: str
+) -> CodegenResult:
+    """The actual per-module/infrastructure/manifest generation — every
+    file this writes goes into `root`, which is ALWAYS a STAGING
+    directory (see `generate_app()`, the only caller); this function has
+    no awareness that `root` is not the caller's real `target_dir` and
+    does not need any — atomicity is entirely `generate_app()`'s
+    responsibility via `_publish_staged_app()`, not this one's. Unchanged
+    by the atomic-staging fix other than taking `root`/`plan`/
+    `target_stack` as explicit parameters instead of closing over
+    `target_dir`."""
     root.mkdir(parents=True, exist_ok=True)
 
     by_kind: Dict[str, List[ScaffoldModule]] = {}
@@ -597,6 +804,186 @@ def _write_file(root: Path, rel_path: str, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _swap_aside_path(final_root: Path) -> Path:
+    """The ONE, deterministic sibling path `_publish_staged_app()` ever
+    renames `final_root`'s prior content aside to, for the duration of the
+    two-rename swap described in its docstring below. Deterministic (not
+    a `tempfile.mkdtemp()`-style random suffix) is the point: it lets
+    `_recover_interrupted_publish()` find — unambiguously, on ANY later
+    call — whether THIS `target_dir`'s swap was left interrupted, without
+    having to guess which of possibly-several random-suffixed siblings
+    might be the one that matters. A random name is exactly what let the
+    original data-loss bug happen: nothing pointed back to it."""
+    return final_root.parent / f".{final_root.name}.codegen-prev"
+
+
+def _recover_interrupted_publish(final_root: Path) -> None:
+    """Called unconditionally at the very start of every `generate_app()`
+    call, before `has_existing_content` is decided — repairs the ONE
+    state a hard kill between `_publish_staged_app()`'s two `os.replace()`
+    calls (the `has_existing_content=True` branch) can leave behind:
+    `final_root` swapped aside to `_swap_aside_path(final_root)` but never
+    swapped back, because the process died before the second rename ran.
+
+    Left unrepaired, the NEXT call against the same `target_dir` — the
+    natural "just re-run it" recovery action after a crash — would see
+    `final_root` absent, treat this as a first-ever generation, and
+    silently publish fresh content straight over it: the real prior
+    content sitting in the aside directory would never be looked at
+    again, and is destroyed the moment this run's own publish succeeds.
+    This function closes that window by restoring the aside BEFORE this
+    run (or any run) gets a chance to draw that wrong conclusion; once
+    restored, `generate_app()`'s normal `has_existing_content` handling
+    takes back over and re-does the swap correctly.
+
+    The other interrupted-cleanup case — the second rename succeeded (so
+    `final_root` already holds the complete, correct new content) but the
+    final `shutil.rmtree(aside, ...)` never ran — is also repaired here:
+    the aside is stale prior content at that point, safe to discard.
+
+    Any state this function cannot safely reconcile — concretely, the
+    aside path existing but not being a directory (including a symlink,
+    whether it resolves to a directory or not), which nothing in this
+    module ever creates — is a genuinely ambiguous situation (something
+    outside `_publish_staged_app()`'s own two-rename sequence put
+    something there) and is never silently guessed at: this raises
+    `SpecEngineError` rather than risk restoring, or discarding, the
+    wrong thing."""
+    aside = _swap_aside_path(final_root)
+
+    # Symlink check FIRST, via `os.path.islink()` (an `os.lstat()`-based
+    # check that does NOT follow the link) — before anything below that
+    # WOULD follow it (`Path.exists()` and `Path.is_dir()` both resolve
+    # through symlinks). `_publish_staged_app()`'s two `os.replace()`
+    # calls only ever move a real directory into/out of this exact path,
+    # so a symlink here is never something this module itself created;
+    # its presence is genuinely ambiguous and must fail loud rather than
+    # be silently followed (PR #156 review round 2, Cyra, MEDIUM: the
+    # prior `aside.is_dir()` check would have let a planted symlink either
+    # bypass the stale-aside `rmtree` below — `rmtree` refuses to operate
+    # on a top-level symlink and `ignore_errors=True` swallows that
+    # refusal — or, worse, get renamed onto `final_root` by the restore
+    # branch, making `target_dir` itself become a symlink to wherever the
+    # symlink pointed). `os.path.islink()` returns False for a
+    # non-existent path, so this is safe to check unconditionally, before
+    # the existence check below.
+    if os.path.islink(aside):
+        raise SpecEngineError(
+            f"generate_app: {aside} exists and is a symlink. This path is reserved for "
+            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+            "creates it as a symlink — refusing to follow it (which could restore a symlink onto "
+            f"{final_root} or silently no-op past it during stale-aside cleanup) or guess whether it "
+            f"is safe to remove outright. Move or remove {aside} by hand (after confirming what it "
+            "actually is) before regenerating."
+        )
+
+    if not aside.exists():
+        # The overwhelmingly common case: no prior swap was ever
+        # interrupted (either none was ever attempted against this
+        # `target_dir`, or the last one that was ran to completion,
+        # cleanup included). Nothing to reconcile.
+        return
+
+    if not aside.is_dir():
+        raise SpecEngineError(
+            f"generate_app: {aside} exists but is not a directory. This path is reserved for "
+            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+            "creates it as anything else — refusing to guess whether it is safe to restore into "
+            f"{final_root} or delete outright. Move or remove {aside} by hand (after confirming "
+            "what it actually is) before regenerating."
+        )
+
+    if not final_root.exists():
+        # Interrupted between the two os.replace() calls: the original
+        # content is intact in `aside`; `final_root` is absent. Restore
+        # it FIRST so this run — and every check `generate_app()` makes
+        # after this one returns — sees the real, pre-crash state.
+        os.replace(aside, final_root)
+        return
+
+    # `final_root` exists AND `aside` exists: the second rename already
+    # completed (`final_root` holds the fully-published new content) but
+    # the trailing `shutil.rmtree(aside, ...)` cleanup step never ran.
+    # `aside` is stale prior content now — safe to discard.
+    shutil.rmtree(aside, ignore_errors=True)
+
+
+def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_content: bool) -> None:
+    """The ONE moment `generate_app()` ever touches `final_root` (the
+    caller's real `target_dir`): a same-filesystem `os.replace()` — a
+    single atomic rename syscall — swaps the fully-written `stage_root`
+    into `final_root`'s place. Nothing before this call has written
+    anything to `final_root` itself, so a process killed at any point up
+    to (but not including) this call leaves `final_root` exactly as
+    `generate_app()` found it — absent, empty, or its own prior content,
+    NEVER a codegen-produced partial file. The rename syscall cannot be
+    observed half-done: a reader of `final_root` sees either the old
+    state or the complete new tree, never a mix of the two.
+
+    When `final_root` already held real content (`has_existing_content`),
+    a direct `os.replace(stage_root, final_root)` is refused by the OS —
+    POSIX `rename(2)` only replaces a directory target that is missing or
+    EMPTY, never a non-empty one (verified empirically on this repo's
+    target platforms: `os.replace()` onto an existing non-empty directory
+    raises `OSError: [Errno 66] Directory not empty` on macOS/BSD, or
+    `OSError: [Errno 39] Directory not empty` on Linux — the code below
+    does not branch on the errno value either way, since the safe
+    two-rename path is always taken whenever `has_existing_content` is
+    true, regardless of platform) — so the prior tree is first atomically
+    renamed aside to `_swap_aside_path(final_root)` (still exactly one
+    atomic rename; a DETERMINISTIC path, not a random one — see that
+    function's docstring for why), `stage_root` then takes `final_root`'s
+    place, and the aside is removed.
+
+    Between those two renames `final_root` is briefly ABSENT. UNLIKE a
+    first-ever generation's absence, this is not a state with nothing to
+    lose: real, previously-committed `target_dir` content is, at that
+    instant, sitting only in the aside directory. A kill exactly here
+    does not corrupt or partially-mix anything (`final_root` is cleanly
+    absent, never a mix of old and new), but it DOES leave that real
+    content orphaned — recoverable only because `generate_app()`
+    unconditionally checks for and repairs exactly this state on every
+    call, before this function ever runs again (see
+    `_recover_interrupted_publish()`). This function does not, and
+    structurally cannot, defend against that kill window by itself — it
+    is two syscalls with nothing to catch a `SIGKILL` between them; the
+    recovery guarantee lives one level up, in `generate_app()`, by
+    design."""
+    if not has_existing_content:
+        os.replace(stage_root, final_root)
+        return
+
+    aside = _swap_aside_path(final_root)
+    if aside.exists():
+        # `_recover_interrupted_publish()` unconditionally reconciles or
+        # clears this exact path at the start of every `generate_app()`
+        # call, before staging even begins — by construction, it should
+        # never exist here. If it does anyway (e.g. a second
+        # `generate_app()` call racing this one against the same
+        # `target_dir` — concurrent calls are not a supported use of this
+        # function), fail loud rather than silently clobber whatever is
+        # in it or lose track of `final_root`'s current content.
+        raise SpecEngineError(
+            f"_publish_staged_app: {aside} already exists immediately before the rename-aside-swap "
+            "it is reserved for. generate_app()'s _recover_interrupted_publish() should already "
+            "have reconciled or cleared this path — its unexpected presence here most likely means "
+            "a concurrent generate_app() call is racing this one against the same target_dir "
+            "(not supported); refusing to publish rather than risk clobbering or losing content."
+        )
+
+    os.replace(final_root, aside)
+    try:
+        os.replace(stage_root, final_root)
+    except BaseException:
+        # Both renames' preconditions are already satisfied by the time
+        # the first one runs; nothing in this module can make the second
+        # one fail after the first succeeds. Restore rather than leave
+        # `final_root` absent if it somehow does anyway.
+        os.replace(aside, final_root)
+        raise
+    shutil.rmtree(aside, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
