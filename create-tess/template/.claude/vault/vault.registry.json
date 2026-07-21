@@ -1,0 +1,12 @@
+{
+  "_doc": "vault.registry.json — ECOSYSTEM catalog. NO VALUES. Describes services/refs/consumers/exposure. Safe to commit. This is a NEUTRAL EXAMPLE — replace it with your own services as you onboard secrets via `tessctl vault set`. See: conductor/vault.md",
+  "services": {
+    "example": {
+      "keys": ["example/api_key"],
+      "consumers": {"agents": ["YourAgent"], "mcp": ["your-mcp-server"]},
+      "exposure": "host-env",
+      "rotation": "https://example.com/account/api-tokens",
+      "rotate_days": 90
+    }
+  }
+}

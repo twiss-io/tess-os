@@ -1,0 +1,205 @@
+/*
+  Tess OS Mission Control — zone 3: Live Mission View (Focus tier).
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.live-view {
+  max-width: 900px;
+  margin: 0 auto;
+  position: relative;
+  background: var(--color-focus);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  opacity: 0;
+  animation: fade-in 220ms var(--ease-deck) forwards;
+}
+
+.live-view[hidden] {
+  display: none;
+}
+
+.live-view::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+  pointer-events: none;
+  box-shadow: var(--shadow-focus-glow);
+  opacity: 0;
+}
+
+.live-view[data-state='running']::after {
+  animation: focus-breathe 2.4s ease-in-out infinite;
+}
+
+.live-view[data-state='running'] {
+  border-color: var(--color-accent);
+}
+
+.live-view[data-state='done'] {
+  border-color: var(--color-success);
+  animation: fade-in 220ms var(--ease-deck) forwards, success-flash 900ms var(--ease-deck) forwards;
+}
+
+.live-view[data-state='error'] {
+  border-color: var(--color-error);
+}
+
+.live-view[data-state='stopped'] {
+  border-color: var(--color-warning);
+}
+
+.live-view__scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+    100deg,
+    transparent 0%,
+    var(--color-accent-glow) 45%,
+    transparent 55%
+  );
+  background-size: 220% 100%;
+  opacity: 0;
+}
+
+.live-view[data-state='running'] .live-view__scanline {
+  opacity: 1;
+  animation: scanline-sweep 2.8s linear infinite;
+}
+
+.live-view__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+  position: relative;
+}
+
+.live-view__back {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+}
+
+.live-view__back:hover {
+  color: var(--color-accent);
+}
+
+.live-view__back:active {
+  color: var(--color-text-primary);
+}
+
+.live-view__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.live-view__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.live-view[data-state='running'] .live-view__status-dot {
+  background: var(--color-accent);
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+.live-view[data-state='done'] .live-view__status-dot {
+  background: var(--color-success);
+}
+
+.live-view[data-state='error'] .live-view__status-dot {
+  background: var(--color-error);
+}
+
+.live-view[data-state='stopped'] .live-view__status-dot {
+  background: var(--color-warning);
+}
+
+.live-view__title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.live-view__summary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.live-view__stop {
+  flex: 0 0 auto;
+}
+
+.live-view__log {
+  position: relative;
+  padding: var(--space-4) var(--space-5);
+  max-height: 60vh;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.log-line {
+  display: flex;
+  gap: var(--space-2);
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line--enter {
+  animation: log-enter 140ms var(--ease-deck);
+}
+
+.log-line--system {
+  color: var(--color-text-muted);
+}
+
+.log-line--assistant {
+  color: var(--color-text-primary);
+}
+
+.log-line--stderr {
+  color: var(--color-error);
+  opacity: 0.85;
+}
+
+.log-line--raw {
+  color: var(--color-text-secondary);
+}
+
+.log-line__tool {
+  color: var(--color-text-secondary);
+  background: var(--color-overlay);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  align-self: flex-start;
+}
+
+.live-view__banner {
+  margin: 0 var(--space-5) var(--space-3);
+  font-size: 11px;
+  color: var(--color-warning);
+}

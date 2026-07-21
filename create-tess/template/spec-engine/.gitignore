@@ -1,0 +1,6 @@
+# Local plan/spec/approval log output (component default sink) — a
+# per-checkout debug artifact, not something a PR should ever carry.
+specs/*.jsonl
+!specs/.gitkeep
+__pycache__/
+*.pyc

@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/retry.schema.json",
+  "title": "Typed Retry Attempt Contract",
+  "description": "Machine-checkable form of one logged retry attempt in a mission's retry ledger — Goal #5 / docs/ULTIMATE_FRAMEWORK_PLAN.md §C4 ('retry ledger in the mission record: missions/<id>/retries/<task>.attempt-N.md — front-matter: failure state, cause class, what-the-brief-changed; enforced: attempt N+1's brief must differ from attempt N's when cause != transient — a literal diff check'). `failure_state` is conductor/subagent-failure-protocol.md's five-state table verbatim; `cause_class` is its four-class cause-classification table verbatim. This schema validates the SHAPE of one attempt file; the cross-attempt rules (the 3-attempt cap, the same-brief-forbidden-for-non-transient-causes rule) are NOT expressible against a single instance in isolation — they are enforced by `tessctl retry check`/`retry log`, which read the sibling attempt files in `missions/<id>/retries/` before deciding whether a new attempt may even be written (see `_retry_precheck` in `.tess/bin/tessctl`'s MISSION LEDGER region). Flat at the top level (no `retry` wrapper key) — same rationale as mission.schema.json: the primary authored form is a `.md` file with YAML front-matter, where flat keys read most naturally.",
+  "type": "object",
+  "properties": {
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Ties to the mission-states.md FSM record this attempt belongs to (same field name/meaning as crew-plan.schema.json and return-manifest.schema.json's own `mission_id`)."
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The task id this retry attempt belongs to — matches a crew-plan Task.id / return-manifest.task_id."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "description": "subagent-failure-protocol.md 'Attempt Cap — 3': 'Maximum 3 total attempts on the same task.' A hand-authored attempt-4 file is schema-invalid on its face, belt-and-suspenders alongside `tessctl retry log`'s own refusal to ever write one."
+    },
+    "failure_state": {
+      "type": "string",
+      "enum": ["empty", "partial", "degraded", "timeout", "error"],
+      "description": "subagent-failure-protocol.md 'Failure States' table, verbatim (its five rows: Empty return, Partial return, Degraded output, Timeout, Error)."
+    },
+    "cause_class": {
+      "type": "string",
+      "enum": ["transient", "context-gap", "wrong-approach", "wrong-task"],
+      "description": "subagent-failure-protocol.md 'Cause Classification' table, verbatim. Retry rule per class: transient permits a same-brief retry; the other three forbid one ('Same-brief retries are forbidden for every non-transient cause') — enforced by `tessctl retry check`/`retry log`, not by this schema node."
+    },
+    "brief_digest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the whitespace-normalized dispatch brief. The retry ledger stores this commitment, never dispatch-brief plaintext, so the same-brief rule remains deterministic without persisting potentially confidential operator instructions."
+    },
+    "brief_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "UTF-8 byte length of the whitespace-normalized dispatch brief, stored beside the digest as a transparent format/integrity guard."
+    },
+    "brief_change_code": {
+      "type": "string",
+      "enum": ["initial", "changed-brief", "same-brief-transient", "migrated-legacy"],
+      "description": "Controlled, value-free explanation of the retry relation. Free-text notes are deliberately not persisted in retry records."
+    },
+    "logged_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp of `tessctl retry log`."
+    },
+    "logged_by": {
+      "type": "string",
+      "description": "Who ran `tessctl retry log` (defaults to the OS user)."
+    }
+  },
+  "required": ["mission_id", "task", "attempt", "failure_state", "cause_class", "brief_digest_sha256", "brief_length", "brief_change_code", "logged_at"],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

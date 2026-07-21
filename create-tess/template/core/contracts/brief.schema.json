@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/brief.schema.json",
+  "title": "Dispatch Brief Contract",
+  "description": "Machine-checkable form of the Dispatch Brief Contract. Grounded verbatim in conductor/dispatch-brief.md ('The Six Required Fields', 'Decomposition Rule', 'Destructive Operations — Mandatory 3-Step Dispatch', 'Recommended Optional Field — Prior Incidents') and the machine-key mapping conductor/orchestra-model.md §3.1 uses for a crew-plan task's `brief:` block ('the six-field Dispatch Brief Contract — VERBATIM REQUIRED'). Phase 0 of ULTIMATE_FRAMEWORK_PLAN.md, Design Decision #3 ('Contracts become schemas'): an instance that fails this schema is a schema-miss, classified degraded_output by `tessctl validate` per conductor/subagent-failure-protocol.md.",
+  "type": "object",
+  "properties": {
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "dispatch-brief.md field 1 — one sentence describing success for THIS agent, not the mission overall."
+    },
+    "output_contract": {
+      "type": "string",
+      "minLength": 1,
+      "description": "dispatch-brief.md field 2 — file path, format, required sections. Not \"a good analysis\" but \"a markdown file at [path] with sections [X, Y, Z]\"."
+    },
+    "tools_sources_constraints": {
+      "type": "string",
+      "minLength": 1,
+      "description": "dispatch-brief.md field 3 — tools/primary-artifact pointers/constraints. Carries the evidence requirement: every factual claim in the return must be grounded in a primary artifact the agent itself read or a tool call it itself ran; inference must be labeled as inference."
+    },
+    "not_responsible_for": {
+      "type": "string",
+      "minLength": 1,
+      "description": "dispatch-brief.md field 4 — the one line that prevents scope bleed into the adjacent agent's territory."
+    },
+    "milestones": {
+      "type": "array",
+      "description": "dispatch-brief.md field 5 — required for tasks estimated >15 minutes or production-touching (Decomposition Rule); optional otherwise. Modeled as an always-present key (empty array when the rule does not apply) so the contract stays deterministic; see the conditional requirement below.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "deliverable": { "type": "string", "minLength": 1 },
+          "acceptance_evidence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Named acceptance-evidence artifact: tool output, file diff, curl response, test result."
+          },
+          "owner": { "type": "string", "minLength": 1 }
+        },
+        "required": ["deliverable", "acceptance_evidence", "owner"],
+        "additionalProperties": false
+      }
+    },
+    "escalation_trigger": {
+      "type": "string",
+      "minLength": 1,
+      "description": "dispatch-brief.md field 6 — the condition that requires the agent to stop and surface to the conductor rather than proceeding."
+    },
+    "prod_touching": {
+      "type": "boolean",
+      "description": "Phase-0 machine-checkable proxy for the Decomposition Rule's 'or touching production' trigger. Not itself one of the prose six fields — added so the milestones-required condition is schema-enforceable rather than left to model judgment."
+    },
+    "estimated_minutes": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Phase-0 machine-checkable proxy for the Decomposition Rule's '>15 minutes' trigger."
+    },
+    "destructive": {
+      "type": "boolean",
+      "description": "Marks a brief covering a destructive operation. dispatch-brief.md: 'Never one-shot a destructive operation' — the mandatory 3-step pattern (verify/snapshot → report + go/no-go → execute) is a dispatch-sequencing rule the conductor enforces across the three dispatches; this flag lets a gate spine detect a destructive brief that skips straight to an execute-only step (see `step` below)."
+    },
+    "step": {
+      "type": "string",
+      "enum": ["verify", "go-no-go", "execute"],
+      "description": "Which leg of the mandatory 3-step destructive dispatch this brief is (only meaningful when destructive: true)."
+    },
+    "prior_incidents": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "dispatch-brief.md 'Recommended Optional Field — Prior Incidents': relevant memory/feedback_* lessons pulled into the brief."
+    }
+  },
+  "required": [
+    "objective",
+    "output_contract",
+    "tools_sources_constraints",
+    "not_responsible_for",
+    "milestones",
+    "escalation_trigger"
+  ],
+  "additionalProperties": false,
+  "if": {
+    "anyOf": [
+      {
+        "required": ["prod_touching"],
+        "properties": { "prod_touching": { "const": true } }
+      },
+      {
+        "required": ["estimated_minutes"],
+        "properties": { "estimated_minutes": { "exclusiveMinimum": 15 } }
+      }
+    ]
+  },
+  "then": {
+    "properties": {
+      "milestones": {
+        "minItems": 1
+      }
+    },
+    "$comment": "Operationalizes the Decomposition Rule: 'Any task estimated at more than 15 minutes or touching production is decomposed into milestones before dispatch.' A weak agent cannot satisfy the schema by declaring prod_touching:true or estimated_minutes>15 while leaving milestones empty."
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["destructive"],
+        "properties": { "destructive": { "const": true } }
+      },
+      "then": {
+        "required": ["step"]
+      },
+      "$comment": "M1 (Fable adversarial review, cheap MEDIUM): dispatch-brief.md's 'Destructive Operations — Mandatory 3-Step Dispatch' (verify/snapshot -> report + go/no-go -> execute) depends on each destructive brief declaring which leg it is. Without this, a `destructive: true` brief with no `step` is indistinguishable from a one-shot destructive dispatch — exactly what the mandatory 3-step pattern exists to forbid. Forces `step` (verify|go-no-go|execute) to be present whenever `destructive: true`."
+    }
+  ],
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

@@ -1,0 +1,649 @@
+"""
+M2 polish tests — bench/recruit shared resolver + roster-apply status-after-write +
+staged-missing WARN in doctor/verify + real-config integrity guard.
+
+(a) Guard test — loads the REAL .tess/core/roster-paths.json + the REAL .tess/tess.lock
+    and asserts every referenced name (universal_base + each path's squad + orchestrators)
+    resolves to an agents-dispatch/ lock entry.
+
+(b) bench <path-group> — benches squad + orchestrators but NOT the universal base
+    (leah/eva must never be benched by a group expansion).
+
+Additional coverage wired to the three fixes in this pass:
+  - Fix 1: bench path-group expansion (b) + bench raises on unknown name
+  - Fix 2: _roster_apply sets status ONLY after guarded_write succeeds; missing core
+           file does not leave a false core-managed status or inflate installed count
+  - Fix 3: staged entry with missing core → STAGED-WARN in doctor (non-failing);
+           staged entry with missing core → STAGED-WARN in verify (non-failing);
+           staged entry with no live_path in lock → STAGED-WARN in doctor/verify
+"""
+
+from __future__ import annotations
+
+import json
+import types
+from pathlib import Path
+
+import pytest
+
+from conftest import REPO_ROOT, ns, _load_engine
+
+# ---------------------------------------------------------------------------
+# Squad constants (mirrors test_curated_squad.py — kept local so these tests
+# are self-contained and robust to membership changes in the production config).
+# ---------------------------------------------------------------------------
+
+UNIVERSAL_BASE = ["leah", "eva"]
+
+FOUNDERS_SQUAD = ["athena", "apolline", "zelie"]
+FOUNDERS_ORCH = ["founders-office-orchestrator", "revenue-orchestrator"]
+FOUNDERS_INSTALL_SET = set(UNIVERSAL_BASE + FOUNDERS_SQUAD + FOUNDERS_ORCH)
+
+BUILDERS_SQUAD = ["elena", "ada", "iris", "quinn", "reid"]
+BUILDERS_ORCH = ["product-delivery-orchestrator"]
+
+OPERATORS_SQUAD = ["adrienne", "evangeline", "clio"]
+OPERATORS_ORCH = ["operational-reliability-orchestrator", "client-experience-orchestrator"]
+
+NOISE = ["vega", "cyra", "freya"]
+
+ALL_AGENTS = (
+    UNIVERSAL_BASE
+    + BUILDERS_SQUAD + BUILDERS_ORCH
+    + FOUNDERS_SQUAD + FOUNDERS_ORCH
+    + OPERATORS_SQUAD + OPERATORS_ORCH
+    + NOISE
+)
+
+ROSTER = {
+    "_doc": "test squad config",
+    "universal_base": UNIVERSAL_BASE,
+    "paths": {
+        "founders": {"squad": FOUNDERS_SQUAD, "orchestrators": FOUNDERS_ORCH},
+        "builders": {"squad": BUILDERS_SQUAD, "orchestrators": BUILDERS_ORCH},
+        "operators": {"squad": OPERATORS_SQUAD, "orchestrators": OPERATORS_ORCH},
+    },
+}
+
+
+def _core_key(name: str) -> str:
+    return f".tess/core/agents-dispatch/{name}.md"
+
+
+def _live(name: str) -> str:
+    return f".claude/agents/{name}.md"
+
+
+def _write_roster_config(project, roster=ROSTER) -> None:
+    rp = project.root / ".tess" / "core" / "roster-paths.json"
+    rp.parent.mkdir(parents=True, exist_ok=True)
+    rp.write_text(json.dumps(roster, indent=2), encoding="utf-8")
+
+
+def _build_squad_project(project):
+    for name in ALL_AGENTS:
+        project.add(
+            _live(name),
+            f"# {name}\n\nDispatch brief for {name}.\n",
+            core_key=_core_key(name),
+            status="core-managed",
+        )
+    _write_roster_config(project)
+    project.write()
+    return project
+
+
+def _statuses(project) -> dict:
+    lock = project.lock()
+    return {
+        name: lock["files"][_core_key(name)]["status"]
+        for name in ALL_AGENTS
+    }
+
+
+# ===========================================================================
+# (a) REAL-CONFIG GUARD — every name in roster-paths.json resolves to a lock entry
+# ===========================================================================
+
+class TestRosterConfigGuard:
+    """
+    Integrity check: load the REAL roster-paths.json and the REAL tess.lock from
+    the repo root and assert every agent name referenced in the config has a
+    corresponding agents-dispatch/ entry in the lock.
+
+    This acts as a typo guard: if a name is added to roster-paths.json but the
+    matching .tess/core/agents-dispatch/<name>.md file (and lock entry) is not
+    created, this test catches it immediately.
+    """
+
+    @pytest.fixture(scope="class")
+    def real_data(self):
+        mod = _load_engine()
+        roster_path = REPO_ROOT / ".tess" / "core" / "roster-paths.json"
+        assert roster_path.exists(), f"roster-paths.json not found at {roster_path}"
+        roster_data = json.loads(roster_path.read_text(encoding="utf-8"))
+        lock = mod.load_lock(REPO_ROOT)
+        by_name = mod._agent_keys_by_name(lock)
+        return {"roster": roster_data, "by_name": by_name, "lock": lock}
+
+    def test_universal_base_in_lock(self, real_data):
+        """Every universal_base agent must have an agents-dispatch/ lock entry."""
+        roster = real_data["roster"]
+        by_name = real_data["by_name"]
+        for name in roster.get("universal_base", []):
+            assert name in by_name, (
+                f"universal_base agent {name!r} not found in agents-dispatch/ lock entries. "
+                f"Add .tess/core/agents-dispatch/{name}.md and a matching lock entry."
+            )
+
+    def test_all_path_squad_members_in_lock(self, real_data):
+        """Every squad member in every path must have an agents-dispatch/ lock entry."""
+        roster = real_data["roster"]
+        by_name = real_data["by_name"]
+        for path_name, path_cfg in roster.get("paths", {}).items():
+            for name in path_cfg.get("squad", []):
+                assert name in by_name, (
+                    f"path={path_name!r} squad member {name!r} not found in "
+                    f"agents-dispatch/ lock entries."
+                )
+
+    def test_all_path_orchestrators_in_lock(self, real_data):
+        """Every orchestrator in every path must have an agents-dispatch/ lock entry."""
+        roster = real_data["roster"]
+        by_name = real_data["by_name"]
+        for path_name, path_cfg in roster.get("paths", {}).items():
+            for name in path_cfg.get("orchestrators", []):
+                assert name in by_name, (
+                    f"path={path_name!r} orchestrator {name!r} not found in "
+                    f"agents-dispatch/ lock entries."
+                )
+
+    def test_no_duplicate_names_across_paths(self, real_data):
+        """Names should be unique within universal_base and each path (catches copy-paste typos)."""
+        roster = real_data["roster"]
+        # universal_base has no duplicates
+        ub = roster.get("universal_base", [])
+        assert len(ub) == len(set(ub)), f"universal_base has duplicates: {ub}"
+        for path_name, path_cfg in roster.get("paths", {}).items():
+            squad = path_cfg.get("squad", [])
+            orch = path_cfg.get("orchestrators", [])
+            assert len(squad) == len(set(squad)), f"path={path_name} squad has duplicates"
+            assert len(orch) == len(set(orch)), f"path={path_name} orchestrators has duplicates"
+
+
+# ===========================================================================
+# (b) bench <path-group> benches squad+orchestrators, NOT universal base
+# ===========================================================================
+
+class TestBenchPathGroup:
+
+    def test_bench_founders_group_benches_squad_and_orch_not_base(self, project, capsys):
+        """
+        `bench founders` must bench FOUNDERS_SQUAD + FOUNDERS_ORCH but leave
+        leah and eva (universal_base) installed — they can never be benched via
+        a group expansion.
+        """
+        p = _build_squad_project(project)
+        # Install the founders path so squad+orch are core-managed
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        st = _statuses(p)
+        for name in FOUNDERS_SQUAD + FOUNDERS_ORCH + UNIVERSAL_BASE:
+            assert st[name] == "core-managed", f"{name} should be installed before bench"
+
+        capsys.readouterr()
+        # bench the entire founders group via path-group expansion
+        p.mod.cmd_bench(ns(names=["founders"]), p.root)
+
+        st = _statuses(p)
+
+        # Squad + orchestrators: must be staged + absent from live
+        for name in FOUNDERS_SQUAD + FOUNDERS_ORCH:
+            assert st[name] == "staged", f"{name} should be staged after bench founders"
+            assert not p.live(_live(name)).exists(), (
+                f"{name} live file should be removed after bench"
+            )
+
+        # Universal base: must remain installed — group expansion explicitly excludes them
+        for name in UNIVERSAL_BASE:
+            assert st[name] == "core-managed", (
+                f"{name} (universal base) must NOT be benched by a path-group bench"
+            )
+            assert p.live(_live(name)).exists(), (
+                f"{name} (universal base) live file must remain present"
+            )
+
+    def test_bench_path_group_doctor_still_green(self, project, capsys):
+        """After bench path-group, doctor + verify remain clean."""
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        p.mod.cmd_bench(ns(names=["founders"]), p.root)
+        capsys.readouterr()
+
+        p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        out = capsys.readouterr().out
+        assert "doctor: OK" in out
+        assert "uncaptured drift: 0" in out
+
+        p.mod.cmd_verify(ns(), p.root)
+        out = capsys.readouterr().out
+        assert "verify: OK" in out
+
+    def test_bench_path_group_unknown_exit(self, project):
+        """bench with an unknown name that is not a path group raises SystemExit."""
+        p = _build_squad_project(project)
+        with pytest.raises(SystemExit):
+            p.mod.cmd_bench(ns(names=["totally-made-up-name"]), p.root)
+
+    def test_bench_path_group_orchestrator_shorthand_still_works(self, project):
+        """bench product-delivery → product-delivery-orchestrator (shorthand still intact)."""
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        assert _statuses(p)["product-delivery-orchestrator"] == "core-managed"
+
+        p.mod.cmd_bench(ns(names=["product-delivery"]), p.root)
+        assert _statuses(p)["product-delivery-orchestrator"] == "staged"
+        assert not p.live(_live("product-delivery-orchestrator")).exists()
+
+
+# ===========================================================================
+# Fix 2 — _roster_apply: status set ONLY after guarded_write succeeds;
+#          missing core file does NOT inflate installed count or set status
+# ===========================================================================
+
+class TestRosterApplyStatusAfterWrite:
+
+    def test_missing_core_does_not_set_core_managed_status(self, project, capsys):
+        """
+        If an agent is in the install set but its core file is MISSING, roster apply
+        must WARN and NOT flip the agent's status to core-managed.
+
+        Setup: apply founders first so ada ends up staged (builders are not in founders).
+        Then remove ada's core file and apply builders — ada should NOT become
+        core-managed because the core file is gone.
+        """
+        p = _build_squad_project(project)
+        # Stage ada by applying founders (ada is in builders, not founders)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("ada")]["status"] == "staged"
+
+        # Remove ada's core file before the builders apply
+        (p.root / _core_key("ada")).unlink()
+        capsys.readouterr()
+
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        out = capsys.readouterr().out
+        assert "WARN" in out and "core missing" in out.lower()
+
+        # Status must remain staged — NOT promoted to core-managed
+        lock = p.lock()
+        status = lock["files"][_core_key("ada")]["status"]
+        assert status == "staged", (
+            f"ada should remain 'staged' after missing-core roster apply; got {status!r}"
+        )
+
+    def test_missing_core_does_not_inflate_installed_count(self, project, capsys):
+        """
+        Missing-core agent must NOT appear in the installed count.
+
+        Setup: apply founders first so ada ends up staged; remove ada's core;
+        then apply builders — installed count must be 7 (not 8) since ada's core is gone.
+        """
+        p = _build_squad_project(project)
+        # Stage ada first via founders apply
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("ada")]["status"] == "staged"
+        # Remove ada's core file
+        (p.root / _core_key("ada")).unlink()
+        capsys.readouterr()
+
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        out = capsys.readouterr().out
+        # builders install set = leah + eva + 5 squad + 1 orch = 8
+        # With ada's core missing, installed count should be 7, not 8
+        assert "installed: 7" in out, (
+            f"Expected 'installed: 7' (ada excluded due to missing core). Got:\n{out}"
+        )
+
+    def test_gate_error_does_not_set_core_managed_status(self, project, capsys):
+        """
+        If guarded_write raises GateError (gate skipped), the agent's status must
+        not be flipped to core-managed — the lock must reflect the pre-apply state.
+        """
+        import shutil, os
+        p = _build_squad_project(project)
+        # Make the live_path for ada a symlink into a never_touch zone to trigger
+        # a GateError.  We achieve this by temporarily making ada's live_path a
+        # symlink that points outside the owned tree — just verify the contract:
+        # if status is NOT staged before apply (it's core-managed), we trust the
+        # gate logic; instead, we test the reverse: start staged and confirm that
+        # a gate failure leaves status as staged.
+        lock = p.lock()
+        lock["files"][_core_key("ada")]["status"] = "staged"
+        p.mod.save_lock(p.root, lock)
+        # Ensure the live file is absent (staged)
+        live_path = p.root / _live("ada")
+        if live_path.exists():
+            live_path.unlink()
+
+        # Now patch the lock live_path to a never_touch path
+        lock = p.lock()
+        lock["files"][_core_key("ada")]["live_path"] = ".env"
+        p.mod.save_lock(p.root, lock)
+        capsys.readouterr()
+
+        # roster apply tries to install ada but guarded_write will refuse .env (never_touch)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        out = capsys.readouterr().out
+
+        lock = p.lock()
+        status = lock["files"][_core_key("ada")]["status"]
+        # Status should remain staged (gate refused) — NOT core-managed
+        assert status == "staged", (
+            f"Status should remain 'staged' after gate failure; got {status!r}"
+        )
+
+
+# ===========================================================================
+# Fix 3 — staged-missing WARN in doctor/verify (non-failing)
+# ===========================================================================
+
+class TestStagedMissingWarn:
+
+    def _make_staged_missing_core(self, project):
+        """
+        Build a project where one staged agent has its core file deleted after
+        the lock entry was created. This represents an un-recruitable staged agent.
+        """
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        # athena is now staged (benched by builders apply)
+        # Remove athena's core file to make it un-recruitable
+        core_path = p.root / _core_key("athena")
+        core_path.unlink()
+        return p
+
+    def test_doctor_staged_missing_core_warns_not_fails(self, project, capsys):
+        """
+        Doctor must surface a STAGED-WARN for a staged entry whose core file is
+        missing (un-recruitable) but must NOT exit with code 1.
+        """
+        p = self._make_staged_missing_core(project)
+        capsys.readouterr()
+
+        # Must NOT raise SystemExit
+        p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        out = capsys.readouterr().out
+
+        assert "doctor: OK" in out, "Doctor should still be OK despite staged missing core"
+        assert "STAGED-WARN" in out, (
+            "Doctor should surface STAGED-WARN for a staged agent with missing core"
+        )
+
+    def test_verify_staged_missing_core_warns_not_fails(self, project, capsys):
+        """
+        Verify must surface a STAGED-WARN for a staged entry whose core file is
+        missing but must NOT exit with code 1.
+        """
+        p = self._make_staged_missing_core(project)
+        capsys.readouterr()
+
+        # Must NOT raise SystemExit
+        p.mod.cmd_verify(ns(), p.root)
+        out = capsys.readouterr().out
+
+        assert "verify: OK" in out, "Verify should still be OK despite staged missing core"
+        assert "STAGED-WARN" in out, (
+            "Verify should surface STAGED-WARN for a staged agent with missing core"
+        )
+
+    def test_doctor_staged_no_live_path_warns_not_fails(self, project, capsys):
+        """
+        Doctor must surface a STAGED-WARN for a staged lock entry whose live_path
+        attribute is absent in the lock (cannot even determine where to install).
+        """
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        # Corrupt athena's lock entry: remove its live_path
+        lock = p.lock()
+        lock["files"][_core_key("athena")]["live_path"] = None
+        p.mod.save_lock(p.root, lock)
+        capsys.readouterr()
+
+        p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        out = capsys.readouterr().out
+
+        assert "doctor: OK" in out
+        assert "STAGED-WARN" in out
+
+    def test_verify_staged_no_live_path_warns_not_fails(self, project, capsys):
+        """
+        Verify must surface a STAGED-WARN for a staged lock entry with no live_path
+        but must NOT exit with code 1.
+        """
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        lock = p.lock()
+        lock["files"][_core_key("athena")]["live_path"] = None
+        p.mod.save_lock(p.root, lock)
+        capsys.readouterr()
+
+        p.mod.cmd_verify(ns(), p.root)
+        out = capsys.readouterr().out
+
+        assert "verify: OK" in out
+        assert "STAGED-WARN" in out
+
+    def test_doctor_check_file_staged_missing_core_returns_staged_warn(self, project):
+        """
+        doctor_check_file returns staged_warn (not issues) for staged + missing core.
+        pristine must be True so it does not feed into the error/drift counts.
+        """
+        name = "athena"
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
+        lock = p.lock()
+        attrs = lock["files"][_core_key(name)]
+        # Remove the core file
+        (p.root / _core_key(name)).unlink()
+
+        r = p.mod.doctor_check_file(_core_key(name), attrs, p.root)
+
+        assert r["staged_warn"], "staged_warn should be non-empty"
+        assert r["issues"] == [], "issues must be empty for staged missing core (non-failing)"
+        assert r["pristine"] is True, "pristine must be True — staged missing core is not drift"
+        assert "core file missing" in r["staged_warn"][0]
+
+    def test_missing_core_of_non_staged_not_treated_as_staged_warn(self, project, capsys):
+        """
+        Regression guard: a core-managed entry with a missing core file must show
+        ISSUE (not STAGED-WARN) AND FAIL doctor (exit 1) in BOTH human and --json
+        modes. A missing managed file is a blocking integrity failure, never a silent
+        'OK' (previously human-mode doctor printed an ISSUE then exited 0 — fail-open).
+        """
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        # athena is installed (core-managed) after founders apply
+        assert p.lock()["files"][_core_key("athena")]["status"] == "core-managed"
+        # Remove core file
+        (p.root / _core_key("athena")).unlink()
+        capsys.readouterr()
+
+        # Human mode: must FAIL (exit 1), not print 'OK'.
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), p.root)
+        assert exc.value.code == 1, "doctor must FAIL (exit 1) on a missing managed core file"
+        out = capsys.readouterr().out
+
+        # Must show ISSUE (standard path), not the staged-specific STAGED-WARN
+        assert "STAGED-WARN" not in out, (
+            "STAGED-WARN must NOT appear for a core-managed entry with missing core"
+        )
+        assert "core file missing" in out.lower() or "ISSUE" in out, (
+            "Expected 'ISSUE' or 'core file missing' in doctor output for core-managed + missing core"
+        )
+
+        # --json mode must ALSO fail (exit 1) on the same state (machine-readable gate).
+        with pytest.raises(SystemExit) as exc_json:
+            p.mod.cmd_doctor(ns(json_out=True, fix=False, path=None), p.root)
+        assert exc_json.value.code == 1, (
+            "doctor --json must also FAIL (exit 1) on a missing managed core file"
+        )
+
+
+class TestIntegrityGateFailOpen:
+    """
+    Regression guards for the integrity-gate fail-opens hardened in this pass:
+      T1  doctor --json exit code must fail on CORE TAMPER (previously the substring
+          heuristic missed it, so --json exited 0 on a tampered core)
+      T3  verify must FAIL on a deleted managed core file (previously every check was
+          guarded by core_path.exists(), so it fell through to 'OK')
+      T4  a .local.md shadow must never be folded into a security-tier doctrine file
+    (T2 — human-mode doctor failing on a missing file — is covered above.)
+    """
+
+    def test_doctor_json_exits_nonzero_on_core_tamper(self, project, capsys):
+        # T1: tamper the pinned core bytes so core_sha != base_sha → CORE TAMPER.
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("athena")]["status"] == "core-managed"
+        (p.root / _core_key("athena")).write_text("TAMPERED BYTES\n", encoding="utf-8")
+        capsys.readouterr()
+
+        # Previously `doctor --json` exited 0 on a tampered core (fail-open).
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_doctor(ns(json_out=True, fix=False, path=None), p.root)
+        assert exc.value.code == 1, "doctor --json must FAIL (exit 1) on a tampered core"
+
+    def test_verify_fails_on_missing_managed_core(self, project, capsys):
+        # T3: a deleted managed core file must be reported as CORE TAMPER, not 'OK'.
+        p = _build_squad_project(project)
+        p.mod.cmd_roster(ns(roster_sub="apply", path_name="founders"), p.root)
+        assert p.lock()["files"][_core_key("athena")]["status"] == "core-managed"
+        (p.root / _core_key("athena")).unlink()
+        capsys.readouterr()
+
+        with pytest.raises(SystemExit) as exc:
+            p.mod.cmd_verify(ns(), p.root)
+        assert exc.value.code == 1, "verify must FAIL (exit 1) on a deleted managed core file"
+        out = capsys.readouterr().out
+        assert "CORE TAMPER" in out, "verify must report CORE TAMPER for a missing managed core"
+
+    def test_security_tier_local_md_shadow_not_folded(self, tmp_path):
+        # T4: render must NOT fold an unverified .local.md shadow into a security-tier
+        # file, but MUST still fold it for an ordinary markdown file (unchanged there).
+        mod = _load_engine()
+        root = tmp_path
+
+        core_sec = root / ".tess" / "core" / "conductor" / "guardrails.md"
+        core_sec.parent.mkdir(parents=True, exist_ok=True)
+        core_sec.write_text("CANONICAL GUARDRAIL\n", encoding="utf-8")
+        live_sec = root / "conductor" / "guardrails.md"
+        live_sec.parent.mkdir(parents=True, exist_ok=True)
+        (root / "conductor" / "guardrails.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+        rendered_sec = mod.render_core_to_live(core_sec, live_sec, root).decode("utf-8")
+        assert "INJECTED OVERRIDE" not in rendered_sec, (
+            "a .local.md shadow must NOT be folded into a security-tier doctrine file"
+        )
+
+        # Control: a non-security markdown file still folds its shadow (unchanged).
+        core_norm = root / ".tess" / "core" / "conductor" / "notes.md"
+        core_norm.write_text("NOTES\n", encoding="utf-8")
+        live_norm = root / "conductor" / "notes.md"
+        (root / "conductor" / "notes.local.md").write_text("EXTRA NOTE\n", encoding="utf-8")
+        rendered_norm = mod.render_core_to_live(core_norm, live_norm, root).decode("utf-8")
+        assert "EXTRA NOTE" in rendered_norm, (
+            "non-security .local.md shadows must still be folded (behavior unchanged)"
+        )
+
+    def test_lock_only_security_tier_md_shadow_not_folded_when_attrs_supplied(self, tmp_path):
+        """MED-1 (Fable Phase-1 review): a file marked `tier: security` in the
+        lock, but NOT in the hardcoded SECURITY_TIER_PATHS set, must ALSO be
+        protected from a `.local.md` shadow-append when render_core_to_live()
+        is called with the real lock attrs — closing the latent gap before a
+        future security-tier .md file exists. Without attrs (the pre-fix
+        call shape), the SAME path is NOT protected — proving the fix is the
+        attrs-aware routing through is_security_tier(), not a change to
+        SECURITY_TIER_PATHS itself."""
+        mod = _load_engine()
+        root = tmp_path
+
+        live_rel = "conductor/new-doctrine.md"
+        assert live_rel not in mod.SECURITY_TIER_PATHS, (
+            "test fixture must use a path NOT hardcoded into SECURITY_TIER_PATHS "
+            "to prove the lock-tier route, not the hardcoded-set route"
+        )
+
+        core_path = root / ".tess" / "core" / "conductor" / "new-doctrine.md"
+        core_path.parent.mkdir(parents=True, exist_ok=True)
+        core_path.write_text("CANONICAL NEW DOCTRINE\n", encoding="utf-8")
+        live_path = root / "conductor" / "new-doctrine.md"
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        (root / "conductor" / "new-doctrine.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+
+        # Lock-declared tier: security (as brief.schema.json / verdict.schema.json
+        # carry in the real tess.lock — not (yet) also in SECURITY_TIER_PATHS).
+        lock_attrs = {"tier": "security", "live_path": live_rel}
+
+        rendered_with_attrs = mod.render_core_to_live(
+            core_path, live_path, root, attrs=lock_attrs
+        ).decode("utf-8")
+        assert "INJECTED OVERRIDE" not in rendered_with_attrs, (
+            "a lock-declared tier:security file must not fold a .local.md shadow "
+            "even when it is absent from the hardcoded SECURITY_TIER_PATHS set"
+        )
+
+        # Without attrs (pre-fix call shape / a caller that doesn't have the lock
+        # entry handy): behavior is unchanged — SECURITY_TIER_PATHS-only check,
+        # and this path isn't in it, so the shadow DOES fold. This proves the
+        # fix is additive (attrs-aware), not a change to the fallback behavior.
+        rendered_without_attrs = mod.render_core_to_live(
+            core_path, live_path, root
+        ).decode("utf-8")
+        assert "INJECTED OVERRIDE" in rendered_without_attrs, (
+            "without attrs, the pre-existing SECURITY_TIER_PATHS-only fallback "
+            "must be unchanged (this path is not hardcoded into that set)"
+        )
+
+    def test_doctor_check_file_flags_lock_only_security_tier_drift(self, tmp_path):
+        """MED-1 end-to-end via doctor_check_file (the real Check B call site,
+        which now passes attrs through): a core-managed file with tier:security
+        in its lock entry, whose live copy silently gained a .local.md shadow
+        NOT reflected in the tracked live bytes, must be flagged as a security
+        drift alert — not silently treated as ordinary drift."""
+        mod = _load_engine()
+        root = tmp_path
+
+        core_key = ".tess/core/conductor/new-doctrine.md"
+        core_path = root / core_key
+        core_path.parent.mkdir(parents=True, exist_ok=True)
+        core_path.write_text("CANONICAL NEW DOCTRINE\n", encoding="utf-8")
+
+        live_rel = "conductor/new-doctrine.md"
+        live_path = root / live_rel
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        # Live file was hand-edited to append the (unverified) .local.md content
+        # directly — simulating what an adversary gains if the shadow silently
+        # folds into 'expected' for a lock-only security-tier file.
+        live_path.write_text("CANONICAL NEW DOCTRINE\n\nINJECTED OVERRIDE\n", encoding="utf-8")
+        (root / "conductor" / "new-doctrine.local.md").write_text(
+            "INJECTED OVERRIDE\n", encoding="utf-8"
+        )
+
+        attrs = {
+            "status": "core-managed",
+            "tier": "security",
+            "base_sha": mod.sha256_file(core_path),
+            "live_path": live_rel,
+        }
+        result = mod.doctor_check_file(core_key, attrs, root)
+        assert result["is_security"] is True
+        assert result["drift"] is True, (
+            "doctor_check_file must flag drift: with attrs correctly routed, "
+            "'expected' bytes exclude the .local.md shadow, so the hand-edited "
+            "live file (which includes it) differs from 'expected'"
+        )
+        assert any("UNCAPTURED DRIFT" in issue for issue in result["issues"])

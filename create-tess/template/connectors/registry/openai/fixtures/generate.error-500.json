@@ -1,0 +1,16 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 500 server_error response (OpenAI API docs, verified 2026-07-18) — not a captured real call. Proves error_map['500'] -> ConnectorProviderError.",
+  "response": {
+    "status": 500,
+    "body": {
+      "error": {
+        "message": "The server had an error while processing your request. Sorry about that!",
+        "type": "server_error",
+        "param": null,
+        "code": null
+      }
+    }
+  },
+  "expected_error_class": "ConnectorProviderError",
+  "expected_http_status": 502
+}

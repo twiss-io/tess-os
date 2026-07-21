@@ -1,0 +1,7 @@
+# Dev / test dependencies for the tessctl merge-engine suite.
+# Runtime engine needs only pyyaml; the test suite adds pytest.
+# pyrage is required for the M5 vault test suite (test_m5_vault.py).
+# Without it, all 48 vault tests skip — the CI vault coverage gate fails.
+pytest>=7.0
+PyYAML>=6.0
+pyrage>=1.1

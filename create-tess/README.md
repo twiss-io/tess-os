@@ -23,9 +23,12 @@ land inside a locally scaffolded Tess OS instance with a first mission open.
 
 ## What it does
 
-1. **Stages** the Tess OS template (default: `https://github.com/twiss-io/tess-os.git`)
-   into a temp dir so the journey can read the real roster and validate names
-   **before the target is ever touched** (cancel = zero state).
+1. **Stages** the Tess OS template into a temp dir so the journey can read the
+   real roster and validate names **before the target is ever touched**
+   (cancel = zero state). By default this is a local copy of the template
+   **bundled inside the `create-tess` package itself** — no network, no
+   `git clone`. Pass `--template-source <git-url>` to opt into fetching from
+   git instead (see "Non-interactive mode" below).
 2. Runs the **journey** (interactive) or resolves all axes from **flags**
    (non-interactive / CI).
 3. On confirm, **promotes** the template into the target (excluding `create-tess/`
@@ -121,19 +124,24 @@ operator space (`operator/**`) and other non-managed files are preserved.
 it is a real local directory, and the git clone uses a `--` end-of-options guard
 — a flag-shaped source can never be read as a `git` option.
 
-**The default source is pinned, not `main` HEAD.** A git-URL clone of the
-default `--template-source` is pinned to a tagged release
-(`DEFAULT_TEMPLATE_REF` in `src/scaffold.js`, in create-tess's own
-`create-tess-v*` tag namespace — see the Release section below) rather than
-whatever commit happens to be `main`'s tip at the moment you run the wizard.
-This is what makes a given `create-tess` version reproducible: the same
-version always scaffolds from the same, already-CI-passed tess-os commit.
-Override with `--template-ref`/`TESS_TEMPLATE_REF` to pin to a different
-tag/branch/SHA. A custom `--template-source` (your own fork/mirror) is cloned
-at its own branch tip and is NOT force-pinned to `DEFAULT_TEMPLATE_REF` unless
-you pass `--template-ref` yourself.
+**The default source is bundled, not a git clone (P0 G-01 BUNDLE fix).**
+Without `--template-source`, the wizard scaffolds from a local copy of the
+template shipped INSIDE this npm package (`create-tess/template/`, generated
+by `npm run build-template` — see the Release section below). This is what
+makes a given `create-tess` version fully reproducible AND network-free: the
+same published version always scaffolds from the exact same, already-CI-
+passed bytes, with no clone, no tag, and no dependency on GitHub being
+reachable. Pass `--template-source <git-url>` / set `TESS_TEMPLATE_SOURCE` to
+explicitly opt into a live git fetch instead (your own fork, a mirror, a
+specific upstream commit); that clone is pinned to `DEFAULT_TEMPLATE_REF`
+(`src/scaffold.js`, in create-tess's own `create-tess-v*` tag namespace)
+unless you pass `--template-ref`/`TESS_TEMPLATE_REF` yourself — note that tag
+has historically not always been cut at release time (see `scaffold.js`'s
+header comment), so an opt-in git fetch without an explicit `--template-ref`
+can fail; the bundled default is unaffected either way.
 
-Point `--template-source` at a local path to test offline:
+Point `--template-source` at a local path to test a git-style fetch, or to
+scaffold from a different tree entirely:
 
 ```bash
 node bin/create-tess.mjs ./out --yes --operator=Alex \
@@ -159,9 +167,14 @@ implementable at conductor-naming time.
 ## Release (maintainers — Xavier-owned; never automated)
 
 1. Bump `create-tess/package.json`'s `version` (and re-run `npm install` in
-   `create-tess/` so `package-lock.json` picks it up) and update the
-   `DEFAULT_TEMPLATE_REF` pin in `src/scaffold.js` if a new release tag should
-   become the default pinned clone target. Confirm `npm test` is green.
+   `create-tess/` so `package-lock.json` picks it up). Confirm `npm test` is
+   green. **The bundled template does not need a manual rebuild step here** —
+   `npm run build-template` (`scripts/build-template.mjs`) runs automatically
+   via the `prepack` lifecycle hook on every `npm pack`/`npm publish`, so the
+   packed tarball's `template/` always reflects the exact tree being released.
+   Run it by hand only to inspect the bundle locally (`npm run build-template`
+   then `git status` under `create-tess/template/` to see what changed) or
+   to regenerate the committed copy for review in a PR.
 2. Cut and push the tag (create-tess's OWN namespace, `create-tess-v*` —
    never the framework's own `v*` tags):
    ```bash
@@ -173,8 +186,17 @@ implementable at conductor-naming time.
    Publisher isn't configured yet for this exact repo + workflow
    (npmjs.com package settings), that final step fails closed with an auth
    error until it is — see the workflow file's header for the current state.
+   **Do this step even if you expect to fall back to (3) below** — every
+   published version through 0.1.3 was actually shipped via the manual
+   fallback ALONE, silently skipping this tag cut each time; that gap is
+   exactly what left `DEFAULT_TEMPLATE_REF` (the old git-clone pin, still
+   used by the explicit `--template-source` git opt-in) pointing at a tag
+   that was never cut, across three release cycles (P0 G-01). The 0.1.4
+   BUNDLE fix (`create-tess/src/scaffold.js`) removes this dependency from
+   the DEFAULT flow entirely, but the opt-in git path still relies on it.
 3. **Manual fallback** (if Trusted Publishing isn't live yet): from
    `create-tess/`, checked out at the tag, run `npm publish --access public`
-   as an npm-authenticated maintainer.
+   as an npm-authenticated maintainer. `prepack` still regenerates
+   `template/` first, same as the CI path.
 4. **Deprecating a bad published version** (e.g. one later found to leak
    secrets): `npm deprecate create-tess@X.Y.Z "reason — upgrade to X.Y.Z+"`.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (report privately)
+    url: https://github.com/twiss-io/tess-os/security/advisories/new
+    about: Do NOT open a public issue for a vulnerability. Report it privately — see SECURITY.md.
+  - name: Question / discussion / get help
+    url: https://github.com/twiss-io/tess-os/discussions
+    about: Questions, ideas, and help requests belong in Discussions (and the community channels in the README), not the issue tracker.

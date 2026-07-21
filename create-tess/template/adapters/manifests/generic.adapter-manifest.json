@@ -1,0 +1,17 @@
+{
+  "schema_version": "tess.adapter-manifest.v1",
+  "adapter_id": "generic",
+  "provider": "AGENTS.md-compatible host",
+  "support_level": "C2",
+  "status": "preview",
+  "capabilities": ["instruction-rendering", "prompt-artifacts"],
+  "evidence": [
+    {"kind": "repository-source", "path": "adapters/generic/README.md", "note": "Documents the rules-file and prompt-artifact baseline without claiming host-native behavior."},
+    {"kind": "status-page", "path": "docs/STATUS.md", "note": "Records the limits of generic host support."}
+  ],
+  "limits": [
+    "C2 is manual-gated compatibility, not a universal host-support claim.",
+    "Host discovery, tool permissions, command handling, and subagent behavior remain host-specific.",
+    "The adapter cannot mint approvals, verifier keys, verdicts, sign-offs, or branch-protection status."
+  ]
+}

@@ -1,0 +1,20 @@
+id: "02-bug-pagination-off-by-one"
+title: "Fix off-by-one bug dropping the last item of every page"
+category: bug
+difficulty: easy
+time_budget_minutes: 8
+tags: [python, off-by-one, bug-with-failing-test]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  paginate() drops the last item of every page due to an off-by-one slice
+  bound. test_paginate.py documents the correct behavior and currently
+  fails. The agent must fix paginate.py without editing the test file.
+pass_criteria: >
+  `pytest test_paginate.py` exits 0 inside the produced workdir, AND
+  test_paginate.py is byte-identical to the shipped fixture.
+planted_trap: false
+protected_paths:
+  - test_paginate.py

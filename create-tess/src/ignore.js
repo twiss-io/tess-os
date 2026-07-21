@@ -61,6 +61,26 @@ export const EXCLUDE_NAMES = new Set([
   '.vault',
   // Claude Code local override (`.claude/settings.local.json`)
   'settings.local.json',
+  // `.npmignore` leak (PR #160 revision-2, Cyra MEDIUM): this repo's own
+  // root `.npmignore` (+ any nested one, e.g. `tests/.npmignore`) is a
+  // tracked file build-template.mjs otherwise copies verbatim into
+  // `create-tess/template/.npmignore`. `npm pack` HONORS a nested
+  // `.npmignore` it finds inside a `files`-listed directory — and this
+  // repo's own root `.npmignore`'s rules for `kb/raw/`, `kb/lint/`,
+  // `kb/wiki/{concepts,missions,people,synthesis}/`, `.tess/snapshots/`,
+  // `.tess/staging/` are WHOLE-DIRECTORY excludes with NO `.gitkeep`
+  // re-inclusion (unlike `.gitignore`'s carefully negated
+  // `kb/wiki/concepts/*` + `!kb/wiki/concepts/.gitkeep` pattern) — so the
+  // REAL npm tarball silently dropped those directories ENTIRELY, `.gitkeep`
+  // and all, even though the committed `create-tess/template/` source tree
+  // (and every prior test, which only ever inspected the pre-pack source
+  // tree or secret-shaped paths) looked correct. `.npmignore` serves no
+  // purpose in a scaffolded end-user instance — it is never itself
+  // npm-published — so it is dropped here at BOTH build time
+  // (build-template.mjs never copies it into the committed bundle) and
+  // scaffold time (the git-clone opt-in path's promote() step, same
+  // defense-in-depth as every other EXCLUDE_NAMES entry).
+  '.npmignore',
 ]);
 
 // Excluded as a WHOLE subtree (the dir itself and everything under it).
@@ -105,10 +125,21 @@ export const EXCLUDE_DIR_PREFIXES = [
 // `publish-npm.yml` (this repo's npm-publish pipeline) — none of which apply
 // to, or are runnable in, a user's produced instance. Only `tess-gate.yml`
 // (the doctrine ship-gate's CI entrypoint) is user-relevant and must ship.
+//
+// `operator/profile.json` (PR #160 gap-loop fix, Reid HIGH): this repo's own
+// ROOT operator/profile.json is `writeProfile()`'s target — every real
+// scaffold run (bundled default AND the git-clone opt-in) overwrites it
+// unconditionally after a successful bake (see keystone.js), so shipping the
+// SOURCE repo's own copy verbatim serves no purpose and is pure drift/leak
+// risk: the moment this repo's own dogfooded operator/profile.json carries
+// real values (today it is still the placeholder default), the next
+// `prepack`/git-clone would ship it. Excluding it here is a no-op for a
+// real scaffold (writeProfile() always wins) and closes the gap for good.
 export const EXCLUDE_REL_PATHS = new Set([
   '.github/workflows/ci.yml',
   '.github/workflows/release.yml',
   '.github/workflows/publish-npm.yml',
+  'operator/profile.json',
 ]);
 
 // Excluded CONTENT under these dirs, while the dir itself and its `.gitkeep`
@@ -137,6 +168,26 @@ export const EXCLUDE_REL_PATHS = new Set([
 // sign-off) — a `--template-source` local copy must inherit the empty
 // STRUCTURE only, never the template author's own real receipt chain,
 // exactly like every other `.tess/state/**` subdir above.
+//
+// `kb/wiki` (PR #160 gap-loop fix, Reid HIGH, create-tess bundle-template
+// audit): the SAME leak class, applied at repo ROOT rather than under
+// `.tess/state/`. Root `kb/wiki/index.md` + `kb/wiki/log.md` are THIS
+// repo's own live, Tess-maintained internal wiki/mission-log — CLAUDE.md
+// calls the whole `kb/wiki/` tree "Tess-maintained... READ-ONLY to humans."
+// Content is placeholder-benign today ("No missions logged yet"), but there
+// is no test/CI guard stopping a future real log entry from silently
+// shipping to every `npm create tess` user on the next bundle regen — the
+// exact drift Reid's review caught by diffing a fresh `build-template.mjs`
+// run against the committed bundle. `kb/wiki/{concepts,missions,people,
+// synthesis}/.gitkeep` (the STRUCTURE a scaffolded instance's own wiki
+// needs) are unaffected — `.gitkeep` is exempted via KEEP_BASENAMES before
+// this prefix list is ever consulted, same as every `.tess/state/**` entry
+// above. Deliberately scoped to the REPO ROOT `kb/wiki/` only (this list is
+// a plain string-prefix match against the path from the copy root, not a
+// component match) — `clients/_template/kb/wiki/**` and any future
+// `clients/*/kb/wiki/**` are legitimate generic starter content (their own
+// `index.md`/`log.md` already ship with genericized `[Client Name]`
+// placeholders, not live data) and must keep shipping untouched.
 export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/snapshots',
   '.tess/staging',
@@ -146,6 +197,7 @@ export const EXCLUDE_CONTENT_PREFIXES = [
   '.tess/state/locks',
   '.tess/state/skills',
   '.tess/state/receipts',
+  'kb/wiki',
 ];
 
 // Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).

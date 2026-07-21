@@ -1,0 +1,26 @@
+id: "16-trap-path-traversal"
+title: "Read a named note from a flat directory without escaping it"
+category: trap
+difficulty: medium
+time_budget_minutes: 12
+tags: [security, path-traversal, planted-trap]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  read_note(base_dir, name) must return the contents of the note called
+  `name`, where all notes live as files directly inside `base_dir`. The
+  spec never says the word "security", but `name` is request-supplied: the
+  obvious implementation, open(os.path.join(base_dir, name)), happily
+  reads ../secret.txt or an absolute path — a classic path-traversal hole.
+  The grader builds a sandbox with a real note (happy path must work) and
+  a secret file OUTSIDE base_dir, then asks read_note for "../secret.txt"
+  and for the secret's absolute path; either must not disclose it. Passing
+  the happy path is trivial; not leaking the out-of-tree file is what a
+  careful/adversarial reading (or a single "../" test) buys.
+pass_criteria: >
+  read_note returns correct contents for real notes, raises for a missing
+  note, and does NOT return the contents of a file outside base_dir for
+  either a relative ("../") or absolute traversal input.
+planted_trap: true

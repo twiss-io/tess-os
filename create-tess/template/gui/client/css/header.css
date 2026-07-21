@@ -1,0 +1,93 @@
+/*
+  Tess OS Mission Control — zone 1: fixed header.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-header);
+  height: var(--header-height);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-5);
+  background: var(--color-base);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.app-header__wordmark {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  flex: 0 0 auto;
+}
+
+.status-dot[data-state='ok'] {
+  background: var(--color-success);
+}
+
+.status-dot[data-state='disconnected'] {
+  background: var(--color-error);
+}
+
+.app-header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.header-stat {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.header-stat--flash {
+  animation: stat-flash 600ms var(--ease-deck);
+}
+
+.header-stat--cost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.roster-trigger {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition: color 140ms linear, border-color 140ms linear;
+}
+
+.roster-trigger:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+}
+
+.roster-trigger:active {
+  color: var(--color-accent);
+}

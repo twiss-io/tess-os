@@ -1,0 +1,38 @@
+/*
+  Tess OS Mission Control — Timeline section.
+
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 Twiss
+*/
+.timeline {
+  max-width: 1200px;
+  margin: 0 auto var(--space-7);
+  padding: 0 var(--space-5);
+}
+
+.timeline__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.timeline__entry {
+  display: flex;
+  gap: var(--space-4);
+  font-size: 12px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.timeline__date {
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  flex: 0 0 88px;
+}
+
+.timeline__text {
+  color: var(--color-text-secondary);
+}

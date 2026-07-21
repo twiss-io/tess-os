@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:twiss-io:tess-os:adapter-manifest:v1",
+  "title": "Tess OS Advisory Adapter Manifest v1",
+  "description": "A local, descriptive record of one Tess OS provider or harness surface. It records currently observed integration capability and limits; it does not grant authority, access, approval, signing, key custody, verifier registration, policy enforcement, or protected-workflow certification. This schema is intentionally outside core/contracts and is validated only by the offline repository test harness until a separately reviewed core-contract proposal is accepted.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "tess.adapter-manifest.v1",
+      "description": "Pins this descriptive record to the v1 advisory contract."
+    },
+    "adapter_id": {
+      "type": "string",
+      "enum": ["claude-code", "codex", "generic", "perplexity"],
+      "pattern": "^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$",
+      "description": "Allowlisted stable lowercase identifier for a provider or harness surface. A new identifier needs an explicit schema, manifest-directory, source-parity, and review update; an unknown manifest may not bypass the advisory checks."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable provider or host name. It is an attribution label, not a trust identity."
+    },
+    "support_level": {
+      "type": "string",
+      "enum": ["C0", "C1", "C2", "C3"],
+      "description": "Observed integration level only. C4 is deliberately excluded: certified protected delivery requires independent evidence and an external trust root, never a self-authored manifest."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["not-supported", "preview"],
+      "description": "Public-status label aligned with docs/STATUS.md. This record does not make a release, production, or security claim."
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "instruction-rendering",
+          "prompt-artifacts",
+          "config-fragment",
+          "local-process-driver",
+          "read-only-research"
+        ]
+      },
+      "description": "Narrow, observable integration surfaces. Capability entries are descriptive; none grants an action, permission, secret, approval, or trust role."
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Evidence" },
+      "description": "Repository-local pointers supporting the stated surface. Evidence is not an approval or a conformance certificate."
+    },
+    "limits": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Known boundaries that prevent the manifest from being read as a universal-support claim."
+    }
+  },
+  "required": ["schema_version", "adapter_id", "provider", "support_level", "status", "capabilities", "evidence", "limits"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "support_level": { "const": "C0" } },
+        "required": ["support_level"]
+      },
+      "then": {
+        "properties": {
+          "status": { "const": "not-supported" },
+          "capabilities": { "maxItems": 0 }
+        },
+        "$comment": "A C0 record documents absence of an adapter; it cannot advertise a capability."
+      },
+      "else": {
+        "properties": {
+          "status": { "const": "preview" },
+          "capabilities": { "minItems": 1 }
+        },
+        "$comment": "C1-C3 records remain preview-only until independently certified; an empty capability list would be misleading."
+      }
+    }
+  ],
+  "$defs": {
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["repository-source", "status-page"],
+          "description": "Evidence category; both refer to repository-local material only."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/).+",
+          "description": "Repository-relative path. The offline test harness rejects absolute paths, parent traversal, symlink escape, and missing or non-regular targets; it never contacts a provider."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short explanation of what the local artifact establishes and what it does not."
+        }
+      },
+      "required": ["kind", "path", "note"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Uses only the dependency-free JSON Schema subset already exercised by the repository test harness: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, pattern, if/then/else, allOf, $ref, $defs."
+}

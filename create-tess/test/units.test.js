@@ -21,8 +21,10 @@ import {
   promote,
   resolveTemplateRef,
   buildCloneArgs,
+  isLocalSource,
   DEFAULT_TEMPLATE_SOURCE,
   DEFAULT_TEMPLATE_REF,
+  BUNDLED_TEMPLATE_DIR,
 } from '../src/scaffold.js';
 import { resetKeyToEmptyInline, resetPolicyKeyRegistries } from '../src/policy-reset.js';
 
@@ -683,6 +685,51 @@ test('args: --template-ref parses, and TESS_TEMPLATE_REF env var is honored as t
   } finally {
     if (prev === undefined) delete process.env.TESS_TEMPLATE_REF;
     else process.env.TESS_TEMPLATE_REF = prev;
+  }
+});
+
+// ── Bundled default (P0 G-01 BUNDLE fix, 2026-07-21) ────────────────────────
+// The wizard's actual default source is no longer DEFAULT_TEMPLATE_SOURCE
+// (the git URL) — it's BUNDLED_TEMPLATE_DIR, a local copy shipped inside
+// this package. See index.js main() and scaffold.js's header comment for
+// the full rationale; this covers the exported primitives directly.
+
+test('BUNDLED_TEMPLATE_DIR: resolves to an existing local directory containing the real template', () => {
+  assert.ok(
+    typeof BUNDLED_TEMPLATE_DIR === 'string' && BUNDLED_TEMPLATE_DIR.length > 0,
+    'BUNDLED_TEMPLATE_DIR must be a real, non-empty path',
+  );
+  assert.ok(
+    isLocalSource(BUNDLED_TEMPLATE_DIR),
+    `BUNDLED_TEMPLATE_DIR (${BUNDLED_TEMPLATE_DIR}) must exist as a local directory — ` +
+      'run `npm run build-template` if this fails locally',
+  );
+  assert.ok(
+    existsSync(join(BUNDLED_TEMPLATE_DIR, '.tess', 'core', 'roster-paths.json')),
+    'the bundled template must contain the roster manifest the wizard reads at scaffold time',
+  );
+});
+
+test('BUNDLED_TEMPLATE_DIR: is NOT the git-URL DEFAULT_TEMPLATE_SOURCE (they are deliberately distinct now)', () => {
+  assert.notEqual(BUNDLED_TEMPLATE_DIR, DEFAULT_TEMPLATE_SOURCE);
+  // Consequence: resolveTemplateRef never auto-pins the bundled default —
+  // pinning is meaningless for a local copy (nothing to clone).
+  assert.equal(resolveTemplateRef(BUNDLED_TEMPLATE_DIR, undefined), null);
+});
+
+test('fetchTemplate: the bundled template stages via the LOCAL-source branch (no git invoked)', () => {
+  const base = mkdtempSync(join(tmpdir(), 'tess-bundled-fetch-test-'));
+  const staging = join(base, 'staging');
+  try {
+    const result = fetchTemplate(BUNDLED_TEMPLATE_DIR, staging);
+    assert.equal(result.mode, 'local', 'the bundled default must stage via fetchTemplate\'s local-copy branch');
+    assert.ok(
+      existsSync(join(staging, '.tess', 'core', 'roster-paths.json')),
+      'staging the bundled template must produce the real roster manifest',
+    );
+    assert.ok(!existsSync(join(staging, 'create-tess')), 'staged bundle must never contain a nested create-tess/');
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });
 

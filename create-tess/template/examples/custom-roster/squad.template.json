@@ -1,0 +1,19 @@
+{
+  "schema_version": "tess-os.custom-roster.reference/v1",
+  "reference_only": true,
+  "squad": {
+    "name": "<squad-name>",
+    "purpose": "<plain-language purpose>",
+    "members": [
+      {
+        "id": "<local-member-id>",
+        "role": "<specialist role>",
+        "templates": {
+          "identity": "identity.template.md",
+          "personality": "personality.template.md",
+          "soul": "soul.template.md"
+        }
+      }
+    ]
+  }
+}

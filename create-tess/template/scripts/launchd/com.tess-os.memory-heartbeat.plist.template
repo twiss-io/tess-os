@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE — not a working plist as-is. Replace every /ABSOLUTE/PATH/TO/REPO
+  placeholder below with the real absolute path to your checkout, then copy
+  the result to ~/Library/LaunchAgents/com.tess-os.memory-heartbeat.plist
+  (a *different* filename, with the .template suffix dropped) before loading
+  it. See scripts/launchd/README.md for the full one-command activation
+  sequence and why this is deliberately staged here rather than already
+  placed in ~/Library/LaunchAgents/.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tess-os.memory-heartbeat</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABSOLUTE/PATH/TO/REPO/scripts/heartbeat.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/ABSOLUTE/PATH/TO/REPO</string>
+
+    <!-- 1800s = 30 min. This ties the plist to launchd's own timer instead
+         of an internal sleep loop, so the process is short-lived (one pass,
+         then exit) rather than a long-running daemon that could drift or
+         leak. RunAtLoad fires one pass immediately when the agent is
+         loaded, so you get an immediate signal that activation worked.
+         Adjust to your own cards' stall_after thresholds if 30 min is
+         finer-grained than you need. -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/HOME/.tess-os/memory-heartbeat/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/HOME/.tess-os/memory-heartbeat/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <!-- Deliberately no KeepAlive — this is a scheduled tick, not a
+         supervised long-running service. A crash just means the next
+         StartInterval tick tries again; nothing depends on this process
+         staying up between ticks. -->
+</dict>
+</plist>

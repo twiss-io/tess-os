@@ -13,7 +13,7 @@ import {
   promote,
   clearManagedDirs,
   isSafeTemplateSource,
-  DEFAULT_TEMPLATE_SOURCE,
+  BUNDLED_TEMPLATE_DIR,
   isLocalSource,
   resolveTemplateRef,
 } from './scaffold.js';
@@ -230,11 +230,32 @@ export async function main(argv) {
   }
 
   const targetDir = resolve(opts.target || process.cwd());
-  const source = opts.templateSource || DEFAULT_TEMPLATE_SOURCE;
-  // Pinned-clone reproducibility (P0 G-01): resolves to an explicit
-  // --template-ref/TESS_TEMPLATE_REF when set, else the DEFAULT_TEMPLATE_REF
-  // release tag for the default source only, else null (unpinned — a custom
-  // source is cloned at its own branch tip, unchanged from prior behavior).
+  // DEFAULT (P0 G-01 BUNDLE fix): scaffold from the template bundled INSIDE
+  // this package — a local copy, never a git clone/network fetch. An
+  // explicit --template-source (flag or TESS_TEMPLATE_SOURCE env var) is the
+  // ONLY way to opt into a live git fetch instead; see scaffold.js's header
+  // comment for why the old git-clone default was removed.
+  const usingBundledDefault = !opts.templateSource;
+  const source = opts.templateSource || BUNDLED_TEMPLATE_DIR;
+  // The bundle ships with every published package; its absence means a
+  // corrupted/incomplete install (or a from-source dev checkout that never
+  // ran `npm run build-template`) — fail with a specific, actionable message
+  // rather than falling through to isSafeTemplateSource's generic "not an
+  // allowed source" (which would be true, but wouldn't say WHY or what to do).
+  if (usingBundledDefault && !isLocalSource(source)) {
+    die(
+      `the bundled Tess OS template is missing from this create-tess install ` +
+        `(expected at ${source}). This package may be corrupted or incomplete — ` +
+        `reinstall it (\`npm install create-tess\`), or run \`npm run ` +
+        `build-template\` if you're working from a source checkout. To fetch ` +
+        `from git instead, pass --template-source <url> explicitly.`,
+    );
+  }
+  // Pinned-clone reproducibility (P0 G-01, opt-in git path only): resolves to
+  // an explicit --template-ref/TESS_TEMPLATE_REF when set, else the
+  // DEFAULT_TEMPLATE_REF release tag for an explicit DEFAULT_TEMPLATE_SOURCE
+  // opt-in, else null (unpinned — a custom source is cloned at its own
+  // branch tip). A no-op for the bundled-default local source.
   const templateRef = resolveTemplateRef(source, opts.templateRef);
 
   // Bootstrap gates (design doc §5.1).
@@ -265,11 +286,11 @@ export async function main(argv) {
   let checks;
   let gate;
   try {
-    const srcKind = isLocalSource(source) ? 'local template' : 'git';
     const refSuffix = templateRef ? ` @ ${templateRef}` : '';
-    process.stdout.write(
-      (plain ? '' : '  ') + dim(`Fetching keystone (${srcKind}: ${source}${refSuffix}) …`) + '\n',
-    );
+    const fetchLabel = usingBundledDefault
+      ? 'Fetching keystone (bundled template — no network required) …'
+      : `Fetching keystone (${isLocalSource(source) ? 'local template' : 'git'}: ${source}${refSuffix}) …`;
+    process.stdout.write((plain ? '' : '  ') + dim(fetchLabel) + '\n');
     fetchTemplate(source, staging, templateRef);
     const roster = loadRoster(staging);
 

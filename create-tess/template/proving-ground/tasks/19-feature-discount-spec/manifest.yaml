@@ -1,0 +1,26 @@
+id: "19-feature-discount-spec"
+title: "Apply a percentage discount honoring floor rounding, range validation, and int return"
+category: feature
+difficulty: medium
+time_budget_minutes: 12
+tags: [python, spec-adherence, money, validation]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  apply_discount(price_cents, discount_percent) has three buried
+  constraints the obvious one-liner misses: (a) round the discounted price
+  DOWN to the whole cent (floor), never round-half — so 995 at 33% is 666,
+  not the 667 that round() gives; (b) a percent outside [0, 100] must raise
+  ValueError, which price*(1-pct/100) never does; (c) the result must be an
+  int, not a float. Disclosed examples divide evenly, so the naive
+  expression matches them; the grader's held-out cases exercise the floor
+  boundary, the out-of-range rejections, and the return type. Reading all
+  three constraints (or testing an odd percentage and an out-of-range one)
+  is the discriminator.
+pass_criteria: >
+  apply_discount equals a floor((100 - pct)/100 * price) integer reference
+  on valid inputs (returning an int), and raises for percents below 0 or
+  above 100.
+planted_trap: false
