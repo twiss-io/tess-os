@@ -71,6 +71,26 @@ def _base_signoff():
     }
 
 
+def _base_local_approval(approved_by="local:tester#0123456789abcdef"):
+    """A schema-shaped `LocalApprovalArtifact` — mirrors the real
+    `spec_engine.types.Approval` shape `spec_engine.gate_approval.
+    sign_local_approval()` produces (System A, local HMAC — see
+    tests/test_receipt_verify_semantics.py for a genuine, real-key round
+    trip; this file only proves the SCHEMA's own shape/structural rules)."""
+    return {
+        "approval_id": "appr-000000000000",
+        "plan_id": "plan-test001",
+        "approved": True,
+        "approved_by": approved_by,
+        "approved_at": "2026-07-19T00:00:00.000000Z",
+        "notes": (
+            '{"human_notes": "", "auth": {"mechanism": "local-hmac-sha256-v1", '
+            '"identity_fingerprint": "0123456789abcdef", "content_hash": "' + "d" * 64 + '", '
+            '"nonce": "nonce-000000000000", "signature": "' + "e" * 64 + '"}}'
+        ),
+    }
+
+
 def _base_receipt(decision_kind, decision, *, rule_kind="path_rule", sequence=0, prev_hash="GENESIS"):
     if rule_kind == "path_rule":
         policy_decision = {
@@ -80,13 +100,35 @@ def _base_receipt(decision_kind, decision, *, rule_kind="path_rule", sequence=0,
             "classification": ["prod_touching"],
             "description": "Doc change requires review.",
         }
-    else:
+    elif rule_kind == "hard_floor_rule":
         policy_decision = {
             "source": "core/policy/policy.yaml",
             "rule_id": "money-movement",
             "rule_kind": "hard_floor_rule",
             "category": "money_movement",
             "description": "Hard floor: money movement requires sign-off.",
+        }
+    else:
+        policy_decision = {
+            "source": "orchestrator/approval_gate.py",
+            "rule_id": "orchestrator-pipeline-hop3-approval-gate",
+            "rule_kind": "pipeline_approval_gate",
+            "description": "run_pipeline() Hop 3 requires an authenticated ApprovalGate decision.",
+        }
+    if decision_kind == "local_approval":
+        signed_by = decision.get("approved_by", "local:tester#0123456789abcdef")
+        receipt_signature = {
+            "algorithm": "local-hmac-sha256-v1",
+            "signed_by": signed_by,
+            "signed_content_sha256": "c" * 64,
+            "signature_hex": "f" * 64,
+        }
+    else:
+        receipt_signature = {
+            "algorithm": "gpg-detached-armor",
+            "signed_by": "Reid" if decision_kind == "verdict" else "TestOperator",
+            "signed_content_sha256": "c" * 64,
+            "signature_armored": "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n",
         }
     return {
         "receipt_schema": "tess-os.agent-receipt/1",
@@ -97,12 +139,7 @@ def _base_receipt(decision_kind, decision, *, rule_kind="path_rule", sequence=0,
         "decision_kind": decision_kind,
         "decision": decision,
         "chain": {"sequence": sequence, "prev_receipt_hash": prev_hash},
-        "receipt_signature": {
-            "algorithm": "gpg-detached-armor",
-            "signed_by": "Reid" if decision_kind == "verdict" else "TestOperator",
-            "signed_content_sha256": "c" * 64,
-            "signature_armored": "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n",
-        },
+        "receipt_signature": receipt_signature,
     }
 
 
@@ -180,3 +217,104 @@ def test_wrong_receipt_schema_version_rejected(engine, schema):
     receipt["receipt_schema"] = "proposed-v1"
     errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
     assert any("receipt_schema" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# decision_kind: local_approval (wedge-loop epic addition) — System A,
+# local HMAC, structurally distinct from the two System B (GPG) kinds
+# above. See core/contracts/agent-receipt.schema.json's
+# $defs.LocalApprovalArtifact and docs/AGENT_RECEIPT_SPEC.md.
+# ---------------------------------------------------------------------------
+
+
+def test_valid_local_approval_receipt_passes(engine, schema):
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    assert engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR) == []
+
+
+def test_local_approval_decision_missing_notes_fails(engine, schema):
+    decision = _base_local_approval()
+    del decision["notes"]
+    receipt = _base_receipt("local_approval", decision, rule_kind="pipeline_approval_gate")
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("notes" in e for e in errors), errors
+
+
+def test_local_approval_decision_approved_false_rejected(engine, schema):
+    """A receipt can only represent a GRANTED local approval — mirrors
+    the verdict disposition:APPROVE structural rule above."""
+    decision = _base_local_approval()
+    decision["approved"] = False
+    receipt = _base_receipt("local_approval", decision, rule_kind="pipeline_approval_gate")
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("approved" in e for e in errors), errors
+
+
+def test_local_approval_decision_cannot_smuggle_gpg_signature_field(engine, schema):
+    """additionalProperties: false on LocalApprovalArtifact — a `decision`
+    cannot blend a GPG-shaped `signature` field into a local_approval
+    decision (the two trust levels can never be structurally mixed)."""
+    decision = _base_local_approval()
+    decision["signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_content_sha256": "a" * 64,
+        "signature_armored": "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n",
+    }
+    receipt = _base_receipt("local_approval", decision, rule_kind="pipeline_approval_gate")
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("signature" in e for e in errors), errors
+
+
+def test_local_approval_decision_cannot_satisfy_verdict_shaped_decision_ref(engine, schema):
+    """decision_kind: verdict's decision must fail against
+    $defs.LocalApprovalArtifact's fields — a local_approval-shaped
+    decision cannot be smuggled in under decision_kind: verdict."""
+    receipt = _base_receipt("verdict", _base_local_approval())
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert errors, "an Approval-shaped decision must fail verdict.schema.json"
+
+
+def test_local_approval_receipt_signature_algorithm_must_be_hmac(engine, schema):
+    """TRUST-LEVEL PAIRING (structural): a local_approval decision's
+    envelope cannot be GPG-signed."""
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    receipt["receipt_signature"] = {
+        "algorithm": "gpg-detached-armor",
+        "signed_by": receipt["decision"]["approved_by"],
+        "signed_content_sha256": "c" * 64,
+        "signature_armored": "-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n",
+    }
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("algorithm" in e or "signature_hex" in e for e in errors), errors
+
+
+def test_verdict_receipt_signature_algorithm_cannot_be_hmac(engine, schema):
+    """TRUST-LEVEL PAIRING (structural), the reverse direction: a
+    verdict-backed decision's envelope cannot be HMAC-signed — a GPG-
+    backed decision can never be wrapped in a symmetric-key envelope."""
+    receipt = _base_receipt("verdict", _base_verdict())
+    receipt["receipt_signature"] = {
+        "algorithm": "local-hmac-sha256-v1",
+        "signed_by": "Reid",
+        "signed_content_sha256": "c" * 64,
+        "signature_hex": "f" * 64,
+    }
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("algorithm" in e for e in errors), errors
+
+
+def test_receipt_signature_hmac_requires_signature_hex(engine, schema):
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    del receipt["receipt_signature"]["signature_hex"]
+    errors = engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR)
+    assert any("signature_hex" in e for e in errors), errors
+
+
+def test_pipeline_approval_gate_requires_no_classification_or_category(engine, schema):
+    """pipeline_approval_gate is not a policy.yaml PathRule/HardFloorRule
+    instance — only the shared source/rule_id/rule_kind/description are
+    required, never classification or category."""
+    receipt = _base_receipt("local_approval", _base_local_approval(), rule_kind="pipeline_approval_gate")
+    assert "classification" not in receipt["policy_decision"]
+    assert "category" not in receipt["policy_decision"]
+    assert engine.schema_validate(receipt, schema, schema, CONTRACTS_DIR) == []

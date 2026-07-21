@@ -20,10 +20,14 @@ the exact same bytes).
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
+import secrets
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -69,11 +73,17 @@ def build_envelope(*, decision_kind, decision, sequence=0, prev_hash="GENESIS",
             "rule_kind": "path_rule", "classification": ["prod_touching"],
             "description": "Doc change requires review.",
         }
-    else:
+    elif rule_kind == "hard_floor_rule":
         policy_decision = {
             "source": "core/policy/policy.yaml", "rule_id": "money-movement",
             "rule_kind": "hard_floor_rule", "category": "money_movement",
             "description": "Hard floor: money movement requires sign-off.",
+        }
+    else:
+        policy_decision = {
+            "source": "orchestrator/approval_gate.py", "rule_id": "orchestrator-pipeline-hop3-approval-gate",
+            "rule_kind": "pipeline_approval_gate",
+            "description": "run_pipeline() Hop 3 requires an authenticated ApprovalGate decision.",
         }
     return {
         "receipt_schema": "tess-os.agent-receipt/1",
@@ -88,7 +98,7 @@ def build_envelope(*, decision_kind, decision, sequence=0, prev_hash="GENESIS",
 
 
 def trust_entry(key):
-    return {"fingerprint": key.fpr, "public_key_bytes": key.pubkey_armored.encode("utf-8")}
+    return {"fingerprint": key.fpr, "key_bytes": key.pubkey_armored.encode("utf-8")}
 
 
 def gpg_sign_receipt(receipt, signer_name, key):
@@ -131,3 +141,101 @@ def write_key(tmp_path, filename, key):
 
 def run_cli(*args):
     return subprocess.run([sys.executable, str(RECEIPT_VERIFY_CLI), *args], capture_output=True, text=True)
+
+
+# ---------------------------------------------------------------------------
+# decision_kind: local_approval (wedge-loop epic addition) — System A,
+# local HMAC-SHA256, DELIBERATELY reimplemented here rather than importing
+# spec_engine.gate_identity, mirroring how `conftest.py`'s `verifier_gpg_keys`
+# generates REAL, independent GPG keys directly rather than importing
+# tessctl's own signing helpers — genuine test data, built independently of
+# the code under test, proves the real algorithm rather than a mock of it.
+# See tools/receipt-verify/hmac_verify.py for the standalone VERIFIER this
+# builds fixtures for.
+# ---------------------------------------------------------------------------
+
+LOCAL_HMAC_MECHANISM = "local-hmac-sha256-v1"
+
+
+@dataclass(frozen=True)
+class LocalHmacKey:
+    """A throwaway local approval-identity key, mirroring
+    `spec_engine.gate_identity.LocalIdentity` closely enough for test
+    fixtures (`key_bytes` instead of a `key_path` — tests build this
+    in-memory, never touching a real `~/.tess-os/approval-identity/`
+    file)."""
+
+    key_bytes: bytes
+    fingerprint: str
+
+
+def generate_local_hmac_key() -> LocalHmacKey:
+    """A genuinely random 32-byte key + its `sha256(key)[:16]`
+    fingerprint — the EXACT `spec_engine.gate_identity` convention,
+    reimplemented here (not imported) for the same standalone-fixture
+    independence `verifier_gpg_keys` already establishes for GPG."""
+    key_bytes = secrets.token_bytes(32)
+    fingerprint = hashlib.sha256(key_bytes).hexdigest()[:16]
+    return LocalHmacKey(key_bytes=key_bytes, fingerprint=fingerprint)
+
+
+def base_local_approval(*, approved_by, key: LocalHmacKey, approved=True,
+                         plan_id="plan-test001", content_hash="d" * 64, human_notes=""):
+    """A genuinely HMAC-signed `LocalApprovalArtifact` decision — the
+    EXACT `spec_engine.gate_identity.canonical_payload()` /
+    `sign_payload()` math (compact, key-sorted JSON, `ensure_ascii`
+    default True), reimplemented here so `hmac_verify.
+    verify_local_approval_decision()` can genuinely re-verify it, the
+    same "independent re-implementation, real signature" discipline
+    `sign_verdict_for_test`/`sign_signoff_for_test` already apply for
+    GPG."""
+    approval_id = "appr-" + uuid.uuid4().hex[:12]
+    approved_at = now_iso()
+    nonce = "nonce-" + uuid.uuid4().hex[:12]
+    payload = {
+        "approval_id": approval_id, "plan_id": plan_id, "content_hash": content_hash,
+        "approved": approved, "approved_by": approved_by, "approved_at": approved_at, "nonce": nonce,
+    }
+    canon = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(key.key_bytes, canon, hashlib.sha256).hexdigest()
+    notes = json.dumps({
+        "human_notes": human_notes,
+        "auth": {
+            "mechanism": LOCAL_HMAC_MECHANISM, "identity_fingerprint": key.fingerprint,
+            "content_hash": content_hash, "nonce": nonce, "signature": signature,
+        },
+    })
+    return {
+        "approval_id": approval_id, "plan_id": plan_id, "approved": approved,
+        "approved_by": approved_by, "approved_at": approved_at, "notes": notes,
+    }
+
+
+def local_hmac_trust_entry(key: LocalHmacKey) -> dict:
+    return {"fingerprint": key.fingerprint, "key_bytes": key.key_bytes}
+
+
+def hmac_sign_receipt(receipt: dict, signer_name: str, key: LocalHmacKey) -> dict:
+    """Sign a receipt envelope's own `receipt_signature` with
+    `algorithm: "local-hmac-sha256-v1"`, using OUR canonicalization
+    (`canonical.receipt_signing_bytes` — the SAME compact/key-sorted form
+    a GPG-backed envelope already uses; only the crypto operation
+    differs) and a genuine HMAC-SHA256 over it."""
+    canon = canonical.receipt_signing_bytes(receipt)
+    content_hash = hashlib.sha256(canon).hexdigest()
+    signature_hex = hmac.new(key.key_bytes, canon, hashlib.sha256).hexdigest()
+    return {
+        "algorithm": "local-hmac-sha256-v1",
+        "signed_by": signer_name,
+        "signed_content_sha256": content_hash,
+        "signature_hex": signature_hex,
+    }
+
+
+def build_local_approval_signed_receipt(decision, signer_name, key: LocalHmacKey,
+                                         sequence=0, prev_hash="GENESIS",
+                                         rule_kind="pipeline_approval_gate"):
+    receipt = build_envelope(decision_kind="local_approval", decision=decision,
+                              sequence=sequence, prev_hash=prev_hash, rule_kind=rule_kind)
+    receipt["receipt_signature"] = hmac_sign_receipt(receipt, signer_name, key)
+    return receipt
