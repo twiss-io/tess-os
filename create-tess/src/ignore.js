@@ -61,6 +61,26 @@ export const EXCLUDE_NAMES = new Set([
   '.vault',
   // Claude Code local override (`.claude/settings.local.json`)
   'settings.local.json',
+  // `.npmignore` leak (PR #160 revision-2, Cyra MEDIUM): this repo's own
+  // root `.npmignore` (+ any nested one, e.g. `tests/.npmignore`) is a
+  // tracked file build-template.mjs otherwise copies verbatim into
+  // `create-tess/template/.npmignore`. `npm pack` HONORS a nested
+  // `.npmignore` it finds inside a `files`-listed directory — and this
+  // repo's own root `.npmignore`'s rules for `kb/raw/`, `kb/lint/`,
+  // `kb/wiki/{concepts,missions,people,synthesis}/`, `.tess/snapshots/`,
+  // `.tess/staging/` are WHOLE-DIRECTORY excludes with NO `.gitkeep`
+  // re-inclusion (unlike `.gitignore`'s carefully negated
+  // `kb/wiki/concepts/*` + `!kb/wiki/concepts/.gitkeep` pattern) — so the
+  // REAL npm tarball silently dropped those directories ENTIRELY, `.gitkeep`
+  // and all, even though the committed `create-tess/template/` source tree
+  // (and every prior test, which only ever inspected the pre-pack source
+  // tree or secret-shaped paths) looked correct. `.npmignore` serves no
+  // purpose in a scaffolded end-user instance — it is never itself
+  // npm-published — so it is dropped here at BOTH build time
+  // (build-template.mjs never copies it into the committed bundle) and
+  // scaffold time (the git-clone opt-in path's promote() step, same
+  // defense-in-depth as every other EXCLUDE_NAMES entry).
+  '.npmignore',
 ]);
 
 // Excluded as a WHOLE subtree (the dir itself and everything under it).

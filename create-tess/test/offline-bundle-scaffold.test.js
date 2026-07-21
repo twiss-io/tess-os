@@ -168,6 +168,40 @@ test(
       'packed tarball must not carry this repo\'s own verifier/sign-off trust-anchor keys',
     );
 
+    // MEDIUM-2 (Cyra, PR #160 revision-2): a leftover `.npmignore` bundled
+    // into `template/` (a verbatim copy of this repo's own root
+    // `.npmignore`, swept in by build-template.mjs before this fix) was
+    // silently SHADOWING the `.gitignore`-based structure-preservation
+    // pattern at npm's OWN pack step — dropping `kb/raw`, `kb/lint`,
+    // `kb/wiki/{concepts,missions,people,synthesis}`, `.tess/snapshots`,
+    // `.tess/staging` ENTIRELY from the REAL tarball, invisible to every
+    // prior test (which only ever inspected the pre-pack SOURCE tree, never
+    // npm's own authoritative `files` manifest for the packed artifact).
+    // Asserting against `packedFiles` (npm's own manifest), not the source
+    // tree, is the only way to catch this class of gap.
+    assert.ok(
+      !packedFiles.some((p) => p.endsWith('.npmignore')),
+      'packed tarball must not carry any .npmignore (it shadows the .gitignore ' +
+        'structure-preservation pattern at npm-pack time and serves no purpose ' +
+        'in a scaffolded end-user instance)',
+    );
+    for (const structurePath of [
+      'template/kb/raw/.gitkeep',
+      'template/kb/lint/.gitkeep',
+      'template/kb/wiki/concepts/.gitkeep',
+      'template/kb/wiki/missions/.gitkeep',
+      'template/kb/wiki/people/.gitkeep',
+      'template/kb/wiki/synthesis/.gitkeep',
+      'template/.tess/snapshots/.gitkeep',
+      'template/.tess/staging/.gitkeep',
+    ]) {
+      assert.ok(
+        packedFiles.some((p) => p === structurePath),
+        `packed tarball must preserve the empty structure at ${structurePath} ` +
+          '(regression guard: MEDIUM-2, .npmignore npm-pack-time shadow)',
+      );
+    }
+
     // ── 2. Extract into a throwaway dir — standing in for node_modules/create-tess/ ──
     const installDir = mkTemp('create-tess-install-');
     const untar = spawnSync('tar', ['-xzf', tarballPath, '-C', installDir], { encoding: 'utf8' });
@@ -179,6 +213,48 @@ test(
       existsSync(join(extractedPkgDir, 'template', '.tess', 'core', 'roster-paths.json')),
       'extracted tarball must contain the bundled template on disk',
     );
+
+    // MEDIUM-1 (Cyra, PR #160 revision-2): `operator/user-profile.md` and
+    // `conductor/user-profile.md` previously shipped the maintainer's own
+    // real, unmodified, byte-for-byte-identical (to the live production
+    // Tess instance) behavioral/psychographic calibration profile as the
+    // DEFAULT persona for every scaffolded instance. Asserted against the
+    // REAL packed-and-extracted tarball content — not the pre-pack source
+    // tree — for the same reason as the structure-preservation checks above:
+    // this is the artifact that actually ships to npm.
+    const bundledUserProfiles = {
+      'operator/user-profile.md': readFileSync(
+        join(extractedPkgDir, 'template', 'operator', 'user-profile.md'),
+        'utf8',
+      ),
+      'conductor/user-profile.md': readFileSync(
+        join(extractedPkgDir, 'template', 'conductor', 'user-profile.md'),
+        'utf8',
+      ),
+    };
+    for (const [rel, content] of Object.entries(bundledUserProfiles)) {
+      assert.doesNotMatch(
+        content,
+        /does not think small/i,
+        `${rel} must not carry the maintainer's own personal calibration profile (found distinctive phrase)`,
+      );
+      assert.doesNotMatch(
+        content,
+        /founder-operator who thinks in systems/i,
+        `${rel} must not carry the maintainer's own personal calibration profile (found distinctive phrase)`,
+      );
+      assert.doesNotMatch(
+        content,
+        /\bHe\b|\bHis\b/,
+        `${rel} must not carry gendered pronouns referring to a specific real individual`,
+      );
+      assert.match(
+        content,
+        /<[^>]*>/,
+        `${rel} must read as a generic fill-in-the-blank template (expected a placeholder token)`,
+      );
+    }
+
     // A real `npm install create-tess` additionally resolves `dependencies`
     // (@clack/prompts, picocolors) into node_modules/ — npm's own dependency
     // install, a well-established mechanism entirely orthogonal to the git-

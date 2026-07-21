@@ -40,9 +40,10 @@
 // out of every install downstream. Defense in depth: fetchTemplate()/
 // promote() still re-apply the same filter at scaffold time regardless.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(SCRIPT_DIR, '..'); // create-tess/
@@ -124,6 +125,124 @@ for (const entry of readdirSync(REPO_ROOT)) {
     dereference: false,
   });
 }
+
+// ── Content overrides (P0 G-01 MEDIUM-1, PR #160 revision-2, Cyra) ────────
+// A small, EXPLICIT set of repo-root paths whose SOURCE content is this
+// repo's own live, fully-populated doctrine — not a "structure-only" leak
+// like kb/wiki/{index,log}.md (EXCLUDE_CONTENT_PREFIXES, dir + .gitkeep
+// only) and not something writeProfile() silently regenerates fresh at
+// scaffold time like operator/profile.json (EXCLUDE_REL_PATHS) — but whose
+// BUNDLED counterpart must still exist and read as a real, usable file: a
+// generic, fill-in-the-blank template, never the maintainer's own real
+// calibration. Cyra (PR #160 security re-review): `operator/user-profile.md`
+// + `conductor/user-profile.md` carry a full, unmodified, real
+// behavioral/psychographic calibration profile — confirmed byte-identical
+// to the live production Tess instance's own conductor/user-profile.md —
+// shipped as the default persona to every `npm create tess` scaffold, with
+// none of the genericization pass (name/identity → "the operator",
+// specifics → placeholders) already applied to conductor/founders-office.md
+// and conductor/channel-guardrails.md.
+//
+// Applied as a final, unconditional OVERWRITE after the normal tracked-file
+// copy above — deliberately NOT an isExcludedRel() exclusion. An exclusion
+// would just DROP the file from the bundle entirely (the kb/wiki/{index,
+// log}.md treatment); these two files are meant to exist and be readable in
+// every scaffold, just never with THIS repo's own populated content.
+//
+// Deliberately scoped to the BUNDLE ONLY: this does not touch the repo
+// ROOT's own operator/user-profile.md / conductor/user-profile.md (this
+// repo's own live, dogfooded calibration, used for THIS repo's own Tess
+// instance) — whether the repo ROOT copies themselves should also be
+// genericized is a separate, non-blocking call flagged for Xavier on
+// PR #160's review thread, out of scope here.
+//
+// `conductor/user-profile.md` is CORE-MANAGED (tess.lock: tier `normal`,
+// core_key `.tess/core/conductor/user-profile.md`, live_path
+// `conductor/user-profile.md`) — tessctl doctor/verify run TWO independent
+// checks against it: Check A (`.tess/core/<key>` bytes == tess.lock's pinned
+// `base_sha`) and Check B (the live copy == freshly-rendered core). Writing
+// the generic override to ONLY the live path — the first cut of this fix —
+// left the `.tess/core` mirror holding the OLD (real-calibration) bytes,
+// which passed Check A (still matched the OLD pin) but failed Check B on
+// EVERY single `npm create tess` run (live now permanently disagrees with
+// core) — the wizard's own embedded `tessctl doctor`/`verify` reported
+// ISSUES and the process exited non-zero for every user. `operator/
+// user-profile.md` has NO tess.lock entry at all (operator/** is pure
+// never_touch instance data, not core-managed) — no equivalent concern
+// there.
+// Fix: overwrite BOTH the live path and its `.tess/core` mirror with the
+// IDENTICAL generic bytes (Check B passes: live == core), then re-pin ONLY
+// that one tess.lock entry's `base_sha` — the same surgical, single-entry
+// re-pin `keystone.js`'s `regenPolicyLock` performs for the analogous
+// policy.yaml case (`tessctl lock --regen --yes --only <core_key>`), but
+// done here as a plain, DETERMINISTIC string/hash patch rather than by
+// shelling out to that command. Reason: `tessctl lock --regen` (even
+// `--only`-scoped) also bumps the lock file's top-level
+// `framework.last_updated` WALL-CLOCK timestamp — harmless for its designed
+// use (a maintainer re-baselining a real scaffold at run time, a one-shot
+// action with no "previous build" to diff against) but fatal for a
+// COMMITTED, reproducible build artifact: `template-drift-guard.test.js`
+// rebuilds this exact bundle fresh and asserts it is byte-identical to the
+// committed tree, and a real `prepack` before `npm publish` does the same
+// implicitly — either would spuriously "drift" on this one timestamp field
+// alone, forever, even with zero actual content change. Patching only the
+// `base_sha:` line for this ONE entry, leaving every other byte of
+// tess.lock (including that timestamp) untouched, keeps the bundle build
+// fully deterministic — same inputs always produce the same bundle.
+const OVERRIDES_DIR = join(SCRIPT_DIR, 'template-overrides');
+const CONTENT_OVERRIDES = {
+  'operator/user-profile.md': join(OVERRIDES_DIR, 'operator-user-profile.md'),
+  'conductor/user-profile.md': join(OVERRIDES_DIR, 'conductor-user-profile.md'),
+  // Core mirror of conductor/user-profile.md — MUST stay byte-identical to
+  // the live path above (see comment block).
+  '.tess/core/conductor/user-profile.md': join(OVERRIDES_DIR, 'conductor-user-profile.md'),
+};
+
+for (const [rel, overrideSrc] of Object.entries(CONTENT_OVERRIDES)) {
+  if (!existsSync(overrideSrc)) die(`content-override source missing: ${overrideSrc}`);
+  const dest = join(TEMPLATE_DIR, ...rel.split('/'));
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(overrideSrc, dest);
+}
+
+// Re-pin tess.lock's base_sha for `.tess/core/conductor/user-profile.md` to
+// match the override content's ACTUAL bytes on disk — `sha256_file()`'s own
+// definition in .tess/bin/tessctl is `"sha256:" + sha256(path.read_bytes())
+// .hexdigest()`, replicated exactly here (Node's `crypto` against the same
+// bytes just written to `dest` above, not a re-derivation from the override
+// SOURCE file — the two are cpSync'd byte-for-byte identical, but hashing
+// what's actually on disk in the bundle is the more defensible ground truth).
+const CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY = '.tess/core/conductor/user-profile.md';
+const coreMirrorPath = join(TEMPLATE_DIR, ...CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY.split('/'));
+const newSha = createHash('sha256').update(readFileSync(coreMirrorPath)).digest('hex');
+
+const lockPath = join(TEMPLATE_DIR, '.tess', 'tess.lock');
+if (!existsSync(lockPath)) die(`bundled tess.lock missing at ${lockPath} — cannot re-pin ${CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY}`);
+const lockText = readFileSync(lockPath, 'utf8');
+const lockLines = lockText.split('\n');
+// tess.lock's `files:` entries are `  <core_key>:` at 2-space indent, with
+// each attribute (status/tier/base_sha/live_path/last_updated) at 4-space
+// indent directly below. Locate the entry header line, then only the very
+// next `    base_sha: sha256:...` line beneath it — scoped precisely enough
+// that no other entry (or any entry whose core_key happens to be a PREFIX
+// of this one) can ever be matched instead.
+const entryHeader = `  ${CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY}:`;
+const headerIdx = lockLines.findIndex((l) => l === entryHeader);
+if (headerIdx === -1) die(`tess.lock has no entry for ${CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY} — cannot re-pin`);
+let baseShaIdx = -1;
+for (let i = headerIdx + 1; i < lockLines.length; i++) {
+  const line = lockLines[i];
+  // Stop at the next entry (a 2-space-indented, non-4-space-indented line)
+  // or end of the files: block — never search past this entry's own block.
+  if (!line.startsWith('    ')) break;
+  if (/^    base_sha: sha256:[0-9a-f]{64}$/.test(line)) {
+    baseShaIdx = i;
+    break;
+  }
+}
+if (baseShaIdx === -1) die(`tess.lock entry for ${CONDUCTOR_USER_PROFILE_LOCK_CORE_KEY} has no base_sha line — cannot re-pin`);
+lockLines[baseShaIdx] = `    base_sha: sha256:${newSha}`;
+writeFileSync(lockPath, lockLines.join('\n'), 'utf8');
 
 // Report what actually landed — a quick sanity signal for the maintainer
 // running this by hand, and useful CI log output when prepack runs it.

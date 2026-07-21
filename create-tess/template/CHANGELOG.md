@@ -89,6 +89,50 @@ All notable changes to Tess OS are documented here. This project adheres to
     `assertSafeTemplateSource`, `isLocalSource`) moved to a new
     `create-tess/src/git-template-source.js`, re-exported from `scaffold.js`
     unchanged — zero import-path churn for existing callers.
+  - **Revision-2 (Cyra security re-review, 2 non-blocking MEDIUMs, closed
+    before republish):**
+    - **MEDIUM — `operator/user-profile.md` + `conductor/user-profile.md`
+      shipped the maintainer's own real, unmodified, byte-for-byte-identical
+      (to the live production Tess instance) behavioral/psychographic
+      calibration profile as the default persona for every scaffolded
+      instance** — the genericization pass already applied to
+      `conductor/founders-office.md`/`conductor/channel-guardrails.md`
+      (operator identity → "the operator", specifics → placeholders) had
+      never been applied to this pair. `create-tess/scripts/build-template.mjs`
+      now overwrites both bundled paths (plus the `.tess/core/conductor/`
+      mirror `conductor/user-profile.md` is core-managed against) with a
+      generic, fill-in-the-blank template from new
+      `create-tess/scripts/template-overrides/`, and deterministically
+      re-pins the one `tess.lock` `base_sha` entry the override changes (a
+      plain hash patch, not `tessctl lock --regen`, which would have
+      introduced a wall-clock timestamp into the committed bundle and broken
+      `template-drift-guard.test.js`'s reproducibility guarantee). Scoped to
+      the BUNDLE only — this repo's own root `operator/user-profile.md` /
+      `conductor/user-profile.md` (this repo's own live, dogfooded
+      calibration) are untouched; whether those should also be genericized
+      is a separate, non-blocking call flagged for Xavier.
+    - **MEDIUM — a leftover `create-tess/template/.npmignore` (+ nested
+      `template/tests/.npmignore`), a verbatim copy of this repo's own root
+      `.npmignore` swept in by `build-template.mjs`, silently shadowed the
+      `.gitignore`-based structure-preservation pattern at npm's OWN pack
+      step** — `npm pack` honors a nested `.npmignore` inside a
+      `files`-listed directory, and the copied `.npmignore`'s rules for
+      `kb/raw/`, `kb/lint/`,
+      `kb/wiki/{concepts,missions,people,synthesis}/`, `.tess/snapshots/`,
+      `.tess/staging/` are whole-directory excludes with no `.gitkeep`
+      re-inclusion (unlike `.gitignore`'s negated pattern) — dropping those
+      directories entirely from the REAL npm tarball, invisible to every
+      prior test (which only ever inspected the pre-pack source tree).
+      `src/ignore.js`'s `EXCLUDE_NAMES` now drops `.npmignore` at both build
+      time and scaffold time (the git-clone opt-in path gets the same
+      defense-in-depth).
+    - New real-tarball assertions in `offline-bundle-scaffold.test.js`:
+      `npm pack` → extract → assert the intended structure dirs are present
+      in npm's own authoritative `files` manifest, `.npmignore` is absent
+      from the packed tarball, and both `user-profile.md` files are generic
+      (no maintainer-specific phrasing, no gendered pronouns, a placeholder
+      token present) — closing the gap where prior tests only ever inspected
+      the pre-pack source tree, never npm's own pack-time filtering.
 
 ### Added
 - **`tools/receipt-emit/` — the Agent Receipt EMIT CLI**, closing the gap
