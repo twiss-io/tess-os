@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tess-os.dev/contracts/agent-receipt.schema.json",
   "title": "Agent Receipt",
-  "description": "Machine-checkable, portable envelope for a single propose -> approve -> sign accountability event. This is NOT a new trust mechanism: it formalizes and packages the two signing primitives this repository already ships and tests — verdict signing (verdict.schema.json's `signature`, `$defs.VerdictSignature`, `_gate_verify_verdict_signature` in .tess/bin/tessctl) for an AI verifier's reviewed APPROVE, and hard-floor sign-off signing (the `.tess/gate/signoffs/<rule-id>.signoff.json` shape checked by `_gate_validate_signoff`/`_gate_verify_signoff_signature`) for a human operator's Rule-18 clearance. An Agent Receipt embeds one of those two ALREADY-SIGNED artifacts verbatim (`decision`), adds the policy rule that made approval necessary in the first place (`policy_decision`, grounded in policy.schema.json's `PathRule`/`HardFloorRule`), what was actually proposed (`proposed_action`), and a SEPARATE envelope-level signature (`receipt_signature`) plus an append-only hash-chain link (`chain`) so a third party holding only this file (or a short chain of these files) and the signer's/signers' public key(s) can verify the whole thing without the rest of the Tess OS install, the mission tree, or core/policy/policy.yaml. See docs/AGENT_RECEIPT_SPEC.md for the full canonicalization/verification algorithm and tools/receipt-verify/ for the standalone verifier. Explicitly distinct from docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md's proposed, deferred, unimplemented 'proposed-v1' universal task-graph/adapter runtime receipt — that document's receipt is a future adapter-evidence proposal with 'receipt signing... deferred'; this schema is the accountability envelope for the propose/approve/sign machinery that is ALREADY implemented and tested today, scoped narrower and shipped now. `receipt_schema` uses its own distinct version string for exactly this reason.",
+  "description": "Machine-checkable, portable envelope for a single propose -> approve -> sign accountability event. This is NOT a new trust mechanism: it formalizes and packages the signing primitives this repository already ships and tests — verdict signing (verdict.schema.json's `signature`, `$defs.VerdictSignature`, `_gate_verify_verdict_signature` in .tess/bin/tessctl) for an AI verifier's reviewed APPROVE, hard-floor sign-off signing (the `.tess/gate/signoffs/<rule-id>.signoff.json` shape checked by `_gate_validate_signoff`/`_gate_verify_signoff_signature`) for a human operator's Rule-18 clearance, AND (wedge-loop epic addition) local HMAC approval signing (`spec_engine.types.Approval`, `spec_engine.gate_identity`/`gate_approval.py`) for `orchestrator.pipeline.run_pipeline()`'s own product-layer approval gate. An Agent Receipt embeds ONE of those three ALREADY-SIGNED artifacts verbatim (`decision`), adds the policy/gate rule that made approval necessary in the first place (`policy_decision`), what was actually proposed (`proposed_action`), and a SEPARATE envelope-level signature (`receipt_signature`) plus an append-only hash-chain link (`chain`) so a third party holding only this file (or a short chain of these files) and the signer's/signers' key material can verify the whole thing without the rest of the Tess OS install, the mission tree, or core/policy/policy.yaml. See docs/AGENT_RECEIPT_SPEC.md for the full canonicalization/verification algorithm and tools/receipt-verify/ for the standalone verifier. ★ TRUST LEVELS ARE NOT INTERCHANGEABLE — see `decision_kind`'s own description and `$defs.LocalApprovalArtifact` below: a `local_approval` receipt is System A (local, symmetric HMAC-SHA256, verifiable only by a holder of the SAME secret key material) and is DELIBERATELY, STRUCTURALLY WEAKER than a `verdict`/`signoff` receipt, which is System B (GPG, asymmetric, publicly verifiable from a pinned fingerprint + public key alone). This schema, `tools/receipt-verify/checks.py`, and `tools/receipt-verify/hmac_verify.py` all encode this distinction structurally (a dedicated `decision_kind` value, a dedicated `receipt_signature.algorithm` value, and a dedicated `policy_decision.rule_kind` value that can ONLY pair with `local_approval`) so a reader or verifier can never mistake one trust level for the other, and a chain can never silently blur System A and System B evidence into one undifferentiated 'it was approved.' Explicitly distinct from docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md's proposed, deferred, unimplemented 'proposed-v1' universal task-graph/adapter runtime receipt — that document's receipt is a future adapter-evidence proposal with 'receipt signing... deferred'; this schema is the accountability envelope for the propose/approve/sign machinery that is ALREADY implemented and tested today, scoped narrower and shipped now. `receipt_schema` uses its own distinct version string for exactly this reason.",
   "type": "object",
   "properties": {
     "receipt_schema": {
@@ -12,7 +12,7 @@
     "receipt_id": {
       "type": "string",
       "pattern": "^[0-9a-f]{32}$",
-      "description": "A stable, opaque identifier for this receipt — a UUID4 hex string (uuid.uuid4().hex), the same convention _trace_build_event already uses for `event_id` in .tess/bin/tessctl. Deliberately NOT a hash of the receipt's own content (that would be self-referential); tamper-evidence is `receipt_signature.signed_content_sha256` + the GPG signature, and history-binding is `chain.prev_receipt_hash` — see below."
+      "description": "A stable, opaque identifier for this receipt — a UUID4 hex string (uuid.uuid4().hex), the same convention _trace_build_event already uses for `event_id` in .tess/bin/tessctl. Deliberately NOT a hash of the receipt's own content (that would be self-referential); tamper-evidence is `receipt_signature.signed_content_sha256` + the signature itself, and history-binding is `chain.prev_receipt_hash` — see below."
     },
     "issued_at": {
       "type": "string",
@@ -27,11 +27,11 @@
     },
     "decision_kind": {
       "type": "string",
-      "enum": ["verdict", "signoff"],
-      "description": "Which of the two already-shipped signed-decision primitives `decision` embeds: 'verdict' for a schema-valid, signed, disposition:APPROVE verdict.schema.json instance (an AI verifier's reviewed sign-off, conductor/review-output-standards.md + conductor/verification-routing.md); 'signoff' for a schema-valid, signed hard-floor sign-off artifact (a human operator's Rule-18 clearance, conductor/guardrails.md Rule 18)."
+      "enum": ["verdict", "signoff", "local_approval"],
+      "description": "Which of the three already-shipped signed-decision primitives `decision` embeds: 'verdict' for a schema-valid, signed, disposition:APPROVE verdict.schema.json instance (an AI verifier's reviewed sign-off, conductor/review-output-standards.md + conductor/verification-routing.md, GPG — System B); 'signoff' for a schema-valid, signed hard-floor sign-off artifact (a human operator's Rule-18 clearance, conductor/guardrails.md Rule 18, GPG — System B); 'local_approval' for a schema-valid, HMAC-SHA256-signed `spec_engine.types.Approval` instance (an `orchestrator.pipeline.run_pipeline()` Hop-3 product-layer approval-gate decision, local single-OS-account symmetric trust — System A). ★ 'local_approval' is DELIBERATELY WEAKER evidence than 'verdict'/'signoff': it proves a decision was HMAC-signed by whoever held one specific local key at the time, not that any particular named human reviewed anything, and it is verifiable only by an independent holder of that SAME symmetric key — never by a public key alone. See `$defs.LocalApprovalArtifact` and docs/AGENT_RECEIPT_SPEC.md for the full disclosure; a reader must never treat the three values as interchangeable strength."
     },
     "decision": {
-      "description": "The embedded, ALREADY-SIGNED decision artifact, VERBATIM — not summarized, not re-derived. When decision_kind is 'verdict' this must independently validate against verdict.schema.json (the real, shipped contract, referenced here rather than duplicated so the two can never drift apart). When decision_kind is 'signoff' this must match $defs.SignoffArtifact below (the sign-off shape `_gate_validate_signoff` already checks; there is no separate signoff.schema.json file in this repository today, so this schema is its first machine-checkable form)."
+      "description": "The embedded, ALREADY-SIGNED decision artifact, VERBATIM — not summarized, not re-derived. When decision_kind is 'verdict' this must independently validate against verdict.schema.json (the real, shipped contract, referenced here rather than duplicated so the two can never drift apart). When decision_kind is 'signoff' this must match $defs.SignoffArtifact below (the sign-off shape `_gate_validate_signoff` already checks — there is no separate signoff.schema.json file in this repository today, so this schema is its first machine-checkable form). When decision_kind is 'local_approval' this must match $defs.LocalApprovalArtifact below (the exact shape of a real `spec_engine.types.Approval` as produced by `spec_engine.gate_approval.sign_local_approval()` — this schema is likewise its first machine-checkable form). See the `allOf` rules below for exactly which $ref applies to which `decision_kind`."
     },
     "chain": {
       "$ref": "#/$defs/ChainLink"
@@ -45,17 +45,57 @@
     "policy_decision", "decision_kind", "decision", "chain", "receipt_signature"
   ],
   "additionalProperties": false,
-  "if": {
-    "required": ["decision_kind"],
-    "properties": { "decision_kind": { "const": "verdict" } }
-  },
-  "then": {
-    "properties": { "decision": { "$ref": "verdict.schema.json#" } }
-  },
-  "else": {
-    "properties": { "decision": { "$ref": "#/$defs/SignoffArtifact" } }
-  },
-  "$comment": "The identity consistency rule this schema deliberately does NOT express structurally (no $data references in this validator's supported subset — see core/contracts/README.md 'Schema vs. lint'): `receipt_signature.signed_by` must equal `decision.verifier` (decision_kind: verdict) or `decision.authorized_by` (decision_kind: signoff). tools/receipt-verify enforces this as an explicit, separate lint-level check — see docs/AGENT_RECEIPT_SPEC.md 'Verification algorithm' step 3.",
+  "allOf": [
+    {
+      "if": {
+        "required": ["decision_kind"],
+        "properties": { "decision_kind": { "const": "verdict" } }
+      },
+      "then": {
+        "properties": { "decision": { "$ref": "verdict.schema.json#" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["decision_kind"],
+        "properties": { "decision_kind": { "const": "signoff" } }
+      },
+      "then": {
+        "properties": { "decision": { "$ref": "#/$defs/SignoffArtifact" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["decision_kind"],
+        "properties": { "decision_kind": { "const": "local_approval" } }
+      },
+      "then": {
+        "properties": { "decision": { "$ref": "#/$defs/LocalApprovalArtifact" } }
+      },
+      "$comment": "Wedge-loop epic addition: the ONLY $ref that resolves for a local_approval decision — a receipt can never satisfy this branch with a GPG verdict/signoff shape, and can never satisfy the two branches above with an Approval shape (additionalProperties: false on every $def below makes a cross-shaped decision fail structurally, not just by convention)."
+    },
+    {
+      "if": {
+        "required": ["decision_kind"],
+        "properties": { "decision_kind": { "enum": ["verdict", "signoff"] } }
+      },
+      "then": {
+        "properties": { "receipt_signature": { "properties": { "algorithm": { "const": "gpg-detached-armor" } } } }
+      },
+      "$comment": "TRUST-LEVEL PAIRING (structural, not just lint): a System B (verdict/signoff) decision's envelope must be GPG-signed — 'local-hmac-sha256-v1' can never wrap a GPG-backed decision, which would falsely upgrade a symmetric-key attestation into something that reads like a publicly-verifiable one."
+    },
+    {
+      "if": {
+        "required": ["decision_kind"],
+        "properties": { "decision_kind": { "const": "local_approval" } }
+      },
+      "then": {
+        "properties": { "receipt_signature": { "properties": { "algorithm": { "const": "local-hmac-sha256-v1" } } } }
+      },
+      "$comment": "TRUST-LEVEL PAIRING (structural, not just lint): a System A (local_approval) decision's envelope must be HMAC-signed — 'gpg-detached-armor' can never wrap a local_approval decision, which would falsely imply a publicly-verifiable signature exists when only a local symmetric key does."
+    }
+  ],
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs. The identity consistency rule this schema deliberately does NOT express structurally (no $data references in this validator's supported subset — see core/contracts/README.md 'Schema vs. lint'): `receipt_signature.signed_by` must equal `decision.verifier` (decision_kind: verdict), `decision.authorized_by` (decision_kind: signoff), or `decision.approved_by` (decision_kind: local_approval). tools/receipt-verify enforces this as an explicit, separate lint-level check — see docs/AGENT_RECEIPT_SPEC.md 'Verification algorithm' step 4.",
   "$defs": {
     "ProposedAction": {
       "type": "object",
@@ -63,12 +103,12 @@
         "actor": {
           "type": "string",
           "minLength": 1,
-          "description": "The agent/persona who proposed the action (e.g. a dispatched subagent's name) — the 'propose' half of propose -> approve -> sign. Not itself authenticated by this schema; the receipt's authority comes entirely from `decision` + `receipt_signature`, exactly as conductor/orchestra-model.md already treats an agent's own claim as informative, never authoritative."
+          "description": "The agent/persona who proposed the action (e.g. a dispatched subagent's name, or a system component like 'orchestrator.pipeline.run_pipeline' for an automated codegen-run proposal) — the 'propose' half of propose -> approve -> sign. Not itself authenticated by this schema; the receipt's authority comes entirely from `decision` + `receipt_signature`, exactly as conductor/orchestra-model.md already treats an agent's own claim as informative, never authoritative."
         },
         "summary": {
           "type": "string",
           "minLength": 1,
-          "description": "Human-readable description of what was proposed — the change, the payment, the deletion, the client-external claim — whatever `policy_decision` below required approval for."
+          "description": "Human-readable description of what was proposed — the change, the payment, the deletion, the generated app, the client-external claim — whatever `policy_decision` below required approval for."
         },
         "repo": {
           "type": "string",
@@ -83,7 +123,7 @@
         "paths": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
-          "description": "OPTIONAL. Repo-relative paths the proposed action touches, when path-detectable (mirrors policy.schema.json PathRule.globs' own path-matching convention). Omitted entirely for a non-path-detectable hard-floor category, e.g. client_external_claims — same explicit non-coverage core/policy/policy.yaml's own `client-external-claims` rule already documents with an empty `globs: []`."
+          "description": "OPTIONAL. Repo-relative paths (or, for a local_approval codegen-run receipt, the generated app's target directory) the proposed action touches, when path-detectable (mirrors policy.schema.json PathRule.globs' own path-matching convention). Omitted entirely for a non-path-detectable hard-floor category, e.g. client_external_claims — same explicit non-coverage core/policy/policy.yaml's own `client-external-claims` rule already documents with an empty `globs: []`."
         }
       },
       "required": ["actor", "summary"],
@@ -91,22 +131,22 @@
     },
     "PolicyDecision": {
       "type": "object",
-      "description": "WHY approval was required — copied verbatim from the policy.schema.json rule that fired, so a reader holding only this receipt (no core/policy/policy.yaml) still sees the actual rule text, not just its id.",
+      "description": "WHY approval was required — copied verbatim from the policy/gate rule that fired, so a reader holding only this receipt (no core/policy/policy.yaml) still sees the actual rule text, not just its id.",
       "properties": {
         "source": {
           "type": "string",
           "minLength": 1,
-          "description": "Repo-relative path to the policy instance this rule was read from — conventionally 'core/policy/policy.yaml' (policy.schema.json's own instance location)."
+          "description": "Repo-relative path to the policy/rule instance this rule was read from — conventionally 'core/policy/policy.yaml' (policy.schema.json's own instance location) for `path_rule`/`hard_floor_rule`; 'orchestrator/approval_gate.py' for `pipeline_approval_gate` (the `ApprovalGate` interface contract, NOT a core/policy/policy.yaml rule — see that field's own description)."
         },
         "rule_id": {
           "type": "string",
           "minLength": 1,
-          "description": "The matched rule's `id`, verbatim from policy.schema.json's PathRule.id or HardFloorRule.id."
+          "description": "The matched rule's `id`, verbatim from policy.schema.json's PathRule.id or HardFloorRule.id when rule_kind is path_rule/hard_floor_rule; a stable, documented literal identifier (e.g. 'orchestrator-pipeline-hop3-approval-gate') when rule_kind is pipeline_approval_gate."
         },
         "rule_kind": {
           "type": "string",
-          "enum": ["path_rule", "hard_floor_rule"],
-          "description": "Which of policy.schema.json's two rule arrays (`policy.rules[]` vs `policy.hard_floor_rules[]`) this decision satisfies. A path_rule is cleared by a covering signed verdict; a hard_floor_rule is cleared ONLY by a signed human sign-off (guardrails.md Rule 18 — never a verdict alone) — this is exactly the pairing `decision_kind` must agree with; see the lint rule in docs/AGENT_RECEIPT_SPEC.md."
+          "enum": ["path_rule", "hard_floor_rule", "pipeline_approval_gate"],
+          "description": "Which governing-rule family fired. A `path_rule` is cleared by a covering signed verdict; a `hard_floor_rule` is cleared ONLY by a signed human sign-off (guardrails.md Rule 18 — never a verdict, and never a local_approval, alone) — both mirror policy.schema.json's two rule arrays (`policy.rules[]` vs `policy.hard_floor_rules[]`). `pipeline_approval_gate` (wedge-loop epic addition) is DIFFERENT IN KIND, not a third core/policy/policy.yaml rule array: it represents `orchestrator.pipeline.run_pipeline()`'s own Hop-3 `ApprovalGate` requirement (orchestrator/approval_gate.py) — a product-layer control this repository's ship-gate (`core/policy/policy.yaml`, `.tess/bin/tessctl gate`) never consults and never governs. `pipeline_approval_gate` can ONLY pair with decision_kind: local_approval — see the lint rule in docs/AGENT_RECEIPT_SPEC.md and tools/receipt-verify/checks.py's `check_policy_pairing`, precisely so a `run_pipeline()` approval can never be misread as having satisfied a real core/policy/policy.yaml PathRule or HardFloorRule, which it never touched."
         },
         "classification": {
           "type": "array",
@@ -130,16 +170,23 @@
       },
       "required": ["source", "rule_id", "rule_kind", "description"],
       "additionalProperties": false,
-      "if": {
-        "required": ["rule_kind"],
-        "properties": { "rule_kind": { "const": "path_rule" } }
-      },
-      "then": {
-        "required": ["classification"]
-      },
-      "else": {
-        "required": ["category"]
-      }
+      "allOf": [
+        {
+          "if": {
+            "required": ["rule_kind"],
+            "properties": { "rule_kind": { "const": "path_rule" } }
+          },
+          "then": { "required": ["classification"] }
+        },
+        {
+          "if": {
+            "required": ["rule_kind"],
+            "properties": { "rule_kind": { "const": "hard_floor_rule" } }
+          },
+          "then": { "required": ["category"] }
+        }
+      ],
+      "$comment": "pipeline_approval_gate requires neither classification nor category — it is not a policy.yaml PathRule/HardFloorRule instance at all (see rule_kind's own description); only `description` (+ the shared source/rule_id/rule_kind) is required for it, same as every rule_kind."
     },
     "SignoffArtifact": {
       "type": "object",
@@ -160,6 +207,44 @@
         "signature": { "$ref": "verdict.schema.json#/$defs/VerdictSignature" }
       },
       "required": ["rule_id", "category", "authorized_by", "rationale", "authorized_at", "signature"],
+      "additionalProperties": false
+    },
+    "LocalApprovalArtifact": {
+      "type": "object",
+      "description": "★ SYSTEM A — LOCAL, HMAC-SHA256, SYMMETRIC-KEY TRUST. DISTINCT FROM, AND WEAKER THAN, 'verdict'/'signoff' ABOVE (System B — GPG, asymmetric, publicly verifiable). The exact shape of a REAL `spec_engine.types.Approval` instance as produced by `spec_engine.gate_approval.sign_local_approval()` (spec-engine/spec_engine/gate_approval.py) — the SAME accountability record `orchestrator.pipeline.run_pipeline()`'s Hop-3 `ApprovalGate` already produces and `spec_engine.spec_builder.build_spec()`'s own codegen-boundary re-verification (`verify_gate_approval()`) already independently re-checks TWICE before any code is generated — embedded here VERBATIM, not summarized, not re-derived, the same 'first machine-checkable JSON Schema form of an already-shipped, already-tested shape' role `SignoffArtifact` plays above for the sign-off shape. A `local_approval` receipt proves 'a real, content-hash-bound decision was recorded and HMAC-signed by whichever process held this ONE OS account's local key at the time.' It does NOT prove which named human was physically at the keyboard, does NOT survive a compromised OS account any better than the raw key file itself would (same trust model as an SSH key), and is independently verifiable ONLY by a party who holds the SAME symmetric key material — unlike a GPG verdict/signoff, which any third party can verify from a public key alone. See `spec_engine.gate_identity`'s own 'Honest limitation' section and docs/AGENT_RECEIPT_SPEC.md for the full disclosure. `additionalProperties: false` here (mirroring every other $def in this schema) means a `decision` cannot smuggle in a GPG-shaped `signature` field alongside this shape, or vice versa — the two trust levels can never be structurally blended into one decision object.",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_engine.types.Approval.approval_id — `new_id('appr')` convention (spec_engine.content.new_id)."
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_engine.types.Approval.plan_id — a safe slug (Approval.__post_init__ already enforces this at construction time)."
+        },
+        "approved": {
+          "type": "boolean",
+          "const": true,
+          "description": "spec_engine.types.Approval.approved. A receipt can only represent a GRANTED local approval — the same discipline verdict.schema.json's own top-level `disposition: APPROVE` rule already enforces for a verdict receipt above; a rejection (`approved: false`) is never something a receipt claims cleared anything, and `sign_local_approval()` can produce either value, so this is a genuine, load-bearing structural check, not a tautology."
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_engine.types.Approval.approved_by — the identity this local approval was recorded as (Approval.__post_init__ already enforces non-empty — 'no anonymous approvals'). The shipped `LocalIdentityApprovalGate` sets this to `local:<os-username>#<key-fingerprint>` (orchestrator/adapters/local_identity.py), so the fingerprint that actually signed this decision travels inside this human-readable string. This is the identity field `receipt_signature.signed_by` must equal for a local_approval receipt — see this schema's top-level `$comment`."
+        },
+        "approved_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_engine.types.Approval.approved_at — UTC ISO-8601, the `spec_engine.content.utc_now_iso()` convention."
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_engine.types.Approval.notes, embedded VERBATIM as the JSON-encoded string `spec_engine.gate_approval.sign_local_approval()` actually writes — `{\"human_notes\": <str>, \"auth\": {\"mechanism\": \"local-hmac-sha256-v1\", \"identity_fingerprint\": <sha256(key)[:16] hex>, \"content_hash\": <plan_content_hash() sha256 hex>, \"nonce\": <str>, \"signature\": <hmac-sha256 hex digest>}}`. Kept as an OPAQUE STRING field here rather than decomposed into nested schema properties — mirrors this schema's own top-level `$comment` discipline: a check this validator's supported keyword subset cannot express structurally (parsing a JSON string's own nested shape) is enforced as an explicit lint-level check instead, never silently skipped. `tools/receipt-verify/checks.py` parses this string at verification time; `tools/receipt-verify/hmac_verify.py` independently re-derives and re-verifies the embedded HMAC-SHA256 signature against a caller-supplied local key file — see that module and docs/AGENT_RECEIPT_SPEC.md for the exact algorithm."
+        }
+      },
+      "required": ["approval_id", "plan_id", "approved", "approved_by", "approved_at", "notes"],
       "additionalProperties": false
     },
     "ChainLink": {
@@ -197,36 +282,51 @@
     },
     "ReceiptSignature": {
       "type": "object",
-      "description": "A SECOND, envelope-level signature, separate from `decision`'s own already-verified inner signature. `decision.signature` proves 'the named verifier/authorizer approved exactly this reviewed/authorized content'; `receipt_signature` proves 'the same identity also attests to this exact proposed_action + policy_decision + chain wrapper' — those three envelope fields are outside what `decision`'s own inner signature covers, so without this second signature the chain link and the stated reason-for-approval would be unauthenticated free text. Deliberately the SAME algorithm/canonicalization discipline as verdict/signoff signing (docs/AGENT_RECEIPT_SPEC.md 'Canonicalization') — no new crypto scheme invented.",
+      "description": "A SECOND, envelope-level signature, separate from `decision`'s own already-verified inner signature (or, for `local_approval`, its own already-verified inner HMAC evidence embedded in `decision.notes`). `decision`'s own signature/evidence proves 'the named verifier/authorizer/local-key-holder approved exactly this reviewed/authorized content'; `receipt_signature` proves 'the same identity also attests to this exact proposed_action + policy_decision + chain wrapper' — those three envelope fields are outside what `decision`'s own inner signature covers, so without this second signature the chain link and the stated reason-for-approval would be unauthenticated free text. Uses ONE of two supported schemes, selected by `algorithm`, and structurally paired 1:1 with `decision_kind` (see this schema's top-level `allOf` rules) — GPG for System B (`verdict`/`signoff`), local HMAC for System A (`local_approval`). No third crypto scheme is introduced by either.",
       "properties": {
         "algorithm": {
           "type": "string",
-          "enum": ["gpg-detached-armor"],
-          "description": "Same single supported scheme as verdict.schema.json/$defs.VerdictSignature — an ASCII-armored GPG detached signature over the receipt's canonical bytes."
+          "enum": ["gpg-detached-armor", "local-hmac-sha256-v1"],
+          "description": "'gpg-detached-armor' — the SAME single scheme verdict.schema.json/$defs.VerdictSignature already supports: an ASCII-armored GPG detached signature over the receipt's canonical bytes, publicly verifiable from a pinned 40-hex-character fingerprint + public key alone. REQUIRED (and the only legal value) when decision_kind is 'verdict' or 'signoff'. 'local-hmac-sha256-v1' (wedge-loop epic addition) — an HMAC-SHA256 signature made with THIS repository's existing local approval-identity mechanism (`spec_engine.gate_identity.AUTH_MECHANISM`, spec-engine/spec_engine/gate_identity.py), verifiable ONLY by an independent holder of the SAME 32-byte symmetric key (pinned by its own 16-hex-character `sha256(key)[:16]` fingerprint — a DIFFERENT, shorter, LOCAL fingerprint convention than GPG's 40-hex one, never to be confused with it). REQUIRED (and the only legal value) when decision_kind is 'local_approval'. See this schema's top-level `allOf` for the structural (not merely lint-level) enforcement of this pairing."
         },
         "signed_by": {
           "type": "string",
           "minLength": 1,
-          "description": "The identity this envelope is signed as — must equal `decision.verifier` (decision_kind: verdict) or `decision.authorized_by` (decision_kind: signoff); see the top-level $comment for why this equality is a lint check, not a schema node."
+          "description": "The identity this envelope is signed as — must equal `decision.verifier` (decision_kind: verdict), `decision.authorized_by` (decision_kind: signoff), or `decision.approved_by` (decision_kind: local_approval); see the top-level $comment for why this equality is a lint check, not a schema node."
         },
         "signed_content_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "sha256 hex digest of the receipt's SIGNING-canonical bytes (the full receipt dict MINUS this `receipt_signature` key), recomputed at verify time and rejected on any mismatch — same tamper-evidence discipline as verdict.schema.json's `signed_content_sha256`."
+          "description": "sha256 hex digest of the receipt's SIGNING-canonical bytes (the full receipt dict MINUS this `receipt_signature` key), recomputed at verify time and rejected on any mismatch — same tamper-evidence discipline as verdict.schema.json's `signed_content_sha256`, and, for `local_approval` receipts, computed with the EXACT SAME canonicalization (`tools/receipt-verify/canonical.py`'s `receipt_signing_bytes()`) as a GPG-backed receipt's envelope — only the signature scheme itself differs by algorithm, never this hash's own canonical form."
         },
         "signature_armored": {
           "type": "string",
           "minLength": 1,
-          "description": "The ASCII-armored GPG detached signature block over the signing-canonical bytes."
+          "description": "REQUIRED when algorithm is 'gpg-detached-armor'; OMITTED when algorithm is 'local-hmac-sha256-v1' (see `signature_hex` instead — the two are deliberately separate fields, never overloading this GPG-specific 'armored block' name to also hold a raw HMAC digest). The ASCII-armored GPG detached signature block (`-----BEGIN PGP SIGNATURE-----` ... `-----END PGP SIGNATURE-----`) over the canonical bytes, produced by `tessctl verdict sign` / an equivalent `gpg --detach-sign --armor` invocation."
+        },
+        "signature_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "REQUIRED when algorithm is 'local-hmac-sha256-v1' (wedge-loop epic addition); OMITTED when algorithm is 'gpg-detached-armor'. The raw HMAC-SHA256 hex digest — `hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()`, `spec_engine.gate_identity.sign_payload()`'s exact convention, applied here to the receipt's OWN envelope-signing-canonical bytes (`tools/receipt-verify/canonical.py`'s `receipt_signing_bytes()`) rather than `gate_identity.canonical_payload()`'s Approval-specific payload shape — those are two distinct signing scopes (inner decision vs. outer envelope) that happen to reuse the same underlying HMAC-SHA256 primitive, not one signature reused twice."
         },
         "signed_at": {
           "type": "string",
           "minLength": 1,
-          "description": "OPTIONAL, purely documentary UTC timestamp of signing. Not consulted by verification — mirrors verdict.schema.json's own `signed_at` disclosure that signatures do not expire in this scheme."
+          "description": "OPTIONAL, purely documentary UTC timestamp of signing. Not consulted by verification — mirrors verdict.schema.json's own `signed_at` disclosure that signatures do not expire in this scheme (true for both supported algorithms — an HMAC signature has no revocation/expiry concept any more than a GPG one is checked for it here beyond gpg's own revoked/expired-key rejection)."
         }
       },
-      "required": ["algorithm", "signed_by", "signed_content_sha256", "signature_armored"],
-      "additionalProperties": false
+      "required": ["algorithm", "signed_by", "signed_content_sha256"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["algorithm"],
+        "properties": { "algorithm": { "const": "gpg-detached-armor" } }
+      },
+      "then": {
+        "required": ["signature_armored"]
+      },
+      "else": {
+        "required": ["signature_hex"]
+      }
     }
   }
 }

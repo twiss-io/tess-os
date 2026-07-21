@@ -277,8 +277,8 @@ GATE_RECEIPT_CHAIN_REL = ".tess/state/receipts/chain.jsonl"
 # `RECEIPT_VERIFY_TOOLS_REL` below are therefore never joined directly onto
 # `root` — see `_gate_extract_trusted_receipt_tooling`, which mirrors the CI
 # workflow's own "extract from BASE ref, fail closed if unavailable, never
-# fall back to the pushed tree" discipline for exactly these ten files, the
-# ONLY point in this module that resolves them onto an actual filesystem
+# fall back to the pushed tree" discipline for exactly these eleven files,
+# the ONLY point in this module that resolves them onto an actual filesystem
 # path an interpreter is asked to load.
 RECEIPT_EMIT_CLI_REL = "tools/receipt-emit/receipt_emit.py"
 
@@ -286,10 +286,16 @@ RECEIPT_EMIT_CLI_REL = "tools/receipt-emit/receipt_emit.py"
 # reading each file's own `import`/`from` statements) — `tools/receipt-emit/`
 # (its own package) plus `tools/receipt-verify/` (reused, never duplicated,
 # per that tool's own README) it imports directly AND separately re-invokes
-# as its own self-verify subprocess. Every one of these ten files, and ONLY
-# these ten, is extracted from the trusted BASE ref — nothing else under
-# `tools/**` (a README, `__pycache__`, a future unrelated file) is needed at
-# runtime, so nothing else is trusted or copied.
+# as its own self-verify subprocess. Every one of these eleven files, and
+# ONLY these eleven, is extracted from the trusted BASE ref — nothing else
+# under `tools/**` (a README, `__pycache__`, a future unrelated file) is
+# needed at runtime, so nothing else is trusted or copied. `hmac_verify.py`
+# (wedge-loop epic addition, `decision_kind: "local_approval"` support) was
+# added here because `checks.py` now imports it at module level —
+# `receipt_emit.py` itself still refuses anything Approval-shaped
+# (`assemble.infer_decision_kind`, unchanged), so this closure grows only
+# because `checks.py`'s own import graph grew, not because `receipt_emit.py`
+# gained new decision-kind support.
 RECEIPT_TOOL_TRUST_CLOSURE = (
     ("tools/receipt-emit", "receipt_emit.py"),
     ("tools/receipt-emit", "assemble.py"),
@@ -301,6 +307,7 @@ RECEIPT_TOOL_TRUST_CLOSURE = (
     ("tools/receipt-verify", "canonical.py"),
     ("tools/receipt-verify", "checks.py"),
     ("tools/receipt-verify", "gpg_verify.py"),
+    ("tools/receipt-verify", "hmac_verify.py"),
 )
 
 # PR-2 (Agent Receipt EMIT wiring) — printed once whenever `tessctl gate
@@ -10921,7 +10928,7 @@ def _gate_extract_trusted_receipt_tooling(root: Path, baseline_ref: str | None) 
     `baseline_ref` is falsy (no push/no usable baseline: matches the CI
     workflow's own bootstrap posture — a missing baseline means there is
     nothing trusted to extract, so this refuses rather than ever falling
-    back to the pushed tree's own copy) or if ANY of the ten files in
+    back to the pushed tree's own copy) or if ANY of the eleven files in
     `RECEIPT_TOOL_TRUST_CLOSURE` is missing, ambiguous, or not a regular
     blob at that ref. The caller folds this into the SAME non-blocking,
     VISIBLE `RECEIPT_EMIT_FAILED` gap every other emit failure already

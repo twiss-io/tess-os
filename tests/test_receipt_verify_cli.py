@@ -12,10 +12,13 @@ from __future__ import annotations
 import json
 
 from _agent_receipt_fixtures import (
+    base_local_approval,
     base_signoff,
     base_verdict,
+    build_local_approval_signed_receipt,
     build_signed_receipt,
     canonical,
+    generate_local_hmac_key,
     run_cli,
     write_key,
 )
@@ -119,3 +122,47 @@ def test_cli_verify_chain_reports_chain_broken(tmp_path, engine, verifier_gpg_ke
     assert payload["chain_intact"] is False
     assert len(payload["failures"]) == 1
     assert payload["failures"][0]["index"] == 1
+
+
+# ---------------------------------------------------------------------------
+# decision_kind: local_approval (wedge-loop epic addition) — CLI round trip,
+# System A (local HMAC), --trust KEYFILE is a raw SECRET key here, not a
+# GPG public key — see receipt_verify.py's own module docstring "★" note.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_verify_valid_local_approval_receipt_exits_zero(tmp_path):
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    key_path = tmp_path / "local-approval.key"
+    key_path.write_bytes(key.key_bytes)
+
+    result = run_cli("verify", str(receipt_path), "--trust", identity, key.fingerprint, str(key_path), "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["valid"] is True
+    assert payload["reasons"] == []
+
+
+def test_cli_verify_local_approval_receipt_wrong_key_exits_nonzero(tmp_path):
+    key = generate_local_hmac_key()
+    identity = "local:tester#" + key.fingerprint
+    decision = base_local_approval(approved_by=identity, key=key)
+    receipt = build_local_approval_signed_receipt(decision, identity, key)
+
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    wrong_key = generate_local_hmac_key()
+    key_path = tmp_path / "wrong.key"
+    key_path.write_bytes(wrong_key.key_bytes)
+
+    result = run_cli("verify", str(receipt_path), "--trust", identity, key.fingerprint, str(key_path), "--json")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["valid"] is False
+    assert payload["reasons"]
