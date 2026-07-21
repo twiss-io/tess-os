@@ -1,0 +1,223 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:twiss-io:tess-os:connector-manifest:v1",
+  "title": "Tess OS Advisory Connector Manifest v1",
+  "description": "A local, descriptive, versioned record of one registered external-service connector (Anthropic, OpenAI, Gemini, ...). It declares the connector's operations (with side-effect class and idempotency), env-var-NAME-only auth, provider API-version pin, error map, timeout, and trust tier. It does not grant authority, access, approval, signing, key custody, verifier registration, or policy enforcement. This schema is intentionally outside core/contracts/ and connectors/** — like adapters/** and docs/** — is never a gate or policy input; see connectors/README.md and docs/design/connectors-architecture.md §4.1/§7.1. Validated only by the offline, dependency-free harness at connectors/manifest_validator.py.",
+  "type": "object",
+  "properties": {
+    "manifest_version": {
+      "type": "string",
+      "const": "connector-manifest.v1",
+      "description": "Pins this record to the v1 advisory contract."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Stable lowercase registry-key slug. Must equal the connector's registry directory name (connectors/registry/<id>/)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semver. Bumped on ANY change to operations, auth, endpoints, error_map, or pins (§4.5)."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "description": "Additional slugs the resolver will match exactly (never fuzzily) against a spec's how_it_works.integrations entries, in addition to `id` itself (§6.2)."
+    },
+    "provider": {
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9.-]+(/.*)?$",
+          "description": "HTTPS only — plaintext http:// is never a valid connector base_url."
+        },
+        "base_url_override_env": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "OPTIONAL. The NAME of an env var whose value, if set, overrides base_url at call time — a disclosed escape hatch for self-hosted proxies / offline contract tests (never a secret; a URL, not a credential)."
+        },
+        "api_version_pin": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "enum": ["header", "url_path"] },
+            "name": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9-]+$",
+              "description": "Header name. Required when kind == 'header'; must be absent when kind == 'url_path'."
+            },
+            "value": { "type": "string", "minLength": 1 }
+          },
+          "required": ["kind", "value"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["base_url", "api_version_pin"],
+      "additionalProperties": false
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "enum": ["env"],
+          "description": "v1 supports exactly ONE scheme: 'env'. 'vault-capability' is reserved in the design doc (§4.1/§11) but NOT implemented — any manifest declaring it fails validation until a future schema version adds real support."
+        },
+        "env": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "description": "Env var NAMES only — SCREAMING_SNAKE_CASE. A value here that is not name-shaped (contains lowercase, matches a known provider-key prefix, or otherwise looks like a real secret) FAILS validation — see manifest_validator.py's secret-value rejection."
+        },
+        "header": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "pattern": "^[a-zA-Z0-9-]+$" },
+            "value_prefix": {
+              "type": "string",
+              "description": "OPTIONAL literal prefix prepended to the env var's value when building the header (e.g. 'Bearer ' for OpenAI's Authorization header). Never a secret itself — always empty or a fixed, public protocol string."
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["scheme", "env", "header"],
+      "additionalProperties": false
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "description": { "type": "string", "minLength": 1 },
+          "side_effect": { "type": "string", "enum": ["read", "write", "spend"] },
+          "idempotent": { "type": "boolean" },
+          "http": {
+            "type": "object",
+            "properties": {
+              "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+              "path": { "type": "string", "pattern": "^/.*$" }
+            },
+            "required": ["method", "path"],
+            "additionalProperties": false
+          },
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "type": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["name", "type"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["fields"],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "type": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["name", "type"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["fields"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["name", "description", "side_effect", "idempotent", "http", "input_schema", "output_schema"],
+        "additionalProperties": false
+      }
+    },
+    "data_flows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "error_map": {
+      "type": "object",
+      "description": "Provider HTTP status code (as a string key, e.g. '429') -> one of the typed error classes (§4.4). Every key must be a 3-digit HTTP status; every value must be a class this schema recognizes.",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "ConnectorAuthError",
+          "ConnectorRateLimitError",
+          "ConnectorProviderError",
+          "ConnectorContractError",
+          "ConnectorInvocationError"
+        ]
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 120000 },
+        "max_retries": {
+          "type": "integer",
+          "const": 0,
+          "description": "v1 hard requirement: zero automatic retries (§4.3) — retrying a non-idempotent spend/write call is how you double-bill or double-post."
+        }
+      },
+      "required": ["timeout_ms", "max_retries"],
+      "additionalProperties": false
+    },
+    "trust": {
+      "type": "object",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["T0", "T1", "T2", "T3"],
+          "description": "A manifest's OWN trust.tier field can self-assert at most T1 (§7.2). T2 additionally requires a non-empty, dated evidence array. T3 is REJECTED unconditionally by the validator — core/policy/policy.yaml's verifier_keys ship empty and no agent may self-provision one; the honest ceiling today is T2."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string", "enum": ["live-smoke"] },
+              "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+              "run_by": { "type": "string", "minLength": 1 },
+              "note": { "type": "string", "minLength": 1 }
+            },
+            "required": ["kind", "date", "run_by", "note"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["tier", "evidence"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "manifest_version", "id", "version", "display_name", "aliases",
+    "provider", "auth", "operations", "data_flows", "error_map", "limits", "trust"
+  ],
+  "additionalProperties": false,
+  "$comment": "Uses the same dependency-free JSON Schema subset adapters/contracts/adapter-manifest.schema.json documents (type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, pattern, $defs) as descriptive documentation; the actual offline check is the hand-rolled, symlink-safe reader at connectors/manifest_validator.py (same harness pattern as tools/adapter_manifest_validator.py), never a generic JSON-Schema engine and never spec_engine.spec_check (which validates Plan/SpecDocument/ScaffoldPlan/codegen-manifest, a disjoint contract)."
+}

@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 500 INTERNAL response (Gemini API docs, verified 2026-07-18) — not a captured real call. Proves error_map['500'] -> ConnectorProviderError.",
+  "response": {
+    "status": 500,
+    "body": {
+      "error": {
+        "code": 500,
+        "message": "Internal error encountered.",
+        "status": "INTERNAL"
+      }
+    }
+  },
+  "expected_error_class": "ConnectorProviderError",
+  "expected_http_status": 502
+}

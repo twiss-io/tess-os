@@ -1,6 +1,6 @@
 {
   "name": "create-tess",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Gamified first-run wizard for Tess OS — npm create tess. Name yourself, choose a world, pick a starter squad of real agents, name your conductor, and land inside a working agent OS.",
   "type": "module",
   "license": "Apache-2.0",
@@ -10,6 +10,7 @@
   "files": [
     "bin",
     "src",
+    "template",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -20,7 +21,9 @@
   "scripts": {
     "start": "node bin/create-tess.mjs",
     "smoke": "node bin/create-tess.mjs",
-    "test": "node --test"
+    "test": "node --test test/",
+    "build-template": "node scripts/build-template.mjs",
+    "prepack": "node scripts/build-template.mjs"
   },
   "keywords": [
     "tess",

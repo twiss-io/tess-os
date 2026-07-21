@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# tessctl — thin wrapper at project root
+# Resolves TESS_ROOT and delegates to .tess/bin/tessctl (Python).
+# Usage: ./tessctl <command> [args...]
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Twiss
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export TESS_ROOT="${SCRIPT_DIR}"
+
+TESSCTL_PY="${SCRIPT_DIR}/.tess/bin/tessctl"
+
+if [ ! -f "${TESSCTL_PY}" ]; then
+  echo "tessctl: .tess/bin/tessctl not found at ${TESSCTL_PY}" >&2
+  echo "  Run: tessctl init  (or check that .tess/ is committed)" >&2
+  exit 1
+fi
+
+exec python3 "${TESSCTL_PY}" "$@"

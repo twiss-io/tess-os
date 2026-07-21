@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/policy.schema.json",
+  "title": "Ship-Gate Policy Contract",
+  "description": "Machine-checkable form of the routing/classification decisions `conductor/verification-routing.md` and `conductor/guardrails.md` Rule 18 already make in prose. This is the fifth contract named but deferred in ULTIMATE_FRAMEWORK_PLAN.md §B.2's `core/contracts/` tree ('policy.schema.json (hard floors, whitelists, gate map)') and built in Phase 2 (Design Decision #2: 'a deterministic gate spine at git/CI level' needs policy AS DATA, not hardcoded, so `tessctl gate` can read it mechanically) alongside Design Decision #6 ('verification produces a gateable artifact... the ship-gate refuses pushes on prod/client-flagged paths without a covering APPROVE verdict'). An INSTANCE of this schema is the actual policy a project ships at `core/policy/policy.yaml` — the schema below is the shape that instance must satisfy; it does not itself declare any project's real path rules (see `core/policy/policy.yaml`'s own header for why the shipped defaults are deliberately narrow/placeholder, mirroring `tess.manifest.json`'s own 'hand-authored per spec, do NOT auto-glob' stance).",
+  "type": "object",
+  "properties": {
+    "policy": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Policy schema revision the instance targets."
+        },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PathRule" },
+          "description": "verification-routing.md 'The Rule': path-glob classification into prod-touching / client-facing / externally-visible / irreversible-decision-informing. A changed path matching any rule with `require_verdict: true` needs a covering APPROVE verdict before `tessctl gate pre-push`/`ci` will allow the push (see verdict.schema.json's `covers_paths`)."
+        },
+        "hard_floor_rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/HardFloorRule" },
+          "description": "guardrails.md Rule 18 hard floor: 'ALWAYS gate on the operator's explicit go-ahead, regardless of any autonomous-mode... authorization.' These four categories (credentials, money movement, destructive production data operations, client-external factual claims) are DELIBERATELY EXCLUDED from `rules[]`/`require_verdict` — a verifier's APPROVE verdict can never clear a hard-floor match (see `tessctl gate`'s hard-floor check, which looks for a human sign-off artifact instead, never a verdict)."
+        },
+        "verifier_keys": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
+          "description": "Phase 2b (verdict signing) — the ALLOWED-KEY SET: a registered map of verifier-identity -> public key the gate trusts to verify a `verdict.signature`. Keys of this object MUST be one of verification-routing.md's six named verifiers (Reid, Quinn, Cyra, Verity, Maialen, Lysandra) — a plain JSON Schema object node cannot itself enumerate its own property NAMES against a fixed list, so `tessctl gate`'s policy lint (`_lint_policy`) enforces that relational rule the same way it already enforces rule-id uniqueness. Tied to `allowed_verifiers`: a covering verdict must be signed by the key registered here under the SAME name as its `verifier` field, AND that name must appear in the matched rule's `allowed_verifiers` — together this means 'a real, authorized verifier of the right domain cryptographically signed off on this exact reviewed change', not just 'a file claims a name that happens to be on both lists.' OPTIONAL at the schema level (a policy with no `verifier_keys` remains schema-valid) but, like `covers_paths`/`artifact_hashes` before it, functionally decisive: with no entry for a given verifier, NO signature can ever verify for that verifier's verdicts, so none of their verdicts can ever cover a path — fail-closed by omission, not fail-open."
+        },
+        "signoff_keys": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
+          "description": "honesty-capstone-audit-2026-07-08 §3-d FIX — the hard-floor SIGN-OFF ALLOWED-KEY SET: a registered map of operator-identity -> public key the gate trusts to authenticate a `.tess/gate/signoffs/<rule-id>.signoff.json` artifact's `signature` block. Reuses the EXACT SAME entry shape as `verifier_keys` (`VerifierKeyEntry`: fingerprint + public_key_file) and the same isolated-GNUPGHOME/C3-exact-fingerprint/C1-containment trust model `_gate_verify_verdict_signature` already applies — but keyed by the sign-off's `authorized_by` field, NOT by one of the six named AI verifiers: a hard-floor sign-off is guardrails.md Rule 18's human-operator escape valve, so `authorized_by` names an arbitrary project-specific human identity (e.g. an operator's name), not a verifier persona, and this map's keys are DELIBERATELY UNCONSTRAINED to any fixed enum (unlike `verifier_keys`, whose keys `_lint_policy` restricts to the six named verifiers). OPTIONAL at the schema level, but — same 'fail-closed by omission, not fail-open' posture as `verifier_keys` — with NO entry for a given `authorized_by` name, no sign-off can ever authenticate as that name, so it can never clear a hard floor. Before this fix, `.tess/gate/signoffs/**` was validated by JSON SHAPE ALONE (five non-empty fields, no signature, no authentication) — any agent able to write a file could forge a hard-floor clearance; this closes that gap the same way Phase 2b closed the equivalent gap for verdicts."
+        }
+      },
+      "required": ["version", "rules", "hard_floor_rules"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["policy"],
+  "additionalProperties": false,
+  "$defs": {
+    "VerifierKeyEntry": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{40}$",
+          "description": "The verifier's full 40-hex-char GPG key fingerprint (uppercase, no spaces) — the SAME 'C3 exact equality, no short-ID matching' discipline `framework.trusted_key_fingerprint` already applies to release-key pinning (`.tess/bin/tessctl`'s `_FULL_FP_RE`). A signature made by any OTHER key — including a same-named but different key, or a key whose armored export was swapped in `public_key_file` without updating this fingerprint — is rejected, not silently accepted by proximity."
+        },
+        "public_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
+        }
+      },
+      "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
+    "PathRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique rule id — surfaced in `tessctl gate` block messages so an operator knows exactly which policy line fired."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why this path shape is prod-touching/client-facing/externally-visible/irreversible-decision-informing for THIS project."
+        },
+        "globs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "description": "Path globs (matched via the same `path_matches_globs()` `**`-aware matcher `tess.manifest.json`'s own `owned_globs` uses) — repo-relative, POSIX-style."
+        },
+        "classification": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["prod_touching", "client_facing", "externally_visible", "irreversible_decision"]
+          },
+          "minItems": 1,
+          "description": "verification-routing.md 'The Rule' — the four mandatory-verification triggers, verbatim as an enum. Purely informational/diagnostic on the rule (surfaced in gate block messages); `require_verdict` is what the gate actually acts on."
+        },
+        "require_verdict": {
+          "type": "boolean",
+          "description": "When true, any changed path matching `globs` needs a schema-valid, disposition:APPROVE verdict whose `covers_paths` matches it, or `tessctl gate pre-push`/`ci` refuses the push (Decision #6)."
+        },
+        "allowed_verifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["Reid", "Quinn", "Cyra", "Verity", "Maialen", "Lysandra"]
+          },
+          "description": "Which of verification-routing.md's six named verifiers may cover this rule. M1 FIX (Fable Phase-2 adversarial review): ENFORCED, not advisory — `tessctl gate`'s covering-verdict check rejects a schema-valid, disposition:APPROVE, covers_paths-matching verdict as non-covering if its `verifier` is not in this list (e.g. Lysandra's APPROVE cannot clear a `prod-api` rule whose `allowed_verifiers` is `[Reid, Quinn]`). Required non-empty whenever `require_verdict: true` so the policy always DECLARES who is supposed to be signing off, and that declaration now has teeth."
+        }
+      },
+      "required": ["id", "description", "globs", "classification", "require_verdict"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["require_verdict"],
+        "properties": { "require_verdict": { "const": true } }
+      },
+      "then": {
+        "required": ["allowed_verifiers"],
+        "properties": { "allowed_verifiers": { "minItems": 1 } }
+      },
+      "$comment": "A rule cannot demand a covering verdict while leaving 'who may cover it' undeclared — mirrors brief.schema.json's milestones-required-when-prod_touching conditional."
+    },
+    "HardFloorRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "enum": ["credentials", "money_movement", "destructive_prod_data", "client_external_claims"],
+          "description": "guardrails.md Rule 18's four hard-floor classes, verbatim: 'Credentials... Money movement... Destructive production data operations... Client-external communications containing new factual claims.'"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "globs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Path globs that heuristically indicate this hard-floor category for THIS project. May be an EMPTY array for a category that is not path-detectable at all (e.g. 'client_external_claims' is a communication-content class, not a file-path class) — an explicit, documented non-coverage rather than a silent omission. See core/policy/policy.yaml."
+        }
+      },
+      "required": ["id", "category", "description", "globs"],
+      "additionalProperties": false
+    }
+  },
+  "$comment": "Minimal-validator keyword subset supported by tessctl validate: type, enum, const, properties, required, additionalProperties, items, minItems, maxItems, minLength, maxLength, pattern, minimum, maximum, exclusiveMinimum, exclusiveMaximum, if/then/else, oneOf, anyOf, allOf, contains, $ref, $defs."
+}

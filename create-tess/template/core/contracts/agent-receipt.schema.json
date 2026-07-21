@@ -1,0 +1,232 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/contracts/agent-receipt.schema.json",
+  "title": "Agent Receipt",
+  "description": "Machine-checkable, portable envelope for a single propose -> approve -> sign accountability event. This is NOT a new trust mechanism: it formalizes and packages the two signing primitives this repository already ships and tests — verdict signing (verdict.schema.json's `signature`, `$defs.VerdictSignature`, `_gate_verify_verdict_signature` in .tess/bin/tessctl) for an AI verifier's reviewed APPROVE, and hard-floor sign-off signing (the `.tess/gate/signoffs/<rule-id>.signoff.json` shape checked by `_gate_validate_signoff`/`_gate_verify_signoff_signature`) for a human operator's Rule-18 clearance. An Agent Receipt embeds one of those two ALREADY-SIGNED artifacts verbatim (`decision`), adds the policy rule that made approval necessary in the first place (`policy_decision`, grounded in policy.schema.json's `PathRule`/`HardFloorRule`), what was actually proposed (`proposed_action`), and a SEPARATE envelope-level signature (`receipt_signature`) plus an append-only hash-chain link (`chain`) so a third party holding only this file (or a short chain of these files) and the signer's/signers' public key(s) can verify the whole thing without the rest of the Tess OS install, the mission tree, or core/policy/policy.yaml. See docs/AGENT_RECEIPT_SPEC.md for the full canonicalization/verification algorithm and tools/receipt-verify/ for the standalone verifier. Explicitly distinct from docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md's proposed, deferred, unimplemented 'proposed-v1' universal task-graph/adapter runtime receipt — that document's receipt is a future adapter-evidence proposal with 'receipt signing... deferred'; this schema is the accountability envelope for the propose/approve/sign machinery that is ALREADY implemented and tested today, scoped narrower and shipped now. `receipt_schema` uses its own distinct version string for exactly this reason.",
+  "type": "object",
+  "properties": {
+    "receipt_schema": {
+      "const": "tess-os.agent-receipt/1",
+      "description": "Deliberately its own namespaced version string — never 'proposed-v1' (docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md's unrelated, unimplemented future receipt proposal) — so the two are never confused in a mixed corpus."
+    },
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "A stable, opaque identifier for this receipt — a UUID4 hex string (uuid.uuid4().hex), the same convention _trace_build_event already uses for `event_id` in .tess/bin/tessctl. Deliberately NOT a hash of the receipt's own content (that would be self-referential); tamper-evidence is `receipt_signature.signed_content_sha256` + the GPG signature, and history-binding is `chain.prev_receipt_hash` — see below."
+    },
+    "issued_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "UTC ISO-8601 timestamp this receipt was assembled, same format tessctl's own `_trace_utc_now_iso()`/verdict `signed_at` already use (e.g. 2026-07-19T00:00:00.000000Z)."
+    },
+    "proposed_action": {
+      "$ref": "#/$defs/ProposedAction"
+    },
+    "policy_decision": {
+      "$ref": "#/$defs/PolicyDecision"
+    },
+    "decision_kind": {
+      "type": "string",
+      "enum": ["verdict", "signoff"],
+      "description": "Which of the two already-shipped signed-decision primitives `decision` embeds: 'verdict' for a schema-valid, signed, disposition:APPROVE verdict.schema.json instance (an AI verifier's reviewed sign-off, conductor/review-output-standards.md + conductor/verification-routing.md); 'signoff' for a schema-valid, signed hard-floor sign-off artifact (a human operator's Rule-18 clearance, conductor/guardrails.md Rule 18)."
+    },
+    "decision": {
+      "description": "The embedded, ALREADY-SIGNED decision artifact, VERBATIM — not summarized, not re-derived. When decision_kind is 'verdict' this must independently validate against verdict.schema.json (the real, shipped contract, referenced here rather than duplicated so the two can never drift apart). When decision_kind is 'signoff' this must match $defs.SignoffArtifact below (the sign-off shape `_gate_validate_signoff` already checks; there is no separate signoff.schema.json file in this repository today, so this schema is its first machine-checkable form)."
+    },
+    "chain": {
+      "$ref": "#/$defs/ChainLink"
+    },
+    "receipt_signature": {
+      "$ref": "#/$defs/ReceiptSignature"
+    }
+  },
+  "required": [
+    "receipt_schema", "receipt_id", "issued_at", "proposed_action",
+    "policy_decision", "decision_kind", "decision", "chain", "receipt_signature"
+  ],
+  "additionalProperties": false,
+  "if": {
+    "required": ["decision_kind"],
+    "properties": { "decision_kind": { "const": "verdict" } }
+  },
+  "then": {
+    "properties": { "decision": { "$ref": "verdict.schema.json#" } }
+  },
+  "else": {
+    "properties": { "decision": { "$ref": "#/$defs/SignoffArtifact" } }
+  },
+  "$comment": "The identity consistency rule this schema deliberately does NOT express structurally (no $data references in this validator's supported subset — see core/contracts/README.md 'Schema vs. lint'): `receipt_signature.signed_by` must equal `decision.verifier` (decision_kind: verdict) or `decision.authorized_by` (decision_kind: signoff). tools/receipt-verify enforces this as an explicit, separate lint-level check — see docs/AGENT_RECEIPT_SPEC.md 'Verification algorithm' step 3.",
+  "$defs": {
+    "ProposedAction": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The agent/persona who proposed the action (e.g. a dispatched subagent's name) — the 'propose' half of propose -> approve -> sign. Not itself authenticated by this schema; the receipt's authority comes entirely from `decision` + `receipt_signature`, exactly as conductor/orchestra-model.md already treats an agent's own claim as informative, never authoritative."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable description of what was proposed — the change, the payment, the deletion, the client-external claim — whatever `policy_decision` below required approval for."
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL. owner/repo this action targets, when applicable."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL. A git ref, commit, PR, or branch identifying the exact proposed change, when applicable."
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "OPTIONAL. Repo-relative paths the proposed action touches, when path-detectable (mirrors policy.schema.json PathRule.globs' own path-matching convention). Omitted entirely for a non-path-detectable hard-floor category, e.g. client_external_claims — same explicit non-coverage core/policy/policy.yaml's own `client-external-claims` rule already documents with an empty `globs: []`."
+        }
+      },
+      "required": ["actor", "summary"],
+      "additionalProperties": false
+    },
+    "PolicyDecision": {
+      "type": "object",
+      "description": "WHY approval was required — copied verbatim from the policy.schema.json rule that fired, so a reader holding only this receipt (no core/policy/policy.yaml) still sees the actual rule text, not just its id.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repo-relative path to the policy instance this rule was read from — conventionally 'core/policy/policy.yaml' (policy.schema.json's own instance location)."
+        },
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The matched rule's `id`, verbatim from policy.schema.json's PathRule.id or HardFloorRule.id."
+        },
+        "rule_kind": {
+          "type": "string",
+          "enum": ["path_rule", "hard_floor_rule"],
+          "description": "Which of policy.schema.json's two rule arrays (`policy.rules[]` vs `policy.hard_floor_rules[]`) this decision satisfies. A path_rule is cleared by a covering signed verdict; a hard_floor_rule is cleared ONLY by a signed human sign-off (guardrails.md Rule 18 — never a verdict alone) — this is exactly the pairing `decision_kind` must agree with; see the lint rule in docs/AGENT_RECEIPT_SPEC.md."
+        },
+        "classification": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["prod_touching", "client_facing", "externally_visible", "irreversible_decision"]
+          },
+          "minItems": 1,
+          "description": "Verbatim copy of the matched PathRule's own `classification` — required when rule_kind is path_rule."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["credentials", "money_movement", "destructive_prod_data", "client_external_claims"],
+          "description": "Verbatim copy of the matched HardFloorRule's own `category` — required when rule_kind is hard_floor_rule."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Verbatim copy of the matched rule's own `description` — the actual prose reason approval was required, not just an id a reader has to go look up."
+        }
+      },
+      "required": ["source", "rule_id", "rule_kind", "description"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["rule_kind"],
+        "properties": { "rule_kind": { "const": "path_rule" } }
+      },
+      "then": {
+        "required": ["classification"]
+      },
+      "else": {
+        "required": ["category"]
+      }
+    },
+    "SignoffArtifact": {
+      "type": "object",
+      "description": "The hard-floor sign-off shape `_gate_validate_signoff` in .tess/bin/tessctl already checks (required tuple: rule_id, category, authorized_by, rationale, authorized_at) plus its `signature` block (honesty-capstone-audit-2026-07-08 3-d fix). This is the first machine-checkable JSON Schema form of that shape; .tess/bin/tessctl's own runtime check remains authoritative for what `tessctl gate` actually accepts at a signoffs/ path — this $def mirrors it for receipt embedding and does not replace it.",
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "enum": ["credentials", "money_movement", "destructive_prod_data", "client_external_claims"]
+        },
+        "authorized_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The human operator identity this sign-off is signed as — checked against policy.schema.json's `signoff_keys[authorized_by]` at verification time, never a free-text-only field (honesty-capstone-audit-2026-07-08 3-d)."
+        },
+        "rationale": { "type": "string", "minLength": 1 },
+        "authorized_at": { "type": "string", "minLength": 1 },
+        "signature": { "$ref": "verdict.schema.json#/$defs/VerdictSignature" }
+      },
+      "required": ["rule_id", "category", "authorized_by", "rationale", "authorized_at", "signature"],
+      "additionalProperties": false
+    },
+    "ChainLink": {
+      "type": "object",
+      "description": "Append-only, tamper-evident history binding. A receipt does not stand alone as a permanent toll paid once (verdict.schema.json's own artifact_hashes doctrine already rejects that shortcut for verdict coverage) — chaining receipts the way a Certificate Transparency log or a git commit's parent hash does means altering or deleting an EARLIER receipt breaks the recorded hash in every receipt issued after it. Grounded in the existing append-only trace/journal convention (missions/<id>/trace.jsonl, .tess/trace/runs/<run_id>.jsonl — see _trace_append_event) rather than inventing new storage; `journal_ref` below is a pointer into that existing journal, not a new ledger.",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 for the first (genesis) receipt in a chain; increments by exactly 1 per subsequent receipt in the same chain."
+        },
+        "prev_receipt_hash": {
+          "type": "string",
+          "pattern": "^(GENESIS|[0-9a-f]{64})$",
+          "description": "sha256 hex digest of the PREVIOUS receipt's full canonical bytes (docs/AGENT_RECEIPT_SPEC.md's `receipt_content_hash()` — the whole persisted receipt, INCLUDING its own receipt_signature; distinct from the signing-time hash which excludes it), or the literal string 'GENESIS' for sequence: 0."
+        },
+        "journal_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL pointer into an existing trace/journal JSONL file this receipt corresponds to, e.g. 'missions/m1/trace.jsonl#L42' — a reference only, per docs/MEMORY_AND_ORCHESTRATION_CONTRACT.md invariant 5 ('Receipts are evidence, not verdicts... does not itself authorize'); it carries no authority of its own."
+        }
+      },
+      "required": ["sequence", "prev_receipt_hash"],
+      "additionalProperties": false,
+      "if": {
+        "required": ["sequence"],
+        "properties": { "sequence": { "const": 0 } }
+      },
+      "then": {
+        "properties": { "prev_receipt_hash": { "const": "GENESIS" } }
+      },
+      "else": {
+        "properties": { "prev_receipt_hash": { "pattern": "^[0-9a-f]{64}$" } }
+      }
+    },
+    "ReceiptSignature": {
+      "type": "object",
+      "description": "A SECOND, envelope-level signature, separate from `decision`'s own already-verified inner signature. `decision.signature` proves 'the named verifier/authorizer approved exactly this reviewed/authorized content'; `receipt_signature` proves 'the same identity also attests to this exact proposed_action + policy_decision + chain wrapper' — those three envelope fields are outside what `decision`'s own inner signature covers, so without this second signature the chain link and the stated reason-for-approval would be unauthenticated free text. Deliberately the SAME algorithm/canonicalization discipline as verdict/signoff signing (docs/AGENT_RECEIPT_SPEC.md 'Canonicalization') — no new crypto scheme invented.",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["gpg-detached-armor"],
+          "description": "Same single supported scheme as verdict.schema.json/$defs.VerdictSignature — an ASCII-armored GPG detached signature over the receipt's canonical bytes."
+        },
+        "signed_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The identity this envelope is signed as — must equal `decision.verifier` (decision_kind: verdict) or `decision.authorized_by` (decision_kind: signoff); see the top-level $comment for why this equality is a lint check, not a schema node."
+        },
+        "signed_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 hex digest of the receipt's SIGNING-canonical bytes (the full receipt dict MINUS this `receipt_signature` key), recomputed at verify time and rejected on any mismatch — same tamper-evidence discipline as verdict.schema.json's `signed_content_sha256`."
+        },
+        "signature_armored": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The ASCII-armored GPG detached signature block over the signing-canonical bytes."
+        },
+        "signed_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL, purely documentary UTC timestamp of signing. Not consulted by verification — mirrors verdict.schema.json's own `signed_at` disclosure that signatures do not expire in this scheme."
+        }
+      },
+      "required": ["algorithm", "signed_by", "signed_content_sha256", "signature_armored"],
+      "additionalProperties": false
+    }
+  }
+}

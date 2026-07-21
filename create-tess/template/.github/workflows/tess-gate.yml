@@ -1,0 +1,128 @@
+# tess-gate-ci v3
+# Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
+# gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
+# harness-independent backstop that still catches `git push --no-verify`.
+#
+# Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
+# workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
+# triggers automatically on `push` to protected branches and on
+# `pull_request`, IN ADDITION TO `workflow_dispatch` (kept for ad hoc/manual
+# re-checks of an arbitrary ref range). This makes the ship-gate BLOCK a
+# failing PR/merge automatically rather than requiring someone to remember
+# to run it. A CI check alone is only ADVISORY until it is also configured
+# as a required status check in branch protection — see
+# conductor/verdict-signing.md and README.md's `tessctl gate` section for
+# the exact branch-protection setup this needs to actually PREVENT a merge
+# (required check name: the job name below, "tessctl gate ci").
+#
+# v3 FIX (honesty-capstone-audit-2026-07-08 §3-c — "same-push engine
+# tamper"): v2 and earlier ran `python3 .tess/bin/tessctl gate ci` straight
+# from the PUSHED checkout. An attacker who edits the gate's own decision
+# logic (e.g. `_gate_run_ship_check` in .tess/bin/tessctl) to unconditionally
+# report "not blocked", in the SAME push as an unreviewed payload, would keep
+# this required check green — the tampered engine is exactly what evaluates
+# whether the tamper itself should be blocked, so no policy rule alone can
+# catch it (the engine is what READS the policy). Fix: this job now extracts
+# and runs the engine as it existed at the push's BASE ref — never the
+# pushed tree's own copy — so a same-push engine edit is evaluated by an
+# engine an attacker never touched. `core/policy/policy.yaml`'s
+# `tess-os-security-tier-doctrine` rule now ALSO covers `.tess/bin/**` (the
+# engine) and `.tess/gate/signoffs/**` (§3-d) as a second, independent layer:
+# even setting the trusted-engine fix aside, an edit to the engine itself is
+# `prod_touching` and needs its own covering, signed Reid/Cyra verdict.
+# BOOTSTRAP NOTE: if the base ref predates the gate's adoption (no
+# `.tess/bin/tessctl` at BASE — e.g. this is the very first commit
+# introducing the gate), there is no trusted engine to extract and this job
+# FAILS CLOSED (refuses) rather than falling back to trusting the pushed
+# tree's own engine — see the "Extract trusted gate engine" step below.
+#
+# BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
+# policy.yaml rules already have real (non-placeholder) globs but no
+# covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
+# match, your FIRST push/PR touching those paths WILL be blocked — this is
+# the gate working as designed (fail-closed), not a bug. If you need a
+# grace period while you write your project's initial covering verdicts,
+# temporarily remove the `push`/`pull_request` triggers below (leave
+# `workflow_dispatch`) and re-add them once you have at least one real,
+# signed covering verdict per rule.
+name: Tess OS ship-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base ref to diff from"
+        required: true
+        default: "origin/main"
+      head:
+        description: "Head ref to diff to"
+        required: true
+        default: "HEAD"
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  ship-gate:
+    name: tessctl gate ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Resolve base/head for this trigger
+        id: refs
+        run: |
+          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BASE="${{ inputs.base }}"
+            HEAD="${{ inputs.head }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$EMPTY_TREE"
+            fi
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Extract trusted gate engine (base ref only — never the pushed tree)
+        id: trusted_engine
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.refs.outputs.base }}"
+          TRUSTED_DIR="$(mktemp -d)"
+          if git cat-file -e "$BASE:.tess/bin/tessctl" 2>/dev/null; then
+            git show "$BASE:.tess/bin/tessctl" > "$TRUSTED_DIR/tessctl"
+            chmod +x "$TRUSTED_DIR/tessctl"
+            echo "engine_path=$TRUSTED_DIR/tessctl" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tess-gate-ci: no gate engine found at base ref '$BASE' — refusing to fall back to the PUSHED tree's own engine (honesty-capstone-audit-2026-07-08 §3-c, same-push engine-tamper fix). A tampered .tess/bin/tessctl in this push must never be trusted to evaluate itself; a missing baseline engine fails closed instead."
+            exit 1
+          fi
+
+      - name: tessctl gate ci (trusted base-ref engine; untrusted pushed tree)
+        env:
+          TESS_ROOT: ${{ github.workspace }}
+        run: |
+          python3 "${{ steps.trusted_engine.outputs.engine_path }}" gate ci \
+            --base "${{ steps.refs.outputs.base }}" \
+            --head "${{ steps.refs.outputs.head }}"

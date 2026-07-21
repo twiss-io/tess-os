@@ -1,0 +1,29 @@
+id: "15-research-cascading-billing"
+title: "Compute month-scoped captured revenue through a dependent multi-step chain"
+category: research
+difficulty: hard
+time_budget_minutes: 15
+tags: [research, cascading, multi-step, checkable-facts]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+answer_key: answer_key.json
+description: >
+  A four-step chain over a synthetic transactions log where each step
+  depends on the previous: (1) the busiest month is defined by row COUNT,
+  not revenue — and the highest-revenue month (2026-03) is deliberately
+  NOT the busiest (2026-02), so a model that conflates "busiest" with
+  "biggest" picks the wrong month and every downstream number is wrong;
+  (2) revenue must exclude failed and refunded rows — the busiest month
+  contains a large failed charge (9900) and negative refunds planted to
+  corrupt the sum if included. A one-shot answer that gets any single
+  intermediate wrong cascades to a wrong final answer; verifying each
+  intermediate (month counts, then the captured filter) before combining
+  catches it.
+pass_criteria: >
+  workdir/answer.json exists, is valid JSON, and matches answer_key.json
+  field-for-field (case-insensitive strings, numeric tolerance).
+planted_trap: false
+protected_paths:
+  - transactions.csv

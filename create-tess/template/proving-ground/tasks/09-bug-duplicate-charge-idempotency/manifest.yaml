@@ -1,0 +1,22 @@
+id: "09-bug-duplicate-charge-idempotency"
+title: "Fix a payment processor that double-charges on retry"
+category: bug
+difficulty: medium
+time_budget_minutes: 12
+tags: [python, idempotency, payments, bug-with-failing-test]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  process_payment() calls charge_fn() unconditionally on every call, even
+  when given an idempotency_key that was already successfully charged.
+  test_payments.py simulates a client retry (same idempotency_key, called
+  twice) and fails because charge_fn is invoked twice. The agent must make
+  process_payment idempotent without editing the test file.
+pass_criteria: >
+  `pytest test_payments.py` exits 0 inside the produced workdir, AND
+  test_payments.py is byte-identical to the shipped fixture.
+planted_trap: false
+protected_paths:
+  - test_payments.py

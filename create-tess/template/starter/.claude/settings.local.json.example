@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Personal hook overrides — copy this file to .claude/settings.local.json",
+    "which is gitignored. Your overrides here won't affect the team config.",
+    "",
+    "To use: cp .claude/settings.local.json.example .claude/settings.local.json",
+    "Then edit .claude/settings.local.json with your personal preferences."
+  ],
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_comment": "Example: override the default hook timeout (milliseconds)",
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Pre-write check'",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "_comment": "Example: personal post-tool hook (e.g., notify, log, or format)",
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "date '+%H:%M:%S file written' >> /tmp/claude-hook-log.txt"
+          }
+        ]
+      }
+    ]
+  },
+
+  "env": {
+    "_comment": "Example: personal environment variables for hooks and scripts",
+    "MY_EDITOR": "code",
+    "LINT_ON_SAVE": "true"
+  }
+}

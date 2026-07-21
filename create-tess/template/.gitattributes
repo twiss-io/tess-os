@@ -1,0 +1,41 @@
+# Tess OS — Keystone LF normalization (Phase 0 prerequisite, spec §4 / §9.4)
+# SHA-256 stability is the merge-base guarantee: tess.lock base_sha equality
+# breaks on CRLF vs LF. Enforce LF on every framework-owned path BEFORE any hash
+# is computed, so `tessctl doctor`/`update` never raise a false drift on line endings.
+# Original bytes are preserved on write; only the stored/normalized form is LF.
+
+# --- Default: let git detect text and normalize to LF on commit ---
+* text=auto eol=lf
+
+# --- Framework-owned doctrine + config (committed, hashed by tess.lock) ---
+CLAUDE.md            text eol=lf
+conductor/**         text eol=lf
+agents/**            text eol=lf
+.claude/agents/**    text eol=lf
+.claude/commands/**  text eol=lf
+.claude/skills/**    text eol=lf
+.claude/settings.json text eol=lf
+clients/_template/** text eol=lf
+
+# --- Shell hooks: LF mandatory (CRLF breaks the shebang / `bash\r` not found) ---
+.claude/hooks/**     text eol=lf
+*.sh                 text eol=lf
+
+# --- Pristine core mirror (created by `tessctl init`; hashed as merge base) ---
+.tess/core/**        text eol=lf
+
+# --- Binary assets: never normalize (branding, media, archives, lockfiles-as-bytes) ---
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.pdf   binary
+*.mp4   binary
+*.mov   binary
+*.zip   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary

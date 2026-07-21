@@ -1,0 +1,20 @@
+# gitleaks configuration for tess-os.
+# Extends the default gitleaks ruleset and allowlists values that are
+# intentionally committed and are NOT secrets. Pattern-based (not commit-SHA
+# fingerprints), so it survives history rewrites.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public, non-secret values intentionally committed to this repo."
+regexes = [
+  # Twiss release-signing-key FINGERPRINT. A PUBLIC GPG key id, pinned in
+  # .tess/tess.lock (framework.trusted_key_fingerprint) and shipped in
+  # .tess/keys/ as the trust root for `tess update` / `tess self-update`.
+  # Public by design — adopters verify signed releases against it. Not a credential.
+  '''EBEABC618C11B6A7340A7D1601DD637667B8CC89''',
+  # Deliberate FAKE placeholder tokens in conductor/vault.md's "# INCORRECT —
+  # never do this" anti-pattern block. Teaching examples, never real tokens.
+  '''ghp_ABCdef123''',
+  '''ghp_EXAMPLE-do-not-commit-a-real-token''',
+]

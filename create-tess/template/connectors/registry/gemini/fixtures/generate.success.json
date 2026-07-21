@@ -1,0 +1,29 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real POST /v1beta/models/{model}:generateContent 200 response (Gemini API docs, verified 2026-07-18) — not a captured real call. No real request was made; no credential of any kind appears anywhere in this file.",
+  "request": {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-2.5-flash:generateContent",
+    "body": {
+      "contents": [{ "role": "user", "parts": [{ "text": "Say hello in five words or fewer." }] }],
+      "generationConfig": { "maxOutputTokens": 256 }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "candidates": [
+        {
+          "content": { "role": "model", "parts": [{ "text": "Hello! How can I help?" }] },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": { "promptTokenCount": 14, "candidatesTokenCount": 7, "totalTokenCount": 21 }
+    }
+  },
+  "expected_normalized_output": {
+    "text": "Hello! How can I help?",
+    "stop_reason": "STOP",
+    "usage": { "input_tokens": 14, "output_tokens": 7 }
+  }
+}

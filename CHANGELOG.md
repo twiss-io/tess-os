@@ -5,6 +5,58 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **`create-tess` — bundled the scaffold template into the npm package, fixing
+  the DEFAULT `npm create tess` flow (100% broken through 0.1.3), P0 G-01.**
+  Root cause: the default (zero-flag) flow depended on a runtime
+  `git clone --depth 1 --branch <DEFAULT_TEMPLATE_REF>` pinned to a
+  `create-tess-v*` tag that was never actually cut — across THREE release
+  cycles (0.1.1, 0.1.2, 0.1.3 each shipped referencing a tag absent from
+  `origin`; every real npm publish went out via the documented manual
+  fallback, which skips the tag-cut step). Every user who ran
+  `npm create tess`/`npx create-tess` without an explicit
+  `--template-ref` hit `fatal: Remote branch create-tess-v0.1.x not found`.
+  - **Fix:** `create-tess/scripts/build-template.mjs` snapshots this repo's
+    own `git ls-files` tree (minus `create-tess/` itself, minus the same
+    secrets + framework-internal-CI exclusions `src/ignore.js` already
+    enforces at scaffold time) into `create-tess/template/` — committed to
+    the repo, shipped inside the published npm tarball via `package.json`'s
+    `files` list, and regenerated automatically by a new `prepack` lifecycle
+    hook before every `npm pack`/`npm publish` (so a forgotten manual
+    rebuild can never ship a stale bundle). The default flow
+    (`BUNDLED_TEMPLATE_DIR` in `src/scaffold.js`) now scaffolds from that
+    local copy — no `git clone`, no tag, no network dependency, for the path
+    every user actually takes.
+  - `--template-source <git-url>` / `TESS_TEMPLATE_SOURCE` remain fully
+    supported as an explicit, opt-in escape hatch for a live git fetch
+    (unchanged mechanism); `DEFAULT_TEMPLATE_REF`'s historical gap (the tag
+    was never cut) is left as a documented, low-impact limitation scoped to
+    that opt-in path only — not bumped to another not-yet-cut tag name,
+    which would misrepresent progress on a problem this fix does not claim
+    to solve for that path.
+  - Supersedes PR #152 (closing issue #151), which would have fixed only the
+    `DEFAULT_TEMPLATE_REF` version-lockstep (still pointing at a not-yet-cut
+    tag) — the mechanism that produced this failure, not the failure itself.
+  - Bumped `create-tess` to **0.1.4**; a republish is required (this fix
+    cannot reach users until it ships to npm — the already-published 0.1.3
+    tarball has the broken ref baked in immutably).
+  - New `create-tess/test/offline-bundle-scaffold.test.js`: `npm pack`s the
+    real package (from an isolated repo snapshot, to avoid racing the
+    `prepack` rebuild against concurrent test files reading the shared
+    `template/`), extracts the tarball, and runs the packed `bin/
+    create-tess.mjs` with zero `--template-source` flags and `git` replaced
+    by an argv-recording stub — proving the default flow scaffolds
+    successfully with `git clone` never invoked (a benign, local-only `git
+    rev-parse --is-inside-work-tree` presence-check from
+    `isInsideGitWorkTree()` is expected and unrelated), the produced
+    instance passes `tessctl doctor`/`verify`, and the packed tarball itself
+    carries the bundled template with no secret-shaped paths.
+  - `create-tess/package.json`'s `test` script now scopes `node --test` to
+    `test/` explicitly (`node --test test/`) — bundling the framework's own
+    `gui/tests/*.test.js` fixtures into `create-tess/template/` would
+    otherwise have them picked up by `create-tess`'s own unscoped test
+    auto-discovery.
+
 ### Added
 - **`tools/receipt-emit/` — the Agent Receipt EMIT CLI**, closing the gap
   `tools/receipt-verify/` left open: the verifier could confirm a receipt

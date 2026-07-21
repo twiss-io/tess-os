@@ -1,0 +1,53 @@
+Tess OS
+Copyright 2026 Twiss
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+SPDX-License-Identifier: Apache-2.0
+
+This NOTICE file is provided for informational purposes only and does not
+modify the License. Under Apache-2.0 §4(d), if you redistribute Tess OS or a
+derivative work, retain this NOTICE file. You may add your own attribution
+notices for your changes; you may not remove or alter the attributions here.
+
+Trademarks: "Tess", "Twiss", "Tess OS", and "Twiss Vault" are trademarks of
+Twiss — not licensed by Apache-2.0. See TRADEMARK.md.
+
+================================================================================
+Third-party dependencies (NOT vendored — installed by the operator)
+================================================================================
+
+Tess OS ships ZERO third-party code in this repository. The components below are
+external dependencies resolved at install/run time, not copied into the tree.
+
+--- Vault crypto backend (Python `tessctl vault`) ---
+
+  pyrage  (preferred backend)
+    Python bindings to the Rust `age`/`rage` implementation. Used by the vault
+    to generate X25519 identities and to encrypt/decrypt the local secret store
+    in the age armored format.
+    License: Apache-2.0 OR MIT (dual-licensed).
+    Project: https://github.com/woodruffw/pyrage
+
+  age / rage CLI  (fallback backend — used only if pyrage is absent)
+    Tess OS does not bundle the age tool. When pyrage is unavailable it shells
+    out to a separately-installed `age`/`age-keygen` (or `rage`/`rage-keygen`)
+    binary.
+    License: BSD-3-Clause (FiloSottile/age, Filippo Valsorda).
+    Project: https://github.com/FiloSottile/age
+
+  PyYAML
+    Used by the engine to read tess.lock / tess.manifest.json.
+    License: MIT.
+    Project: https://pyyaml.org/
+
+--- create-tess scaffolder (npm `npm create tess`) ---
+
+  @clack/prompts
+    Interactive prompt primitives for the first-run wizard.
+    License: MIT.
+    Project: https://github.com/bombshell-dev/clack
+
+  picocolors
+    Terminal color output for the wizard.
+    License: ISC.
+    Project: https://github.com/alexeyraspopov/picocolors

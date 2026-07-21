@@ -8,8 +8,15 @@
 //   starter path   : --path
 //   pathway        : --pathway
 //   template source: --template-source   (env TESS_TEMPLATE_SOURCE)
+//                                          default: the template BUNDLED inside
+//                                          this package (local copy, no network) —
+//                                          pass a git URL/path here to opt into a
+//                                          live git fetch instead (see
+//                                          scaffold.js BUNDLED_TEMPLATE_DIR)
 //   template ref   : --template-ref      (env TESS_TEMPLATE_REF; pins a git-URL
-//                                          clone to a tag/branch/SHA — see
+//                                          clone to a tag/branch/SHA — only
+//                                          meaningful alongside an explicit
+//                                          --template-source git opt-in; see
 //                                          scaffold.js resolveTemplateRef())
 //   target dir     : --target / --dir / first positional
 //   unattended     : --yes
@@ -156,15 +163,17 @@ OPTIONS
                                  chief-of-staff|co-founder|strategist|guide|operator
   --telegram <channel-id>        optional Telegram channel to wire (default: skipped)
   --target, --dir <path>         target directory (default: cwd)
-  --template-source <url|path>   git URL or local path for the Tess OS template
-                                 (env: TESS_TEMPLATE_SOURCE;
-                                  default: https://github.com/twiss-io/tess-os.git)
+  --template-source <url|path>   OPT-IN: fetch the Tess OS template from this
+                                 git URL or local path instead of the copy
+                                 bundled inside this package (env:
+                                 TESS_TEMPLATE_SOURCE). Default (unset): the
+                                 bundled template — a local copy, no network
+                                 or git clone involved.
   --template-ref <tag|branch|sha>  pin a git-URL --template-source to this ref
-                                 (env: TESS_TEMPLATE_REF; default source is
-                                  pinned to a tagged release automatically —
-                                  see scaffold.js DEFAULT_TEMPLATE_REF; a
-                                  custom --template-source is cloned at its
-                                  own default branch tip unless set here)
+                                 (env: TESS_TEMPLATE_REF). Only meaningful
+                                 alongside an explicit --template-source git
+                                 opt-in — a custom source is otherwise cloned
+                                 at its own default branch tip.
   --force                        overwrite a non-empty / existing-install target
   --no-doctor                    skip the post-bake integrity check
   --no-verify                    skip the post-bake verify check

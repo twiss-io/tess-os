@@ -1,0 +1,28 @@
+id: "18-bug-idempotency-retry-after-failure"
+title: "Make a charge idempotent without poisoning the key on a failed attempt"
+category: bug
+difficulty: hard
+time_budget_minutes: 15
+tags: [python, idempotency, payments, subtle-bug, failure-path]
+brief: brief.md
+fixture_dir: fixture
+grader: grader.py
+grader_entrypoint: grade
+description: >
+  charge.py's process() records the idempotency key BEFORE it knows the
+  charge succeeded, then calls charge_fn(). If charge_fn raises (a
+  transient gateway failure), the key is already stored as "charged", so a
+  later retry short-circuits and NEVER actually charges — the customer is
+  never billed but the system thinks they were. The shipped test_charge.py
+  only covers the success path and success-idempotency, so it passes
+  against the buggy code. The grader adds the failure-then-retry case: the
+  first attempt's charge_fn raises, and a retry with the same key must
+  actually charge. Tracing the failure path (not just the green happy-path
+  test) is what catches the ordering bug.
+pass_criteria: >
+  process() charges once on success, is idempotent across repeated
+  successes, charges distinct keys, and — after a first attempt whose
+  charge_fn raised — a retry with the same key DOES charge.
+planted_trap: false
+protected_paths:
+  - test_charge.py

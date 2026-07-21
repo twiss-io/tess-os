@@ -1,0 +1,38 @@
+[
+  {
+    "tier": "sonnet",
+    "verifier_name": "Quinn",
+    "total_cost_usd": 0.797466,
+    "n_bad": 6,
+    "n_good": 6,
+    "bad_blocked": 6,
+    "bad_shipped": 0,
+    "good_shipped": 3,
+    "good_blocked": 3,
+    "bad_ship_reduction_pct": 100.0,
+    "good_output_friction_pct": 50.0,
+    "bad_shipped_case_ids": [],
+    "good_blocked_case_ids": [
+      "02-csv-quoting-good",
+      "03-path-traversal-good",
+      "05-idempotency-good"
+    ]
+  },
+  {
+    "tier": "haiku",
+    "verifier_name": "Quinn",
+    "total_cost_usd": 0.352081,
+    "n_bad": 6,
+    "n_good": 6,
+    "bad_blocked": 6,
+    "bad_shipped": 0,
+    "good_shipped": 5,
+    "good_blocked": 1,
+    "bad_ship_reduction_pct": 100.0,
+    "good_output_friction_pct": 16.7,
+    "bad_shipped_case_ids": [],
+    "good_blocked_case_ids": [
+      "02-csv-quoting-good"
+    ]
+  }
+]

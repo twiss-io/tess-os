@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "Hand-authored, representative shape of a real 429 rate_limit_exceeded response (OpenAI API docs, verified 2026-07-18) — not a captured real call. Proves error_map['429'] -> ConnectorRateLimitError.",
+  "response": {
+    "status": 429,
+    "headers": { "retry-after": "5" },
+    "body": {
+      "error": {
+        "message": "Rate limit reached for requests",
+        "type": "requests",
+        "param": null,
+        "code": "rate_limit_exceeded"
+      }
+    }
+  },
+  "expected_error_class": "ConnectorRateLimitError",
+  "expected_http_status": 429
+}

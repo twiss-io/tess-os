@@ -1,0 +1,49 @@
+{
+  "siteUrl": "https://example.com",
+  "siteName": "My Project",
+  "author": "Your Name",
+  "outputDir": "public/articles",
+  "categories": ["All", "Guides", "Updates", "Tutorials"],
+  "articles": [
+    {
+      "id": "getting-started",
+      "published": true,
+      "mdSource": "content/getting-started.md",
+      "htmlOutput": "public/articles/getting-started/index.html",
+      "title": "Getting Started Guide",
+      "titleHtml": "Getting <span>Started</span>",
+      "subtitle": "Everything you need to know",
+      "description": "A comprehensive guide to getting started with the project. Covers installation, configuration, and first steps.",
+      "bannerImage": "/images/getting-started-banner.webp",
+      "bannerAlt": "Getting Started Guide",
+      "url": "https://example.com/articles/getting-started/",
+      "datePublished": "2026-01-15",
+      "category": "Guides",
+      "tags": ["Guide", "Setup", "2026"],
+      "keywords": ["getting started", "setup", "installation", "tutorial"]
+    },
+    {
+      "id": "example-with-sidebar",
+      "published": false,
+      "mdSource": "content/advanced-guide.md",
+      "htmlOutput": "public/articles/advanced-guide/index.html",
+      "title": "Advanced Configuration",
+      "titleHtml": "Advanced <span>Configuration</span>",
+      "subtitle": "Deep dive into settings",
+      "description": "Advanced configuration options and patterns for power users.",
+      "bannerImage": "/images/advanced-banner.webp",
+      "bannerAlt": "Advanced Configuration Guide",
+      "url": "https://example.com/articles/advanced-guide/",
+      "datePublished": "2026-02-01",
+      "category": "Tutorials",
+      "tags": ["Advanced", "Configuration", "2026"],
+      "keywords": ["advanced", "configuration", "settings", "customization"],
+      "sidebar": true,
+      "children": [
+        { "title": "Database Setup", "url": "/articles/advanced-guide/database/" },
+        { "title": "Authentication", "url": "/articles/advanced-guide/auth/" },
+        { "title": "Deployment", "url": "/articles/advanced-guide/deploy/" }
+      ]
+    }
+  ]
+}

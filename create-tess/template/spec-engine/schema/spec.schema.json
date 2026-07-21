@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tess-os.dev/spec-engine/contracts/spec.schema.json",
+  "title": "Spec Engine — SpecDocument Contract",
+  "description": "Machine-checkable form of the post-approval source-of-truth spec (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2, deliverable (1): 'SPEC.md schema — what it does / how it looks / how it works / data model / open questions / non-goals — versioned in git.'). This is the exact shape `spec_engine.types.SpecDocument.to_log_record()` emits and the literal content of the `spec.json` artifact `spec_engine.scaffold.write_scaffold_stub()` writes next to the rendered `SPEC.md`. Deliberately NOT placed under core/contracts/ — this is this component's OWN local contract, validated by spec_engine.spec_check (a minimal, dependency-free validator), never by tessctl. additionalProperties:false means a code change that adds an undocumented field fails validation loudly rather than silently drifting from this contract.",
+  "type": "object",
+  "properties": {
+    "spec_id": { "type": "string", "minLength": 1, "description": "Safe slug, unique per generated app. See spec_engine.content.is_valid_slug." },
+    "title": { "type": "string", "minLength": 1 },
+    "spec_version": { "type": "integer", "minimum": 1, "description": "Starts at 1; a future spec-diff regeneration flow (Epic E5) increments this on each approved revision." },
+    "status": { "type": "string", "enum": ["active", "superseded"] },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source_type": { "type": "string", "enum": ["voice_transcript", "pasted_doc", "fragment", "structured_brief"] },
+        "input_excerpt": { "type": "string" },
+        "approved_by": { "type": "string", "minLength": 1 },
+        "approved_at": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "minLength": 1 },
+        "plan_id": { "type": "string", "minLength": 1 },
+        "routing_decision_id": { "type": ["string", "null"] },
+        "entry_command": { "type": ["string", "null"] },
+        "orchestrator": { "type": ["string", "null"] },
+        "mission_id": { "type": ["string", "null"] }
+      },
+      "required": ["source_type", "input_excerpt", "approved_by", "approved_at", "generated_at", "plan_id"],
+      "additionalProperties": false
+    },
+    "what_it_does": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "goals": { "type": "array", "items": { "type": "string" } },
+        "user_stories": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["summary", "goals", "user_stories"],
+      "additionalProperties": false
+    },
+    "how_it_looks": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "key_screens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "name": { "type": "string", "minLength": 1 }, "description": { "type": "string" } },
+            "required": ["name", "description"],
+            "additionalProperties": false
+          }
+        },
+        "design_references": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["description", "key_screens", "design_references"],
+      "additionalProperties": false
+    },
+    "how_it_works": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "key_flows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "steps": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["name", "steps"],
+            "additionalProperties": false
+          }
+        },
+        "integrations": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["description", "key_flows", "integrations"],
+      "additionalProperties": false
+    },
+    "data_model": {
+      "type": "object",
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1 },
+                    "type": { "type": "string" },
+                    "description": { "type": "string" }
+                  },
+                  "required": ["name", "type", "description"],
+                  "additionalProperties": false
+                }
+              },
+              "relationships": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["name", "fields", "relationships"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["entities"],
+      "additionalProperties": false
+    },
+    "non_goals": { "type": "array", "items": { "type": "string" } },
+    "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "enum": ["ambiguity", "scope", "design", "technical", "data"] },
+          "raised_from": { "type": "string" },
+          "blocking": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["open", "resolved"] },
+          "resolution": { "type": ["string", "null"] }
+        },
+        "required": ["id", "question", "category", "raised_from", "blocking", "status", "resolution"],
+        "additionalProperties": false
+      }
+    },
+    "resolved_connectors": {
+      "type": "array",
+      "description": "Connectors v1 (docs/design/connectors-architecture.md §6.2/§6.4): copied VERBATIM from the approved Plan's resolved_connectors by spec_builder.build_spec() — the plan-time resolution of how_it_works.integrations against the connector registry, one entry per integration, same order. OPTIONAL (default []): a pre-Connectors-v1 persisted SpecDocument JSON record predates this field entirely and must still validate — see spec_engine.types.SpecDocument.resolved_connectors' own default_factory=list.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "integration_name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["resolved", "unresolved"] },
+          "connector_id": { "type": ["string", "null"] },
+          "connector_version": { "type": ["string", "null"] },
+          "manifest_hash": { "type": ["string", "null"] },
+          "display_name": { "type": ["string", "null"] },
+          "base_url": { "type": ["string", "null"] },
+          "base_url_override_env": { "type": ["string", "null"] },
+          "api_version_pin_kind": { "type": ["string", "null"] },
+          "api_version_pin_name": { "type": ["string", "null"] },
+          "api_version_pin_value": { "type": ["string", "null"] },
+          "auth_env_vars": { "type": "array", "items": { "type": "string" } },
+          "auth_header_name": { "type": ["string", "null"] },
+          "auth_header_value_prefix": { "type": "string" },
+          "timeout_ms": { "type": ["integer", "null"] },
+          "error_map": { "type": "object" },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "side_effect": { "type": "string", "enum": ["read", "write", "spend"] },
+                "http_method": { "type": "string", "minLength": 1 },
+                "http_path": { "type": "string", "minLength": 1 }
+              },
+              "required": ["name", "side_effect", "http_method", "http_path"],
+              "additionalProperties": false
+            }
+          },
+          "registered_connector_ids": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": [
+          "integration_name", "status", "connector_id", "connector_version", "manifest_hash",
+          "display_name", "base_url", "base_url_override_env", "api_version_pin_kind",
+          "api_version_pin_name", "api_version_pin_value", "auth_env_vars", "auth_header_name",
+          "auth_header_value_prefix", "timeout_ms", "error_map", "operations", "registered_connector_ids"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "spec_id", "title", "spec_version", "status", "provenance",
+    "what_it_does", "how_it_looks", "how_it_works", "data_model",
+    "non_goals", "acceptance_criteria", "open_questions"
+  ],
+  "additionalProperties": false,
+  "$comment": "Minimal-validator keyword subset supported by spec_engine.spec_check: type, enum, properties, required, additionalProperties, items. Mirrors (in spirit, not in code) intent_router's own schema/routing-decision.schema.json convention — no $ref/$defs, everything inline, so the same dependency-free validator handles it with no ref-resolution step."
+}

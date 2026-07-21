@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Guide — Claude Code Starter Kit</title>
+  <meta name="description" content="Step-by-step tutorials, command deep dives, hook explanations, database cookbook, and troubleshooting for the Claude Code Starter Kit.">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="thedecipherist.png">
+  <link rel="apple-touch-icon" href="thedecipherist.png">
+
+  <!-- Rybbit Analytics -->
+  <script
+    src="https://app.rybbit.io/api/script.js"
+    data-site-id="e7e29192d813"
+    defer
+  ></script>
+
+  <!-- Prism.js theme -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+
+  <!-- Custom styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <nav class="container">
+      <ul>
+        <li>
+          <button id="menu-toggle" class="menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+            <span class="hamburger-line"></span>
+            <span class="hamburger-line"></span>
+            <span class="hamburger-line"></span>
+          </button>
+          <div class="brand">
+            <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=header-logo" target="_blank" rel="noopener" title="By TheDecipherist" class="brand-logo">
+              <img src="thedecipherist.png" alt="TheDecipherist" class="logo">
+            </a>
+            <div class="brand-text">
+              <span class="brand-title">Claude Code Starter Kit</span>
+              <span class="brand-author">by <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=header-author" target="_blank" rel="noopener">TheDecipherist</a></span>
+            </div>
+          </div>
+        </li>
+      </ul>
+      <ul>
+        <li><a href="index.html">Home</a></li>
+        <li><a href="https://github.com/TheDecipherist/claude-code-mastery-project-starter-kit" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <!-- Mobile menu overlay -->
+  <div id="mobile-menu-overlay" class="mobile-menu-overlay"></div>
+
+  <!-- Mobile menu drawer -->
+  <aside id="mobile-menu" class="mobile-menu">
+    <nav id="mobile-toc" class="mobile-toc">
+      <div class="toc-header">User Guide</div>
+      <a href="#getting-started">Part 1: Getting Started</a>
+      <a href="#daily-workflow">Part 2: Daily Workflow</a>
+      <a href="#commands-deep-dive">Part 3: Commands Deep Dive</a>
+      <a href="#hook-system">Part 4: Hook System</a>
+      <a href="#strictdb-database-layer">Part 5: StrictDB Database Layer</a>
+      <a href="#claudemd-customization">Part 6: CLAUDE.md Customization</a>
+      <a href="#testing">Part 7: Testing</a>
+      <a href="#deployment">Part 8: Deployment</a>
+      <a href="#troubleshooting">Part 9: Troubleshooting</a>
+      <a href="#faq">Part 10: FAQ</a>
+    </nav>
+    <div class="mobile-projects">
+      <div class="toc-header">More Projects</div>
+      <a href="https://rulecatch.ai?utm_source=github-pages&utm_medium=article&utm_campaign=rulecatch&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=rulecatch.ai&sz=32" alt="" class="link-favicon">RuleCatch.AI</a>
+      <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=thedecipherist.com&sz=32" alt="" class="link-favicon">TheDecipherist</a>
+      <a href="https://classpresso.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=classpresso.com&sz=32" alt="" class="link-favicon">Classpresso</a>
+      <a href="https://classmcp.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=classmcp.com&sz=32" alt="" class="link-favicon">ClassMCP</a>
+      <a href="https://tersejson.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=tersejson.com&sz=32" alt="" class="link-favicon">TerseJSON</a>
+    </div>
+  </aside>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="hero-glow"></div>
+    <div class="container hero-content">
+      <div class="hero-badge">Hands-On Companion Guide</div>
+      <h1>User Guide</h1>
+      <p class="hero-subtitle">Step-by-step tutorials, command deep dives, and practical workflows. Everything you need to master the Claude Code Starter Kit.</p>
+      <div class="hero-actions">
+        <a href="index.html" class="btn btn-secondary">Back to Home</a>
+        <a href="#getting-started" class="btn btn-primary">Start Reading</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="hero-banner">
+    <img src="https://thedecipherist.com/img/articles/claude-code-mastery-project-starter-kit/banner--md--userguide--claude-code-mastery-project-starter-kit--banner.webp" alt="Claude Code Starter Kit — User Guide">
+  </section>
+
+  <!-- Main Content -->
+  <main class="container main-layout">
+    <aside id="sidebar">
+      <nav id="toc">
+        <div class="toc-header">User Guide</div>
+        <a href="#getting-started" class="active">Part 1: Getting Started</a>
+        <a href="#daily-workflow">Part 2: Daily Workflow</a>
+        <a href="#commands-deep-dive">Part 3: Commands Deep Dive</a>
+        <a href="#hook-system">Part 4: Hook System</a>
+        <a href="#strictdb-database-layer">Part 5: StrictDB Database Layer</a>
+        <a href="#claudemd-customization">Part 6: CLAUDE.md Customization</a>
+        <a href="#testing">Part 7: Testing</a>
+        <a href="#deployment">Part 8: Deployment</a>
+        <a href="#troubleshooting">Part 9: Troubleshooting</a>
+        <a href="#faq">Part 10: FAQ</a>
+      </nav>
+    </aside>
+
+    <article id="content">
+
+      <!-- Part 1: Getting Started -->
+      <section id="getting-started">
+        <h2>Part 1: Getting Started</h2>
+
+        <h3>What This Kit Does</h3>
+        <p>The Claude Code Starter Kit is a <strong>scaffold template</strong> that supercharges Claude Code with battle-tested rules, automated enforcement, and on-demand tools. Think of it as a senior engineer's playbook, encoded into files that Claude reads and follows:</p>
+
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-icon feature-icon-cyan">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </div>
+            <h3>CLAUDE.md</h3>
+            <p>Tells Claude <em>what rules to follow</em></p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon feature-icon-green">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <h3>9 Hooks</h3>
+            <p><em>Enforce</em> those rules automatically</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon feature-icon-blue">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            </div>
+            <h3>25 Commands</h3>
+            <p><em>On-demand tools</em> for common tasks</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon feature-icon-purple">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+            <h3>Skills &amp; Agents</h3>
+            <p><em>Specialized work</em> triggered automatically</p>
+          </div>
+        </div>
+
+        <h3>Decision Tree: Which Path Is Right for You?</h3>
+        <pre class="language-text"><code class="language-text">Are you starting a brand new project?
+├── YES → Use /new-project
+│   ├── Full opinions (TypeScript, ports, quality gates)?  → /new-project my-app default
+│   ├── Just AI tooling, zero coding opinions?             → /new-project my-app clean
+│   ├── Building a Go API?                                 → /new-project my-api go
+│   └── Building a Python API?                             → /new-project my-api python-api
+│
+├── NO → Do you have an existing project?
+│   └── YES → /convert-project-to-starter-kit ~/projects/my-app
+│
+└── Want to customize the template itself?
+    └── Clone the repo, modify commands/hooks/rules</code></pre>
+
+        <h3>Tutorial: Your First Project in 5 Minutes</h3>
+
+        <div class="step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>Install global config (one time only)</h3>
+            <pre class="language-bash"><code class="language-bash">/install-global</code></pre>
+            <p>Merges security rules and hooks into <code>~/.claude/</code>. Never overwrites existing config.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>Create your project</h3>
+            <pre class="language-bash"><code class="language-bash">/new-project my-app clean          # Zero opinions
+/new-project my-app default        # Full stack: Next.js + MongoDB + Tailwind</code></pre>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>Enter and configure</h3>
+            <pre class="language-bash"><code class="language-bash">cd ~/projects/my-app
+/setup                             # Configure .env interactively</code></pre>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">4</div>
+          <div class="step-content">
+            <h3>Start building</h3>
+            <pre class="language-bash"><code class="language-bash">claude</code></pre>
+            <p>That's it. Claude now has all rules, hooks, and commands ready to go.</p>
+          </div>
+        </div>
+
+        <h3>What Got Created</h3>
+        <p>After <code>/new-project my-app clean</code>, here's what's in your project:</p>
+        <pre class="language-text"><code class="language-text">my-app/
+├── .claude/
+│   ├── commands/       ← 26 slash commands (16 project + 10 kit management)
+│   ├── skills/         ← Auto-triggered expertise
+│   ├── agents/         ← Specialist subagents
+│   ├── hooks/          ← 9 enforcement scripts
+│   └── settings.json   ← Hooks wired to lifecycle
+├── project-docs/       ← ARCHITECTURE, INFRASTRUCTURE, DECISIONS
+├── tests/              ← CHECKLIST, ISSUES_FOUND
+├── CLAUDE.md           ← The rules Claude follows
+├── CLAUDE.local.md     ← Your personal preferences (gitignored)
+├── .env                ← Secrets (never committed)
+├── .env.example        ← Template with placeholders
+└── .gitignore          ← Includes .env, CLAUDE.local.md</code></pre>
+      </section>
+
+      <!-- Part 2: Daily Workflow -->
+      <section id="daily-workflow">
+        <h2>Part 2: Daily Workflow</h2>
+
+        <h3>The Development Loop</h3>
+        <div class="learning-phases">
+          <div class="phase">
+            <div class="phase-number">1</div>
+            <h3>Write Code</h3>
+            <p class="phase-time">Claude follows CLAUDE.md</p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">2</div>
+            <h3>Review</h3>
+            <p class="phase-time"><code>/review</code></p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">3</div>
+            <h3>Fix Issues</h3>
+            <p class="phase-time">Critical &amp; Warning</p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">4</div>
+            <h3>Commit</h3>
+            <p class="phase-time"><code>/commit</code></p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">5</div>
+            <h3>Repeat</h3>
+            <p class="phase-time">Next feature</p>
+          </div>
+        </div>
+
+        <h3>When to <code>/clear</code> and Start Fresh</h3>
+        <div class="callout" style="background: var(--bg-secondary); border-left: 4px solid var(--accent-amber); padding: 1rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem;">
+          Research shows <strong>39% performance degradation</strong> when mixing topics. A 2% misalignment early can cause <strong>40% failure rate</strong> by conversation end. Use <code>/clear</code> between unrelated tasks.
+        </div>
+
+        <h3>Working with Branches</h3>
+        <p><strong>Auto-branch is ON by default.</strong> Every command that modifies code automatically creates a feature branch when it detects you're on main. If Claude screws up &mdash; just delete the branch. Main was never touched.</p>
+        <pre class="language-bash"><code class="language-bash"># For parallel sessions in separate directories:
+/worktree add-auth        # Creates branch + separate working directory
+/worktree add-payments    # Another isolated workspace</code></pre>
+      </section>
+
+      <!-- Part 3: Commands Deep Dive -->
+      <section id="commands-deep-dive">
+        <h2>Part 3: Commands Deep Dive</h2>
+        <p>All 26 commands (16 project + 10 kit management) grouped by category with real examples.</p>
+
+        <h3 style="color: var(--accent-cyan);">Getting Started</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/help</code></h3>
+            <p class="command-desc">Lists every command, skill, and agent grouped by category. Run this whenever you forget what's available.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/quickstart</code></h3>
+            <p class="command-desc">Interactive first-run walkthrough. Checks global config, asks for project name and profile, walks you through scaffolding and first build.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/install-global</code></h3>
+            <p class="command-desc">One-time setup: installs global CLAUDE.md, settings.json, and hooks into <code>~/.claude/</code>. Smart merge &mdash; never overwrites.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/setup</code></h3>
+            <p class="command-desc">Interactive .env configuration &mdash; database, GitHub, Docker, analytics, RuleCatch. Supports multi-region. Use <code>--reset</code> to reconfigure.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/show-user-guide</code></h3>
+            <p class="command-desc">Opens this user guide in your browser. Tries GitHub Pages first, falls back to local file.</p>
+          </div>
+        </div>
+
+        <h3 style="color: var(--accent-green);">Code Quality</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/review</code></h3>
+            <p class="command-desc">Systematic 7-point code review: security, types, errors, performance, testing, database, API versioning. Issues reported with Critical/Warning/Info severity.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/refactor &lt;file&gt;</code></h3>
+            <p class="command-desc">Audit + refactor against every CLAUDE.md rule. Checks file size, function size, types, imports, errors, database, and security. Presents a plan first.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/commit</code></h3>
+            <p class="command-desc">Smart commit with conventional format. Reviews staged changes, generates <code>type(scope): description</code> messages. Warns on multi-concern changes.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/security-check</code></h3>
+            <p class="command-desc">Scans for secrets in code, .gitignore gaps, sensitive files in git, .env handling, and dependency vulnerabilities.</p>
+          </div>
+        </div>
+
+        <h3 style="color: var(--accent-purple);">Scaffolding</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/new-project</code></h3>
+            <p class="command-desc">Full project scaffolding with profiles: <code>clean</code>, <code>default</code>, <code>api</code>, <code>go</code>, <code>python-api</code>, <code>vue</code>, <code>nuxt</code>, <code>sveltekit</code>, <code>django</code>, and more.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/create-api &lt;resource&gt;</code></h3>
+            <p class="command-desc">Scaffold types, handler, route, and tests for a complete API endpoint. Uses StrictDB, auto-sanitization, and <code>/api/v1/</code> prefix.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/create-e2e &lt;feature&gt;</code></h3>
+            <p class="command-desc">Generate a Playwright E2E test with happy path, error cases, and edge cases. Reads source code to identify what to verify.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/convert-project-to-starter-kit</code></h3>
+            <p class="command-desc">Non-destructive merge of all starter kit infrastructure into an existing project. Creates safety commit first. Undo with <code>git revert HEAD</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/update-project</code></h3>
+            <p class="command-desc">Smart-merge the latest starter kit commands, hooks, skills, agents, and rules into an existing project. Shows a diff report before applying. Creates a safety commit for easy undo.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/add-feature &lt;name&gt;</code></h3>
+            <p class="command-desc">Add capabilities (StrictDB, Docker, testing, etc.) to an existing project after scaffolding. Idempotent &mdash; safely updates already-installed features. Maintains a feature manifest so <code>/update-project</code> can sync feature files too.</p>
+          </div>
+        </div>
+
+        <h3 style="color: var(--accent-blue);">Infrastructure</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/diagram</code></h3>
+            <p class="command-desc">Generate ASCII diagrams from actual code: <code>architecture</code>, <code>api</code>, <code>database</code>, <code>infrastructure</code>, or <code>all</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/architecture</code></h3>
+            <p class="command-desc">Display system architecture and data flow from <code>project-docs/ARCHITECTURE.md</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/optimize-docker</code></h3>
+            <p class="command-desc">Audit Dockerfile against 12 best practices. Generates optimized version with before/after size comparison.</p>
+          </div>
+        </div>
+
+        <h3 style="color: var(--accent-amber);">Project Management</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/progress</code></h3>
+            <p class="command-desc">Project status snapshot &mdash; file counts, test coverage, recent git activity, and prioritized next actions.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/test-plan</code></h3>
+            <p class="command-desc">Generate a structured test plan with prerequisites, happy path, error cases, edge cases, and pass/fail criteria.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/worktree &lt;name&gt;</code></h3>
+            <p class="command-desc">Create an isolated git worktree + branch. Enables parallel Claude sessions without conflicts.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/what-is-my-ai-doing</code></h3>
+            <p class="command-desc">Launch live AI monitor in a separate terminal. Free mode &mdash; no API key needed. Shows tool calls, tokens, cost, and file access.</p>
+          </div>
+        </div>
+
+        <h3 style="color: var(--accent-pink);">Meta</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>/set-project-profile-default</code></h3>
+            <p class="command-desc">Set the default profile for <code>/new-project</code>. Accepts any profile name or a custom combo.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/add-project-setup</code></h3>
+            <p class="command-desc">Interactive wizard to create a named profile in <code>claude-mastery-project.conf</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/projects-created</code></h3>
+            <p class="command-desc">List all projects scaffolded by <code>/new-project</code> with creation date, profile, language, and location.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>/remove-project &lt;name&gt;</code></h3>
+            <p class="command-desc">Remove a project from registry and optionally delete from disk. Shows details first, asks for confirmation.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Part 4: Hook System -->
+      <section id="hook-system">
+        <h2>Part 4: Hook System Explained</h2>
+        <p>Hooks are shell/python scripts that run automatically at specific lifecycle points. Unlike CLAUDE.md rules (suggestions), hooks are <strong>guaranteed to run</strong>.</p>
+
+        <h3>The Lifecycle</h3>
+        <pre class="language-text"><code class="language-text">┌─────────────────────────────────────────────┐
+│  PreToolUse — BEFORE Claude uses a tool     │
+│  Can BLOCK the action (exit code 2)         │
+│                                             │
+│  → block-secrets.py (Read/Edit/Write)       │
+│  → check-rybbit.sh  (Bash - deploy)         │
+│  → check-branch.sh  (Bash - git commit)     │
+│  → check-ports.sh   (Bash - dev servers)    │
+│  → check-e2e.sh     (Bash - git push)       │
+├─────────────────────────────────────────────┤
+│  PostToolUse — AFTER Claude uses a tool     │
+│  Informational only                         │
+│                                             │
+│  → lint-on-save.sh   (Write)                │
+├─────────────────────────────────────────────┤
+│  Stop — When Claude FINISHES a turn         │
+│  Can warn, typically doesn't block          │
+│                                             │
+│  → verify-no-secrets.sh                     │
+│  → check-rulecatch.sh                       │
+│  → check-env-sync.sh                        │
+└─────────────────────────────────────────────┘</code></pre>
+
+        <h3>Each Hook Explained</h3>
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3><code>block-secrets.py</code></h3>
+            <p class="command-desc"><strong>PreToolUse: Read|Edit|Write</strong> &mdash; Blocks Claude from reading or editing sensitive files: <code>.env</code>, <code>credentials.json</code>, SSH keys, <code>.npmrc</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-branch.sh</code></h3>
+            <p class="command-desc"><strong>PreToolUse: Bash</strong> &mdash; Blocks <code>git commit</code> on main/master when auto-branch is enabled. Create a feature branch first.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-rybbit.sh</code></h3>
+            <p class="command-desc"><strong>PreToolUse: Bash</strong> &mdash; Blocks deployment if Rybbit analytics isn't configured. Skips projects that don't use Rybbit.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-ports.sh</code></h3>
+            <p class="command-desc"><strong>PreToolUse: Bash</strong> &mdash; Blocks dev server start if the target port is already in use. Shows PID + kill command.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-e2e.sh</code></h3>
+            <p class="command-desc"><strong>PreToolUse: Bash</strong> &mdash; Blocks <code>git push</code> to main if no E2E tests exist in <code>tests/e2e/</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>lint-on-save.sh</code></h3>
+            <p class="command-desc"><strong>PostToolUse: Write</strong> &mdash; Auto-lints after file writes: <code>tsc</code> for TypeScript, <code>eslint</code> for JS, <code>ruff</code> for Python.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>verify-no-secrets.sh</code></h3>
+            <p class="command-desc"><strong>Stop</strong> &mdash; Scans staged files for API key patterns, AWS credentials, and credential URLs.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-rulecatch.sh</code></h3>
+            <p class="command-desc"><strong>Stop</strong> &mdash; Reports RuleCatch violations. Skips silently if RuleCatch isn't installed.</p>
+          </div>
+          <div class="command-card">
+            <h3><code>check-env-sync.sh</code></h3>
+            <p class="command-desc"><strong>Stop</strong> &mdash; Warns when <code>.env</code> has keys that <code>.env.example</code> doesn't document. Informational only.</p>
+          </div>
+        </div>
+
+        <h3>Creating Custom Hooks</h3>
+        <pre class="language-bash"><code class="language-bash">#!/bin/bash
+# .claude/hooks/my-custom-hook.sh
+INPUT=$(cat)
+COMMAND=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null)
+
+if echo "$COMMAND" | grep -q "something-dangerous"; then
+    echo "BLOCKED: Reason for blocking" >&2
+    exit 2  # Block the operation
+fi
+exit 0  # Allow</code></pre>
+        <p>Wire it in <code>.claude/settings.json</code> under the appropriate lifecycle event and matcher.</p>
+      </section>
+
+      <!-- Part 5: StrictDB Database Layer -->
+      <section id="strictdb-database-layer">
+        <h2>Part 5: StrictDB Database Layer</h2>
+
+        <h3>Why StrictDB Exists</h3>
+        <div class="callout" style="background: var(--bg-secondary); border-left: 4px solid var(--accent-cyan); padding: 1rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem;">
+          The #1 database failure in AI-assisted development is <strong>connection pool exhaustion</strong>. Without StrictDB, Claude creates direct database clients in every file. Each client opens its own pool. During hot reload, connections multiply until the database rejects new connections.
+        </div>
+
+        <h3>Reading Data</h3>
+        <pre class="language-typescript"><code class="language-typescript">import { StrictDB } from 'strictdb';
+
+const db = StrictDB.getInstance();
+
+// Single document (works with MongoDB, PostgreSQL, SQLite, etc.)
+const user = await db.queryOne&lt;User&gt;('users', { email: 'test@example.com' });
+
+// Filtered query with options (filter, then options object)
+const recentOrders = await db.queryMany&lt;Order&gt;('orders',
+  { userId, status: 'active' },
+  { sort: { createdAt: -1 }, limit: 20 },
+);
+
+// Join across collections/tables
+const userWithOrders = await db.queryWithLookup&lt;UserWithOrders&gt;('users', {
+  match: { _id: userId },
+  lookup: { from: 'orders', localField: '_id', foreignField: 'userId', as: 'orders' },
+  unwind: 'orders',
+});
+
+// Count
+const total = await db.count('users', { role: 'admin' });</code></pre>
+
+        <h3>Writing Data</h3>
+        <pre class="language-typescript"><code class="language-typescript">import { StrictDB } from 'strictdb';
+
+const db = StrictDB.getInstance();
+
+await db.insertOne('users', { email, name, createdAt: new Date() });
+await db.insertMany('events', batchOfEvents);
+
+// Use $inc for counters — NEVER read-modify-write
+await db.updateOne&lt;Stats&gt;('stats', { date }, { $inc: { pageViews: 1 } }, true);
+
+// Batch operations (array of typed operations)
+await db.batch([
+  { operation: 'updateOne', collection: 'sessions', filter: { sessionId }, update: { $inc: { events: 1 } } },
+  { operation: 'deleteOne', collection: 'tokens', filter: { token: expiredToken } },
+]);
+
+await db.deleteOne('tokens', { token: expiredToken });</code></pre>
+
+        <h3>AI-First Discovery</h3>
+        <pre class="language-typescript"><code class="language-typescript">import { StrictDB } from 'strictdb';
+
+const db = StrictDB.getInstance();
+
+// Discover schema — fields, indexes, document count
+const schema = await db.describe('users');
+
+// Dry-run validation — catches errors before execution
+const check = await db.validate('users', { doc: { email: 'test@test.com' } });
+
+// See the native query that would run
+const plan = await db.explain('users', { filter: { role: 'admin' }, limit: 50 });</code></pre>
+
+        <div class="callout" style="background: var(--bg-secondary); border-left: 4px solid var(--accent-purple); padding: 1rem 1.25rem; border-radius: 0.5rem; margin: 1.5rem 0;">
+          <strong>Recommended MCP Server:</strong> Install <a href="https://www.npmjs.com/package/strictdb-mcp" target="_blank" rel="noopener">StrictDB-MCP</a> to give Claude direct database awareness &mdash; schema discovery, query validation, and AI-first database workflows right in your editor.
+        </div>
+
+        <h3>Graceful Shutdown</h3>
+        <pre class="language-typescript"><code class="language-typescript">import { StrictDB } from 'strictdb';
+
+const db = StrictDB.getInstance();
+
+// Closes all database connections (MongoDB, PostgreSQL, SQLite, etc.)
+process.on('SIGTERM', () =&gt; db.gracefulShutdown(0));
+process.on('SIGINT', () =&gt; db.gracefulShutdown(0));
+process.on('uncaughtException', (err) =&gt; {
+  console.error('Uncaught Exception:', err);
+  db.gracefulShutdown(1);
+});</code></pre>
+      </section>
+
+      <!-- Part 6: CLAUDE.md Customization -->
+      <section id="claudemd-customization">
+        <h2>Part 6: CLAUDE.md Customization</h2>
+
+        <h3>Team File vs Personal File</h3>
+        <div class="check-before-grid" style="grid-template-columns: 1fr 1fr;">
+          <div class="check-before-card">
+            <h4>CLAUDE.md &mdash; Team Rules</h4>
+            <p>Checked into git. Everyone on the team follows these. Contains coding standards, quality gates, database rules, testing requirements.</p>
+          </div>
+          <div class="check-before-card">
+            <h4>CLAUDE.local.md &mdash; Personal</h4>
+            <p>Gitignored. Only affects you. Contains communication style, testing preferences, custom shortcuts, deployment preferences.</p>
+          </div>
+        </div>
+
+        <h3>Adding Your Own Rules</h3>
+        <p>Use strong language &mdash; Claude responds to <strong>NEVER</strong> and <strong>ALWAYS</strong> more consistently than &ldquo;try to&rdquo; or &ldquo;prefer&rdquo;:</p>
+        <pre class="language-markdown"><code class="language-markdown">### Rule 11: Always Use Relative Imports
+
+- NEVER use absolute paths in imports
+- ALWAYS use relative paths from the current file
+- This prevents path mapping issues across environments</code></pre>
+
+        <h3>The Feedback Loop</h3>
+        <div class="learning-phases">
+          <div class="phase">
+            <div class="phase-number">1</div>
+            <h3>Mistake</h3>
+            <p class="phase-time">Claude breaks a rule</p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">2</div>
+            <h3>Fix</h3>
+            <p class="phase-time">You correct it</p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">3</div>
+            <h3>Rule</h3>
+            <p class="phase-time">Update CLAUDE.md</p>
+          </div>
+          <div class="phase-arrow">&rarr;</div>
+          <div class="phase">
+            <div class="phase-number">4</div>
+            <h3>Improvement</h3>
+            <p class="phase-time">Mistake rate drops</p>
+          </div>
+        </div>
+        <p>Every mistake is a missing rule. Don't just fix bugs &mdash; fix the rules that allowed the bug. The file is checked into git, so the whole team benefits.</p>
+      </section>
+
+      <!-- Part 7: Testing -->
+      <section id="testing">
+        <h2>Part 7: Testing</h2>
+
+        <h3>Test Infrastructure</h3>
+        <div class="check-before-grid" style="grid-template-columns: 1fr 1fr;">
+          <div class="check-before-card">
+            <h4>Unit &amp; Integration (Vitest)</h4>
+            <pre class="language-bash"><code class="language-bash">pnpm test:unit        # Run once
+pnpm test:unit:watch  # Watch mode
+pnpm test:coverage    # With coverage</code></pre>
+          </div>
+          <div class="check-before-card">
+            <h4>E2E (Playwright)</h4>
+            <pre class="language-bash"><code class="language-bash">pnpm test:e2e         # Full run
+pnpm test:e2e:headed  # Visible browser
+pnpm test:e2e:ui      # Debug UI</code></pre>
+          </div>
+        </div>
+
+        <h3>The 3-Assertion Minimum</h3>
+        <div class="rule-block">
+          <div class="rule-header">
+            <span class="rule-number">Required</span>
+            <h3>Every E2E test must verify at least 3 things</h3>
+          </div>
+          <pre class="language-typescript"><code class="language-typescript">// CORRECT — 3 explicit assertions
+await expect(page).toHaveURL('/dashboard');              // 1. URL
+await expect(page.locator('h1')).toBeVisible();         // 2. Element
+await expect(page.locator('[data-testid="user"]'))
+  .toContainText('test@example.com');                   // 3. Data
+
+// WRONG — passes even if broken
+await page.goto('/dashboard');
+// no assertions!</code></pre>
+        </div>
+
+        <h3>Test Ports</h3>
+        <p>Tests run on separate ports so you can develop and test simultaneously:</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 1rem 0;">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--border-color);">
+              <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary);">Service</th>
+              <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary);">Dev Port</th>
+              <th style="text-align: left; padding: 0.5rem; color: var(--text-secondary);">Test Port</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--border-color);"><td style="padding: 0.5rem;">Website</td><td style="padding: 0.5rem;">3000</td><td style="padding: 0.5rem;">4000</td></tr>
+            <tr style="border-bottom: 1px solid var(--border-color);"><td style="padding: 0.5rem;">API</td><td style="padding: 0.5rem;">3001</td><td style="padding: 0.5rem;">4010</td></tr>
+            <tr><td style="padding: 0.5rem;">Dashboard</td><td style="padding: 0.5rem;">3002</td><td style="padding: 0.5rem;">4020</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Part 8: Deployment -->
+      <section id="deployment">
+        <h2>Part 8: Deployment</h2>
+
+        <h3>Pre-Deployment Checklist</h3>
+        <div class="check-before-grid">
+          <div class="check-before-card">
+            <h4>Analytics</h4>
+            <p>Is <code>NEXT_PUBLIC_RYBBIT_SITE_ID</code> set with a site-specific ID?</p>
+          </div>
+          <div class="check-before-card">
+            <h4>Secrets</h4>
+            <p>No API keys, passwords, or tokens in the codebase?</p>
+          </div>
+          <div class="check-before-card">
+            <h4>Tests</h4>
+            <p>All tests passing? <code>pnpm test</code></p>
+          </div>
+          <div class="check-before-card">
+            <h4>TypeScript</h4>
+            <p><code>pnpm typecheck</code> passes with zero errors?</p>
+          </div>
+          <div class="check-before-card">
+            <h4>Docker</h4>
+            <p>Image tested locally? (if push gate enabled)</p>
+          </div>
+          <div class="check-before-card">
+            <h4>Branch</h4>
+            <p>On a feature branch, not main?</p>
+          </div>
+        </div>
+
+        <h3>Docker Multi-Stage Build</h3>
+        <pre class="language-dockerfile"><code class="language-dockerfile"># Stage 1: Build
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+# Stage 2: Production
+FROM node:20-alpine AS runner
+WORKDIR /app
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 appuser
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+USER appuser
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:3000/health || exit 1
+CMD ["node", "dist/index.js"]</code></pre>
+
+        <h3>Docker Push Gate</h3>
+        <p>Enable with <code>docker_test_before_push = true</code> in <code>claude-mastery-project.conf</code>. When enabled, no <code>docker push</code> is allowed until: build &rarr; run &rarr; wait 5s &rarr; verify running &rarr; health check 200 &rarr; clean logs &rarr; cleanup &rarr; push.</p>
+      </section>
+
+      <!-- Part 9: Troubleshooting -->
+      <section id="troubleshooting">
+        <h2>Part 9: Troubleshooting</h2>
+
+        <div class="troubleshooting-grid">
+          <div class="troubleshooting-item">
+            <h4>Hooks not firing at all</h4>
+            <p>Check <code>.claude/settings.json</code> is valid JSON. Verify hook files exist: <code>ls -la .claude/hooks/</code>. Restart Claude session.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Hook blocks unexpectedly</h4>
+            <p>Read the error message. For branch check: set <code>auto_branch = false</code>. For Rybbit: set <code>analytics = none</code>. For secrets: use <code>/setup</code> instead.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Port already in use</h4>
+            <p>Run <code>lsof -i :3000</code> to find the PID, then <code>kill -9 PID</code>. Or: <code>pnpm test:kill-ports</code></p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>"Cannot find module" after moving files</h4>
+            <p>Update all import references. Run <code>pnpm typecheck</code> to find broken imports. Check <code>tsconfig.json</code> path mappings.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Database connection timeout</h4>
+            <p>Verify <code>STRICTDB_URI</code> in <code>.env</code>. For MongoDB Atlas, whitelist your IP. For PostgreSQL, check <code>pg_hba.conf</code>. Test connectivity with your database's CLI tool.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Too many open connections</h4>
+            <p>You're creating direct database clients outside StrictDB. Always use <code>import { StrictDB } from 'strictdb'</code> and call methods on the instance.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>"BLOCKED: You're on main"</h4>
+            <p>Create a feature branch: <code>git checkout -b feat/my-feature</code>. Or disable: <code>auto_branch = false</code> in conf.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Extremely slow file operations (WSL)</h4>
+            <p>Project is on <code>/mnt/c/</code> &mdash; move to <code>~/projects/</code>. Run <code>pwd</code> to check.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Playwright tests failing in WSL</h4>
+            <p>Install deps: <code>npx playwright install --with-deps</code>. Ensure VS Code is in WSL mode.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Hot reload not working (WSL)</h4>
+            <p>File watching doesn't work across Windows/Linux boundary. Move project to WSL filesystem.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>E2E tests timing out</h4>
+            <p>Kill stale processes: <code>pnpm test:kill-ports</code>. Run headed: <code>pnpm test:e2e:headed</code>. Check <code>playwright.config.ts</code> webServer.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>"Target closed" or "Frame detached"</h4>
+            <p>Page navigated before assertion completed. Add <code>await page.waitForURL(...)</code> before assertions.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4><code>pnpm dev</code> fails or does nothing</h4>
+            <p>This is a scaffold template. Use <code>/new-project my-app</code> first, then run <code>pnpm dev</code> inside that project.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4><code>/install-global</code> reports conflicts</h4>
+            <p>Normal. Smart merge keeps your existing sections, adds what's missing. Check the report for details.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>RuleCatch not monitoring</h4>
+            <p>Free mode needs no setup: <code>pnpm ai:monitor</code>. Full experience needs an API key from <a href="https://rulecatch.ai" target="_blank" rel="noopener">rulecatch.ai</a>.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Connection works locally, fails in Docker</h4>
+            <p>Container can't reach <code>localhost</code>. Use the actual database URI (e.g., MongoDB Atlas, remote PostgreSQL) and pass via <code>STRICTDB_URI</code> env var.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>"pnpm: command not found"</h4>
+            <p>Install: <code>npm install -g pnpm</code> or use corepack: <code>corepack enable</code></p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Tests pass locally, fail in CI</h4>
+            <p>Different browser versions &mdash; pin in config. Timeouts too short &mdash; increase. Flaky selectors &mdash; use <code>data-testid</code>.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>"Type 'any' is not assignable"</h4>
+            <p>The starter kit working as intended. Add proper type annotations or create a type in <code>src/types/</code>.</p>
+          </div>
+          <div class="troubleshooting-item">
+            <h4>Merge conflicts after /worktree</h4>
+            <p>Each worktree is isolated. Merge the branch normally: <code>git merge task/add-auth</code> from main.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Part 10: FAQ -->
+      <section id="faq">
+        <h2>Part 10: FAQ</h2>
+
+        <div class="commands-grid">
+          <div class="command-card">
+            <h3>Do I need all the MCP servers?</h3>
+            <p class="command-desc">No. MCP servers are optional. The starter kit works fully without any. Install the ones that match your workflow.</p>
+          </div>
+          <div class="command-card">
+            <h3>Can I use JavaScript instead of TypeScript?</h3>
+            <p class="command-desc">Yes. Use <code>/new-project my-app clean</code> for zero coding opinions. The <code>default</code> profile enforces TypeScript as a best practice, but <code>clean</code> lets you choose.</p>
+          </div>
+          <div class="command-card">
+            <h3>Can I use npm or yarn?</h3>
+            <p class="command-desc">Yes. The <code>default</code> profile uses pnpm, but you can specify any package manager during <code>/new-project</code> or change it in the config.</p>
+          </div>
+          <div class="command-card">
+            <h3>How do I add my own slash commands?</h3>
+            <p class="command-desc">Create a <code>.md</code> file in <code>.claude/commands/</code>. The filename becomes the command name. Add YAML frontmatter with <code>description</code> and <code>allowed-tools</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3>Can I use Prisma or Mongoose?</h3>
+            <p class="command-desc">The starter kit recommends StrictDB as the centralized database layer. For <code>clean</code> profile projects, use any ORM you prefer.</p>
+          </div>
+          <div class="command-card">
+            <h3>How do I switch from MongoDB to PostgreSQL?</h3>
+            <p class="command-desc">StrictDB handles all backends. Set <code>STRICTDB_URI=postgresql://...</code> in <code>.env</code> &mdash; StrictDB auto-detects the driver from the URI scheme.</p>
+          </div>
+          <div class="command-card">
+            <h3>Why 3 assertions minimum?</h3>
+            <p class="command-desc">One assertion can pass even if the page is broken. Three assertions verify URL, visible content, and data accuracy — catching real bugs.</p>
+          </div>
+          <div class="command-card">
+            <h3>Is the Docker push gate mandatory?</h3>
+            <p class="command-desc">No, disabled by default. Enable with <code>docker_test_before_push = true</code> in <code>claude-mastery-project.conf</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3>Is RuleCatch required?</h3>
+            <p class="command-desc">No. Completely optional. The hook skips silently if not installed. Free monitor (<code>pnpm ai:monitor</code>) needs no API key.</p>
+          </div>
+          <div class="command-card">
+            <h3>How do I update the starter kit in an existing project?</h3>
+            <p class="command-desc">Run <code>/update-project</code> &mdash; it picks from your registered projects, shows a diff report, and smart-merges only changed files. For first-time conversion, use <code>/convert-project-to-starter-kit</code>.</p>
+          </div>
+          <div class="command-card">
+            <h3>Does this work with monorepos?</h3>
+            <p class="command-desc">Designed for single-project repos. For monorepos, use <code>/convert-project-to-starter-kit</code> on individual packages.</p>
+          </div>
+          <div class="command-card">
+            <h3>What does the free AI monitor show?</h3>
+            <p class="command-desc">Every tool call, token usage per turn, cost per session, and which files Claude is accessing — all live in a separate terminal.</p>
+          </div>
+          <div class="command-card">
+            <h3>Why does <code>/review</code> sometimes miss issues?</h3>
+            <p class="command-desc">It's a structured prompt, not a linter. Use it with <code>/security-check</code> and the lint-on-save hook. RuleCatch adds automated monitoring.</p>
+          </div>
+          <div class="command-card">
+            <h3>Do I need E2E tests for every feature?</h3>
+            <p class="command-desc">The hook only blocks push to main if there are zero E2E tests. Focus on critical user flows.</p>
+          </div>
+          <div class="command-card">
+            <h3>Can I deploy to platforms other than Dokploy?</h3>
+            <p class="command-desc">Yes. Supports Dokploy, Vercel, and static hosting (GitHub Pages, Netlify). Specify during <code>/new-project</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Credits -->
+      <section id="credits">
+        <h2>Credits</h2>
+        <p>This user guide is part of the <a href="https://github.com/TheDecipherist/claude-code-mastery-project-starter-kit" target="_blank" rel="noopener">Claude Code Starter Kit</a> by <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=user-guide-credits" target="_blank" rel="noopener">TheDecipherist</a>.</p>
+        <p>Based on the <a href="https://github.com/TheDecipherist/claude-code-mastery" target="_blank" rel="noopener">Claude Code Mastery Guide</a> series (V1&ndash;V5).</p>
+        <p><a href="index.html">&larr; Back to the main documentation</a></p>
+      </section>
+
+    </article>
+  </main>
+
+  <footer class="container">
+    <div class="footer-projects">
+      <span class="footer-label">More Projects:</span>
+      <a href="https://rulecatch.ai?utm_source=github-pages&utm_medium=article&utm_campaign=rulecatch&utm_content=user-guide" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=rulecatch.ai&sz=32" alt="" class="link-favicon">RuleCatch.AI</a>
+      <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=footer-thedecipherist" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=thedecipherist.com&sz=32" alt="" class="link-favicon">TheDecipherist</a>
+      <a href="https://classpresso.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=footer-classpresso" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=classpresso.com&sz=32" alt="" class="link-favicon">Classpresso</a>
+      <a href="https://classmcp.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=footer-classmcp" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=classmcp.com&sz=32" alt="" class="link-favicon">ClassMCP</a>
+      <a href="https://tersejson.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=footer-tersejson" target="_blank" rel="noopener"><img src="https://www.google.com/s2/favicons?domain=tersejson.com&sz=32" alt="" class="link-favicon">TerseJSON</a>
+    </div>
+    <p>
+      By <a href="https://thedecipherist.com?utm_source=github&utm_medium=website&utm_campaign=claude-code-starter-kit&utm_content=footer-author" target="_blank" rel="noopener">TheDecipherist</a>
+      &middot;
+      <a href="https://github.com/TheDecipherist/claude-code-mastery-project-starter-kit" target="_blank" rel="noopener">View Source</a>
+    </p>
+  </footer>
+
+  <!-- Prism.js for syntax highlighting -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+
+  <!-- Application -->
+  <script src="app.js"></script>
+</body>
+</html>

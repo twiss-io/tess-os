@@ -1,0 +1,5 @@
+{
+  "case_id": "01-rounding-good",
+  "domain": "billing / currency rounding",
+  "ground_truth_label": "good"
+}
