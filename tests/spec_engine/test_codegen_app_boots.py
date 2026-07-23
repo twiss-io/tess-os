@@ -36,7 +36,7 @@ import urllib.request
 import pytest
 
 import _spec_engine_paths  # sys.path bootstrap; EVAL_FIXTURES_DIR used below
-from _node_server import HAS_NODE, get_json as _get, node_server, post_json as _post
+from _node_server import HAS_NODE, assert_node_test_passed, get_json as _get, node_server, post_json as _post
 
 from spec_engine.gate_approval import sign_local_approval
 from spec_engine.codegen import generate_app
@@ -145,10 +145,7 @@ def test_generated_app_own_test_suite_passes_when_run_for_real(tmp_path, node_se
         text=True,
         timeout=30,
     )
-    combined = result.stdout + result.stderr
-    assert result.returncode == 0, f"generated test suite failed:\n{combined}"
-    assert "# fail 0" in combined, combined
-    assert "# pass" in combined and "# pass 0" not in combined, combined
+    assert_node_test_passed(result, description="generated test suite")
 
 
 def test_generated_app_all_route_kinds_respond_over_real_http(tmp_path, node_server):
