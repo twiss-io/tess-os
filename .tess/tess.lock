@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-20T13:20:39.841668Z'
+  last_updated: '2026-07-23T13:19:39.497174Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:3f82a8c77640788b8b20c804507e7573225949e3c34dc52422cd9971f1ac8ade
+    base_sha: sha256:299fc410d8073a35fd3823f93329cf49ee656ae7917e7ac288a4121cd7dca5d3
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5658,24 +5658,6 @@ files:
     tier: normal
     base_sha: sha256:1329eaa8a9d12f7a56a275960f95185d5cabc83f3261f1d6cacb87b250f15741
     live_path: .claude/skills/3d-web-experience/SKILL.md
-    last_updated: 2026-06-27 10:00:00+00:00
-  .tess/core/skills/browser-use/SKILL.md:
-    status: core-managed
-    tier: normal
-    base_sha: sha256:a8cdeb87bf175560613183071a60c82b6224230ead100ede025e8658b8d410ec
-    live_path: .claude/skills/browser-use/SKILL.md
-    last_updated: 2026-06-27 10:00:00+00:00
-  .tess/core/skills/browser-use/references/cdp-python.md:
-    status: core-managed
-    tier: normal
-    base_sha: sha256:97dff18b0b2f788a15787e9462ffa920201fa2ebc3dcb100b63d605b8af96338
-    live_path: .claude/skills/browser-use/references/cdp-python.md
-    last_updated: 2026-06-27 10:00:00+00:00
-  .tess/core/skills/browser-use/references/multi-session.md:
-    status: core-managed
-    tier: normal
-    base_sha: sha256:6320cac141a19f8fd6ba33018c7aad9558b228a77bd1a7da5ca272124fb9f28f
-    live_path: .claude/skills/browser-use/references/multi-session.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/skills/design-taste-frontend/SKILL.md:
     status: core-managed
