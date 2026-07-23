@@ -227,16 +227,16 @@ def test_existing_baseline_verifier_remains_usable_symbolically(engine, tmp_path
 
     imported = {}
 
-    def fake_subprocess_run(command, *_args, **_kwargs):
+    def fake_subprocess_run(command, *_args, **kwargs):
         if "--import" in command:
-            imported["bytes"] = _kwargs["input"]
+            imported["bytes"] = kwargs.get("input")
         return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
         engine,
         "_gpg_verify_detached_signature",
-        lambda *_args: (True, "A" * 40, None),
+        lambda *_args: (True, "A" * 40, "A" * 40, None),
     )
 
     valid, reason = engine._gate_verify_verdict_signature(
@@ -284,6 +284,15 @@ def test_candidate_key_rollback_cannot_bypass_base_key_bytes_or_revocation(engin
             "public_key_file": ".tess/keys/verifiers/reid.asc",
         }
     })
+    monkeypatch.setattr(
+        engine,
+        "_gate_primary_fingerprint_from_public_key_blob",
+        lambda key_bytes: (
+            ("A" * 40, None)
+            if key_bytes == baseline_bytes
+            else (None, "unexpected candidate key bytes reached BASE inspection")
+        ),
+    )
     trusted_blobs, trusted_errors = engine._gate_load_baseline_verifier_key_blobs(
         repo, policy, base,
     )
@@ -292,16 +301,16 @@ def test_candidate_key_rollback_cannot_bypass_base_key_bytes_or_revocation(engin
 
     imported = {}
 
-    def fake_subprocess_run(command, *_args, **_kwargs):
+    def fake_subprocess_run(command, *_args, **kwargs):
         if "--import" in command:
-            imported["bytes"] = _kwargs["input"]
+            imported["bytes"] = kwargs.get("input")
         return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
         engine,
         "_gpg_verify_detached_signature",
-        lambda *_args: (True, "A" * 40, "revoked"),
+        lambda *_args: (True, "A" * 40, "A" * 40, "revoked"),
     )
 
     valid, reason = engine._gate_verify_verdict_signature(
@@ -355,7 +364,8 @@ def test_baseline_key_loader_rejects_traversal_and_symlink_entries(engine, tmp_p
     })
     blobs, errors = engine._gate_load_baseline_verifier_key_blobs(repo, traversal_policy, base)
     assert blobs == {}
-    assert "contains '..' traversal" in errors["Reid"]
+    assert engine.GATE_KEY_PATH_CONTAINMENT_CODE in errors["Reid"]
+    assert "../outside.asc" not in errors["Reid"]
 
 
 def test_existing_baseline_signoff_key_remains_usable_symbolically(engine, tmp_path, monkeypatch):
@@ -367,16 +377,16 @@ def test_existing_baseline_signoff_key_remains_usable_symbolically(engine, tmp_p
     })
     imported = {}
 
-    def fake_subprocess_run(command, *_args, **_kwargs):
+    def fake_subprocess_run(command, *_args, **kwargs):
         if "--import" in command:
-            imported["bytes"] = _kwargs["input"]
+            imported["bytes"] = kwargs.get("input")
         return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
         engine,
         "_gpg_verify_detached_signature",
-        lambda *_args: (True, "A" * 40, None),
+        lambda *_args: (True, "A" * 40, "A" * 40, None),
     )
 
     valid, reason = engine._gate_verify_signoff_signature(
@@ -419,6 +429,15 @@ def test_candidate_signoff_key_rollback_cannot_bypass_base_bytes_or_revocation(e
             "public_key_file": ".tess/keys/signoffs/xavier.asc",
         }
     })
+    monkeypatch.setattr(
+        engine,
+        "_gate_primary_fingerprint_from_public_key_blob",
+        lambda key_bytes: (
+            ("A" * 40, None)
+            if key_bytes == baseline_bytes
+            else (None, "unexpected candidate key bytes reached BASE inspection")
+        ),
+    )
     trusted_blobs, trusted_errors = engine._gate_load_baseline_signoff_key_blobs(
         repo, policy, base,
     )
@@ -427,16 +446,16 @@ def test_candidate_signoff_key_rollback_cannot_bypass_base_bytes_or_revocation(e
 
     imported = {}
 
-    def fake_subprocess_run(command, *_args, **_kwargs):
+    def fake_subprocess_run(command, *_args, **kwargs):
         if "--import" in command:
-            imported["bytes"] = _kwargs["input"]
+            imported["bytes"] = kwargs.get("input")
         return SimpleNamespace(returncode=0, stderr=b"", stdout=b"pub:::::::::\n")
 
     monkeypatch.setattr(engine.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(
         engine,
         "_gpg_verify_detached_signature",
-        lambda *_args: (True, "A" * 40, "revoked"),
+        lambda *_args: (True, "A" * 40, "A" * 40, "revoked"),
     )
 
     valid, reason = engine._gate_verify_signoff_signature(

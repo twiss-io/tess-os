@@ -137,19 +137,18 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v3" in text
-    assert "workflow_dispatch" in text
+    assert "# tess-gate-ci v6" in text
     assert "tessctl gate ci" in text
     import yaml
     parsed = yaml.safe_load(text)
-    # Phase 2b (CI auto-enforce): push + pull_request triggers now ship
-    # alongside workflow_dispatch. PyYAML's default (1.1) resolver reads the
+    # v6: only immutable pull_request merge-wrapper events may create the
+    # authoritative required-check job. PyYAML's default (1.1) resolver reads the
     # bare `on:` key as boolean True, not the string 'on' — a well-known
     # YAML/GitHub-Actions quirk (GitHub's own parser treats `on` specially);
     # this is how every GH Actions workflow round-trips through PyYAML.
     triggers = parsed[True]
-    assert set(triggers) == {"workflow_dispatch", "push", "pull_request"}
-    assert triggers["push"]["branches"] == ["main"]
+    assert set(triggers) == {"pull_request"}
+    assert "workflow_dispatch" not in triggers
     assert triggers["pull_request"]["branches"] == ["main"]
     assert parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
     # v3 (honesty-capstone-audit-2026-07-08 §3-c): a dedicated step extracts
@@ -161,6 +160,82 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     final_run = parsed["jobs"]["ship-gate"]["steps"][-1]["run"]
     assert "steps.trusted_engine.outputs.engine_path" in final_run
     assert ".tess/bin/tessctl gate ci" not in final_run
+    resolve_run = next(
+        step["run"] for step in parsed["jobs"]["ship-gate"]["steps"]
+        if step.get("name") == "Resolve immutable admission objects for this trigger"
+    )
+    assert "github.event.pull_request.base.sha" in resolve_run
+    assert "github.event.pull_request.head.sha" in resolve_run
+    assert "github.event.before" not in resolve_run
+    assert "github.event.after" not in resolve_run
+    assert "GITHUB_SHA" in resolve_run
+    assert "GITHUB_REF" in resolve_run
+    assert "refs/pull/${PR_NUMBER}/merge" in resolve_run
+    assert "inputs.base" not in resolve_run
+    assert "inputs.head" not in resolve_run
+    assert "4b825dc642cb6eb9a060e54bf8d69288fbee4904" not in resolve_run
+    final_env = parsed["jobs"]["ship-gate"]["steps"][-1]["env"]
+    assert set(final_env) == {
+        "TESS_ROOT",
+        "TESS_JOB_CONTEXT_JSON",
+    }
+    assert final_env["TESS_JOB_CONTEXT_JSON"] == "${{ toJSON(job) }}"
+
+
+def test_authoritative_workflow_pins_actions_and_uses_only_base_owned_dependencies(engine):
+    """Reverse proof: mutable actions or candidate requirements cannot run the gate."""
+    parsed = yaml.safe_load(engine._GATE_CI_WORKFLOW)
+    steps = parsed["jobs"]["ship-gate"]["steps"]
+    checkout = next(step for step in steps if step.get("name") == "Checkout (full history)")
+    setup_python = next(step for step in steps if step.get("name") == "Set up Python")
+    extract = next(
+        step for step in steps
+        if step.get("name") == "Extract trusted gate dependencies (base ref only)"
+    )
+    install = next(
+        step for step in steps
+        if step.get("name") == "Install exact trusted gate dependencies"
+    )
+
+    assert checkout["uses"] == (
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+    )
+    assert setup_python["uses"] == (
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert setup_python["with"]["python-version"] == "3.13.7"
+    assert not any(
+        isinstance(step.get("uses"), str) and "@v" in step["uses"]
+        for step in steps
+    )
+
+    extract_run = extract["run"]
+    install_run = install["run"]
+    assert 'BASE="${{ steps.refs.outputs.base }}"' in extract_run
+    assert 'git show "${BASE}:${REQUIREMENTS_REL}" > "$TRUSTED_REQUIREMENTS"' in extract_run
+    assert "candidate-derived or unhashed dependencies" in extract_run
+    assert "--require-hashes" in install_run
+    assert "--only-binary=:all:" in install_run
+    assert "--no-deps" in install_run
+    assert "steps.trusted_dependencies.outputs.requirements_path" in install_run
+    assert ".tess/ci/ship-gate-requirements.txt" not in install_run
+    assert steps.index(extract) < steps.index(install)
+
+
+def test_external_required_workflow_boundary_is_explicit():
+    """Repo code cannot authorize a workflow that an attacker prevents from running."""
+    topology = (REPO_ROOT / "docs" / "GITHUB_MERGE_TOPOLOGY.md").read_text(
+        encoding="utf-8",
+    )
+    assert "A candidate branch cannot make its own check authoritative" in topology
+    assert "ruleset-required workflow" in topology
+    assert "repository_id" in topology
+    assert "exact reviewed commit SHA" in topology
+    assert "Tess-specific GitHub App" in topology
+    assert "generic GitHub Actions expected-source check is not" in topology
+    assert "Do not grant routine bypass" in topology
+    assert "Production remains **BLOCKED**" in topology
 
 
 def test_install_ci_workflow_idempotent(engine, tmp_path):
@@ -174,7 +249,7 @@ def test_install_ci_workflow_idempotent(engine, tmp_path):
 def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     """Phase 2b: an operator who already installed the v1 (workflow_dispatch-
     only) template gets actively UPGRADED to the current template
-    (push/pull_request added, v3's trusted-engine step included) on the next
+    (pull_request-only, v3's trusted-engine step included) on the next
     `install-hooks` run — not silently skipped forever, and not mistaken for
     an unrelated operator-authored workflow."""
     wf_dir = tmp_path / ".github" / "workflows"
@@ -195,14 +270,15 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v6" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
-    assert "push:" in upgraded
+    assert "push:" not in upgraded
     assert "pull_request:" in upgraded
+    assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
 
-def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
+def test_install_ci_workflow_upgrades_v2_to_v6(engine, tmp_path):
     """honesty-capstone-audit-2026-07-08 §3-c: an operator on the v2 template
     (CI auto-enforce, but still trusting the pushed tree's own engine) is
     actively upgraded to v3 (trusted base-ref engine extraction) on the next
@@ -230,9 +306,73 @@ def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v6" in upgraded
     assert "# tess-gate-ci v2" not in upgraded
+    assert "workflow_dispatch:" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
+
+
+def test_install_ci_workflow_upgrades_v3_and_removes_manual_authority(engine, tmp_path):
+    """A previously-current v3 install must not retain workflow_dispatch."""
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "tess-gate.yml").write_text(
+        "# tess-gate-ci v3\n"
+        "name: Tess OS ship-gate\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      base: {required: true}\n"
+        "      head: {required: true}\n"
+        "jobs:\n"
+        "  ship-gate:\n"
+        "    name: tessctl gate ci\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n",
+        encoding="utf-8",
+    )
+
+    engine._gate_install_ci_workflow(tmp_path)
+
+    upgraded = (wf_dir / "tess-gate.yml").read_text()
+    assert "# tess-gate-ci v6" in upgraded
+    assert "workflow_dispatch:" not in upgraded
+    assert "inputs.base" not in upgraded
+    assert "inputs.head" not in upgraded
+    parsed = yaml.safe_load(upgraded)
+    assert set(parsed[True]) == {"pull_request"}
+
+
+def test_committed_authoritative_workflow_matches_secure_template(engine):
+    """Reverse proof: checked-in workflow cannot drift back to manual refs."""
+    committed = (REPO_ROOT / ".github" / "workflows" / "tess-gate.yml").read_text()
+    assert committed == engine._GATE_CI_WORKFLOW
+    assert "workflow_dispatch:" not in committed
+    assert "inputs.base" not in committed
+    assert "inputs.head" not in committed
+
+
+def test_post_merge_audit_workflow_is_distinct_and_evidence_only(engine, tmp_path):
+    engine._gate_install_post_merge_workflow(tmp_path)
+    installed = (
+        tmp_path / ".github" / "workflows" / "tess-post-merge-audit.yml"
+    ).read_text()
+    committed = (
+        REPO_ROOT / ".github" / "workflows" / "tess-post-merge-audit.yml"
+    ).read_text()
+
+    assert installed == engine._GATE_POST_MERGE_WORKFLOW == committed
+    parsed = yaml.safe_load(installed)
+    assert set(parsed[True]) == {"push"}
+    assert parsed[True]["push"]["branches"] == ["main"]
+    assert set(parsed["jobs"]) == {"post-merge-audit"}
+    assert "evidence only" in parsed["jobs"]["post-merge-audit"]["name"]
+    final = parsed["jobs"]["post-merge-audit"]["steps"][-1]
+    assert "gate post-merge-audit" in final["run"]
+    assert "--json" in final["run"]
+    assert "gate ci" not in final["run"]
+    assert "steps.trusted_engine.outputs.engine_path" in final["run"]
+    assert "steps.trusted_dependencies.outputs.requirements_path" in installed
 
 
 def test_install_ci_workflow_does_not_clobber_operator_authored_workflow(engine, tmp_path):
@@ -333,7 +473,19 @@ def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
-    push0 = _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False)
+    # Seed the exact remote ref with an explicit test-only hook bypass so the
+    # normal push below has an immutable remote base to evaluate. First-push
+    # admission itself is covered separately and must fail closed with
+    # REMOTE_BASE_REQUIRED.
+    push0 = _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    )
     assert push0.returncode == 0, f"baseline push should succeed:\n{push0.stdout}\n{push0.stderr}"
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
@@ -350,11 +502,17 @@ def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_pa
     bare = tmp_path / "origin.git"
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
-    # Seed the same remote ref this test updates below.  Pushing the default
-    # local branch name here and then `HEAD:main` later would make the latter
-    # look like a brand-new ref (empty BASE), which correctly has no trusted
-    # verifier registration under the immutable-base contract.
-    assert _git(e2e_repo, "push", "-u", "origin", "HEAD:main", check=False).returncode == 0
+    # Bootstrap only the immutable remote base needed by this hook E2E. The
+    # tested push below still runs the hook normally.
+    assert _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    ).returncode == 0
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")
@@ -393,7 +551,18 @@ def test_e2e_git_push_no_verify_bypasses_local_hook_but_ci_would_still_catch_it(
     _git(e2e_repo, "init", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     base = _git(e2e_repo, "rev-parse", "HEAD").stdout.strip()
-    assert _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False).returncode == 0
+    # Seed the exact destination ref outside the hook under test. This
+    # preserves fail-closed first-push behavior while giving the later
+    # --no-verify push a real remote base.
+    assert _git(
+        e2e_repo,
+        "push",
+        "--no-verify",
+        "-u",
+        "origin",
+        "HEAD:main",
+        check=False,
+    ).returncode == 0
 
     (e2e_repo / "src" / "prod").mkdir(parents=True)
     (e2e_repo / "src" / "prod" / "app.py").write_text("print('prod')\n")

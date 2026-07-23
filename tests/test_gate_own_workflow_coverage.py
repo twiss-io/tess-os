@@ -48,6 +48,7 @@ from conftest import REPO_ROOT, sign_verdict_for_test
 CONTRACTS_SRC = REPO_ROOT / "core" / "contracts"
 REAL_POLICY_PATH = REPO_ROOT / "core" / "policy" / "policy.yaml"
 WORKFLOW_REL = ".github/workflows/tess-gate.yml"
+POST_MERGE_WORKFLOW_REL = ".github/workflows/tess-post-merge-audit.yml"
 
 HAS_GIT = shutil.which("git") is not None
 HAS_GPG = shutil.which("gpg") is not None
@@ -127,8 +128,9 @@ def test_glob_match_proves_the_gap_is_actually_closed(engine):
     (pre-fix) glob list did not — this is the concrete before/after proof
     that MEDIUM-1 closes a real gap, not a no-op."""
     rule = _load_real_rule(REAL_POLICY_PATH)
-    assert engine.path_matches_globs(WORKFLOW_REL, rule["globs"]) is True
-    assert engine.path_matches_globs(WORKFLOW_REL, _PRE_FIX_GLOBS) is False
+    for workflow_path in (WORKFLOW_REL, POST_MERGE_WORKFLOW_REL):
+        assert engine.path_matches_globs(workflow_path, rule["globs"]) is True
+        assert engine.path_matches_globs(workflow_path, _PRE_FIX_GLOBS) is False
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +149,9 @@ def real_workflow_root(tmp_path):
     dst = tmp_path / "os"
     shutil.copytree(REPO_ROOT, dst, ignore=_COPY_IGNORE)
     assert (dst / WORKFLOW_REL).exists(), "fixture must include the real workflow file"
+    assert (dst / POST_MERGE_WORKFLOW_REL).exists(), (
+        "fixture must include the real post-merge audit workflow"
+    )
 
     env = {
         **os.environ,

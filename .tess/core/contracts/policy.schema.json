@@ -13,6 +13,13 @@
           "minimum": 1,
           "description": "Policy schema revision the instance targets."
         },
+        "repository_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "description": "Stable host-independent owner/repository identity (for example twiss-io/tess-os). Hard-floor sign-off v2 compares the artifact's repository_id only with this field from the immutable event BASE policy, before signature verification. Candidate policy cannot introduce or replace its own repository identity for the revision it is trying to authorize. Optional for policies with no active hard-floor clearance workflow; when absent at BASE, every hard-floor sign-off fails closed."
+        },
         "rules": {
           "type": "array",
           "items": { "$ref": "#/$defs/PathRule" },
@@ -30,8 +37,16 @@
         },
         "signoff_keys": {
           "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/VerifierKeyEntry" },
-          "description": "honesty-capstone-audit-2026-07-08 §3-d FIX — the hard-floor SIGN-OFF ALLOWED-KEY SET: a registered map of operator-identity -> public key the gate trusts to authenticate a `.tess/gate/signoffs/<rule-id>.signoff.json` artifact's `signature` block. Reuses the EXACT SAME entry shape as `verifier_keys` (`VerifierKeyEntry`: fingerprint + public_key_file) and the same isolated-GNUPGHOME/C3-exact-fingerprint/C1-containment trust model `_gate_verify_verdict_signature` already applies — but keyed by the sign-off's `authorized_by` field, NOT by one of the six named AI verifiers: a hard-floor sign-off is guardrails.md Rule 18's human-operator escape valve, so `authorized_by` names an arbitrary project-specific human identity (e.g. an operator's name), not a verifier persona, and this map's keys are DELIBERATELY UNCONSTRAINED to any fixed enum (unlike `verifier_keys`, whose keys `_lint_policy` restricts to the six named verifiers). OPTIONAL at the schema level, but — same 'fail-closed by omission, not fail-open' posture as `verifier_keys` — with NO entry for a given `authorized_by` name, no sign-off can ever authenticate as that name, so it can never clear a hard floor. Before this fix, `.tess/gate/signoffs/**` was validated by JSON SHAPE ALONE (five non-empty fields, no signature, no authentication) — any agent able to write a file could forge a hard-floor clearance; this closes that gap the same way Phase 2b closed the equivalent gap for verdicts."
+          "additionalProperties": { "$ref": "#/$defs/SignoffKeyEntry" },
+          "description": "Hard-floor SIGN-OFF ALLOWED-KEY SET: operator identity -> public key. Sign-off schema v2 is revision-bound and short-lived: the immutable attestation HEAD must be a single-parent signoff-only commit; its signed artifact binds repository_id from immutable BASE, the exact event base, exact reviewed payload parent, effective rule/category, and every matched path/blob hash. Authoritative CI separately validates an exact two-parent evaluation merge whose second parent and tree are that attestation HEAD. V1/unversioned artifacts are rejected. Signature verification still uses immutable BASE key bytes, isolated GNUPGHOME, exact fingerprint matching, and current expiry/revocation status. OPTIONAL at schema level but fail-closed by omission."
+        },
+        "renderer_admission": {
+          "$ref": "#/$defs/RendererAdmission",
+          "description": "Optional immutable-BASE renderer admission inventory. Candidate policy and lock bytes are consistency evidence only; they never replace the inventory already committed at the event-derived BASE."
+        },
+        "ci_admission": {
+          "$ref": "#/$defs/CiAdmission",
+          "description": "Optional owner-configured authoritative-CI identity. When absent or malformed at immutable event BASE, GitHub Actions admission fails closed with CI_TRUST_BOOTSTRAP_REQUIRED. Only event=pull_request is admissible. Workflow source repository/path/ref/SHA are intentionally separate from the event target repository_id and must match both the external source-bound ruleset and GitHub plus job.workflow_* runtime identity."
         }
       },
       "required": ["version", "rules", "hard_floor_rules"],
@@ -47,15 +62,141 @@
         "fingerprint": {
           "type": "string",
           "pattern": "^[0-9A-F]{40}$",
-          "description": "The verifier's full 40-hex-char GPG key fingerprint (uppercase, no spaces) — the SAME 'C3 exact equality, no short-ID matching' discipline `framework.trusted_key_fingerprint` already applies to release-key pinning (`.tess/bin/tessctl`'s `_FULL_FP_RE`). A signature made by any OTHER key — including a same-named but different key, or a key whose armored export was swapped in `public_key_file` without updating this fingerprint — is rejected, not silently accepted by proximity."
+          "description": "The verifier certificate's full 40-hex-char PRIMARY GPG fingerprint (uppercase, no spaces). The gate derives the actual primary from the immutable BASE public certificate and requires exact equality. A signature may use a signing subkey only when GPG's VALIDSIG binds it to this exact primary. A same-named different primary, declared signing-subkey fingerprint, filtered-export alias, or swapped armored export is rejected."
         },
         "public_key_file": {
           "type": "string",
           "minLength": 1,
+          "pattern": "^\\.tess/keys/verifiers/.+$",
+          "x-tess-sensitive-diagnostic": "verifier-public-key-path",
           "description": "Repo-relative path to this verifier's ASCII-armored PUBLIC key (convention: `.tess/keys/verifiers/<name-lowercase>.asc`, mirroring `.tess/keys/twiss-release-key.asc`'s existing bundled-public-key pattern). During a ship-gate run, tessctl imports the exact regular public-key blob recorded in the immutable BASE Git tree that supplied the established registration — never the candidate checkout or ambient/system keyring — into an ISOLATED, throwaway GNUPGHOME for every verification. A missing, traversal-bearing, symlink, directory, or ambiguous BASE-tree entry fails closed; CI needs no manual `gpg --import` bootstrap step. Standalone diagnostic commands have no push BASE and are not ship-gate authorization."
         }
       },
       "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
+    "SignoffKeyEntry": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{40}$",
+          "description": "The operator sign-off certificate's full 40-hex-character PRIMARY GPG fingerprint (uppercase, no spaces). The immutable certificate must derive this exact primary; a signing subkey is accepted only when VALIDSIG binds it to that primary. Names, short key IDs, filtered exports, and verifier-role aliases never establish authority."
+        },
+        "public_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\.tess/keys/signoffs/.+$",
+          "x-tess-sensitive-diagnostic": "signoff-public-key-path",
+          "description": "Repo-relative path below the dedicated `.tess/keys/signoffs/` namespace to this operator's ASCII-armored PUBLIC key. Ship admission reads only the exact regular blob from immutable BASE, never candidate checkout bytes, an ambient keyring, or the verifier-key namespace."
+        }
+      },
+      "required": ["fingerprint", "public_key_file"],
+      "additionalProperties": false
+    },
+    "RepoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "RepoRelativeGlob": {
+      "allOf": [
+        { "$ref": "#/$defs/RepoRelativePath" },
+        { "not": { "pattern": "[?\\[]" } }
+      ]
+    },
+    "CiAdmission": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "event": {
+          "type": "string",
+          "const": "pull_request",
+          "description": "The only authoritative admission event. Push, pull_request_target, merge_group, workflow_dispatch, and manual contexts fail closed; landed pushes are handled separately by the non-authoritative post-merge audit."
+        },
+        "workflow_source_repository": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        },
+        "workflow_source_path": {
+          "type": "string",
+          "const": ".github/workflows/tess-gate.yml"
+        },
+        "workflow_source_ref": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 255,
+          "pattern": "^refs/(heads|tags)/(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)(?!.*@$)[A-Za-z0-9._/-]+$"
+        },
+        "workflow_source_sha": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$"
+        }
+      },
+      "required": ["version", "event", "workflow_source_repository", "workflow_source_path", "workflow_source_ref", "workflow_source_sha"],
+      "additionalProperties": false
+    },
+    "RendererAdmission": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "lock_file": { "$ref": "#/$defs/RepoRelativePath" },
+        "registry_file": { "$ref": "#/$defs/RepoRelativePath" },
+        "target_config_files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RepoRelativePath" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "family_globs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RepoRelativeGlob" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "mappings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RendererMapping" },
+          "minItems": 1
+        }
+      },
+      "required": ["version", "rule_id", "lock_file", "registry_file", "target_config_files", "family_globs", "mappings"],
+      "additionalProperties": false
+    },
+    "RendererMapping": {
+      "type": "object",
+      "properties": {
+        "input_glob": { "$ref": "#/$defs/RepoRelativeGlob" },
+        "lock_live_glob": {
+          "anyOf": [
+            { "$ref": "#/$defs/RepoRelativeGlob" },
+            { "type": "null" }
+          ]
+        },
+        "lock_name_binding": { "type": "boolean" },
+        "canonical_status": { "const": "core-managed" },
+        "canonical_tier": { "type": "string", "enum": ["normal", "security"] },
+        "canonical_render": { "type": ["string", "null"], "enum": ["fragment", "rendered", "template", null] },
+        "projections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RendererProjection" },
+          "minItems": 1
+        },
+        "min_matches": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["input_glob", "lock_live_glob", "canonical_status", "canonical_tier", "canonical_render", "projections", "min_matches"],
+      "additionalProperties": false
+    },
+    "RendererProjection": {
+      "type": "object",
+      "properties": {
+        "output_glob": { "$ref": "#/$defs/RepoRelativeGlob" },
+        "mode": { "type": "string", "enum": ["core-render", "engine-render", "source-copy"] }
+      },
+      "required": ["output_glob", "mode"],
       "additionalProperties": false
     },
     "PathRule": {

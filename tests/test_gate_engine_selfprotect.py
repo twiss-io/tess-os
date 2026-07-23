@@ -62,11 +62,18 @@ _COPY_IGNORE = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycac
 _NEUTER_MARKER = "def _gate_run_ship_check("
 _NEUTER_INJECTION = (
     "def _gate_run_ship_check(\n"
-    "    root, changed_paths, verdict_dirs=None, head_shas=None, base_shas=None,\n"
+    # `**_kwargs` (not a hand-copied positional list) tolerates whatever
+    # keyword arguments the real callers currently pass (e.g. `gate ci`'s
+    # `emit_receipts=True` — the emit_receipts gate-overlap fix) without
+    # this fixture needing to track this function's own signature drift —
+    # the point of this stub is "an attacker's always-pass replacement
+    # still gets CALLED the same way the real one is," not an exact
+    # parameter-list replica.
+    "    *_args, **_kwargs,\n"
     "):\n"
     "    # SAME-PUSH ENGINE TAMPER (honesty-capstone-audit-2026-07-08 §3-c fixture):\n"
     "    # an attacker-inserted early return that self-attests clean, unconditionally.\n"
-    "    return {\"blocked\": False, \"reasons\": [], \"changed_paths\": changed_paths}\n"
+    "    return {\"blocked\": False, \"reasons\": [], \"changed_paths\": _args[1] if len(_args) > 1 else []}\n"
     "\n"
     "\n"
     "def _gate_run_ship_check_ORIGINAL_UNREACHABLE(\n"
@@ -133,7 +140,7 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
     """Parses and EXECUTES the real, COMMITTED `.github/workflows/
     tess-gate.yml`'s own "Extract trusted gate engine" + final "tessctl
     gate ci" run: blocks — substituting the two GH Actions expressions this
-    harness needs (steps.refs.outputs.{base,head}, steps.trusted_engine.
+    harness needs (steps.refs.outputs.{base,evaluation}, steps.trusted_engine.
     outputs.engine_path) with literal values / a real $GITHUB_OUTPUT file.
     This proves the ACTUAL committed workflow script (not a
     reimplementation) closes the gap — if the fix is ever reverted (the
@@ -169,7 +176,11 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
         ci_script
         .replace("${{ steps.trusted_engine.outputs.engine_path }}", engine_path)
         .replace("${{ steps.refs.outputs.base }}", base)
-        .replace("${{ steps.refs.outputs.head }}", head)
+        .replace("${{ steps.refs.outputs.evaluation }}", head)
+    )
+    assert "${{" not in ci_script2, (
+        "the trusted gate command must substitute every GitHub Actions "
+        "expression before its shell is executed"
     )
     env2 = {**os.environ, "TESS_ROOT": str(root)}
     r2 = subprocess.run(["bash", "-c", ci_script2], cwd=str(root), env=env2, capture_output=True, text=True)
@@ -215,6 +226,8 @@ def test_same_push_engine_tamper_slips_past_naive_execution_but_not_the_real_wor
     # still blocks its candidate-tree replacement, but does not disclose the
     # protected path through the CI log.
     assert "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found" in trusted_out
+    assert "bad substitution" not in trusted_out
+    assert "${{" not in trusted_out
     assert ".tess/bin/tessctl" not in trusted_out
 
 

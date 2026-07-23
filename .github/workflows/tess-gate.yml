@@ -1,13 +1,15 @@
-# tess-gate-ci v3
+# tess-gate-ci v6
 # Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
 # gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
 # harness-independent backstop that still catches `git push --no-verify`.
 #
 # Phase 2b (CI auto-enforce, closes the Fable Phase-2 residual "the CI
 # workflow is workflow_dispatch-only — advisory, not auto-enforcing"):
-# triggers automatically on `push` to protected branches and on
-# `pull_request`, IN ADDITION TO `workflow_dispatch` (kept for ad hoc/manual
-# re-checks of an arbitrary ref range). This makes the ship-gate BLOCK a
+# triggers automatically on `pull_request` to the protected branch. The
+# authoritative workflow deliberately has NO push, pull_request_target,
+# merge_group, or
+# `workflow_dispatch`: caller-selected refs must never create the required
+# `tessctl gate ci` check context. This makes the ship-gate BLOCK a
 # failing PR/merge automatically rather than requiring someone to remember
 # to run it. A CI check alone is only ADVISORY until it is also configured
 # as a required status check in branch protection — see
@@ -36,30 +38,42 @@
 # FAILS CLOSED (refuses) rather than falling back to trusting the pushed
 # tree's own engine — see the "Extract trusted gate engine" step below.
 #
+# v4 EVENT-PROVENANCE FIX: BASE/HEAD come only from immutable
+# `github.event` fields. The trusted BASE engine independently compares its
+# CLI range with GITHUB_EVENT_PATH before granting authoritative renderer
+# admission. Manual/local calls are diagnostic-only; workflow_dispatch is
+# rejected. Push and every other non-pull_request event fail closed before
+# event-range evaluation; landed push inspection belongs to the audit job.
+#
+# v5 MERGE-PREVIEW TOPOLOGY: authoritative admission always evaluates an
+# exact two-parent merge wrapper. For pull requests, BASE is
+# `pull_request.base.sha`, the attestation HEAD is `pull_request.head.sha`,
+# and evaluation HEAD is `GITHUB_SHA` on exactly `refs/pull/<n>/merge`.
+# Ordered parents must be exactly
+# [BASE, attestation HEAD], and both commits must have the same tree. Squash,
+# rebase, fast-forward, octopus, reordered/divergent merges, merge queues,
+# arbitrary refs/tags, and conflict-resolution bytes fail closed. This
+# requires merge-commit-only + strict-up-to-date repository settings; see
+# docs/GITHUB_MERGE_TOPOLOGY.md.
+#
+# v6 PR-ONLY ADMISSION: only a source-bound pull_request required workflow
+# can authorize. The engine validates both GITHUB_WORKFLOW_REF/SHA and the
+# protected job.workflow_ref/SHA/repository/file_path contexts forwarded
+# below. A separate tess-post-merge-audit workflow inspects landed main
+# pushes as evidence only and always reports authoritative:false and
+# prevented_merge:false.
+#
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
 # covering, VALIDLY-SIGNED APPROVE verdict yet exists for the paths they
 # match, your FIRST push/PR touching those paths WILL be blocked — this is
 # the gate working as designed (fail-closed), not a bug. If you need a
 # grace period while you write your project's initial covering verdicts,
-# temporarily remove the `push`/`pull_request` triggers below (leave
-# `workflow_dispatch`) and re-add them once you have at least one real,
-# signed covering verdict per rule.
+# do so before installing this required check; never add caller-selected
+# inputs to the authoritative job.
 name: Tess OS ship-gate
 
 on:
-  workflow_dispatch:
-    inputs:
-      base:
-        description: "Base ref to diff from"
-        required: true
-        default: "origin/main"
-      head:
-        description: "Head ref to diff to"
-        required: true
-        default: "HEAD"
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -72,37 +86,83 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: "3.12"
+          python-version: "3.13.7"
 
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip pyyaml
-
-      - name: Resolve base/head for this trigger
+      - name: Resolve immutable admission objects for this trigger
         id: refs
         run: |
-          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BASE="${{ inputs.base }}"
-            HEAD="${{ inputs.head }}"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-            HEAD="${{ github.event.after }}"
-            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-              BASE="$EMPTY_TREE"
-            fi
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "::error::CI_PR_EVENT_REQUIRED: authoritative ship-gate accepts only pull_request events."
+            exit 1
           fi
-          echo "base=$BASE" >> "$GITHUB_OUTPUT"
-          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          BASE="${{ github.event.pull_request.base.sha }}"
+          ATTESTATION="${{ github.event.pull_request.head.sha }}"
+          EVALUATION="$GITHUB_SHA"
+          PR_NUMBER="${{ github.event.number }}"
+          if [ "$GITHUB_REF" != "refs/pull/${PR_NUMBER}/merge" ]; then
+            echo "::error::CI_EVENT_REF_MISMATCH: pull_request gate must run on its exact refs/pull/<n>/merge ref."
+            exit 1
+          fi
+          {
+            echo "base=$BASE"
+            echo "attestation=$ATTESTATION"
+            echo "evaluation=$EVALUATION"
+            echo "pr_number=$PR_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch and pin exact event objects
+        id: objects
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.refs.outputs.base }}"
+          ATTESTATION="${{ steps.refs.outputs.attestation }}"
+          EVALUATION="${{ steps.refs.outputs.evaluation }}"
+          PR_NUMBER="${{ steps.refs.outputs.pr_number }}"
+          git fetch --no-tags --force origin \
+            "$BASE" \
+            "+refs/pull/${PR_NUMBER}/head:refs/tess/admission-head" \
+            "+refs/pull/${PR_NUMBER}/merge:refs/tess/admission-merge"
+          test "$(git rev-parse refs/tess/admission-head)" = "$ATTESTATION"
+          test "$(git rev-parse refs/tess/admission-merge)" = "$EVALUATION"
+          git cat-file -e "${BASE}^{commit}"
+          git cat-file -e "${ATTESTATION}^{commit}"
+          git cat-file -e "${EVALUATION}^{commit}"
+          echo "attestation=$ATTESTATION" >> "$GITHUB_OUTPUT"
+
+      - name: Extract trusted gate dependencies (base ref only)
+        id: trusted_dependencies
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.refs.outputs.base }}"
+          REQUIREMENTS_REL=".tess/ci/ship-gate-requirements.txt"
+          TRUSTED_DIR="$(mktemp -d)"
+          TRUSTED_REQUIREMENTS="$TRUSTED_DIR/ship-gate-requirements.txt"
+          if git cat-file -e "${BASE}:${REQUIREMENTS_REL}" 2>/dev/null; then
+            git show "${BASE}:${REQUIREMENTS_REL}" > "$TRUSTED_REQUIREMENTS"
+            chmod 0444 "$TRUSTED_REQUIREMENTS"
+            echo "requirements_path=$TRUSTED_REQUIREMENTS" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::TRUST_BOOTSTRAP_REQUIRED: immutable BASE has no pinned ship-gate dependency requirements. Refusing candidate-derived or unhashed dependencies; adopt the reviewed bootstrap stack out of band first."
+            exit 1
+          fi
+
+      - name: Install exact trusted gate dependencies
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement "${{ steps.trusted_dependencies.outputs.requirements_path }}"
 
       - name: Extract trusted gate engine (base ref only — never the pushed tree)
         id: trusted_engine
@@ -122,7 +182,8 @@ jobs:
       - name: tessctl gate ci (trusted base-ref engine; untrusted pushed tree)
         env:
           TESS_ROOT: ${{ github.workspace }}
+          TESS_JOB_CONTEXT_JSON: ${{ toJSON(job) }}
         run: |
           python3 "${{ steps.trusted_engine.outputs.engine_path }}" gate ci \
             --base "${{ steps.refs.outputs.base }}" \
-            --head "${{ steps.refs.outputs.head }}"
+            --head "${{ steps.refs.outputs.evaluation }}"

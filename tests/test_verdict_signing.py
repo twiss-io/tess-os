@@ -659,21 +659,28 @@ def test_public_key_file_escaping_root_is_rejected_end_to_end(project, verifier_
     assert r.returncode == 1, r.stdout + r.stderr
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
-    # The literal '../' in the registered path is caught by the FIRST
-    # containment check (absolute-or-'..'-component rejection) — the
-    # separate "resolves outside the Tess root" message is reserved for a
-    # relative path with no literal '..' that still escapes root via a
-    # symlink (see test_verify_rejects_symlink_escape_public_key_file below).
-    assert payload["reasons"] == [
-        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
-    ]
+    # The unauthorized path remains denied, but externally consumed gate
+    # output exposes only a stable engine-selected category.  It must never
+    # reflect the attacker-controlled path (which can contain host details).
+    assert any(
+        engine.GATE_KEY_PATH_CONTAINMENT_CODE in reason
+        for reason in payload["reasons"]
+    )
+    assert all(rel_escape not in reason for reason in payload["reasons"])
+    assert rel_escape not in r.stdout
+    assert rel_escape not in r.stderr
 
 
 def test_lint_policy_rejects_unrecognized_verifier_key_name(engine):
     instance = {
         "policy": {
             "version": 1, "rules": [], "hard_floor_rules": [],
-            "verifier_keys": {"NotARealVerifier": {"fingerprint": "A" * 40, "public_key_file": "x.asc"}},
+            "verifier_keys": {
+                "NotARealVerifier": {
+                    "fingerprint": "A" * 40,
+                    "public_key_file": ".tess/keys/verifiers/not-a-real-verifier.asc",
+                }
+            },
         }
     }
     errors = engine._lint_policy(instance)
@@ -684,7 +691,12 @@ def test_lint_policy_accepts_real_verifier_key_names(engine):
     instance = {
         "policy": {
             "version": 1, "rules": [], "hard_floor_rules": [],
-            "verifier_keys": {"Reid": {"fingerprint": "A" * 40, "public_key_file": "x.asc"}},
+            "verifier_keys": {
+                "Reid": {
+                    "fingerprint": "A" * 40,
+                    "public_key_file": ".tess/keys/verifiers/reid.asc",
+                }
+            },
         }
     }
     assert engine._lint_policy(instance) == []
@@ -998,3 +1010,18 @@ def test_gpg_signing_key_validity_reason_none_for_goodsig(engine):
         "ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
     )
     assert engine._gpg_signing_key_validity_reason(raw) is None
+
+
+def test_validsig_primary_parser_does_not_treat_signing_subkey_as_authority(engine):
+    signing_subkey = "1" * 40
+    certificate_primary = "2" * 40
+    raw = (
+        f"[GNUPG:] VALIDSIG {signing_subkey} 2026-01-01 1700000000 0 "
+        f"4 0 22 10 00 {certificate_primary}\n"
+    )
+
+    assert engine._parse_gpg_fingerprint(raw) == signing_subkey
+    assert (
+        engine._parse_gpg_signature_primary_fingerprint(raw)
+        == certificate_primary
+    )

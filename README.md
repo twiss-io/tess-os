@@ -46,15 +46,20 @@ Two production prerequisites remain unresolved:
 
 1. The first verifier/sign-off trust anchor needs an external, human-owned
    custody design. Candidate repository content must never establish the
-   authority that approves itself.
-2. GitHub must make the real gate and CI results required checks before a gate
-   can protect a branch. That enforcement is not configured today.
+   authority that approves itself. Verifier review and human hard-floor
+   sign-off require two distinct primary keys even for a solo owner; owner
+   approval alone is not independent review.
+2. GitHub must make the real gate and CI results source-bound required checks,
+   allow merge commits only, require the branch to be current, and disable
+   incompatible squash/rebase/linear-history/merge-queue paths before the
+   gate can protect a branch. That enforcement is not configured today.
 
 Until both are complete, a passing local command or GitHub Action is useful
-engineering evidence, but not a production admission control. The committed
-`gate-arena` scorecard on `main` is **12/12**; the multi-push policy-reduction
-case A14 remains open. That score is disclosed evidence, not a production
-readiness certificate.
+engineering evidence, but not a production admission control. The historical
+GPG-backed `gate-arena` scorecard is **12/12**. A separate no-key A13
+path-ingress scorecard records **49/49** regression tests; the two numbers are
+not added together. The multi-push policy-reduction case A14 remains open.
+These scores are disclosed evidence, not a production-readiness certificate.
 
 Do **not** generate, register, or sign a verifier or sign-off key to clear a
 gate. Key custody is a designated human ceremony owned by Xavier. See
@@ -77,16 +82,49 @@ gate. Key custody is a designated human ceremony owned by Xavier. See
 ```text
 repository change
   -> policy identifies governed paths
-  -> review evidence is checked against the immutable base/head artifacts
+  -> review evidence is checked against immutable BASE + attestation HEAD
+  -> exact two-parent evaluation merge has the attestation HEAD's tree
   -> independent required CI check reports pass or block
   -> protected VCS rule admits or rejects delivery
 ```
 
-The gate only has its intended meaning when every step is in place. Current
-`main` also has unresolved tree-consistency and type-swap hardening from the
-adversarial corpus, so this diagram is a target delivery model rather than a
-claim that every trust input is already bound correctly. A model, adapter, MCP
-server, or local hook does not replace independent review or VCS enforcement.
+The gate only has its intended meaning when every step is in place. A model,
+adapter, MCP server, or local hook does not replace independent review or VCS
+enforcement.
+
+For ship-gate authority, Tess reads Git's NUL-delimited raw diff directly. It
+keeps each path's status, old/new mode, and full SHA-1 or SHA-256 object IDs
+through policy classification; that SHA-256 statement is about raw Git ingress,
+not approval support. The current `verdict.artifact_hashes` schema accepts only
+40-hex SHA-1 blob IDs, so a governed SHA-256 blob cannot receive covering
+approval and fails closed. Rename detection is disabled so a rename-away cannot
+hide the governed source deletion. Malformed, unmerged/unknown, non-UTF-8, or
+non-NFC path records fail closed.
+
+A signed blob hash can authorize only a surviving regular-file blob. For a
+governed path, a non-executable regular addition (`100644`) and same-mode regular
+content modifications may proceed to normal review. A new executable (`100755`)
+is unavailable until signed evidence binds Git status/mode. Deletions,
+renames-away, mode/type transitions, symlinks, and gitlinks/submodules stop first
+with `GOVERNED_TRANSITION_UNSUPPORTED`; a verdict or sign-off is not consulted
+as a workaround for those transitions. The local pre-commit diagnostic reads
+classification from immutable `HEAD`, never a staged candidate policy, and
+universally rejects new symlinks/gitlinks; pre-push/CI remains the ship-gate.
+
+Pre-push stdin also rejects ref deletions because blob/path review evidence does
+not bind ref-topology deletion. This does not adopt a multi-ref or multi-push
+policy: A14 remains an open Xavier-owned policy/topology decision.
+
+Hard-floor operator sign-offs use a reviewed payload followed by one
+single-parent attestation commit containing only the full required sign-off
+file set. Authoritative CI then evaluates a distinct two-parent merge wrapper
+whose tree equals that attestation head. Schema v2 binds immutable BASE
+repository identity, the payload parent, effective policy rule, exact governed
+path/blob manifest, and a short validity window before checking the BASE-held
+signing key. This prevents a valid signature from being replayed onto another
+repository, revision, rule, or artifact. See
+[Gate operation and custody](docs/GATE_QUICKSTART.md#hard-floor-sign-off-v2-exact-revision-binding)
+and [GitHub merge topology](docs/GITHUB_MERGE_TOPOLOGY.md).
 
 ### Safe evaluation
 
@@ -104,7 +142,13 @@ cd tess-os
 
 Do not use this sequence to activate a production branch. In particular, do
 not run key-generation, key-registration, or verdict-signing commands as a
-bootstrap shortcut.
+bootstrap shortcut. A local `gate ci` invocation is explicitly reported as
+diagnostic-only and cannot claim the authoritative GitHub required-check
+context. Only the source-bound pull-request required workflow can create
+authoritative admission, and it has no push, `pull_request_target`,
+`merge_group`, or caller-selected `workflow_dispatch` trigger. A separate
+main-push workflow runs `gate post-merge-audit` after landing and always reports
+`authoritative: false` and `prevented_merge: false`.
 
 ## npm and source status
 

@@ -40,11 +40,13 @@
 # verdict must now ALSO carry a `signature` (core/contracts/verdict.schema.json)
 # that verifies against the SAME-named entry in `verifier_keys` below — see
 # docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md for the fail-closed trust boundary.
-# `.tess/keys/verifiers/**` (where each verifier's bundled PUBLIC key lives) is
-# added to tess-os-security-tier-doctrine's globs below: tampering with the key
-# registry is exactly as consequential as tampering with policy.yaml itself,
-# and requires its own covering Reid/Cyra verdict — closing the "who guards the
-# key registry" loop.
+# `.tess/keys/verifiers/**` and `.tess/keys/signoffs/**` are separate,
+# non-interchangeable public-key namespaces. Both are added to
+# tess-os-security-tier-doctrine's globs below: tampering with either registry
+# is exactly as consequential as tampering with policy.yaml itself, and
+# requires its own covering Reid/Cyra verdict — closing the "who guards the
+# key registry" loop. Policy lint and signature verification also reject a
+# registration that redirects either role outside its dedicated namespace.
 #
 # MEDIUM-1 FIX (Fable Phase-2b follow-up review — the universal GitHub
 # self-gating trap): `.github/workflows/**` is now ALSO in
@@ -58,6 +60,9 @@
 # `prod_touching` and needs its own covering, signed Reid/Cyra verdict —
 # closing the "who guards the gate's own trigger" loop the same way
 # `.tess/keys/verifiers/**` already closed "who guards the key registry."
+# The authoritative workflow's hashed runtime requirements below .tess/ci/
+# are governed by the same rule and read only from immutable event BASE.
+# Candidate dependency pins or hashes never evaluate their own revision.
 # See conductor/verdict-signing.md's "Defense-in-depth" section for the
 # complementary, repo-admin-side CODEOWNERS/ruleset recommendation this does
 # NOT replace (a signed verdict is a content control; CODEOWNERS/rulesets are
@@ -95,6 +100,131 @@
 #       artifact AND signed by a registered operator key.
 policy:
   version: 1
+  # Stable sign-off scope identity. The ship gate trusts only this value from
+  # immutable BASE policy; a candidate cannot rename itself and replay a
+  # clearance issued for another repository.
+  repository_id: twiss-io/tess-os
+
+  # Authoritative GitHub CI is intentionally UNCONFIGURED in the shipped
+  # policy. Production admission therefore returns CI_TRUST_BOOTSTRAP_REQUIRED
+  # even if a same-named check is green. Xavier must first pin a separately
+  # reviewed workflow source and apply a matching no-bypass required-workflow
+  # ruleset; the candidate change introducing that trust anchor cannot approve
+  # itself. Required shape (values deliberately not fabricated here):
+  # ci_admission:
+  #   version: 1
+  #   event: pull_request
+  #   workflow_source_repository: owner/trusted-workflows
+  #   workflow_source_path: .github/workflows/tess-gate.yml
+  #   workflow_source_ref: refs/tags/immutable-reviewed-release
+  #   workflow_source_sha: <full-40-or-64-hex-source-commit>
+
+  # Immutable renderer admission inventory. Bootstrap truth: this inventory
+  # is NOT authority for the PR that first introduces it because that PR's
+  # BASE does not contain it. The first adoption remains owner-controlled and
+  # NO-MERGE. Once committed, only this BASE copy — never candidate policy or
+  # candidate lock rows — defines renderer families, canonical lock mappings,
+  # and generated outputs for the next admission decision.
+  renderer_admission:
+    version: 1
+    rule_id: tess-os-renderer-base-admission
+    lock_file: .tess/tess.lock
+    registry_file: .tess/bin/tessctl
+    target_config_files:
+      - tess.manifest.json
+    family_globs:
+      - .tess/core/templates/CLAUDE.md.tpl
+      - .tess/core/templates/claude-md/**
+      - .tess/core/settings-core.json
+      - .tess/core/conductor/identity.md
+      - .tess/core/conductor/personality.md
+      - .tess/core/templates/client/_template/CLAUDE.md
+      - .tess/core/templates/agents-md/**
+      - .tess/core/commands/**
+    mappings:
+      - input_glob: .tess/core/templates/CLAUDE.md.tpl
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: template
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/claude-md/*.md
+        lock_live_glob: CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: fragment
+        projections:
+          - {output_glob: CLAUDE.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/settings-core.json
+        lock_live_glob: .claude/settings.json
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: rendered
+        projections:
+          - {output_glob: .claude/settings.json, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/identity.md
+        lock_live_glob: conductor/identity.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/identity.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/conductor/personality.md
+        lock_live_glob: conductor/personality.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: conductor/personality.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/client/_template/CLAUDE.md
+        lock_live_glob: clients/_template/CLAUDE.md
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: clients/_template/CLAUDE.md, mode: core-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/AGENTS.md.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/templates/agents-md/*.md
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: AGENTS.md, mode: engine-render}
+        min_matches: 3
+      - input_glob: .tess/core/templates/agents-md/codex-config.toml.tpl
+        lock_live_glob: null
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .codex/config.toml, mode: engine-render}
+        min_matches: 1
+      - input_glob: .tess/core/commands/*.md
+        lock_live_glob: .claude/commands/*.md
+        lock_name_binding: true
+        canonical_status: core-managed
+        canonical_tier: normal
+        canonical_render: null
+        projections:
+          - {output_glob: .claude/commands/*.md, mode: source-copy}
+          - {output_glob: .codex/prompts/*.md, mode: engine-render}
+          - {output_glob: prompts/*.md, mode: engine-render}
+        min_matches: 1
 
   rules:
     - id: tess-os-security-tier-doctrine
@@ -106,7 +236,10 @@ policy:
         and verification-routing machine-checkable (core/contracts/brief.schema.json,
         core/contracts/verdict.schema.json), and the gate's own policy surface
         (core/contracts/policy.schema.json, core/policy/**, the verifier
-        public-key registry at .tess/keys/verifiers/** — Phase 2b — and the
+        public-key registry at .tess/keys/verifiers/** and the
+        distinct human sign-off public-key registry at
+        .tess/keys/signoffs/** — Phase 2b — plus the immutable-BASE CI
+        dependency lock at .tess/ci/**, and the
         gate's OWN CI workflow at .github/workflows/** — MEDIUM-1, closing the
         self-gating trap where a PR could keep the required check name while
         neutering its step), PLUS — honesty-capstone-audit-2026-07-08 §3-c/
@@ -127,10 +260,45 @@ policy:
         - core/contracts/policy.schema.json
         - core/policy/**
         - .tess/keys/verifiers/**
+        - .tess/keys/signoffs/**
+        - .tess/ci/**
         - .github/workflows/**
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+      classification: [prod_touching]
+      require_verdict: true
+      allowed_verifiers: [Reid, Cyra]
+
+    - id: tess-os-renderer-base-admission
+      description: >-
+        Immutable-BASE renderer admission surface. The committed BASE policy
+        inventory, BASE lock rows, BASE engine registry, and BASE source blobs
+        define required renderer ownership. Candidate policy/lock bytes may
+        prove a coherent upgrade but cannot delete, remap, downgrade, or
+        re-hash that authority to approve their own generated doctrine.
+      globs:
+        - .tess/tess.lock
+        - .tess/bin/tessctl
+        - tess.manifest.json
+        - .tess/core/templates/CLAUDE.md.tpl
+        - .tess/core/templates/claude-md/**
+        - .tess/core/settings-core.json
+        - .tess/core/conductor/identity.md
+        - .tess/core/conductor/personality.md
+        - .tess/core/templates/client/_template/CLAUDE.md
+        - .tess/core/templates/agents-md/**
+        - .tess/core/commands/**
+        - CLAUDE.md
+        - .claude/settings.json
+        - conductor/identity.md
+        - conductor/personality.md
+        - clients/_template/CLAUDE.md
+        - AGENTS.md
+        - .codex/config.toml
+        - .claude/commands/*.md
+        - .codex/prompts/*.md
+        - prompts/*.md
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
@@ -196,6 +364,22 @@ policy:
   #   .tess/gate/signoffs/ edit] as tamper and fails closed": writing a
   #   sign-off CLEARED the floor, it did not trip anything.
   #
+  #   Schema v2 also closes cross-revision replay. A valid sign-off binds
+  #   this repository_id from immutable BASE, the exact event BASE, the
+  #   exact reviewed payload parent, the effective rule/category, and every
+  #   matched path's immutable Git blob id. The attestation HEAD must be a
+  #   single-parent commit changing exactly the complete required sign-off
+  #   path set and nothing else; authoritative CI separately requires an exact
+  #   two-parent evaluation merge whose second parent and tree are that
+  #   attestation HEAD. V1/unversioned artifacts, merge/multi-head
+  #   events, later commits, extra paths, symlinks/type swaps, expired
+  #   attestations, and TTLs over 24 hours all fail closed before GPG.
+  #   After every BASE-derived required sign-off validates, only those exact
+  #   canonical files are removed from ordinary verdict matching. This
+  #   narrowly breaks the payload-SHA/signoff-blob/verdict-hash cycle; it is
+  #   atomic and never extends to a glob, directory, candidate-added rule,
+  #   candidate key, or extra signoff-looking path.
+  #
   #   Until a real entry exists here for a given `authorized_by` name, NO
   #   signature can ever verify for that name (there is no key to check it
   #   against), so a sign-off claiming that name can NEVER clear a hard floor
@@ -228,11 +412,11 @@ policy:
         satisfiable by a verifier's verdict alone — `tessctl gate` requires an
         explicit human sign-off artifact at
         .tess/gate/signoffs/<id>.signoff.json regardless of any verdict.
-        honesty-capstone-audit-2026-07-08 §3-d FIX: that sign-off artifact
-        must now ALSO carry a signature that verifies against a registered
-        key in signoff_keys below — an unsigned/hand-authored/forged
-        sign-off can no longer clear this floor (see signoff_keys' own
-        custody-boundary comment).
+        The artifact must use schema v2, bind the exact immutable payload
+        parent and full matched path/blob set, remain within its short
+        validity window, and carry a signature verified against immutable
+        BASE signoff_keys bytes. Unsigned, v1, stale, replayed, expired, or
+        candidate-key-authenticated sign-offs cannot clear this floor.
       globs:
         - "**/*.env"
         - "**/*.env.*"

@@ -1243,15 +1243,7 @@ def test_run_check_artifact_refuses_path_escaping_missions_root(engine, tmp_path
 def test_run_check_artifact_rejects_return_manifest_whose_declared_artifact_is_cwd_relative_only(
     engine, rroot, monkeypatch
 ):
-    """MEDIUM-2 FIX proof: `_lint_return_manifest`'s own existence check
-    (`Path(path).exists()`) is CWD-relative, not root-relative. `tessctl
-    run`'s OWN artifact check must not inherit that blind spot: a
-    return-manifest declaring an `artifacts[].path` that happens to exist
-    relative to the tessctl PROCESS's CWD, but does NOT exist under `root`,
-    must still be rejected. WITHOUT the fix, running from a CWD that
-    happens to contain a same-named file lets a non-existent-under-root
-    artifact pass (H4's own 'fabricated artifact' guarantee silently
-    defeated)."""
+    """The shared artifact boundary resolves evidence from root, never CWD."""
     mission_id = _new_mission(engine, rroot)
 
     # A decoy directory, SIBLING to root, that becomes the tessctl
@@ -1287,6 +1279,83 @@ def test_run_check_artifact_rejects_return_manifest_whose_declared_artifact_is_c
         "relative to CWD (not root) was accepted"
     )
     assert any("root" in v.lower() for v in violations), violations
+
+
+def test_run_fake_no_verifier_halts_for_external_return_manifest_artifact(engine, rroot, monkeypatch):
+    """A fake internal task cannot complete by citing `/etc/hosts` as output."""
+    monkeypatch.chdir(rroot)
+    mission_id = _new_mission(engine, rroot)
+    evidence = rroot / "evidence.md"
+    evidence.write_text("proof\n", encoding="utf-8")
+    _clear_all_five_gates(engine, rroot, mission_id, evidence)
+    plan = _crew_plan(mission_id, [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("external-artifact", verifier_required=False)]},
+    ])
+    plan_path = _write_plan(rroot, "plan.json", plan)
+    external_return = {
+        "task_id": "external-artifact", "mission_id": mission_id, "agent": "fake-agent",
+        "status": "complete", "self_reported_complete": True,
+        "artifacts": [{"path": "/etc/hosts", "description": "external host file"}],
+        "claims": [{"claim": "done", "evidence": "/etc/hosts", "inferred": False}],
+        "flags": [],
+    }
+    driver = engine.FakeDriver(script={
+        "external-artifact": {"mode": "good", "instance": external_return},
+    })
+
+    result = engine._do_run(rroot, plan_path, driver, by="tester")
+
+    assert result["status"] == "halted", result
+    assert result["status"] != "complete"
+    assert "attempt cap" in result["halt_reason"]
+    retries = sorted((_mission_dir(rroot, mission_id) / "retries").glob("external-artifact.attempt-*.md"))
+    assert len(retries) == 3
+    # Retry records are deliberately privacy-safe projections: they prove the
+    # failed task was retried and halted without persisting the attacker-supplied
+    # external path in mission state.
+    retry_text = retries[-1].read_text(encoding="utf-8")
+    assert "/etc/hosts" not in retry_text
+    assert "failure_state: degraded" in retry_text
+    assert len([call for call in driver.calls if call["task_id"] == "external-artifact"]) == 3
+    assert all(not call["task_id"].endswith(".verify") for call in driver.calls)
+
+
+def test_run_artifact_hash_keeps_opened_file_during_directory_swap(engine, tmp_path, monkeypatch):
+    """A directory-to-symlink swap cannot redirect verdict binding outside root."""
+    root = tmp_path / "os"
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    trusted = b"trusted in-root evidence\n"
+    (artifacts / "evidence.md").write_bytes(trusted)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evidence.md").write_bytes(b"external evidence\n")
+    expected = subprocess.check_output(
+        ["git", "hash-object", str(artifacts / "evidence.md")], text=True
+    ).strip()
+
+    real_open = engine.os.open
+    swapped = False
+
+    def swap_directory_before_final_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and str(path) == "evidence.md" and dir_fd is not None:
+            artifacts.rename(root / "artifacts-original")
+            artifacts.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(engine.os, "open", swap_directory_before_final_open)
+
+    observed = engine._run_artifact_current_blob_hash(root, "artifacts/evidence.md")
+
+    assert swapped, "regression setup did not replace the checked directory"
+    assert (root / "artifacts").is_symlink()
+    assert observed == expected, "verdict binding must read the originally opened in-root file"
 
 
 # ---------------------------------------------------------------------------

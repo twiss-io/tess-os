@@ -51,6 +51,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,7 @@ from test_gate_spine import (
     gate_repo,  # noqa: F401  (pytest fixture, made available via import)
     _git, _base_sha, _commit_all, _blob_sha,
     _valid_verdict, _write_verdict, _signed_signoff,
+    _commit_money_payload, _commit_signoff_attestation,
 )
 
 RECEIPT_EMIT_SRC = REPO_ROOT / "tools" / "receipt-emit"
@@ -179,24 +181,35 @@ def test_ci_clear_via_covering_verdict_auto_emits_verifiable_receipt(
 # ---------------------------------------------------------------------------
 
 def test_ci_clear_via_hard_floor_signoff_emits_receipt(
-    gate_repo_with_receipt_emit, run_cli, engine, verifier_gpg_keys, tmp_path,
+    gate_repo_with_receipt_emit, run_cli, engine, verifier_gpg_keys, signoff_gpg_key, tmp_path,
 ):
     root = gate_repo_with_receipt_emit
     base = _base_sha(root)
-    (root / "payments").mkdir(parents=True)
-    (root / "payments" / "charge.py").write_text("refund()\n")
-    signoff_dir = root / ".tess" / "gate" / "signoffs"
-    signoff_dir.mkdir(parents=True, exist_ok=True)
-    # gate_repo's policy registers "Xavier" in signoff_keys, reusing Reid's
-    # generated test keypair under that name (test_gate_spine.py's own
-    # documented, deliberate choice — see _policy_with_verifier_keys).
-    signoff = _signed_signoff(engine, verifier_gpg_keys["Reid"])
-    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
-    head = _commit_all(root, "payments change + validly-signed human signoff")
+    # #76 (source-bound admission topology): a hard-floor sign-off is no
+    # longer a shape+signature check against whatever sits at HEAD — it must
+    # be an exact schema-v2 artifact, bound to this base/payload/artifact
+    # content, delivered in a SEPARATE, signoff-only attestation commit that
+    # is the immediate child of the reviewed payload commit. Build that
+    # topology with the same two helpers test_gate_spine.py's own hard-floor
+    # tests already use, rather than a flat single commit.
+    payload_head, artifact_hashes = _commit_money_payload(root)
+    # gate_repo's policy registers "Xavier" in signoff_keys, backed by the
+    # dedicated `signoff_gpg_key` fixture — a seventh, human-operator-only
+    # identity distinct from every AI verifier's own key (see
+    # `_policy_with_verifier_keys`/`signoff_gpg_key`'s own docstring in
+    # test_gate_spine.py / conftest.py: "instead of aliasing Reid's
+    # certificate").
+    signoff = _signed_signoff(
+        engine, signoff_gpg_key, base_sha=base,
+        payload_head_sha=payload_head, artifact_hashes=artifact_hashes,
+    )
+    head = _commit_signoff_attestation(
+        root, signoff, "payments change + validly-signed human signoff",
+    )
 
     r = run_cli(
         root, "gate", "ci", "--base", base, "--head", head, "--json",
-        extra_env={"GNUPGHOME": str(verifier_gpg_keys["Reid"].home)},
+        extra_env={"GNUPGHOME": str(signoff_gpg_key.home)},
     )
     assert r.returncode == 0, r.stdout + r.stderr
     payload = json.loads(r.stdout)
@@ -217,8 +230,8 @@ def test_ci_clear_via_hard_floor_signoff_emits_receipt(
     assert receipt["policy_decision"]["rule_id"] == "money"
     assert receipt["policy_decision"]["rule_kind"] == "hard_floor_rule"
 
-    pubkey = _export_pubkey(verifier_gpg_keys["Reid"], tmp_path, "xavier.asc")
-    result = _independent_verify_chain(root, [("Xavier", verifier_gpg_keys["Reid"].fpr, str(pubkey))])
+    pubkey = _export_pubkey(signoff_gpg_key, tmp_path, "xavier.asc")
+    result = _independent_verify_chain(root, [("Xavier", signoff_gpg_key.fpr, str(pubkey))])
     assert result["chain_intact"] is True, result
 
 
@@ -227,7 +240,7 @@ def test_ci_clear_via_hard_floor_signoff_emits_receipt(
 # ---------------------------------------------------------------------------
 
 def test_two_clearing_pushes_chain_correctly(
-    gate_repo_with_receipt_emit, run_cli, engine, verifier_gpg_keys, tmp_path,
+    gate_repo_with_receipt_emit, run_cli, engine, verifier_gpg_keys, signoff_gpg_key, tmp_path,
 ):
     root = gate_repo_with_receipt_emit
     env = {"GNUPGHOME": str(verifier_gpg_keys["Reid"].home)}
@@ -249,14 +262,24 @@ def test_two_clearing_pushes_chain_correctly(
     assert json.loads(r1.stdout)["receipt_gaps"] == []
 
     base2 = head1
-    (root / "payments").mkdir(parents=True)
-    (root / "payments" / "charge.py").write_text("refund()\n")
-    signoff_dir = root / ".tess" / "gate" / "signoffs"
-    signoff_dir.mkdir(parents=True, exist_ok=True)
-    signoff = _signed_signoff(engine, verifier_gpg_keys["Reid"])
-    (signoff_dir / "money.signoff.json").write_text(json.dumps(signoff), encoding="utf-8")
-    head2 = _commit_all(root, "second clearing push")
-    r2 = run_cli(root, "gate", "ci", "--base", base2, "--head", head2, "--json", extra_env=env)
+    # #76 (source-bound admission topology): the hard-floor sign-off must be
+    # a schema-v2 artifact bound to this base/payload/artifact content,
+    # delivered as a separate signoff-only attestation commit — the same
+    # topology test_gate_spine.py's own hard-floor tests already build.
+    # `signoff_gpg_key` (not a reused `verifier_gpg_keys["Reid"]") is the
+    # identity actually registered under "Xavier" in policy.signoff_keys —
+    # see `_policy_with_verifier_keys`/`signoff_gpg_key`'s own docstring.
+    payload_head, artifact_hashes = _commit_money_payload(root)
+    signoff = _signed_signoff(
+        engine, signoff_gpg_key, base_sha=base2,
+        payload_head_sha=payload_head, artifact_hashes=artifact_hashes,
+    )
+    head2 = _commit_signoff_attestation(root, signoff, "second clearing push")
+    # Receipt-emit signs with the CLEARING identity's own private key
+    # (Xavier's, for a hard-floor sign-off) — a different GNUPGHOME than the
+    # first (verdict/Reid) push above.
+    env2 = {"GNUPGHOME": str(signoff_gpg_key.home)}
+    r2 = run_cli(root, "gate", "ci", "--base", base2, "--head", head2, "--json", extra_env=env2)
     assert r2.returncode == 0, r2.stdout + r2.stderr
     payload2 = json.loads(r2.stdout)
     assert payload2["receipt_gaps"] == []
@@ -269,9 +292,10 @@ def test_two_clearing_pushes_chain_correctly(
     assert second["chain"]["sequence"] == 1
     assert second["chain"]["prev_receipt_hash"] != "GENESIS"
 
-    pubkey = _export_pubkey(verifier_gpg_keys["Reid"], tmp_path, "reid.asc")
+    reid_pubkey = _export_pubkey(verifier_gpg_keys["Reid"], tmp_path, "reid.asc")
+    xavier_pubkey = _export_pubkey(signoff_gpg_key, tmp_path, "xavier.asc")
     result = _independent_verify_chain(
-        root, [("Reid", verifier_gpg_keys["Reid"].fpr, str(pubkey)), ("Xavier", verifier_gpg_keys["Reid"].fpr, str(pubkey))],
+        root, [("Reid", verifier_gpg_keys["Reid"].fpr, str(reid_pubkey)), ("Xavier", signoff_gpg_key.fpr, str(xavier_pubkey))],
     )
     assert result["chain_intact"] is True, result
     assert result["receipt_count"] == 2
@@ -582,3 +606,145 @@ def test_malformed_emit_json_output_is_a_gap_never_a_crash(engine, tmp_path, stu
     )
     assert payload is None
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# 9) ★ `emit_receipts` gate-overlap re-reconciliation fix — `_gate_run_ship_
+#    check` is shared by FOUR callers: `gate pre-push`/`gate ci` (genuine
+#    ship authorization, opt in with `emit_receipts=True`) AND
+#    `_cmd_gate_post_merge_audit`/MCP `gate_check_paths` (documented,
+#    non-authoritative diagnostic/evidence paths — "Diagnostic preview
+#    only; never a ship authorization result" — that take the ★SAFE
+#    DEFAULT, `emit_receipts=False`, and must therefore never execute
+#    tools/receipt-emit/ or write to .tess/state/receipts/chain.jsonl,
+#    however cleanly the underlying change would otherwise clear).
+# ---------------------------------------------------------------------------
+
+def _covering_verdict_scenario(root, engine, verifier_gpg_keys):
+    """The SAME base/head/changed-paths covering-verdict clearance already
+    proven (test 1 above) to make `_gate_covering_gap_report` return a
+    non-empty `cleared` — reused here to prove `emit_receipts` gating
+    itself, not the underlying clearance mechanism (already covered)."""
+    base = _base_sha(root)
+    (root / "src" / "prod").mkdir(parents=True)
+    (root / "src" / "prod" / "app.py").write_text("print('prod')\n")
+    blob = _blob_sha(root, "src/prod/app.py")
+    _write_verdict(
+        root, "missions/m1/verdicts/prod-src.verdict.md",
+        _valid_verdict(
+            covers_paths=["src/prod/**"], artifact_hashes={"src/prod/app.py": blob},
+            engine=engine, keys=verifier_gpg_keys,
+        ),
+    )
+    head = _commit_all(root, "add prod change + covering verdict")
+    changed = engine._gate_diff_paths(root, base, head)
+    return base, head, changed
+
+
+def test_emit_receipts_parameter_is_the_only_switch_for_the_side_effect(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch,
+):
+    """Direct proof of the fix's actual mechanism, at the function that owns
+    it: same genuinely-clearing covering-verdict scenario, called twice with
+    everything else held constant — only `emit_receipts` differs."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    # `emit_receipts` omitted entirely -> the ★SAFE DEFAULT (False), exactly
+    # mirroring a caller that never thought about receipt-emit at all.
+    result_default = engine._gate_run_ship_check(
+        root, changed, None, [head], [base],
+        engine._GATE_ADMISSION_SOURCE_CI_EVENT, [head],
+    )
+    assert result_default["blocked"] is False
+    assert "receipts_emitted" not in result_default
+    assert "receipt_gaps" not in result_default
+    assert not _chain_path(root).exists()
+
+    # Identical scenario, only difference: `emit_receipts=True` (what `gate
+    # pre-push`/`gate ci` now explicitly opt in with) -> a receipt IS minted.
+    result_authorized = engine._gate_run_ship_check(
+        root, changed, None, [head], [base],
+        engine._GATE_ADMISSION_SOURCE_CI_EVENT, [head], emit_receipts=True,
+    )
+    assert result_authorized["blocked"] is False
+    assert result_authorized["receipt_gaps"] == []
+    assert len(result_authorized["receipts_emitted"]) == 1
+    assert _chain_path(root).exists()
+
+
+def test_post_merge_audit_pass_mints_no_receipt(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch, capsys,
+):
+    """★ THE FIX — `_cmd_gate_post_merge_audit` is a read-only re-audit of an
+    ALREADY-LANDED merge (its own output: authoritative:false,
+    prevented_merge:false); it must never mint a receipt even when the
+    underlying evaluator genuinely clears a rule. `_gate_post_merge_event_
+    provenance` (GitHub-Actions-env + exact two-parent merge topology) is
+    monkeypatched to a valid result — that function's own correctness is
+    already covered extensively by test_gate_merge_topology.py, orthogonal
+    to what this test proves. This test's only job: `_cmd_gate_post_merge_
+    audit`'s REAL, UNMOCKED call into `_gate_run_ship_check` (with its
+    actual, hardcoded `emit_receipts=False`) never writes to
+    .tess/state/receipts/chain.jsonl — the ground-truth side effect, since
+    `_safe_post_merge_audit_result`'s own projected JSON never even
+    surfaces receipts_emitted/receipt_gaps fields either way."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, _changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    monkeypatch.setattr(
+        engine, "_gate_post_merge_event_provenance",
+        lambda _root, _base, _head: (
+            True, None,
+            {"base_sha": base, "attestation_head_sha": head, "evaluation_head_sha": head},
+        ),
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        engine._cmd_gate_post_merge_audit(
+            SimpleNamespace(base=base, head=head, verdict_dirs=None, json_out=True),
+            root,
+        )
+    assert stopped.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["audit_passed"] is True
+    assert payload["authoritative"] is False
+    assert payload["prevented_merge"] is False
+
+    # THE FIX: a genuinely-cleared covering verdict still mints NOTHING from
+    # this read-only re-audit.
+    assert not _chain_path(root).exists()
+
+
+def test_mcp_gate_check_paths_pass_mints_no_receipt(
+    gate_repo_with_receipt_emit, engine, verifier_gpg_keys, monkeypatch,
+):
+    """★ THE FIX — the MCP `gate_check_paths` tool's own docstring:
+    "Diagnostic preview only; never a ship authorization result." Prove the
+    REAL, unmocked tool function — which still runs the full clearing/
+    decision machinery internally via `_gate_run_ship_check` — never writes
+    to .tess/state/receipts/chain.jsonl, even though the underlying
+    evaluator genuinely clears a rule. The tool's own OUTPUT always
+    redacts to blocked:true/authoritative:false regardless (this file's own
+    `_diagnostic()` wrapper, unaffected by this fix) — the printed answer
+    alone would never reveal a receipt had been minted; the chain file is
+    the only reliable, ground-truth signal, which is exactly why this bug
+    was a real, EXTERNALLY INVISIBLE side effect before the fix."""
+    root = gate_repo_with_receipt_emit
+    monkeypatch.setenv("GNUPGHOME", str(verifier_gpg_keys["Reid"].home))
+    base, head, changed = _covering_verdict_scenario(root, engine, verifier_gpg_keys)
+
+    result = engine._mcp_tool_gate_check_paths(
+        root, {"paths": changed, "base": base, "head": head},
+    )
+
+    # The tool's own documented, unconditional redaction — unaffected by
+    # this fix, exactly what it always was.
+    assert result["authoritative"] is False
+    assert result["blocked"] is True
+    assert result["diagnostic_would_block"] is False  # the shared evaluator DID clear it
+
+    # THE FIX: no receipt was minted as a side effect of this "preview."
+    assert not _chain_path(root).exists()
