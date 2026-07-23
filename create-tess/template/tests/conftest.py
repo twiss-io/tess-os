@@ -470,3 +470,42 @@ def make_upstream(path: Path, gpg, tag, *, sign="signed",
     else:
         raise ValueError(sign)
     return path
+
+
+def corrupt_tag_signature(repo_path: Path, tag: str) -> None:
+    """Tamper an ALREADY-SIGNED annotated tag in place, in `repo_path` (built by
+    `make_upstream(..., sign="signed")`).
+
+    Flips one byte inside the tag object's armored PGP signature block, then
+    repoints `refs/tags/<tag>` at the corrupted object (`git hash-object -t tag
+    -w --stdin` + `git update-ref`). The corrupted object is STILL a
+    well-formed annotated tag — `git cat-file -t <tag>` keeps reporting "tag"
+    (so C4's "is an annotated tag object" check still passes) — but
+    `git verify-tag` fails (BADSIG/NODATA), because the signature bytes no
+    longer match what was actually signed.
+
+    This is deliberately a THIRD, distinct security scenario from the suite's
+    existing coverage:
+      * unsigned tag (test_mandatory_pin.py)   → no signature at all
+      * wrong-key tag (test_mandatory_pin.py)  → valid signature, untrusted key
+      * tampered tag (this helper)              → well-formed tag object,
+                                                    invalid/corrupted signature
+    """
+    raw = subprocess.run(
+        ["git", "-C", str(repo_path), "cat-file", "tag", tag],
+        capture_output=True, check=True,
+    ).stdout
+    idx = raw.find(b"-----BEGIN PGP SIGNATURE-----")
+    assert idx != -1, "corrupt_tag_signature: no armored PGP signature block found on tag"
+    body_start = raw.find(b"\n", idx) + 1
+    flip_pos = body_start + 40  # well inside the base64 body, not the header/footer markers
+    corrupted = bytearray(raw)
+    corrupted[flip_pos] ^= 0xFF
+    new_hash = subprocess.run(
+        ["git", "-C", str(repo_path), "hash-object", "-t", "tag", "-w", "--stdin"],
+        input=bytes(corrupted), capture_output=True, check=True,
+    ).stdout.decode().strip()
+    subprocess.run(
+        ["git", "-C", str(repo_path), "update-ref", f"refs/tags/{tag}", new_hash],
+        check=True,
+    )
