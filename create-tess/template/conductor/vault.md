@@ -36,6 +36,14 @@ named child environment; and `recover rm <stored-ref>` removes only that exact
 stored key. Recovery never guesses which duplicate to use, never automatically
 deletes one, and never prints the raw value.
 
+Very early decryptable vaults may have no layout version or may include
+compatible custom metadata. Normal commands deliberately refuse those blobs
+until an owner runs `tessctl vault recover migrate`, reviews its non-secret
+dry-run plan, and applies that exact plan. The plan is bound to the encrypted
+blob state and preserves every representable value and metadata field. If an
+old layout contains fields that cannot be represented safely, it is not
+silently rewritten; use exact-key recovery instead.
+
 ---
 
 ## How Agents Resolve a Ref
@@ -81,7 +89,7 @@ around: restructure the prompt to use a `vault://` ref instead.
 | `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, pipe only) |
 | `tessctl vault list` | List all refs (no values shown) |
 | `tessctl vault migrate-refs` | Dry-run legacy `vault://` storage-key normalization; add `--apply --plan <dry-run-id>` only after review |
-| `tessctl vault recover <op>` | Exact-key owner recovery for ambiguous or malformed historical entries; never auto-selects or reveals a raw value |
+| `tessctl vault recover <op>` | Exact-key owner recovery for ambiguous or malformed historical entries; `recover migrate` explicitly upgrades compatible pre-versioned blobs; never auto-selects or reveals a raw value |
 | `tessctl vault exec --ref <ref> -- <cmd>` | Inject secret into child env JIT |
 | `tessctl vault rotate <ref>` | Re-encrypt under a new value |
 | `tessctl vault rm <ref>` | Delete a ref from the vault |

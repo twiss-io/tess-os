@@ -7244,12 +7244,12 @@ VAULT_VERSION = 1
 VAULT_LOCK = ".claude/vault/.vault.lock"
 
 # The encrypted data format deliberately remains small and closed.  Every
-# vault command reaches it through _vault_read_blob(), so a malformed blob
-# fails before any command can print metadata or select a value.
-_VAULT_META_FIELDS = {
-    "minted_at", "minted_by", "service", "key", "format", "rotates",
-    "purpose", "rotated_at",
-}
+# normal vault command reaches it through _vault_read_blob(), so a malformed
+# blob fails before any command can print metadata or select a value. Metadata
+# is extensible for compatibility, but only string keys and string values with
+# a safe field name are accepted by the current version. Consumers display only
+# the documented fields below; unknown fields are retained but never executed.
+_VAULT_META_FIELD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
 
 # Keychain service/account identifiers for macOS `security` and Linux secret-tool
 _KEYCHAIN_SERVICE = "tess-vault-identity"
@@ -7585,12 +7585,26 @@ def _vault_schema_error() -> None:
     sys.exit("tessctl vault: vault blob schema is invalid; refusing to read or modify it.")
 
 
+def _vault_validate_current_metadata(meta: object) -> dict:
+    """Validate metadata allowed by the current version without consuming it."""
+    if not isinstance(meta, dict):
+        _vault_schema_error()
+    for field, value in meta.items():
+        if (
+            not isinstance(field, str)
+            or not _VAULT_META_FIELD_RE.fullmatch(field)
+            or not isinstance(value, str)
+        ):
+            _vault_schema_error()
+    return meta
+
+
 def _vault_validate_blob_data(data: object) -> dict:
     """Validate the complete decrypted vault schema before any consumer uses it.
 
     Error messages intentionally carry no refs, metadata, or values because all
-    of those originate in decrypted material.  Unknown fields are rejected so a
-    consumer cannot accidentally start treating an unreviewed field as trusted.
+    of those originate in decrypted material. Top-level and entry fields are
+    closed; compatible metadata fields are retained as inert strings.
     """
     if not isinstance(data, dict) or set(data) != {"version", "entries"}:
         _vault_schema_error()
@@ -7606,20 +7620,72 @@ def _vault_validate_blob_data(data: object) -> dict:
             _vault_schema_error()
         if not isinstance(entry["value"], str) or not entry["value"]:
             _vault_schema_error()
-        meta = entry["meta"]
-        if not isinstance(meta, dict):
+        _vault_validate_current_metadata(entry["meta"])
+    return data
+
+
+def _vault_is_preversioned_blob(data: object) -> bool:
+    """Return whether decrypted data is a plausible pre-versioned vault blob."""
+    return (
+        isinstance(data, dict)
+        and "version" not in data
+        and set(data).issubset({"entries"})
+    )
+
+
+def _vault_validate_preversioned_blob_data(data: object) -> dict:
+    """Validate only the safe recovery subset of the original unversioned format.
+
+    This reader is intentionally not used by normal list/get/set/exec paths.
+    It admits the format that old releases actually read: a mapping of string
+    refs to values plus optional metadata. Unknown legacy fields stay inert and
+    cannot be silently dropped by the dedicated schema-upgrade operation.
+    """
+    if not _vault_is_preversioned_blob(data):
+        _vault_schema_error()
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        _vault_schema_error()
+    for stored_ref, entry in entries.items():
+        if not isinstance(stored_ref, str) or not stored_ref:
             _vault_schema_error()
-        for field, value in meta.items():
-            if not isinstance(field, str) or field not in _VAULT_META_FIELDS or not isinstance(value, str):
+        if not isinstance(entry, dict) or not isinstance(entry.get("value"), str) or not entry["value"]:
+            _vault_schema_error()
+        if "meta" in entry:
+            meta = entry["meta"]
+            if not isinstance(meta, dict) or any(not isinstance(field, str) for field in meta):
                 _vault_schema_error()
     return data
 
 
-def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
+def _vault_upgrade_preversioned_blob(data: dict) -> dict | None:
+    """Return a lossless current-format copy, or None when upgrade would drop data.
+
+    The original reader accepted missing ``meta`` and arbitrary extra fields.
+    Recovery can still use such a blob exactly, but automatic migration only
+    proceeds when every field can be represented by the current version.
+    """
+    if set(data) - {"entries"}:
+        return None
+    entries = {}
+    for stored_ref, entry in data.get("entries", {}).items():
+        if set(entry) - {"value", "meta"}:
+            return None
+        meta = entry.get("meta", {})
+        try:
+            _vault_validate_current_metadata(meta)
+        except SystemExit:
+            return None
+        entries[stored_ref] = {"value": entry["value"], "meta": dict(meta)}
+    upgraded = {"version": VAULT_VERSION, "entries": entries}
+    return _vault_validate_blob_data(upgraded)
+
+
+def _vault_read_decrypted_blob_state(root: Path) -> tuple[dict, str | None]:
     """
     Decrypt the vault blob and return the in-memory dict.
-    Structure: {"version": 1, "entries": {"ref": {"value": "...", "meta": {...}}}}
-    Returns {"version": 1, "entries": {}} for a missing blob (new vault).
+    Returns decrypted JSON plus a digest of encrypted bytes, without assigning a
+    schema version. Callers must choose the current or recovery-only validator.
     NEVER logs or prints any entry value.
 
     The second value is the SHA-256 digest of the encrypted blob bytes, never
@@ -7628,8 +7694,7 @@ def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
     """
     blob_path = root / VAULT_BLOB
     if not blob_path.exists():
-        data = {"version": VAULT_VERSION, "entries": {}}
-        return _vault_validate_blob_data(data), None
+        return {"version": VAULT_VERSION, "entries": {}}, None
 
     backend = _vault_check_crypto()
     private_key = _vault_load_identity(root)
@@ -7653,7 +7718,32 @@ def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
             f"({type(e).__name__}). The blob may be corrupt or encrypted to a different identity."
         )
 
-    return _vault_validate_blob_data(data), hashlib.sha256(ciphertext).hexdigest()
+    return data, hashlib.sha256(ciphertext).hexdigest()
+
+
+def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
+    """Read only the current, fully validated vault format for normal commands."""
+    data, ciphertext_digest = _vault_read_decrypted_blob_state(root)
+    if _vault_is_preversioned_blob(data):
+        _vault_validate_preversioned_blob_data(data)
+        sys.exit(
+            "tessctl vault: vault blob uses a pre-versioned legacy layout; normal access is "
+            "refused. Use `tessctl vault recover migrate` to review an explicit upgrade."
+        )
+    return _vault_validate_blob_data(data), ciphertext_digest
+
+
+def _vault_read_recovery_blob_state(root: Path) -> tuple[dict, str | None, bool]:
+    """Read current data or the narrow pre-versioned recovery format.
+
+    The final flag is true only for a recognized pre-versioned layout. Callers
+    must keep legacy access exact-key and must not route it into normal alias
+    resolution until the owner has explicitly upgraded it.
+    """
+    data, ciphertext_digest = _vault_read_decrypted_blob_state(root)
+    if _vault_is_preversioned_blob(data):
+        return _vault_validate_preversioned_blob_data(data), ciphertext_digest, True
+    return _vault_validate_blob_data(data), ciphertext_digest, False
 
 
 def _vault_read_blob(root: Path) -> dict:
@@ -7714,6 +7804,18 @@ def _vault_mutate_blob(root: Path, mutate):
         return result
 
 
+def _vault_mutate_recovery_blob(root: Path, mutate):
+    """Apply an exact recovery mutation without silently upgrading legacy data."""
+    with _vault_mutation_lock(root):
+        data, _, legacy = _vault_read_recovery_blob_state(root)
+        result = mutate(data)
+        if legacy:
+            _vault_write_preversioned_blob(root, data)
+        else:
+            _vault_write_blob(root, data)
+        return result
+
+
 def _vault_write_blob(root: Path, data: dict) -> None:
     """
     Re-encrypt the in-memory dict and atomically write to vault.age (0600).
@@ -7721,6 +7823,17 @@ def _vault_write_blob(root: Path, data: dict) -> None:
     NEVER logs or prints any entry value.
     """
     _vault_validate_blob_data(data)
+    _vault_write_encrypted_blob(root, data)
+
+
+def _vault_write_preversioned_blob(root: Path, data: dict) -> None:
+    """Re-encrypt a recovery-only legacy blob after an exact owner mutation."""
+    _vault_validate_preversioned_blob_data(data)
+    _vault_write_encrypted_blob(root, data)
+
+
+def _vault_write_encrypted_blob(root: Path, data: dict) -> None:
+    """Encrypt already-validated vault data and atomically replace the blob."""
     blob_path = root / VAULT_BLOB
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -7906,6 +8019,15 @@ def _vault_ref_migration_plan_id(migrations, ciphertext_digest: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _vault_legacy_upgrade_plan_id(ciphertext_digest: str) -> str:
+    """Return a non-secret confirmation token for a legacy schema upgrade."""
+    payload = json.dumps(
+        {"ciphertext_sha256": ciphertext_digest, "operation": "upgrade-preversioned-vault-v1"},
+        separators=(",", ":"), ensure_ascii=True, sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 # ---------------------------------------------------------------------------
 # Vault subcommands
 # ---------------------------------------------------------------------------
@@ -7920,80 +8042,76 @@ def _vault_cmd_init(args, root: Path) -> None:
     headless = getattr(args, "headless", False)
     vault_dir = root / VAULT_DIR
 
-    # Check crypto availability first (exits with install instructions if missing)
+    # The backend probe is read-only. Every claim/check and every identity,
+    # recipient, and blob mutation is serialized below.
     backend = _vault_check_crypto()
     print(f"tessctl vault init: crypto backend = {backend}")
 
-    # Create vault directory
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(str(vault_dir), 0o700)
-    except OSError:
-        pass
+    initialized = False
+    # A recipient file is the initialization claim. Holding the shared lock for
+    # check → identity custody → recipient → first ciphertext prevents a second
+    # initializer from generating a different keypair and racing an
+    # unrecoverable recipient/blob combination into place.
+    with _vault_mutation_lock(root):
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(vault_dir), 0o700)
+        except OSError:
+            pass
 
-    # .gitkeep (marks the dir as shippable scaffold)
-    gitkeep_path = vault_dir / ".gitkeep"
-    if not gitkeep_path.exists():
-        gitkeep_path.write_text("# vault scaffold — blob and identity are gitignored\n", encoding="utf-8")
-        print(f"  created {VAULT_GITKEEP}")
+        gitkeep_path = vault_dir / ".gitkeep"
+        if not gitkeep_path.exists():
+            gitkeep_path.write_text("# vault scaffold — blob and identity are gitignored\n", encoding="utf-8")
+            print(f"  created {VAULT_GITKEEP}")
 
-    # vault.registry.json scaffold (ships in public repo — no values)
-    registry_path = vault_dir / "vault.registry.json"
-    if not registry_path.exists():
-        _vault_write_registry_scaffold(root)
-        print(f"  created {VAULT_REGISTRY}")
+        registry_path = vault_dir / "vault.registry.json"
+        if not registry_path.exists():
+            _vault_write_registry_scaffold(root)
+            print(f"  created {VAULT_REGISTRY}")
 
-    # Check for existing identity: vault.recipients is the authoritative "vault exists" marker.
-    # If recipients exists (even without a blob), refuse to generate a new identity — doing so
-    # would silently overwrite the recipients file and leave any existing .age blob undecryptable.
-    # Require an explicit `rm .claude/vault/vault.recipients` (or --force/rekey) before reinit.
-    recip_path = vault_dir / "vault.recipients"
-    if recip_path.exists():
-        print(
-            "tessctl vault init: vault already initialized (vault.recipients exists).\n"
-            "  To regenerate: rm .claude/vault/vault.recipients && tessctl vault init\n"
-            "  WARNING: regenerating creates a new identity — migrate secrets first with vault rekey."
-        )
-        _vault_install_git_hooks(root)
-        return
-
-    # Generate new identity
-    private_key, public_key = _vault_generate_identity(backend)
-    print(f"  generated age X25519 identity (public: {public_key[:20]}...)")
-
-    # Store private key (NEVER print or log it)
-    if headless:
-        _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
-        print(f"  identity stored at {_GLOBAL_IDENTITY_FILE} (0600, headless mode)")
-        print("  HEADLESS: also set TESS_VAULT_IDENTITY for CI/droplet environments.")
-    else:
-        stored_in_keychain = _vault_store_identity_keychain(private_key)
-        if stored_in_keychain:
-            ks = "macOS Keychain" if sys.platform == "darwin" else "OS secret-service"
-            print(f"  identity stored in {ks} (service={_KEYCHAIN_SERVICE})")
-        else:
-            _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
+        recip_path = vault_dir / "vault.recipients"
+        if recip_path.exists():
             print(
-                f"  keychain unavailable — identity stored at {_GLOBAL_IDENTITY_FILE} (0600).\n"
-                f"  For headless/CI: set TESS_VAULT_IDENTITY env var."
+                "tessctl vault init: vault already initialized (vault.recipients exists).\n"
+                "  To regenerate: rm .claude/vault/vault.recipients && tessctl vault init\n"
+                "  WARNING: regenerating creates a new identity — migrate secrets first with vault rekey."
             )
+        else:
+            private_key, public_key = _vault_generate_identity(backend)
+            print(f"  generated age X25519 identity (public: {public_key[:20]}...)")
 
-    # Write recipients file (public key — not secret)
-    recip_path.write_text(
-        f"# age public key for this vault\n"
-        f"# Generated by tessctl vault init\n"
-        f"{public_key}\n",
-        encoding="utf-8",
-    )
-    print(f"  wrote vault.recipients (public key only)")
+            # Store private key (NEVER print or log it).
+            if headless:
+                _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
+                print(f"  identity stored at {_GLOBAL_IDENTITY_FILE} (0600, headless mode)")
+                print("  HEADLESS: also set TESS_VAULT_IDENTITY for CI/droplet environments.")
+            else:
+                stored_in_keychain = _vault_store_identity_keychain(private_key)
+                if stored_in_keychain:
+                    ks = "macOS Keychain" if sys.platform == "darwin" else "OS secret-service"
+                    print(f"  identity stored in {ks} (service={_KEYCHAIN_SERVICE})")
+                else:
+                    _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
+                    print(
+                        f"  keychain unavailable — identity stored at {_GLOBAL_IDENTITY_FILE} (0600).\n"
+                        f"  For headless/CI: set TESS_VAULT_IDENTITY env var."
+                    )
 
-    # Create empty vault blob
-    _vault_write_blob(root, {"version": VAULT_VERSION, "entries": {}})
-    print(f"  created empty vault at {VAULT_BLOB}")
+            recip_path.write_text(
+                f"# age public key for this vault\n"
+                f"# Generated by tessctl vault init\n"
+                f"{public_key}\n",
+                encoding="utf-8",
+            )
+            print(f"  wrote vault.recipients (public key only)")
+            _vault_write_blob(root, {"version": VAULT_VERSION, "entries": {}})
+            print(f"  created empty vault at {VAULT_BLOB}")
+            initialized = True
 
-    # Install git hooks
+    # Git hook installation is independent of the vault identity transaction.
     _vault_install_git_hooks(root)
-
+    if not initialized:
+        return
     print(
         "\ntessctl vault init: complete.\n"
         "  Set secrets:   tessctl vault set github/token\n"
@@ -8753,7 +8871,8 @@ def _vault_cmd_exec(args, root: Path) -> None:
 def _vault_cmd_recover_get(args, root: Path) -> None:
     """Show a masked value for one exact historical storage key, never raw."""
     stored_ref = getattr(args, "stored_ref", None)
-    entry = _vault_exact_stored_entry(_vault_read_blob(root), stored_ref)
+    data, _, _ = _vault_read_recovery_blob_state(root)
+    entry = _vault_exact_stored_entry(data, stored_ref)
     print(f"  stored ref: {_vault_display_stored_ref(stored_ref)}")
     print(f"  value:      {_vault_mask_value(entry['value'], 'exact stored ref')}")
     print("  recovery mode: this command never reveals the raw value; use recover exec to test it externally.")
@@ -8764,7 +8883,8 @@ def _vault_cmd_recover_exec(args, root: Path) -> None:
     stored_ref = getattr(args, "stored_ref", None)
     cmd_list = _vault_exec_command(getattr(args, "cmd", None) or [], "recover exec")
     env_var = _vault_exec_env_var(getattr(args, "as_var", None), None, "recover exec")
-    entry = _vault_exact_stored_entry(_vault_read_blob(root), stored_ref)
+    data, _, _ = _vault_read_recovery_blob_state(root)
+    entry = _vault_exact_stored_entry(data, stored_ref)
     _vault_exec_value(entry["value"], env_var, cmd_list, "recover exec")
 
 
@@ -8776,8 +8896,43 @@ def _vault_cmd_recover_rm(args, root: Path) -> None:
         _vault_exact_stored_entry(data, stored_ref)
         del data["entries"][stored_ref]
 
-    _vault_mutate_blob(root, mutate)
+    _vault_mutate_recovery_blob(root, mutate)
     print(f"tessctl vault recover: removed exact stored ref {_vault_display_stored_ref(stored_ref)}")
+
+
+def _vault_cmd_recover_migrate(args, root: Path) -> None:
+    """Preview or explicitly upgrade a safe pre-versioned vault layout to v1."""
+    apply_changes = getattr(args, "apply", False)
+    with _vault_mutation_lock(root):
+        data, ciphertext_digest, legacy = _vault_read_recovery_blob_state(root)
+        if not legacy:
+            print("tessctl vault recover migrate: vault already uses the current version; no changes made.")
+            return
+        upgraded = _vault_upgrade_preversioned_blob(data)
+        if upgraded is None:
+            sys.exit(
+                "tessctl vault recover migrate: legacy layout cannot be upgraded without "
+                "dropping unrecognized data. No changes made; use exact-key recovery first."
+            )
+        if ciphertext_digest is None:
+            sys.exit("tessctl vault recover migrate: no encrypted vault state exists; no changes made.")
+        plan_id = _vault_legacy_upgrade_plan_id(ciphertext_digest)
+        if not apply_changes:
+            print("tessctl vault recover migrate: dry run; legacy layout will be upgraded to version 1.")
+            print("  All compatible values and metadata will be retained; no values are displayed.")
+            print(f"  plan id: {plan_id}")
+            print(
+                "  Review this plan, then run `tessctl vault recover migrate --apply "
+                f"--plan {plan_id}`."
+            )
+            return
+        if getattr(args, "plan", None) != plan_id:
+            sys.exit(
+                "tessctl vault recover migrate: supplied plan is missing, stale, or does not "
+                "match the encrypted vault state. Run the dry run again; no changes made."
+            )
+        _vault_write_blob(root, upgraded)
+    print("tessctl vault recover migrate: upgraded the vault layout to version 1; values were not displayed.")
 
 
 def _vault_cmd_recover(args, root: Path) -> None:
@@ -8786,11 +8941,12 @@ def _vault_cmd_recover(args, root: Path) -> None:
         "get": _vault_cmd_recover_get,
         "exec": _vault_cmd_recover_exec,
         "rm": _vault_cmd_recover_rm,
+        "migrate": _vault_cmd_recover_migrate,
     }
     sub = getattr(args, "vault_recover_sub", None)
     fn = dispatch.get(sub)
     if not fn:
-        sys.exit("tessctl vault recover: choose get, exec, or rm for an exact stored reference.")
+        sys.exit("tessctl vault recover: choose get, exec, rm, or migrate.")
     fn(args, root)
 
 
@@ -9017,7 +9173,7 @@ def cmd_vault(args, root: Path) -> None:
             "    get <ref>             show masked value (--reveal for raw; refused on TTY)\n"
             "    list [--scope <s>]    list refs + metadata (never values)\n"
             "    migrate-refs [--apply --plan ID]  dry-run then explicitly normalize legacy refs\n"
-            "    recover <op>          owner recovery for one exact legacy stored ref\n"
+            "    recover <op>          exact-key recovery or explicit legacy-layout upgrade\n"
             "    rm <ref>              remove an entry\n"
             "    rotate <ref>          re-encrypt a new value, show rotation URL\n"
             "    exec --ref <r> [--as VAR] -- <cmd>  JIT inject into child env\n"
@@ -20877,6 +21033,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_vrecover_rm = recover_sub.add_parser("rm", help="remove one exact stored reference")
     p_vrecover_rm.add_argument("stored_ref", metavar="STORED-REF",
                                help="exact encrypted-map key; no normalization is applied")
+    p_vrecover_migrate = recover_sub.add_parser(
+        "migrate",
+        help="dry-run then explicitly upgrade a safe pre-versioned vault layout",
+    )
+    p_vrecover_migrate.add_argument("--apply", action="store_true",
+                                    help="apply only the displayed dry-run plan")
+    p_vrecover_migrate.add_argument("--plan", metavar="ID",
+                                    help="required dry-run plan id when using --apply")
 
     # vault migrate-refs
     p_vmigrate = vault_sub.add_parser(

@@ -501,6 +501,93 @@ def test_malformed_blob_schema_fails_closed_for_every_consumer_without_value_out
         assert malformed_value not in r.stdout + r.stderr
 
 
+def test_preversioned_blob_requires_explicit_recovery_upgrade_and_preserves_custom_metadata(vault, run_cli, engine):
+    """A safe old blob remains owner-recoverable, not silently rewritten or exposed."""
+    legacy_value = "PREVERSIONED_value_not_to_be_printed_12345"
+    custom_metadata = "legacy-custom-metadata-not-printed"
+    legacy_payload = {
+        "entries": {
+            "legacy/secret": {
+                "value": legacy_value,
+                "meta": {"legacy_tag": custom_metadata, "service": "legacy"},
+            }
+        }
+    }
+    _write_unvalidated_blob(vault, engine, legacy_payload)
+
+    # Normal consumers stay fail-closed until an owner explicitly upgrades.
+    for command in (("list",), ("get", "legacy/secret"), ("migrate-refs",)):
+        r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
+        assert r.returncode != 0
+        assert "pre-versioned" in (r.stdout + r.stderr).lower()
+        assert legacy_value not in r.stdout + r.stderr
+        assert custom_metadata not in r.stdout + r.stderr
+
+    # Recovery selects the stored key exactly and still masks/JIT-injects only.
+    r = run_cli(vault.root, "vault", "recover", "get", "legacy/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    assert custom_metadata not in r.stdout + r.stderr
+    r = run_cli(vault.root, "vault", "recover", "exec", "--stored-ref", "legacy/secret",
+                "--as", "LEGACY_SECRET", "--", sys.executable, "-c",
+                _CHILD_WRITE.format(var="LEGACY_SECRET"), extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert (vault.root / "child_out.txt").read_text() == legacy_value
+    assert legacy_value not in r.stdout + r.stderr
+
+    # Upgrade is a dry-run-bound owner action, never an automatic side effect.
+    r = run_cli(vault.root, "vault", "recover", "migrate", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    plan_id = re.search(r"plan id: ([0-9a-f]{16})", r.stdout).group(1)
+    assert legacy_value not in r.stdout + r.stderr
+    assert custom_metadata not in r.stdout + r.stderr
+
+    # Even an otherwise identical legacy payload is newly encrypted ciphertext,
+    # so the old dry-run confirmation must not authorize it.
+    _write_unvalidated_blob(vault, engine, legacy_payload)
+    r = run_cli(vault.root, "vault", "recover", "migrate", "--apply", "--plan", plan_id,
+                extra_env=vault.env)
+    assert r.returncode != 0
+    assert "stale" in (r.stdout + r.stderr).lower()
+    assert legacy_value not in r.stdout + r.stderr
+    assert custom_metadata not in r.stdout + r.stderr
+
+    r = run_cli(vault.root, "vault", "recover", "migrate", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    plan_id = re.search(r"plan id: ([0-9a-f]{16})", r.stdout).group(1)
+    r = run_cli(vault.root, "vault", "recover", "migrate", "--apply", "--plan", plan_id,
+                extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    data = engine._vault_read_blob(vault.root)
+    assert data["version"] == 1
+    assert data["entries"]["legacy/secret"]["value"] == legacy_value
+    assert data["entries"]["legacy/secret"]["meta"]["legacy_tag"] == custom_metadata
+
+
+def test_unrepresentable_preversioned_fields_remain_recoverable_without_silent_drop(vault, run_cli, engine):
+    """Recovery may access a valid old value, but an unsafe schema rewrite is denied."""
+    legacy_value = "UNREPRESENTABLE_legacy_value_not_printed_12345"
+    _write_unvalidated_blob(vault, engine, {
+        "entries": {
+            "legacy/secret": {
+                "value": legacy_value,
+                "meta": {"service": "legacy"},
+                "old_extension": "must-not-be-discarded",
+            }
+        }
+    })
+    before = (vault.root / ".claude" / "vault" / "vault.age").read_bytes()
+    r = run_cli(vault.root, "vault", "recover", "get", "legacy/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    r = run_cli(vault.root, "vault", "recover", "migrate", extra_env=vault.env)
+    assert r.returncode != 0
+    assert "cannot be upgraded" in (r.stdout + r.stderr).lower()
+    assert legacy_value not in r.stdout + r.stderr
+    assert (vault.root / ".claude" / "vault" / "vault.age").read_bytes() == before
+
+
 def test_mutation_lock_prevents_lost_updates(vault, engine):
     """A deterministic interleaving proves the second writer reads post-write state."""
     engine._vault_write_blob(vault.root, {"version": 1, "entries": {}})
@@ -528,6 +615,57 @@ def test_mutation_lock_prevents_lost_updates(vault, engine):
     second.join(timeout=10)
     assert not first.is_alive() and not second.is_alive()
     assert set(engine._vault_read_blob(vault.root)["entries"]) == {"one/secret", "two/secret"}
+
+
+def test_concurrent_init_uses_one_identity_recipient_and_blob(project, engine, monkeypatch):
+    """A second init cannot race a different keypair into the same vault."""
+    root = project.root
+    original_generate = engine._vault_generate_identity
+    generated = []
+    stored_identities = []
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+    errors = []
+
+    def blocking_generate(backend):
+        private_key, public_key = original_generate(backend)
+        generated.append((private_key, public_key))
+        if len(generated) == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+        return private_key, public_key
+
+    monkeypatch.setattr(engine, "_vault_generate_identity", blocking_generate)
+    monkeypatch.setattr(engine, "_vault_store_identity_keychain",
+                        lambda private_key: (stored_identities.append(private_key) or True))
+    monkeypatch.setattr(engine, "_vault_install_git_hooks", lambda _root: None)
+
+    def run_init(mark_done=False):
+        try:
+            engine._vault_cmd_init(types.SimpleNamespace(headless=False), root)
+        except Exception as exc:  # thread assertion failures must not disappear
+            errors.append(exc)
+        finally:
+            if mark_done:
+                second_finished.set()
+
+    first = threading.Thread(target=run_init)
+    second = threading.Thread(target=lambda: run_init(mark_done=True))
+    first.start()
+    assert first_entered.wait(timeout=5)
+    second.start()
+    assert not second_finished.wait(timeout=0.25), "second init bypassed the vault initialization lock"
+    release_first.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not errors
+    assert not first.is_alive() and not second.is_alive()
+    assert len(generated) == 1
+    assert stored_identities == [generated[0][0]]
+    assert engine._vault_load_public_key(root) == generated[0][1]
+    monkeypatch.setenv("TESS_VAULT_IDENTITY", generated[0][0])
+    assert engine._vault_read_blob(root) == {"version": 1, "entries": {}}
 
 
 # ===========================================================================
@@ -759,6 +897,7 @@ GITIGNORED = [
     ".claude/vault/vault.age",
     ".claude/vault/vault.recipients",
     ".claude/vault/identity.age",
+    ".claude/vault/.vault.lock",
     "clients/ExampleClient/.vault/secret.txt",
     "foo.env.json",
 ]
@@ -790,6 +929,7 @@ def test_vault_patterns_in_npmignore():
         ".claude/vault/vault.age",
         ".claude/vault/vault.recipients",
         ".claude/vault/identity.age",
+        ".claude/vault/.vault.lock",
         "**/vault.age",
         "**/identity.age",
         "clients/*/.vault/",
