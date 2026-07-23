@@ -78,8 +78,70 @@
 // — the source comment deliberately avoids a literal accented character
 // itself, so this file's own bytes can't silently drift between NFC/NFD
 // depending on the editor that touched it last.
+// ★ Issue #146 (Cyra, PR #145 re-review — pre-existing, narrow residual, NOT
+// a regression of the HIGH fix below). `normalizeComponent`'s trailing
+// `[. ]` strip only ever collapsed a component that is ENTIRELY dots/spaces.
+// A "noise" component built instead from Unicode general-category Cf
+// (format-control) codepoints — zero-width space U+200B, ZWNJ/ZWJ, soft
+// hyphen U+00AD (Cf, verified — not a printable hyphen), the BOM/ZWNBSP
+// U+FEFF, the LRM/RLM/Arabic-letter-mark bidi controls, word joiner, … — or
+// from a LONE combining mark (general category Mn/Mc/Me) with no preceding
+// base character to attach to, does NOT normalize to empty under the
+// original rule: it is real, non-empty, non-dot/-space content, so it
+// survives `normalizePath`'s `.filter(Boolean)` untouched. Interposed
+// WITHIN a forbidden EXCLUDE_DIR_PREFIXES/EXCLUDE_CONTENT_PREFIXES root
+// (e.g. `.tess/<U+200B>/keys/verifiers/cyra.asc`), it still defeats the
+// string prefix-match exactly like the all-dots/all-space vector PR #145
+// closed — the interposed segment breaks the contiguous comparison while
+// remaining, under the old rule, a "real" segment.
+//
+// FIX — extend the SAME normalize-to-empty mechanism, not a new one:
+//   1. Strip every Cf-category codepoint from the ENTIRE component (not
+//      only a trailing run) — `\p{Cf}` is exhaustive over Unicode's format-
+//      control block, so this needs no per-character allowlist to maintain.
+//      A component composed ENTIRELY of such codepoints collapses to `''`
+//      and is dropped by `normalizePath`'s existing `.filter(Boolean)` (PR
+//      #145's HIGH fix) — the SAME fail-safe machinery, a wider input set.
+//      Applied BEFORE the trailing dot/space strip (not after): a Cf
+//      codepoint trailing a run of literal dots/spaces (e.g. `". ​"`)
+//      would otherwise block that regex's end-anchor from reaching the real
+//      dots/spaces underneath it — stripping the invisible layer first
+//      restores the original rule's own reach.
+//   2. Collapse a component that is, after step 1, ENTIRELY combining marks
+//      (`\p{M}`, general categories Mn/Mc/Me) to `''` too — a "combining-
+//      only" component, issue #146's third named vector: no base character
+//      means nothing for the mark to combine with, so it is orphaned by
+//      construction. NOT applied to a mark that has a base alongside it in
+//      the same component (an ordinary accented letter) — by this point
+//      `.normalize('NFC')` (the very first step) has already composed any
+//      such base+mark sequence back into its single precomposed codepoint
+//      wherever Unicode defines one (see this function's header test,
+//      test/pathnorm.test.js's NFC/NFD regression lock), so a RAW combining
+//      mark surviving to this check has already failed to compose with
+//      anything — orphaned, not merely decomposed. This scoping is
+//      deliberate and load-bearing: an earlier, broader draft of this fix
+//      that instead force-excluded ANY component containing a non-
+//      `[A-Za-z0-9._-]` character (Cyra's alternate "match-forcing token"
+//      framing in #146, taken literally) was rejected during review — it
+//      would have flipped test/secrets-casefold-bypass.test.js's own
+//      negative control ("a legitimate, non-secret file that happens to
+//      carry accented characters is kept ... the fix must not become an
+//      overbroad hammer against ordinary unicode filenames", e.g.
+//      `agents/café-notes/README.md`) from KEPT to wrongly EXCLUDED. Only
+//      the two provably-noise categories above (invisible format-control
+//      codepoints; marks with no base to attach to) are collapsed — real,
+//      printable, identity-bearing Unicode text of any script is left
+//      exactly as NFC + casefold already handled it, unaffected by this fix.
+//      See test/pathnorm.test.js and test/secrets-noise-component-bypass.test.js
+//      for the empirically-verified (buggy-before / correct-after)
+//      regression lock on all three named vectors, plus the café negative
+//      control proving this fix does not regress the existing one.
+const FORMAT_CONTROL_RE = /\p{Cf}/gu;
+const COMBINING_ONLY_RE = /^\p{M}+$/u;
+
 export function normalizeComponent(c) {
-  return c.normalize('NFC').toLowerCase().replace(/[. ]+$/, '');
+  const stripped = c.normalize('NFC').toLowerCase().replace(FORMAT_CONTROL_RE, '').replace(/[. ]+$/, '');
+  return COMBINING_ONLY_RE.test(stripped) ? '' : stripped;
 }
 
 // ★ HIGH (Reid, PR #145 review) — empty-normalized-component join corruption.

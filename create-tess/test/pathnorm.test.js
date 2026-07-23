@@ -53,6 +53,46 @@ test('★★ HIGH regression lock: an all-dots/all-spaces component normalizes t
   assert.equal(normalizeComponent('   '), '', 'a pure-space component must normalize to empty');
 });
 
+// ★★ Issue #146 regression lock (Cyra, PR #145 re-review) — the primitive-
+// level assertion: a component built ENTIRELY from Unicode format-control
+// (Cf) codepoints, or ENTIRELY from a lone combining mark with no base
+// character, also collapses to the EMPTY STRING — the SAME contract as the
+// all-dots/all-spaces case above, extended to the three vectors named in
+// #146. Verified directly against the pre-fix module (git stash) before
+// writing this fix: all three returned the UN-stripped, non-empty component.
+test('★★ #146 regression lock: a component composed entirely of Cf/zero-width/soft-hyphen/combining-only codepoints normalizes to the empty string', () => {
+  assert.equal(normalizeComponent('​'), '', 'a lone zero-width space (U+200B, Cf) must normalize to empty');
+  assert.equal(normalizeComponent('­'), '', 'a lone soft hyphen (U+00AD, Cf) must normalize to empty');
+  assert.equal(normalizeComponent('́'), '', 'a lone combining acute accent (U+0301, no base) must normalize to empty');
+  assert.equal(normalizeComponent('‌‍'), '', 'ZWNJ+ZWJ (both Cf) must normalize to empty');
+  assert.equal(normalizeComponent('﻿'), '', 'a lone BOM/ZWNBSP (U+FEFF, Cf) must normalize to empty');
+  assert.equal(
+    normalizeComponent('́̀'),
+    '',
+    'multiple stacked combining marks with no base (U+0301 + U+0300) must normalize to empty',
+  );
+});
+
+// Embedded (not whole-component) noise: Cf codepoints stripped from
+// ANYWHERE in the component, not only when they make up the whole thing —
+// closes the same vector when the attacker splices the invisible codepoint
+// INTO an otherwise-ordinary segment name rather than using it as its own
+// segment.
+test('★ #146: a Cf codepoint embedded inside an otherwise-ordinary component is stripped, not just a whole-component match', () => {
+  assert.equal(normalizeComponent('k​eys'), 'keys', 'an embedded ZWSP inside "keys" must be stripped to reveal "keys"');
+  assert.equal(normalizeComponent('secre­ts'), 'secrets', 'an embedded soft hyphen inside "secrets" must be stripped to reveal "secrets"');
+});
+
+// Negative control (issue #146 fix): this fix must NOT become the overbroad
+// hammer an earlier draft considered and rejected (see pathnorm.js's header
+// comment) — real, printable, identity-bearing Unicode text (an ordinary
+// accented word, no Cf/lone-combining-mark content) is left exactly as NFC +
+// casefold already handled it.
+test('negative control (#146 fix): an ordinary accented component (no Cf/combining-only content) is unaffected', () => {
+  assert.equal(normalizeComponent('café'), 'café');
+  assert.equal(normalizeComponent('CAFÉ'), 'café');
+});
+
 test('★ NFC/NFD regression lock: normalizeComponent converges NFC-composed and NFD-decomposed forms of the identical grapheme', () => {
   const composed = 'É'; // U+00C9 — single precomposed codepoint
   const decomposed = 'É'.normalize('NFD'); // U+0045 U+0301 — "E" + COMBINING ACUTE ACCENT
@@ -102,6 +142,41 @@ test('★★ HIGH regression lock: normalizePath drops an empty-after-normalizat
   // Multiple noise components, and a noise component at the very end.
   assert.equal(normalizePath('.tess/.../.../keys/verifiers/cyra.asc'), '.tess/keys/verifiers/cyra.asc');
   assert.equal(normalizePath('.tess/keys/verifiers/...'), '.tess/keys/verifiers');
+});
+
+// ★★ Issue #146 regression lock, primitive level — the FIX itself, at
+// normalizePath's join surface: a Cf/zero-width/soft-hyphen/combining-only
+// component interposed WITHIN a forbidden-prefix-shaped path must vanish
+// from the joined path exactly like the all-dots/all-space vector above,
+// collapsing back to the canonical form so the (unchanged) downstream
+// `startsWith` prefix match in ignore.js fires correctly. Empirically
+// verified against the pre-#146-fix module (git stash) before writing this
+// fix: all four vectors below normalized to a STRING CONTAINING the noise
+// codepoint (not the canonical collapsed form) pre-fix.
+test('★★ #146 regression lock: normalizePath drops a Cf/zero-width/soft-hyphen/combining-only noise component interposed within a forbidden-prefix path', () => {
+  assert.equal(
+    normalizePath('.tess/​/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone zero-width space (U+200B) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/­/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone soft hyphen (U+00AD) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/́/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone combining-only (U+0301, no base) directory component must vanish, not defeat the prefix match',
+  );
+  // EXCLUDE_CONTENT_PREFIXES is affected by the identical root cause, not
+  // just EXCLUDE_DIR_PREFIXES (mirrors the HIGH fix's own second
+  // reproduction above).
+  assert.equal(
+    normalizePath('.tess/state/​/memory/real.json'),
+    '.tess/state/memory/real.json',
+    'the same #146 noise-component vector against EXCLUDE_CONTENT_PREFIXES, not just EXCLUDE_DIR_PREFIXES',
+  );
 });
 
 test('negative control: normalizePath does not collapse an ordinary path with no noise components', () => {
