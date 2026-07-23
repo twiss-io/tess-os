@@ -74,6 +74,7 @@ import time
 import pytest
 
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap; COMPONENT_ROOT used below
+from _kill_test_helpers import KillTestTmpDirs
 
 import spec_engine.codegen as codegen_module
 from spec_engine.codegen import generate_app
@@ -148,7 +149,16 @@ trigger = sys.argv[2]  # "FIRST" or an exact rel_path, e.g. ".spec-engine/codege
 # sys.path and its own throwaway approval-identity dir (never touching
 # this machine's real ~/.tess-os/approval-identity/) before importing
 # spec_engine.
-os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", tempfile.mkdtemp(prefix="codegen-kill-test-identity-"))
+#
+# tess-os #165 (Reid, post-#164 follow-up): the parent SIGKILLs this
+# child, which is unblockable and skips all Python-level cleanup -- so
+# this mkdtemp() dir would never be removed by anyone. Report it back to
+# the parent over stdout (mirroring the "REACHED:" marker convention
+# below) BEFORE anything else runs, so the parent can track and remove
+# the exact real path in its own teardown (see tests/_kill_test_helpers.py).
+_identity_dir = tempfile.mkdtemp(prefix="codegen-kill-test-identity-")
+print("KILL_TEST_TMPDIR:" + _identity_dir, flush=True)
+os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", _identity_dir)
 sys.path.insert(0, "__COMPONENT_ROOT__")
 
 from spec_engine.gate_approval import sign_local_approval
@@ -229,6 +239,11 @@ def _spawn_and_kill_mid_write(tmp_path, target_dir, trigger):
     )
     deadline = time.monotonic() + 30
     marker = None
+    # tess-os #165: tracks the child's own throwaway TESS_OS_APPROVAL_IDENTITY_DIR
+    # mkdtemp() dir (reported over stdout, since the SIGKILL below means the
+    # child can never clean it up itself) so this function's own `finally:`
+    # below removes it rather than leaking it.
+    leaked_tmp_dirs = KillTestTmpDirs()
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -241,6 +256,8 @@ def _spawn_and_kill_mid_write(tmp_path, target_dir, trigger):
             line = proc.stdout.readline()
             if not line:
                 time.sleep(0.02)
+                continue
+            if leaked_tmp_dirs.observe_line(line):
                 continue
             if line.startswith("REACHED:"):
                 marker = line.strip()[len("REACHED:"):]
@@ -255,6 +272,7 @@ def _spawn_and_kill_mid_write(tmp_path, target_dir, trigger):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+        leaked_tmp_dirs.cleanup()
     return marker
 
 
@@ -333,7 +351,12 @@ from pathlib import Path
 target_dir = sys.argv[1]
 target_path = Path(target_dir)
 
-os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", tempfile.mkdtemp(prefix="codegen-kill-test-identity-"))
+# tess-os #165 (Reid, post-#164 follow-up): report this mkdtemp() dir back
+# to the parent over stdout -- see the twin comment on `_CHILD_SCRIPT`
+# above for the full rationale.
+_identity_dir = tempfile.mkdtemp(prefix="codegen-kill-test-identity-")
+print("KILL_TEST_TMPDIR:" + _identity_dir, flush=True)
+os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", _identity_dir)
 sys.path.insert(0, "__COMPONENT_ROOT__")
 
 from spec_engine.gate_approval import sign_local_approval
@@ -428,6 +451,11 @@ def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_nex
     )
     deadline = time.monotonic() + 30
     marker = None
+    # tess-os #165: tracks the child's own throwaway TESS_OS_APPROVAL_IDENTITY_DIR
+    # mkdtemp() dir (reported over stdout, since the SIGKILL below means the
+    # child can never clean it up itself) so this test's own `finally:`
+    # below removes it rather than leaking it.
+    leaked_tmp_dirs = KillTestTmpDirs()
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -440,6 +468,8 @@ def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_nex
             line = proc.stdout.readline()
             if not line:
                 time.sleep(0.02)
+                continue
+            if leaked_tmp_dirs.observe_line(line):
                 continue
             if line.startswith("REACHED_SWAP_ASIDE"):
                 marker = line.strip()
@@ -454,6 +484,7 @@ def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_nex
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+        leaked_tmp_dirs.cleanup()
 
     # Post-kill, pre-recovery: this is the exact orphaned state both
     # reviewers independently reproduced — target_dir absent, original

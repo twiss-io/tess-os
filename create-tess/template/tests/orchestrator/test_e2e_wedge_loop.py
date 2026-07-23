@@ -53,6 +53,7 @@ import pytest
 import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
 from _orchestrator_paths import EXAMPLE_ROUTING_TABLE, REPO_ROOT
 
+from _kill_test_helpers import KillTestTmpDirs
 from _node_server import HAS_NODE, get_json, node_server, post_json  # noqa: F401 -- node_server used as a fixture
 
 from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
@@ -162,38 +163,38 @@ def test_happy_path_freeform_idea_approves_boots_and_produces_a_verifiable_recei
     assert manifest["spec_id"] == result.spec.spec_id
 
     # --- the app BOOTS and serves real HTTP traffic ----------------------
+    # (no try/finally needed here -- the `node_server` fixture itself
+    # already terminates the spawned process on teardown, even if an
+    # assertion below raises; see tests/_node_server.py's own docstring.)
     proc, base_url = node_server(target_dir)
-    try:
-        status, body = get_json(f"{base_url}/health")
-        assert status == 200
-        assert body == {"status": "ok"}
-        assert proc.poll() is None, "server must still be alive after answering a real request"
+    status, body = get_json(f"{base_url}/health")
+    assert status == 200
+    assert body == {"status": "ok"}
+    assert proc.poll() is None, "server must still be alive after answering a real request"
 
-        # One real CRUD round-trip against the entity the freeform idea
-        # actually declared -- create, then fetch it back by id, then
-        # confirm it shows up in the list.
-        slug = re.sub(r"[^a-z0-9]+", "-", entity.name.lower()).strip("-")
-        collection_url = f"{base_url}/api/{slug}s"
-        payload = {
-            "vendor_name": "Acme Freight Co",
-            "amount": "4200.00",
-            "due_date": "2026-08-15",
-            "status": "open",
-        }
-        status, created = post_json(collection_url, payload)
-        assert status == 201
-        assert "id" in created
-        assert created["vendor_name"] == "Acme Freight Co"
+    # One real CRUD round-trip against the entity the freeform idea
+    # actually declared -- create, then fetch it back by id, then
+    # confirm it shows up in the list.
+    slug = re.sub(r"[^a-z0-9]+", "-", entity.name.lower()).strip("-")
+    collection_url = f"{base_url}/api/{slug}s"
+    payload = {
+        "vendor_name": "Acme Freight Co",
+        "amount": "4200.00",
+        "due_date": "2026-08-15",
+        "status": "open",
+    }
+    status, created = post_json(collection_url, payload)
+    assert status == 201
+    assert "id" in created
+    assert created["vendor_name"] == "Acme Freight Co"
 
-        status, fetched = get_json(f"{collection_url}/{created['id']}")
-        assert status == 200
-        assert fetched["id"] == created["id"]
+    status, fetched = get_json(f"{collection_url}/{created['id']}")
+    assert status == 200
+    assert fetched["id"] == created["id"]
 
-        status, listed = get_json(collection_url)
-        assert status == 200
-        assert any(r["id"] == created["id"] for r in listed)
-    finally:
-        pass  # node_server fixture terminates the process on teardown
+    status, listed = get_json(collection_url)
+    assert status == 200
+    assert any(r["id"] == created["id"] for r in listed)
 
     # --- the generated app's OWN acceptance-test suite passes for real ---
     node_test = subprocess.run(
@@ -305,8 +306,20 @@ identity_dir = sys.argv[4]
 # own child script both apply -- this child has NO pytest/conftest
 # machinery at all, so it sets up its own isolation before importing
 # anything real.
-os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", tempfile.mkdtemp(prefix="e2e-kill-test-identity-"))
-os.environ.setdefault("TESS_OS_TELEMETRY_DIR", tempfile.mkdtemp(prefix="e2e-kill-test-telemetry-"))
+#
+# tess-os #165 (Reid, post-#164 follow-up): the parent SIGKILLs this
+# child, which is unblockable and skips all Python-level cleanup -- so
+# neither of these two mkdtemp() dirs would ever be removed by anyone.
+# Report each one back to the parent over stdout (mirroring the
+# "REACHED:" marker convention below) BEFORE anything else runs, so the
+# parent can track and remove the exact real path in its own teardown
+# (see tests/_kill_test_helpers.py).
+_identity_dir = tempfile.mkdtemp(prefix="e2e-kill-test-identity-")
+_telemetry_dir = tempfile.mkdtemp(prefix="e2e-kill-test-telemetry-")
+print("KILL_TEST_TMPDIR:" + _identity_dir, flush=True)
+print("KILL_TEST_TMPDIR:" + _telemetry_dir, flush=True)
+os.environ.setdefault("TESS_OS_APPROVAL_IDENTITY_DIR", _identity_dir)
+os.environ.setdefault("TESS_OS_TELEMETRY_DIR", _telemetry_dir)
 
 sys.path.insert(0, "__REPO_ROOT__")
 
@@ -377,6 +390,11 @@ def test_sigkill_mid_generate_app_leaves_zero_partial_trust_artifacts(tmp_path):
     )
     deadline = time.monotonic() + BOOT_TIMEOUT_SECONDS
     marker = None
+    # tess-os #165: tracks the child's own throwaway TESS_OS_APPROVAL_IDENTITY_DIR
+    # / TESS_OS_TELEMETRY_DIR mkdtemp() dirs (reported over stdout, since the
+    # SIGKILL below means the child can never clean them up itself) so this
+    # test's own `finally:` below removes them rather than leaking them.
+    leaked_tmp_dirs = KillTestTmpDirs()
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -389,6 +407,8 @@ def test_sigkill_mid_generate_app_leaves_zero_partial_trust_artifacts(tmp_path):
             line = proc.stdout.readline()
             if not line:
                 time.sleep(0.02)
+                continue
+            if leaked_tmp_dirs.observe_line(line):
                 continue
             if line.startswith("REACHED:"):
                 marker = line.strip()[len("REACHED:"):]
@@ -403,6 +423,7 @@ def test_sigkill_mid_generate_app_leaves_zero_partial_trust_artifacts(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+        leaked_tmp_dirs.cleanup()
 
     # --- ZERO partial codegen tree ---------------------------------------
     # The kill landed right after the FIRST generated file was written --
