@@ -129,6 +129,7 @@ from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.
 
 import argparse
 import copy
+import contextlib
 import datetime
 import getpass
 import glob
@@ -7240,6 +7241,15 @@ VAULT_BLOB = ".claude/vault/vault.age"
 VAULT_REGISTRY = ".claude/vault/vault.registry.json"
 VAULT_GITKEEP = ".claude/vault/.gitkeep"
 VAULT_VERSION = 1
+VAULT_LOCK = ".claude/vault/.vault.lock"
+
+# The encrypted data format deliberately remains small and closed.  Every
+# vault command reaches it through _vault_read_blob(), so a malformed blob
+# fails before any command can print metadata or select a value.
+_VAULT_META_FIELDS = {
+    "minted_at", "minted_by", "service", "key", "format", "rotates",
+    "purpose", "rotated_at",
+}
 
 # Keychain service/account identifiers for macOS `security` and Linux secret-tool
 _KEYCHAIN_SERVICE = "tess-vault-identity"
@@ -7570,16 +7580,56 @@ def _vault_blob_exists(root: Path) -> bool:
     return (root / VAULT_BLOB).exists()
 
 
-def _vault_read_blob(root: Path) -> dict:
+def _vault_schema_error() -> None:
+    """Fail closed without reflecting decrypted content into an error."""
+    sys.exit("tessctl vault: vault blob schema is invalid; refusing to read or modify it.")
+
+
+def _vault_validate_blob_data(data: object) -> dict:
+    """Validate the complete decrypted vault schema before any consumer uses it.
+
+    Error messages intentionally carry no refs, metadata, or values because all
+    of those originate in decrypted material.  Unknown fields are rejected so a
+    consumer cannot accidentally start treating an unreviewed field as trusted.
+    """
+    if not isinstance(data, dict) or set(data) != {"version", "entries"}:
+        _vault_schema_error()
+    if type(data["version"]) is not int or data["version"] != VAULT_VERSION:
+        _vault_schema_error()
+    entries = data["entries"]
+    if not isinstance(entries, dict):
+        _vault_schema_error()
+    for stored_ref, entry in entries.items():
+        if not isinstance(stored_ref, str) or not stored_ref:
+            _vault_schema_error()
+        if not isinstance(entry, dict) or set(entry) != {"value", "meta"}:
+            _vault_schema_error()
+        if not isinstance(entry["value"], str) or not entry["value"]:
+            _vault_schema_error()
+        meta = entry["meta"]
+        if not isinstance(meta, dict):
+            _vault_schema_error()
+        for field, value in meta.items():
+            if not isinstance(field, str) or field not in _VAULT_META_FIELDS or not isinstance(value, str):
+                _vault_schema_error()
+    return data
+
+
+def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
     """
     Decrypt the vault blob and return the in-memory dict.
     Structure: {"version": 1, "entries": {"ref": {"value": "...", "meta": {...}}}}
     Returns {"version": 1, "entries": {}} for a missing blob (new vault).
     NEVER logs or prints any entry value.
+
+    The second value is the SHA-256 digest of the encrypted blob bytes, never
+    of plaintext.  It is used only as an opaque stale-plan guard for explicit
+    migrations.
     """
     blob_path = root / VAULT_BLOB
     if not blob_path.exists():
-        return {"version": VAULT_VERSION, "entries": {}}
+        data = {"version": VAULT_VERSION, "entries": {}}
+        return _vault_validate_blob_data(data), None
 
     backend = _vault_check_crypto()
     private_key = _vault_load_identity(root)
@@ -7603,13 +7653,65 @@ def _vault_read_blob(root: Path) -> dict:
             f"({type(e).__name__}). The blob may be corrupt or encrypted to a different identity."
         )
 
-    if not isinstance(data, dict):
-        sys.exit("tessctl vault: vault blob has unexpected structure (not a dict).")
+    return _vault_validate_blob_data(data), hashlib.sha256(ciphertext).hexdigest()
 
-    if "entries" not in data:
-        data["entries"] = {}
 
+def _vault_read_blob(root: Path) -> dict:
+    """Read a schema-validated vault blob; never expose decrypted data on error."""
+    data, _ = _vault_read_blob_state(root)
     return data
+
+
+@contextlib.contextmanager
+def _vault_mutation_lock(root: Path):
+    """Serialize every vault read-modify-write operation for this project.
+
+    The lock is a separate 0600 file, so replacing ``vault.age`` remains atomic
+    and cannot invalidate the lock inode.  It contains no secrets and is already
+    covered by the vault directory's git-ignore/hard-guard rules.
+    """
+    lock_path = root / VAULT_LOCK
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(str(lock_path.parent), 0o700)
+    except OSError:
+        pass
+
+    handle = open(lock_path, "a+b")
+    try:
+        os.chmod(str(lock_path), 0o600)
+    except OSError:
+        pass
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            unlock = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            unlock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            yield
+        finally:
+            unlock()
+    finally:
+        handle.close()
+
+
+def _vault_mutate_blob(root: Path, mutate):
+    """Lock, read, mutate, validate, and atomically re-encrypt one vault state."""
+    with _vault_mutation_lock(root):
+        data = _vault_read_blob(root)
+        result = mutate(data)
+        _vault_validate_blob_data(data)
+        _vault_write_blob(root, data)
+        return result
 
 
 def _vault_write_blob(root: Path, data: dict) -> None:
@@ -7618,6 +7720,7 @@ def _vault_write_blob(root: Path, data: dict) -> None:
     Uses a temp sibling file + os.replace() so the vault is never partially written.
     NEVER logs or prints any entry value.
     """
+    _vault_validate_blob_data(data)
     blob_path = root / VAULT_BLOB
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -7736,6 +7839,27 @@ def _vault_resolve_entry(data: dict, canonical_ref: str):
     return None, None
 
 
+def _vault_exact_stored_entry(data: dict, stored_ref: str):
+    """Return one explicitly named encrypted-map entry, without normalizing it.
+
+    This is intentionally separate from normal resolution.  It is the owner
+    recovery path for data created by old clients: a duplicate or a malformed
+    historical key must never be selected by a canonical alias, but an owner can
+    still access exactly the stored key through ``vault recover``.
+    """
+    if not isinstance(stored_ref, str) or not stored_ref:
+        sys.exit("tessctl vault recover: --stored-ref must be a non-empty exact stored reference.")
+    entry = data["entries"].get(stored_ref)
+    if entry is None:
+        sys.exit("tessctl vault recover: exact stored reference not found.")
+    return entry
+
+
+def _vault_display_stored_ref(stored_ref: str) -> str:
+    """Render an arbitrary stored key safely for a terminal-facing recovery UI."""
+    return repr(stored_ref)
+
+
 def _vault_ref_migration_plan(data: dict):
     """Return legacy key re-mappings plus invalid/ambiguous storage findings.
 
@@ -7773,9 +7897,12 @@ def _vault_ref_migration_plan(data: dict):
     return migrations, sorted(invalid), conflicts
 
 
-def _vault_ref_migration_plan_id(migrations) -> str:
-    """Return a non-secret confirmation token for a dry-run migration plan."""
-    payload = json.dumps(migrations, separators=(",", ":"), ensure_ascii=True)
+def _vault_ref_migration_plan_id(migrations, ciphertext_digest: str) -> str:
+    """Return a non-secret token bound to plan *and exact ciphertext state*."""
+    payload = json.dumps(
+        {"ciphertext_sha256": ciphertext_digest, "migrations": migrations},
+        separators=(",", ":"), ensure_ascii=True, sort_keys=True,
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -8295,28 +8422,28 @@ def _vault_cmd_set(args, root: Path) -> None:
         if not value:
             sys.exit("tessctl vault set: empty value received on stdin — nothing stored.")
 
-    data = _vault_read_blob(root)
-    stored_ref, _ = _vault_resolve_entry(data, canonical_ref)
-    existing = stored_ref is not None
-    # New entries are always canonical. Existing prefixed keys are intentionally
-    # updated in place for backward compatibility; migrate-refs is the only
-    # explicit operation that rekeys an existing secret.
-    storage_ref = stored_ref or canonical_ref
-
-    data.setdefault("entries", {})[storage_ref] = {
-        "value": value,
-        "meta": {
-            "minted_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "minted_by": os.environ.get("USER", "unknown"),
-            "service": service,
-            "key": key,
-            "format": "token",
-            "rotates": "",
-            "purpose": ""
+    def mutate(data):
+        stored_ref, _ = _vault_resolve_entry(data, canonical_ref)
+        existing = stored_ref is not None
+        # New entries are always canonical. Existing prefixed keys are
+        # deliberately updated in place for compatibility; only the explicit
+        # migration command rekeys an existing secret.
+        storage_ref = stored_ref or canonical_ref
+        data["entries"][storage_ref] = {
+            "value": value,
+            "meta": {
+                "minted_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "minted_by": os.environ.get("USER", "unknown"),
+                "service": service,
+                "key": key,
+                "format": "token",
+                "rotates": "",
+                "purpose": ""
+            }
         }
-    }
+        return existing
 
-    _vault_write_blob(root, data)
+    existing = _vault_mutate_blob(root, mutate)
     verb = "updated" if existing else "stored"
     print(
         f"tessctl vault: {verb} {canonical_ref}  "
@@ -8425,56 +8552,65 @@ def _vault_cmd_migrate_refs(args, root: Path) -> None:
     default is a dry run and ``--apply`` is rejected for malformed or ambiguous
     data.  It changes map keys only; values and metadata are retained verbatim.
     """
-    data = _vault_read_blob(root)
-    migrations, invalid, conflicts = _vault_ref_migration_plan(data)
-
-    if invalid or conflicts:
-        print("tessctl vault migrate-refs: no changes made; storage needs manual recovery.")
-        for stored_ref in invalid:
-            print(f"  invalid stored ref: {stored_ref!r}")
-        for canonical_ref, stored_refs in sorted(conflicts.items()):
-            print(
-                f"  ambiguous ref {canonical_ref!r}: "
-                f"{', '.join(repr(ref) for ref in stored_refs)}"
-            )
-        print("  Refusing to choose, overwrite, or delete any secret entry.")
-        sys.exit(1)
-
-    if not migrations:
-        print("tessctl vault migrate-refs: all stored references are already canonical; no changes made.")
-        return
-
-    plan_id = _vault_ref_migration_plan_id(migrations)
     apply_changes = getattr(args, "apply", False)
-    mode = "apply" if apply_changes else "dry run"
-    print(f"tessctl vault migrate-refs: {mode}; {len(migrations)} reference(s) to normalize")
-    for legacy_ref, canonical_ref in migrations:
-        print(f"  {legacy_ref!r} -> {canonical_ref!r}")
-    print(f"  plan id: {plan_id}")
+    with _vault_mutation_lock(root):
+        # Read the ciphertext and its digest under the same lock used by every
+        # mutation. A plan therefore cannot be applied to a different encrypted
+        # state if set/rotate/rm ran after its dry run.
+        data, ciphertext_digest = _vault_read_blob_state(root)
+        migrations, invalid, conflicts = _vault_ref_migration_plan(data)
 
-    if not apply_changes:
-        print("  No encrypted vault data was changed.")
-        print(
-            "  Review this plan, then run `tessctl vault migrate-refs --apply "
-            f"--plan {plan_id}` to rekey it."
-        )
-        return
+        if invalid or conflicts:
+            print("tessctl vault migrate-refs: no changes made; storage needs manual recovery.")
+            for stored_ref in invalid:
+                print(f"  invalid stored ref: {_vault_display_stored_ref(stored_ref)}")
+            for canonical_ref, stored_refs in sorted(conflicts.items()):
+                print(
+                    f"  ambiguous ref {canonical_ref!r}: "
+                    f"{', '.join(_vault_display_stored_ref(ref) for ref in stored_refs)}"
+                )
+            print("  Refusing to choose, overwrite, or delete any secret entry.")
+            sys.exit(1)
 
-    if getattr(args, "plan", None) != plan_id:
-        print("  No encrypted vault data was changed.")
-        print(
-            "  Refusing to apply without this dry-run plan id. Run `tessctl vault "
-            "migrate-refs` first and pass its exact `--plan` value."
-        )
-        sys.exit(2)
+        if not migrations:
+            print("tessctl vault migrate-refs: all stored references are already canonical; no changes made.")
+            return
 
-    entries = dict(data["entries"])
-    for legacy_ref, canonical_ref in migrations:
-        # Conflicts were rejected above, so this cannot overwrite a canonical
-        # entry. The value and metadata object are moved unchanged.
-        entries[canonical_ref] = entries.pop(legacy_ref)
-    data["entries"] = entries
-    _vault_write_blob(root, data)
+        # A non-empty migration necessarily has a ciphertext blob. Keep the
+        # assertion local rather than ever emitting a digest in terminal output.
+        if ciphertext_digest is None:
+            sys.exit("tessctl vault migrate-refs: no encrypted vault state exists; no changes made.")
+        plan_id = _vault_ref_migration_plan_id(migrations, ciphertext_digest)
+        mode = "apply" if apply_changes else "dry run"
+        print(f"tessctl vault migrate-refs: {mode}; {len(migrations)} reference(s) to normalize")
+        for legacy_ref, canonical_ref in migrations:
+            print(f"  {_vault_display_stored_ref(legacy_ref)} -> {canonical_ref!r}")
+        print(f"  plan id: {plan_id}")
+
+        if not apply_changes:
+            print("  No encrypted vault data was changed.")
+            print(
+                "  Review this plan, then run `tessctl vault migrate-refs --apply "
+                f"--plan {plan_id}` to rekey it."
+            )
+            return
+
+        if getattr(args, "plan", None) != plan_id:
+            print("  No encrypted vault data was changed.")
+            print(
+                "  Refusing to apply: pass the exact dry-run plan id for this encrypted "
+                "vault state. The supplied plan is missing, stale, or does not match; "
+                "run `tessctl vault migrate-refs` again."
+            )
+            sys.exit(2)
+
+        entries = dict(data["entries"])
+        for legacy_ref, canonical_ref in migrations:
+            # Conflicts were rejected above, so this cannot overwrite a
+            # canonical entry. The value and metadata object are moved unchanged.
+            entries[canonical_ref] = entries.pop(legacy_ref)
+        data["entries"] = entries
+        _vault_write_blob(root, data)
     print(
         f"tessctl vault migrate-refs: normalized {len(migrations)} reference(s); "
         "values and metadata were retained."
@@ -8488,13 +8624,13 @@ def _vault_cmd_rm(args, root: Path) -> None:
         sys.exit("tessctl vault rm: specify a ref (e.g. tessctl vault rm github/token)")
     canonical_ref = _vault_canonical_ref(requested_ref)
 
-    data = _vault_read_blob(root)
-    stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
-    if entry is None:
-        sys.exit(f"tessctl vault rm: ref not found: {canonical_ref}")
+    def mutate(data):
+        stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
+        if entry is None:
+            sys.exit(f"tessctl vault rm: ref not found: {canonical_ref}")
+        del data["entries"][stored_ref]
 
-    del data["entries"][stored_ref]
-    _vault_write_blob(root, data)
+    _vault_mutate_blob(root, mutate)
     print(f"tessctl vault: removed {canonical_ref}")
 
 
@@ -8509,9 +8645,10 @@ def _vault_cmd_rotate(args, root: Path) -> None:
     canonical_ref = _vault_canonical_ref(requested_ref)
     service, _ = _vault_parse_ref(canonical_ref)
 
-    data = _vault_read_blob(root)
-    stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
-    if entry is None:
+    # Avoid prompting for a missing/ambiguous ref. The same check is repeated
+    # inside the mutation lock before writing to close the race after input.
+    _, existing_entry = _vault_resolve_entry(_vault_read_blob(root), canonical_ref)
+    if existing_entry is None:
         sys.exit(
             f"tessctl vault rotate: ref not found: {canonical_ref}.\n"
             f"  Use `tessctl vault set {canonical_ref}` to create it."
@@ -8543,81 +8680,118 @@ def _vault_cmd_rotate(args, root: Path) -> None:
         if not value:
             sys.exit("tessctl vault rotate: empty value received on stdin.")
 
-    old_meta = data["entries"][stored_ref].get("meta", {})
-    old_meta["rotated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    old_meta["minted_at"] = old_meta.get("rotated_at")
+    def mutate(data):
+        stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
+        if entry is None:
+            sys.exit(
+                f"tessctl vault rotate: ref not found: {canonical_ref}.\n"
+                f"  Use `tessctl vault set {canonical_ref}` to create it."
+            )
+        old_meta = dict(entry["meta"])
+        old_meta["rotated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old_meta["minted_at"] = old_meta["rotated_at"]
+        data["entries"][stored_ref] = {"value": value, "meta": old_meta}
 
-    data["entries"][stored_ref] = {"value": value, "meta": old_meta}
-    _vault_write_blob(root, data)
+    _vault_mutate_blob(root, mutate)
     print(f"tessctl vault: rotated {canonical_ref}  (new value stored; value masked)")
 
 
-def _vault_cmd_exec(args, root: Path) -> None:
-    """
-    tess vault exec --ref <ref> [--as ENVVAR] -- <command...>
-
-    Just-in-time injection: decrypts ONLY the requested ref, injects it as an
-    env var into the child process environment, runs the command. The secret
-    value NEVER appears in tessctl's stdout/stderr — only in the child's env.
-    Child stdout/stderr are connected directly to the terminal (not captured).
-
-    This is the §3.2 injection wrapper — the vault → child-process-env path.
-    """
-    requested_ref = getattr(args, "ref", None)
-    as_var = getattr(args, "as_var", None)
-    cmd_list = getattr(args, "cmd", None) or []
-
-    if not requested_ref:
-        sys.exit("tessctl vault exec: --ref <service/key> is required")
-
-    # argparse REMAINDER includes '--' as the first item when present; strip it
+def _vault_exec_command(cmd_list, command_name: str) -> list[str]:
+    """Validate argparse's remainder without echoing a value-bearing command."""
     if cmd_list and cmd_list[0] == "--":
         cmd_list = cmd_list[1:]
-
     if not cmd_list:
-        sys.exit("tessctl vault exec: specify a command after --  (e.g. tessctl vault exec --ref github/token -- gh pr list)")
+        sys.exit(f"tessctl vault {command_name}: specify a command after --")
+    return cmd_list
 
-    canonical_ref = _vault_canonical_ref(requested_ref)
 
-    # Determine the env var name
+def _vault_exec_env_var(as_var: str | None, default: str | None, command_name: str) -> str:
+    """Return a portable environment name; recovery requires an explicit one."""
     if as_var:
         env_var = as_var.upper()
+    elif default is not None:
+        env_var = default
     else:
-        # Default: SERVICE_KEY in upper snake_case
-        env_var = canonical_ref.replace("/", "_").replace("-", "_").upper()
+        sys.exit(f"tessctl vault {command_name}: --as ENVVAR is required for exact stored-ref recovery.")
+    if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", env_var):
+        sys.exit(f"tessctl vault {command_name}: --as must be a valid environment variable name.")
+    return env_var
 
-    # Decrypt just the requested ref
-    data = _vault_read_blob(root)
-    _, entry = _vault_resolve_entry(data, canonical_ref)
-    if entry is None:
-        sys.exit(f"tessctl vault exec: ref not found: {canonical_ref}")
 
-    value = entry.get("value", "")
-    if not value:
-        sys.exit(f"tessctl vault exec: ref {canonical_ref!r} has an empty value — set it first.")
-
-    # Build child env: inherit current env + inject the secret
+def _vault_exec_value(value: str, env_var: str, cmd_list: list[str], command_name: str) -> None:
+    """Inject a schema-validated value into one child environment only."""
     child_env = dict(os.environ)
     child_env[env_var] = value
-
-    # Clear the value from Python's memory as soon as it's in child_env
-    # (best-effort; Python GC is not deterministic, but we don't hold extra refs)
     del value
-
-    # Run child with stdout/stderr connected directly to terminal.
-    # tessctl never captures child output — the secret value goes only into
-    # the child's env, never into tessctl's own output stream.
     try:
         result = subprocess.run(cmd_list, env=child_env)
     except FileNotFoundError:
-        sys.exit(f"tessctl vault exec: command not found: {cmd_list[0]!r}")
+        sys.exit(f"tessctl vault {command_name}: command not found: {cmd_list[0]!r}")
     except Exception as e:
-        sys.exit(f"tessctl vault exec: failed to run command: {e}")
+        sys.exit(f"tessctl vault {command_name}: failed to run command: {type(e).__name__}")
     finally:
-        # Explicitly delete child_env to minimize window where secret is in memory
         del child_env
-
     sys.exit(result.returncode)
+
+
+def _vault_cmd_exec(args, root: Path) -> None:
+    """JIT-inject a canonically resolved ref into one child process."""
+    requested_ref = getattr(args, "ref", None)
+    if not requested_ref:
+        sys.exit("tessctl vault exec: --ref <service/key> is required")
+    canonical_ref = _vault_canonical_ref(requested_ref)
+    cmd_list = _vault_exec_command(getattr(args, "cmd", None) or [], "exec")
+    default_env = canonical_ref.replace("/", "_").replace("-", "_").upper()
+    env_var = _vault_exec_env_var(getattr(args, "as_var", None), default_env, "exec")
+
+    _, entry = _vault_resolve_entry(_vault_read_blob(root), canonical_ref)
+    if entry is None:
+        sys.exit(f"tessctl vault exec: ref not found: {canonical_ref}")
+    _vault_exec_value(entry["value"], env_var, cmd_list, "exec")
+
+
+def _vault_cmd_recover_get(args, root: Path) -> None:
+    """Show a masked value for one exact historical storage key, never raw."""
+    stored_ref = getattr(args, "stored_ref", None)
+    entry = _vault_exact_stored_entry(_vault_read_blob(root), stored_ref)
+    print(f"  stored ref: {_vault_display_stored_ref(stored_ref)}")
+    print(f"  value:      {_vault_mask_value(entry['value'], 'exact stored ref')}")
+    print("  recovery mode: this command never reveals the raw value; use recover exec to test it externally.")
+
+
+def _vault_cmd_recover_exec(args, root: Path) -> None:
+    """JIT-inject an owner-selected exact historical key without normalization."""
+    stored_ref = getattr(args, "stored_ref", None)
+    cmd_list = _vault_exec_command(getattr(args, "cmd", None) or [], "recover exec")
+    env_var = _vault_exec_env_var(getattr(args, "as_var", None), None, "recover exec")
+    entry = _vault_exact_stored_entry(_vault_read_blob(root), stored_ref)
+    _vault_exec_value(entry["value"], env_var, cmd_list, "recover exec")
+
+
+def _vault_cmd_recover_rm(args, root: Path) -> None:
+    """Delete only an owner-selected exact historical storage key."""
+    stored_ref = getattr(args, "stored_ref", None)
+
+    def mutate(data):
+        _vault_exact_stored_entry(data, stored_ref)
+        del data["entries"][stored_ref]
+
+    _vault_mutate_blob(root, mutate)
+    print(f"tessctl vault recover: removed exact stored ref {_vault_display_stored_ref(stored_ref)}")
+
+
+def _vault_cmd_recover(args, root: Path) -> None:
+    """Dispatch explicit owner recovery for an exact encrypted-map key."""
+    dispatch = {
+        "get": _vault_cmd_recover_get,
+        "exec": _vault_cmd_recover_exec,
+        "rm": _vault_cmd_recover_rm,
+    }
+    sub = getattr(args, "vault_recover_sub", None)
+    fn = dispatch.get(sub)
+    if not fn:
+        sys.exit("tessctl vault recover: choose get, exec, or rm for an exact stored reference.")
+    fn(args, root)
 
 
 def _vault_cmd_doctor(args, root: Path) -> None:
@@ -8825,6 +8999,7 @@ def cmd_vault(args, root: Path) -> None:
         "get":     _vault_cmd_get,
         "list":    _vault_cmd_list,
         "migrate-refs": _vault_cmd_migrate_refs,
+        "recover": _vault_cmd_recover,
         "rm":      _vault_cmd_rm,
         "rotate":  _vault_cmd_rotate,
         "exec":    _vault_cmd_exec,
@@ -8842,6 +9017,7 @@ def cmd_vault(args, root: Path) -> None:
             "    get <ref>             show masked value (--reveal for raw; refused on TTY)\n"
             "    list [--scope <s>]    list refs + metadata (never values)\n"
             "    migrate-refs [--apply --plan ID]  dry-run then explicitly normalize legacy refs\n"
+            "    recover <op>          owner recovery for one exact legacy stored ref\n"
             "    rm <ref>              remove an entry\n"
             "    rotate <ref>          re-encrypt a new value, show rotation URL\n"
             "    exec --ref <r> [--as VAR] -- <cmd>  JIT inject into child env\n"
@@ -20681,6 +20857,26 @@ def build_parser() -> argparse.ArgumentParser:
     # vault list
     p_vlist = vault_sub.add_parser("list", help="list all refs + metadata (never values)")
     p_vlist.add_argument("--scope", metavar="PREFIX", help="filter refs by service/scope prefix")
+
+    # vault recover — explicit, unnormalized owner recovery for historical keys
+    p_vrecover = vault_sub.add_parser(
+        "recover",
+        help="owner recovery for one exact stored legacy reference (never auto-selects)",
+    )
+    recover_sub = p_vrecover.add_subparsers(dest="vault_recover_sub", metavar="OPERATION")
+    p_vrecover_get = recover_sub.add_parser("get", help="show a masked value for an exact stored reference")
+    p_vrecover_get.add_argument("stored_ref", metavar="STORED-REF",
+                                help="exact encrypted-map key; no normalization is applied")
+    p_vrecover_exec = recover_sub.add_parser("exec", help="JIT-inject an exact stored reference")
+    p_vrecover_exec.add_argument("--stored-ref", required=True, metavar="STORED-REF",
+                                 help="exact encrypted-map key; no normalization is applied")
+    p_vrecover_exec.add_argument("--as", dest="as_var", required=True, metavar="ENVVAR",
+                                 help="required environment variable name for recovery injection")
+    p_vrecover_exec.add_argument("cmd", nargs=argparse.REMAINDER, metavar="-- <command>",
+                                 help="command to run after --")
+    p_vrecover_rm = recover_sub.add_parser("rm", help="remove one exact stored reference")
+    p_vrecover_rm.add_argument("stored_ref", metavar="STORED-REF",
+                               help="exact encrypted-map key; no normalization is applied")
 
     # vault migrate-refs
     p_vmigrate = vault_sub.add_parser(

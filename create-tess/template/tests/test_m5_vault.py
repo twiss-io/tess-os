@@ -32,6 +32,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import types
 
 import pytest
@@ -283,6 +284,7 @@ def test_prefixed_and_canonical_refs_share_one_new_storage_entry(vault, run_cli,
 def _seed_legacy_prefixed_entry(vault, engine, value=SECRET):
     """Seed the raw-key format emitted by the first vault implementation."""
     data = {
+        "version": 1,
         "entries": {
             "vault://legacy/secret": {
                 "value": value,
@@ -341,6 +343,7 @@ def test_duplicate_canonical_and_legacy_refs_fail_closed_without_value_output(va
     canonical_value = "CANONICAL_value_not_to_be_printed_12345"
     legacy_value = "LEGACY_value_not_to_be_printed_67890"
     engine._vault_write_blob(vault.root, {
+        "version": 1,
         "entries": {
             "test/secret": {"value": canonical_value, "meta": {}},
             "vault://test/secret": {"value": legacy_value, "meta": {}},
@@ -369,6 +372,7 @@ def test_incompatible_legacy_path_is_denied_without_migration_or_value_output(va
     """Malformed old map keys are visible as a recovery problem, never guessed."""
     value = "INVALID_path_value_not_to_be_printed_12345"
     engine._vault_write_blob(vault.root, {
+        "version": 1,
         "entries": {"vault://../secret": {"value": value, "meta": {}}}
     })
 
@@ -381,6 +385,149 @@ def test_incompatible_legacy_path_is_denied_without_migration_or_value_output(va
     r = run_cli(vault.root, "vault", "get", "vault://../secret", extra_env=vault.env)
     assert r.returncode != 0
     assert value not in r.stdout + r.stderr
+
+
+def test_recover_exact_stored_ref_preserves_owner_access_without_auto_selection(vault, run_cli, engine):
+    """Duplicates and dot components remain recoverable only by exact key."""
+    canonical_value = "CANONICAL_recovery_value_not_printed_12345"
+    legacy_value = "LEGACY_recovery_value_not_printed_67890"
+    dot_value = "DOT_recovery_value_not_printed_ABCDE"
+    engine._vault_write_blob(vault.root, {
+        "version": 1,
+        "entries": {
+            "test/secret": {"value": canonical_value, "meta": {}},
+            "vault://test/secret": {"value": legacy_value, "meta": {}},
+            "vault://dot/..": {"value": dot_value, "meta": {}},
+        },
+    })
+
+    # Normal canonical resolution remains fail-closed; it cannot choose a value.
+    r = run_cli(vault.root, "vault", "get", "test/secret", extra_env=vault.env)
+    assert r.returncode != 0
+    assert "ambiguous" in (r.stdout + r.stderr).lower()
+    assert canonical_value not in r.stdout + r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+
+    # Recovery reads *exactly* the owner-selected map key and remains masked.
+    for stored_ref, value in (
+        ("test/secret", canonical_value),
+        ("vault://test/secret", legacy_value),
+        ("vault://dot/..", dot_value),
+    ):
+        r = run_cli(vault.root, "vault", "recover", "get", stored_ref, extra_env=vault.env)
+        assert r.returncode == 0, r.stderr
+        assert value not in r.stdout + r.stderr
+        assert "recovery mode" in r.stdout
+
+    # Exact recovery exec provides a no-output way to validate each candidate.
+    for stored_ref, value in (
+        ("test/secret", canonical_value),
+        ("vault://test/secret", legacy_value),
+        ("vault://dot/..", dot_value),
+    ):
+        r = run_cli(vault.root, "vault", "recover", "exec", "--stored-ref", stored_ref,
+                    "--as", "RECOVERED_SECRET", "--", sys.executable, "-c",
+                    _CHILD_WRITE.format(var="RECOVERED_SECRET"), extra_env=vault.env)
+        assert r.returncode == 0, r.stderr
+        assert (vault.root / "child_out.txt").read_text() == value
+        assert value not in r.stdout + r.stderr
+
+    # Only an explicit exact-key removal resolves the duplicate; no command
+    # silently selected or deleted either entry before this owner action.
+    r = run_cli(vault.root, "vault", "recover", "rm", "vault://test/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    data = engine._vault_read_blob(vault.root)
+    assert set(data["entries"]) == {"test/secret", "vault://dot/.."}
+    assert data["entries"]["test/secret"]["value"] == canonical_value
+
+    r = run_cli(vault.root, "vault", "get", "test/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert canonical_value not in r.stdout + r.stderr
+
+
+def test_migration_plan_rejects_ciphertext_changed_after_dry_run(vault, run_cli, engine):
+    """A plan ID is tied to the exact age ciphertext, not merely ref names."""
+    _seed_legacy_prefixed_entry(vault, engine)
+    r = run_cli(vault.root, "vault", "migrate-refs", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    plan_id = re.search(r"plan id: ([0-9a-f]{16})", r.stdout).group(1)
+
+    newer_value = "NEWER_mutation_value_not_to_be_printed_12345"
+    r = run_cli(vault.root, "vault", "set", "other/secret", input_text=newer_value + "\n",
+                extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert newer_value not in r.stdout + r.stderr
+
+    r = run_cli(vault.root, "vault", "migrate-refs", "--apply", "--plan", plan_id,
+                extra_env=vault.env)
+    assert r.returncode != 0
+    assert "stale" in (r.stdout + r.stderr).lower()
+    assert SECRET not in r.stdout + r.stderr
+    assert newer_value not in r.stdout + r.stderr
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {
+        "vault://legacy/secret", "other/secret"
+    }
+
+
+def _write_unvalidated_blob(vault, engine, payload):
+    """Test-only writer for ciphertext that deliberately bypasses schema checks."""
+    plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ciphertext = engine._vault_encrypt(vault.backend, plaintext, vault.pub)
+    blob_path = vault.root / ".claude" / "vault" / "vault.age"
+    blob_path.write_bytes(ciphertext)
+    os.chmod(blob_path, 0o600)
+
+
+def test_malformed_blob_schema_fails_closed_for_every_consumer_without_value_output(vault, run_cli, engine):
+    """Schema validation runs before list/get/exec/migration can consume data."""
+    malformed_value = "MALFORMED_schema_value_not_to_be_printed_12345"
+    _write_unvalidated_blob(vault, engine, {
+        "version": 1,
+        "entries": {"test/secret": {"value": malformed_value, "meta": []}},
+    })
+
+    commands = (
+        ("list",),
+        ("get", "test/secret"),
+        ("exec", "--ref", "test/secret", "--", sys.executable, "-c", "print('unreachable')"),
+        ("migrate-refs",),
+        ("recover", "get", "test/secret"),
+    )
+    for command in commands:
+        r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
+        assert r.returncode != 0
+        assert "schema is invalid" in (r.stdout + r.stderr).lower()
+        assert malformed_value not in r.stdout + r.stderr
+
+
+def test_mutation_lock_prevents_lost_updates(vault, engine):
+    """A deterministic interleaving proves the second writer reads post-write state."""
+    engine._vault_write_blob(vault.root, {"version": 1, "entries": {}})
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_mutation(data):
+        data["entries"]["one/secret"] = {"value": "ONE_value_not_printed", "meta": {}}
+        first_entered.set()
+        assert release_first.wait(timeout=5)
+
+    def second_mutation(data):
+        second_entered.set()
+        data["entries"]["two/secret"] = {"value": "TWO_value_not_printed", "meta": {}}
+
+    first = threading.Thread(target=lambda: engine._vault_mutate_blob(vault.root, first_mutation))
+    second = threading.Thread(target=lambda: engine._vault_mutate_blob(vault.root, second_mutation))
+    first.start()
+    assert first_entered.wait(timeout=5)
+    second.start()
+    assert not second_entered.wait(timeout=0.25), "second writer entered before the first released the vault lock"
+    release_first.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not first.is_alive() and not second.is_alive()
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {"one/secret", "two/secret"}
 
 
 # ===========================================================================

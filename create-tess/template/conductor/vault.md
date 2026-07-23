@@ -23,7 +23,18 @@ prefix remains the recommended form in prose and dispatches because it makes
 the pointer unmistakable. Existing older entries stored with a `vault://`
 prefix continue to resolve. Review `tessctl vault migrate-refs` first, then
 use `--apply --plan <dry-run-id>` only if its dry-run plan is unambiguous —
-migration never guesses between duplicates or deletes a secret.
+migration never guesses between duplicates or deletes a secret. The dry-run
+plan is bound to the encrypted vault state it inspected. Any intervening vault
+change makes that plan stale, so repeat the dry run rather than applying an
+old decision.
+
+If normal resolution refuses an ambiguous or malformed historical storage
+key, an owner can use the explicit exact-key recovery path. `tessctl vault
+recover get <stored-ref>` only displays a masked value; `recover exec
+--stored-ref <stored-ref> --as <ENV_VAR> -- <command>` injects it JIT into the
+named child environment; and `recover rm <stored-ref>` removes only that exact
+stored key. Recovery never guesses which duplicate to use, never automatically
+deletes one, and never prints the raw value.
 
 ---
 
@@ -70,6 +81,7 @@ around: restructure the prompt to use a `vault://` ref instead.
 | `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, pipe only) |
 | `tessctl vault list` | List all refs (no values shown) |
 | `tessctl vault migrate-refs` | Dry-run legacy `vault://` storage-key normalization; add `--apply --plan <dry-run-id>` only after review |
+| `tessctl vault recover <op>` | Exact-key owner recovery for ambiguous or malformed historical entries; never auto-selects or reveals a raw value |
 | `tessctl vault exec --ref <ref> -- <cmd>` | Inject secret into child env JIT |
 | `tessctl vault rotate <ref>` | Re-encrypt under a new value |
 | `tessctl vault rm <ref>` | Delete a ref from the vault |
