@@ -126,6 +126,80 @@ test('negative control (PR #170 fix): ordinary printable Unicode (no Default_Ign
   assert.equal(normalizeComponent('日本支店'), '日本支店');
 });
 
+// ---------------------------------------------------------------------------
+// ★★★ HIGH regression lock (Cyra, PR #170 THIRD security re-review,
+// RE-BLOCK at `d96cc7a`) — Part B: the category-agnostic "no visible base
+// glyph survives" whole-component test (`GRAPHIC_RE`), which closes the
+// Zs (space-separator) / Zl/Zp (line/paragraph separator) / Cc (control)
+// sibling categories `Default_Ignorable_Code_Point` does not cover. Verified
+// directly against `d96cc7a` (this exact PR branch, i.e. AFTER the Hangul-
+// filler fix already landed) before writing this fix: every vector below
+// returned the UN-stripped, non-empty component. Escaped via `\uXXXX` rather
+// than literal bytes so this file's own source never embeds a raw control
+// character.
+// ---------------------------------------------------------------------------
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a component composed entirely of Zs (space-separator) codepoints normalizes to the empty string', () => {
+  const zsVectors = {
+    'NBSP U+00A0': ' ',
+    'EN QUAD U+2000': ' ',
+    'EM SPACE U+2003': ' ',
+    'THIN SPACE U+2009': ' ',
+    'NARROW NO-BREAK SPACE U+202F': ' ',
+    'MEDIUM MATHEMATICAL SPACE U+205F': ' ',
+    'IDEOGRAPHIC SPACE U+3000': '　',
+    'OGHAM SPACE MARK U+1680': ' ',
+  };
+  for (const [label, ch] of Object.entries(zsVectors)) {
+    assert.equal(normalizeComponent(ch), '', `a lone ${label} (Zs) must normalize to empty`);
+  }
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a component composed entirely of Zl/Zp (line/paragraph separator) codepoints normalizes to the empty string', () => {
+  assert.equal(normalizeComponent(' '), '', 'a lone LINE SEPARATOR (U+2028, Zl) must normalize to empty');
+  assert.equal(normalizeComponent(' '), '', 'a lone PARAGRAPH SEPARATOR (U+2029, Zp) must normalize to empty');
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a component composed entirely of Cc (control) codepoints normalizes to the empty string', () => {
+  const ccVectors = {
+    'SOH U+0001 (C0)': '',
+    'US U+001F (C0)': '',
+    'TAB U+0009 (C0)': '	',
+    'PAD U+0080 (C1)': '',
+    'NEL U+0085 (C1)': '',
+  };
+  for (const [label, ch] of Object.entries(ccVectors)) {
+    assert.equal(normalizeComponent(ch), '', `a lone ${label} must normalize to empty — filesystem-legal on macOS/Linux`);
+  }
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): mixed noise components (Zs + Default_Ignorable, Zs + trailing dot) normalize to the empty string', () => {
+  assert.equal(normalizeComponent(' ​'), '', 'NBSP + ZWSP (mixed Zs + Default_Ignorable) must normalize to empty');
+  assert.equal(normalizeComponent(' .'), '', 'NBSP + trailing dot must normalize to empty');
+});
+
+// Negative control — PART B must not become an embedded strip: a real,
+// visible-glyph CJK name that uses U+3000 IDEOGRAPHIC SPACE as an internal
+// word separator (a legitimate use — not noise) must survive completely
+// unaffected, RETAINING the embedded separator character itself, not merely
+// "not excluded". Reid's constraint: `\p{Zs}` must never be stripped
+// mid-component — only the whole-component graphic test may drop a
+// component, and only when NO visible base glyph survives anywhere in it.
+test('★ negative control (Cyra, PR #170 third re-review): a real CJK name using U+3000 as an internal word separator is NOT mangled by the whole-component test', () => {
+  assert.equal(
+    normalizeComponent('日本　支店'),
+    '日本　支店',
+    'an embedded ideographic space between two real glyphs must survive untouched (including the separator itself) — Part B only drops a component with NO visible base; this one has two',
+  );
+});
+
+// Negative control: a lone punctuation character is itself a visible glyph
+// (`\p{P}`, general category Pd) and must not be swept up by the
+// noise-collapse.
+test('negative control (Cyra, PR #170 third re-review): a lone hyphen (visible punctuation, not noise) is unaffected', () => {
+  assert.equal(normalizeComponent('-'), '-');
+});
+
 test('★ NFC/NFD regression lock: normalizeComponent converges NFC-composed and NFD-decomposed forms of the identical grapheme', () => {
   const composed = 'É'; // U+00C9 — single precomposed codepoint
   const decomposed = 'É'.normalize('NFD'); // U+0045 U+0301 — "E" + COMBINING ACUTE ACCENT
@@ -240,9 +314,49 @@ test('★★ HIGH regression lock (Reid, PR #170): normalizePath drops a Hangul-
   );
 });
 
+// ★★★ HIGH regression lock (Cyra, PR #170 THIRD security re-review), at
+// normalizePath's join surface — the FIX itself: a Zs/Zl/Zp/Cc noise
+// component interposed WITHIN a forbidden-prefix-shaped path must vanish
+// from the joined path exactly like every prior vector in this class,
+// collapsing back to the canonical form so the (unchanged) downstream
+// `startsWith` prefix match in ignore.js fires correctly. Empirically
+// verified against `d96cc7a` (this PR branch, pre-this-fix): all four
+// vectors below normalized to a STRING CONTAINING the noise codepoint (not
+// the canonical collapsed form) pre-fix.
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): normalizePath drops a Zs/Zl/Zp/Cc noise component interposed within a forbidden-prefix path', () => {
+  assert.equal(
+    normalizePath('.tess/\u00A0/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone NBSP (U+00A0) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/\u3000/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone IDEOGRAPHIC SPACE (U+3000) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/\u2028/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone LINE SEPARATOR (U+2028) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/\u0001/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone Cc control (U+0001) directory component must vanish, not defeat the prefix match',
+  );
+});
+
 test('negative control: normalizePath does not collapse an ordinary path with no noise components', () => {
   assert.equal(normalizePath('docs/notes/README.md'), 'docs/notes/readme.md');
   assert.equal(normalizePath(''), '');
+});
+
+// Negative control: normalizePath must preserve a legitimate CJK path
+// segment that uses U+3000 as an internal word separator, not merely "not
+// exclude" it — the whole component (with its embedded separator intact)
+// must appear unchanged in the joined path.
+test('negative control (Cyra, PR #170 third re-review): normalizePath preserves a legitimate CJK path segment using U+3000 as an internal word separator', () => {
+  assert.equal(normalizePath('docs/日本　支店/README.md'), 'docs/日本　支店/readme.md');
 });
 
 // ---------------------------------------------------------------------------

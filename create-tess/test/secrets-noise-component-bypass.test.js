@@ -218,6 +218,74 @@ test('sanity: canonical (noise-free) forms of every #146/PR-170 vector path are 
 });
 
 // ---------------------------------------------------------------------------
+// ★★★ HIGH regression lock (Cyra, PR #170 THIRD security re-review,
+// RE-BLOCK at `d96cc7a`) — `isExcludedRel`-surface: a whole path component
+// composed entirely of Unicode Zs (space separator) / Zl / Zp (line /
+// paragraph separator) / Cc (control) codepoints, interposed within
+// `.tess/keys/verifiers`, must not defeat exclusion — the same closure as
+// the #146 Cf and PR #170 Hangul-filler vectors above, extended to the
+// categories `Default_Ignorable_Code_Point` does not cover. Verified
+// directly against `d96cc7a` (this PR branch, AFTER the Hangul-filler fix
+// already landed) before writing this fix: every vector below returned
+// `false` (KEPT — the bug) pre-fix. Codepoints given as \\uXXXX escapes
+// (unambiguous ASCII in the source) rather than literal bytes.
+// ---------------------------------------------------------------------------
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a whole-component Zs (space-separator) noise directory interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  const vectors = {
+    'NBSP U+00A0': '.tess/\u00A0/keys/verifiers/cyra.asc',
+    'EN QUAD U+2000': '.tess/\u2000/keys/verifiers/cyra.asc',
+    'EM SPACE U+2003': '.tess/\u2003/keys/verifiers/cyra.asc',
+    'THIN SPACE U+2009': '.tess/\u2009/keys/verifiers/cyra.asc',
+    'NARROW NO-BREAK SPACE U+202F': '.tess/\u202F/keys/verifiers/cyra.asc',
+    'MEDIUM MATHEMATICAL SPACE U+205F': '.tess/\u205F/keys/verifiers/cyra.asc',
+    'IDEOGRAPHIC SPACE U+3000': '.tess/\u3000/keys/verifiers/cyra.asc',
+    'OGHAM SPACE MARK U+1680': '.tess/\u1680/keys/verifiers/cyra.asc',
+  };
+  for (const [label, p] of Object.entries(vectors)) {
+    assert.equal(isExcludedRel(p), true, `a ${label} directory component interposed within the forbidden .tess/keys/verifiers prefix must not defeat exclusion`);
+  }
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a whole-component Zl/Zp (line/paragraph separator) noise directory interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  assert.equal(isExcludedRel('.tess/\u2028/keys/verifiers/cyra.asc'), true, 'a LINE SEPARATOR (U+2028) directory component must not defeat exclusion');
+  assert.equal(isExcludedRel('.tess/\u2029/keys/verifiers/cyra.asc'), true, 'a PARAGRAPH SEPARATOR (U+2029) directory component must not defeat exclusion');
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): a whole-component Cc (control) noise directory interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  const vectors = {
+    'SOH U+0001 (C0)': '.tess/\u0001/keys/verifiers/cyra.asc',
+    'US U+001F (C0)': '.tess/\u001F/keys/verifiers/cyra.asc',
+    'TAB U+0009 (C0)': '.tess/\u0009/keys/verifiers/cyra.asc',
+    'PAD U+0080 (C1)': '.tess/\u0080/keys/verifiers/cyra.asc',
+    'NEL U+0085 (C1)': '.tess/\u0085/keys/verifiers/cyra.asc',
+  };
+  for (const [label, p] of Object.entries(vectors)) {
+    assert.equal(isExcludedRel(p), true, `a ${label} directory component interposed within the forbidden .tess/keys/verifiers prefix must not defeat exclusion`);
+  }
+});
+
+test('★★★ HIGH regression lock (Cyra, PR #170 third re-review): mixed noise components (NBSP+ZWSP, NBSP+trailing-dot) interposed within .tess/keys/verifiers do not defeat exclusion', () => {
+  assert.equal(isExcludedRel('.tess/\u00A0\u200B/keys/verifiers/cyra.asc'), true, 'NBSP + ZWSP mixed noise component must not defeat exclusion');
+  assert.equal(isExcludedRel('.tess/\u00A0./keys/verifiers/cyra.asc'), true, 'NBSP + trailing dot mixed noise component must not defeat exclusion');
+});
+
+// Sweep across every EXCLUDE_DIR_PREFIXES / EXCLUDE_CONTENT_PREFIXES root —
+// mirrors the identical sweep already done above for the Hangul-filler
+// vectors, extended to the Zs/Cc widening.
+test('★ PR #170 third re-review: the Zs/Cc noise-component vector is closed against every EXCLUDE_DIR_PREFIXES / EXCLUDE_CONTENT_PREFIXES root, not just one', () => {
+  const vectors = [
+    ['.claude/\u00A0/tess-secrets/token.env', 'EXCLUDE_DIR_PREFIXES: .claude/tess-secrets (NBSP)'],
+    ['.claude/\u3000/channels/access.json', 'EXCLUDE_DIR_PREFIXES: .claude/channels (IDEOGRAPHIC SPACE)'],
+    ['.tess/\u0001/keys/signoffs/xavier.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs (Cc control)'],
+    ['.tess/\u2028/state/memory/real.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/memory (LINE SEPARATOR)'],
+  ];
+  for (const [p, label] of vectors) {
+    assert.equal(isExcludedRel(p), true, `${label}: Zs/Cc noise component interposed within the prefix must not defeat exclusion — isExcludedRel(${JSON.stringify(p)})`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Negative controls — the #146 fix must not become an overbroad hammer.
 // ---------------------------------------------------------------------------
 
@@ -255,6 +323,21 @@ test('negative control (#146 fix, scoping): ordinary non-ASCII (non-Cf, non-comb
 // Ordinary files, completely unaffected — proves the fix is not an overbroad
 // hammer in the plain-ASCII case either (mirrors secrets-casefold-bypass's
 // own convention).
+// Negative control (Cyra, PR #170 third re-review): the whole-component
+// "no visible base" test (Part B) must NOT become an embedded strip — a real
+// CJK directory name that uses U+3000 IDEOGRAPHIC SPACE as an internal word
+// separator (a legitimate, identity-bearing use, not noise) must stay KEPT.
+test('negative control (Cyra, PR #170 third re-review): a real CJK path segment using U+3000 as an internal word separator stays kept, not excluded', () => {
+  assert.equal(isExcludedRel('clients/\u65E5\u672C\u3000\u652F\u5E97/kb/wiki/index.md'), false, 'a legitimate CJK directory name with an embedded ideographic-space word separator must stay kept');
+});
+
+// Negative control (Cyra, PR #170 third re-review): a lone visible
+// punctuation character (Pd category, not noise) must not be swept up by
+// the whole-component collapse.
+test('negative control (Cyra, PR #170 third re-review): a lone hyphen path component is kept, not excluded', () => {
+  assert.equal(isExcludedRel('docs/-/README.md'), false, 'a lone hyphen directory component is visible punctuation, not noise, and must stay kept');
+});
+
 test('negative control: ordinary ASCII files are unaffected by the #146 fix', () => {
   for (const p of ['README.md', 'CLAUDE.md', 'src/index.js', 'agents/leah/README.md', 'package.json']) {
     assert.equal(isExcludedRel(p), false, `${p} must be kept`);

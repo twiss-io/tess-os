@@ -116,6 +116,99 @@ test('★★ regression lock (#146, fs-level): a genuine verifier key nested und
 });
 
 // ---------------------------------------------------------------------------
+// ★★★ HIGH regression lock (Cyra, PR #170 THIRD security re-review,
+// RE-BLOCK at `d96cc7a`) — the exact PoC structure Cyra reproduced: a WHOLE
+// noise directory composed entirely of Zs (space-separator) / Zl / Zp
+// (line/paragraph separator) / Cc (control) codepoints, interposed BEFORE
+// `.tess/keys/verifiers` is ever reached, proven via a REAL on-disk fixture
+// through BOTH arms (`isExcludedRel` AND `makeCopyFilter`) — not just the
+// string arm alone. Verified directly against `d96cc7a` (this PR branch,
+// AFTER the Hangul-filler fix already landed) before writing this fix: every
+// vector below returned `copied = true` (LEAK) pre-fix, through the REAL
+// scaffold-copy path, exactly mirroring the Hangul-filler PoC above.
+// Codepoints given as \\uXXXX escapes (unambiguous ASCII in the source)
+// rather than literal bytes.
+// ---------------------------------------------------------------------------
+
+for (const [label, noise] of [
+  ['NBSP U+00A0', '\u00A0'],
+  ['EN QUAD U+2000', '\u2000'],
+  ['EM SPACE U+2003', '\u2003'],
+  ['THIN SPACE U+2009', '\u2009'],
+  ['NARROW NO-BREAK SPACE U+202F', '\u202F'],
+  ['MEDIUM MATHEMATICAL SPACE U+205F', '\u205F'],
+  ['IDEOGRAPHIC SPACE U+3000', '\u3000'],
+  ['OGHAM SPACE MARK U+1680', '\u1680'],
+  ['LINE SEPARATOR U+2028', '\u2028'],
+  ['PARAGRAPH SEPARATOR U+2029', '\u2029'],
+  ['Cc SOH U+0001 (C0)', '\u0001'],
+  ['Cc US U+001F (C0)', '\u001F'],
+  ['Cc TAB U+0009 (C0)', '\u0009'],
+  ['Cc PAD U+0080 (C1)', '\u0080'],
+  ['Cc NEL U+0085 (C1)', '\u0085'],
+  ['combining-only U+0301 (no base)', '\u0301'],
+  ['mixed NBSP+ZWSP', '\u00A0\u200B'],
+  ['mixed NBSP+trailing-dot', '\u00A0.'],
+]) {
+  test(`★★★ HIGH regression lock (Cyra, PR #170 third re-review): a genuine verifier key nested under a ${label} whole-noise directory is excluded by makeCopyFilter (fs-level PoC)`, () => {
+    const { root, abs, rel } = buildFixture(`.tess/${noise}/keys/verifiers/cyra.asc`);
+
+    assert.equal(isExcludedRel(rel), true, `isExcludedRel must exclude the ${label}-nested path`);
+
+    const filter = makeCopyFilter(root);
+    assert.equal(
+      filter(abs),
+      false,
+      `makeCopyFilter must refuse to copy a real verifier key nested under a ${label} whole-noise directory — ` +
+        'this is the real scaffold-copy path, not just the string-only isExcludedRel check',
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ★ PART A regression lock (embedded strip, unaffected by this fix) —
+// proves the ORIGINAL embedded-invisible-codepoint mechanism (Default_Ignorable
+// stripped from ANYWHERE in a component, not only a whole noise component)
+// still works at the fs-level makeCopyFilter surface: an invisible codepoint
+// spliced INTO an otherwise-real `keys` segment must still resolve to the
+// canonical `.tess/keys/verifiers` prefix and be excluded/refused.
+// ---------------------------------------------------------------------------
+
+for (const [label, noise] of [
+  ['ZWSP U+200B', '\u200B'],
+  ['HANGUL CHOSEONG FILLER U+115F', '\u115F'],
+]) {
+  test(`★ Part A regression lock (embedded invisible in a real prefix component): a genuine verifier key under .tess/keys<${label}>/verifiers is excluded by makeCopyFilter (fs-level PoC)`, () => {
+    const { root, abs, rel } = buildFixture(`.tess/keys${noise}/verifiers/cyra.asc`);
+
+    assert.equal(isExcludedRel(rel), true, `isExcludedRel must exclude the path with ${label} embedded inside the "keys" segment`);
+
+    const filter = makeCopyFilter(root);
+    assert.equal(
+      filter(abs),
+      false,
+      `makeCopyFilter must refuse to copy a real verifier key when ${label} is embedded inside the "keys" segment — ` +
+        'proves the embedded-strip mechanism (Part A) still works, not just the whole-component drop (Part B)',
+    );
+  });
+}
+
+// Negative control (fs-level, Cyra PR #170 third re-review): a legitimate
+// CJK directory name using U+3000 as an internal word separator (has visible
+// glyphs either side of the separator) must stay KEPT — the whole-component
+// test must not become an embedded strip against real names.
+test('negative control (fs-level, Cyra PR #170 third re-review): a real CJK directory name using U+3000 as an internal word separator is still copied, not excluded', () => {
+  const { root, abs } = buildFixture('docs/\u65E5\u672C\u3000\u652F\u5E97/notes/README.md');
+
+  const filter = makeCopyFilter(root);
+  assert.equal(
+    filter(abs),
+    true,
+    'a legitimate CJK directory name with an embedded ideographic-space word separator, outside any forbidden prefix, must still be copied (kept)',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Literal "noise directory nested under verifiers" shape — a noise
 // component AFTER the forbidden root has already been reached
 // (`.tess/keys/verifiers/<noise>/key.asc`). Unlike the vectors above, this

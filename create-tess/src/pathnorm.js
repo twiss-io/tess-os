@@ -198,12 +198,79 @@
 // surface), and test/secrets-nested-noise-dir-copy-filter.test.js
 // (`makeCopyFilter` fs-level surface — the actual scaffold-copy path) for
 // the Hangul-filler regression lock, each verified fail-against-pre-this-fix.
+//
+// ★★★ HIGH FIX (Cyra, PR #170 THIRD security re-review) — RE-BLOCKED at
+// `d96cc7a`: `Default_Ignorable_Code_Point` closes the Hangul-filler class
+// but is NOT a superset of Unicode's space/separator/control families. A
+// whole component built ENTIRELY from `\p{Zs}` (space separators — NBSP
+// U+00A0, EN QUAD..HAIR SPACE U+2000-200A, NARROW NBSP U+202F, MEDIUM
+// MATHEMATICAL SPACE U+205F, IDEOGRAPHIC SPACE U+3000, OGHAM SPACE MARK
+// U+1680), `\p{Zl}`/`\p{Zp}` (LINE/PARAGRAPH SEPARATOR, U+2028/U+2029), or
+// `\p{Cc}` (C0/C1 controls — TAB, NEL, etc., all filesystem-legal on
+// macOS/Linux) survives `normalizeComponent` non-empty — none of these are
+// `Default_Ignorable` (Unicode deliberately scopes that property to
+// invisible-but-NOT-whitespace marks, not "renders as blank"), so none are
+// touched by the DEFAULT_IGNORABLE_RE strip above. Interposed within a
+// forbidden EXCLUDE_DIR_PREFIXES/EXCLUDE_CONTENT_PREFIXES root exactly like
+// every prior vector in this class, it defeats the prefix-match and leaks a
+// trust-anchor key through the REAL `makeCopyFilter` — reproduced live for
+// all three families (Zs/Zl/Zp/Cc) and their mixes (e.g. NBSP+ZWSP,
+// NBSP+trailing dot). This is the enumeration anti-pattern this class has
+// now hit three times (all-dots/space -> `\p{Cf}` -> `Default_Ignorable`),
+// each closing only the specific named codepoints while leaving sibling
+// categories open.
+//
+// FIX — stop enumerating categories; replace the "is this codepoint on my
+// noise list" question with a category-agnostic "does ANY visible/base
+// glyph survive" question. After the existing DEFAULT_IGNORABLE_RE strip
+// and trailing dot/space strip, a component is dropped to `''` unless a
+// `\p{L}` (letter) / `\p{N}` (number) / `\p{P}` (punctuation) / `\p{S}`
+// (symbol) codepoint remains in it (see GRAPHIC_RE below). This is a
+// STRICT SUPERSET closure over the prior three fixes — Zs/Zl/Zp/Cc-only,
+// Default-Ignorable-only, and combining-mark-only components all fail this
+// test identically, because none of those general categories are L/N/P/S —
+// while it needs no future per-codepoint follow-up as new Unicode noise
+// siblings are discovered. It also makes the former `COMBINING_ONLY_RE`
+// special-case redundant (`\p{M}` is not in L/N/P/S either), so that check
+// is removed rather than kept alongside a second, overlapping mechanism.
+//
+// ★ TWO DISTINCT MECHANISMS, KEEP BOTH — do NOT collapse them into one:
+//   PART A (embedded strip, DEFAULT_IGNORABLE_RE, unchanged by this fix) —
+//     removes a Default-Ignorable codepoint from ANYWHERE inside a
+//     component, including a REAL, otherwise-legitimate prefix segment
+//     (e.g. `keys<U+200B>` -> `keys`, so `.tess/keys<ZWSP>/verifiers` still
+//     matches the `.tess/keys/verifiers` prefix). Safe to strip mid-string
+//     specifically because Default_Ignorable codepoints are, by Unicode's
+//     own definition, ignorable wherever they occur.
+//   PART B (whole-component graphic test, GRAPHIC_RE, new in this fix) —
+//     drops an ENTIRE component only when NO visible base glyph survives at
+//     all (all-Zs/Zl/Zp/Cc, all-combining, all-Default-Ignorable, or any
+//     mix). This is intentionally NOT an embedded strip: `\p{Zs}` in
+//     particular is NOT stripped mid-component, because U+3000 (IDEOGRAPHIC
+//     SPACE) and other Zs codepoints are legitimate word separators inside
+//     real CJK names (e.g. `日本　支店`) — embedded-stripping them would
+//     silently mangle such a name into a different string, a correctness
+//     regression, not merely an over-exclusion. The whole-component test
+//     preserves these names untouched, because they retain a visible glyph
+//     either side of the separator.
+// See test/pathnorm.test.js (primitive level, both mechanisms + the
+// `日本　支店` embedded-Zs negative control), test/secrets-noise-component-bypass.test.js
+// (`isExcludedRel` surface), and test/secrets-nested-noise-dir-copy-filter.test.js
+// (`makeCopyFilter` fs-level surface — the actual scaffold-copy path), each
+// verified fail-against-pre-this-fix (`d96cc7a`) / pass-after.
 const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
-const COMBINING_ONLY_RE = /^\p{M}+$/u;
+// A component keeps *some* visible/base glyph iff a `\p{L}`/`\p{N}`/`\p{P}`/
+// `\p{S}` codepoint survives the DEFAULT_IGNORABLE_RE strip above. `\p{M}`
+// (combining marks) is deliberately NOT in this set, so a lone/orphaned
+// combining mark with no base to attach to also fails this test — the
+// GRAPHIC_RE whole-component check below therefore subsumes the former
+// `COMBINING_ONLY_RE` special-case; see PR #170 third security re-review
+// (Cyra) for the derivation.
+const GRAPHIC_RE = /[\p{L}\p{N}\p{P}\p{S}]/u;
 
 export function normalizeComponent(c) {
   const stripped = c.normalize('NFC').toLowerCase().replace(DEFAULT_IGNORABLE_RE, '').replace(/[. ]+$/, '');
-  return COMBINING_ONLY_RE.test(stripped) ? '' : stripped;
+  return GRAPHIC_RE.test(stripped) ? stripped : '';
 }
 
 // ★ HIGH (Reid, PR #145 review) — empty-normalized-component join corruption.
