@@ -43,13 +43,26 @@ jobs:
       # pre-baked into the runner image.
       # tess-os #165 (Cyra + Reid, post-#164 follow-up): '20' reached EOL
       # 2026-04-30 (CI's own job log was already flagging "Node 20 is being
-      # deprecated"). Bumped to '24' -- a supported LTS, and consistent
-      # with the `create-tess` job's own matrix below, which already tests
-      # against Node 24 (and 18).
+      # deprecated"). Bumped to '22' -- a supported LTS.
+      #
+      # Deliberately '22', NOT '24' (the `create-tess` job's own matrix
+      # below tests against 24, but this job's Node also runs `node --test
+      # <path>` against the Python-side generated apps in tests/spec_engine/
+      # test_codegen_app_boots.py and tests/orchestrator/test_e2e_wedge_
+      # loop.py, both of which assert on the literal `# fail 0` / `# pass`
+      # TAP-format summary lines `node --test` prints on a non-TTY stream).
+      # Verified empirically (piping `node --test` through a non-TTY
+      # subprocess, matching how Python's subprocess.run(capture_output=
+      # True) invokes it): Node 20 AND Node 22 both still default to the
+      # `tap` reporter on a non-TTY stream (`# fail 0`, `# pass N`) --
+      # Node 24 silently switched its non-TTY default to the `spec`
+      # reporter (`✔`/`ℹ` icons, no `# `-prefixed summary at all), which
+      # breaks both of those assertions outright. '22' preserves the exact
+      # output format those two tests already depend on; '24' does not.
       - name: Set up Node (required by tests/orchestrator/test_e2e_wedge_loop.py)
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
 
       - name: Install dev dependencies
         run: |
