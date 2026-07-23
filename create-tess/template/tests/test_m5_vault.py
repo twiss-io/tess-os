@@ -125,12 +125,21 @@ def test_parse_ref_valid(engine, ref, expected):
     "nogithub",          # no slash
     "github/",           # empty key
     "/token",            # empty service
+    "../token",          # traversal-like service
+    "github/..",         # traversal-like key
+    "vault://../token",  # traversal-like service with public prefix
+    "vault://github/token/extra",  # more than service/key
     "bad service/key",   # space (invalid char)
     "svc/k$y",           # invalid char
 ])
 def test_parse_ref_invalid_exits(engine, ref):
     with pytest.raises(SystemExit):
         engine._vault_parse_ref(ref)
+
+
+@pytest.mark.parametrize("ref", ["github/token", "vault://github/token"])
+def test_canonical_ref_has_one_storage_spelling(engine, ref):
+    assert engine._vault_canonical_ref(ref) == "github/token"
 
 
 def test_mask_value_short_is_all_dots(engine):
@@ -225,6 +234,153 @@ def test_set_empty_value_rejected(vault, run_cli):
                 input_text="\n", extra_env=vault.env)
     assert r.returncode != 0
     assert "empty" in (r.stdout + r.stderr).lower()
+
+
+def test_prefixed_and_canonical_refs_share_one_new_storage_entry(vault, run_cli, engine):
+    """The public vault:// spelling cannot create a second encrypted entry."""
+    root = vault.root
+    r = run_cli(root, "vault", "set", "vault://test/secret",
+                input_text=SECRET + "\n", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert SECRET not in r.stdout + r.stderr
+
+    data = engine._vault_read_blob(root)
+    assert set(data["entries"]) == {"test/secret"}
+
+    # Both references resolve the same stored value, with masked CLI output.
+    for ref in ("test/secret", "vault://test/secret"):
+        r = run_cli(root, "vault", "get", ref, extra_env=vault.env)
+        assert r.returncode == 0, r.stderr
+        assert "test/secret" in r.stdout
+        assert SECRET not in r.stdout + r.stderr
+
+    r = run_cli(root, "vault", "list", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "test/secret" in r.stdout
+    assert "vault://test/secret" not in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+
+    # The default exec env name derives from the canonical ref, never vault://.
+    r = run_cli(root, "vault", "exec", "--ref", "vault://test/secret", "--",
+                sys.executable, "-c", _CHILD_WRITE.format(var="TEST_SECRET"),
+                extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert (root / "child_out.txt").read_text() == SECRET
+    assert SECRET not in r.stdout + r.stderr
+
+    r = run_cli(root, "vault", "rotate", "vault://test/secret",
+                input_text="ROTATED_value_not_printed_12345\n", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "ROTATED_value_not_printed_12345" not in r.stdout + r.stderr
+    assert set(engine._vault_read_blob(root)["entries"]) == {"test/secret"}
+
+    r = run_cli(root, "vault", "rm", "vault://test/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "removed test/secret" in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+
+
+def _seed_legacy_prefixed_entry(vault, engine, value=SECRET):
+    """Seed the raw-key format emitted by the first vault implementation."""
+    data = {
+        "entries": {
+            "vault://legacy/secret": {
+                "value": value,
+                "meta": {"service": "legacy", "key": "secret", "minted_at": "test"},
+            }
+        }
+    }
+    engine._vault_write_blob(vault.root, data)
+
+
+def test_legacy_prefixed_entry_reads_safely_then_requires_explicit_migration(vault, run_cli, engine):
+    """Old prefixed keys remain usable, but normalization is never automatic."""
+    _seed_legacy_prefixed_entry(vault, engine)
+
+    r = run_cli(vault.root, "vault", "get", "legacy/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "legacy/secret" in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+
+    r = run_cli(vault.root, "vault", "list", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "legacy/secret" in r.stdout
+    assert "vault://legacy/secret" not in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+
+    # A default migration run is dry-run only: the old encrypted key remains.
+    r = run_cli(vault.root, "vault", "migrate-refs", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "dry run" in r.stdout
+    assert "vault://legacy/secret" in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {"vault://legacy/secret"}
+    plan_match = re.search(r"plan id: ([0-9a-f]{16})", r.stdout)
+    assert plan_match, r.stdout
+
+    # An apply without a dry-run plan token cannot change the encrypted blob.
+    r = run_cli(vault.root, "vault", "migrate-refs", "--apply", extra_env=vault.env)
+    assert r.returncode != 0
+    assert "dry-run plan id" in (r.stdout + r.stderr)
+    assert SECRET not in r.stdout + r.stderr
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {"vault://legacy/secret"}
+
+    # Only explicit --apply changes the key; the entry's value/metadata survive.
+    r = run_cli(vault.root, "vault", "migrate-refs", "--apply", "--plan", plan_match.group(1),
+                extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert "normalized 1" in r.stdout
+    assert SECRET not in r.stdout + r.stderr
+    data = engine._vault_read_blob(vault.root)
+    assert set(data["entries"]) == {"legacy/secret"}
+    assert data["entries"]["legacy/secret"]["value"] == SECRET
+
+
+def test_duplicate_canonical_and_legacy_refs_fail_closed_without_value_output(vault, run_cli, engine):
+    """The resolver must not guess which of two differently-valued entries wins."""
+    canonical_value = "CANONICAL_value_not_to_be_printed_12345"
+    legacy_value = "LEGACY_value_not_to_be_printed_67890"
+    engine._vault_write_blob(vault.root, {
+        "entries": {
+            "test/secret": {"value": canonical_value, "meta": {}},
+            "vault://test/secret": {"value": legacy_value, "meta": {}},
+        }
+    })
+
+    for command in (
+        ("get", "test/secret"),
+        ("exec", "--ref", "vault://test/secret", "--", sys.executable, "-c", "print('unreachable')"),
+        ("list",),
+        ("migrate-refs", "--apply"),
+    ):
+        r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
+        assert r.returncode != 0
+        assert "ambiguous" in (r.stdout + r.stderr).lower()
+        assert canonical_value not in r.stdout + r.stderr
+        assert legacy_value not in r.stdout + r.stderr
+
+    # Refusal leaves both possible secrets untouched for owner-led recovery.
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {
+        "test/secret", "vault://test/secret"
+    }
+
+
+def test_incompatible_legacy_path_is_denied_without_migration_or_value_output(vault, run_cli, engine):
+    """Malformed old map keys are visible as a recovery problem, never guessed."""
+    value = "INVALID_path_value_not_to_be_printed_12345"
+    engine._vault_write_blob(vault.root, {
+        "entries": {"vault://../secret": {"value": value, "meta": {}}}
+    })
+
+    r = run_cli(vault.root, "vault", "migrate-refs", "--apply", extra_env=vault.env)
+    assert r.returncode != 0
+    assert "invalid stored ref" in (r.stdout + r.stderr).lower()
+    assert value not in r.stdout + r.stderr
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {"vault://../secret"}
+
+    r = run_cli(vault.root, "vault", "get", "vault://../secret", extra_env=vault.env)
+    assert r.returncode != 0
+    assert value not in r.stdout + r.stderr
 
 
 # ===========================================================================

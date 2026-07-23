@@ -7665,8 +7665,18 @@ def _vault_mask_value(value: str, ref: str) -> str:
 
 
 def _vault_parse_ref(ref: str) -> tuple[str, str]:
-    """Parse 'service/key' into (service, key). Validates format."""
-    # Strip vault:// prefix if present
+    """Parse a canonical or ``vault://`` reference into ``(service, key)``.
+
+    References are opaque identifiers, not filesystem paths.  In particular,
+    ``.`` and ``..`` are rejected even though the vault currently stores them
+    inside an encrypted JSON object rather than opening a path on disk.
+    """
+    if not isinstance(ref, str):
+        sys.exit("tessctl vault: reference must be a string.")
+
+    # ``vault://`` is the public spelling.  Storage is canonicalized separately
+    # by _vault_canonical_ref(), so callers never use the incoming spelling as
+    # an encrypted-blob map key.
     if ref.startswith("vault://"):
         ref = ref[len("vault://"):]
     parts = ref.split("/", 1)
@@ -7678,12 +7688,95 @@ def _vault_parse_ref(ref: str) -> tuple[str, str]:
     # Validate characters
     allowed = re.compile(r'^[a-zA-Z0-9_\-\.]+$')
     for part in parts:
-        if not allowed.match(part):
+        if part in {".", ".."} or not allowed.match(part):
             sys.exit(
                 f"tessctl vault: ref component {part!r} contains invalid characters. "
                 "Use letters, digits, underscores, hyphens, and dots only."
             )
     return parts[0], parts[1]
+
+
+def _vault_canonical_ref(ref: str) -> str:
+    """Return the sole storage/display spelling for a valid vault reference.
+
+    Both ``vault://service/key`` and ``service/key`` address
+    ``service/key``.  The public prefix remains accepted at the CLI boundary,
+    but it must never create a second entry in the encrypted store.
+    """
+    service, key = _vault_parse_ref(ref)
+    return f"{service}/{key}"
+
+
+def _vault_resolve_entry(data: dict, canonical_ref: str):
+    """Resolve canonical storage with read compatibility for old prefixed keys.
+
+    Early vault versions used the caller's raw input as the encrypted map key.
+    A stored ``vault://service/key`` is therefore read-compatible.  If both it
+    and the canonical key exist, choosing either could use the wrong secret, so
+    fail closed and require an explicit migration/recovery decision.
+    """
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        sys.exit("tessctl vault: encrypted vault data has an invalid entries object.")
+
+    legacy_ref = f"vault://{canonical_ref}"
+    has_canonical = canonical_ref in entries
+    has_legacy = legacy_ref in entries
+    if has_canonical and has_legacy:
+        sys.exit(
+            f"tessctl vault: ambiguous ref {canonical_ref!r}: both canonical and "
+            "legacy prefixed entries exist. Refusing to choose a secret. "
+            "Run `tessctl vault migrate-refs` to inspect the conflict; do not "
+            "delete either entry until its owner has recovered the intended value."
+        )
+    if has_canonical:
+        return canonical_ref, entries[canonical_ref]
+    if has_legacy:
+        return legacy_ref, entries[legacy_ref]
+    return None, None
+
+
+def _vault_ref_migration_plan(data: dict):
+    """Return legacy key re-mappings plus invalid/ambiguous storage findings.
+
+    This is intentionally side-effect free.  The caller may show the plan as a
+    dry run, or reject it altogether if old data is malformed or ambiguous.
+    """
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        sys.exit("tessctl vault: encrypted vault data has an invalid entries object.")
+
+    by_canonical: dict[str, list[str]] = {}
+    invalid: list[str] = []
+    for stored_ref in entries:
+        if not isinstance(stored_ref, str):
+            invalid.append(repr(stored_ref))
+            continue
+        try:
+            canonical_ref = _vault_canonical_ref(stored_ref)
+        except SystemExit:
+            invalid.append(stored_ref)
+            continue
+        by_canonical.setdefault(canonical_ref, []).append(stored_ref)
+
+    conflicts = {
+        canonical_ref: stored_refs
+        for canonical_ref, stored_refs in by_canonical.items()
+        if len(stored_refs) > 1
+    }
+    migrations = sorted([
+        (stored_ref, canonical_ref)
+        for canonical_ref, stored_refs in by_canonical.items()
+        for stored_ref in stored_refs
+        if stored_ref != canonical_ref
+    ])
+    return migrations, sorted(invalid), conflicts
+
+
+def _vault_ref_migration_plan_id(migrations) -> str:
+    """Return a non-secret confirmation token for a dry-run migration plan."""
+    payload = json.dumps(migrations, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -8183,15 +8276,16 @@ def _vault_cmd_set(args, root: Path) -> None:
     tess vault set <ref> — set a secret value.
     Value read from stdin (piped) or a secure TTY prompt. NEVER from argv.
     """
-    ref = getattr(args, "ref", None)
-    if not ref:
+    requested_ref = getattr(args, "ref", None)
+    if not requested_ref:
         sys.exit("tessctl vault set: specify a ref (e.g. tessctl vault set github/token)")
-    service, key = _vault_parse_ref(ref)
+    canonical_ref = _vault_canonical_ref(requested_ref)
+    service, key = _vault_parse_ref(canonical_ref)
 
     # Read value from stdin or secure prompt — NEVER from argv (argv leaks to ps/history)
     if sys.stdin.isatty():
         try:
-            value = getpass.getpass(f"Value for {ref}: ")
+            value = getpass.getpass(f"Value for {canonical_ref}: ")
         except (EOFError, KeyboardInterrupt):
             sys.exit("\ntessctl vault set: aborted.")
         if not value:
@@ -8202,9 +8296,14 @@ def _vault_cmd_set(args, root: Path) -> None:
             sys.exit("tessctl vault set: empty value received on stdin — nothing stored.")
 
     data = _vault_read_blob(root)
-    existing = ref in data.get("entries", {})
+    stored_ref, _ = _vault_resolve_entry(data, canonical_ref)
+    existing = stored_ref is not None
+    # New entries are always canonical. Existing prefixed keys are intentionally
+    # updated in place for backward compatibility; migrate-refs is the only
+    # explicit operation that rekeys an existing secret.
+    storage_ref = stored_ref or canonical_ref
 
-    data.setdefault("entries", {})[ref] = {
+    data.setdefault("entries", {})[storage_ref] = {
         "value": value,
         "meta": {
             "minted_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -8219,7 +8318,10 @@ def _vault_cmd_set(args, root: Path) -> None:
 
     _vault_write_blob(root, data)
     verb = "updated" if existing else "stored"
-    print(f"tessctl vault: {verb} {ref}  (value masked — use `tessctl vault get {ref}` to verify)")
+    print(
+        f"tessctl vault: {verb} {canonical_ref}  "
+        f"(value masked — use `tessctl vault get {canonical_ref}` to verify)"
+    )
 
 
 def _vault_cmd_get(args, root: Path) -> None:
@@ -8228,18 +8330,18 @@ def _vault_cmd_get(args, root: Path) -> None:
     --reveal prints the full value to stdout only if stdout is NOT a terminal.
     --force allows reveal to a terminal (for scripting).
     """
-    ref = getattr(args, "ref", None)
-    if not ref:
+    requested_ref = getattr(args, "ref", None)
+    if not requested_ref:
         sys.exit("tessctl vault get: specify a ref (e.g. tessctl vault get github/token)")
-    _vault_parse_ref(ref)  # validate format
+    canonical_ref = _vault_canonical_ref(requested_ref)
 
     reveal = getattr(args, "reveal", False)
     force = getattr(args, "force", False)
 
     data = _vault_read_blob(root)
-    entry = data.get("entries", {}).get(ref)
+    _, entry = _vault_resolve_entry(data, canonical_ref)
     if entry is None:
-        sys.exit(f"tessctl vault: ref not found: {ref}")
+        sys.exit(f"tessctl vault: ref not found: {canonical_ref}")
 
     value = entry.get("value", "")
     meta = entry.get("meta", {})
@@ -8258,11 +8360,11 @@ def _vault_cmd_get(args, root: Path) -> None:
         sys.stdout.write(value)
         sys.stdout.flush()
     else:
-        masked = _vault_mask_value(value, ref)
+        masked = _vault_mask_value(value, canonical_ref)
         minted = meta.get("minted_at", "unknown")
         purpose = meta.get("purpose", "")
         purpose_str = f"  purpose: {purpose}" if purpose else ""
-        print(f"  {ref}")
+        print(f"  {canonical_ref}")
         print(f"  value:   {masked}")
         print(f"  minted:  {minted}{purpose_str}")
 
@@ -8277,35 +8379,123 @@ def _vault_cmd_list(args, root: Path) -> None:
         return
 
     scope = getattr(args, "scope", None)
-    print(f"\ntessctl vault — {len(entries)} secret(s) stored\n")
+    indexed = {}
+    invalid = []
+    duplicates = {}
+    for stored_ref, entry in entries.items():
+        try:
+            canonical_ref = _vault_canonical_ref(stored_ref)
+        except SystemExit:
+            invalid.append(stored_ref)
+            continue
+        if canonical_ref in indexed:
+            duplicates.setdefault(canonical_ref, [indexed[canonical_ref][0]]).append(stored_ref)
+            continue
+        indexed[canonical_ref] = (stored_ref, entry)
+
+    if invalid or duplicates:
+        print("tessctl vault: refusing an incomplete listing of unsafe stored references.")
+        for stored_ref in invalid:
+            print(f"  invalid stored ref: {stored_ref!r}")
+        for canonical_ref, stored_refs in sorted(duplicates.items()):
+            print(f"  ambiguous ref {canonical_ref!r}: {', '.join(repr(ref) for ref in stored_refs)}")
+        print("  Run `tessctl vault migrate-refs` to inspect normalizable legacy refs.")
+        sys.exit(1)
+
+    print(f"\ntessctl vault — {len(indexed)} secret(s) stored\n")
     print(f"  {'REF':<30}  {'SERVICE':<15}  {'MINTED':<22}  ROTATES")
     print(f"  {'-'*30}  {'-'*15}  {'-'*22}  -------")
-    for ref, entry in sorted(entries.items()):
-        if scope and not ref.startswith(scope + "/"):
+    for canonical_ref, (_, entry) in sorted(indexed.items()):
+        if scope and not canonical_ref.startswith(scope + "/"):
             continue
         meta = entry.get("meta", {})
         service = meta.get("service", "-")
         minted = meta.get("minted_at", "-")[:19]
         rotates = meta.get("rotates", "-") or "-"
-        print(f"  {ref:<30}  {service:<15}  {minted:<22}  {rotates}")
+        print(f"  {canonical_ref:<30}  {service:<15}  {minted:<22}  {rotates}")
     print()
     print("  Values are NEVER shown by list. Use `tessctl vault get <ref>` (masked).")
 
 
+def _vault_cmd_migrate_refs(args, root: Path) -> None:
+    """Preview or explicitly normalize old ``vault://`` storage keys.
+
+    The first vault implementation accepted both public spellings but persisted
+    whichever spelling a caller used.  Migration is deliberately opt-in: the
+    default is a dry run and ``--apply`` is rejected for malformed or ambiguous
+    data.  It changes map keys only; values and metadata are retained verbatim.
+    """
+    data = _vault_read_blob(root)
+    migrations, invalid, conflicts = _vault_ref_migration_plan(data)
+
+    if invalid or conflicts:
+        print("tessctl vault migrate-refs: no changes made; storage needs manual recovery.")
+        for stored_ref in invalid:
+            print(f"  invalid stored ref: {stored_ref!r}")
+        for canonical_ref, stored_refs in sorted(conflicts.items()):
+            print(
+                f"  ambiguous ref {canonical_ref!r}: "
+                f"{', '.join(repr(ref) for ref in stored_refs)}"
+            )
+        print("  Refusing to choose, overwrite, or delete any secret entry.")
+        sys.exit(1)
+
+    if not migrations:
+        print("tessctl vault migrate-refs: all stored references are already canonical; no changes made.")
+        return
+
+    plan_id = _vault_ref_migration_plan_id(migrations)
+    apply_changes = getattr(args, "apply", False)
+    mode = "apply" if apply_changes else "dry run"
+    print(f"tessctl vault migrate-refs: {mode}; {len(migrations)} reference(s) to normalize")
+    for legacy_ref, canonical_ref in migrations:
+        print(f"  {legacy_ref!r} -> {canonical_ref!r}")
+    print(f"  plan id: {plan_id}")
+
+    if not apply_changes:
+        print("  No encrypted vault data was changed.")
+        print(
+            "  Review this plan, then run `tessctl vault migrate-refs --apply "
+            f"--plan {plan_id}` to rekey it."
+        )
+        return
+
+    if getattr(args, "plan", None) != plan_id:
+        print("  No encrypted vault data was changed.")
+        print(
+            "  Refusing to apply without this dry-run plan id. Run `tessctl vault "
+            "migrate-refs` first and pass its exact `--plan` value."
+        )
+        sys.exit(2)
+
+    entries = dict(data["entries"])
+    for legacy_ref, canonical_ref in migrations:
+        # Conflicts were rejected above, so this cannot overwrite a canonical
+        # entry. The value and metadata object are moved unchanged.
+        entries[canonical_ref] = entries.pop(legacy_ref)
+    data["entries"] = entries
+    _vault_write_blob(root, data)
+    print(
+        f"tessctl vault migrate-refs: normalized {len(migrations)} reference(s); "
+        "values and metadata were retained."
+    )
+
+
 def _vault_cmd_rm(args, root: Path) -> None:
     """tess vault rm <ref> — remove a secret entry."""
-    ref = getattr(args, "ref", None)
-    if not ref:
+    requested_ref = getattr(args, "ref", None)
+    if not requested_ref:
         sys.exit("tessctl vault rm: specify a ref (e.g. tessctl vault rm github/token)")
-    _vault_parse_ref(ref)
+    canonical_ref = _vault_canonical_ref(requested_ref)
 
     data = _vault_read_blob(root)
-    if ref not in data.get("entries", {}):
-        sys.exit(f"tessctl vault rm: ref not found: {ref}")
+    stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
+    if entry is None:
+        sys.exit(f"tessctl vault rm: ref not found: {canonical_ref}")
 
-    del data["entries"][ref]
+    del data["entries"][stored_ref]
     _vault_write_blob(root, data)
-    print(f"tessctl vault: removed {ref}")
+    print(f"tessctl vault: removed {canonical_ref}")
 
 
 def _vault_cmd_rotate(args, root: Path) -> None:
@@ -8313,16 +8503,18 @@ def _vault_cmd_rotate(args, root: Path) -> None:
     tess vault rotate <ref> — re-encrypt a new value for an existing ref.
     Opens the registry's per-service rotation URL if known.
     """
-    ref = getattr(args, "ref", None)
-    if not ref:
+    requested_ref = getattr(args, "ref", None)
+    if not requested_ref:
         sys.exit("tessctl vault rotate: specify a ref (e.g. tessctl vault rotate github/token)")
-    service, _ = _vault_parse_ref(ref)
+    canonical_ref = _vault_canonical_ref(requested_ref)
+    service, _ = _vault_parse_ref(canonical_ref)
 
     data = _vault_read_blob(root)
-    if ref not in data.get("entries", {}):
+    stored_ref, entry = _vault_resolve_entry(data, canonical_ref)
+    if entry is None:
         sys.exit(
-            f"tessctl vault rotate: ref not found: {ref}.\n"
-            f"  Use `tessctl vault set {ref}` to create it."
+            f"tessctl vault rotate: ref not found: {canonical_ref}.\n"
+            f"  Use `tessctl vault set {canonical_ref}` to create it."
         )
 
     # Show rotation URL from registry if available
@@ -8341,7 +8533,7 @@ def _vault_cmd_rotate(args, root: Path) -> None:
     # Read new value — same stdin/prompt logic as set
     if sys.stdin.isatty():
         try:
-            value = getpass.getpass(f"New value for {ref}: ")
+            value = getpass.getpass(f"New value for {canonical_ref}: ")
         except (EOFError, KeyboardInterrupt):
             sys.exit("\ntessctl vault rotate: aborted.")
         if not value:
@@ -8351,13 +8543,13 @@ def _vault_cmd_rotate(args, root: Path) -> None:
         if not value:
             sys.exit("tessctl vault rotate: empty value received on stdin.")
 
-    old_meta = data["entries"][ref].get("meta", {})
+    old_meta = data["entries"][stored_ref].get("meta", {})
     old_meta["rotated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     old_meta["minted_at"] = old_meta.get("rotated_at")
 
-    data["entries"][ref] = {"value": value, "meta": old_meta}
+    data["entries"][stored_ref] = {"value": value, "meta": old_meta}
     _vault_write_blob(root, data)
-    print(f"tessctl vault: rotated {ref}  (new value stored; value masked)")
+    print(f"tessctl vault: rotated {canonical_ref}  (new value stored; value masked)")
 
 
 def _vault_cmd_exec(args, root: Path) -> None:
@@ -8371,11 +8563,11 @@ def _vault_cmd_exec(args, root: Path) -> None:
 
     This is the §3.2 injection wrapper — the vault → child-process-env path.
     """
-    ref = getattr(args, "ref", None)
+    requested_ref = getattr(args, "ref", None)
     as_var = getattr(args, "as_var", None)
     cmd_list = getattr(args, "cmd", None) or []
 
-    if not ref:
+    if not requested_ref:
         sys.exit("tessctl vault exec: --ref <service/key> is required")
 
     # argparse REMAINDER includes '--' as the first item when present; strip it
@@ -8385,24 +8577,24 @@ def _vault_cmd_exec(args, root: Path) -> None:
     if not cmd_list:
         sys.exit("tessctl vault exec: specify a command after --  (e.g. tessctl vault exec --ref github/token -- gh pr list)")
 
-    _vault_parse_ref(ref)  # validate
+    canonical_ref = _vault_canonical_ref(requested_ref)
 
     # Determine the env var name
     if as_var:
         env_var = as_var.upper()
     else:
         # Default: SERVICE_KEY in upper snake_case
-        env_var = ref.replace("/", "_").replace("-", "_").upper()
+        env_var = canonical_ref.replace("/", "_").replace("-", "_").upper()
 
     # Decrypt just the requested ref
     data = _vault_read_blob(root)
-    entry = data.get("entries", {}).get(ref)
+    _, entry = _vault_resolve_entry(data, canonical_ref)
     if entry is None:
-        sys.exit(f"tessctl vault exec: ref not found: {ref}")
+        sys.exit(f"tessctl vault exec: ref not found: {canonical_ref}")
 
     value = entry.get("value", "")
     if not value:
-        sys.exit(f"tessctl vault exec: ref {ref!r} has an empty value — set it first.")
+        sys.exit(f"tessctl vault exec: ref {canonical_ref!r} has an empty value — set it first.")
 
     # Build child env: inherit current env + inject the secret
     child_env = dict(os.environ)
@@ -8632,6 +8824,7 @@ def cmd_vault(args, root: Path) -> None:
         "set":     _vault_cmd_set,
         "get":     _vault_cmd_get,
         "list":    _vault_cmd_list,
+        "migrate-refs": _vault_cmd_migrate_refs,
         "rm":      _vault_cmd_rm,
         "rotate":  _vault_cmd_rotate,
         "exec":    _vault_cmd_exec,
@@ -8648,12 +8841,13 @@ def cmd_vault(args, root: Path) -> None:
             "    set <ref>             store secret (prompt or stdin, NEVER argv)\n"
             "    get <ref>             show masked value (--reveal for raw; refused on TTY)\n"
             "    list [--scope <s>]    list refs + metadata (never values)\n"
+            "    migrate-refs [--apply --plan ID]  dry-run then explicitly normalize legacy refs\n"
             "    rm <ref>              remove an entry\n"
             "    rotate <ref>          re-encrypt a new value, show rotation URL\n"
             "    exec --ref <r> [--as VAR] -- <cmd>  JIT inject into child env\n"
             "    doctor [--strict]     audit perms, gitignore, hooks, registry\n"
             "    scan [--staged]       dry-run secret scan over working tree\n\n"
-            "  References: vault://service/key (e.g. vault://github/token)\n"
+            "  References: vault://service/key or service/key (same canonical ref)\n"
             "  Design:     conductor/vault.md\n\n"
             "  Dependency: pip install pyrage  (or: brew install age)"
         )
@@ -20487,6 +20681,20 @@ def build_parser() -> argparse.ArgumentParser:
     # vault list
     p_vlist = vault_sub.add_parser("list", help="list all refs + metadata (never values)")
     p_vlist.add_argument("--scope", metavar="PREFIX", help="filter refs by service/scope prefix")
+
+    # vault migrate-refs
+    p_vmigrate = vault_sub.add_parser(
+        "migrate-refs",
+        help="dry-run or explicitly normalize old vault:// storage keys",
+    )
+    p_vmigrate.add_argument(
+        "--apply", action="store_true",
+        help="apply a reviewed rekeying plan (requires the dry-run --plan ID)",
+    )
+    p_vmigrate.add_argument(
+        "--plan", metavar="ID",
+        help="dry-run plan ID required with --apply; never includes secret values",
+    )
 
     # vault rm
     p_vrm = vault_sub.add_parser("rm", help="remove a secret entry")
