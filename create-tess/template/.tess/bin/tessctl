@@ -7506,16 +7506,21 @@ def _vault_identity_file_write(private_key_str: str, path: Path) -> None:
         pass
 
 
-def _vault_load_identity(root: Path) -> str:
+def _vault_existing_identity() -> str | None:
     """
-    Load the age private identity. Resolution order:
+    Return an existing age private identity without creating or replacing one.
+
+    Resolution order:
     1. TESS_VAULT_IDENTITY env var (headless / CI)
     2. OS keychain (macOS security / Linux secret-tool)
     3. ~/.config/tess/vault/identity.age file (0600)
 
-    Returns the private key string (AGE-SECRET-KEY-...).
-    Exits if no identity found.
-    NEVER logs or prints the key.
+    This is deliberately shared by ``vault init`` and normal decryptions.  A
+    vault identity is global operator custody, not a per-project credential:
+    replacing it while initialising a second project would make the first
+    project's recipient impossible to decrypt.  Callers that need a key must
+    reuse this value or explicitly report that none exists; they must never
+    overwrite it merely because they are operating in a different repository.
     """
     # 1. Env override (headless / CI / droplet)
     env_id = os.environ.get("TESS_VAULT_IDENTITY", "").strip()
@@ -7543,6 +7548,20 @@ def _vault_load_identity(root: Path) -> str:
             )
         return _GLOBAL_IDENTITY_FILE.read_text(encoding="utf-8").strip()
 
+    return None
+
+
+def _vault_load_identity(root: Path) -> str:
+    """Load an existing global vault identity, or fail without creating one.
+
+    ``root`` is retained for the public helper signature used by all vault
+    read paths.  Identity custody itself is intentionally global and never
+    falls back to repository-local key material.
+    """
+    identity = _vault_existing_identity()
+    if identity:
+        return identity
+
     sys.exit(
         "tessctl vault: no identity found.\n"
         "  Run `tessctl vault init` to set up the vault, or:\n"
@@ -7550,6 +7569,56 @@ def _vault_load_identity(root: Path) -> str:
         "  - Desktop:     run `tessctl vault init` to store in OS keychain\n"
         "  - File:        save your private key to ~/.config/tess/vault/identity.age (chmod 600)"
     )
+
+
+def _vault_public_from_identity(backend: str, private_key_str: str) -> str:
+    """Derive and validate an age recipient from a private identity.
+
+    The value is used only inside the initialisation custody transaction.  The
+    CLI fallback writes a 0600 transient identity file inside the private
+    global vault directory rather than exposing an identity on argv or in
+    output.  Errors intentionally contain neither a private key nor backend
+    stderr, because either is not safe terminal material.
+    """
+    try:
+        if backend == "pyrage":
+            import pyrage
+            recipient = str(pyrage.x25519.Identity.from_str(private_key_str).to_public())
+        else:
+            keygen_bin = shutil.which("age-keygen") or shutil.which("rage-keygen")
+            if not keygen_bin:
+                sys.exit(
+                    "tessctl vault: cannot verify an existing identity because age-keygen is unavailable. "
+                    "Install pyrage or the matching age/rage keygen binary."
+                )
+            _GLOBAL_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(str(_GLOBAL_VAULT_DIR), 0o700)
+            except OSError:
+                pass
+            tmp_fd, id_tmp = tempfile.mkstemp(
+                dir=str(_GLOBAL_VAULT_DIR), suffix=".age", prefix=".tess_pub_tmp_"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w") as fh:
+                    fh.write(private_key_str + "\n")
+                os.chmod(id_tmp, 0o600)
+                result = subprocess.run([keygen_bin, "-y", id_tmp], capture_output=True, text=True)
+            finally:
+                try:
+                    os.unlink(id_tmp)
+                except OSError:
+                    pass
+            if result.returncode != 0:
+                sys.exit("tessctl vault: existing identity could not be verified by age-keygen.")
+            recipient = result.stdout.strip()
+        if not recipient.startswith("age1"):
+            sys.exit("tessctl vault: existing identity did not yield a valid age recipient.")
+        return recipient
+    except SystemExit:
+        raise
+    except Exception as exc:
+        sys.exit(f"tessctl vault: existing identity could not be verified ({type(exc).__name__}).")
 
 
 def _vault_load_public_key(root: Path) -> str:
@@ -7624,52 +7693,60 @@ def _vault_validate_blob_data(data: object) -> dict:
     return data
 
 
-def _vault_is_preversioned_blob(data: object) -> bool:
-    """Return whether decrypted data is a plausible pre-versioned vault blob."""
-    return (
-        isinstance(data, dict)
-        and "version" not in data
-        and set(data).issubset({"entries"})
-    )
+def _vault_is_recovery_legacy_blob(data: object) -> bool:
+    """Whether a non-current blob has a minimally safe recovery envelope.
 
-
-def _vault_validate_preversioned_blob_data(data: object) -> dict:
-    """Validate only the safe recovery subset of the original unversioned format.
-
-    This reader is intentionally not used by normal list/get/set/exec paths.
-    It admits the format that old releases actually read: a mapping of string
-    refs to values plus optional metadata. Unknown legacy fields stay inert and
-    cannot be silently dropped by the dedicated schema-upgrade operation.
+    Historical encrypted blobs are not limited to one unversioned prototype:
+    some carry a version field with extensions, arbitrary top-level metadata,
+    or metadata values the current schema deliberately does not interpret.
+    Normal commands must still reject all of those variants.  Recovery only
+    needs an entries map whose individual entries have a string value; every
+    other field remains opaque and is preserved on an explicit exact-key
+    recovery mutation.
     """
-    if not _vault_is_preversioned_blob(data):
+    return isinstance(data, dict) and isinstance(data.get("entries"), dict)
+
+
+def _vault_validate_recovery_legacy_blob_data(data: object) -> dict:
+    """Validate the narrow recovery envelope without consuming extensions.
+
+    This accepts arbitrary JSON-compatible top-level and entry-level fields,
+    including a historical ``version`` and non-string metadata.  It is never
+    used by normal resolution.  A blob without a usable entries/value mapping
+    is refused rather than guessed at, and no decrypted shape is reflected in
+    the error.
+    """
+    if not _vault_is_recovery_legacy_blob(data):
         _vault_schema_error()
-    entries = data.get("entries", {})
-    if not isinstance(entries, dict):
-        _vault_schema_error()
+    entries = data["entries"]
     for stored_ref, entry in entries.items():
-        if not isinstance(stored_ref, str) or not stored_ref:
+        # JSON objects already require string keys; keep this explicit for
+        # in-process callers and allow the empty historical key only through
+        # explicit recovery (normal commands reject it during ref parsing).
+        if not isinstance(stored_ref, str):
             _vault_schema_error()
         if not isinstance(entry, dict) or not isinstance(entry.get("value"), str) or not entry["value"]:
             _vault_schema_error()
-        if "meta" in entry:
-            meta = entry["meta"]
-            if not isinstance(meta, dict) or any(not isinstance(field, str) for field in meta):
-                _vault_schema_error()
     return data
 
 
 def _vault_upgrade_preversioned_blob(data: dict) -> dict | None:
     """Return a lossless current-format copy, or None when upgrade would drop data.
 
-    The original reader accepted missing ``meta`` and arbitrary extra fields.
-    Recovery can still use such a blob exactly, but automatic migration only
-    proceeds when every field can be represented by the current version.
+    Recovery is intentionally broader than migration.  Only a truly
+    unversioned ``{entries}`` root with current-representable entry fields can
+    become v1; any historical version marker, extension, non-string metadata,
+    or unknown entry field stays recovery-only so no owner data is discarded.
     """
-    if set(data) - {"entries"}:
+    if set(data) != {"entries"}:
         return None
     entries = {}
-    for stored_ref, entry in data.get("entries", {}).items():
-        if set(entry) - {"value", "meta"}:
+    for stored_ref, entry in data["entries"].items():
+        if not isinstance(stored_ref, str) or not stored_ref:
+            return None
+        if not isinstance(entry, dict) or set(entry) - {"value", "meta"}:
+            return None
+        if not isinstance(entry.get("value"), str) or not entry["value"]:
             return None
         meta = entry.get("meta", {})
         try:
@@ -7724,26 +7801,34 @@ def _vault_read_decrypted_blob_state(root: Path) -> tuple[dict, str | None]:
 def _vault_read_blob_state(root: Path) -> tuple[dict, str | None]:
     """Read only the current, fully validated vault format for normal commands."""
     data, ciphertext_digest = _vault_read_decrypted_blob_state(root)
-    if _vault_is_preversioned_blob(data):
-        _vault_validate_preversioned_blob_data(data)
-        sys.exit(
-            "tessctl vault: vault blob uses a pre-versioned legacy layout; normal access is "
-            "refused. Use `tessctl vault recover migrate` to review an explicit upgrade."
-        )
-    return _vault_validate_blob_data(data), ciphertext_digest
+    try:
+        return _vault_validate_blob_data(data), ciphertext_digest
+    except SystemExit:
+        if _vault_is_recovery_legacy_blob(data):
+            _vault_validate_recovery_legacy_blob_data(data)
+            sys.exit(
+                "tessctl vault: vault blob uses a historical recovery-only layout; normal access is "
+                "refused. Use `tessctl vault recover` for exact owner recovery or review "
+                "`tessctl vault recover migrate`."
+            )
+        raise
 
 
 def _vault_read_recovery_blob_state(root: Path) -> tuple[dict, str | None, bool]:
-    """Read current data or the narrow pre-versioned recovery format.
+    """Read current data or a historical recovery-only envelope.
 
-    The final flag is true only for a recognized pre-versioned layout. Callers
-    must keep legacy access exact-key and must not route it into normal alias
-    resolution until the owner has explicitly upgraded it.
+    The final flag is true only for a non-current but recoverable layout.
+    Callers must keep it exact-key and must not route it into normal alias
+    resolution until the owner has explicitly upgraded it (when lossless
+    upgrade is even possible).
     """
     data, ciphertext_digest = _vault_read_decrypted_blob_state(root)
-    if _vault_is_preversioned_blob(data):
-        return _vault_validate_preversioned_blob_data(data), ciphertext_digest, True
-    return _vault_validate_blob_data(data), ciphertext_digest, False
+    try:
+        return _vault_validate_blob_data(data), ciphertext_digest, False
+    except SystemExit:
+        if _vault_is_recovery_legacy_blob(data):
+            return _vault_validate_recovery_legacy_blob_data(data), ciphertext_digest, True
+        raise
 
 
 def _vault_read_blob(root: Path) -> dict:
@@ -7753,17 +7838,18 @@ def _vault_read_blob(root: Path) -> dict:
 
 
 @contextlib.contextmanager
-def _vault_mutation_lock(root: Path):
-    """Serialize every vault read-modify-write operation for this project.
+def _vault_file_lock(lock_path: Path, directory_mode: int = 0o700):
+    """Acquire an exclusive, 0600 advisory lock at ``lock_path``.
 
-    The lock is a separate 0600 file, so replacing ``vault.age`` remains atomic
-    and cannot invalidate the lock inode.  It contains no secrets and is already
-    covered by the vault directory's git-ignore/hard-guard rules.
+    The lock is separate from the data it protects, so replacing an encrypted
+    blob or identity file cannot invalidate the lock inode.  It never contains
+    secret data.  Both project-state and global-identity custody use this one
+    primitive so the two transactions have identical permission and release
+    behaviour.
     """
-    lock_path = root / VAULT_LOCK
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(str(lock_path.parent), 0o700)
+        os.chmod(str(lock_path.parent), directory_mode)
     except OSError:
         pass
 
@@ -7792,6 +7878,27 @@ def _vault_mutation_lock(root: Path):
             unlock()
     finally:
         handle.close()
+
+
+@contextlib.contextmanager
+def _vault_mutation_lock(root: Path):
+    """Serialize every vault read-modify-write operation for this project."""
+    with _vault_file_lock(root / VAULT_LOCK):
+        yield
+
+
+@contextlib.contextmanager
+def _vault_identity_custody_lock():
+    """Serialize the global check-or-create identity custody transaction.
+
+    Two different project roots have distinct project locks.  This additional
+    global lock closes the remaining race in which both see no global identity,
+    each generate a key, and the later store invalidates the earlier project's
+    recipient.  All callers take a project lock before this lock; no vault path
+    acquires them in the inverse order.
+    """
+    with _vault_file_lock(_GLOBAL_VAULT_DIR / ".identity.lock"):
+        yield
 
 
 def _vault_mutate_blob(root: Path, mutate):
@@ -7827,8 +7934,13 @@ def _vault_write_blob(root: Path, data: dict) -> None:
 
 
 def _vault_write_preversioned_blob(root: Path, data: dict) -> None:
-    """Re-encrypt a recovery-only legacy blob after an exact owner mutation."""
-    _vault_validate_preversioned_blob_data(data)
+    """Re-encrypt a recovery-only legacy blob after an exact owner mutation.
+
+    The relaxed recovery validator intentionally leaves historical extensions
+    inert, and json serialization carries them forward unchanged.  The only
+    permitted caller mutation is an explicit exact-key delete.
+    """
+    _vault_validate_recovery_legacy_blob_data(data)
     _vault_write_encrypted_blob(root, data)
 
 
@@ -7960,12 +8072,11 @@ def _vault_exact_stored_entry(data: dict, stored_ref: str):
     historical key must never be selected by a canonical alias, but an owner can
     still access exactly the stored key through ``vault recover``.
     """
-    if not isinstance(stored_ref, str) or not stored_ref:
-        sys.exit("tessctl vault recover: --stored-ref must be a non-empty exact stored reference.")
-    entry = data["entries"].get(stored_ref)
-    if entry is None:
+    if not isinstance(stored_ref, str):
+        sys.exit("tessctl vault recover: --stored-ref must be an exact stored reference.")
+    if stored_ref not in data["entries"]:
         sys.exit("tessctl vault recover: exact stored reference not found.")
-    return entry
+    return data["entries"][stored_ref]
 
 
 def _vault_display_stored_ref(stored_ref: str) -> str:
@@ -8034,8 +8145,8 @@ def _vault_legacy_upgrade_plan_id(ciphertext_digest: str) -> str:
 
 def _vault_cmd_init(args, root: Path) -> None:
     """
-    tess vault init — create vault, generate age identity, store key in keychain.
-    Idempotent: re-running does not overwrite existing keys.
+    tess vault init — create a project vault using global identity custody.
+    Idempotent: re-running does not overwrite existing recipients or identity.
 
     Also installs git pre-commit + pre-push hooks (extended secret patterns).
     """
@@ -8048,10 +8159,10 @@ def _vault_cmd_init(args, root: Path) -> None:
     print(f"tessctl vault init: crypto backend = {backend}")
 
     initialized = False
-    # A recipient file is the initialization claim. Holding the shared lock for
-    # check → identity custody → recipient → first ciphertext prevents a second
-    # initializer from generating a different keypair and racing an
-    # unrecoverable recipient/blob combination into place.
+    # A recipient file is the initialization claim. Holding the project lock
+    # for check → global identity custody → recipient → first ciphertext
+    # prevents same-project races; the nested global custody lock separately
+    # prevents two different projects from replacing one shared identity.
     with _vault_mutation_lock(root):
         vault_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -8074,28 +8185,41 @@ def _vault_cmd_init(args, root: Path) -> None:
             print(
                 "tessctl vault init: vault already initialized (vault.recipients exists).\n"
                 "  To regenerate: rm .claude/vault/vault.recipients && tessctl vault init\n"
-                "  WARNING: regenerating creates a new identity — migrate secrets first with vault rekey."
+                "  WARNING: regenerating rebinds this project to the current global identity; "
+                "confirm its custody before changing recipients."
             )
         else:
-            private_key, public_key = _vault_generate_identity(backend)
-            print(f"  generated age X25519 identity (public: {public_key[:20]}...)")
-
-            # Store private key (NEVER print or log it).
-            if headless:
-                _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
-                print(f"  identity stored at {_GLOBAL_IDENTITY_FILE} (0600, headless mode)")
-                print("  HEADLESS: also set TESS_VAULT_IDENTITY for CI/droplet environments.")
-            else:
-                stored_in_keychain = _vault_store_identity_keychain(private_key)
-                if stored_in_keychain:
-                    ks = "macOS Keychain" if sys.platform == "darwin" else "OS secret-service"
-                    print(f"  identity stored in {ks} (service={_KEYCHAIN_SERVICE})")
+            with _vault_identity_custody_lock():
+                private_key = _vault_existing_identity()
+                if private_key:
+                    # Derivation validates the existing private identity before
+                    # we bind another project to it.  Do not store it again:
+                    # keychain/file custody is global operator state.
+                    public_key = _vault_public_from_identity(backend, private_key)
+                    print(f"  reusing verified global age identity (public: {public_key[:20]}...)")
                 else:
-                    _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
-                    print(
-                        f"  keychain unavailable — identity stored at {_GLOBAL_IDENTITY_FILE} (0600).\n"
-                        f"  For headless/CI: set TESS_VAULT_IDENTITY env var."
-                    )
+                    private_key, public_key = _vault_generate_identity(backend)
+                    print(f"  generated age X25519 identity (public: {public_key[:20]}...)")
+
+                    # Store private key (NEVER print or log it).  This occurs
+                    # only when no global identity already exists, so a second
+                    # project init can never overwrite the first project's
+                    # decryption custody.
+                    if headless:
+                        _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
+                        print(f"  identity stored at {_GLOBAL_IDENTITY_FILE} (0600, headless mode)")
+                        print("  HEADLESS: also set TESS_VAULT_IDENTITY for CI/droplet environments.")
+                    else:
+                        stored_in_keychain = _vault_store_identity_keychain(private_key)
+                        if stored_in_keychain:
+                            ks = "macOS Keychain" if sys.platform == "darwin" else "OS secret-service"
+                            print(f"  identity stored in {ks} (service={_KEYCHAIN_SERVICE})")
+                        else:
+                            _vault_identity_file_write(private_key, _GLOBAL_IDENTITY_FILE)
+                            print(
+                                f"  keychain unavailable — identity stored at {_GLOBAL_IDENTITY_FILE} (0600).\n"
+                                f"  For headless/CI: set TESS_VAULT_IDENTITY env var."
+                            )
 
             recip_path.write_text(
                 f"# age public key for this vault\n"
@@ -8640,8 +8764,11 @@ def _vault_cmd_list(args, root: Path) -> None:
 
     if invalid or duplicates:
         print("tessctl vault: refusing an incomplete listing of unsafe stored references.")
-        for stored_ref in invalid:
-            print(f"  invalid stored ref: {stored_ref!r}")
+        if invalid:
+            print(
+                f"  {len(invalid)} malformed stored reference(s) redacted. "
+                "Use `tessctl vault recover list` for explicit owner recovery."
+            )
         for canonical_ref, stored_refs in sorted(duplicates.items()):
             print(f"  ambiguous ref {canonical_ref!r}: {', '.join(repr(ref) for ref in stored_refs)}")
         print("  Run `tessctl vault migrate-refs` to inspect normalizable legacy refs.")
@@ -8680,8 +8807,11 @@ def _vault_cmd_migrate_refs(args, root: Path) -> None:
 
         if invalid or conflicts:
             print("tessctl vault migrate-refs: no changes made; storage needs manual recovery.")
-            for stored_ref in invalid:
-                print(f"  invalid stored ref: {_vault_display_stored_ref(stored_ref)}")
+            if invalid:
+                print(
+                    f"  {len(invalid)} malformed stored reference(s) redacted. "
+                    "Use `tessctl vault recover list` for explicit owner recovery."
+                )
             for canonical_ref, stored_refs in sorted(conflicts.items()):
                 print(
                     f"  ambiguous ref {canonical_ref!r}: "
@@ -8878,6 +9008,22 @@ def _vault_cmd_recover_get(args, root: Path) -> None:
     print("  recovery mode: this command never reveals the raw value; use recover exec to test it externally.")
 
 
+def _vault_cmd_recover_list(args, root: Path) -> None:
+    """List exact stored keys only after an explicit owner recovery request.
+
+    Normal list and migration diagnostics deliberately redact malformed keys:
+    they came from decrypted state and might include terminal-control or other
+    unsafe text.  This separate, named recovery command is the one opt-in path
+    that renders their repr form so an owner can copy an exact key into get,
+    exec, or rm.  It never prints values or metadata.
+    """
+    data, _, legacy = _vault_read_recovery_blob_state(root)
+    mode = "historical recovery-only" if legacy else "current"
+    print(f"tessctl vault recover list: {mode} stored references (no values)")
+    for stored_ref in data["entries"]:
+        print(f"  {_vault_display_stored_ref(stored_ref)}")
+
+
 def _vault_cmd_recover_exec(args, root: Path) -> None:
     """JIT-inject an owner-selected exact historical key without normalization."""
     stored_ref = getattr(args, "stored_ref", None)
@@ -8901,7 +9047,7 @@ def _vault_cmd_recover_rm(args, root: Path) -> None:
 
 
 def _vault_cmd_recover_migrate(args, root: Path) -> None:
-    """Preview or explicitly upgrade a safe pre-versioned vault layout to v1."""
+    """Preview or explicitly upgrade a losslessly representable legacy layout to v1."""
     apply_changes = getattr(args, "apply", False)
     with _vault_mutation_lock(root):
         data, ciphertext_digest, legacy = _vault_read_recovery_blob_state(root)
@@ -8938,6 +9084,7 @@ def _vault_cmd_recover_migrate(args, root: Path) -> None:
 def _vault_cmd_recover(args, root: Path) -> None:
     """Dispatch explicit owner recovery for an exact encrypted-map key."""
     dispatch = {
+        "list": _vault_cmd_recover_list,
         "get": _vault_cmd_recover_get,
         "exec": _vault_cmd_recover_exec,
         "rm": _vault_cmd_recover_rm,
@@ -8946,7 +9093,7 @@ def _vault_cmd_recover(args, root: Path) -> None:
     sub = getattr(args, "vault_recover_sub", None)
     fn = dispatch.get(sub)
     if not fn:
-        sys.exit("tessctl vault recover: choose get, exec, rm, or migrate.")
+        sys.exit("tessctl vault recover: choose list, get, exec, rm, or migrate.")
     fn(args, root)
 
 
@@ -9168,12 +9315,12 @@ def cmd_vault(args, root: Path) -> None:
         print(
             "tessctl vault — age-encrypted secret store (M5)\n\n"
             "  Subcommands:\n"
-            "    init                  create vault, generate identity, store in keychain\n"
+            "    init                  create vault; reuse global identity or create it once\n"
             "    set <ref>             store secret (prompt or stdin, NEVER argv)\n"
             "    get <ref>             show masked value (--reveal for raw; refused on TTY)\n"
             "    list [--scope <s>]    list refs + metadata (never values)\n"
             "    migrate-refs [--apply --plan ID]  dry-run then explicitly normalize legacy refs\n"
-            "    recover <op>          exact-key recovery or explicit legacy-layout upgrade\n"
+            "    recover <op>          explicit exact-key recovery (list/get/exec/rm) or safe upgrade\n"
             "    rm <ref>              remove an entry\n"
             "    rotate <ref>          re-encrypt a new value, show rotation URL\n"
             "    exec --ref <r> [--as VAR] -- <cmd>  JIT inject into child env\n"
@@ -20994,7 +21141,9 @@ def build_parser() -> argparse.ArgumentParser:
     vault_sub = p_vault.add_subparsers(dest="vault_sub", metavar="SUBCOMMAND")
 
     # vault init
-    p_vinit = vault_sub.add_parser("init", help="create vault, generate age identity, store in keychain")
+    p_vinit = vault_sub.add_parser(
+        "init", help="create vault; reuse a verified global identity or create it once"
+    )
     p_vinit.add_argument("--headless", action="store_true",
                          help="headless mode: store identity in ~/.config/tess/vault/identity.age (not keychain)")
 
@@ -21017,9 +21166,13 @@ def build_parser() -> argparse.ArgumentParser:
     # vault recover — explicit, unnormalized owner recovery for historical keys
     p_vrecover = vault_sub.add_parser(
         "recover",
-        help="owner recovery for one exact stored legacy reference (never auto-selects)",
+        help="explicit owner recovery for exact historical stored references",
     )
     recover_sub = p_vrecover.add_subparsers(dest="vault_recover_sub", metavar="OPERATION")
+    recover_sub.add_parser(
+        "list",
+        help="list exact stored references only in explicit recovery mode (never values)",
+    )
     p_vrecover_get = recover_sub.add_parser("get", help="show a masked value for an exact stored reference")
     p_vrecover_get.add_argument("stored_ref", metavar="STORED-REF",
                                 help="exact encrypted-map key; no normalization is applied")
@@ -21035,7 +21188,7 @@ def build_parser() -> argparse.ArgumentParser:
                                help="exact encrypted-map key; no normalization is applied")
     p_vrecover_migrate = recover_sub.add_parser(
         "migrate",
-        help="dry-run then explicitly upgrade a safe pre-versioned vault layout",
+        help="dry-run then explicitly upgrade a losslessly representable historical layout",
     )
     p_vrecover_migrate.add_argument("--apply", action="store_true",
                                     help="apply only the displayed dry-run plan")

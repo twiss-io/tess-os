@@ -369,20 +369,31 @@ def test_duplicate_canonical_and_legacy_refs_fail_closed_without_value_output(va
 
 
 def test_incompatible_legacy_path_is_denied_without_migration_or_value_output(vault, run_cli, engine):
-    """Malformed old map keys are visible as a recovery problem, never guessed."""
+    """Malformed map keys are redacted outside explicit owner recovery."""
     value = "INVALID_path_value_not_to_be_printed_12345"
+    malformed_ref = "vault://../secret"
     engine._vault_write_blob(vault.root, {
         "version": 1,
-        "entries": {"vault://../secret": {"value": value, "meta": {}}}
+        "entries": {malformed_ref: {"value": value, "meta": {}}}
     })
 
-    r = run_cli(vault.root, "vault", "migrate-refs", "--apply", extra_env=vault.env)
-    assert r.returncode != 0
-    assert "invalid stored ref" in (r.stdout + r.stderr).lower()
-    assert value not in r.stdout + r.stderr
-    assert set(engine._vault_read_blob(vault.root)["entries"]) == {"vault://../secret"}
+    for command in (("list",), ("migrate-refs", "--apply")):
+        r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
+        output = r.stdout + r.stderr
+        assert r.returncode != 0
+        assert "malformed stored reference" in output.lower()
+        assert malformed_ref not in output
+        assert value not in output
+    assert set(engine._vault_read_blob(vault.root)["entries"]) == {malformed_ref}
 
-    r = run_cli(vault.root, "vault", "get", "vault://../secret", extra_env=vault.env)
+    # Raw stored keys are displayable only on the owner's explicit recovery
+    # path, never in a normal command's diagnostic.
+    r = run_cli(vault.root, "vault", "recover", "list", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert repr(malformed_ref) in r.stdout
+    assert value not in r.stdout + r.stderr
+
+    r = run_cli(vault.root, "vault", "get", malformed_ref, extra_env=vault.env)
     assert r.returncode != 0
     assert value not in r.stdout + r.stderr
 
@@ -484,7 +495,7 @@ def test_malformed_blob_schema_fails_closed_for_every_consumer_without_value_out
     malformed_value = "MALFORMED_schema_value_not_to_be_printed_12345"
     _write_unvalidated_blob(vault, engine, {
         "version": 1,
-        "entries": {"test/secret": {"value": malformed_value, "meta": []}},
+        "entries": {"test/secret": {"value": [], "meta": {}, "hidden": malformed_value}},
     })
 
     commands = (
@@ -519,7 +530,7 @@ def test_preversioned_blob_requires_explicit_recovery_upgrade_and_preserves_cust
     for command in (("list",), ("get", "legacy/secret"), ("migrate-refs",)):
         r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
         assert r.returncode != 0
-        assert "pre-versioned" in (r.stdout + r.stderr).lower()
+        assert "historical recovery-only" in (r.stdout + r.stderr).lower()
         assert legacy_value not in r.stdout + r.stderr
         assert custom_metadata not in r.stdout + r.stderr
 
@@ -588,6 +599,53 @@ def test_unrepresentable_preversioned_fields_remain_recoverable_without_silent_d
     assert (vault.root / ".claude" / "vault" / "vault.age").read_bytes() == before
 
 
+def test_historical_extensions_and_nonstring_metadata_are_recovery_only_and_preserved(vault, run_cli, engine):
+    """Recovery must preserve rich decryptable legacy JSON or refuse its upgrade."""
+    legacy_value = "RICH_legacy_value_not_to_be_printed_12345"
+    legacy_payload = {
+        "version": 0,
+        "entries": {
+            "legacy/secret": {
+                "value": legacy_value,
+                "meta": {"attempts": 3, "labels": ["old", "owner"], "active": True},
+                "entry_extension": {"nested": [1, {"opaque": "kept"}]},
+            }
+        },
+        "top_extension": {"migration": ["v0", {"opaque": True}]},
+        "custom_root_note": ["must", "survive"],
+    }
+    _write_unvalidated_blob(vault, engine, legacy_payload)
+
+    # Normal access stays fail-closed even though explicit recovery can safely
+    # select the value field without interpreting any extension.
+    for command in (("list",), ("get", "legacy/secret"), ("migrate-refs",)):
+        r = run_cli(vault.root, "vault", *command, extra_env=vault.env)
+        assert r.returncode != 0
+        assert "historical recovery-only" in (r.stdout + r.stderr).lower()
+        assert legacy_value not in r.stdout + r.stderr
+
+    r = run_cli(vault.root, "vault", "recover", "get", "legacy/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    r = run_cli(vault.root, "vault", "recover", "migrate", extra_env=vault.env)
+    assert r.returncode != 0
+    assert "cannot be upgraded" in (r.stdout + r.stderr).lower()
+    assert legacy_value not in r.stdout + r.stderr
+
+    # An exact owner mutation preserves every inert top-level, entry-level,
+    # and non-string metadata field while deleting only the chosen key.
+    r = run_cli(vault.root, "vault", "recover", "rm", "legacy/secret", extra_env=vault.env)
+    assert r.returncode == 0, r.stderr
+    assert legacy_value not in r.stdout + r.stderr
+    raw_data, _ = engine._vault_read_decrypted_blob_state(vault.root)
+    assert raw_data == {
+        "version": 0,
+        "entries": {},
+        "top_extension": {"migration": ["v0", {"opaque": True}]},
+        "custom_root_note": ["must", "survive"],
+    }
+
+
 def test_mutation_lock_prevents_lost_updates(vault, engine):
     """A deterministic interleaving proves the second writer reads post-write state."""
     engine._vault_write_blob(vault.root, {"version": 1, "entries": {}})
@@ -637,6 +695,10 @@ def test_concurrent_init_uses_one_identity_recipient_and_blob(project, engine, m
         return private_key, public_key
 
     monkeypatch.setattr(engine, "_vault_generate_identity", blocking_generate)
+    monkeypatch.delenv("TESS_VAULT_IDENTITY", raising=False)
+    monkeypatch.setattr(engine, "_GLOBAL_VAULT_DIR", root / ".test-global-vault")
+    monkeypatch.setattr(engine, "_GLOBAL_IDENTITY_FILE", root / ".test-global-vault" / "identity.age")
+    monkeypatch.setattr(engine, "_vault_load_identity_keychain", lambda: None)
     monkeypatch.setattr(engine, "_vault_store_identity_keychain",
                         lambda private_key: (stored_identities.append(private_key) or True))
     monkeypatch.setattr(engine, "_vault_install_git_hooks", lambda _root: None)
@@ -666,6 +728,52 @@ def test_concurrent_init_uses_one_identity_recipient_and_blob(project, engine, m
     assert engine._vault_load_public_key(root) == generated[0][1]
     monkeypatch.setenv("TESS_VAULT_IDENTITY", generated[0][0])
     assert engine._vault_read_blob(root) == {"version": 1, "entries": {}}
+
+
+def test_init_reuses_verified_global_identity_across_projects(tmp_path, engine, monkeypatch):
+    """Project B must not replace the identity that decrypts project A."""
+    root_a = tmp_path / "project-a"
+    root_b = tmp_path / "project-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    global_dir = tmp_path / "global-vault"
+    global_identity = global_dir / "identity.age"
+    generated = []
+    stored_identities = []
+    keychain = {}
+    original_generate = engine._vault_generate_identity
+
+    def record_generate(backend):
+        keypair = original_generate(backend)
+        generated.append(keypair)
+        return keypair
+
+    def store_identity(private_key):
+        stored_identities.append(private_key)
+        keychain["identity"] = private_key
+        return True
+
+    monkeypatch.delenv("TESS_VAULT_IDENTITY", raising=False)
+    monkeypatch.setattr(engine, "_GLOBAL_VAULT_DIR", global_dir)
+    monkeypatch.setattr(engine, "_GLOBAL_IDENTITY_FILE", global_identity)
+    monkeypatch.setattr(engine, "_vault_generate_identity", record_generate)
+    monkeypatch.setattr(engine, "_vault_store_identity_keychain", store_identity)
+    monkeypatch.setattr(engine, "_vault_load_identity_keychain", lambda: keychain.get("identity"))
+    monkeypatch.setattr(engine, "_vault_install_git_hooks", lambda _root: None)
+
+    args = types.SimpleNamespace(headless=False)
+    engine._vault_cmd_init(args, root_a)
+    # This is the regression: a second root must derive/reuse the existing
+    # identity, not create and store a replacement in global custody.
+    engine._vault_cmd_init(args, root_b)
+
+    assert len(generated) == 1
+    assert stored_identities == [generated[0][0]]
+    assert engine._vault_load_public_key(root_a) == generated[0][1]
+    assert engine._vault_load_public_key(root_b) == generated[0][1]
+    # Project A remains decryptable after B has initialised.
+    assert engine._vault_read_blob(root_a) == {"version": 1, "entries": {}}
+    assert engine._vault_read_blob(root_b) == {"version": 1, "entries": {}}
 
 
 # ===========================================================================
