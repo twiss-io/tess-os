@@ -7,9 +7,28 @@
 
 > **Status: technology preview. Do not use the current release or `main` to protect production merges.**
 
-Tess OS is a local governance and review harness for work produced by coding
-agents. It records policy and review evidence around repository changes, then
-can run a gate before a protected delivery step.
+**Your own AI, not a subscription to someone else's assistant. It keeps a
+plain record of what happened — and can prove what a change went through
+before it shipped.**
+
+Run the wizard and you get a local instance: a conductor you name, one of
+five pathways for how it shows up — Chief of Staff, co-founder, strategist,
+guide, operator — and a crew drawn from a roster of 150 specialists, all
+running on your own machine, in your own git repo, under an Apache-2.0
+license. Every mission and gate decision leaves a plain-file, hash-chained
+trail under `.tess/state/` that you can read yourself, no proprietary memory
+store to trust blindly. And when a change needs a "prove it," Tess OS can
+hand you a real [Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed,
+chain-linked, and designed to be checked by a standalone verifier that
+doesn't take Tess OS's own word for it. That verifier runs today; the
+human-owned key custody it depends on for that independence is still being
+built — see [Important limits today](#important-limits-today) before
+treating a receipt as a production trust guarantee.
+
+None of that makes the underlying model smarter. Tess OS is a local
+governance and review harness for work produced by coding agents. It records
+policy and review evidence around repository changes, then can run a gate
+before a protected delivery step.
 
 It is not a model-improvement product. It does not make an agent smarter,
 prove a model's reasoning, or make an unsupported platform safe. Its value is
@@ -34,6 +53,18 @@ enforce.
 These are current repository capabilities, not equivalent provider support
 claims. Read the [support and status guide](docs/STATUS.md) before deciding
 whether an integration fits a particular workflow.
+
+## See it
+
+![Tess OS -- create-tess wizard and Agent Receipt demo](docs/demo/tess-demo.svg)
+
+A real, unedited terminal recording, not a mockup. It runs `npm create
+tess`'s five-axis wizard end to end — vibe, operator name, starter squad,
+conductor name, pathway — through the actual post-bake `tessctl
+doctor`/`tessctl verify` checks and the conductor's in-voice arrival
+greeting, then the Agent Receipt "show me the receipt" demo (propose →
+approve → sign → journal → verify, plus a tamper rejection). How it was
+recorded, and how to reproduce it, is in [docs/demo/](docs/demo/README.md).
 
 ## Important limits today
 
@@ -106,35 +137,216 @@ Do not use this sequence to activate a production branch. In particular, do
 not run key-generation, key-registration, or verdict-signing commands as a
 bootstrap shortcut.
 
+## Quickstart
+
+### Option A — `npm create tess`
+
+```bash
+npm create tess@latest my-os
+cd my-os
+```
+
+This runs the interactive wizard through five axes: a **vibe** (Guild /
+Tactical / Studio — reskins the language, not the power underneath), your
+**name**, a **starter squad** (`founders` / `builders` / `operators`), your
+**conductor's name**, and how it should **show up in the room** (Chief of
+Staff / Co-founder / Strategist / Guide / Operator). It then bakes the
+instance, runs `tessctl doctor`/`tessctl verify`, and the conductor greets
+you by name — see [See it](#see-it) above for the real recording.
+
+For CI or a non-interactive setup, pass every axis as a flag:
+
+```bash
+npm create tess@latest my-os -- --yes \
+  --operator="Alex" --vibe=studio --path=builders \
+  --conductor="Atlas" --pathway=co-founder
+```
+
+**Verified 2026-07-23:** the P0 zero-flag `git clone` bug (present through
+`0.1.3`) is fixed and published as `0.1.4` — see
+[npm and source status](#npm-and-source-status) for the full incident
+writeup.
+
+### Option B — clone the source
+
+```bash
+git clone https://github.com/twiss-io/tess-os.git
+cd tess-os
+cp .env.example .env        # fill in real values; .env is gitignored, never committed
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+./tessctl init
+```
+
+`tessctl init` restores the managed tree from `.tess/core`, renders
+`CLAUDE.md`/`AGENTS.md`/`.codex/` from templates, and creates the working
+`.tess/state/` directories — same command documented in full, with the test
+suite, in [docs/LOCAL_DEV_QUICKSTART.md](docs/LOCAL_DEV_QUICKSTART.md).
+
+### Everyday `tessctl` commands
+
+Real output, from a fresh clone:
+
+```console
+$ ./tessctl doctor
+tessctl doctor — 1033 files checked
+  ok          .tess/core/MANIFEST.md
+  ok          .tess/core/personas/chief-of-staff.md
+  ...
+============================================================
+pristine: 890  |  staged (benched): 143  |  uncaptured drift: 0  |  captured: 0  |
+quarantined: 0  |  core tamper: 0  |  security alerts: 0
+
+doctor: OK
+
+$ ./tessctl verify
+============================================================
+ok: 1033  |  staged warns: 0  |  core tampers: 0  |  security drifts: 0  |
+live drifts: 0  |  missing live files: 0  |  quarantined: 0  |  doctrine leaks: 0
+
+verify: OK — core integrity confirmed; no security-tier tampering; live matches core
+
+$ ./tessctl roster list
+  installed (7):
+    apolline  athena  eva  founders-office-orchestrator  leah
+    revenue-orchestrator  zelie
+
+  staged / benched (143):
+    ada  adrienne  alessia  alina  alouette
+    amandine  amara  anais  arielle  aurora
+    ... and 113 more
+
+$ ./tessctl recruit reid
+tessctl recruit: installed 1 agent(s): reid
+  Run `tessctl doctor` to verify.
+```
+
+`doctor` checks every managed file against expected state and flags
+security-tier drift; `verify` checks `.tess/core` bytes against their
+recorded `base_sha` and flags tampering. Neither one makes a branch
+protected — see [Important limits today](#important-limits-today).
+`recruit`/`bench` move an agent between the bench and installed — see
+[The specialist roster](#the-specialist-roster) next.
+
+## The specialist roster
+
+`npm create tess` doesn't hand you an empty framework — it hands you a crew.
+**150 dispatchable specialists in this repository: 144 individual personas**
+(`agents/`) **plus 6 outcome orchestrators**
+(`conductor/outcome-orchestrators/`) that route work across them. Nobody runs
+with all 150 active — each starter path installs a small squad plus a
+universal base (Leah — research, Eva — talent/recruiting) and stages
+everyone else on the bench:
+
+| Path | Squad | Orchestrators |
+|---|---|---|
+| `founders` | Athena — Chief Strategy Officer · Apolline — Chief Sales Strategist · Zélie — Presentation & Deck Design | Founder's Office · Revenue |
+| `builders` | Elena — Product Engineer · Ada — Lead Backend Engineer · Iris — Lead Frontend Engineer · Quinn — QA & Reliability Architect · Reid — Code Quality & Standards | Product & Delivery |
+| `operators` | Adrienne — Chief of Staff & Executive Operations · Evangeline — Chief Customer Experience Strategist · Clio — Session Scribe | Operational Reliability · Client Experience |
+
+### From spec to dispatch
+
+139 of 144 personas live as a 5-file spec under `agents/<name>/`:
+`README.md`, `identity.md`, `personality.md`, `soul.md`, `capabilities.md`.
+That's a floor, not a ceiling: the other 5 carry one or more additional
+files — Leah and Eva each add a `governance.md`, Eva also adds
+`hiring-framework.md` and `agent-profile-template.md`, and Clio, Petra, and
+Reid run leaner (1-2 files each). Once recruited, every persona compiles
+down to a single `.claude/agents/<name>.md` dispatch file: YAML frontmatter
+(`name`, `description`, `model`, `lifecycle_status`, `tools`) plus the
+merged spec body Claude Code actually reads at dispatch time.
+
+Take Leah, the universal-base researcher installed on every path, as a real
+example. Here's the spec:
+
+```
+agents/leah/
+├── README.md         "Leah ensures the team never operates on incomplete,
+│                       shallow, or unchallenged information."
+├── identity.md        who she is, her function, when to call her
+├── personality.md     how she thinks, communicates, works with others
+├── soul.md            what drives her, what she stands for
+├── capabilities.md    the 9-section research-output format, hard constraints
+└── governance.md      core mandate, research protocol, and escalation rules —
+                        the one extra file beyond the 5-file floor (202 lines)
+```
+
+compiles to `.claude/agents/leah.md`:
+
+```yaml
+---
+name: leah
+description: Senior Researcher & Intelligence Lead. Invoke at the start of
+  every mission, before any other specialist moves. Use whenever the team is
+  operating on thin or untested information...
+model: sonnet
+lifecycle_status: core
+tools: Read, Write, Glob, Grep, WebSearch, WebFetch
+---
+```
+
+Ada, Lead Backend Engineer on the `builders` squad, is the opposite case: her
+spec under `agents/ada/` is just as complete, but there's no
+`.claude/agents/ada.md` in a fresh `founders`-path install. She's on the
+bench until you recruit her.
+
+### Bench vs. active
+
+```console
+$ ./tessctl recruit reid
+tessctl recruit: installed 1 agent(s): reid
+  Run `tessctl doctor` to verify.
+
+$ ./tessctl roster list
+  installed (8):
+    apolline  athena  eva  founders-office-orchestrator  leah
+    reid  revenue-orchestrator  zelie
+```
+
+`recruit` accepts an exact name (`ada`), an orchestrator shorthand (`revenue`
+→ `revenue-orchestrator`), or a whole path group (`founders` → squad +
+orchestrators). `bench` reverses it — moves an agent back to staged and
+removes its live dispatch file. Either way, the underlying spec under
+`agents/<name>/` is untouched; only the compiled, dispatchable copy changes.
+
 ## npm and source status
 
-The public `create-tess` package is currently published at **0.1.3** and lags
-repository `main`; it is not production onboarding for the signed gate. The
-package can still scaffold a local Tess OS instance, but it does not solve
-the custody or required-check prerequisites above.
+The public `create-tess` package is published at **0.1.4** (2026-07-21),
+matching this repository's `create-tess/package.json`.
 
-**Known defect in every published version through 0.1.3, fixed in `main` and
-pending republish as 0.1.4 (P0 G-01):** the default (zero-flag)
-`npm create tess` flow depended on a runtime `git clone --branch
-<create-tess-vX.Y.Z>` against a tag that was never actually cut, so it failed
-for every user who did not pass `--template-ref` explicitly. `main` now ships
-the scaffold template bundled INSIDE the `create-tess` package itself — the
-default flow copies that local, offline bundle and never invokes `git clone`.
-`--template-source <git-url>` remains available as an explicit opt-in for a
-live git fetch. See `create-tess/src/scaffold.js`'s header comment for the
-full incident writeup. Until the 0.1.4 republish lands, run the wizard from
-a source checkout (`node create-tess/bin/create-tess.mjs`) or pass
-`--template-source`/`--template-ref` explicitly to work around the published
-0.1.3 defect.
+**Fixed and verified (2026-07-23), P0 G-01:** every published version
+through `0.1.3` had the default (zero-flag) `npm create tess` flow depend on
+a runtime `git clone --branch <create-tess-vX.Y.Z>` against a tag that was
+never actually cut — it failed for every user who didn't pass
+`--template-ref` explicitly. `0.1.4` bundles the scaffold template inside the
+`create-tess` package itself; the default flow now copies that local,
+offline bundle and never invokes `git clone`. Confirmed by running both
+`npx create-tess@latest` and `npm create tess@latest` fresh against the live
+npm registry — no flags, no workaround needed. `--template-source
+<git-url>` remains available as an explicit opt-in for a live git fetch. See
+`create-tess/src/scaffold.js`'s header comment for the full incident
+writeup.
 
-For exact source behavior, use a reviewed GitHub tag or commit and read its
-release notes. A future npm release will be documented only after a
-reproducible release rehearsal and the production prerequisites are complete.
+`create-tess/template/` — what actually gets copied into a scaffolded
+project — is a full mirror of this repository's tree, rebuilt automatically
+before every `npm pack`/`npm publish`. It can still move a little ahead of
+whatever the last publish captured (as of this writing, two commits have
+touched the bundled template since the `0.1.4` publish, both mirroring
+unrelated orchestrator/receipt-hardening work, not the wizard itself). For
+the exact current state, use a reviewed GitHub tag or commit, or the
+source-checkout path above.
+
+This publish is documented here because its specific, previously-broken
+behavior was independently re-verified against the live registry, not
+asserted from the changelog alone. Future releases will be documented the
+same way.
 
 ## Where to start
 
 - [Local development quickstart](https://github.com/twiss-io/tess-os/blob/main/docs/LOCAL_DEV_QUICKSTART.md) — clone, Python
   environment, scoped `create-tess` validation, and safe local checks.
+- [Demo recording](docs/demo/README.md) — how the terminal recording above was
+  made and how to reproduce it.
 - [Support and status](docs/STATUS.md) — capability labels and current limits.
 - [Gate operation and custody](docs/GATE_QUICKSTART.md) — safe diagnostics and
   the boundary around the human-owned key ceremony.
