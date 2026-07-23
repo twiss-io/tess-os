@@ -47,6 +47,31 @@ HAS_NODE = which("node") is not None
 
 BOOT_TIMEOUT_SECONDS = 10
 _LISTEN_RE = re.compile(r"listening on http://localhost:(\d+)")
+_NODE_TEST_PASS_RE = re.compile(r"(?m)^[#ℹ] pass (?P<count>[1-9]\d*)\s*$")
+_NODE_TEST_FAIL_RE = re.compile(r"(?m)^[#ℹ] fail (?P<count>\d+)\s*$")
+
+
+def assert_node_test_passed(result: subprocess.CompletedProcess, *, description: str) -> None:
+    """Require a generated app's real ``node --test`` run to have passed.
+
+    Node 18--22 use the TAP reporter for a captured stream (``# pass`` /
+    ``# fail``); newer Node releases use the spec reporter (``ℹ pass`` /
+    ``ℹ fail``). The runner's exit code is the primary success signal, but
+    the summary check remains deliberate: it proves this explicit generated
+    test file actually ran at least one test rather than merely exiting zero.
+    """
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        raise AssertionError(f"{description} exited with code {result.returncode}:\n{output}")
+
+    passed = _NODE_TEST_PASS_RE.search(output)
+    failed = _NODE_TEST_FAIL_RE.search(output)
+    if passed is None or failed is None:
+        raise AssertionError(
+            f"{description} did not emit a recognized Node test summary:\n{output}"
+        )
+    if int(failed.group("count")) != 0:
+        raise AssertionError(f"{description} reported {failed.group('count')} failed test(s):\n{output}")
 
 
 @pytest.fixture

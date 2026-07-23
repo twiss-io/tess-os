@@ -54,7 +54,13 @@ import _orchestrator_paths  # noqa: F401 -- sys.path bootstrap
 from _orchestrator_paths import EXAMPLE_ROUTING_TABLE, REPO_ROOT
 
 from _kill_test_helpers import KillTestTmpDirs
-from _node_server import HAS_NODE, get_json, node_server, post_json  # noqa: F401 -- node_server used as a fixture
+from _node_server import (  # noqa: F401 -- node_server used as a fixture
+    HAS_NODE,
+    assert_node_test_passed,
+    get_json,
+    node_server,
+    post_json,
+)
 
 from orchestrator.adapters.local_identity import LocalIdentityApprovalGate
 from orchestrator.pipeline import run_pipeline
@@ -204,10 +210,7 @@ def test_happy_path_freeform_idea_approves_boots_and_produces_a_verifiable_recei
         text=True,
         timeout=BOOT_TIMEOUT_SECONDS,
     )
-    combined = node_test.stdout + node_test.stderr
-    assert node_test.returncode == 0, f"generated app's own test suite failed:\n{combined}"
-    assert "# fail 0" in combined, combined
-    assert "# pass" in combined and "# pass 0" not in combined, combined
+    assert_node_test_passed(node_test, description="generated app's own test suite")
 
     # --- a real, independently verifiable Agent Receipt was emitted -----
     assert result.receipt is not None
