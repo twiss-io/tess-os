@@ -18571,8 +18571,8 @@ def _cmd_skill_from_task(args, root: Path) -> None:
             # so this is a robustness fix with no test-visible behavior
             # change, not a functional regression.
             out_dir = root / out_dir
-        # Issue #133 (CRITICAL hardened, PR #140 re-review): this is the
-        # ONE directory `--out` must never resolve into, unconditionally —
+        # Issue #133 (CRITICAL hardened, PR #140 re-review): this is a
+        # forbidden root `--out` must never resolve into, unconditionally —
         # checked BEFORE the exists/--force conflict check below, and
         # BEFORE anything on disk is touched. Reuse the RESOLVED path this
         # call returns (not out_dir itself) for everything downstream that
