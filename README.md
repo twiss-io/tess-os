@@ -83,9 +83,10 @@ Two production prerequisites remain unresolved:
 
 Until both are complete, a passing local command or GitHub Action is useful
 engineering evidence, but not a production admission control. The committed
-`gate-arena` scorecard on `main` is **12/12**; the multi-push policy-reduction
-case A14 remains open. That score is disclosed evidence, not a production
-readiness certificate.
+`gate-arena` scorecard on `main` reports **12/12 attacks blocked**.
+Multi-push policy reduction is a disclosed but untested case, and is not
+included in that score. The score is disclosed evidence, not a
+production-readiness certificate.
 
 Do **not** generate, register, or sign a verifier or sign-off key to clear a
 gate. Key custody is a designated human ceremony owned by Xavier. See

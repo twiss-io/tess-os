@@ -44,8 +44,9 @@ repository today from pilot work and product plans.
 5. an honest adversarial-corpus result with every open case disclosed.
 
 The current repository does not meet those conditions. In particular, the
-committed `gate-arena` scorecard reports 12/12 while A14 remains open, and the
-shipped verifier/sign-off registries are intentionally empty.
+committed `gate-arena` scorecard reports 12/12 attacks blocked; multi-push
+policy reduction is a disclosed but untested case and is not included in that
+score; and the shipped verifier/sign-off registries are intentionally empty.
 
 ## Product boundaries
 

@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-23T13:19:39.497174Z'
+  last_updated: '2026-07-23T21:18:06.158651Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -957,7 +957,7 @@ files:
   .tess/core/agents/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5af7594814b884c85376d7f9fe8f43b7a591839263c7707c9a95e2e916f52ccb
+    base_sha: sha256:130eb32ba2bdc030d9cda9056486f81f445639fb8547d1c99de9c720e1829b7d
     live_path: agents/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/ada/README.md:
