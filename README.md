@@ -7,19 +7,23 @@
 
 > **Status: technology preview. Do not use the current release or `main` to protect production merges.**
 
-**An AI that's genuinely yours — not a subscription to someone else's
-assistant — that keeps a plain record of what happened, and can prove what a
-change actually went through before it shipped.**
+**Your own AI, not a subscription to someone else's assistant. It keeps a
+plain record of what happened — and can prove what a change went through
+before it shipped.**
 
 Run the wizard and you get a local instance: a conductor you name, one of
-five house personas you pick for it, and a crew assembled from a roster of
-about 150 specialists — all running on your own machine, in your own git
-repo, under an Apache-2.0 license. Every mission and gate decision leaves a
-plain-file, hash-chained trail under `.tess/state/` that you can read
-yourself, no proprietary memory store to trust blindly. And when a change
-needs a "prove it," Tess OS can hand you a real
-[Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed, chain-linked, and
-checked by a standalone verifier that doesn't take Tess OS's own word for it.
+five pathways for how it shows up — Chief of Staff, co-founder, strategist,
+guide, operator — and a crew drawn from a roster of 150 specialists, all
+running on your own machine, in your own git repo, under an Apache-2.0
+license. Every mission and gate decision leaves a plain-file, hash-chained
+trail under `.tess/state/` that you can read yourself, no proprietary memory
+store to trust blindly. And when a change needs a "prove it," Tess OS can
+hand you a real [Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed,
+chain-linked, and designed to be checked by a standalone verifier that
+doesn't take Tess OS's own word for it. That verifier runs today; the
+human-owned key custody it depends on for that independence is still being
+built — see [Important limits today](#important-limits-today) before
+treating a receipt as a production trust guarantee.
 
 None of that makes the underlying model smarter. Tess OS is a local
 governance and review harness for work produced by coding agents. It records
@@ -158,15 +162,10 @@ npm create tess@latest my-os -- --yes \
   --conductor="Atlas" --pathway=co-founder
 ```
 
-**Verified 2026-07-23:** every published version through `0.1.3` had the
-default (zero-flag) flow depend on a runtime `git clone` against a release
-tag that was never actually cut — it failed for anyone who didn't pass
-`--template-ref` explicitly (P0 G-01). That's fixed and published as `0.1.4`
-(2026-07-21): the default flow now scaffolds from a template bundled inside
-the `create-tess` package itself, no `git clone`, no network dependency.
-Confirmed by running both `npx create-tess@latest` and `npm create
-tess@latest` fresh against the live npm registry — no workaround needed. See
-[npm and source status](#npm-and-source-status) below for what can still lag.
+**Verified 2026-07-23:** the P0 zero-flag `git clone` bug (present through
+`0.1.3`) is fixed and published as `0.1.4` — see
+[npm and source status](#npm-and-source-status) for the full incident
+writeup.
 
 ### Option B — clone the source
 
@@ -247,24 +246,29 @@ everyone else on the bench:
 
 ### From spec to dispatch
 
-Every persona lives as a 5-file spec under `agents/<name>/` — `README.md`,
-`identity.md`, `personality.md`, `soul.md`, `capabilities.md` — and, once
-recruited, compiles down to a single `.claude/agents/<name>.md` dispatch
-file: YAML frontmatter (`name`, `description`, `model`, `lifecycle_status`,
-`tools`) plus the merged spec body Claude Code actually reads at dispatch
-time.
+139 of 144 personas live as a 5-file spec under `agents/<name>/`:
+`README.md`, `identity.md`, `personality.md`, `soul.md`, `capabilities.md`.
+That's a floor, not a ceiling: the other 5 carry one or more additional
+files — Leah and Eva each add a `governance.md`, Eva also adds
+`hiring-framework.md` and `agent-profile-template.md`, and Clio, Petra, and
+Reid run leaner (1-2 files each). Once recruited, every persona compiles
+down to a single `.claude/agents/<name>.md` dispatch file: YAML frontmatter
+(`name`, `description`, `model`, `lifecycle_status`, `tools`) plus the
+merged spec body Claude Code actually reads at dispatch time.
 
-Leah — the universal-base researcher, installed on every path — as a real
-example. The spec:
+Take Leah, the universal-base researcher installed on every path, as a real
+example. Here's the spec:
 
 ```
 agents/leah/
-├── README.md        "Leah ensures the team never operates on incomplete,
-│                      shallow, or unchallenged information."
-├── identity.md       who she is, her function, when to call her
-├── personality.md    how she thinks, communicates, works with others
-├── soul.md           what drives her, what she stands for
-└── capabilities.md   the 9-section research-output format, hard constraints
+├── README.md         "Leah ensures the team never operates on incomplete,
+│                       shallow, or unchallenged information."
+├── identity.md        who she is, her function, when to call her
+├── personality.md     how she thinks, communicates, works with others
+├── soul.md            what drives her, what she stands for
+├── capabilities.md    the 9-section research-output format, hard constraints
+└── governance.md      core mandate, research protocol, and escalation rules —
+                        the one extra file beyond the 5-file floor (202 lines)
 ```
 
 compiles to `.claude/agents/leah.md`:
@@ -281,7 +285,7 @@ tools: Read, Write, Glob, Grep, WebSearch, WebFetch
 ---
 ```
 
-Ada — Lead Backend Engineer, `builders` squad — is the opposite case: her
+Ada, Lead Backend Engineer on the `builders` squad, is the opposite case: her
 spec under `agents/ada/` is just as complete, but there's no
 `.claude/agents/ada.md` in a fresh `founders`-path install. She's on the
 bench until you recruit her.
