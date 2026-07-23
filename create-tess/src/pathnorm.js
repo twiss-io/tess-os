@@ -78,8 +78,199 @@
 // — the source comment deliberately avoids a literal accented character
 // itself, so this file's own bytes can't silently drift between NFC/NFD
 // depending on the editor that touched it last.
+// ★ Issue #146 (Cyra, PR #145 re-review — pre-existing, narrow residual, NOT
+// a regression of the HIGH fix below). `normalizeComponent`'s trailing
+// `[. ]` strip only ever collapsed a component that is ENTIRELY dots/spaces.
+// A "noise" component built instead from Unicode general-category Cf
+// (format-control) codepoints — zero-width space U+200B, ZWNJ/ZWJ, soft
+// hyphen U+00AD (Cf, verified — not a printable hyphen), the BOM/ZWNBSP
+// U+FEFF, the LRM/RLM/Arabic-letter-mark bidi controls, word joiner, … — or
+// from a LONE combining mark (general category Mn/Mc/Me) with no preceding
+// base character to attach to, does NOT normalize to empty under the
+// original rule: it is real, non-empty, non-dot/-space content, so it
+// survives `normalizePath`'s `.filter(Boolean)` untouched. Interposed
+// WITHIN a forbidden EXCLUDE_DIR_PREFIXES/EXCLUDE_CONTENT_PREFIXES root
+// (e.g. `.tess/<U+200B>/keys/verifiers/cyra.asc`), it still defeats the
+// string prefix-match exactly like the all-dots/all-space vector PR #145
+// closed — the interposed segment breaks the contiguous comparison while
+// remaining, under the old rule, a "real" segment.
+//
+// ★★ HIGH (Reid, PR #170 second security re-review) — RISK-LANGUAGE
+// CORRECTION. This corrects both issue #146's own "Why it is narrow"
+// section and this PR's original body text, both of which claimed "the
+// inode arm already backstops the real key roots... not an active leak".
+// That claim is FALSE for exactly the vector class named above and was
+// empirically DISPROVED with a real on-disk fixture run through the actual
+// scaffold-copy filter, `makeCopyFilter` — not just the string-only
+// `isExcludedRel` — for BOTH the originally-named vectors (pre-#170 fix)
+// and, before this fix, for the Hangul-filler addition below:
+//   isExcludedRel('.tess/<noise>/keys/verifiers/cyra.asc')       -> false (KEPT)
+//   makeCopyFilter(srcRoot)(<abs path to that file>)             -> true  (COPY — leak)
+// The inode/stat arm in `makeCopyFilter` (ignore.js, `forbiddenStats` +
+// `ancestorStatCache`) walks `src`'s ancestors and compares each one's
+// `(dev, ino)` against the FOUR resolved `EXCLUDE_DIR_PREFIXES` roots. That
+// only catches SAME-DIRECTORY aliasing — a case-fold or NFC/NFD-divergent
+// STRING that still resolves to the identical physical inode as, say,
+// `.tess/keys/verifiers` (the CRITICAL bug PR #145 fixed). It provides
+// **zero** protection when the noise component is a genuinely separate,
+// real, differently-inoded directory interposed BEFORE the forbidden root
+// is ever reached (`.tess/<noise>/keys/verifiers` is never the same
+// directory as `.tess/keys/verifiers` — different inode, full stop) —
+// which is exactly the shape of every vector named in this file, #146's
+// three original vectors included. The accurate statement: the STRING arm
+// (`normalizeComponent`/`normalizePath`, this file) is the ONLY guard for
+// this vector class; the inode arm is a different, narrower control that
+// backstops a different bug (case/Unicode-form aliasing of the SAME
+// directory), not this one (a genuinely nested, separate directory). Any
+// future comment, PR body, or issue in this repo describing this vector
+// class must not repeat the "inode-backstopped, not an active leak"
+// framing — it is empirically false and was the direct cause of #146
+// (correctly) closing as CRITICAL-adjacent-but-deferred when it should have
+// been treated as a live gap. See
+// test/secrets-nested-noise-dir-copy-filter.test.js for the fs-level,
+// real-`makeCopyFilter`-call proof (both pre-fix failing and post-fix
+// passing) that closes this specific mischaracterization.
+//
+// FIX — extend the SAME normalize-to-empty mechanism, not a new one:
+//   1. Strip every Cf-category codepoint from the ENTIRE component (not
+//      only a trailing run) — `\p{Cf}` is exhaustive over Unicode's format-
+//      control block, so this needs no per-character allowlist to maintain.
+//      A component composed ENTIRELY of such codepoints collapses to `''`
+//      and is dropped by `normalizePath`'s existing `.filter(Boolean)` (PR
+//      #145's HIGH fix) — the SAME fail-safe machinery, a wider input set.
+//      Applied BEFORE the trailing dot/space strip (not after): a Cf
+//      codepoint trailing a run of literal dots/spaces (e.g. `". ​"`)
+//      would otherwise block that regex's end-anchor from reaching the real
+//      dots/spaces underneath it — stripping the invisible layer first
+//      restores the original rule's own reach.
+//   2. Collapse a component that is, after step 1, ENTIRELY combining marks
+//      (`\p{M}`, general categories Mn/Mc/Me) to `''` too — a "combining-
+//      only" component, issue #146's third named vector: no base character
+//      means nothing for the mark to combine with, so it is orphaned by
+//      construction. NOT applied to a mark that has a base alongside it in
+//      the same component (an ordinary accented letter) — by this point
+//      `.normalize('NFC')` (the very first step) has already composed any
+//      such base+mark sequence back into its single precomposed codepoint
+//      wherever Unicode defines one (see this function's header test,
+//      test/pathnorm.test.js's NFC/NFD regression lock), so a RAW combining
+//      mark surviving to this check has already failed to compose with
+//      anything — orphaned, not merely decomposed. This scoping is
+//      deliberate and load-bearing: an earlier, broader draft of this fix
+//      that instead force-excluded ANY component containing a non-
+//      `[A-Za-z0-9._-]` character (Cyra's alternate "match-forcing token"
+//      framing in #146, taken literally) was rejected during review — it
+//      would have flipped test/secrets-casefold-bypass.test.js's own
+//      negative control ("a legitimate, non-secret file that happens to
+//      carry accented characters is kept ... the fix must not become an
+//      overbroad hammer against ordinary unicode filenames", e.g.
+//      `agents/café-notes/README.md`) from KEPT to wrongly EXCLUDED. Only
+//      the two provably-noise categories above (invisible format-control
+//      codepoints; marks with no base to attach to) are collapsed — real,
+//      printable, identity-bearing Unicode text of any script is left
+//      exactly as NFC + casefold already handled it, unaffected by this fix.
+//      See test/pathnorm.test.js and test/secrets-noise-component-bypass.test.js
+//      for the empirically-verified (buggy-before / correct-after)
+//      regression lock on all three named vectors, plus the café negative
+//      control proving this fix does not regress the existing one.
+// ★★ HIGH FIX (Reid, PR #170) — widen from `\p{Cf}` to
+// `\p{Default_Ignorable_Code_Point}`. THE GAP: `\p{Cf}` is exhaustive over
+// Unicode's format-control block but is NOT a superset of Unicode's
+// Default_Ignorable_Code_Point derived property — HANGUL CHOSEONG FILLER
+// (U+115F), HANGUL JUNGSEONG FILLER (U+1160), and HANGUL FILLER (U+3164)
+// are general category `Lo` (Letter, other) — real, standard, genuinely
+// invisible-when-rendered Unicode characters, NOT `Cf` and NOT `\p{M}` —
+// and survived the #146 fix (`\p{Cf}`-only) completely untouched, on this
+// PR's OWN post-#146-fix code, reproduced live: `.tess/<U+115F>/keys/
+// verifiers/cyra.asc` stayed KEPT by `isExcludedRel` and COPIED by
+// `makeCopyFilter`. `\p{Default_Ignorable_Code_Point}` is a strict superset
+// of `\p{Cf}` (verified: every #146-named vector — ZWSP U+200B, soft hyphen
+// U+00AD, ZWNJ/ZWJ, BOM/ZWNBSP U+FEFF, bidi marks, word joiner — is
+// Default_Ignorable too, so this is a pure widening, not a behavior change
+// for any already-closed vector) that ALSO covers the Hangul filler family
+// and variation selectors, and is natively supported as a Unicode property
+// escape on Node >=18 (this package's own `engines` floor) with no
+// polyfill. Verified directly, alongside this change, that it does NOT
+// match ordinary printable text of any script (café, 日本支店) —
+// Default_Ignorable_Code_Point is specifically the set Unicode itself
+// defines as "should generally be ignored for rendering/processing", the
+// same intent this filter needs. See test/pathnorm.test.js (primitive
+// level), test/secrets-noise-component-bypass.test.js (`isExcludedRel`
+// surface), and test/secrets-nested-noise-dir-copy-filter.test.js
+// (`makeCopyFilter` fs-level surface — the actual scaffold-copy path) for
+// the Hangul-filler regression lock, each verified fail-against-pre-this-fix.
+//
+// ★★★ HIGH FIX (Cyra, PR #170 THIRD security re-review) — RE-BLOCKED at
+// `d96cc7a`: `Default_Ignorable_Code_Point` closes the Hangul-filler class
+// but is NOT a superset of Unicode's space/separator/control families. A
+// whole component built ENTIRELY from `\p{Zs}` (space separators — NBSP
+// U+00A0, EN QUAD..HAIR SPACE U+2000-200A, NARROW NBSP U+202F, MEDIUM
+// MATHEMATICAL SPACE U+205F, IDEOGRAPHIC SPACE U+3000, OGHAM SPACE MARK
+// U+1680), `\p{Zl}`/`\p{Zp}` (LINE/PARAGRAPH SEPARATOR, U+2028/U+2029), or
+// `\p{Cc}` (C0/C1 controls — TAB, NEL, etc., all filesystem-legal on
+// macOS/Linux) survives `normalizeComponent` non-empty — none of these are
+// `Default_Ignorable` (Unicode deliberately scopes that property to
+// invisible-but-NOT-whitespace marks, not "renders as blank"), so none are
+// touched by the DEFAULT_IGNORABLE_RE strip above. Interposed within a
+// forbidden EXCLUDE_DIR_PREFIXES/EXCLUDE_CONTENT_PREFIXES root exactly like
+// every prior vector in this class, it defeats the prefix-match and leaks a
+// trust-anchor key through the REAL `makeCopyFilter` — reproduced live for
+// all three families (Zs/Zl/Zp/Cc) and their mixes (e.g. NBSP+ZWSP,
+// NBSP+trailing dot). This is the enumeration anti-pattern this class has
+// now hit three times (all-dots/space -> `\p{Cf}` -> `Default_Ignorable`),
+// each closing only the specific named codepoints while leaving sibling
+// categories open.
+//
+// FIX — stop enumerating categories; replace the "is this codepoint on my
+// noise list" question with a category-agnostic "does ANY visible/base
+// glyph survive" question. After the existing DEFAULT_IGNORABLE_RE strip
+// and trailing dot/space strip, a component is dropped to `''` unless a
+// `\p{L}` (letter) / `\p{N}` (number) / `\p{P}` (punctuation) / `\p{S}`
+// (symbol) codepoint remains in it (see GRAPHIC_RE below). This is a
+// STRICT SUPERSET closure over the prior three fixes — Zs/Zl/Zp/Cc-only,
+// Default-Ignorable-only, and combining-mark-only components all fail this
+// test identically, because none of those general categories are L/N/P/S —
+// while it needs no future per-codepoint follow-up as new Unicode noise
+// siblings are discovered. It also makes the former `COMBINING_ONLY_RE`
+// special-case redundant (`\p{M}` is not in L/N/P/S either), so that check
+// is removed rather than kept alongside a second, overlapping mechanism.
+//
+// ★ TWO DISTINCT MECHANISMS, KEEP BOTH — do NOT collapse them into one:
+//   PART A (embedded strip, DEFAULT_IGNORABLE_RE, unchanged by this fix) —
+//     removes a Default-Ignorable codepoint from ANYWHERE inside a
+//     component, including a REAL, otherwise-legitimate prefix segment
+//     (e.g. `keys<U+200B>` -> `keys`, so `.tess/keys<ZWSP>/verifiers` still
+//     matches the `.tess/keys/verifiers` prefix). Safe to strip mid-string
+//     specifically because Default_Ignorable codepoints are, by Unicode's
+//     own definition, ignorable wherever they occur.
+//   PART B (whole-component graphic test, GRAPHIC_RE, new in this fix) —
+//     drops an ENTIRE component only when NO visible base glyph survives at
+//     all (all-Zs/Zl/Zp/Cc, all-combining, all-Default-Ignorable, or any
+//     mix). This is intentionally NOT an embedded strip: `\p{Zs}` in
+//     particular is NOT stripped mid-component, because U+3000 (IDEOGRAPHIC
+//     SPACE) and other Zs codepoints are legitimate word separators inside
+//     real CJK names (e.g. `日本　支店`) — embedded-stripping them would
+//     silently mangle such a name into a different string, a correctness
+//     regression, not merely an over-exclusion. The whole-component test
+//     preserves these names untouched, because they retain a visible glyph
+//     either side of the separator.
+// See test/pathnorm.test.js (primitive level, both mechanisms + the
+// `日本　支店` embedded-Zs negative control), test/secrets-noise-component-bypass.test.js
+// (`isExcludedRel` surface), and test/secrets-nested-noise-dir-copy-filter.test.js
+// (`makeCopyFilter` fs-level surface — the actual scaffold-copy path), each
+// verified fail-against-pre-this-fix (`d96cc7a`) / pass-after.
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
+// A component keeps *some* visible/base glyph iff a `\p{L}`/`\p{N}`/`\p{P}`/
+// `\p{S}` codepoint survives the DEFAULT_IGNORABLE_RE strip above. `\p{M}`
+// (combining marks) is deliberately NOT in this set, so a lone/orphaned
+// combining mark with no base to attach to also fails this test — the
+// GRAPHIC_RE whole-component check below therefore subsumes the former
+// `COMBINING_ONLY_RE` special-case; see PR #170 third security re-review
+// (Cyra) for the derivation.
+const GRAPHIC_RE = /[\p{L}\p{N}\p{P}\p{S}]/u;
+
 export function normalizeComponent(c) {
-  return c.normalize('NFC').toLowerCase().replace(/[. ]+$/, '');
+  const stripped = c.normalize('NFC').toLowerCase().replace(DEFAULT_IGNORABLE_RE, '').replace(/[. ]+$/, '');
+  return GRAPHIC_RE.test(stripped) ? stripped : '';
 }
 
 // ★ HIGH (Reid, PR #145 review) — empty-normalized-component join corruption.
