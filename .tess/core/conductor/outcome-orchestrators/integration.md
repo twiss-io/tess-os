@@ -1,7 +1,7 @@
 # Outcome Orchestrator Integration Doctrine
 
 **Purpose:** Cross-orchestrator routing discipline, ownership clarity, and structural integrity  
-**Applies to:** All 6 Outcome Orchestrators and Tess's mission routing logic  
+**Applies to:** All 6 Outcome Orchestrators and {{ASSISTANT_NAME}}'s mission routing logic  
 **Authority:** System-level — overrides any individual orchestrator's self-claimed scope where conflict exists
 
 ---
@@ -120,9 +120,9 @@ The following mission types create genuine ownership tension across orchestrator
 
 ## Part 2 — Master Routing Matrix
 
-For each mission type: default owner, common supporting orchestrators, and Tess override conditions.
+For each mission type: default owner, common supporting orchestrators, and {{ASSISTANT_NAME}} override conditions.
 
-| Mission Type | Default Owner | Common Support | Tess Override Condition |
+| Mission Type | Default Owner | Common Support | {{ASSISTANT_NAME}} Override Condition |
 |---|---|---|---|
 | High-stakes directional decision | Founder's Office | Strategic Growth, Finance | Never — this is always FO |
 | New venture evaluation | Founder's Office | Strategic Growth, Finance, P&D | Only if capital is committed |
@@ -148,7 +148,7 @@ For each mission type: default owner, common supporting orchestrators, and Tess 
 | Upsell execution | Revenue | CX (readiness signal first) | Never |
 | Revenue model optimisation | Revenue | Finance, Strategy, Analytics | If model change → SGO |
 | Event-led commercial strategy | Revenue | Events, Sales, Brand | Never |
-| Revenue recovery | Revenue | Finance, Sales, Strategy | If business-critical → Tess |
+| Revenue recovery | Revenue | Finance, Sales, Strategy | If business-critical → {{ASSISTANT_NAME}} |
 | Product discovery and validation | P&D | Research, Analytics, Product | Never |
 | Feature prioritisation and roadmap | P&D | Product, Analytics | Never |
 | Product specification | P&D | Product, Coding | Never |
@@ -178,7 +178,7 @@ For each mission type: default owner, common supporting orchestrators, and Tess 
 | Compliance programme | ORO | Legal, Ops | Never |
 | Scaling readiness | ORO | Finance, People, Analytics | Never |
 | Post-acquisition integration | ORO | People, Finance, Legal | Never |
-| Operational recovery | ORO | Analytics, Finance | If business-critical → Tess |
+| Operational recovery | ORO | Analytics, Finance | If business-critical → {{ASSISTANT_NAME}} |
 
 ---
 
@@ -207,13 +207,13 @@ When a delivery failure damages client relationships, **Client Experience acts f
 No specialist orchestrator (Revenue, P&D, CX, ORO) leads a mission that requires a founder-level strategic decision as its first step. **Founder's Office frames before others execute.**
 
 ### Rule 7 — Single Owner Always
-When precedence rules produce ambiguity, **Tess designates a single owner**. No mission proceeds with two orchestrators claiming equal ownership. Tess escalation is the tiebreaker.
+When precedence rules produce ambiguity, **{{ASSISTANT_NAME}} designates a single owner**. No mission proceeds with two orchestrators claiming equal ownership. {{ASSISTANT_NAME}} escalation is the tiebreaker.
 
 ---
 
 ## Part 4 — Orchestrator Selection Doctrine
 
-This doctrine tells Tess when to use each routing option.
+This doctrine tells {{ASSISTANT_NAME}} when to use each routing option.
 
 ---
 
@@ -320,14 +320,14 @@ The following gaps exist in the current agentic operating model. Each is assesse
 ---
 
 ### Blind Spot 6 — Mission-to-Orchestrator Routing at Intake
-**Gap:** The system currently has no explicit intake protocol that classifies an incoming mission before it is routed. Without this, Tess must infer routing from context — which creates inconsistency.
+**Gap:** The system currently has no explicit intake protocol that classifies an incoming mission before it is routed. Without this, {{ASSISTANT_NAME}} must infer routing from context — which creates inconsistency.
 
-**Recommended response (minimum):** At every mission intake, Tess must ask three classification questions before any orchestrator is activated:
+**Recommended response (minimum):** At every mission intake, {{ASSISTANT_NAME}} must ask three classification questions before any orchestrator is activated:
 1. **Outcome type:** What outcome is being sought? (decide / design / build / convert / recover / govern / review / communicate / scale)
 2. **Founder-level test:** Does this decision require founder-level authority, capital, or cross-business synthesis? If yes → Founder's Office.
 3. **Domain test:** Does this mission map cleanly to one outcome domain? If yes → route to that orchestrator. If it spans multiple → apply precedence rules (Part 3).
 
-This three-question intake should be made explicit in Tess's doctrine.
+This three-question intake should be made explicit in {{ASSISTANT_NAME}}'s doctrine.
 
 ---
 
@@ -336,7 +336,7 @@ This three-question intake should be made explicit in Tess's doctrine.
 Based on the integration audit, the following are the only structural additions warranted at this stage:
 
 ### Recommended Addition 1 — Mission Intake Classification Protocol
-**What:** A formal three-question intake protocol (see Blind Spot 6) that Tess applies before activating any orchestrator.  
+**What:** A formal three-question intake protocol (see Blind Spot 6) that {{ASSISTANT_NAME}} applies before activating any orchestrator.  
 **Why:** The most common routing failure will be skipping intake classification and defaulting to the most obvious orchestrator, rather than the correct one.  
 **Effort:** Low — add to conductor/doctrine.md and conductor/guardrails.md.
 

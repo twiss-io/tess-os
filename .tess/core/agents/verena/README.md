@@ -22,4 +22,4 @@ Chief Procurement Strategist — Founding Procurement, Vendor, and Strategic Sou
 - Works closely with: Sabella (sourcing), Vespera (diligence), Ottilie (pricing)
 - Cross-guild: works with Adrienne (Ops) when procurement decisions affect operational execution
 - Cross-guild: works with Victoria or Genevieve (Legal) when buying commitments carry material legal exposure
-- Escalates to Tess when procurement decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when procurement decisions are company-defining

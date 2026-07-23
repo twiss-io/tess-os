@@ -20,7 +20,7 @@ Use this playbook when:
 
 ## Intake Questions
 
-Before activating any guild, Tess must answer:
+Before activating any guild, {{ASSISTANT_NAME}} must answer:
 1. What user problem is this solving? (Not the feature — the problem)
 2. What business outcome is this build meant to produce?
 3. What is the current state of validation? (Assumption / hypothesis / partially validated / fully validated)

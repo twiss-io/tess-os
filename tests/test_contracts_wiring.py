@@ -100,8 +100,22 @@ def test_lock_has_entry_per_contract_file(engine):
 
 def test_lock_base_sha_matches_committed_core_and_live_bytes(engine):
     """Round-trip: base_sha pins the .tess/core mirror, AND the live copy is
-    byte-identical to it (render_core_to_live is an identity copy for these
-    plain JSON/markdown files — no {{TESS_ROOT}} tokens, no .local.md shadow)."""
+    exactly what render_core_to_live() produces from that core source today.
+
+    Originally a raw byte-equality check, on the premise that these plain
+    JSON files carried no template tokens at all (render_core_to_live is an
+    identity copy in that case). Issue #21's follow-up audit added the
+    {{ASSISTANT_NAME}} token to crew-plan.schema.json/verdict.schema.json's
+    own `description` fields (they quote doctrine prose — orchestra-model.md /
+    verification-routing.md — that already carried the token; the schemas
+    hardcoded the literal default name where they quoted it). For THIS repo's
+    shipped, never-renamed default profile, {{ASSISTANT_NAME}} renders back to
+    the literal string "Tess" the live copy always had — so the live bytes
+    are unchanged, but the raw core-vs-live byte comparison no longer holds
+    (core now carries a longer token placeholder). Rendering core through the
+    real render_core_to_live() and comparing THAT output to live bytes is the
+    correct, general form: it degrades to the old identity-copy check for any
+    file with zero tokens, and correctly validates the now-tokenized two."""
     lock = engine.load_lock(REPO_ROOT)
     files = lock["files"]
     for fname in _CONTRACT_FILES:
@@ -114,8 +128,10 @@ def test_lock_base_sha_matches_committed_core_and_live_bytes(engine):
         assert engine.sha256_file(core_path) == attrs["base_sha"], (
             f"{core_key}: base_sha does not match committed core bytes"
         )
-        assert core_path.read_bytes() == live_path.read_bytes(), (
-            f"{fname}: .tess/core mirror and live core/contracts/ copy are not byte-identical"
+        rendered = engine.render_core_to_live(core_path, live_path, REPO_ROOT, attrs=attrs)
+        assert rendered == live_path.read_bytes(), (
+            f"{fname}: rendering .tess/core mirror does not reproduce the "
+            f"committed live core/contracts/ copy"
         )
 
 

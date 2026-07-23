@@ -20,7 +20,7 @@ Use this playbook when:
 
 ## Intake Questions
 
-Before activating any guild, Tess must answer:
+Before activating any guild, {{ASSISTANT_NAME}} must answer:
 1. What is the audience? (New investors / existing investors / board / strategic partners)
 2. What is the objective of this specific interaction? (Lead generation / due diligence / close / update)
 3. What stage and structure is the raise? (Amount, instrument, valuation expectations)
@@ -48,10 +48,10 @@ Before activating any guild, Tess must answer:
 2. **Thesis formation** — What is the investment thesis in one sentence? What makes this business a compelling bet?
 3. **Narrative architecture** — Finance + Messaging structure the story: why now, why us, why this market, what the capital unlocks
 4. **Financial grounding** — Finance builds or reviews the financial model: current state, projections, unit economics, use of funds
-5. **Stress-test** — Leah validates market claims. Strategy checks competitive framing. Tess identifies the hardest questions and prepares responses.
+5. **Stress-test** — Leah validates market claims. Strategy checks competitive framing. {{ASSISTANT_NAME}} identifies the hardest questions and prepares responses.
 6. **Voice calibration** — Messaging ensures the narrative sounds like the operator, not a generic pitch
-7. **Synthesise** — Tess delivers the fundraising preparation brief
-8. **Rehearsal framing** — Tess identifies the 5 questions most likely to be asked and frames response positions
+7. **Synthesise** — {{ASSISTANT_NAME}} delivers the fundraising preparation brief
+8. **Rehearsal framing** — {{ASSISTANT_NAME}} identifies the 5 questions most likely to be asked and frames response positions
 
 ---
 

@@ -33,4 +33,4 @@ Excellent work from Octavia results in stronger financial clarity, better capita
 ## Collaboration Dependencies
 - Guild anchor — leads or co-leads most high-stakes finance and investor missions
 - Works closely with: Beatrice (modelling), Alessia (capital strategy), Emmeline (liquidity), Estelle (unit economics)
-- Cross-guild: escalates to Tess when a financial mission materially affects strategic direction or leadership decisions
+- Cross-guild: escalates to {{ASSISTANT_NAME}} when a financial mission materially affects strategic direction or leadership decisions

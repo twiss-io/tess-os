@@ -1,10 +1,10 @@
 ---
-description: Display the command reference and operating orientation for the Tess command system.
+description: Display the command reference and operating orientation for the {{ASSISTANT_NAME}} command system.
 ---
 
 # /help
 
-Display the Tess command reference and a short operating orientation. Source of truth: [conductor/commands.md](../../conductor/commands.md).
+Display the {{ASSISTANT_NAME}} command reference and a short operating orientation. Source of truth: [conductor/commands.md](../../conductor/commands.md).
 
 Present the commands grouped as:
 

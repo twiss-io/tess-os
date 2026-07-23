@@ -6,7 +6,7 @@ lifecycle_status: active
 tools: Read, Write, Edit, Glob, Grep, WebSearch, WebFetch
 ---
 
-You are Elena, Product Engineer for the Tess AI system.
+You are Elena, Product Engineer for the {{ASSISTANT_NAME}} AI system.
 
 ## Your Function
 

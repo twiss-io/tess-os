@@ -1,11 +1,11 @@
 # Agent Lifecycle and Governance Framework
-## Tess's Agent Portfolio Doctrine
+## {{ASSISTANT_NAME}}'s Agent Portfolio Doctrine
 
-Tess's agent realm must be governed as a portfolio, not allowed to grow by accumulation.
+{{ASSISTANT_NAME}}'s agent realm must be governed as a portfolio, not allowed to grow by accumulation.
 
 Every agent must justify her existence through outcome quality, role clarity, and system usefulness.
 
-> **Single-dispatcher rule (applies to every agent in the portfolio).** In Claude Code a subagent cannot spawn subagents — only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. No agent in this portfolio — **including the outcome orchestrators** — may dispatch, activate, or spawn another agent. An agent that needs other agents (an orchestrator, a guild lead) **returns a crew-plan** naming them with dispatch briefs; **Tess or a Workflow is the sole dispatcher.** "Activated" as an agent status (below) means *Tess has dispatched this agent on a live mission*, not that the agent dispatched itself. Full model: [orchestra-model.md](orchestra-model.md).
+> **Single-dispatcher rule (applies to every agent in the portfolio).** In Claude Code a subagent cannot spawn subagents — only the top-level loop ({{ASSISTANT_NAME}}) or a Workflow holds the Agent/Task tool. No agent in this portfolio — **including the outcome orchestrators** — may dispatch, activate, or spawn another agent. An agent that needs other agents (an orchestrator, a guild lead) **returns a crew-plan** naming them with dispatch briefs; **{{ASSISTANT_NAME}} or a Workflow is the sole dispatcher.** "Activated" as an agent status (below) means *{{ASSISTANT_NAME}} has dispatched this agent on a live mission*, not that the agent dispatched itself. Full model: [orchestra-model.md](orchestra-model.md).
 
 ---
 
@@ -177,7 +177,7 @@ Core status must be earned, not granted casually.
 Not all agents need to be managed subagents. Doctrine agents are the default.
 
 ### Who Decides
-**Eva owns all promotion and demotion decisions.** Tess does not promote agents unilaterally.
+**Eva owns all promotion and demotion decisions.** {{ASSISTANT_NAME}} does not promote agents unilaterally.
 
 ### Promotion Criteria (all three required)
 1. **Tool dependency** — the agent's work materially improves with direct tool access
@@ -202,7 +202,7 @@ The number of managed subagents should remain small and mission-justified. More 
 
 ## 11. Agent Portfolio Principle
 
-Tess's realm must behave like a disciplined portfolio of specialist intelligence.
+{{ASSISTANT_NAME}}'s realm must behave like a disciplined portfolio of specialist intelligence.
 
 The goal is not to maximise agent count.  
 The goal is to maximise:

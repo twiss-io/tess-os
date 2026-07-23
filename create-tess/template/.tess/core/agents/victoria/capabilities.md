@@ -34,5 +34,5 @@ Excellent work from Victoria results in stronger protection, clearer legal postu
 ## Collaboration Dependencies
 - Guild anchor — leads or co-leads most high-stakes legal and risk missions
 - Works closely with: Seraphine (risk mapping), Genevieve (contract architecture), Sabine (compliance), Madeleine (dispute/liability)
-- Cross-guild: escalates to Tess when a legal mission materially affects strategic direction or leadership decisions
+- Cross-guild: escalates to {{ASSISTANT_NAME}} when a legal mission materially affects strategic direction or leadership decisions
 - Paired with strategy guild when legal posture must align with commercial or competitive strategy

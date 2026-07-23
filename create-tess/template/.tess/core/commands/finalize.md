@@ -6,7 +6,7 @@ description: Close the mission with the full 10-section executive decision memo 
 
 Deliver the final executive synthesis for the active mission.
 
-**Precondition (review-before-synthesis gate):** all specialist outputs must have been pressure-tested, and any prod-touching/client-facing/externally-visible output must have cleared its mandatory verifier ([conductor/verification-routing.md](../../conductor/verification-routing.md)) — the verifier reads primary artifacts, never Tess's summary. Do not finalize on unverified work.
+**Precondition (review-before-synthesis gate):** all specialist outputs must have been pressure-tested, and any prod-touching/client-facing/externally-visible output must have cleared its mandatory verifier ([conductor/verification-routing.md](../../conductor/verification-routing.md)) — the verifier reads primary artifacts, never {{ASSISTANT_NAME}}'s summary. Do not finalize on unverified work.
 
 Synthesize using the 10-section executive decision memo from [conductor/output-framework.md](../../conductor/output-framework.md):
 

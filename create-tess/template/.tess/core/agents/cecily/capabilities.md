@@ -33,5 +33,5 @@ Excellent work from Cecily results in smarter transaction direction, stronger st
 ## Collaboration Dependencies
 - Guild anchor — leads or co-leads most high-stakes transaction missions
 - Works closely with: Leonora (M&A rationale), Odette (structure), Romilly (diligence), Tatienne (negotiation)
-- Cross-guild: escalates to Tess when a transaction materially affects strategic direction or business model
+- Cross-guild: escalates to {{ASSISTANT_NAME}} when a transaction materially affects strategic direction or business model
 - Cross-guild: works with Octavia and Valeria (Finance) on deal economics

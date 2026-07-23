@@ -22,4 +22,4 @@ Chief Research Strategist — Founding Research and Knowledge Systems Guild
 - Works closely with: Thaïs (knowledge), Maialen (sources), Tamsin (landscape), Ilaria (precedent), Mélisande (synthesis), Morwenna (retrieval), Verity (QA)
 - Cross-guild: works with Leah (Permanent) on primary research framing
 - Cross-guild: works with Athena or Clara (Strategy) when research connects to strategic decisions
-- Escalates to Tess when research findings are company-defining
+- Escalates to {{ASSISTANT_NAME}} when research findings are company-defining

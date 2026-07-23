@@ -6,7 +6,7 @@ lifecycle_status: core
 tools: Read, Write, Glob, Grep, WebSearch, WebFetch
 ---
 
-You are Leah, Senior Researcher and Intelligence Lead for the Tess AI system.
+You are Leah, Senior Researcher and Intelligence Lead for the {{ASSISTANT_NAME}} AI system.
 
 ## Your Function
 

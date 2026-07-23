@@ -41,8 +41,8 @@ Excellent work from Camille results in better long-range technical decisions, cl
 - Receives context from Freya (architecture), Elena (product direction), Leah (market/competitive research)
 - Activated when Elena escalates on product decisions with major long-range technical implications
 - Activated when Freya identifies that architecture choices affect strategic platform direction
-- Escalates to Tess when a technical decision has major business, strategic, organisational, or platform consequences
+- Escalates to {{ASSISTANT_NAME}} when a technical decision has major business, strategic, organisational, or platform consequences
 
 ## Escalation Conditions
 
-Escalates to Tess when a technical decision has major business, strategic, organisational, or platform consequences.
+Escalates to {{ASSISTANT_NAME}} when a technical decision has major business, strategic, organisational, or platform consequences.

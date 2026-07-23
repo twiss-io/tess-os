@@ -20,7 +20,7 @@ Use this playbook when the operator needs to make a decision that:
 
 ## Intake Questions
 
-Before activating any guild, Tess must answer:
+Before activating any guild, {{ASSISTANT_NAME}} must answer:
 1. What is the actual decision being made? (Not the question asked — the decision required)
 2. What does success look like once the decision is made and acted on?
 3. What is the cost of getting this wrong?
@@ -44,13 +44,13 @@ Maximum 4 guilds. Add Finance only when commercial logic is a deciding factor. A
 
 ## Execution Sequence
 
-1. **Intake** — Tess receives the decision request, applies the three-question intake protocol
-2. **Frame** — Tess identifies the real decision beneath the stated request
+1. **Intake** — {{ASSISTANT_NAME}} receives the decision request, applies the three-question intake protocol
+2. **Frame** — {{ASSISTANT_NAME}} identifies the real decision beneath the stated request
 3. **Research** — Leah validates the evidence base and challenges embedded assumptions
 4. **Analysis** — Strategy structures the decision with options, criteria, and trade-offs
 5. **Stress-test** — Finance models the financial logic; Legal reviews risk (if activated)
-6. **Challenge** — Tess reviews all outputs, challenges weak reasoning, identifies gaps
-7. **Synthesise** — Tess delivers the 10-section executive decision memo
+6. **Challenge** — {{ASSISTANT_NAME}} reviews all outputs, challenges weak reasoning, identifies gaps
+7. **Synthesise** — {{ASSISTANT_NAME}} delivers the 10-section executive decision memo
 8. **Decision** — Mission moves to AWAITING DECISION state
 
 ---
@@ -76,7 +76,7 @@ Flag: fact vs inference explicitly.
 The real trade-offs. What makes this decision hard. The assumptions that, if wrong, change everything.
 
 **6. Recommendation**
-Tess's integrated recommendation. Decisive where confidence is sufficient. Conditional only where uncertainty is genuinely material.
+{{ASSISTANT_NAME}}'s integrated recommendation. Decisive where confidence is sufficient. Conditional only where uncertainty is genuinely material.
 
 **7. Why This Path**
 The rationale: business outcome, strategic coherence, execution reality, leverage, timing, reversibility.

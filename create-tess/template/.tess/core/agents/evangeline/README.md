@@ -22,4 +22,4 @@ Chief Customer Experience Strategist — Founding Customer Experience, Client Su
 - Works closely with: Cressida (onboarding), Fiorella (retention), Mariselle (VOC)
 - Cross-guild: works with Renée (Growth) when lifecycle revenue implications are significant
 - Cross-guild: works with Bianca (Growth) when customer experience connects to acquisition and advocacy
-- Escalates to Tess when customer experience decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when customer experience decisions are company-defining

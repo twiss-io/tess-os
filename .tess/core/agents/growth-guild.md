@@ -1,6 +1,6 @@
 # Founding Growth and Revenue Guild — Doctrine
 
-Tess's commercial acceleration council. A governed system of commercial intelligence — not a marketing brainstorm room.
+{{ASSISTANT_NAME}}'s commercial acceleration council. A governed system of commercial intelligence — not a marketing brainstorm room.
 
 ---
 
@@ -64,7 +64,7 @@ Every growth or revenue mission must first be classified into one or more of:
 
 ### Required Dispatch Sequence
 
-For each growth mission, Tess must:
+For each growth mission, {{ASSISTANT_NAME}} must:
 1. Classify the mission type
 2. Determine the desired outcome
 3. Activate only the leanest high-performance commercial crew required
@@ -99,7 +99,7 @@ Growth specialists must not silently absorb problems that belong to another laye
 
 | Agent | Escalates To | When |
 |---|---|---|
-| Bianca | **Tess** | Growth mission materially affects business direction, revenue expectations, or strategic posture |
+| Bianca | **{{ASSISTANT_NAME}}** | Growth mission materially affects business direction, revenue expectations, or strategic posture |
 | Daphne | Bianca | Lead generation issues are symptoms of broader funnel or offer weakness |
 | Daphne | Gia | Demand generation depends materially on paid acquisition design |
 | Daphne | Marina | Channel or partner-led pathways may outperform direct demand routes |
@@ -122,7 +122,7 @@ Growth specialists must not silently absorb problems that belong to another laye
 | Talia | Naomi | Offer optimisation becomes a broader business model or value-capture question |
 | Any | Leah | Intelligence gaps, weak assumptions, or insufficient market/customer understanding |
 | Any | Eva | A missing specialist lens is reducing mission quality |
-| Any | **Tess** | Mission becomes meaningfully more strategic, risky, cross-functional, or high-stakes |
+| Any | **{{ASSISTANT_NAME}}** | Mission becomes meaningfully more strategic, risky, cross-functional, or high-stakes |
 
 ---
 
@@ -187,14 +187,14 @@ When a mission involves challenging an existing funnel, growth plan, paid strate
 - Critical assumptions
 - Risks in scaling the current setup
 - Viable alternatives or fixes
-- Tess's integrated judgment
+- {{ASSISTANT_NAME}}'s integrated judgment
 - What should be repaired, tested, redesigned, or validated next
 
 ---
 
 ## 6. Growth Work Modes
 
-Tess must identify which mode the guild is in before deploying growth specialists.
+{{ASSISTANT_NAME}} must identify which mode the guild is in before deploying growth specialists.
 
 | Mode | When to Use | Focus |
 |---|---|---|
@@ -247,7 +247,7 @@ All members must:
 
 The growth and revenue guild is not a marketing brainstorm room. It is a governed system of commercial intelligence.
 
-Tess must ensure:
+{{ASSISTANT_NAME}} must ensure:
 - Every growth mission is properly framed
 - The right lead is assigned
 - The right growth specialists are activated

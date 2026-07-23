@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"systemMessage\": \"Agent completed. If you are Tess: send a Telegram update to the operator NOW before continuing. Use mcp__plugin_telegram_telegram__reply.\"}'"
+            "command": "echo '{\"systemMessage\": \"Agent completed. If you are {{ASSISTANT_NAME}}: send a Telegram update to the operator NOW before continuing. Use mcp__plugin_telegram_telegram__reply.\"}'"
           }
         ]
       },

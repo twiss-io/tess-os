@@ -19,7 +19,7 @@
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1,
-      "description": "verification-routing.md: 'the diff, the logs, the URLs, the file paths — never Tess's summary of those artifacts. A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.' Required non-empty so a verdict cannot exist without at least one primary artifact the verifier claims to have read itself."
+      "description": "verification-routing.md: 'the diff, the logs, the URLs, the file paths — never {{ASSISTANT_NAME}}'s summary of those artifacts. A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.' Required non-empty so a verdict cannot exist without at least one primary artifact the verifier claims to have read itself."
     },
     "findings": {
       "type": "array",

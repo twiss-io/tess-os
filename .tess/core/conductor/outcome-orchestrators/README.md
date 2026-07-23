@@ -1,13 +1,13 @@
 # Outcome Orchestrator Layer
 
-**Position in System:** Above guilds. Below Tess.  
+**Position in System:** Above guilds. Below {{ASSISTANT_NAME}}.  
 **Purpose:** Coordinate guilds around business outcomes, not around domains.
 
-Outcome orchestrators are not specialist guilds. They are outcome owners and cross-guild coordinators. They **determine** the leanest high-performance set of guilds required to achieve a defined business outcome and **return it as a structured crew-plan** for Tess (or a Workflow) to dispatch.
+Outcome orchestrators are not specialist guilds. They are outcome owners and cross-guild coordinators. They **determine** the leanest high-performance set of guilds required to achieve a defined business outcome and **return it as a structured crew-plan** for {{ASSISTANT_NAME}} (or a Workflow) to dispatch.
 
 Every serious mission should be considered for routing through an outcome orchestrator before routing directly to a single guild.
 
-> **Dispatcher rule (read first).** An outcome orchestrator is a **routing brain, not a dispatcher**. In Claude Code a subagent cannot spawn subagents — only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. So an orchestrator never activates, dispatches, or spawns a guild. It **returns a crew-plan** (the crew-plan contract: which agents, order/parallelism, each with a six-field [dispatch brief](../dispatch-brief.md), gates, and the mandatory verifier); **Tess or a Workflow is the sole dispatcher.** Throughout these files, "activate / assemble / brief a guild" means "name it in the crew-plan you return." Full model: [conductor/orchestra-model.md](../orchestra-model.md).
+> **Dispatcher rule (read first).** An outcome orchestrator is a **routing brain, not a dispatcher**. In Claude Code a subagent cannot spawn subagents — only the top-level loop ({{ASSISTANT_NAME}}) or a Workflow holds the Agent/Task tool. So an orchestrator never activates, dispatches, or spawns a guild. It **returns a crew-plan** (the crew-plan contract: which agents, order/parallelism, each with a six-field [dispatch brief](../dispatch-brief.md), gates, and the mandatory verifier); **{{ASSISTANT_NAME}} or a Workflow is the sole dispatcher.** Throughout these files, "activate / assemble / brief a guild" means "name it in the crew-plan you return." Full model: [conductor/orchestra-model.md](../orchestra-model.md).
 
 ---
 
@@ -72,9 +72,9 @@ Minimum viable crew for each orchestrator. Expand only when it materially improv
 
 ---
 
-## Escalation Rules — Orchestrators to Tess
+## Escalation Rules — Orchestrators to {{ASSISTANT_NAME}}
 
-An orchestrator must escalate to Tess when any of the following conditions are true:
+An orchestrator must escalate to {{ASSISTANT_NAME}} when any of the following conditions are true:
 
 1. **Cross-orchestrator impact** — the mission affects multiple business-critical outcomes across more than one orchestrator
 2. **Unresolvable guild conflict** — guild disagreement within the orchestrator cannot be resolved through the cross-guild conflict resolution process
@@ -85,11 +85,11 @@ An orchestrator must escalate to Tess when any of the following conditions are t
 When escalating:
 - State the outcome type and the specific reason for escalation
 - Provide a summary of guild positions and the nature of the disagreement
-- Propose the synthesis options available to Tess
+- Propose the synthesis options available to {{ASSISTANT_NAME}}
 
 ---
 
-## When Tess Routes Through an Orchestrator vs Directly to a Guild
+## When {{ASSISTANT_NAME}} Routes Through an Orchestrator vs Directly to a Guild
 
 ### Use an Outcome Orchestrator when:
 - The mission involves more than one guild or domain

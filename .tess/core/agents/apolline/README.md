@@ -22,4 +22,4 @@ Chief Sales Strategist — Founding Sales, Business Development, and Key Account
 - Works closely with: Bettina (systems), Domitille (key accounts), Roxane (outbound), Gaïane (conversion), Ondine (closing), Bérénice (expansion), Xanthe (enablement)
 - Cross-guild: works with Bianca or Daphne (Growth) when sales aligns with demand generation
 - Cross-guild: works with Talia (Growth) when offer quality affects conversion
-- Escalates to Tess when sales decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when sales decisions are company-defining

@@ -20,7 +20,7 @@ Use this playbook when:
 
 ## Intake Questions
 
-Before activating any guild, Tess must answer:
+Before activating any guild, {{ASSISTANT_NAME}} must answer:
 1. What is the commercial objective of this event? (New revenue / existing client expansion / brand positioning / advocacy activation / launch)
 2. Who is the primary audience? (Prospects / clients / investors / media / partners / mixed)
 3. What is the desired audience state at the end of the event? (What should they believe, feel, or decide?)
@@ -31,7 +31,7 @@ Before activating any guild, Tess must answer:
 
 ## Three-Layer Ownership Model
 
-This playbook operates with split ownership across three layers. Each must be coordinated by Tess.
+This playbook operates with split ownership across three layers. Each must be coordinated by {{ASSISTANT_NAME}}.
 
 | Layer | Orchestrator/Guild | Owns |
 |---|---|---|

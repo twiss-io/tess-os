@@ -33,5 +33,5 @@ Excellent work from Livia results in stronger product direction, better prioriti
 ## Collaboration Dependencies
 - Guild anchor — leads or co-leads most high-stakes product missions
 - Works closely with: Arielle (discovery), Oriana (roadmap), Elodie (UX), Valina (feature systems)
-- Cross-guild: escalates to Tess when product direction materially affects strategic direction or business model
+- Cross-guild: escalates to {{ASSISTANT_NAME}} when product direction materially affects strategic direction or business model
 - Cross-guild: works with Elena (Coding Team) when product scope must connect tightly to engineering execution

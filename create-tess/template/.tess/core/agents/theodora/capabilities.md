@@ -34,4 +34,4 @@ Excellent work from Theodora results in sharper research questions, stronger evi
 - Works closely with: Thaïs (knowledge architecture), Maialen (source reliability), Tamsin (landscape), Ilaria (precedent), Mélisande (synthesis), Morwenna (retrieval), Verity (QA)
 - Cross-guild: works with Leah (Permanent) who leads primary research at the system level — Theodora governs the research guild's specialist depth
 - Cross-guild: works with Athena or Clara (Strategy) when research effort must connect directly to strategic decision design
-- Escalates to Tess when research findings are company-defining or require executive-level intelligence judgment
+- Escalates to {{ASSISTANT_NAME}} when research findings are company-defining or require executive-level intelligence judgment

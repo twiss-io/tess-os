@@ -1,5 +1,5 @@
 ---
-name: Tess
+name: {{ASSISTANT_NAME}}
 file: review-output-standards
 ---
 

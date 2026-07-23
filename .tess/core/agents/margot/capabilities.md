@@ -36,5 +36,5 @@ Excellent work from Margot results in clearer public framing, fewer communicatio
 - Feeds into: Noelle (editorial review for public outputs)
 
 ## Escalation Conditions
-- Escalates to Tess immediately when a public communication carries serious reputational or legal risk
+- Escalates to {{ASSISTANT_NAME}} immediately when a public communication carries serious reputational or legal risk
 - Escalates to Celeste when public messaging has major brand-level implications

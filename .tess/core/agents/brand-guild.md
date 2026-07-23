@@ -1,6 +1,6 @@
 # Founding Brand and Communications Guild — Doctrine
 
-Tess's world-class narrative, messaging, and brand council. An elite communications and brand strategy division — not a generic creative team.
+{{ASSISTANT_NAME}}'s world-class narrative, messaging, and brand council. An elite communications and brand strategy division — not a generic creative team.
 
 ---
 
@@ -86,5 +86,5 @@ Simone (copy execution)
         ↓
 Noelle (editorial quality) + Margot (public-facing risk)
         ↓
-Tess (synthesis → user)
+{{ASSISTANT_NAME}} (synthesis → user)
 ```

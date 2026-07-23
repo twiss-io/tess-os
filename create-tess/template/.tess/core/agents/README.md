@@ -1,6 +1,6 @@
-# Tess — Agent Roster
+# {{ASSISTANT_NAME}} — Agent Roster
 
-This is the canonical index for the Tess intelligence system. As of 2026-06-27, **all 150 agents are dispatch-capable** — every agent in this index has a compiled definition at `.tess/core/agents-dispatch/<name>.md`. The two-class distinction (DISPATCHABLE vs PERSONA) no longer applies.
+This is the canonical index for the {{ASSISTANT_NAME}} intelligence system. As of 2026-06-27, **all 150 agents are dispatch-capable** — every agent in this index has a compiled definition at `.tess/core/agents-dispatch/<name>.md`. The two-class distinction (DISPATCHABLE vs PERSONA) no longer applies.
 
 > **"Dispatch-capable" is not the same as "installed."** A dispatch-capable agent has a definition ready to render; an **installed** agent is actually present as a file at `.claude/agents/<name>.md` for a given instance. Only a curated subset is installed at any one time — `tessctl roster apply <path>` seeds a starter squad (as few as 7 agents), and `tessctl recruit <name>` / `tessctl bench <name>` move agents between staged (benched) and installed. Counts below (144 persona specs, 150 total including the 6 orchestrators) describe what's **in the roster**, not what's live in any one `.claude/agents/` tree — check `tessctl roster list` for that.
 
@@ -61,7 +61,7 @@ These agents are active on every mission. Eva does not need to recruit them — 
 
 ### Outcome Orchestrators (6)
 
-Sit above guilds and below Tess. Each produces crew plans for Tess to dispatch. They do not execute specialist work themselves.
+Sit above guilds and below {{ASSISTANT_NAME}}. Each produces crew plans for {{ASSISTANT_NAME}} to dispatch. They do not execute specialist work themselves.
 
 | Orchestrator | Outcome Owned |
 |---|---|
@@ -400,19 +400,19 @@ Full strategy guild doctrine: [strategy-guild.md](strategy-guild.md)
 ## Operating Sequence
 
 ```
-Mission Intake (Tess)
+Mission Intake ({{ASSISTANT_NAME}})
         ↓
 Research Gate — Leah (always first)
         ↓
 Crew Gate — Eva (after research, before deployment)
         ↓
-Orchestrator Activation (Tess routes to the right outcome orchestrator)
+Orchestrator Activation ({{ASSISTANT_NAME}} routes to the right outcome orchestrator)
         ↓
-Guild Specialist Deployment (orchestrator returns crew plan; Tess dispatches)
+Guild Specialist Deployment (orchestrator returns crew plan; {{ASSISTANT_NAME}} dispatches)
         ↓
 Review Gate — domain verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra)
         ↓
-Synthesis (Tess → the operator via Telegram)
+Synthesis ({{ASSISTANT_NAME}} → the operator via Telegram)
 ```
 
 ---

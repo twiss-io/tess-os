@@ -1,6 +1,6 @@
 # Subagent Failure & Retry Protocol
 
-What Tess does when a dispatched subagent fails, times out, returns degraded output — or when a verifier rejects an output.
+What {{ASSISTANT_NAME}} does when a dispatched subagent fails, times out, returns degraded output — or when a verifier rejects an output.
 
 **Failed verification enters this protocol.** When a mandatory verifier ([verification-routing.md](verification-routing.md)) rejects an output, that rejection is a failure of the originating dispatch and goes through cause classification and the retry loop below exactly like any other failure.
 
@@ -20,7 +20,7 @@ What Tess does when a dispatched subagent fails, times out, returns degraded out
 
 ## Cause Classification (why it failed) — mandatory before any retry
 
-Classifying the failure state is not enough. Before any retry, Tess must classify the cause:
+Classifying the failure state is not enough. Before any retry, {{ASSISTANT_NAME}} must classify the cause:
 
 | Cause class | Definition | Retry rule |
 |---|---|---|
@@ -67,7 +67,7 @@ Per-attempt rules:
 
 > **Supersession note (2026-06-10, Tess OS reform — operator-authorized):** this protocol previously read "If the same agent fails twice on the same task: stop retrying." The 2-attempt cap is superseded by the operator's ratified 3-attempt cap with mandatory per-retry error analysis and the changed-brief requirement. The escalation requirement is unchanged in force.
 
-At the cap: **STOP.** Escalate to the operator with the full per-attempt analysis log — every attempt, its failure state, its cause class, what each brief changed, and Tess's read on why the task is failing. Do not dispatch again without the operator's direction.
+At the cap: **STOP.** Escalate to the operator with the full per-attempt analysis log — every attempt, its failure state, its cause class, what each brief changed, and {{ASSISTANT_NAME}}'s read on why the task is failing. Do not dispatch again without the operator's direction.
 
 ---
 
