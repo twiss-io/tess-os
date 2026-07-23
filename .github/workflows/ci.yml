@@ -41,10 +41,15 @@ jobs:
       # running. This step makes that hard requirement explicit and
       # verifiable rather than relying on whatever Node happens to be
       # pre-baked into the runner image.
+      # tess-os #165 (Cyra + Reid, post-#164 follow-up): '20' reached EOL
+      # 2026-04-30 (CI's own job log was already flagging "Node 20 is being
+      # deprecated"). Bumped to '24' -- a supported LTS, and consistent
+      # with the `create-tess` job's own matrix below, which already tests
+      # against Node 24 (and 18).
       - name: Set up Node (required by tests/orchestrator/test_e2e_wedge_loop.py)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dev dependencies
         run: |
