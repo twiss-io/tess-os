@@ -87,7 +87,7 @@ Eva may recommend promotion only when **all three** of the following are true:
 ### Promotion Process
 1. Eva assesses the agent against all three criteria
 2. Eva drafts the `.claude/agents/<name>.md` file with appropriate tools and a condensed system prompt
-3. Tess reviews and approves
+3. {{ASSISTANT_NAME}} reviews and approves
 4. Eva files the promotion in the agent's governance record
 
 ### Demotion

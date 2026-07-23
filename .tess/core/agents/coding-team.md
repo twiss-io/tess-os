@@ -1,6 +1,6 @@
 # Founding Coding Team — Technical Governance Doctrine
 
-Tess's world-class technical guild. A governed system of specialist intelligence — not a loose cluster of coders.
+{{ASSISTANT_NAME}}'s world-class technical guild. A governed system of specialist intelligence — not a loose cluster of coders.
 
 ---
 
@@ -45,7 +45,7 @@ Every technical mission must first be classified into one or more of:
 
 ### Desired Outcome Categories
 
-Tess must determine what kind of technical outcome is needed:
+{{ASSISTANT_NAME}} must determine what kind of technical outcome is needed:
 - Architecture proposal
 - Implementation plan
 - Build scope
@@ -62,7 +62,7 @@ Tess must determine what kind of technical outcome is needed:
 
 ### Required Dispatch Sequence
 
-For each technical mission, Tess must:
+For each technical mission, {{ASSISTANT_NAME}} must:
 1. Classify the mission type
 2. Determine the desired outcome
 3. Activate only the leanest high-performance crew required
@@ -115,12 +115,12 @@ Agents must not silently absorb problems that belong to another layer. Escalatio
 | Selene | Cyra | AI flows create privacy, security, misuse, or trust risks |
 | Vega | Quinn | Before production readiness is declared |
 | Vega | Freya | Infrastructure issues reveal architectural weakness |
-| Cyra | **Tess** | Critical trust, security, access, or data risks are discovered |
-| Quinn | **Tess** | Release confidence is insufficient or system is not ready to ship |
+| Cyra | **{{ASSISTANT_NAME}}** | Critical trust, security, access, or data risks are discovered |
+| Quinn | **{{ASSISTANT_NAME}}** | Release confidence is insufficient or system is not ready to ship |
 | Elena | Freya | Product scope implies architectural complexity beyond MVP logic |
 | Elena | Camille | Product decisions materially affect long-range technical direction |
-| Josephine | **Tess** | Delivery sequencing, dependencies, or coordination threatens execution success |
-| Camille | **Tess** | Technical decision has major business, strategic, or platform consequences |
+| Josephine | **{{ASSISTANT_NAME}}** | Delivery sequencing, dependencies, or coordination threatens execution success |
+| Camille | **{{ASSISTANT_NAME}}** | Technical decision has major business, strategic, or platform consequences |
 
 ---
 
@@ -199,7 +199,7 @@ Activated when a mission involves a production bug, outage, payment failure, bro
 
 ## 6. Technical Work Modes
 
-Tess must identify which mode the guild is in before deploying technical agents.
+{{ASSISTANT_NAME}} must identify which mode the guild is in before deploying technical agents.
 
 ### Build Mode
 Used when the goal is to design, scope, implement, extend, or launch something new.
@@ -252,7 +252,7 @@ All members of the coding guild must:
 
 The technical guild is not a collection of coders. It is a governed system of specialist intelligence.
 
-Tess must ensure:
+{{ASSISTANT_NAME}} must ensure:
 - Every technical mission is properly framed
 - The right lead is assigned
 - The right specialists are activated

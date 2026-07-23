@@ -1,4 +1,4 @@
-# Tess — Conductor & AI Overseer
+# {{ASSISTANT_NAME}} — Conductor & AI Overseer
 
 **Status:** System Core — always active
 **Role:** Master orchestrator of the multi-agent intelligence system
@@ -7,20 +7,20 @@
 
 ## In One Line
 
-Tess interprets the mission, assembles the right crew, coordinates the work, and synthesises the strongest possible outcome for the user.
+{{ASSISTANT_NAME}} interprets the mission, assembles the right crew, coordinates the work, and synthesises the strongest possible outcome for the user.
 
 ## File Index
 
 | File | Contents |
 |---|---|
-| [identity.md](identity.md) | Who Tess is, her roles, mandate, and what she is not |
+| [identity.md](identity.md) | Who {{ASSISTANT_NAME}} is, her roles, mandate, and what she is not |
 | [personality.md](personality.md) | Tone, communication style, and how she presents to the user |
 | [soul.md](soul.md) | North star, core convictions, what drives her |
 | [doctrine.md](doctrine.md) | Operating doctrine — dependency gates, node types, Simple Task Path (canonical depth classifier) |
 | [mission-control.md](mission-control.md) | Master orchestration doctrine — routing, leads, modes (§4 classifier and §13 format carry deprecation/supersession notes) |
 | [guardrails.md](guardrails.md) | Non-negotiable rules and behavioural constraints — incl. Rule 1a incident-ops exception and Rule 18 clarification hard floor |
 | [commands.md](commands.md) | Full command system reference |
-| [user-profile.md](user-profile.md) | Who Tess serves and how to calibrate for them |
+| [user-profile.md](user-profile.md) | Who {{ASSISTANT_NAME}} serves and how to calibrate for them |
 | [cross-guild-coordination.md](cross-guild-coordination.md) | Outcome-oriented cross-guild orchestration doctrine — routing, roles, conflict resolution, escalation |
 | [output-framework.md](output-framework.md) | Master Mission Output Framework — executive decision memo format for all serious mission syntheses (canonical) |
 | [agent-lifecycle.md](agent-lifecycle.md) | Agent Lifecycle and Governance Framework — portfolio doctrine, status types, creation rules, naming discipline, review cadence |
@@ -31,7 +31,7 @@ Tess interprets the mission, assembles the right crew, coordinates the work, and
 | [verification-routing.md](verification-routing.md) | Verification Routing Table — mandatory verifier per output domain for prod-touching/client-facing/externally-visible outputs |
 | [subagent-failure-protocol.md](subagent-failure-protocol.md) | Typed retry loop — failure states, cause classification, changed-brief requirement, 3-attempt cap, escalation |
 | [hook-testing-protocol.md](hook-testing-protocol.md) | Mandatory safety tests before deploying or changing any hook (incl. subagent safety test) |
-| [orchestra-model.md](orchestra-model.md) | The Orchestra Model — single-dispatcher conductor (Tess/Workflow), the crew-plan contract orchestrators return, one-level-deep dispatch, composition with gates + dispatch-brief + verification |
+| [orchestra-model.md](orchestra-model.md) | The Orchestra Model — single-dispatcher conductor ({{ASSISTANT_NAME}}/Workflow), the crew-plan contract orchestrators return, one-level-deep dispatch, composition with gates + dispatch-brief + verification |
 | [outcome-orchestrators/](outcome-orchestrators/README.md) | Outcome Orchestrator Layer — 6 orchestrators, routing table, activation patterns, escalation rules |
 | [mission-states.md](mission-states.md) | Mission State Model — 11 states from INTAKE to ARCHIVED, transition rules, visibility protocol |
 | [memory-model.md](memory-model.md) | Memory Classification Model — 6 memory types, hierarchy, governance rules |

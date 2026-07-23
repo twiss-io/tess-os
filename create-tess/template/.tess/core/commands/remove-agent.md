@@ -12,4 +12,4 @@ Dispatch **Eva** to:
 2. If not, set `lifecycle_status` to retired (or remove the `.claude/agents/<name>.md` file) and reassign or close any open workstream the agent owned.
 3. Confirm no active mission depends on the agent before removal.
 
-Per Rule Zero, Tess dispatches Eva rather than editing the roster solo. Confirm with the operator before removing an agent tied to live client work.
+Per Rule Zero, {{ASSISTANT_NAME}} dispatches Eva rather than editing the roster solo. Confirm with the operator before removing an agent tied to live client work.

@@ -110,7 +110,7 @@ The narrative should be clear to a first-time reader, credible to a sceptical in
 
 ### 11. Collaboration Dependencies
 - Receives from: Leah (market research), Finance Strategist (financial model)
-- Feeds into: Creative Director (deck design), Tess (final synthesis)
+- Feeds into: Creative Director (deck design), {{ASSISTANT_NAME}} (final synthesis)
 
 ### 12. Escalation Conditions
 - If the business model is fundamentally unclear → escalate to Business Model Strategist

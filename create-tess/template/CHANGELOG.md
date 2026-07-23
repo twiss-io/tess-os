@@ -6,6 +6,46 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- **Issue #21 — completed assistant-name propagation: the wizard's Conductor
+  axis now reads consistently everywhere a scaffold renders, not just in the
+  historic 3-file render subset.** The first-run wizard's conductor rename
+  already propagated into `CLAUDE.md`, `conductor/identity.md`,
+  `conductor/personality.md`, and `clients/_template/CLAUDE.md` — but the
+  wider doctrine corpus (`conductor/**`'s other 30+ files, `agents/**`'s 150
+  compiled dispatch definitions + guild/persona docs, `.claude/commands/**`,
+  and the client wiki template) hardcoded the literal default name "Tess" in
+  prose instead of the `{{ASSISTANT_NAME}}` render token, so those files
+  stayed on the default name forever after a rename.
+  - **Content fix:** replaced ~245 core-managed files' hardcoded default
+    conductor-identity references with `{{ASSISTANT_NAME}}` (the product
+    name "Tess OS" is untouched — it is a trademark, not the customizable
+    persona name).
+  - **Engine fix (`.tess/bin/tessctl`):** `cmd_rename` / `cmd_set_operator` /
+    `cmd_pathway` previously called only `_render_enabled_targets()` — the
+    templated-compile subset. They now also call the shared
+    `_rerender_identity_surfaces()` helper, which runs `_do_restore()` first
+    (the same target-agnostic, lock-entry-driven core -> live sync
+    `cmd_init`/`cmd_restore` already use) so every core-managed file carrying
+    a name/pathway token refreshes, not just the historic 3. A bare
+    `tessctl render` (the wizard's own unconditional final bake step) now
+    does the same — closing a related gap where a `--force` re-scaffold of
+    an already-personalized target left the wider doctrine corpus stuck on
+    the template's default name: the clean-replace step resets those files to
+    default bytes, `rename`/`set-operator`/`pathway` each no-op (skip their
+    own re-render) because the persisted `operator/profile.json` already
+    matches the target value, and the old bare `render` never called
+    `_do_restore()` either — reproduced via `create-tess`'s existing M2
+    `--force` test (105 files flagged as drift) before this fix.
+  - `.tess/core/hooks/**` deliberately left untouched: the 6 guard hooks are
+    documented (`tess.manifest.json`'s `owned_notes`) and tested
+    (`tests/test_dispatch_guard_headless.py`) as byte-identical copies
+    between core and live, never templated — a hook script resolves its
+    project root at RUN time via `$CLAUDE_PROJECT_DIR`, not render time.
+  - New `tests/test_issue21_doctrine_name_propagation.py`: proves a rename
+    propagates into a REAL conductor/** doctrine file (`guardrails.md`,
+    tier:security) and a REAL `.claude/commands/**` file (`help.md`) — both
+    outside the old 3-file subset — with `doctor`/`verify` staying clean
+    (fails without the engine fix, confirmed by temporarily reverting it).
 - **`create-tess` — bundled the scaffold template into the npm package, fixing
   the DEFAULT `npm create tess` flow (100% broken through 0.1.3), P0 G-01.**
   Root cause: the default (zero-flag) flow depended on a runtime

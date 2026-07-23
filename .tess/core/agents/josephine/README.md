@@ -22,5 +22,5 @@ Josephine ensures the guild's specialist work sequences properly and delivers as
 
 - **Lead on:** cross-functional delivery, complex sequencing, technical programme orchestration
 - **Code Red role:** coordinates multi-layer incident response
-- **Escalates to:** Tess when delivery or dependencies threaten execution success
+- **Escalates to:** {{ASSISTANT_NAME}} when delivery or dependencies threaten execution success
 - **Does not:** replace domain specialists, define architecture, own product scope

@@ -57,85 +57,85 @@ files:
   .tess/core/agents-dispatch/ada.md:
     status: staged
     tier: normal
-    base_sha: sha256:4597c129127e50b576f15fcae1958248cfcd927a6205fc50eb0f6a0bf0312e6f
+    base_sha: sha256:de95575d525e823f29bfa407ea9e3d777906ee8ac33831a948e0ffa8150558e6
     live_path: .claude/agents/ada.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/adrienne.md:
     status: staged
     tier: normal
-    base_sha: sha256:1ad360295c1988e2aa617a9037c2e50286bed69990705f6e6fe3b04691261fa1
+    base_sha: sha256:633e465e997a7576135bfce52ebfe9c0f462531588e6125400e1ec0e983414e1
     live_path: .claude/agents/adrienne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/alessia.md:
     status: staged
     tier: normal
-    base_sha: sha256:c2e6b9f085f7e1841e9c9a4f8b85971817a06fe9ee85bf2e2e9eaf4d9c315d99
+    base_sha: sha256:d5990b3938eafb38a6298184eed6d864db2812b2d8538d81c99270011a3ecba2
     live_path: .claude/agents/alessia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/alina.md:
     status: staged
     tier: normal
-    base_sha: sha256:52bc8d75eb50718b39b8a035a8ca9c51d5b7667e6a44e887b05464143fd0189e
+    base_sha: sha256:6875e805f5b83339a5c768b887105b1afab71bd22ce85eb05727edc81beabbdf
     live_path: .claude/agents/alina.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/alouette.md:
     status: staged
     tier: normal
-    base_sha: sha256:704c184e66f10da1d2a9066c7f5bdf147ab108cdeb9065ae0d0c0d7b786f01d0
+    base_sha: sha256:61ff341c45070af0b38ae14d81363b2527656cd20c939da291c188ad25b499b9
     live_path: .claude/agents/alouette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/amandine.md:
     status: staged
     tier: normal
-    base_sha: sha256:af09bfb85a9675c1e574ea34f8a207f2cb37842ce7bc2fe44b30279612d846e8
+    base_sha: sha256:aeb6995ecff5d980b07aa032e9742d2c5368922a57409bc477db9476e9ea34d0
     live_path: .claude/agents/amandine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/amara.md:
     status: staged
     tier: normal
-    base_sha: sha256:a421f46e2fbe7c0c0eb53587ff92a58bfaf1403489b4681d904c93f30ef6b71a
+    base_sha: sha256:16a0c80575c0e42a49da65e5af7afc6f5550026631b1b5f085ce919753e68f83
     live_path: .claude/agents/amara.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/anais.md:
     status: staged
     tier: normal
-    base_sha: sha256:62140d408d5ad16f82022df868ec25d11e2120fdcb19a670e6db7304bbc9ab80
+    base_sha: sha256:2caf3b6ca2e6f82a17b0470493538477058f5709a08e4db0d2b2e0079bea8248
     live_path: .claude/agents/anais.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/apolline.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:56c54502f08703e8b352106a45cea62ce37ebcf63c7f4117ee3f228b6d0a9110
+    base_sha: sha256:646baea6f6fa17f995f677e8362227aac057518c4a6ddf5b223315a4ff6ed3f8
     live_path: .claude/agents/apolline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/arielle.md:
     status: staged
     tier: normal
-    base_sha: sha256:1cfef997ec00a63b04b3d0cb1cf45e1e518e5ebcd97d2640055e3e0f3f91f5c4
+    base_sha: sha256:c9ea96e048af3193a5729856a8b14226ccc8088ced1c22e3d932917decc565ec
     live_path: .claude/agents/arielle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/athena.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c78f8d081e67c142cdf82e7aabcb42b898f6f094c844616c959663934f8be858
+    base_sha: sha256:4ec6b0510ae47d9f9f7d11674df8ff39b492ece78d32830affb6685b6df8b496
     live_path: .claude/agents/athena.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/aurora.md:
     status: staged
     tier: normal
-    base_sha: sha256:2ebff19413d4fe145e5427d342274612d5a3b72b04ef19f0d69f404b58b085c4
+    base_sha: sha256:1a4c9bc6395df1f21e057d53a49dfb544590f74b6e947ec89f315373b1d1f56b
     live_path: .claude/agents/aurora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/aveline.md:
     status: staged
     tier: normal
-    base_sha: sha256:1b3f0fcc0d56ea8f252eaf780424749855f81cf7e43883cdceb50056b96b2526
+    base_sha: sha256:c43d1a44060e594c3c8f823744b9df62f087a4ff2eb72ff4f784e22e53abae29
     live_path: .claude/agents/aveline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/beatrice.md:
     status: staged
     tier: normal
-    base_sha: sha256:8f2dea0d96e64b67a599966d4793b3a4f5890ccd9a58c9cd209a4461ff1aee4a
+    base_sha: sha256:25aa32efb174c17a4fff47fb139e1aec02f2b9e968b13e6730508a34cada2da8
     live_path: .claude/agents/beatrice.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/berenice.md:
@@ -147,13 +147,13 @@ files:
   .tess/core/agents-dispatch/bettina.md:
     status: staged
     tier: normal
-    base_sha: sha256:2029960c58ffa677cdef79268278794ec090dd836336f1f712f0fcb4533e643d
+    base_sha: sha256:e1cb08e5f17bc1f27a0a092bbe6199d74db41cfa58336a4a43543d7b8cd12bd2
     live_path: .claude/agents/bettina.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/bianca.md:
     status: staged
     tier: normal
-    base_sha: sha256:5332f0c8e8a79085d59fc3b29a41ada9b55044d05c62936da4e7a0611ec014f8
+    base_sha: sha256:3adcc01e31ce9706bc9a6c7bbd1801043663fe5f49b45121daf74e8cd2fc7f4f
     live_path: .claude/agents/bianca.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/briony.md:
@@ -165,91 +165,91 @@ files:
   .tess/core/agents-dispatch/callista.md:
     status: staged
     tier: normal
-    base_sha: sha256:18918402fe073d0a619c06cf8c5d496c49542e426d945e4e62cfd60803b4f4bb
+    base_sha: sha256:9b6a8712005c87b767f461671982f821e2c64549127a1678593a3a6eaf89b80b
     live_path: .claude/agents/callista.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/camille.md:
     status: staged
     tier: normal
-    base_sha: sha256:db93161403a2799035c67be755fbc8ec46bb11b5853c32155d1bf84fd451ec31
+    base_sha: sha256:eae6aa4cee21b64b188b07469c518a2c6f30bd41f1bec7d6003a274d3ff3e0d9
     live_path: .claude/agents/camille.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/cecily.md:
     status: staged
     tier: normal
-    base_sha: sha256:061bc45831769b6f9dba664528796c3cd6b7933d771dcb0ffd09c6f6a71f9c04
+    base_sha: sha256:c0d14d32ed7eea14b182b9ac8ee2f8629f42987e4158d93dd66087028470782b
     live_path: .claude/agents/cecily.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/celeste.md:
     status: staged
     tier: normal
-    base_sha: sha256:4e4a1ea02c4d83211baddd9cf19eb33f72950c08e2f61a89ad71f75a34228a70
+    base_sha: sha256:670f260a0e034197a2700e5b05ec7bb4589e9585d52326166c9d5997c4573843
     live_path: .claude/agents/celeste.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/celine.md:
     status: staged
     tier: normal
-    base_sha: sha256:b397fc9819ff49a0ee8b5f199a0d042c10df7000daf097df73b54a3ea8d6e7a6
+    base_sha: sha256:d3dbdd995126c44ac41458d3d7fb0b12526f3c9e8cd6db457b00b0f44dcc4941
     live_path: .claude/agents/celine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/cerise.md:
     status: staged
     tier: normal
-    base_sha: sha256:9106541adca9faa98fec58312931da3e1e100bb00c022379775b5a742957fdd2
+    base_sha: sha256:59841b5f7f1ad1ab8fdbb75db6981da7a35300943da9bfc00b3d5045c8058c4b
     live_path: .claude/agents/cerise.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/clara.md:
     status: staged
     tier: normal
-    base_sha: sha256:671bb1dc9a1d41789bd02b14e552b617326ad8e187f42898d05f9830cf170324
+    base_sha: sha256:5c34d76e93e076a260f90f938247828dc798346a0bd4b582805abd675233ab61
     live_path: .claude/agents/clara.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/clarisse.md:
     status: staged
     tier: normal
-    base_sha: sha256:7f6ccbdc37929151b3029279989e9f8bc4e4a4382f5246c3175b49334a867b91
+    base_sha: sha256:35f97bac6c6a3959a0e7d57c77092714d79ea446ad3010c8d7b02c4f8627e23e
     live_path: .claude/agents/clarisse.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/client-experience-orchestrator.md:
     status: staged
     tier: normal
-    base_sha: sha256:1d406ed798cad0872507ce5128a4f53f6a6b75b09516a77cf60190b08e4b69d8
+    base_sha: sha256:505b69e043fa070fbc59207b257d9f28bed591ee1ad060d2eca2100ffd2eabbe
     live_path: .claude/agents/client-experience-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/clio.md:
     status: staged
     tier: normal
-    base_sha: sha256:c05795194a535938670a09609417509ccc29e625363f1dcfb5f2af9f5819eebc
+    base_sha: sha256:2a69f60227fae5f3e99b00c372b9fba8d4309dae36274854d1fa5c71b476e603
     live_path: .claude/agents/clio.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/colette.md:
     status: staged
     tier: normal
-    base_sha: sha256:c8be615683561df0066942b6743f4f7426a1acb6c6601199afbf46bee8bea444
+    base_sha: sha256:56ae633aee2b6ecca2f288c65d74233600707118bb9bc80e5cf88311651efa47
     live_path: .claude/agents/colette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/coralie.md:
     status: staged
     tier: normal
-    base_sha: sha256:c6fcc580294ab319bc29d2117601ce3bd94c206968353d79a95fa5d7be12d95b
+    base_sha: sha256:80c10fc258df102c590b65e6324219db9aaf2f4ef8cdb770fe8be3e8af4a57d8
     live_path: .claude/agents/coralie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/corinne.md:
     status: staged
     tier: normal
-    base_sha: sha256:7bba983d82adf3fc146ee5bc36eb3eaf6fe36773b08d40c3cac52c507057eb84
+    base_sha: sha256:fc838aca83ef7523014d67150d5819338a7725ca6a64e2d3ccb5ba8d56150fae
     live_path: .claude/agents/corinne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/corisande.md:
     status: staged
     tier: normal
-    base_sha: sha256:7e0403ec559656cf429361cfe7c8d56b7a7dc9f0c6c83986dad0591635ef5f71
+    base_sha: sha256:9ea54626b31f42bc11c3fee729160aaf0e1db679b014d5ddf5853b22db078b47
     live_path: .claude/agents/corisande.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/cosima.md:
     status: staged
     tier: normal
-    base_sha: sha256:0786f04d1195b93211581f11ff2df521db296e3d1a8c9690fb819614f97a2353
+    base_sha: sha256:441f07ce123b8ef8ff92bfc228adafef42e73703af244afd1fe69aabfda60f14
     live_path: .claude/agents/cosima.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/cressida.md:
@@ -261,205 +261,205 @@ files:
   .tess/core/agents-dispatch/cyra.md:
     status: staged
     tier: normal
-    base_sha: sha256:51792d8ec3572ee0ebb5e099efc9ed2f76ee29a2a0a6bd74d0c4da46ea105d0f
+    base_sha: sha256:bd2c761c220edb1870c279531743efc7a83fb1e694454391e637dfcbb8f5c4e4
     live_path: .claude/agents/cyra.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/danica.md:
     status: staged
     tier: normal
-    base_sha: sha256:4298cb3f757d4ef957017d5217ef1002a0ab362216e05f26654a32ae97576bff
+    base_sha: sha256:dced6ef178e6d5ccaafa571af637cfef366b07ac9c76503f230ff8eb0bcc6b00
     live_path: .claude/agents/danica.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/daphne.md:
     status: staged
     tier: normal
-    base_sha: sha256:c1787186309a0e12f7999fcf30d945e5f72cdc98684032b370be70406b31d117
+    base_sha: sha256:5c0f9a6343c9d1ad1dc9d0ed5efbc245aab2b71cfd223689fc3ad8548c054d2f
     live_path: .claude/agents/daphne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/delphine.md:
     status: staged
     tier: normal
-    base_sha: sha256:684ba94556a9c7280e43ff2c0eac66e6fb8a0cde28a6134161d880312b1915f7
+    base_sha: sha256:0df23eb9316a218c9daff70d54bdac46effef6a8644e76c3dad75a965e325839
     live_path: .claude/agents/delphine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/domitille.md:
     status: staged
     tier: normal
-    base_sha: sha256:4eb0e6b7fd01b8ba311e40674809ef71ec5c4fa4b432c81a148ffe421de47896
+    base_sha: sha256:a050436acda8b59e426092766df441a811d8fcda68310f3b1867562e9951775e
     live_path: .claude/agents/domitille.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/elara.md:
     status: staged
     tier: normal
-    base_sha: sha256:815fcd3c1931e974102c6286aed1f0022256e1ec91bede434d1adcc573af74b4
+    base_sha: sha256:167ae6efd6610021700deb2821941474bd7e4d45d790b7763b49ad13adc5b21b
     live_path: .claude/agents/elara.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/elena.md:
     status: staged
     tier: normal
-    base_sha: sha256:cabfe3124cd9e01485eef3d11428abe2117be360077c11a8964a614b47b393ea
+    base_sha: sha256:9dce8c69b7321865a1d7cc0a151994d0e17749c7b3244b815d7e2f6a97b494a8
     live_path: .claude/agents/elena.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/elodie.md:
     status: staged
     tier: normal
-    base_sha: sha256:2e15a1571210d6525a2815f79c56d09fee98402e7278912da7bc102b50f0755a
+    base_sha: sha256:139361a9c1ef074ad38e19dbd16eb4d21d936161e388c4afe711f15283c68b18
     live_path: .claude/agents/elodie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/eloise.md:
     status: staged
     tier: normal
-    base_sha: sha256:8652e7b2e199ddf81fe0f3f6ec4989b0458c3c37d21a7c8abb97ce4c727a6f57
+    base_sha: sha256:1569dc74a375f6777b093a0f934333ab8ef1c45fee4ee3a0ae4eeb69ba6d4c8d
     live_path: .claude/agents/eloise.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/elspeth.md:
     status: staged
     tier: normal
-    base_sha: sha256:8e0133eefc6e7483e24cc39336462ec3a322ed1337b37d63fe6eba143244f319
+    base_sha: sha256:54c7d182f1057577487e39ab2aca7195226fbbcdf1fbfd40d12bf7f242d3f93f
     live_path: .claude/agents/elspeth.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/emmeline.md:
     status: staged
     tier: normal
-    base_sha: sha256:00ce4bf948771f86cfb34a6c0d09a8b0a56bb6709117268c59f78c568ecb4d79
+    base_sha: sha256:78ee268b3a11456484de2dc54b413969776f1d9b1f58d8e2161e567fd07d543d
     live_path: .claude/agents/emmeline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/estelle.md:
     status: staged
     tier: normal
-    base_sha: sha256:2fd9568f83c0ba0d9aade29f8f962e4c5847ce9613469cf1ac8d786a4abc9e0e
+    base_sha: sha256:99bf16e5e6b8aba0fbc78b5b1a41fcecb74a1b41b675740377e50658928b6706
     live_path: .claude/agents/estelle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/eulalie.md:
     status: staged
     tier: normal
-    base_sha: sha256:6f389963977e25de2fb287ae264ea15e6d682ee572c7c567db98b65ca4bd0ad5
+    base_sha: sha256:130fcd6939ef12abc5f19f9422fc43ee90723f4bacef72c628d2283ff6629b8b
     live_path: .claude/agents/eulalie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/eva.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9a8acf8beaec15783314ae070925a2b85303695304c0706ce3092761bfcfa257
+    base_sha: sha256:58974f9d6c29a2fdfa1c9b564c0fb4dcaee250b0cd85ba78093744d5e7e5bcc3
     live_path: .claude/agents/eva.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/evangeline.md:
     status: staged
     tier: normal
-    base_sha: sha256:9c401352a90fb56876a8ecdd511993c70dd8c021ecdf047de4a0ce2f60f2c532
+    base_sha: sha256:23e5d07389f574dc81589aa078ed0f4eccafafa78259c20e81f9b40c3322d8a3
     live_path: .claude/agents/evangeline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/evelina.md:
     status: staged
     tier: normal
-    base_sha: sha256:32fc7753fdc678e46c75aa05f1b58275ca06e451915713b4d19861e1f61f31df
+    base_sha: sha256:b6d4cdae9c2c9162a9d5d5b4ac99dc186b53d5f4b05596cfa4110674ab2ce9a3
     live_path: .claude/agents/evelina.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/fiorella.md:
     status: staged
     tier: normal
-    base_sha: sha256:70d63bd5b600403113c5377c0e45f304a2de94def72e0036ad8d2b95a04de083
+    base_sha: sha256:6ab3e304c58d42490794be5ba49533c59a09fdcc7226687ef6183e007e513d8e
     live_path: .claude/agents/fiorella.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/fleur.md:
     status: staged
     tier: normal
-    base_sha: sha256:aaac06bc8d5306ae031af14be91e0d9fcd475286ffcd372f67a34b64e9385cdb
+    base_sha: sha256:3ae4ed14b1dded7a4b4011667825a862772eb50b17afb4f4ca137529dfaa88e8
     live_path: .claude/agents/fleur.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/floriane.md:
     status: staged
     tier: normal
-    base_sha: sha256:5c273cea455bc2e3615d2c09a93a76b777f52d3a5f28a69d5d9b604e170b4cf5
+    base_sha: sha256:a154645452bebd2f51f3ad1fa6d35492d4f830bc9fd16069724ca6eb304c9d03
     live_path: .claude/agents/floriane.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/founders-office-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d1f016170c7923cd2e1297e29d539e79ae823259d24eda31b33b4395534610bb
+    base_sha: sha256:b9cee1e3a8d593144828c3558ef543f7e7219503abde07b4260e67f4c6b13b62
     live_path: .claude/agents/founders-office-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/freya.md:
     status: staged
     tier: normal
-    base_sha: sha256:3b4df21eaced8f8a366462760b8c24196cf002ed5df5902914b7332cdd0c4456
+    base_sha: sha256:0f26c7d9377bce312a45c94bf35ac2dce253f7f7883746164a3be44f2e047433
     live_path: .claude/agents/freya.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/gaiane.md:
     status: staged
     tier: normal
-    base_sha: sha256:f4fa1d59c1d68aa05e025139bbd9f7eba8c842be2cf74127d30332bc2ae10946
+    base_sha: sha256:e30a6c450a149c58b2a869b7cd6d826be72645e05ad8e8bda61cfeb32cee3281
     live_path: .claude/agents/gaiane.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/genevieve.md:
     status: staged
     tier: normal
-    base_sha: sha256:02f07f291404c3f942a522bc7c109858285ffe487cc799cd0f2e8b35e70ef6b6
+    base_sha: sha256:1aa35d2e9dc3a1d2eecc4f1594f06feb204fe256cddf8973e323a863e8595bb4
     live_path: .claude/agents/genevieve.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/gia.md:
     status: staged
     tier: normal
-    base_sha: sha256:1cebef46c2cc132f8752d6a98ab6e8ad38a72fb129c3e5865cafdd9a1507daa9
+    base_sha: sha256:5ea825ab14d7c3fff593bcc8c3e7019fd257f7ecdc2ca79d52de09c3ad071741
     live_path: .claude/agents/gia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/helena.md:
     status: staged
     tier: normal
-    base_sha: sha256:4571c6514a09fae27b7324bae5f1965b1b350366a808fe805ddf03de7b7e73a3
+    base_sha: sha256:da50480eccede8a4acca8cfe01696c3a3d9c44a04d47989b8959b95226bc121f
     live_path: .claude/agents/helena.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/hesper.md:
     status: staged
     tier: normal
-    base_sha: sha256:5e60c9c07bbe000e91bf5555e649facd8aaa45a0f58ae74185f8817ad8ea991e
+    base_sha: sha256:b46c8710b12c28cf19a4f3a82a665b05194d3cb77bb33929e2583f4e1bab3045
     live_path: .claude/agents/hesper.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/ilaria.md:
     status: staged
     tier: normal
-    base_sha: sha256:d85292eaae357d94456184fd0e670e77857c1c43d5564fca9cb60bacc9081997
+    base_sha: sha256:f9c5b7ef1e8cf35457843df07eec1f4e83c9ac367f13626f9c38b1c9a8e1fca5
     live_path: .claude/agents/ilaria.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/imogen.md:
     status: staged
     tier: normal
-    base_sha: sha256:17aad5577c9e7022df10d7461059506008f07fbfa57560eccaec70b14d565444
+    base_sha: sha256:a35699d7fda741aff1812aeadab539474f4e9fc3832478f2f59fd78722998df3
     live_path: .claude/agents/imogen.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/iris.md:
     status: staged
     tier: normal
-    base_sha: sha256:faf8313c81b794622eaffc63b7c1b630e2274572b196a48014576945d1ba620d
+    base_sha: sha256:6a3116cac57abf3f3bdcf1aaaae72a86da3bc32e47fe6b842dececb989c0eb59
     live_path: .claude/agents/iris.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/isadora.md:
     status: staged
     tier: normal
-    base_sha: sha256:067ce6da8f6d9d01019cb47d236936fbfda4d92d7bf8cc612c1f27e12051f0d7
+    base_sha: sha256:d57eeef3470e9ae8861b1f62480c505af6323c8b81e9a3b55ebd547a3549af6a
     live_path: .claude/agents/isadora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/iseult.md:
     status: staged
     tier: normal
-    base_sha: sha256:fdecc08babea7352afdbc448fa4d463f98c94f5ec84c2f6ce516262151bc6f02
+    base_sha: sha256:009ef83ec68aee5c8e7f9e3c66a214ab2490dc68cc1ac495f73f849285e19bdd
     live_path: .claude/agents/iseult.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/isolde.md:
     status: staged
     tier: normal
-    base_sha: sha256:5e26c4508cbabd9555d68d4771cff0a5056b4e90cb13ff66d6b7fa8be409afe3
+    base_sha: sha256:1b379f59b22da553b35a9eb85b5df2c7b940bdd78118a82f00c69c1ab2a8ca63
     live_path: .claude/agents/isolde.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/jessamine.md:
     status: staged
     tier: normal
-    base_sha: sha256:c4dca7342dc8df14d749872b3ea016163acb5efdae9ecdd9925f0af724b8b5c9
+    base_sha: sha256:4eae51bdc93b4bc69e8c89e013c0722be36b8469efa349a173de0b3ce1eb423f
     live_path: .claude/agents/jessamine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/josephine.md:
     status: staged
     tier: normal
-    base_sha: sha256:f2f33abed04b02d7c5e043dfa1623b2fa110547e18050effef86572da489a154
+    base_sha: sha256:5244fbb5a04c725f623970b103c272b1ab9bb9af919ab7c04ac590b87497da8d
     live_path: .claude/agents/josephine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/jovienne.md:
@@ -471,43 +471,43 @@ files:
   .tess/core/agents-dispatch/juliette.md:
     status: staged
     tier: normal
-    base_sha: sha256:a0da704450b6b662eb8f0a8d0f61ff4d46d2ee9a85bc84ed6ef68828518a9be5
+    base_sha: sha256:26469ad80e34da14b037828997b2d4ce0d512808e4bbfb37b9198bcb3693b200
     live_path: .claude/agents/juliette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/lavinia.md:
     status: staged
     tier: normal
-    base_sha: sha256:ebe3944c2b526ba13a87dd277d600986451af99d5ef46a2f8ca5a1d392124904
+    base_sha: sha256:df6edc927fce2eed8f0780a7c158795c3ed3a2d6dfdbbbca3b827ee34bc0c347
     live_path: .claude/agents/lavinia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/leah.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5497e43d85c120b3206953c5c11b221f0b689a87b0836f703644ed7b0a882cd0
+    base_sha: sha256:69cd6d7d30cd1ba265828376ccbf52c8d80f14fd3f9a037eb6ae9888238119b6
     live_path: .claude/agents/leah.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/leonora.md:
     status: staged
     tier: normal
-    base_sha: sha256:33a01cdb17de0d9efb41e4bf7d9176569b5a859b5b4ea6614ad21378d6c66fbc
+    base_sha: sha256:3e0d82b201da9a6703fc1481b375f86e6f13320160204731691bd70748e4d237
     live_path: .claude/agents/leonora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/linnea.md:
     status: staged
     tier: normal
-    base_sha: sha256:632745a40049e8e0b9b0547d9b815bdee9b86050c71d7ee3232bc2599d89e58f
+    base_sha: sha256:4a2c0d1973df3233f96419861d8de1b1166945d2846ab5847111da3698b11cd1
     live_path: .claude/agents/linnea.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/liora.md:
     status: staged
     tier: normal
-    base_sha: sha256:022202094bcac2273753b6b620fb2f49aa670f06c5b9aec2ce4f2b7680c089ac
+    base_sha: sha256:6d1f76d7ee5c20281a9a83b1205432d76b53451e9deb3f23f52ff53832a30642
     live_path: .claude/agents/liora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/livia.md:
     status: staged
     tier: normal
-    base_sha: sha256:8f053b40eaca5d226d23d2ff8b2e43ad33bc74d983c5e45928f1c3a9649ef799
+    base_sha: sha256:c29b47dab6d479b9934ccee259d3046b174fb66472d130d3b1fd30b22d7f484e
     live_path: .claude/agents/livia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/lucasta.md:
@@ -519,157 +519,157 @@ files:
   .tess/core/agents-dispatch/lucienne.md:
     status: staged
     tier: normal
-    base_sha: sha256:0b0a540020a7d2580b3dd96a2d394c33ba8294f6ed60abb9af2b188eed266f64
+    base_sha: sha256:67e5f2bedf10f4f3ba620a9391b72a902ce6329e694b28b568059f789f783f0d
     live_path: .claude/agents/lucienne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/lysandra.md:
     status: staged
     tier: normal
-    base_sha: sha256:473815b19d1099b1581f7d928cd2381263608b1e9b0ddf6cfd595d2e100b2ac0
+    base_sha: sha256:c1fde14c0fb9beec9e75882c3ac64d31821f04e0cbd70eb5af08b1c15d849880
     live_path: .claude/agents/lysandra.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/madeleine.md:
     status: staged
     tier: normal
-    base_sha: sha256:d147ad4ccbca6cddab02c3335be62464cdf7111d5604faa3f094bd0f9d7891db
+    base_sha: sha256:cec1a4be6e232b99bab4a408331053a6e3e800de5247a3d0327a8058063954ce
     live_path: .claude/agents/madeleine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/maelle.md:
     status: staged
     tier: normal
-    base_sha: sha256:333a4d91a66a00442933fc076cd486ef16fbf57ace21d1fb67652e3e73b330e2
+    base_sha: sha256:d1f59dbbb37045c69144cc3264259c006fbffffbd73f85e6b737d073c0a7bf2a
     live_path: .claude/agents/maelle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/maialen.md:
     status: staged
     tier: normal
-    base_sha: sha256:bc01b1c49bc88ddbfefa6a2c78e55c24f2d46d52ca7bfde0b51abbebde3dd6b4
+    base_sha: sha256:c61189a5c6a6a1001ecf42e5d52e0db6651db3a0ed810ad0e418271195caf019
     live_path: .claude/agents/maialen.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/marcelline.md:
     status: staged
     tier: normal
-    base_sha: sha256:0c746a4456b6b52548a21e3f9be6c6bf0455f02adec916779c975b18e05957de
+    base_sha: sha256:2cadf37e99f70348eb02c429689d3c5d3e125c39fbfcba571c1443071e14c16e
     live_path: .claude/agents/marcelline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/margot.md:
     status: staged
     tier: normal
-    base_sha: sha256:996941896f104d9f8cf8f0da0e02fa70796ae7878b920a73cdab58b039b18bd8
+    base_sha: sha256:a15203c97baba1e85f571aa1910a16965a3c7f51fb1813fe12ac9fd877389540
     live_path: .claude/agents/margot.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/marina.md:
     status: staged
     tier: normal
-    base_sha: sha256:46c615ccc7cab4288c6c88383170057526917e4fd76d83e7717323f4ba406a10
+    base_sha: sha256:d26247af84b82924289c8a9a8e6eaacffbb350c95fcca55a8bfafb0cfb225c5e
     live_path: .claude/agents/marina.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/mariselle.md:
     status: staged
     tier: normal
-    base_sha: sha256:097aa11a21b425ee6c8de327de2f1e192aecd1f2542daa1d4f8d1626118461e6
+    base_sha: sha256:77c35e3b843c8a3bedc0850131884b7c8adaf269853ed67e840fa3134f8abf01
     live_path: .claude/agents/mariselle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/melisande.md:
     status: staged
     tier: normal
-    base_sha: sha256:f9a8550480518fe28ef64b169893d8b21fade52b2014591d3a61c27eff822ce7
+    base_sha: sha256:2720db2db02e38525065b2b684ff76d40148b4cebb0abc1b44fce221040286df
     live_path: .claude/agents/melisande.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/mira.md:
     status: staged
     tier: normal
-    base_sha: sha256:b05c301f05d37ecb3f6f578aa005d6907433336005b6630f00fa409fa32bceae
+    base_sha: sha256:f49632856854ab3a15b19cf90d53a907d0b55ba81d7aa8b697232300b07bb4ee
     live_path: .claude/agents/mira.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/mireille.md:
     status: staged
     tier: normal
-    base_sha: sha256:f1313917e12905638755453dff9c88a6fbc7f8bc3c6589c423323f2c883f05ae
+    base_sha: sha256:5eb423475d3f03b016bb321c26e28b89704d9871d335d06fc45aadb5c356b9bd
     live_path: .claude/agents/mireille.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/mireya.md:
     status: staged
     tier: normal
-    base_sha: sha256:cf8708b80a0646e4bb6a82446811ba7511cf22175ed37cb53d8f57527f83a8c5
+    base_sha: sha256:ea89bc4b0f1dd9f8234deb2f03cbcffc623f6c3961c31db9659d3d3d8c4c36ec
     live_path: .claude/agents/mireya.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/morwenna.md:
     status: staged
     tier: normal
-    base_sha: sha256:6aca66d492c53276a2ce43d2a2a639a93ba3b2e3aa77402e0b84009686943ec8
+    base_sha: sha256:86fb97b1f3d11c7d19520088f0e2157611db5afc162b097173779fb1273acb9b
     live_path: .claude/agents/morwenna.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/nadia.md:
     status: staged
     tier: normal
-    base_sha: sha256:c405a8e3fe22eb0dee78792b3b271659451819d38220cb5da196abe636046588
+    base_sha: sha256:24200b1863aeab2ad071f26b6bfcffc67bc311a347a05563e9212e076a2fd1b5
     live_path: .claude/agents/nadia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/naomi.md:
     status: staged
     tier: normal
-    base_sha: sha256:028b4924b34504d7f28f6ef32c84e611181cc8d2dbcc9d4034aca1c75e3aa82f
+    base_sha: sha256:f949039a478a63349bbc2f40b2e980d794b454c32b3a5d836244b34c97edd5a9
     live_path: .claude/agents/naomi.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/nerissa.md:
     status: staged
     tier: normal
-    base_sha: sha256:2e365fe0fd47b9440322bd7e6ee3b0c44f05d3fb6ab26c71a40e590bb971ebe1
+    base_sha: sha256:8b29ef8802bcf6e602aee47193c4eb0c983b1cb26f34a33b87c6e65d19725730
     live_path: .claude/agents/nerissa.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/noelle.md:
     status: staged
     tier: normal
-    base_sha: sha256:f0862ee295f20c4426a6218b2aa86421676bea18ef189baea80cda42f2e65fec
+    base_sha: sha256:93916b38cbcad47ffff1e669c1ab0f5d9b95957ba4753aa27d3721b2c6a8b68a
     live_path: .claude/agents/noelle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/noemi.md:
     status: staged
     tier: normal
-    base_sha: sha256:49ad4e1fb96f635fd987b9244be2633493f1d5ac874e046e20e11af66039a4c1
+    base_sha: sha256:08e4d75fdeb03f7bc994141e032dce071efc3ced2d083f6954e14f3599860478
     live_path: .claude/agents/noemi.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/nova.md:
     status: staged
     tier: normal
-    base_sha: sha256:53c9d9e3fa248c6d8b36df78cb959f8fa3b3b4424dbcbf3dca436e7890b182ae
+    base_sha: sha256:391407070b57a12f2ac9b74be01f1841867ac9f56ccbbf4b185004efd119ff56
     live_path: .claude/agents/nova.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/octavia.md:
     status: staged
     tier: normal
-    base_sha: sha256:ac6cdd0b38311dcd430d50a4e1e9e0914dc1766439238cfb592d054d0d247190
+    base_sha: sha256:ae5668ad3a97d023318a5cc20524323c7ab5738b97c3a1093047fb50310e6550
     live_path: .claude/agents/octavia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/odette.md:
     status: staged
     tier: normal
-    base_sha: sha256:a678e8bb2adbd9451f1f4b85ce3e196b38222d0621b571784b707dd5de5eca8c
+    base_sha: sha256:ea500aabc7e992f3954d738921aacaccb3581b700e35ca683fc9bd0b8156085a
     live_path: .claude/agents/odette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/ondine.md:
     status: staged
     tier: normal
-    base_sha: sha256:30b227d68e4336a6f8370429e647d72122337f02b3bc126381d9bd1d5a530b2c
+    base_sha: sha256:489de8949214e9be6b18a94f96d7e1645af3706d387321ed1ea825c2e5ede351
     live_path: .claude/agents/ondine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/opaline.md:
     status: staged
     tier: normal
-    base_sha: sha256:644f8b91b9323f5dee3ebc0967ece98207a290571668452cfa44ecc20b016ac5
+    base_sha: sha256:52e4390a5d94a4c77d162995e3713f5c1099a5fd8d1a323544a3a9da6474eeb9
     live_path: .claude/agents/opaline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/operational-reliability-orchestrator.md:
     status: staged
     tier: normal
-    base_sha: sha256:8b579d391d335e2cae1c91ccde850427d4b8590cbadc3641faa3a4f6f1133b4f
+    base_sha: sha256:9c8b11e0b70ac9ae650283f7ec8a3f742d98857515a331bde56e88d0f5c04236
     live_path: .claude/agents/operational-reliability-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/oriana.md:
     status: staged
     tier: normal
-    base_sha: sha256:8235fd53e628068cbcc0bc18bedbf24064366f7e35f79248d2a18e7066ab8d4b
+    base_sha: sha256:d9e483e152cc45793a8d082fe6062533e19ecffae2aae11105a01661b3ae80af
     live_path: .claude/agents/oriana.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/orielle.md:
@@ -681,25 +681,25 @@ files:
   .tess/core/agents-dispatch/ottilie.md:
     status: staged
     tier: normal
-    base_sha: sha256:e9dad077ef40b2e2636b2d20ac03aba28a78159308454f81a828a383d93f998b
+    base_sha: sha256:1ffa325c9ee4a7f6f5a5efc9210880ae24ad6db7157bf8bbb791fe094db0af74
     live_path: .claude/agents/ottilie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/paloma.md:
     status: staged
     tier: normal
-    base_sha: sha256:cbd9e9bf9370dfcf22e482e5796ae7e5b31d9378a2ca0a69a4884367a111a551
+    base_sha: sha256:57d612df4e6d6c6c94088e3e0132fa7db153ce6e3961feeee7b2079cfff8b38c
     live_path: .claude/agents/paloma.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/petra.md:
     status: staged
     tier: normal
-    base_sha: sha256:f4b199a83cd9534a904cd4b9ecd8b383ce72687f204ec5c6550edf36a1bc9077
+    base_sha: sha256:380803339be45d611160c5a47333b5d95fa25ddef186736ff9266ddda4d3eea4
     live_path: .claude/agents/petra.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/product-delivery-orchestrator.md:
     status: staged
     tier: normal
-    base_sha: sha256:98fece6dc16c86ed606c44b6a7f465e5945336cd225e44707459c06d1fd26c5d
+    base_sha: sha256:47984821836af8b9920117afd6f0a0a8395cc602defe16ef2427a5898cf9ed5b
     live_path: .claude/agents/product-delivery-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/queniva.md:
@@ -711,37 +711,37 @@ files:
   .tess/core/agents-dispatch/quinn.md:
     status: staged
     tier: normal
-    base_sha: sha256:ca1d9f3d7c8f88d0146e13470a39f89a57eea0096caada721009adbc1d892c4b
+    base_sha: sha256:6b97fd4a0285cf54956325c91d5addb5358deb8ba54b788c72567214c87cf86e
     live_path: .claude/agents/quinn.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/reid.md:
     status: staged
     tier: normal
-    base_sha: sha256:c785542951a33b02caaf6048d51dd7300b060af53fb825677dd9eb039d719e09
+    base_sha: sha256:4d25b80fe70d19a27f7289fb9163e7c4b1f8f24749ac42706be99fb77ef6ff29
     live_path: .claude/agents/reid.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/renee.md:
     status: staged
     tier: normal
-    base_sha: sha256:d411e64183ce3d9ea04d05280fc9d5a6392a09a4bf3704f81bef25841701e378
+    base_sha: sha256:5653dbd887b0c52ea9d0896da2cc9759a29668d514d242a69a5f6b1e57ebbec5
     live_path: .claude/agents/renee.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/revenue-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:85e87e407e7e400dc45238f2bbb6e8c1da48cc6339572155d61a7fd2c26f7ff6
+    base_sha: sha256:490bfe6e16e2dc5f94a8f49d3a162bef8270986c5128f8a15f1e8b2ca0df40e6
     live_path: .claude/agents/revenue-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/romilly.md:
     status: staged
     tier: normal
-    base_sha: sha256:6e47fdcd9b378284be71a982948b7c0f2ecd62aba73416de7fbda088cc207124
+    base_sha: sha256:4ec10feea955237bb81f381bf65d7fc16ac4aaf8df93e7f7c18e8e2e544d93af
     live_path: .claude/agents/romilly.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/rosalie.md:
     status: staged
     tier: normal
-    base_sha: sha256:e66b716f787dce43b0857e2c754c696dde63c29cb82469a67793538575519c30
+    base_sha: sha256:6b587da2ebd0240358019d9c3e82cbd70a7f2dc3af97dc7b5da1c0ded27490c8
     live_path: .claude/agents/rosalie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/rowena.md:
@@ -753,145 +753,145 @@ files:
   .tess/core/agents-dispatch/roxane.md:
     status: staged
     tier: normal
-    base_sha: sha256:e999af26fc76cfdb76b2c4ebecfbc860a9c783c463e310f58d517d202f71cc1f
+    base_sha: sha256:149bf17fa223a884c028700c513ff434426a16b5daf036f07226e98b6a8a362a
     live_path: .claude/agents/roxane.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sabella.md:
     status: staged
     tier: normal
-    base_sha: sha256:1379ddbf0ee94aab690d127bfa9ae9d84b1d1bcf29cc0e57c6249dba4ebaa63e
+    base_sha: sha256:b4ba1cc1b1f47c4200154e798059f012020534a065e1aeec5853813d43fa1cf7
     live_path: .claude/agents/sabella.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sabine.md:
     status: staged
     tier: normal
-    base_sha: sha256:681f952471e3eb62789b60a2220cac243f6b3308e1cbb4cf868c3e29f84f389c
+    base_sha: sha256:98e87aa9b22c6b4932591f27659a5d1f86b862c0e00e67213012177f89739b76
     live_path: .claude/agents/sabine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/selene.md:
     status: staged
     tier: normal
-    base_sha: sha256:241ba4c63a64bd732a2519168add405960949d8e0945af37a5afd02ee9d81f17
+    base_sha: sha256:206193fc3249117f5288fac4dc9174736fd82ecc54008bbfe1f5a64d6fb3f01d
     live_path: .claude/agents/selene.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/seraphine.md:
     status: staged
     tier: normal
-    base_sha: sha256:434cc9f03fcd55c2c758db460877f4653dc0a21f335213765f85f5950f0218a7
+    base_sha: sha256:c180bc0c54345816b91be91787d3baad6e916543982d1c94f2f638717de83972
     live_path: .claude/agents/seraphine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sienna.md:
     status: staged
     tier: normal
-    base_sha: sha256:f114f1739a25a9852b0785afdcb24e3c6310ea69e35ed139151d6b569be6af17
+    base_sha: sha256:a801976c6f77c7ccc40e06d2ba012cd422fa1dffaa069af3aefb927e8aa467e6
     live_path: .claude/agents/sienna.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/simone.md:
     status: staged
     tier: normal
-    base_sha: sha256:1fc7dcbf411ff15e54f29ace877f2bb50e7b1174c0eee279c83ec49e7ca4fc7c
+    base_sha: sha256:13b50e6e3883f799761c46ba1f0442e14bf6bf04b5dbb47cd16cbe121f86adad
     live_path: .claude/agents/simone.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sofia.md:
     status: staged
     tier: normal
-    base_sha: sha256:36d1de024ea699d96170bd8c8eb771d62e2bdef84b9310a89cba5344e9f50470
+    base_sha: sha256:fb16a793a5f9e65cd9da2b3e731b05154890f4b3b33ffe6f7892721cae0041ef
     live_path: .claude/agents/sofia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/soraya.md:
     status: staged
     tier: normal
-    base_sha: sha256:75c879657916dae4f24c78239ef45618eaf81edc26f632660e3a876b4c141932
+    base_sha: sha256:6cf69baad983ba95fbb5a13a6fe056708081eea29c6752fb9a47d286d308f9e7
     live_path: .claude/agents/soraya.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/strategic-growth-orchestrator.md:
     status: staged
     tier: normal
-    base_sha: sha256:abf91e16359275626647468b249854d9fe8231960121aa996b3b2b9df8e8c4e1
+    base_sha: sha256:839792ccb14588f3afcbdc3c12e35748930609a7df2785ba30c27c954562e54b
     live_path: .claude/agents/strategic-growth-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/talia.md:
     status: staged
     tier: normal
-    base_sha: sha256:1e4391ecd549f4c53c06893bb63ba2e547ea399d25ddb0b73eed43a246107191
+    base_sha: sha256:2a798dbde044f39ebb67beeadf5d181fa4c171e674c685d86fe94297b9cf045f
     live_path: .claude/agents/talia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/tamsin.md:
     status: staged
     tier: normal
-    base_sha: sha256:33620299ac734d0dbd34c6e17d277eb002155145dbc5c72a78a71ded6590e102
+    base_sha: sha256:d3abeca07fee38e4cb4478a3c16ab46b7c483a6abec0c364be498d208f0a56e0
     live_path: .claude/agents/tamsin.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/tatienne.md:
     status: staged
     tier: normal
-    base_sha: sha256:c6cf07810905a8a1ea9c68a989456aec94cf87c9d512404862f0d43e07ff5163
+    base_sha: sha256:3c453c9047f8c597c3bf7cb536e6c88f3506c805a9f4ae2b2143f701f3b9e009
     live_path: .claude/agents/tatienne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/thais.md:
     status: staged
     tier: normal
-    base_sha: sha256:3329a9133cbc9bc79f4086ab44fae0e0379779f786d56908b9362d671a4216df
+    base_sha: sha256:bd8f23e5baff31edc380c9e6b7e15ecdea7a11fe5880656c1b194ce1d0112a2a
     live_path: .claude/agents/thais.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/thea.md:
     status: staged
     tier: normal
-    base_sha: sha256:265916adb60ae768112e0fd82bca37bd6358bff185f074a612121dc0a7840045
+    base_sha: sha256:bc3ced1163ea9189ea9a42e4cf15cdc07aa7a3faf709a11fab361d35013c4e21
     live_path: .claude/agents/thea.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/theodora.md:
     status: staged
     tier: normal
-    base_sha: sha256:783f910b94e51520524767d1bf2a0c8943613d3c818cc18a260f35f37c718739
+    base_sha: sha256:d106a1fe30b79f3d91263725032318cc532eed90fdaa52c787473669885e6b54
     live_path: .claude/agents/theodora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/valeria.md:
     status: staged
     tier: normal
-    base_sha: sha256:9b17920e9e8f2e71c487828b05f7f6cedad5886e34aa9c09e048aa7842a3745c
+    base_sha: sha256:a65ade360d628755b3a708f4908853ae1bd75d1aac536bd79c439a81d2100719
     live_path: .claude/agents/valeria.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/valina.md:
     status: staged
     tier: normal
-    base_sha: sha256:b692352b6cdd0cab5ab65637e229f3d4c95dff766ba693740c609665eee267e1
+    base_sha: sha256:fe515bc9a6d9742b12563bbe0752175d84336460dbe868d95c9ee44163708c5e
     live_path: .claude/agents/valina.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/vega.md:
     status: staged
     tier: normal
-    base_sha: sha256:3ca8c770a13478a3d62c1bb52c363d4e21e00a170f139410e7512217571534ea
+    base_sha: sha256:6ccdd54f35fb5b571bd3f2dd9db40c313100ab34bd3fe51c7561514029fa725b
     live_path: .claude/agents/vega.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/verena.md:
     status: staged
     tier: normal
-    base_sha: sha256:e383fb7eb77d898de4c4f7fd86f993a8f60425a955df76e22a1d86afb82a4611
+    base_sha: sha256:577212fb5aac6b1a490864f8bb4f1703986199a797552ba63820f5fc8cb8108d
     live_path: .claude/agents/verena.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/verity.md:
     status: staged
     tier: normal
-    base_sha: sha256:51f2eb808c4c5303ae95dcfe908da6b4189d84be23da5634b4e050a25bdb3009
+    base_sha: sha256:4545c326621c3269863cc897866738c311f7b2791c0ac679cbe94c5ab6ea3aa7
     live_path: .claude/agents/verity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/vespera.md:
     status: staged
     tier: normal
-    base_sha: sha256:e10c376d1ab34ea4cc81dba625da49ff91aea6efd08381ed9c0aa9678333b718
+    base_sha: sha256:30fa853ed889ff50d8b7e28ad280c9b7406b022a008fe08daa4d223b5ae12726
     live_path: .claude/agents/vespera.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/victoria.md:
     status: staged
     tier: normal
-    base_sha: sha256:bf0d60e0f5d1e1f1ec4b45cce21da2b8bc3a36027ac79ef192d4ff8583ffc576
+    base_sha: sha256:0b7347daa5cc9fe8135239c518cfe5571488513fa33ef79445fa631c2c2b2df9
     live_path: .claude/agents/victoria.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/violette.md:
     status: staged
     tier: normal
-    base_sha: sha256:4dc0f42fbfd8a6231ef5099e0a017b00509d236650884793501c513300042fdb
+    base_sha: sha256:929ce0c938fb1162fbba07994037951a06a12ec4b78e17d7d6b0098bf065c722
     live_path: .claude/agents/violette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/virelai.md:
@@ -903,13 +903,13 @@ files:
   .tess/core/agents-dispatch/vivienne.md:
     status: staged
     tier: normal
-    base_sha: sha256:5fe421b0bcfba869bd2d7fadfb8c69f3748f94c1c99ccef62e93263437332a7b
+    base_sha: sha256:dada848612b1b751d5614bf4482501f6c6dd65ad80a34cce1b1c64f4bbef2361
     live_path: .claude/agents/vivienne.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/xanthe.md:
     status: staged
     tier: normal
-    base_sha: sha256:66f9a6f9278cba93038fe304fc663323d80c5899265a1a03b0b87a5f616d2e30
+    base_sha: sha256:90971ec661abd8360979421594cd6de3b3ade3ca418e21b2fef086e3dcb7e4dd
     live_path: .claude/agents/xanthe.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/yselle.md:
@@ -921,19 +921,19 @@ files:
   .tess/core/agents-dispatch/yvette.md:
     status: staged
     tier: normal
-    base_sha: sha256:7d2b0d839d26a90e84289618713ee33c2dd631a0e3b7c65f3a393bf9f1dca8a1
+    base_sha: sha256:035fd1320918ae8b2257a16221aef5a4202a261e34066ebd8e9272a9c653bbb0
     live_path: .claude/agents/yvette.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/zara.md:
     status: staged
     tier: normal
-    base_sha: sha256:ce4419840ed5bc1e91f66bae1941456821ba8e378d683885330f5ff6a5081d4a
+    base_sha: sha256:0d636c5de38adc227bd43e3353a691af696b8f1b56aa56240747487f07b58bd5
     live_path: .claude/agents/zara.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/zelie.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:b0bce09e1b3b844f5237b007a70ed1f4f94a338ee387405b71774833a6e0a12b
+    base_sha: sha256:c1d6720f42200874fab19c02ec455263d1649039e2478cfaa129fead49c15497
     live_path: .claude/agents/zelie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/zephirine.md:
@@ -945,19 +945,19 @@ files:
   .tess/core/agents-dispatch/zinnia.md:
     status: staged
     tier: normal
-    base_sha: sha256:15209cafb0cc29948f5495526736486157ba9ab21bd09b61dcb25dc4f35e5abf
+    base_sha: sha256:797edd83bc0acb9596ed770ba372bb9e954bd1c5235b4431b9787fe744172077
     live_path: .claude/agents/zinnia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/zorine.md:
     status: staged
     tier: normal
-    base_sha: sha256:e8d135abac971d20548ab745ecb5f2710c0d44b728f2871ad93b2a1132248817
+    base_sha: sha256:853e9f84245f0a158bfae3405e81912a7860d5ce28f4d8ac6aa3732f9ce92acb
     live_path: .claude/agents/zorine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5af7594814b884c85376d7f9fe8f43b7a591839263c7707c9a95e2e916f52ccb
+    base_sha: sha256:eeac363a5ecae32e18aa35c1ae2adb2e4d8a6dbf7c569b84b217bc70c6255e8a
     live_path: agents/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/ada/README.md:
@@ -999,7 +999,7 @@ files:
   .tess/core/agents/adrienne/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fe9e3f8e719f38cc9ebdfa9f45a54a5de9262925446e37b1747890321501d2fa
+    base_sha: sha256:9ca8d98b4cc00c1d3efaafb62288340451c97851c67261d6dc3f46a13997876e
     live_path: agents/adrienne/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/adrienne/identity.md:
@@ -1203,13 +1203,13 @@ files:
   .tess/core/agents/apolline/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6ded9350a9f96114a62b8f7365f4ddac74f4d96ab946cfad2eb2bb4dfaa6793d
+    base_sha: sha256:04ad5d0a649e054e9927ef5cf38ffeaba24f1b05f40c39a1bdea05e9f359b082
     live_path: agents/apolline/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/apolline/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:b6be5b49496ba3cfc2c2de16e682c4160f216c76cc2e92a890931b57c884a64e
+    base_sha: sha256:2d9f2fe9f54ecab41bbda57dcd13c1a5479a4a52496e2f7ad7cf8a65b10e6108
     live_path: agents/apolline/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/apolline/identity.md:
@@ -1473,7 +1473,7 @@ files:
   .tess/core/agents/brand-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:57902d0aa01e20f866a73bc21c6e07a55d720d68bd2fcac82b9835fa4641086f
+    base_sha: sha256:8d24905910ed3ca223b80a88721c1e05d9b6493b3d196291edce0c19a5b49262
     live_path: agents/brand-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/briony/README.md:
@@ -1539,13 +1539,13 @@ files:
   .tess/core/agents/camille/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a67d7b8ed1418b1a4dd7111879ea148e019489c984319cbbf0559c44bffa63b3
+    base_sha: sha256:93a20225744619874b2175ed7c3abadf937984f2c1f2c181e1b9567da5ede390
     live_path: agents/camille/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/camille/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a3dde7881186a03f15a53bbd6bf9f96a10ae5933645468aafd9454afa2884972
+    base_sha: sha256:dcba7e921efe89f4b72eef9c2d56e76ed13d95a45ad1c3ddf767b6b95f9cd74c
     live_path: agents/camille/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/camille/identity.md:
@@ -1575,13 +1575,13 @@ files:
   .tess/core/agents/cecily/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:77799f916afd0dab1fb82bf10427e6575ddf1c7e394345e86c8aa15fdfae8d23
+    base_sha: sha256:d97d445eb2318b181579e7f874bcdaa4c81ea8dc59152223425a1407161c6cc3
     live_path: agents/cecily/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/cecily/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:cdf98d55650fbe66135eacbb0f9107167e9b8ad95c5255fda7571a1851083714
+    base_sha: sha256:56ea9473880b13d3271b2998c453d87ed8665a40c360f9acebff63982d2cf8c2
     live_path: agents/cecily/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/cecily/personality.md:
@@ -1605,7 +1605,7 @@ files:
   .tess/core/agents/celeste/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fb18b43cf9cb71d931403325595fd9c707eba6ee10f8068f3c9837bb66e30eaa
+    base_sha: sha256:416ed12e69eaf9031fad1fec11776658983791f0b36fccfe70a16bc49104de45
     live_path: agents/celeste/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/celeste/identity.md:
@@ -1749,13 +1749,13 @@ files:
   .tess/core/agents/clio/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e0344037087c12027637b95be585ea6037c6286fa17b49083348f7cc4d8a4b72
+    base_sha: sha256:c53962aca76e16f0e05b44421ce8c82e37dcb5dbc889228ed2f0cb35856ff731
     live_path: agents/clio/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/coding-team.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:bbb1aa22085f0bdf231182a25cf9f517eba40455c081a64de8314c0abf38d87e
+    base_sha: sha256:80baa62f34d318fa7cc8525c1784d57149cfbc9572cbf515c8dcfa2afd7c7b96
     live_path: agents/coding-team.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/colette/README.md:
@@ -1911,7 +1911,7 @@ files:
   .tess/core/agents/creative-design-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:7d5dda3666b6851d0ae4ceb15f87dff9923b0e50fc19f6798be147cfc0012945
+    base_sha: sha256:56d183b798f3c3bfb73e691880779fe59745e7577a22bfa4732bf7ed69fe882e
     live_path: agents/creative-design-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/cressida/README.md:
@@ -1947,7 +1947,7 @@ files:
   .tess/core/agents/cx-client-success-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:7117759d412a45bbd5559939497ab477e991cb832c2f2d05d614e2e106d4ebda
+    base_sha: sha256:dd28c1610dd5c9e9d1509a400ffaad8956b38ebbc86692295c62185ce8729b73
     live_path: agents/cx-client-success-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/cyra/README.md:
@@ -1989,13 +1989,13 @@ files:
   .tess/core/agents/danica/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:875e031413ae4f707f78446f2e19fe33d115b298259a9d85dfccd68758de9d7e
+    base_sha: sha256:a061099c36b5f0f5f140df8eb9eccaf974aa2833fa09e751e4974ab155db2c3a
     live_path: agents/danica/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/danica/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0e1f7a5386bf587f14c532c03e82aea1fc2c3bc402faa8fa0fd421e2a9d40ba2
+    base_sha: sha256:86f596f2c2ff48f3c39bfe5a1a9a36778157d43173d7c5b02bcb3809e66aacc7
     live_path: agents/danica/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/danica/personality.md:
@@ -2043,7 +2043,7 @@ files:
   .tess/core/agents/data-analytics-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:86b2ea81695d792e468e57276099806fc1b797bae11cc4fde701e26d2ca9e96a
+    base_sha: sha256:963f5b7d8c6f0fad83a15bfa9ab4fa80c22ae12989a1c9d15aee803ad47e6946
     live_path: agents/data-analytics-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/delphine/README.md:
@@ -2355,25 +2355,25 @@ files:
   .tess/core/agents/eva/agent-profile-template.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c6823c41867623d07239587bd4bb258c4be0d0de9e4e1016a7b0b6ba18246c1f
+    base_sha: sha256:f67515cc32b52bfe75382552d620880c9fae5f4d1a658742257170f311c591ae
     live_path: agents/eva/agent-profile-template.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/eva/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:22fa46034236fa09a2e32bc147042a59975b75ebff1d3711ef2d5278d4d27b16
+    base_sha: sha256:9b25736db112029e62476404b7b1707ed724d88e4ffdf89f4e11a7ec83fabf98
     live_path: agents/eva/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/eva/governance.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d1a4f5ce13154f039226c8cbe4e656fe67fede67fd0dd63173f3099c679271ff
+    base_sha: sha256:1d5a55835e671388502eaa6bb58e750f19afc77629e5820448cf6fe0e1c7784c
     live_path: agents/eva/governance.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/eva/hiring-framework.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d2913927aa5904e53f2bf20b2a07a390b04037adc4f6703833e8d2f3256dd5e9
+    base_sha: sha256:20692d950926f3e41b5f4ec42397e2f2b111aefeec9ddf129861b4263e7953e6
     live_path: agents/eva/hiring-framework.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/eva/identity.md:
@@ -2403,13 +2403,13 @@ files:
   .tess/core/agents/evangeline/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:66db2fa45e165cff1ef447d7f940951780da0c0108f3ba1bfb0e1ea2c9d02c7c
+    base_sha: sha256:9045d7257dbe4196803201ff8ed3b98637dda361e8374b0ac3094f7614062e1d
     live_path: agents/evangeline/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/evangeline/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0b6bf3fff7768a5861dfa0935b61d0fc817be5b9d6549596f98e6cbb6d4212b8
+    base_sha: sha256:512f67f8ed9d4c1ee31735eea0f0bed9aa6bf5e008ccdd8bcc87082933c5bc35
     live_path: agents/evangeline/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/evangeline/identity.md:
@@ -2463,13 +2463,13 @@ files:
   .tess/core/agents/events-stagecraft-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:00470d4134c358111935de05e8f168dd50ecf5a3d7827643287e2ffc52900cc1
+    base_sha: sha256:635f29a9ad95a58ef97d683fa05071b115370a05be32cd4f530f4d3cbb046c14
     live_path: agents/events-stagecraft-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/finance-investor-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:85342b6596e9a69b5fe72953c158b779b5d2c1cd671b0d0f2f3eea30bc07bd56
+    base_sha: sha256:b3b3a5a43c40f61195cffe1b5a68e7e6b1ea0f8ba7d1db758dc962ff3ae3c838
     live_path: agents/finance-investor-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/fiorella/README.md:
@@ -2685,13 +2685,13 @@ files:
   .tess/core/agents/growth-governance.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:b83a252800ca0e598cd7d24649d9b70cab0b45aa335caabed7b0d07eed7ddcf4
+    base_sha: sha256:88ffe2cf53dbb0212e33caa633867eb84220f335ad64343d4c9cd3d8f2fc3fe4
     live_path: agents/growth-governance.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/growth-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fb4df40656f5b572bdd033369007fd888a17af4ffbb06f11ab0932abc15e2930
+    base_sha: sha256:62d1ca5bd8167815e542f2c2860385e28e549cc3e22aac7751f16860ba112ab2
     live_path: agents/growth-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/helena/README.md:
@@ -2817,7 +2817,7 @@ files:
   .tess/core/agents/intelligence-staffing.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:241e246a8c75c88caa78ff56f6dff49a7992da5870f6e71e58274e659cd1ca91
+    base_sha: sha256:c998531dbeb4fce0918d05f0f25672465b22471c55ba3b9f9581903549b0ef51
     live_path: agents/intelligence-staffing.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/iris/README.md:
@@ -2973,13 +2973,13 @@ files:
   .tess/core/agents/josephine/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6f252758f38dd0f650f09edcd130e0069a8d97825a4e5168460865868f3b2ca9
+    base_sha: sha256:5ee5f324b8acca48b03c79b6561009d43b6f41b27af675e6480262996616463a
     live_path: agents/josephine/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/josephine/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6e931d29f3e9355a26d617d9cb52a8eec824c1e1031b4bb819837cd18f0a52a5
+    base_sha: sha256:271782279f36756b7e61124ba964adc6bd92626c6b2694e287359888de7ba650
     live_path: agents/josephine/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/josephine/identity.md:
@@ -3063,13 +3063,13 @@ files:
   .tess/core/agents/lavinia/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:36b572c6bf088296683791a3a9bae710018964093590156727aa905e47a760fa
+    base_sha: sha256:e143562faa6b4222e89a1b3c791e82b8affaa10f478bb491790b1e2aa0ca592f
     live_path: agents/lavinia/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/lavinia/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fb4dc56379524cde5bdeb11950bddbea9a64119ecd7f032c817f60649a841f4c
+    base_sha: sha256:9a9d7222e97dbf7d05ec63f2735a596051624ae670c3aa656feff1dde6b05ccd
     live_path: agents/lavinia/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/lavinia/identity.md:
@@ -3105,7 +3105,7 @@ files:
   .tess/core/agents/leah/governance.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0ae98376026de51e7a300cd9ae9e5c51cde023185f1d2157450d57e328988d70
+    base_sha: sha256:e7f9b813ad6bdc6c693950e1d3d09d02315fd98ce85f9347f7de6f9234cd289a
     live_path: agents/leah/governance.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/leah/identity.md:
@@ -3123,13 +3123,13 @@ files:
   .tess/core/agents/leah/soul.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5d97f6f31e571451c2db6f053a905bf59d34489193690a30642af7f1a2401a30
+    base_sha: sha256:6fcefe5a6de283f4a9ac37808b0d3319e899eee06897a0aec0cfa84615283256
     live_path: agents/leah/soul.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/legal-risk-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:dd14372128ad370570bf90298d2a516f8d8258e206721100a39785936a539003
+    base_sha: sha256:1ee234ef3481b3ab0cf05c62e3d5a057574893abca403f8a863dad3c13d25990
     live_path: agents/legal-risk-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/leonora/README.md:
@@ -3231,13 +3231,13 @@ files:
   .tess/core/agents/livia/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2c103283dc67c979ccbdecfb45f31008efdf70091fe224e4b0850805b81abc5c
+    base_sha: sha256:ae6ad53c2ec98ac10c15cbe187a9590c4d83a2da57e12d7078e9f73763bdccc5
     live_path: agents/livia/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/livia/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5bcd07e13f8ac64f055789cdffa02cd26303a140c08422ca9801a4a524e4f55b
+    base_sha: sha256:863c8c419897a85918de0a787871b6d667b5e0987b8a7b2b71cad251387debb7
     live_path: agents/livia/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/livia/personality.md:
@@ -3435,13 +3435,13 @@ files:
   .tess/core/agents/marcelline/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:4bcbcab6170597f8d55b69543f6be321a600716bd12b056211ada90dce56333d
+    base_sha: sha256:faa9bfe2bd6e1a834fe9cee769c89d89a9e291abb0e8a98758224018e188ffc5
     live_path: agents/marcelline/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/marcelline/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:84467604417830cc5a370014792cd4802993f500959c9a2adfc91c854929d2ce
+    base_sha: sha256:dde2ab7c9f7fca7072d9af65608035453373a3386c029ed7fc128ae19f46a87b
     live_path: agents/marcelline/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/marcelline/identity.md:
@@ -3471,7 +3471,7 @@ files:
   .tess/core/agents/margot/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c61db071f0a0875df6109fd3943799e011f464599b9a46f02cc3c7a98dd5a9ba
+    base_sha: sha256:29d4c30d68735ecf4b8270c89ec01effc3db28689e45b81d384ab4a4ab7f6d2e
     live_path: agents/margot/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/margot/identity.md:
@@ -3891,13 +3891,13 @@ files:
   .tess/core/agents/octavia/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2aba13d24c2cdc0375426b39e968531ba628ae5cad98cfc1fd28a5ced5201268
+    base_sha: sha256:b6133bad168dc18cfd15c17d314459a0004ec7f7a796f3711db0fbbdf7f6400c
     live_path: agents/octavia/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/octavia/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:616e5f573e1d50efe11650e9888086bbc71ca75c9b78d0df21a4a0dd1316360f
+    base_sha: sha256:f76821ee5cdb1f62d594e94032dbe392b1d260bcb529387d909c541629500b3b
     live_path: agents/octavia/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/octavia/personality.md:
@@ -4005,7 +4005,7 @@ files:
   .tess/core/agents/ops-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5fcff36bef29bbab86035de67beeea85a593ba79814d6e55a532cc81b6832399
+    base_sha: sha256:8baa88d41d32b6dd68339bd0b15064c7cddd7b48e45186d32065fc651551629b
     live_path: agents/ops-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/oriana/README.md:
@@ -4131,13 +4131,13 @@ files:
   .tess/core/agents/people-talent-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:70a9e72b515ff31d1abdce429136ffea92e3aef277b93b0148c3d7c6af704a84
+    base_sha: sha256:f43df17a95ffd271a8972695841197a49d0efc946144ef189a65f29a645e6213
     live_path: agents/people-talent-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/petra/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:3205b81c3fc119b82486ea81701b1b1f0030018930c19923551f7bb37d764c87
+    base_sha: sha256:3d7a9e4e926401706eb59e49b267dcde62d990ff31feda160103f3eda66b2a25
     live_path: agents/petra/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/petra/capabilities.md:
@@ -4149,13 +4149,13 @@ files:
   .tess/core/agents/procurement-vendor-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d5c19fd245f59a546ca8738d9c6b648847b30cb17bde71772df860fa825040be
+    base_sha: sha256:650e1eea4bdd4ff6c3f295d1ff117884230346aea8815a527b7dbc0943c076f7
     live_path: agents/procurement-vendor-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/product-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:ad05f979f17c845b0995de6e0f48d5ae73307d25e53823056bc75c997ed0f6d4
+    base_sha: sha256:0fb14974d13feebe5bf808897b4de33c892c9e8c9da1f977e19e90ea4dd1314f
     live_path: agents/product-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/queniva/README.md:
@@ -4221,7 +4221,7 @@ files:
   .tess/core/agents/reid/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a7d5e342c37016c24643e2a128af914383a9a39684273fd99dd55b12d604a655
+    base_sha: sha256:e086d3681a48da88e48595190a156777d9c186f506450ec9f1f266a515b37850
     live_path: agents/reid/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/reid/capabilities.md:
@@ -4263,7 +4263,7 @@ files:
   .tess/core/agents/research-knowledge-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a6de684eabc49b000a6289d4f6846494da970b072630618e8e8fb6e6e4b4d5e9
+    base_sha: sha256:a2f1ab6a04a6f278dd459e3e6b944f37f7d6134e4f53ae053a709900774faf76
     live_path: agents/research-knowledge-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/romilly/README.md:
@@ -4449,7 +4449,7 @@ files:
   .tess/core/agents/sales-bd-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8ed5e1dc0c47c3a103be5ace458de54ba2fb0cf1c383f77c735afe907a3f6d69
+    base_sha: sha256:3fc46ef97a3de871fe58f72f4e19fb110e3b79be03765aa49e57598fdcd3507f
     live_path: agents/sales-bd-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/selene/README.md:
@@ -4491,7 +4491,7 @@ files:
   .tess/core/agents/seraphine/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5e22b2895319d6efb8e53dc3c1a38ca37b0b4b57ed316180dfa143940d1be8ac
+    base_sha: sha256:c20b8bc2f46add92ed1c66675cfcb3652bba17197d8e620b2f09bb2afe784070
     live_path: agents/seraphine/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/seraphine/identity.md:
@@ -4635,13 +4635,13 @@ files:
   .tess/core/agents/strategy-governance.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9a79f8d524af28178118d6ae768d3fe05ba0c1be435eff40271cb26b4f07a2e4
+    base_sha: sha256:f4cfc20f483a4f00a64acc3fd04310266f121d0d31dbea7ff1f7b8c2b1185840
     live_path: agents/strategy-governance.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/strategy-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5c626c6b3dfc24aea2ddd5efc9e477e061be306ca5856db6e8c00c9c4a56700d
+    base_sha: sha256:c6a26ff1f992157faecab08348a31b465ec0a50b9b3703816ee2e07cc7434d74
     live_path: agents/strategy-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/talia/README.md:
@@ -4797,13 +4797,13 @@ files:
   .tess/core/agents/theodora/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:dea45ffa79a1baf46418296af6c32eda22d12f3f8b5b4a45319931b667c8e0ea
+    base_sha: sha256:fc05c87b7ade586eea40fc5b848a7759d5d10c12d18bf422ba0a53ae44dc987d
     live_path: agents/theodora/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/theodora/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:ddc759ef8b074cd302cb8fcf75cad6f14ef260b6d111e508f3b14c029471acd3
+    base_sha: sha256:9322529d495d2e8012c4a69f64bf7d8417243f488243f228ee765fd8159b403b
     live_path: agents/theodora/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/theodora/identity.md:
@@ -4827,7 +4827,7 @@ files:
   .tess/core/agents/transactions-ma-guild.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:3150319ca6da8a1f6870185b1093ec61fc478bdc95a4ff3ca29c747cb674980e
+    base_sha: sha256:64c59de29aa630f1010e77ab2c708d38f182fcda9658ed7585aa4484b78012d3
     live_path: agents/transactions-ma-guild.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/valeria/README.md:
@@ -4923,13 +4923,13 @@ files:
   .tess/core/agents/verena/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9c03b8ffbceebaa50cf2aaa8558ef1e42f548ab1aeeb73d00398e04663908195
+    base_sha: sha256:b74346428a8eafac360c407b054145e47ee6e46ea8fef9ad4aa889dfc7134a6f
     live_path: agents/verena/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/verena/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:53295c149275320f616d2824d468e84f87f811357f87aea2e0828bad3e2611bb
+    base_sha: sha256:05d3dcce408e7d5197c9da43798a852462814dd57034e1a00b34682ebd68821d
     live_path: agents/verena/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/verena/identity.md:
@@ -5019,13 +5019,13 @@ files:
   .tess/core/agents/victoria/capabilities.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:238922b7c300b3f9305a3cb719e55e06fe6b35e45c9a873ab40b0545940975a5
+    base_sha: sha256:dc3dfceec0a648c72fa04fa7718251d905aef8e7d287fb1245c9323736bf1144
     live_path: agents/victoria/capabilities.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/victoria/identity.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5b4d3a9d26e9019f2f007a811dc785590bcb9bcff56afcd260af57815b22cca2
+    base_sha: sha256:1590e2f318210a3b6666e9c53f05964ca8cef6e915cc9fabb4832d84564acbd2
     live_path: agents/victoria/identity.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/victoria/personality.md:
@@ -5373,7 +5373,7 @@ files:
   .tess/core/conductor/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:22d14085aaa64d9f879ab351a00815293120dcadbb329accb982c233c2b67260
+    base_sha: sha256:91b29d8c90a3a84a9a9bcb9f9fd91b7095556927d2ac07db310e8ad8d7a393bd
     live_path: conductor/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/release-process.md:
@@ -5391,61 +5391,61 @@ files:
   .tess/core/conductor/agent-lifecycle.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6956f68a08c45fa781783c087eb62914ec9296be2ea9c1c38295cf1bafc50c33
+    base_sha: sha256:f5db45e14a5b3043ef376c96326545b5d2be430c6f6390bbe8afc0be48372a8e
     live_path: conductor/agent-lifecycle.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/channel-guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:ae625584dae8bf909a7f13a2df46979a3f453bc83aa4125c107d088dd29bc0cb
+    base_sha: sha256:835da5a02604e4bc8ece19fa2e3f856e307f9661d12c40df86487b2205598079
     live_path: conductor/channel-guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/commands.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f61e2f9b4f7494c0e76d8a34244958cfdfe3c097cf96ef590ea3ae0beede26b5
+    base_sha: sha256:ce94f32b0498819e1ace1ab29a2d6b5de7bdd78149abc3951775addd0a5a5ac1
     live_path: conductor/commands.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/cross-guild-coordination.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a2919b75cd6cbd0deb32d464a93787112524d7f36ae9484dfd16a3cf6221991f
+    base_sha: sha256:2873c979eea8a5847b7a58e70ababfa33275caddb85de26fe8f67fa9b2936579
     live_path: conductor/cross-guild-coordination.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/daily-operating-behavior.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6cfc2183c11e454f6e2d0bd9a0998ef28eab9c268a52d39a24fdec96f908ccf3
+    base_sha: sha256:790d7e105f6c39069f22be86c6f235183d4893635fb428e3fd921c3975762517
     live_path: conductor/daily-operating-behavior.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/dispatch-brief.md:
     status: core-managed
     tier: security
-    base_sha: sha256:60f6c37810e3b8778b54031393c2423442196f95433769b614d300d3fa4df595
+    base_sha: sha256:6f69c23a0c59800e75483dc3093d6b77ab53b6c054d606a4a6f4e191501ec7ce
     live_path: conductor/dispatch-brief.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/doctrine.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f25aa9c318c1eeac940ccc0907449d5daf05e90aea67be6bd2f267d63a62cf88
+    base_sha: sha256:02426cef5e6773b16a6109557103fac38e8dafc322d8b7226a21857a9a9a7f58
     live_path: conductor/doctrine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/founders-office.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:bf6fb515366f706b2435bd5f60c9a20dc1584f92dbe5d02bfa51bca679d07100
+    base_sha: sha256:4c037f507def049a42d3ea4d4ee7d7dfcb46e9e97f1e67ef380493c5b8bc2974
     live_path: conductor/founders-office.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:42b7e3059373230a5ae2313127c46a90f75346840be117e0ced9818fcd231f18
+    base_sha: sha256:8e14a246e6fa42333e0c9253f68d9c5c7f72f91e1b1a581d91baabe677759d26
     live_path: conductor/guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/hook-testing-protocol.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a8435340a3f62178ad92e20eec7a339fcdfdc6acbe8c36707c670218817770cc
+    base_sha: sha256:d1058584704faa4e23da09ba269c2a5c25232de5f82757523ff5d68b23db6d78
     live_path: conductor/hook-testing-protocol.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/identity.md:
@@ -5457,79 +5457,79 @@ files:
   .tess/core/conductor/memory-model.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:b7f5cbe060358b0638ae0dc62fab9676f2d245674f06757dcf041a30544004f6
+    base_sha: sha256:05f4eb97c24b6d4b6983d8884ca2536e6ffb56ea7cde552319df18f2c3a41926
     live_path: conductor/memory-model.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/mission-control.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fc0d3e5fa6825c10d61dd080846422f5b9c5ab8ebf97a9c8138004e87fbeacc0
+    base_sha: sha256:7765ef3be15b5e76ca49b3773857520613f5791de85059b52462814251473670
     live_path: conductor/mission-control.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/mission-states.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6626a3cc7d4fc3c448d67f0ee2f6f15e508a89f3e27f7b56e3d1e2674d8ec2f3
+    base_sha: sha256:cbda35e44d3ba5593a3db5bc8cf85d09a10923a581c1b8546f6b7335fc7cf0e6
     live_path: conductor/mission-states.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/orchestra-model.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0c9a750762f5f70c81dc1a90759858b7d4d6440f5abdc4963c0db17e6a1c4e52
+    base_sha: sha256:314691a55565850ffbeb5f3ab18be5b9b5e101ef21912f7240ce6b29980cf305
     live_path: conductor/orchestra-model.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6bf7ab48f42ec32ae964a7405e235602a39c96e993f6bca33ca4d5cd9fc73377
+    base_sha: sha256:bc761fda76c8b117368bbf9e57b4359effdd2b30381eb94d4664a9a87fd8920a
     live_path: conductor/outcome-orchestrators/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/client-experience-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:ca7d3a09e6292b87ced5bed478805f38f8e8240a1db241a752f3763b7db2aacd
+    base_sha: sha256:e1fe2dd78fb7f41ed4aa8032ef2fa1342f967973b12c571fe56664df55c818d2
     live_path: conductor/outcome-orchestrators/client-experience-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/founders-office-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9ef4098fb26898e1e108cae3f221ea8259f39a75aa14ebc44e3dc7194b499383
+    base_sha: sha256:77a2808449bf0bd5b5205bf11c222f1df1f2458989e5c4602d98cee83789f6c5
     live_path: conductor/outcome-orchestrators/founders-office-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/integration.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c5b6a1dc036fabcecf81d56e83c0745f5ae3a34da40a55d7f582dce0e3191014
+    base_sha: sha256:92e4c393ff0cb014c0e940220cd7dc3dd47580c73a794532068083727825cfdb
     live_path: conductor/outcome-orchestrators/integration.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/operational-reliability-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a37847923df1518ff3926be6061eec64ea0366d6bf0dd7148dd3db8bd86cddad
+    base_sha: sha256:98f2ab0941c9226b08e0bfc29242845e65bdaac95e7925f2ea8c473ad0519f46
     live_path: conductor/outcome-orchestrators/operational-reliability-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/product-delivery-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6f94e1369b995a5b3eb61f4c641794deeedbbfba511ce2a7040923f87689bc31
+    base_sha: sha256:039f6b1b057edffcbe97af2fff00feb1d3cbfdc51f55d2316983ce3dbf7c9423
     live_path: conductor/outcome-orchestrators/product-delivery-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/revenue-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:209ca3f14485a4388cb6e4b7a5d76f67301b96cf707edd51e9965954fe30e4e9
+    base_sha: sha256:46f326c0c8d49b46d967a2a0a9a07f70dce8fb3f9765cd09e0f5312989f9b0aa
     live_path: conductor/outcome-orchestrators/revenue-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/strategic-growth-orchestrator.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:3dcc9d4bad50fc940607a1e6110af668075623b6992ad53ae37673ac7d60f34c
+    base_sha: sha256:875598a42946b9f172e486a1d040b79330501c4d0f2588c08d40d08489238104
     live_path: conductor/outcome-orchestrators/strategic-growth-orchestrator.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/output-framework.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:94eb8aafc21b98b8931821944e9c173485a257575b9b7db19546b618c6ee994b
+    base_sha: sha256:1ff4969df48c8018b376a9e011bf4c960c080cefded56e5f32b5602226fe4f08
     live_path: conductor/output-framework.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/personality.md:
@@ -5541,61 +5541,61 @@ files:
   .tess/core/conductor/playbooks/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e54bceefea4558918ffd6af39c880428b5bb7f624ae5d8e8217de640c425b037
+    base_sha: sha256:a48630f0d3a6447501558535dda69fc2f3f4691c9c1bd17463d791cadc78163d
     live_path: conductor/playbooks/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/event-launch-orchestration.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fe880e60261260e51e507caff749e0e7697d140cb509232f04d88f7984cdfc25
+    base_sha: sha256:1c19f7dab8c133f1821217aeebf4877a6ef994b83eeefc9d6c01f39ff8202f50
     live_path: conductor/playbooks/event-launch-orchestration.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/founder-decision-memo.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:b38fccaf5434fa36e0576ca76207d0ae1b0f494e27d89df0fc4ab749893f528e
+    base_sha: sha256:f648d96e23c9edd5df2352a3754d30851b0ec02ef531e571cdf31b99579658e7
     live_path: conductor/playbooks/founder-decision-memo.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/investor-fundraising-prep.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:93b20c63997217acb1cdcd0b58870784dccefca9c70ed6fe25e54aec55ac6629
+    base_sha: sha256:e7034398f85bddb68cc6a24e11d7223bb0a7485d85db3f71d2c20b184addf10b
     live_path: conductor/playbooks/investor-fundraising-prep.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/l99-merge-discipline.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2a8ce32cd9dc08db3854cf2c3061fef72ef230c572bae06ab0b5ecad468dca1a
+    base_sha: sha256:07a310513cf6b2beadb4062019588ec9cea39e806d543195b55a317595c784a9
     live_path: conductor/playbooks/l99-merge-discipline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/product-build-mission.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:eefc71aea07b6c6fc69efeff1f7dac8e23b05865857e23e1c2f9861d88d17181
+    base_sha: sha256:322d67d2810c494037a305e5a6479afcc01fee10f5e7e40b52bb783c6e576706
     live_path: conductor/playbooks/product-build-mission.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/revenue-diagnosis.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2ddf797d7605885281378ac97f75b2fd99cb000eb2cd7375dd4b187ddd7a9f90
+    base_sha: sha256:a9f7f5e600ccd5e7f66a9cb1cd2834394c5741fabaa895892624aae1fad94f6e
     live_path: conductor/playbooks/revenue-diagnosis.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/review-output-standards.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8a88c7cfe8c4600606d2d6738a9a66cad6e207cfd60e391e634ca63c7ef1e4c1
+    base_sha: sha256:b50bab1ceea67b784ee62f1613c08c809c8b20f06f145aa26602266f52acedf2
     live_path: conductor/review-output-standards.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/soul.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6a7a0baf6c1a773b11838ea9f8422848afe333cc89efcce865f553f7557bc5ae
+    base_sha: sha256:36f02aabc51f82f750755e5ce6132c7b0c7460579707d54b9723b9d33462fb1a
     live_path: conductor/soul.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/subagent-failure-protocol.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2501d39d8947aaf482be34b2d70242e120e046d123ea8f07ba8ee9b9f00fab02
+    base_sha: sha256:b6a7c739d80970ede087907d41f7834d78b09a758321d070a7e0c4f154408e02
     live_path: conductor/subagent-failure-protocol.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/user-profile.md:
@@ -5607,7 +5607,7 @@ files:
   .tess/core/conductor/verification-routing.md:
     status: core-managed
     tier: security
-    base_sha: sha256:6123f1730663e0720eaa03a8e1e53d1ca4d35946f30023d615e221f76d5496c6
+    base_sha: sha256:3bd0c731f2d9d9f6ddd422f1381e12b7cded7dd4052468e26da430eca45fc21b
     live_path: conductor/verification-routing.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/anti-fabrication-guard.sh:
@@ -5801,7 +5801,7 @@ files:
   .tess/core/templates/client/_template/kb/lint/lint-log.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2c665e9fc9f969579b2ab63d117f7123313fd586cd649d1c899fe1553c883ac1
+    base_sha: sha256:b2dd1d7bfb30b726ae9f319a8d823b28851e8519b05c613597a79e56c6d530ec
     live_path: clients/_template/kb/lint/lint-log.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/templates/client/_template/kb/research/.gitkeep:
@@ -5813,7 +5813,7 @@ files:
   .tess/core/templates/client/_template/kb/wiki/index.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5d9fcf4ae64329cf3ce8781135f44b1a8a7526a81a45f3ebd51affd6637a8197
+    base_sha: sha256:3e0f49c781e6cb6ce155c8ddf799d85e0ad67f7cacbd148b89e8656f601e6891
     live_path: clients/_template/kb/wiki/index.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/templates/client/_template/kb/wiki/log.md:
@@ -5825,7 +5825,7 @@ files:
   .tess/core/commands/add-agent.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:62ef6a2706b08c26b888c32ca2e72c38167614ea6f7ff55677d644dccb2b082f
+    base_sha: sha256:8234327cbcbe9ccbfbf319a7fa3d8f1966a9143dd033038d4747f84d538a2143
     live_path: .claude/commands/add-agent.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/add-mission.md:
@@ -5843,13 +5843,13 @@ files:
   .tess/core/commands/close.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:634923e372abd92734efac3cc021170dd7895f863bb6b194c6eab6082a8ae155
+    base_sha: sha256:7da259473571be677fa377b262f287b0c1fda0de73e3cf78b83cd56680d6653f
     live_path: .claude/commands/close.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/code-red.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9c77754164c7a4591ab67d996a595e5c0e068eb6b2753a1213f20b74c6e9f07b
+    base_sha: sha256:702e22e0b69343ce0dba2c101ebf99fc7bddd26d34621afed78b54d0e628b3e4
     live_path: .claude/commands/code-red.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/cx-mode.md:
@@ -5867,7 +5867,7 @@ files:
   .tess/core/commands/finalize.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:16f37783291f8b7dbb3db89ee0b9067513be783db568a43d5a3e6f7fa7f32278
+    base_sha: sha256:a1f20fc7252bbfb1bdd9d6aabce07f59ce74c3a7d2fd97f0c8f56d06b24d070e
     live_path: .claude/commands/finalize.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/founder-mode.md:
@@ -5879,7 +5879,7 @@ files:
   .tess/core/commands/help.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:82cc7b10b0f664573a27ad0ca12218c45e034d873de6b1f27394af8b746c3818
+    base_sha: sha256:827d76bd16e3cc07e9b804a4d4b6cb1549d7827b0ca7408841dd9b5169f778e3
     live_path: .claude/commands/help.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/initiate.md:
@@ -5909,13 +5909,13 @@ files:
   .tess/core/commands/remove-agent.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:395d5fe117c9b7ac4cf46466847b14db651fcb96e8c12b6c03c38c9c624a6ca4
+    base_sha: sha256:5e3492dd1c472a5f7ddf3d810dded550168841932ede5deda296605218547903
     live_path: .claude/commands/remove-agent.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/reset.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:727e4e4376e885c8c331b68eb23f49d7d098f506c66e49bd5617dfcb126f5d41
+    base_sha: sha256:e8d352a732416b6ae5486efbc157a3472a43f5af3808fd0c1add66a3f9571c50
     live_path: .claude/commands/reset.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/revenue-mode.md:

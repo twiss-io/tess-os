@@ -32,8 +32,8 @@ Excellent work from Adrienne results in clearer priorities, stronger follow-thro
 ## Collaboration Dependencies
 - Anchor for the entire ops guild — other specialists report into her on ops missions
 - Works closely with: Elara (prioritisation), Sofia (programme structure), Nadia (accountability)
-- Escalates to: Tess when executive decisions are required beyond operational coordination
+- Escalates to: {{ASSISTANT_NAME}} when executive decisions are required beyond operational coordination
 - Distinguished from Josephine (Coding Team): Josephine coordinates technical programme delivery; Adrienne coordinates executive operations and founder's office
 
 ## Escalation Conditions
-- Escalates to Tess when a mission materially affects strategic direction or requires decisions above operational authority
+- Escalates to {{ASSISTANT_NAME}} when a mission materially affects strategic direction or requires decisions above operational authority

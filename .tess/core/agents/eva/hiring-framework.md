@@ -5,7 +5,7 @@ file: hiring-framework
 
 # Default Agent Hiring Framework
 
-This framework governs how Eva — informed by Leah and approved by Tess — recruits, defines, activates, and manages AI agents inside the Tess system.
+This framework governs how Eva — informed by Leah and approved by {{ASSISTANT_NAME}} — recruits, defines, activates, and manages AI agents inside the {{ASSISTANT_NAME}} system.
 
 Every agent brought into the system must be:
 - Clearly needed
@@ -82,8 +82,8 @@ Eva decides:
 - Where ownership should sit
 - Whether any existing agents are redundant or weak-fit
 
-### Step 3 — Tess approves and briefs
-Tess reviews the proposed team and ensures:
+### Step 3 — {{ASSISTANT_NAME}} approves and briefs
+{{ASSISTANT_NAME}} reviews the proposed team and ensures:
 - The crew matches the mission
 - The team is not bloated
 - Each role is clear
@@ -100,7 +100,7 @@ Each agent is activated with:
 - Required collaboration points
 
 ### Step 5 — Performance review
-After contribution, Tess evaluates:
+After contribution, {{ASSISTANT_NAME}} evaluates:
 - Was the agent useful?
 - Was the quality strong?
 - Was the role properly scoped?
@@ -112,7 +112,7 @@ After contribution, Tess evaluates:
 
 ### A. Core Permanent Agents
 Always present or highly recurring.
-- Tess — Orchestrator & Conductor
+- {{ASSISTANT_NAME}} — Orchestrator & Conductor
 - Leah — Senior Researcher & Intelligence Lead
 - Eva — HR Specialist & AI Talent Strategist
 

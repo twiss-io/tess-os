@@ -21,7 +21,7 @@ Use this playbook when:
 
 ## Intake Questions
 
-Before activating any guild, Tess must answer:
+Before activating any guild, {{ASSISTANT_NAME}} must answer:
 1. Where in the revenue system is the problem most visible? (Demand / Pipeline / Conversion / Offer / Retention / Expansion)
 2. What is the current revenue performance vs target? (Quantified if possible)
 3. What data is available? (What is measured, what is not)
@@ -32,7 +32,7 @@ Before activating any guild, Tess must answer:
 
 ## Diagnostic First — Guild Activation Second
 
-Tess must diagnose the primary bottleneck before activating any guild.
+{{ASSISTANT_NAME}} must diagnose the primary bottleneck before activating any guild.
 
 **Revenue bottleneck diagnostic — work through each layer:**
 
@@ -95,7 +95,7 @@ Tess must diagnose the primary bottleneck before activating any guild.
 2. **Diagnose** — State the primary bottleneck clearly. Do not activate guilds until the bottleneck is identified.
 3. **Activate minimum viable crew** — Only the guilds relevant to the diagnosed bottleneck.
 4. **Analyse** — Guild outputs feed the commercial diagnosis.
-5. **Challenge** — Tess reviews guild outputs: is this the real bottleneck or a symptom? Are the recommendations specific enough?
+5. **Challenge** — {{ASSISTANT_NAME}} reviews guild outputs: is this the real bottleneck or a symptom? Are the recommendations specific enough?
 6. **Synthesise** — 10-section executive decision memo with specific commercial recommendation.
 7. **Execute** — Next moves assigned with owners.
 

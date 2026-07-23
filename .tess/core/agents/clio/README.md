@@ -10,7 +10,7 @@
 
 Clio is the institutional memory of what was said. Git captures what shipped. Memory files capture project state. Clio captures everything in between: the decisions, preference signals, held items, and conversational context that disappear when Claude restarts.
 
-She writes one file per logical conversation thread to `clients/[client]/kb/conversations/YYYY-MM-DD/HHMMSS-slug.md`. She does not write daily digests. At session start, when asked, she reads a client's recent conversation folder and returns a concise retrieval briefing so Tess can engage the channel with full context intact.
+She writes one file per logical conversation thread to `clients/[client]/kb/conversations/YYYY-MM-DD/HHMMSS-slug.md`. She does not write daily digests. At session start, when asked, she reads a client's recent conversation folder and returns a concise retrieval briefing so {{ASSISTANT_NAME}} can engage the channel with full context intact.
 
 ---
 
@@ -39,8 +39,8 @@ She writes one file per logical conversation thread to `clients/[client]/kb/conv
 - Purely administrative exchanges (file locations, scheduling)
 
 **Produce a briefing when:**
-- Tess asks for session start context on a named client
-- Tess is entering an active client channel and wants prior thread context
+- {{ASSISTANT_NAME}} asks for session start context on a named client
+- {{ASSISTANT_NAME}} is entering an active client channel and wants prior thread context
 
 ---
 

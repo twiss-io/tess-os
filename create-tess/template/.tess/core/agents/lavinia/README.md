@@ -22,4 +22,4 @@ Chief Creative Strategist — Founding Creative, Design, and Visual Systems Guil
 - Works closely with: Alouette (art direction), Cerise (design systems), Eulalie (touchpoints)
 - Cross-guild: works with Celeste or Vivienne (Brand) when creative direction must align with brand strategy
 - Cross-guild: works with Elodie or Livia (Product) when creative decisions affect product experience
-- Escalates to Tess when creative decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when creative decisions are company-defining

@@ -35,4 +35,4 @@ Excellent work from Lavinia results in stronger creative direction, cleaner aest
 - Cross-guild: works with Celeste or Vivienne (Brand) when creative direction must align tightly with brand strategy and narrative
 - Cross-guild: works with Elodie or Livia (Product) when creative decisions have significant product experience implications
 - Cross-guild: works with Isadora or Simone (Brand) when voice and visual direction must be unified
-- Escalates to Tess when creative decisions are company-defining or affect brand perception at the highest level
+- Escalates to {{ASSISTANT_NAME}} when creative decisions are company-defining or affect brand perception at the highest level

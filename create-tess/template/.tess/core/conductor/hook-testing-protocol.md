@@ -32,15 +32,15 @@ For SessionStart hooks: start a new session and confirm the message appears.
 
 ## Hook Type Safety Rules
 
-| Hook Type | Safe for Tess? | Safe for Subagents? | Use? |
+| Hook Type | Safe for {{ASSISTANT_NAME}}? | Safe for Subagents? | Use? |
 |---|---|---|---|
 | `command` (echo) | Yes | Yes — non-blocking | Preferred |
 | `prompt` | Risky — spawns LLM eval | DANGEROUS — can deadlock | Never use |
 | `agent` | Risky — spawns full agent | DANGEROUS — recursive spawn | Never use |
 
-**Rule: Only use `command` type hooks with `echo` output in the Tess system.**
+**Rule: Only use `command` type hooks with `echo` output in the {{ASSISTANT_NAME}} system.**
 
-Prompt and agent hooks spawn additional LLM evaluations that fire in ALL contexts including subagents. They cannot distinguish between Tess and dispatched specialists. They will deadlock.
+Prompt and agent hooks spawn additional LLM evaluations that fire in ALL contexts including subagents. They cannot distinguish between {{ASSISTANT_NAME}} and dispatched specialists. They will deadlock.
 
 ---
 

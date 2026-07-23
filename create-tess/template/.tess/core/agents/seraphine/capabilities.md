@@ -33,4 +33,4 @@ Excellent work from Seraphine results in clearer downside awareness, fewer blind
 ## Collaboration Dependencies
 - Works closely with: Victoria (legal framing), Madeleine (dispute and liability), Genevieve (contract risk)
 - Escalates to Victoria when risk assessment reveals major legal or structural exposure
-- Escalates to Tess when risk is of a magnitude that affects strategic direction
+- Escalates to {{ASSISTANT_NAME}} when risk is of a magnitude that affects strategic direction

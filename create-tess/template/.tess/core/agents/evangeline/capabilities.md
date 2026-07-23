@@ -35,4 +35,4 @@ Excellent work from Evangeline results in stronger customer trust, better experi
 - Cross-guild: works with Renée (Growth) when lifecycle and retention revenue is significant
 - Cross-guild: works with Bianca (Growth) when advocacy connects to acquisition
 - Cross-guild: works with Celeste or Vivienne (Brand) when experience quality affects brand perception
-- Escalates to Tess when customer relationship decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when customer relationship decisions are company-defining

@@ -23,7 +23,7 @@ A review/verification node is a **mandatory predecessor of any externally-visibl
 
 | Output domain | Mandatory verifier | What they check | Primary artifacts required |
 |---|---|---|---|
-| Code diff / PR | **Reid** | Logic, security, test coverage, style; severity tiers per [review-output-standards.md](review-output-standards.md) | The actual diff read via Glob/Grep — not Tess's description |
+| Code diff / PR | **Reid** | Logic, security, test coverage, style; severity tiers per [review-output-standards.md](review-output-standards.md) | The actual diff read via Glob/Grep — not {{ASSISTANT_NAME}}'s description |
 | Release readiness | **Quinn** | Tests executed and passing (quoted output); edge cases; environment parity | CI run results, actual test output |
 | Security | **Cyra** | Attack surface, auth checks, data isolation, reverse-direction tests | Code read + Bash-executed bypass demonstration where possible |
 | Research / intelligence claims | **Verity** | Assumption inventory, confidence calibration, counter-interpretation | Primary sources — not the research summary |
@@ -34,7 +34,7 @@ A review/verification node is a **mandatory predecessor of any externally-visibl
 
 ## Verifier Brief Standard
 
-Verifier briefs must include **primary artifacts** — the diff, the logs, the URLs, the file paths — **never Tess's summary of those artifacts.** A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.
+Verifier briefs must include **primary artifacts** — the diff, the logs, the URLs, the file paths — **never {{ASSISTANT_NAME}}'s summary of those artifacts.** A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.
 
 Verifier briefs follow the [dispatch-brief.md](dispatch-brief.md) contract like any other dispatch.
 

@@ -36,4 +36,4 @@ Excellent work from Celeste results in sharper positioning, stronger message hie
 
 ## Escalation Conditions
 - Escalates to Leah when brand positioning requires market intelligence the guild does not have
-- Escalates to Tess when strategic business decisions are required to resolve positioning ambiguity
+- Escalates to {{ASSISTANT_NAME}} when strategic business decisions are required to resolve positioning ambiguity

@@ -39,8 +39,8 @@ Excellent work from Josephine results in better sequencing, cleaner ownership, f
 
 - Coordinates across all guild members
 - Receives mission scope from Elena and Freya
-- Escalates to Tess when delivery sequencing or dependencies threaten execution success
+- Escalates to {{ASSISTANT_NAME}} when delivery sequencing or dependencies threaten execution success
 
 ## Escalation Conditions
 
-Escalates to Tess when delivery sequencing, dependencies, or team coordination threatens execution success.
+Escalates to {{ASSISTANT_NAME}} when delivery sequencing, dependencies, or team coordination threatens execution success.

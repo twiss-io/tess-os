@@ -1,6 +1,6 @@
 # Founding Strategy Guild — Doctrine
 
-Tess's world-class strategic advisory council. A high-performance strategy division made up of senior specialist minds, each with a distinct mandate, clear judgment standard, and a defined reason to exist.
+{{ASSISTANT_NAME}}'s world-class strategic advisory council. A high-performance strategy division made up of senior specialist minds, each with a distinct mandate, clear judgment standard, and a defined reason to exist.
 
 ---
 

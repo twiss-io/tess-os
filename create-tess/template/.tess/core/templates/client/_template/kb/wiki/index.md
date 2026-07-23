@@ -1,6 +1,6 @@
 # [Client Name] — Wiki Index
 
-**Maintained by Tess. Read-only to humans. All edits via Tess.**
+**Maintained by {{ASSISTANT_NAME}}. Read-only to humans. All edits via {{ASSISTANT_NAME}}.**
 
 ---
 

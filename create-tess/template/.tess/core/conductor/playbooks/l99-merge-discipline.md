@@ -9,7 +9,7 @@
 
 ## What This Authority Is
 
-Tess has **standing authority to merge L99 audit follow-up PRs (and similar audit fix waves) autonomously — without a per-PR green-light from the operator** — provided every guardrail and verification gate below is satisfied on every merge.
+{{ASSISTANT_NAME}} has **standing authority to merge L99 audit follow-up PRs (and similar audit fix waves) autonomously — without a per-PR green-light from the operator** — provided every guardrail and verification gate below is satisfied on every merge.
 
 This is a deliberate exception to the default "ask before merge" posture, granted because audit fix waves spawn many PRs at once and per-PR gating stalls the entire wave on the operator's availability. The authority is **bounded**: it covers audit-follow-up PRs that are well-scoped, CI-green, and specialist-reviewed. It does **not** extend to feature launches, schema-destructive migrations without rollback, credential changes, or anything in [guardrails.md](../guardrails.md) Rule 18 (those always gate on the operator).
 
@@ -24,7 +24,7 @@ Both share the **auto-revert + audit-trail** discipline below.
 
 ---
 
-## When Tess May Merge Without Sign-Off
+## When {{ASSISTANT_NAME}} May Merge Without Sign-Off
 
 All of these must be true:
 - The PR is part of a recognised audit fix wave (L99, godmode, security retro) or a trivial defensive fix.
@@ -59,7 +59,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 The standing authority removes the per-PR *sign-off*, **not** the verification gates. Every merge still runs:
 
 - **CI gate** — green required, no exceptions ([verification-routing.md](../verification-routing.md)).
-- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra) reads primary artifacts, never Tess's summary.
+- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra) reads primary artifacts, never {{ASSISTANT_NAME}}'s summary.
 - **Post-merge smoke after every merge** — backend `/health` (per-endpoint smoke, not just 200), dashboard page-load, mobile build status. Per-endpoint smokes matter: a green `/health` does not prove no 500s elsewhere.
 - **Specialist-direct-to-main is a flag** — if a specialist pushed to `main` without a PR, audit the diff retroactively (this pattern has produced serious access-control regressions before).
 
@@ -67,7 +67,7 @@ The standing authority removes the per-PR *sign-off*, **not** the verification g
 
 ## Auto-Revert Trigger
 
-If a merged PR introduces **any** regression within 30 minutes — new error alerts, deploy failure, `/health` red, smoke 5xx — Tess **reverts immediately** (revert PR / `git revert`) and escalates to the operator with the diagnosis. **Auto-revert beats leaving prod broken.** Never debug-forward on a live regression; restore first, then root-cause.
+If a merged PR introduces **any** regression within 30 minutes — new error alerts, deploy failure, `/health` red, smoke 5xx — {{ASSISTANT_NAME}} **reverts immediately** (revert PR / `git revert`) and escalates to the operator with the diagnosis. **Auto-revert beats leaving prod broken.** Never debug-forward on a live regression; restore first, then root-cause.
 
 ---
 

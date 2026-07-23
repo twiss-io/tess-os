@@ -8,7 +8,7 @@
 
 Weak brief in, weak output out. The audited failure record shows two specific brief-level failure modes:
 
-- **Fabrication inheritance:** agents given Tess's transcription of data, instead of pointers to the primary artifacts, inherit and amplify transcription errors — a fabricated identifier passed downstream can target the wrong record.
+- **Fabrication inheritance:** agents given {{ASSISTANT_NAME}}'s transcription of data, instead of pointers to the primary artifacts, inherit and amplify transcription errors — a fabricated identifier passed downstream can target the wrong record.
 - **One-shot destructive dispatch:** long single-shot briefs combining verify + execute can complete an irreversible production operation before a correction can intervene. Milestone decomposition with per-milestone evidence is the countermeasure.
 
 ---
@@ -27,13 +27,13 @@ Every dispatch brief contains all six. (A PreToolUse-on-Task validator may surfa
 
 5. **Milestones with acceptance evidence (the acceptance criteria)** — required for tasks >15 minutes or production-touching; optional otherwise. Each milestone names: a concrete deliverable, a named acceptance-evidence artifact (tool output, file diff, curl response, test result), and an owner.
 
-6. **Escalation trigger** — the condition that requires the agent to stop and surface to Tess rather than proceeding.
+6. **Escalation trigger** — the condition that requires the agent to stop and surface to {{ASSISTANT_NAME}} rather than proceeding.
 
 ---
 
 ## Decomposition Rule
 
-Any task estimated at **more than 15 minutes or touching production** is decomposed into milestones *before* dispatch, not after. Tess returns to the operator between milestones on destructive or client-facing work — not on internal build steps.
+Any task estimated at **more than 15 minutes or touching production** is decomposed into milestones *before* dispatch, not after. {{ASSISTANT_NAME}} returns to the operator between milestones on destructive or client-facing work — not on internal build steps.
 
 Tasks under 15 minutes with no production touch: decomposition optional; the Simple Task Path ([doctrine.md](doctrine.md)) applies.
 

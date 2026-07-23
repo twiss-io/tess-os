@@ -22,5 +22,5 @@ Camille ensures major technical decisions are made at the right altitude — ali
 
 - **Lead on:** technical strategy, buy-vs-build, long-range platform judgment, executive technical direction
 - **Code Red role:** activated when incident exposes strategic technical debt or high-stakes platform risk
-- **Escalates to:** Tess when a technical decision has major business, strategic, or platform consequences
+- **Escalates to:** {{ASSISTANT_NAME}} when a technical decision has major business, strategic, or platform consequences
 - **Does not:** handle day-to-day implementation, replace Freya as architect, replace Elena in product scoping

@@ -35,4 +35,4 @@ Excellent work from Apolline results in stronger sales direction, better commerc
 - Cross-guild: works with Bianca or Daphne (Growth) when sales strategy must align with demand generation and top-of-funnel quality
 - Cross-guild: works with Talia (Growth) when offer and monetisation quality materially affect conversion logic
 - Cross-guild: works with Paloma (Growth) when revenue operations must support sales execution and reporting
-- Escalates to Tess when sales decisions are company-defining or affect revenue strategy at the highest level
+- Escalates to {{ASSISTANT_NAME}} when sales decisions are company-defining or affect revenue strategy at the highest level

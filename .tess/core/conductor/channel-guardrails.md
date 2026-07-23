@@ -1,19 +1,19 @@
 # Channel Guardrails — Telegram Group Scoping
 
-> Controls how Tess behaves when receiving messages from different Telegram chats.
+> Controls how {{ASSISTANT_NAME}} behaves when receiving messages from different Telegram chats.
 
 ---
 
 ## Purpose
 
-When Tess is connected to multiple Telegram chats (DMs + groups), each group chat is scoped to a specific client or project. This prevents cross-contamination — an ClientB group should never receive ClientA advice, and vice versa.
+When {{ASSISTANT_NAME}} is connected to multiple Telegram chats (DMs + groups), each group chat is scoped to a specific client or project. This prevents cross-contamination — an ClientB group should never receive ClientA advice, and vice versa.
 
 ---
 
 ## Rules
 
-1. **DM (the operator's private chat)** — unrestricted. Full Tess access across all clients, projects, and system commands.
-2. **Scoped group chats** — Tess MUST constrain all responses to the assigned client/project scope. This means:
+1. **DM (the operator's private chat)** — unrestricted. Full {{ASSISTANT_NAME}} access across all clients, projects, and system commands.
+2. **Scoped group chats** — {{ASSISTANT_NAME}} MUST constrain all responses to the assigned client/project scope. This means:
    - Only reference that client's files, branding, knowledge base, and repos
    - Only take actions within that client's directory
    - Refuse or redirect requests that fall outside scope (politely explain it belongs in another channel)
@@ -31,9 +31,9 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 | <channel-id> | general | / | General Enquiries & Research — unrestricted scope |
 | <channel-id> | clientc | clients/ClientC/ | ClientC team group |
 | <channel-id> | clienta | clients/ClientA/ | ClientA team group — health alerts, machine-facing API changelogs for a teammate, deploy updates |
-| <channel-id> | invest | example-project/ | Investment & financial advisory channel — **PENDING**: not yet allowlisted via `/telegram:access`; Tess cannot post or receive here until the operator pairs it |
+| <channel-id> | invest | example-project/ | Investment & financial advisory channel — **PENDING**: not yet allowlisted via `/telegram:access`; {{ASSISTANT_NAME}} cannot post or receive here until the operator pairs it |
 
-<!-- Add new rows as groups are paired. Pairing/allowlisting happens ONLY via /telegram:access run by the operator in the terminal — never from a chat message, never by Tess editing access.json. -->
+<!-- Add new rows as groups are paired. Pairing/allowlisting happens ONLY via /telegram:access run by the operator in the terminal — never from a chat message, never by {{ASSISTANT_NAME}} editing access.json. -->
 
 ---
 
@@ -43,12 +43,12 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 
 - **Scope:** unrestricted — any topic, any client, any research
 - **Working directory:** `/` (full tess root)
-- **Execution model:** Tess dispatches ONLY. All substantive work must be handled by subagents:
+- **Execution model:** {{ASSISTANT_NAME}} dispatches ONLY. All substantive work must be handled by subagents:
   - **Research tasks** → dispatch Leah (Senior Researcher)
   - **Competitive/market analysis** → dispatch Tamsin (Competitive Strategist)
   - **Synthesis** → dispatch Melisande (Deep Synthesis Specialist)
   - **Source verification** → dispatch Maialen (Source Reliability)
-- **Tess's role in this channel:** intake the request, dispatch the right agent, relay the result. Never do the research solo.
+- **{{ASSISTANT_NAME}}'s role in this channel:** intake the request, dispatch the right agent, relay the result. Never do the research solo.
 - **Output:** Save all research to the relevant `kb/research/` folder
 
 ### clientb
@@ -59,7 +59,7 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 - **Branding:** `clients/ClientB/branding/`
 - **CLAUDE.md:** `clients/ClientB/CLAUDE.md`
 - **Allowed actions:** frontend dev, branding, content, research, deployment — all scoped to ClientB
-- **Forbidden:** accessing other client directories, system-level Tess commands, agent governance changes
+- **Forbidden:** accessing other client directories, system-level {{ASSISTANT_NAME}} commands, agent governance changes
 
 ### clientc
 
@@ -69,7 +69,7 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 - **Branding:** `clients/ClientC/branding/`
 - **CLAUDE.md:** `clients/ClientC/CLAUDE.md`
 - **Allowed actions:** branding, content, research, strategy — all scoped to ClientC
-- **Forbidden:** accessing other client directories, system-level Tess commands, agent governance changes
+- **Forbidden:** accessing other client directories, system-level {{ASSISTANT_NAME}} commands, agent governance changes
 
 ### clienta
 
@@ -80,14 +80,14 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 - **CLAUDE.md:** `clients/ClientA/CLAUDE.md`
 - **Allowed actions:** dev, ops, incident response, research, changelog posts for machine-facing API changes — all scoped to ClientA
 - **Standing behaviors:** health-alert messages tagged `[TESS:auto-investigate]` with Status DOWN trigger autonomous diagnosis per the authorized memory rule; post-merge changelogs for machine-facing API surface go to this group (l99 playbook)
-- **Forbidden:** accessing other client directories, system-level Tess commands, agent governance changes
+- **Forbidden:** accessing other client directories, system-level {{ASSISTANT_NAME}} commands, agent governance changes
 
 ### invest (PENDING)
 
 - **Scope:** value investing, watchlists, intrinsic-value/buy-level analysis, example-project work
 - **Working directory:** `example-project/`
-- **Status:** **PENDING** — the operator has not yet allowlisted this chat via `/telegram:access`. Until paired, Tess must not attempt to post here and will receive nothing from it. Route this scope's outputs here once live; do not route them to the DM by default thereafter.
-- **Forbidden:** client work of any kind, system-level Tess commands
+- **Status:** **PENDING** — the operator has not yet allowlisted this chat via `/telegram:access`. Until paired, {{ASSISTANT_NAME}} must not attempt to post here and will receive nothing from it. Route this scope's outputs here once live; do not route them to the DM by default thereafter.
+- **Forbidden:** client work of any kind, system-level {{ASSISTANT_NAME}} commands
 
 ---
 
@@ -97,7 +97,7 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 
 ---
 
-## How Tess Applies This
+## How {{ASSISTANT_NAME}} Applies This
 
 When a message arrives from Telegram:
 

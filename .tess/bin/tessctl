@@ -2903,6 +2903,30 @@ def cmd_render(args, root: Path) -> None:
         )
         return
     print(f"tessctl render — target(s): {', '.join(sorted(enabled))} …")
+    # issue #21: a bare `tessctl render` used to call ONLY
+    # `_render_enabled_targets()` — the templated-compile subset (see
+    # ClaudeCodeRenderTarget's docstring). It never called `_do_restore()`,
+    # the target-agnostic lock-entry-driven sync that refreshes every OTHER
+    # core-managed doctrine file carrying a name/pathway token (conductor/**,
+    # agents/**, .claude/commands/**, etc.). That gap was invisible while the
+    # wizard's `rename`/`set-operator`/`pathway` verbs always ran their own
+    # `_do_restore()` (see `_rerender_identity_surfaces`) — but the wizard's
+    # bake() sequence ALWAYS ends with a plain `render` call too, and every
+    # one of those three verbs no-ops (skips its own re-render) when its
+    # value already matches the persisted operator/profile.json — e.g. a
+    # `--force` re-scaffold of an ALREADY-personalized target: the clean-
+    # replace step resets the wider doctrine corpus to the template's
+    # default-name bytes, `rename`/`set-operator`/`pathway` all see
+    # "unchanged" against the persisted profile and skip, and the bare
+    # `render` step used to be the only thing left — but it never touched
+    # that corpus, so it stayed stuck on the default name and doctor flagged
+    # 105 files as uncaptured drift (reproduced via create-tess's M2 --force
+    # test). Calling `_do_restore()` here, unconditionally, closes that gap:
+    # idempotent for an already-synced tree, and harmless to `cmd_update`
+    # (which never calls this CLI function — it calls `_render_enabled_targets()`
+    # and its own Step 5-6 sync directly) or `test_render_ordering_guard.py` /
+    # `test_tracked_render_e2e.py` (neither invokes the `render` CLI verb).
+    _do_restore(root, verbose=True)
     _render_enabled_targets(root, verbose=True)
     print("render: complete.")
 
@@ -7103,6 +7127,36 @@ def cmd_identity(args, root: Path) -> None:
         print(f"    tessctl pathway list           — list all 5 pathways")
 
 
+def _rerender_identity_surfaces(root: Path, verbose: bool = True) -> None:
+    """
+    Shared post-identity-change re-render step (issue #21).
+
+    `rename` / `set-operator` / `pathway` only ever called
+    `_render_enabled_targets()` — which covers exactly `ClaudeCodeRenderTarget`'s
+    TEMPLATED subset (CLAUDE.md, conductor/identity.md, conductor/personality.md,
+    clients/_template/CLAUDE.md, .claude/settings.json — see that class's
+    docstring) plus each other enabled target's own bespoke compile step. It
+    does NOT touch the much larger "copy-only" surface driven by
+    `_do_restore()` (conductor/**'s non-templated files, agents/**,
+    .claude/commands/**, .claude/hooks/**, core/contracts/**) — a gap that was
+    harmless while only identity.md/personality.md carried {{ASSISTANT_NAME}}/
+    {{OPERATOR_NAME}} tokens, but went stale the moment those tokens were
+    added to the wider doctrine corpus (issue #21: dozens of conductor/agent
+    docs hardcoded the literal default name 'Tess' instead of the token).
+
+    Fix: call `_do_restore()` first — the SAME target-agnostic, lock-entry-
+    driven sync `cmd_init`/`cmd_restore` already run, which calls
+    `render_core_to_live()` (→ `apply_token_sub()`) for every core-managed
+    file — then `_render_enabled_targets()` for the bespoke compiled
+    artifacts, mirroring `cmd_restore`'s own restore-then-render order
+    exactly. Idempotent: a file whose rendered bytes already match live is
+    left untouched; locally-modified/user-published/held files are skipped
+    the same way a plain `tessctl restore` skips them.
+    """
+    _do_restore(root, verbose=verbose)
+    _render_enabled_targets(root, verbose=verbose)
+
+
 def cmd_rename(args, root: Path) -> None:
     """
     Set the conductor/assistant name and re-render (M6).
@@ -7120,6 +7174,11 @@ def cmd_rename(args, root: Path) -> None:
     any install with `codex`/`generic` enabled (this repo, as of #118).
     doctor + verify remain green because every enabled target compares its
     OWN rendered output against the same profile.json state.
+
+    issue #21: ALSO calls `_do_restore()` (via `_rerender_identity_surfaces`)
+    so every core-managed doctrine file carrying an {{ASSISTANT_NAME}} token
+    — not just the 3-file templated subset — reflects the new name too (see
+    that helper's docstring for the full gap this closes).
     """
     name = getattr(args, "name", None)
     if not name:
@@ -7137,7 +7196,7 @@ def cmd_rename(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl rename: {old_name!r} → {validated!r}")
     print("tessctl rename: re-rendering …")
-    _render_enabled_targets(root, verbose=True)
+    _rerender_identity_surfaces(root, verbose=True)
     print(f"tessctl rename: done. Run `tessctl doctor` to verify.")
 
 
@@ -7153,6 +7212,11 @@ def cmd_set_operator(args, root: Path) -> None:
     claude-code target's own digest (worker-hard-floor.md's
     {{OPERATOR_NAME}}, mounted into codex/generic's shared AGENTS.md) all
     reflect the name.
+
+    issue #21: ALSO calls `_do_restore()` (via `_rerender_identity_surfaces`)
+    for the same reason `cmd_rename` does — {{OPERATOR_NAME}} token sites
+    outside the 3-file templated subset (the wider conductor/agent doctrine
+    corpus) must refresh too.
     """
     name = getattr(args, "name", None)
     if not name:
@@ -7170,7 +7234,7 @@ def cmd_set_operator(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl set-operator: {old_name!r} → {validated!r}")
     print("tessctl set-operator: re-rendering …")
-    _render_enabled_targets(root, verbose=True)
+    _rerender_identity_surfaces(root, verbose=True)
     print(f"tessctl set-operator: done. Run `tessctl doctor` to verify.")
 
 
@@ -7190,6 +7254,10 @@ def cmd_pathway(args, root: Path) -> None:
     worker-profile fragment that references it stays correct too, even
     though none does today) — doctor stays green because every enabled
     target always compares against its own freshly-rendered core output.
+
+    issue #21: ALSO calls `_do_restore()` (via `_rerender_identity_surfaces`),
+    same reasoning as `cmd_rename` — a future {{PATHWAY}} site outside the
+    templated subset would otherwise go stale after a pathway switch.
     """
     key = getattr(args, "key", None)
 
@@ -7221,7 +7289,7 @@ def cmd_pathway(args, root: Path) -> None:
     _save_operator_profile(root, profile)
     print(f"tessctl pathway: {old_pathway!r} → {key!r}")
     print("tessctl pathway: re-rendering …")
-    _render_enabled_targets(root, verbose=True)
+    _rerender_identity_surfaces(root, verbose=True)
     print(f"tessctl pathway: done. Run `tessctl doctor` to verify.")
 
 

@@ -35,4 +35,4 @@ Excellent work from Verena results in stronger sourcing logic, cleaner supplier 
 - Cross-guild: works with Adrienne or Amara (Ops) when procurement decisions have significant operational implications
 - Cross-guild: works with Victoria or Genevieve (Legal) when buying commitments carry material legal exposure
 - Cross-guild: works with Octavia or Rosalie (Finance) when procurement decisions materially affect financial planning
-- Escalates to Tess when procurement or vendor decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when procurement or vendor decisions are company-defining

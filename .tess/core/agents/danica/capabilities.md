@@ -33,4 +33,4 @@ Excellent work from Danica results in cleaner measurement logic, better executiv
 ## Collaboration Dependencies
 - Guild anchor — leads or co-leads most high-stakes analytics and decision intelligence missions
 - Works closely with: Zinnia (decision synthesis), Clarisse (KPI design), Linnea (BI architecture), Noemi (data integrity)
-- Cross-guild: escalates to Tess when analytics findings materially affect strategic direction or business decisions
+- Cross-guild: escalates to {{ASSISTANT_NAME}} when analytics findings materially affect strategic direction or business decisions

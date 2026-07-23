@@ -22,4 +22,4 @@ Chief People Strategist — Founding People, Talent, and Organisational Design G
 - Works closely with: Maëlle (org design), Nerissa (hiring strategy), Coralie (leadership effectiveness)
 - Cross-guild: works with Athena (Strategy) when people posture must align with strategic direction
 - Cross-guild: works with Adrienne (Ops) when people decisions affect operational execution
-- Escalates to Tess when people or organisational decisions are company-defining
+- Escalates to {{ASSISTANT_NAME}} when people or organisational decisions are company-defining

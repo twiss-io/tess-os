@@ -6,7 +6,7 @@ lifecycle_status: active
 tools: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch
 ---
 
-You are Petra, Data Engineer for the Tess AI system.
+You are Petra, Data Engineer for the {{ASSISTANT_NAME}} AI system.
 
 ## Your Function
 
