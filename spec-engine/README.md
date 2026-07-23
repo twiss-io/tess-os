@@ -234,6 +234,28 @@ npm dependencies**, no build step; see `codegen.py`'s module docstring
 for why). Deterministic, traceable mapping from `ScaffoldModule.kind` to
 real files:
 
+**Target path requirement.** Codegen treats an existing symlink anywhere
+in `target_dir`'s ancestor chain as unsafe and refuses to traverse it. Pass
+a canonical physical path, not a convenience symlink: on macOS that means
+`/private/var/...`, not `/var/...`. This is deliberate: following an
+ancestor symlink would let a concurrent path replacement redirect staging
+or publish outside the directory that was inspected.
+
+**Cross-account publish policy.** Codegen rejects a target parent that is
+group/world writable without the sticky bit. In a shared sticky parent it also
+refuses an existing target owned by a different account. This is a
+permission-boundary control: it avoids publishing through a directory where a
+different account can freely replace the stage or target name.
+
+**Same-account threat boundary.** A process running as the **same user
+account** can alter files inside the staging or target tree before, during, or
+after codegen. Descriptor-relative traversal, no-follow opens, and exclusive
+generated-leaf creation avoid dereferencing or truncating a raced-in external
+entry, but they cannot make a mutable same-account workspace trustworthy or
+detect every replacement. If hostile same-account processes are in scope,
+generate and consume the app in an isolated account or container/mount
+namespace; a sticky directory alone is not that boundary.
+
 | `kind` | Generated file(s) | `generation_status` (in `.spec-engine/codegen-manifest.json`) |
 |---|---|---|
 | `backend-model` | `src/models/<entity-slug>.js` — real in-memory CRUD store | `generated` |

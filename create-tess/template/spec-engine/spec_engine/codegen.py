@@ -78,7 +78,8 @@ integration/infrastructure file, `.spec-engine/codegen-manifest.json`,
 and `write_scaffold_stub()`'s own artifacts (`SPEC.md`, `spec.json`,
 `.spec-engine/scaffold-plan.json`, `CLAUDE.md`/`AGENTS.md`) — is written
 into a same-filesystem STAGING directory first; the complete result is
-then swapped into `target_dir` with exactly one atomic `os.replace()`.
+then swapped into `target_dir` with exactly one descriptor-relative atomic
+`os.rename()`.
 A process killed at ANY point — mid-write of a single file, or between
 the manifest write and `write_scaffold_stub()`'s own writes (the
 historical failure mode: a manifest claiming `codegen_status:
@@ -93,33 +94,31 @@ proof.
 
 Publishing OVER pre-existing `target_dir` content needs a second rename
 in addition to the first (see `_publish_staged_app()`'s docstring for
-why) — a kill exactly between those two renames would, left unhandled,
-leave that prior content orphaned in an untracked sibling with nothing
-pointing back to it, then PERMANENTLY and SILENTLY destroyed by the very
-next regeneration (the natural post-crash "just re-run it" recovery
-action), since that next run would see `target_dir` absent and treat it
-as a first-ever generation. `generate_app()` closes this window itself:
-on EVERY call, before it decides whether `target_dir` has existing
-content, it first checks for and repairs exactly this interrupted-swap
-state (`_recover_interrupted_publish()`) — so any orphaned prior content
-is restored before this run ever gets a chance to treat `target_dir` as
-empty. This check runs unconditionally on every call, not just after a
-known crash.
+why). A kill between them leaves the prior content in a deterministic,
+reserved sibling. The next call detects that sibling before it decides
+whether `target_dir` is empty and fails closed: a portable pathname
+rename cannot bind an inspected aside directory against a concurrent
+swap. The operator must inspect and restore/remove that sibling manually,
+but codegen will never silently publish over it or turn `target_dir` into
+a raced symlink. This check runs unconditionally on every call, not just
+after a known crash.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
-import shutil
-import tempfile
+import secrets
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .content import Entity, EntityField, KeyFlow, KeyScreen, ResolvedConnector, SpecEngineError
-from .scaffold import plan_scaffold_from_spec, write_scaffold_stub
+from .render import render_markdown
+from .scaffold import SPEC_DIRECTIVE_BLOCK, SPEC_DIRECTIVE_MARKER, plan_scaffold_from_spec
 from .types import ScaffoldModule, ScaffoldPlan, SpecDocument
 
 PathLike = Union[str, Path]
@@ -153,6 +152,27 @@ _CONNECTOR_RUNTIME_REL_PATH = "src/integrations/_connector-runtime.js"
 # and in CI). An explicit file path sidesteps that version-dependent
 # discovery logic entirely and works identically on every Node >=18.
 ACCEPTANCE_TEST_REL_PATH = "tests/acceptance.test.js"
+
+# Regeneration may preserve caller-owned content already present in target_dir
+# (notably hand-authored CLAUDE.md/AGENTS.md).  That tree is ingress from a
+# less-trusted writer, so it gets an explicit, finite copy budget rather than
+# an unbounded shutil.copytree() read.  These limits are deliberately far
+# beyond the generated app's normal text-only footprint while keeping one
+# accidentally or maliciously huge existing file from exhausting the process
+# or staging filesystem.
+_MAX_EXISTING_CONTENT_FILE_BYTES = 16 * 1024 * 1024
+_MAX_EXISTING_CONTENT_TOTAL_BYTES = 64 * 1024 * 1024
+_EXISTING_CONTENT_COPY_CHUNK_BYTES = 64 * 1024
+_MAX_EXISTING_CONTENT_TREE_DEPTH = 32
+_MAX_EXISTING_CONTENT_ENTRY_COUNT = 4096
+# Capture this capability before tests or embedding code wrap ``os.open``;
+# the wrapper must not make a safe platform appear unsupported.
+_OS_OPEN_SUPPORTS_DIR_FD = os.open in os.supports_dir_fd
+_OS_MKDIR_SUPPORTS_DIR_FD = os.mkdir in os.supports_dir_fd
+_OS_STAT_SUPPORTS_DIR_FD = os.stat in os.supports_dir_fd
+_OS_RENAME_SUPPORTS_DIR_FD = os.rename in os.supports_dir_fd
+_OS_UNLINK_SUPPORTS_DIR_FD = os.unlink in os.supports_dir_fd
+_OS_RMDIR_SUPPORTS_DIR_FD = os.rmdir in os.supports_dir_fd
 
 _INFRA_NOTE = (
     "Infrastructure file — required scaffolding for this target stack, "
@@ -316,7 +336,7 @@ def generate_app(
 
     Atomic (see module docstring's "Atomicity" section): the full tree is
     staged in a same-filesystem sibling directory and swapped into
-    `target_dir` with exactly one `os.replace()` only after every file —
+    `target_dir` with exactly one descriptor-relative `os.rename()` only after every file —
     including the manifest — has been written. A process killed at any
     point leaves `target_dir` either exactly as found or the complete,
     `codegen_status: "generated"` tree; never a partial mix. Every call
@@ -338,99 +358,69 @@ def generate_app(
             f"spec_version={plan.spec_version}) does not match spec "
             f"(spec_id={spec.spec_id!r}, spec_version={spec.spec_version}) — "
             "regenerate the plan from this exact spec before generating code."
-        )
+    )
 
     final_root = Path(target_dir)
-    final_root.parent.mkdir(parents=True, exist_ok=True)
-    # MUST run before `has_existing_content` is decided below: repairs any
-    # rename-aside-swap a PRIOR call left interrupted (see
-    # `_recover_interrupted_publish()`'s docstring) so that leftover state
-    # is never mistaken for "target_dir has always been empty" by this
-    # call. Unconditional — cheap (two `Path.exists()` checks) on the
-    # overwhelmingly common case where there is nothing to recover.
-    _recover_interrupted_publish(final_root)
-    # "Has real content to preserve" is NOT the same as `.exists()`: every
-    # real caller today (orchestrator/pipeline.py, and pytest's own
-    # `tmp_path` fixture in every test in this suite) hands generate_app()
-    # a directory that already EXISTS but is EMPTY — and POSIX `rename(2)`
-    # is perfectly happy replacing an empty directory (see
-    # `_publish_staged_app()`), so only a genuinely NON-empty `target_dir`
-    # needs the slower preserve-and-swap path. Evaluated AFTER recovery
-    # above, so a just-restored prior tree is correctly seen as existing
-    # content, not as an empty/absent `target_dir`.
-    has_existing_content = final_root.exists() and any(final_root.iterdir())
-    stage_root = Path(
-        tempfile.mkdtemp(prefix=f".{final_root.name}.codegen-stage-", dir=str(final_root.parent))
-    )
+    parent_fd = _open_target_parent_safely(final_root)
+    stage_fd: Optional[int] = None
+    stage_name: Optional[str] = None
+    # MUST run before `has_existing_content` is decided below: detects any
+    # rename-aside-swap a PRIOR call left interrupted so that leftover state
+    # is never mistaken for "target_dir has always been empty". Recovery is
+    # intentionally fail-closed rather than a racy pathname restore.
     try:
+        _recover_interrupted_publish(final_root, parent_fd)
+        # "Has real content to preserve" is NOT the same as `.exists()`: every
+        # real caller today (orchestrator/pipeline.py, and pytest's own
+        # `tmp_path` fixture in every test in this suite) hands generate_app()
+        # a directory that already EXISTS but is EMPTY — and POSIX `rename(2)`
+        # is perfectly happy replacing an empty directory (see
+        # `_publish_staged_app()`), so only a genuinely NON-empty `target_dir`
+        # needs the slower preserve-and-swap path. Evaluated AFTER recovery
+        # above, so an interrupted prior tree can never be mistaken for an
+        # empty/absent `target_dir`.
+        has_existing_content, expected_target_identity = _target_has_existing_content(final_root, parent_fd)
+        _require_publish_parent_isolation(parent_fd, final_root, expected_target_identity)
+        stage_name, stage_fd = _create_staging_directory(final_root, parent_fd)
         if has_existing_content:
-            # `write_scaffold_stub()` (called at the end of
-            # `_write_generated_app_tree()`) MERGES with an
-            # already-present CLAUDE.md/AGENTS.md rather than overwriting
-            # it — staging must start from a real copy of `target_dir`'s
-            # current content for that merge to see the same state it
-            # would have seen writing into `target_dir` directly, not an
-            # empty directory.
-            #
-            # Neither `copytree(symlinks=True)` nor the default
-            # `symlinks=False` is safe alone for a tree this module must
-            # treat as coming from a less-trusted actor than the process
-            # calling `generate_app()` (planting a path in `target_dir`
-            # before a regenerate call is this module's own documented,
-            # supported workflow — human-edited CLAUDE.md/AGENTS.md,
-            # git-committed app trees — not a privileged position):
-            #
-            #   - `symlinks=True` PRESERVES symlinks in the staged copy,
-            #     but every write below (`_write_file()` ->
-            #     `Path.write_text()`) follows symlinks unconditionally and
-            #     always targets the SAME fixed, generated-content
-            #     relative paths (e.g. `.spec-engine/codegen-manifest.json`)
-            #     on every call — a symlink planted at one of those paths
-            #     let an ordinary regeneration write generated content
-            #     straight THROUGH it to wherever it pointed, including
-            #     outside `target_dir` entirely (PR #156 review round 2,
-            #     Cyra, CRITICAL — verified working exploit). WRITE-THROUGH.
-            #   - `symlinks=False` (the default) DEREFERENCES any symlink
-            #     it finds — which closes the write-through vector above
-            #     (the later write lands harmlessly on the dereferenced
-            #     plain-file copy inside the disposable `stage_root`) but
-            #     opens its mirror image: a symlink at ANY relative path
-            #     in the tree (not just the small set of fixed generated
-            #     ones) has its TARGET's file content copied into the
-            #     staged — and, for a relative path nothing downstream
-            #     ever overwrites, the PUBLISHED — tree: a disclosure
-            #     primitive (PR #156 review round 3, Cyra AND Reid,
-            #     independently reproduced with separate PoCs, HIGH).
-            #     READ-DEREFERENCE.
-            #
-            # The only answer that closes both at once, with one rule
-            # instead of two different ones for different classes of
-            # path, is to never copy a symlink at all: refuse outright
-            # and fail loud, before `copytree()` (or anything else) ever
-            # touches it — mirroring this exact module's own established
-            # "never silently guess" pattern already applied to the
-            # rename-aside path in `_recover_interrupted_publish()`. See
-            # `_refuse_symlinks_in_existing_content()`,
-            # `test_regenerate_over_existing_symlink_write_through_is_blocked`,
-            # and
-            # `test_regenerate_over_existing_symlink_read_dereference_is_blocked`.
-            _refuse_symlinks_in_existing_content(final_root)
-            shutil.copytree(final_root, stage_root, dirs_exist_ok=True)
-        result = _write_generated_app_tree(stage_root, spec, plan, target_stack)
+            # `_write_scaffold_stub_to_fd()` (called at the end of
+            # `_write_generated_app_tree()`) MERGES with an already-present
+            # CLAUDE.md/AGENTS.md rather than overwriting it — staging starts
+            # from a descriptor-anchored copy of target_dir's current content.
+            # Every source and destination operation stays relative to open
+            # directory handles; no process-global cwd is ever changed.
+            _copy_existing_content_safely(final_root, parent_fd, stage_fd)
+        result = _write_generated_app_tree(stage_fd, spec, plan, target_stack)
         # Publishing is inside this same try/except: an exception raised
-        # by `_publish_staged_app()` itself (its own internal
-        # restore-on-exception handling notwithstanding) must still clean
-        # up `stage_root` here — `_publish_staged_app()` only ever
-        # consumes `stage_root` (renames it away) on the success path, so
+        # by `_publish_staged_app()` itself must still clean
+        # up the stage here — `_publish_staged_app()` only ever consumes the
+        # stage (renames it away) on the success path, so
         # this cleanup is always safe to attempt, and a no-op
         # (`ignore_errors=True`) on that success path since the path no
         # longer exists under its staging name by then.
-        _publish_staged_app(stage_root, final_root, has_existing_content=has_existing_content)
+        _publish_staged_app(
+            stage_name,
+            stage_fd,
+            final_root,
+            parent_fd,
+            has_existing_content=has_existing_content,
+            expected_target_identity=expected_target_identity,
+        )
+        # The staging entry was renamed into final_root. Do not try to clean
+        # it up if the final lexical binding check below detects an ancestor
+        # replacement; the descriptor still names the live generated tree.
+        stage_name = None
+        _verify_published_target_before_return(final_root, parent_fd, stage_fd)
     except BaseException:
-        shutil.rmtree(stage_root, ignore_errors=True)
+        if stage_fd is not None and stage_name is not None:
+            _discard_staging_directory(stage_name, stage_fd, parent_fd)
         raise
+    finally:
+        if stage_fd is not None:
+            os.close(stage_fd)
+        os.close(parent_fd)
 
-    # `result.written`'s Path values were built against `stage_root`
+    # `result.written`'s Path values were built against the staging tree
     # (renamed away by the publish above — that inode now IS
     # `final_root`); rebind them so callers see real, live paths under
     # `target_dir`, exactly as if generation had written there directly.
@@ -438,66 +428,566 @@ def generate_app(
     return result
 
 
-def _refuse_symlinks_in_existing_content(root: Path) -> None:
-    """Called by `generate_app()` immediately before `shutil.copytree(root,
-    stage_root, ...)` in the `has_existing_content=True` branch — refuses
-    (fails loud) rather than copy through ANY symlink found anywhere in
-    `root` (the pre-existing `target_dir` content being staged for the
-    CLAUDE.md/AGENTS.md-merge regenerate-over-existing path; see
-    `generate_app()`'s call site for the full write-vs-read tradeoff this
-    closes).
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
 
-    Pre-walks `root` with `os.walk(..., followlinks=False)` — so a
-    symlinked directory is reported in `dirnames` but never descended
-    into, which matters here: without it, anything nested BELOW a
-    symlinked directory would silently never be visited by this check at
-    all — and `os.path.islink()` (an `os.lstat()`-based check that does
-    NOT itself follow the link, consistent with
-    `_recover_interrupted_publish()`'s own aside-path check) on `root`
-    itself and on every directory and file entry `os.walk` yields. Raises
-    `SpecEngineError` naming the offending path on the FIRST symlink
-    found — this function never dereferences (read-leak risk) or
-    recreates (write-through risk) a symlink; it only ever looks at it
-    long enough to name it in the error and stop."""
-    if os.path.islink(root):
+
+def _require_fd_safe_platform() -> None:
+    """Reject platforms without the primitives needed for fail-closed IO.
+
+    A lexical pre-check followed by ordinary pathlib operations is not an
+    acceptable fallback: an ancestor can be replaced after that check and
+    before staging/publish.  The caller gets a clear error instead.
+    """
+    if (
+        not hasattr(os, "O_NOFOLLOW")
+        or not _OS_OPEN_SUPPORTS_DIR_FD
+        or not _OS_MKDIR_SUPPORTS_DIR_FD
+        or not _OS_STAT_SUPPORTS_DIR_FD
+        or not _OS_RENAME_SUPPORTS_DIR_FD
+        or not _OS_UNLINK_SUPPORTS_DIR_FD
+        or not _OS_RMDIR_SUPPORTS_DIR_FD
+    ):
         raise SpecEngineError(
-            f"generate_app: {root} (target_dir) is itself a symlink. Regenerating over "
-            "pre-existing content requires target_dir to be a real directory — refusing to "
-            "stage through a symlinked target_dir, which could silently read from, or write "
-            "through to, wherever it points."
+            "generate_app: this platform lacks the descriptor-relative no-follow operations "
+            "required to safely stage and publish target_dir. Refusing a pathname-based fallback."
         )
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        for name in sorted(dirnames) + sorted(filenames):
-            candidate = os.path.join(dirpath, name)
-            if os.path.islink(candidate):
+
+
+def _target_name(final_root: Path) -> str:
+    name = final_root.name
+    if not name or name in {".", os.path.sep}:
+        raise SpecEngineError(
+            f"generate_app: target_dir {final_root!s} must name a directory, not a filesystem root."
+        )
+    return name
+
+
+def _open_target_parent_safely(final_root: Path, *, create_missing: bool = True) -> int:
+    """Return a no-follow FD for ``final_root.parent``.
+
+    Each lexical ancestor is opened relative to the previously-open parent
+    and its inode is bound to the preceding no-follow observation.  If an
+    attacker replaces an ancestor after it is acquired, later mkdir, staging,
+    recovery, and publish operations remain directed at the original parent
+    FD; a final binding check rejects the now-stale lexical path rather than
+    reporting an external location as the generated app.
+    """
+    _require_fd_safe_platform()
+    lexical = Path(os.path.abspath(str(final_root)))
+    _target_name(lexical)
+    parent = lexical.parent
+    parts = parent.parts
+    if not parts or parts[0] != os.path.sep:
+        raise SpecEngineError(f"generate_app: cannot safely open target_dir parent {parent}.")
+
+    try:
+        descriptor = os.open(os.path.sep, _directory_open_flags())
+    except OSError as exc:
+        _raise_existing_content_open_error(Path(os.path.sep), exc)
+
+    current_display = Path(os.path.sep)
+    try:
+        for component in parts[1:]:
+            current_display /= component
+            try:
+                observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                if not create_missing:
+                    raise SpecEngineError(
+                        f"generate_app: target_dir ancestor {current_display} disappeared while "
+                        "verifying the final publish location. Refusing to report an unstable path."
+                    )
+                try:
+                    # Match Path.mkdir(parents=True)'s normal mode and let
+                    # the caller's umask retain control of new ancestors.
+                    os.mkdir(component, 0o777, dir_fd=descriptor)
+                except FileExistsError:
+                    # A concurrent creator won this race. Re-observe it below
+                    # through the stable parent descriptor.
+                    pass
+                except OSError as exc:
+                    raise SpecEngineError(
+                        f"generate_app: cannot create target_dir ancestor {current_display}: {exc}."
+                    ) from exc
+                try:
+                    observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+                except OSError as exc:
+                    _raise_existing_content_open_error(current_display, exc)
+            except OSError as exc:
+                _raise_existing_content_open_error(current_display, exc)
+
+            if stat.S_ISLNK(observed.st_mode):
                 raise SpecEngineError(
-                    f"generate_app: {candidate} is a symlink inside pre-existing target_dir "
-                    f"content ({root}). Regenerating over existing content stages that content "
-                    "into a staging directory first (so write_scaffold_stub()'s "
-                    "CLAUDE.md/AGENTS.md-merge logic sees the same state it would have seen "
-                    "writing into target_dir directly) — a symlink anywhere in that tree is "
-                    "either silently DEREFERENCED by the copy (pulling whatever it points at, "
-                    "including files outside target_dir, into the staged and potentially "
-                    "published tree — a disclosure risk) or, if a later generated-content write "
-                    "follows it, an overwrite-through primitive to wherever it points (PR #156 "
-                    "review round 2, CRITICAL). Neither is safe to guess at: remove or replace "
-                    f"{candidate} with a real file or directory before regenerating."
+                    f"generate_app: {current_display} is an ancestor symlink for target_dir. "
+                    "Refusing to create, stage, recover, or publish through it. Pass a canonical physical "
+                    "path with no symlink ancestors (on macOS, use /private/var/... rather than /var/...)."
                 )
+            if not stat.S_ISDIR(observed.st_mode):
+                raise SpecEngineError(
+                    f"generate_app: {current_display} is not a directory in target_dir's ancestor path."
+                )
+            try:
+                child_descriptor = os.open(component, _directory_open_flags(), dir_fd=descriptor)
+            except OSError as exc:
+                _raise_existing_content_open_error(current_display, exc)
+            try:
+                opened = os.fstat(child_descriptor)
+                _require_stable_identity(observed, opened, current_display, "directory")
+            except BaseException:
+                os.close(child_descriptor)
+                raise
+            os.close(descriptor)
+            descriptor = child_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _target_has_existing_content(final_root: Path, parent_fd: int) -> Tuple[bool, Optional[os.stat_result]]:
+    """Return whether target_dir is non-empty plus its identity, if present."""
+    name = _target_name(final_root)
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False, None
+    except OSError as exc:
+        _raise_existing_content_open_error(final_root, exc)
+
+    if stat.S_ISLNK(observed.st_mode):
+        raise SpecEngineError(
+            f"generate_app: {final_root} is a symlink. Refusing to stage or replace target_dir through a symlink."
+        )
+    if not stat.S_ISDIR(observed.st_mode):
+        raise SpecEngineError(f"generate_app: target_dir {final_root} exists but is not a directory.")
+
+    descriptor = _open_existing_directory_entry(parent_fd, name, final_root, observed)
+    try:
+        with os.scandir(descriptor) as entries:
+            return next(entries, None) is not None, observed
+    except OSError as exc:
+        raise SpecEngineError(f"generate_app: cannot inspect target_dir {final_root}: {exc}.") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _create_staging_directory(final_root: Path, parent_fd: int) -> Tuple[str, int]:
+    """Create and open a private sibling staging directory through parent_fd."""
+    name_prefix = f".{_target_name(final_root)}.codegen-stage-"
+    for _ in range(32):
+        stage_name = name_prefix + secrets.token_hex(16)
+        try:
+            os.mkdir(stage_name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise SpecEngineError(
+                f"generate_app: cannot create descriptor-anchored staging directory for {final_root}: {exc}."
+            ) from exc
+        try:
+            observed = os.stat(stage_name, dir_fd=parent_fd, follow_symlinks=False)
+            stage_fd = _open_existing_directory_entry(parent_fd, stage_name, final_root.parent / stage_name, observed)
+            return stage_name, stage_fd
+        except BaseException:
+            # This is an immediately-created private directory. Best-effort
+            # cleanup avoids normal exception residue; if a concurrent actor
+            # changed its entry, the descriptor-identity check below refuses
+            # to touch the replacement.
+            try:
+                os.rmdir(stage_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+    raise SpecEngineError("generate_app: could not allocate a unique descriptor-anchored staging directory.")
+
+
+def _copy_existing_content_safely(source_root: Path, parent_fd: int, destination_fd: int) -> None:
+    """Copy pre-existing target_dir content into private staging safely.
+
+    The tree is ingress, not trusted project output.  Every source directory
+    and file is opened through a descriptor for its already-open parent with
+    ``O_NOFOLLOW``.  The descriptor's device/inode must match the preceding
+    no-follow stat, so a concurrent replacement with a different regular
+    file or directory is refused too.  Regular files with multiple hard links
+    are refused because their origin cannot be proved to be inside target_dir.
+    Reads are streamed and constrained by both per-file and aggregate byte
+    budgets, so existing content cannot turn a regenerate call into an
+    unbounded staging copy.
+
+    This deliberately fails closed on a platform without the descriptor
+    primitives needed for that guarantee.  Falling back to a pre-walk plus a
+    pathname copy would reintroduce the check-then-use vulnerability.
+    """
+    _require_fd_safe_platform()
+    root_name = _target_name(source_root)
+    try:
+        observed = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        _raise_existing_content_open_error(source_root, exc)
+    root_fd = _open_existing_directory_entry(parent_fd, root_name, source_root, observed)
+
+    try:
+        _copy_existing_directory(root_fd, destination_fd, source_root, Path(), 0, 0, 0)
+    finally:
+        os.close(root_fd)
+
+
+def _verify_target_parent_binding(final_root: Path, parent_fd: int) -> None:
+    """Reject a result whose lexical parent no longer names parent_fd."""
+    verification_fd = _open_target_parent_safely(final_root, create_missing=False)
+    try:
+        expected = os.fstat(parent_fd)
+        actual = os.fstat(verification_fd)
+        _require_stable_identity(expected, actual, final_root.parent, "target_dir parent directory")
+    finally:
+        os.close(verification_fd)
+
+
+def _discard_staging_directory(stage_name: str, stage_fd: int, parent_fd: int) -> None:
+    """Best-effort cleanup of an unpublished, identity-bound stage directory.
+
+    The stage name is checked against the open FD before removal.  A changed
+    name is left alone rather than following or deleting a replacement.  In
+    the ordinary exception path this removes the private stage so callers do
+    not accumulate residue; a race resolves fail-closed as residue, not an
+    operation on the replacement.
+    """
+    try:
+        observed = os.stat(stage_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    try:
+        _require_stable_identity(observed, os.fstat(stage_fd), Path(stage_name), "staging directory")
+    except SpecEngineError:
+        return
+    if not stat.S_ISDIR(observed.st_mode):
+        return
+    try:
+        _remove_directory_tree_at(parent_fd, stage_name, expected=stage_fd)
+    except OSError:
+        # Cleanup never changes a generation failure into a silent delete of
+        # an object that was raced after our identity binding.  The reserved
+        # stage can be inspected and removed manually if it remains.
+        return
+
+
+def _remove_directory_tree_at(parent_fd: int, name: str, *, expected: Optional[int] = None) -> None:
+    """Remove a directory tree by descriptors, never by a lexical cwd path."""
+    observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if expected is not None:
+        _require_stable_identity(observed, os.fstat(expected), Path(name), "directory to remove")
+    directory_fd = _open_existing_directory_entry(parent_fd, name, Path(name), observed)
+    try:
+        _remove_directory_contents(directory_fd)
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _remove_directory_contents(directory_fd: int) -> None:
+    with os.scandir(directory_fd) as entries:
+        names = [entry.name for entry in entries]
+    for name in names:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(observed.st_mode):
+            child_fd = _open_existing_directory_entry(directory_fd, name, Path(name), observed)
+            try:
+                _remove_directory_contents(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            # unlink(2) removes the directory entry itself; it does not
+            # dereference a symlink. This cleanup path never follows input.
+            os.unlink(name, dir_fd=directory_fd)
+
+
+def _copy_existing_directory(
+    source_dir_fd: int,
+    destination_dir_fd: int,
+    display_root: Path,
+    relative: Path,
+    copied_bytes: int,
+    copied_entries: int,
+    depth: int,
+) -> Tuple[int, int]:
+    """Copy one already-open source directory, returning bytes and entries."""
+    if depth > _MAX_EXISTING_CONTENT_TREE_DEPTH:
+        raise SpecEngineError(
+            f"generate_app: pre-existing target_dir content exceeds the "
+            f"{_MAX_EXISTING_CONTENT_TREE_DEPTH}-directory-level ingress depth limit at "
+            f"{display_root / relative}."
+        )
+    try:
+        names = []
+        with os.scandir(source_dir_fd) as directory_entries:
+            for entry in directory_entries:
+                copied_entries += 1
+                if copied_entries > _MAX_EXISTING_CONTENT_ENTRY_COUNT:
+                    raise SpecEngineError(
+                        "generate_app: pre-existing target_dir content exceeds the "
+                        f"{_MAX_EXISTING_CONTENT_ENTRY_COUNT}-entry regeneration ingress limit."
+                    )
+                names.append(entry.name)
+    except OSError as exc:
+        raise SpecEngineError(
+            f"generate_app: cannot safely enumerate pre-existing target_dir content at "
+            f"{display_root / relative}: {exc}"
+        ) from exc
+
+    for name in names:
+        candidate_relative = relative / name
+        candidate_display = display_root / candidate_relative
+        try:
+            observed = os.stat(name, dir_fd=source_dir_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise SpecEngineError(
+                f"generate_app: pre-existing target_dir content changed while staging "
+                f"{candidate_display}: {exc}. Refusing to copy an unstable input tree."
+            ) from exc
+
+        if stat.S_ISLNK(observed.st_mode):
+            raise SpecEngineError(
+                f"generate_app: {candidate_display} is a symlink inside pre-existing target_dir content. "
+                "Refusing to follow or copy a symlink during regeneration."
+            )
+
+        if stat.S_ISDIR(observed.st_mode):
+            if depth >= _MAX_EXISTING_CONTENT_TREE_DEPTH:
+                raise SpecEngineError(
+                    f"generate_app: pre-existing target_dir content exceeds the "
+                    f"{_MAX_EXISTING_CONTENT_TREE_DEPTH}-directory-level ingress depth limit at "
+                    f"{candidate_display}."
+                )
+            child_fd = _open_existing_directory_entry(source_dir_fd, name, candidate_display, observed)
+            try:
+                os.mkdir(name, stat.S_IMODE(observed.st_mode), dir_fd=destination_dir_fd)
+            except OSError as exc:
+                os.close(child_fd)
+                raise SpecEngineError(
+                    f"generate_app: cannot create descriptor-anchored staging directory {candidate_display}: {exc}."
+                ) from exc
+            destination_fd = _open_new_directory_entry(destination_dir_fd, name, candidate_display)
+            try:
+                copied_bytes, copied_entries = _copy_existing_directory(
+                    child_fd,
+                    destination_fd,
+                    display_root,
+                    candidate_relative,
+                    copied_bytes,
+                    copied_entries,
+                    depth + 1,
+                )
+                source_stat = os.fstat(child_fd)
+            finally:
+                os.close(child_fd)
+                os.close(destination_fd)
+            os.chmod(name, stat.S_IMODE(source_stat.st_mode), dir_fd=destination_dir_fd)
+            os.utime(
+                name,
+                ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+                dir_fd=destination_dir_fd,
+                follow_symlinks=False,
+            )
+            continue
+
+        if not stat.S_ISREG(observed.st_mode):
+            raise SpecEngineError(
+                f"generate_app: {candidate_display} is not a regular file or directory. "
+                "Refusing unsupported pre-existing target_dir content during regeneration."
+            )
+
+        copied_bytes = _copy_existing_file(
+            source_dir_fd, destination_dir_fd, name, candidate_display, copied_bytes, observed
+        )
+
+    return copied_bytes, copied_entries
+
+
+def _open_existing_directory_entry(
+    parent_fd: int, name: str, display_path: Path, observed: os.stat_result
+) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        _raise_existing_content_open_error(display_path, exc)
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(descriptor)
+        raise SpecEngineError(
+            f"generate_app: {display_path} changed while staging and is no longer a directory. "
+            "Refusing to copy an unstable input tree."
+        )
+    try:
+        _require_stable_identity(observed, opened, display_path, "directory")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_new_directory_entry(parent_fd: int, name: str, display_path: Path) -> int:
+    """Open a directory this process just created, without pathname traversal."""
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        _raise_existing_content_open_error(display_path, exc)
+    return _open_existing_directory_entry(parent_fd, name, display_path, observed)
+
+
+def _copy_existing_file(
+    parent_fd: int,
+    destination_parent_fd: int,
+    name: str,
+    display_path: Path,
+    copied_bytes: int,
+    observed: os.stat_result,
+) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    try:
+        source_fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        _raise_existing_content_open_error(display_path, exc)
+
+    try:
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise SpecEngineError(
+                f"generate_app: {display_path} changed while staging and is no longer a regular file. "
+                "Refusing to copy an unstable input tree."
+            )
+        _require_stable_identity(observed, source_stat, display_path, "regular file")
+        if source_stat.st_nlink != 1:
+            raise SpecEngineError(
+                f"generate_app: {display_path} has {source_stat.st_nlink} hard links. "
+                "Refusing a regular file whose origin cannot be proved to be inside target_dir."
+            )
+        if source_stat.st_size > _MAX_EXISTING_CONTENT_FILE_BYTES:
+            raise SpecEngineError(
+                f"generate_app: {display_path} is {source_stat.st_size} bytes, above the "
+                f"{_MAX_EXISTING_CONTENT_FILE_BYTES}-byte per-file regeneration ingress limit."
+            )
+        if copied_bytes + source_stat.st_size > _MAX_EXISTING_CONTENT_TOTAL_BYTES:
+            raise SpecEngineError(
+                "generate_app: pre-existing target_dir content exceeds the "
+                f"{_MAX_EXISTING_CONTENT_TOTAL_BYTES}-byte aggregate regeneration ingress limit."
+            )
+
+        destination_fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=destination_parent_fd,
+        )
+        try:
+            file_remaining = _MAX_EXISTING_CONTENT_FILE_BYTES
+            total_remaining = _MAX_EXISTING_CONTENT_TOTAL_BYTES - copied_bytes
+            while True:
+                # The +1 makes a file that grows after fstat() fail rather
+                # than silently accepting a byte beyond either budget.
+                read_size = min(
+                    _EXISTING_CONTENT_COPY_CHUNK_BYTES,
+                    file_remaining + 1,
+                    total_remaining + 1,
+                )
+                chunk = os.read(source_fd, read_size)
+                if not chunk:
+                    break
+                if len(chunk) > file_remaining:
+                    raise SpecEngineError(
+                        f"generate_app: {display_path} grew beyond the "
+                        f"{_MAX_EXISTING_CONTENT_FILE_BYTES}-byte per-file regeneration ingress limit "
+                        "while it was being staged."
+                    )
+                if len(chunk) > total_remaining:
+                    raise SpecEngineError(
+                        "generate_app: pre-existing target_dir content grew beyond the "
+                        f"{_MAX_EXISTING_CONTENT_TOTAL_BYTES}-byte aggregate regeneration ingress limit "
+                        "while it was being staged."
+                    )
+                _write_all(destination_fd, chunk)
+                file_remaining -= len(chunk)
+                total_remaining -= len(chunk)
+                copied_bytes += len(chunk)
+            os.fchmod(destination_fd, stat.S_IMODE(source_stat.st_mode))
+        finally:
+            os.close(destination_fd)
+        os.utime(
+            name,
+            ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+            dir_fd=destination_parent_fd,
+            follow_symlinks=False,
+        )
+        return copied_bytes
+    finally:
+        os.close(source_fd)
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short write while staging pre-existing target_dir content")
+        view = view[written:]
+
+
+def _require_stable_identity(
+    observed: os.stat_result, opened: os.stat_result, display_path: Path, expected_kind: str
+) -> None:
+    """Fail closed if a pathname changed object between lstat and open.
+
+    O_NOFOLLOW only rejects a symlink at the instant of ``open``.  An
+    attacker can instead replace a checked entry with an ordinary external
+    file/directory (or a hard-link) in the check-to-open interval.  Bind the
+    descriptor to the no-follow observation by device/inode and file kind
+    before any bytes or child names are consumed.
+    """
+    if (
+        observed.st_dev != opened.st_dev
+        or observed.st_ino != opened.st_ino
+        or stat.S_IFMT(observed.st_mode) != stat.S_IFMT(opened.st_mode)
+    ):
+        raise SpecEngineError(
+            f"generate_app: {display_path} changed identity between inspection and open. "
+            f"Refusing to stage an unstable {expected_kind} from target_dir."
+        )
+
+
+def _raise_existing_content_open_error(path: Path, exc: OSError) -> None:
+    if exc.errno == errno.ELOOP:
+        raise SpecEngineError(
+            f"generate_app: {path} is a symlink or was swapped to one while staging pre-existing "
+            "target_dir content. Refusing to follow it."
+        ) from exc
+    raise SpecEngineError(
+        f"generate_app: cannot safely open pre-existing target_dir content at {path}: {exc}. "
+        "Refusing to copy an unstable input tree."
+    ) from exc
 
 
 def _write_generated_app_tree(
-    root: Path, spec: SpecDocument, plan: ScaffoldPlan, target_stack: str
+    root_fd: int, spec: SpecDocument, plan: ScaffoldPlan, target_stack: str
 ) -> CodegenResult:
     """The actual per-module/infrastructure/manifest generation — every
-    file this writes goes into `root`, which is ALWAYS a STAGING
+    file this writes goes into `root_fd`, which is ALWAYS an open STAGING
     directory (see `generate_app()`, the only caller); this function has
     no awareness that `root` is not the caller's real `target_dir` and
     does not need any — atomicity is entirely `generate_app()`'s
     responsibility via `_publish_staged_app()`, not this one's. Unchanged
-    by the atomic-staging fix other than taking `root`/`plan`/
+    by the atomic-staging fix other than taking `root_fd`/`plan`/
     `target_stack` as explicit parameters instead of closing over
     `target_dir`."""
-    root.mkdir(parents=True, exist_ok=True)
 
     by_kind: Dict[str, List[ScaffoldModule]] = {}
     for module in plan.modules:
@@ -548,8 +1038,8 @@ def _write_generated_app_tree(
         slug = _unique_slug(entity_slugs, _slugify(entity.name))
         entities_by_slug[slug] = (entity, slug)
         rel_path = f"src/models/{slug}.js"
-        _write_file(root, rel_path, _render_model_js(entity, module))
-        written[rel_path] = root / rel_path
+        _write_file(root_fd, rel_path, _render_model_js(entity, module))
+        written[rel_path] = Path(rel_path)
         manifest_modules.append(
             _manifest_entry(module, "generated", [rel_path], f"In-memory CRUD store for entity '{entity.name}'.")
         )
@@ -565,8 +1055,8 @@ def _write_generated_app_tree(
                     matched_slug = eslug
                     break
         rel_path = f"src/pages/{slug}.js"
-        _write_file(root, rel_path, _render_page_js(screen, module, matched_entity, matched_slug))
-        written[rel_path] = root / rel_path
+        _write_file(root_fd, rel_path, _render_page_js(screen, module, matched_entity, matched_slug))
+        written[rel_path] = Path(rel_path)
         screens_written.append((screen, slug))
         note = (
             f"Server-rendered page for screen '{screen.name}', showing live "
@@ -580,8 +1070,8 @@ def _write_generated_app_tree(
     for module, flow in zip(flow_modules, spec.how_it_works.key_flows):
         slug = _unique_slug(flow_slugs, _slugify(flow.name))
         rel_path = f"src/flows/{slug}.js"
-        _write_file(root, rel_path, _render_flow_js(flow, module))
-        written[rel_path] = root / rel_path
+        _write_file(root_fd, rel_path, _render_flow_js(flow, module))
+        written[rel_path] = Path(rel_path)
         flows_written.append((flow, slug))
         manifest_modules.append(
             _manifest_entry(
@@ -614,8 +1104,8 @@ def _write_generated_app_tree(
                     "can resolve to it)."
                 )
             any_resolved_connector = True
-            _write_file(root, rel_path, renderer(integration_name, module, resolved))
-            written[rel_path] = root / rel_path
+            _write_file(root_fd, rel_path, renderer(integration_name, module, resolved))
+            written[rel_path] = Path(rel_path)
             operation_names = sorted({op.name for op in resolved.operations})
             side_effects = sorted({op.side_effect for op in resolved.operations})
             integrations_written.append(
@@ -650,8 +1140,8 @@ def _write_generated_app_tree(
                 )
             )
         else:
-            _write_file(root, rel_path, _render_integration_js(integration_name, module))
-            written[rel_path] = root / rel_path
+            _write_file(root_fd, rel_path, _render_integration_js(integration_name, module))
+            written[rel_path] = Path(rel_path)
             integrations_written.append(
                 _IntegrationRoute(
                     integration_name=integration_name, slug=slug, kind="stub", operation=None,
@@ -700,8 +1190,8 @@ def _write_generated_app_tree(
     if any_resolved_connector:
         infra_entries.append((_CONNECTOR_RUNTIME_REL_PATH, _render_connector_runtime_js()))
     for rel_path, content in infra_entries:
-        _write_file(root, rel_path, content)
-        written[rel_path] = root / rel_path
+        _write_file(root_fd, rel_path, content)
+        written[rel_path] = Path(rel_path)
         infra_files.append(rel_path)
 
     # Tests — from acceptance_criteria (deliverable: "acceptance_criteria
@@ -710,14 +1200,14 @@ def _write_generated_app_tree(
     # content.
     test_rel_path = ACCEPTANCE_TEST_REL_PATH
     _write_file(
-        root,
+        root_fd,
         test_rel_path,
         _render_acceptance_test_js(
             spec,
             entities=[(slug, entity) for slug, (entity, _) in entities_by_slug.items()],
         ),
     )
-    written[test_rel_path] = root / test_rel_path
+    written[test_rel_path] = Path(test_rel_path)
     if test_modules:
         for module in test_modules:
             manifest_modules.append(
@@ -760,10 +1250,10 @@ def _write_generated_app_tree(
         ),
     }
     manifest_rel_path = ".spec-engine/codegen-manifest.json"
-    _write_file(root, manifest_rel_path, json.dumps(manifest, indent=2, sort_keys=True))
-    written[manifest_rel_path] = root / manifest_rel_path
+    _write_file(root_fd, manifest_rel_path, json.dumps(manifest, indent=2, sort_keys=True))
+    written[manifest_rel_path] = Path(manifest_rel_path)
 
-    scaffold_written = write_scaffold_stub(spec, root, scaffold_plan=finalized_plan)
+    scaffold_written = _write_scaffold_stub_to_fd(spec, root_fd, finalized_plan)
     written.update(scaffold_written)
 
     return CodegenResult(written=written, scaffold_plan=finalized_plan, manifest=manifest)
@@ -799,11 +1289,138 @@ def _manifest_entry(
     }
 
 
-def _write_file(root: Path, rel_path: str, content: str) -> Path:
-    path = root / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
+def _write_file(root_fd: int, rel_path: str, content: str) -> Path:
+    """Write one generated file through a newly-created descriptor.
+
+    Never truncate a pathname entry that was merely inspected first. A
+    same-UID writer could replace such an entry with a hard link between a
+    lstat and an open using the truncation flag; truncating that descriptor would modify
+    the external inode. Removing the local directory entry is safe (unlink
+    does not dereference a symlink or mutate another hard-link name), and an
+    exclusive create then either gives this process a fresh leaf or fails if
+    anything appeared in the gap.
+    """
+    parent_fd, leaf = _open_output_parent(root_fd, rel_path)
+    try:
+        try:
+            # This removes only the staging-directory name. If it was a
+            # hardlink, its other names and their inode are untouched. A
+            # directory is deliberately not removed by this file writer.
+            os.unlink(leaf, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise SpecEngineError(
+                f"generate_app: cannot safely replace staged generated entry {rel_path!r}: {exc}."
+            ) from exc
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(leaf, flags, 0o666, dir_fd=parent_fd)
+        except FileExistsError as exc:
+            raise SpecEngineError(
+                f"generate_app: staged generated entry {rel_path!r} appeared while creating it exclusively. "
+                "Refusing to open an entry this call did not create."
+            ) from exc
+        except OSError as exc:
+            raise SpecEngineError(
+                f"generate_app: cannot create staged generated entry {rel_path!r} exclusively: {exc}."
+            ) from exc
+        try:
+            created = os.fstat(descriptor)
+            if not stat.S_ISREG(created.st_mode) or created.st_nlink != 1:
+                raise SpecEngineError(
+                    f"generate_app: staged generated entry {rel_path!r} is not a private fresh regular file."
+                )
+            _write_all(descriptor, content.encode("utf-8"))
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_fd)
+    return Path(rel_path)
+
+
+def _open_output_parent(root_fd: int, rel_path: str) -> Tuple[int, str]:
+    parts = Path(rel_path).parts
+    if not parts or Path(rel_path).is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise SpecEngineError(f"generate_app: generated file path {rel_path!r} is not a safe relative path.")
+    descriptor = os.dup(root_fd)
+    try:
+        for component in parts[:-1]:
+            display_path = Path(rel_path)
+            try:
+                observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, 0o755, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise SpecEngineError(
+                        f"generate_app: cannot create generated directory {component!r}: {exc}."
+                    ) from exc
+                observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+                raise SpecEngineError(
+                    f"generate_app: generated path component {component!r} is not a real directory."
+                )
+            child_fd = _open_existing_directory_entry(descriptor, component, display_path, observed)
+            os.close(descriptor)
+            descriptor = child_fd
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_staged_text(root_fd: int, rel_path: str) -> Optional[str]:
+    parent_fd, leaf = _open_output_parent(root_fd, rel_path)
+    try:
+        try:
+            descriptor = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), dir_fd=parent_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            _raise_existing_content_open_error(Path(rel_path), exc)
+        try:
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise SpecEngineError(f"generate_app: staged entry {rel_path!r} is not a regular file.")
+            chunks = []
+            while True:
+                chunk = os.read(descriptor, _EXISTING_CONTENT_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_fd)
+
+
+def _write_scaffold_stub_to_fd(
+    spec: SpecDocument, root_fd: int, scaffold_plan: ScaffoldPlan
+) -> Dict[str, Path]:
+    """Descriptor-relative counterpart to scaffold.write_scaffold_stub()."""
+    written: Dict[str, Path] = {}
+    scaffold_files = {
+        "SPEC.md": render_markdown(spec),
+        "spec.json": json.dumps(spec.to_log_record(), indent=2, sort_keys=True),
+        ".spec-engine/scaffold-plan.json": json.dumps(scaffold_plan.to_log_record(), indent=2, sort_keys=True),
+    }
+    for rel_path, content in scaffold_files.items():
+        _write_file(root_fd, rel_path, content)
+        written[rel_path] = Path(rel_path)
+
+    for directive_filename in ("CLAUDE.md", "AGENTS.md"):
+        existing = _read_staged_text(root_fd, directive_filename)
+        if existing is None:
+            _write_file(root_fd, directive_filename, SPEC_DIRECTIVE_BLOCK)
+        elif SPEC_DIRECTIVE_MARKER not in existing:
+            _write_file(root_fd, directive_filename, existing.rstrip() + "\n\n" + SPEC_DIRECTIVE_BLOCK)
+        written[directive_filename] = Path(directive_filename)
+    return written
 
 
 def _swap_aside_path(final_root: Path) -> Path:
@@ -819,10 +1436,10 @@ def _swap_aside_path(final_root: Path) -> Path:
     return final_root.parent / f".{final_root.name}.codegen-prev"
 
 
-def _recover_interrupted_publish(final_root: Path) -> None:
+def _recover_interrupted_publish(final_root: Path, parent_fd: Optional[int] = None) -> None:
     """Called unconditionally at the very start of every `generate_app()`
     call, before `has_existing_content` is decided — repairs the ONE
-    state a hard kill between `_publish_staged_app()`'s two `os.replace()`
+    state a hard kill between `_publish_staged_app()`'s two `os.rename()`
     calls (the `has_existing_content=True` branch) can leave behind:
     `final_root` swapped aside to `_swap_aside_path(final_root)` but never
     swapped back, because the process died before the second rename ran.
@@ -833,15 +1450,15 @@ def _recover_interrupted_publish(final_root: Path) -> None:
     silently publish fresh content straight over it: the real prior
     content sitting in the aside directory would never be looked at
     again, and is destroyed the moment this run's own publish succeeds.
-    This function closes that window by restoring the aside BEFORE this
-    run (or any run) gets a chance to draw that wrong conclusion; once
-    restored, `generate_app()`'s normal `has_existing_content` handling
-    takes back over and re-does the swap correctly.
-
-    The other interrupted-cleanup case — the second rename succeeded (so
-    `final_root` already holds the complete, correct new content) but the
-    final `shutil.rmtree(aside, ...)` never ran — is also repaired here:
-    the aside is stale prior content at that point, safe to discard.
+    There is no portable rename-by-file-descriptor primitive that can bind an
+    already-inspected aside directory to the later path-based restore.  An
+    attacker able to mutate this parent directory could replace `aside` with
+    a symlink after inspection and before a restore rename, making
+    `final_root` point outside the intended tree.  Therefore recovery is
+    deliberately fail-closed: any reserved aside path is preserved for an
+    operator to inspect and restore manually.  Ordinary runs (where aside is
+    absent) remain unaffected; a crash or cleanup interruption requires an
+    explicit human decision rather than an unsafe automatic rename/delete.
 
     Any state this function cannot safely reconcile — concretely, the
     aside path existing but not being a directory (including a symlink,
@@ -851,69 +1468,154 @@ def _recover_interrupted_publish(final_root: Path) -> None:
     something there) and is never silently guessed at: this raises
     `SpecEngineError` rather than risk restoring, or discarding, the
     wrong thing."""
+    owns_parent_fd = parent_fd is None
+    if parent_fd is None:
+        parent_fd = _open_target_parent_safely(final_root)
     aside = _swap_aside_path(final_root)
+    aside_name = aside.name
+    try:
+        try:
+            aside_stat = os.stat(aside_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise SpecEngineError(
+                f"generate_app: cannot safely inspect reserved recovery path {aside}: {exc}."
+            ) from exc
 
-    # Symlink check FIRST, via `os.path.islink()` (an `os.lstat()`-based
-    # check that does NOT follow the link) — before anything below that
-    # WOULD follow it (`Path.exists()` and `Path.is_dir()` both resolve
-    # through symlinks). `_publish_staged_app()`'s two `os.replace()`
-    # calls only ever move a real directory into/out of this exact path,
-    # so a symlink here is never something this module itself created;
-    # its presence is genuinely ambiguous and must fail loud rather than
-    # be silently followed (PR #156 review round 2, Cyra, MEDIUM: the
-    # prior `aside.is_dir()` check would have let a planted symlink either
-    # bypass the stale-aside `rmtree` below — `rmtree` refuses to operate
-    # on a top-level symlink and `ignore_errors=True` swallows that
-    # refusal — or, worse, get renamed onto `final_root` by the restore
-    # branch, making `target_dir` itself become a symlink to wherever the
-    # symlink pointed). `os.path.islink()` returns False for a
-    # non-existent path, so this is safe to check unconditionally, before
-    # the existence check below.
-    if os.path.islink(aside):
+        if stat.S_ISLNK(aside_stat.st_mode):
+            raise SpecEngineError(
+                f"generate_app: {aside} exists and is a symlink. This path is reserved for "
+                "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+                "creates it as a symlink — refusing to follow it (which could restore a symlink onto "
+                f"{final_root} or silently no-op past it during stale-aside cleanup) or guess whether it "
+                f"is safe to remove outright. Move or remove {aside} by hand (after confirming what it "
+                "actually is) before regenerating."
+            )
+
+        if not stat.S_ISDIR(aside_stat.st_mode):
+            raise SpecEngineError(
+                f"generate_app: {aside} exists but is not a directory. This path is reserved for "
+                "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
+                "creates it as anything else — refusing to guess whether it is safe to restore into "
+                f"{final_root} or delete outright. Move or remove {aside} by hand (after confirming "
+                "what it actually is) before regenerating."
+            )
+
         raise SpecEngineError(
-            f"generate_app: {aside} exists and is a symlink. This path is reserved for "
-            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
-            "creates it as a symlink — refusing to follow it (which could restore a symlink onto "
-            f"{final_root} or silently no-op past it during stale-aside cleanup) or guess whether it "
-            f"is safe to remove outright. Move or remove {aside} by hand (after confirming what it "
-            "actually is) before regenerating."
+            f"generate_app: reserved recovery directory {aside} exists. It may contain a prior "
+            "target_dir following an interrupted publish, but automatic recovery is disabled because "
+            "a concurrently writable parent directory cannot safely bind that path to a later rename. "
+            f"Inspect and restore or remove {aside} manually before regenerating; {final_root} was left untouched."
+        )
+    finally:
+        if owns_parent_fd:
+            os.close(parent_fd)
+
+
+def _require_publish_parent_isolation(
+    parent_fd: int, final_root: Path, expected_target_identity: Optional[os.stat_result]
+) -> None:
+    """Reject an immediately unsafe *cross-account* publish parent.
+
+    POSIX has no inode-bound rename primitive. In an ordinary private parent,
+    a different account normally cannot mutate stage/final names; in a sticky
+    shared directory (such as /private/var/tmp), the kernel protects entries
+    owned by this account. A non-sticky group/world-writable parent provides
+    neither property, so no pre-rename identity observation can make
+    publication safe against another account.
+
+    This is intentionally not described as same-UID isolation: a process
+    running as the caller can mutate child entries in the staging or target
+    tree before, during, or after this call. The final descriptor check can
+    detect only a root-entry replacement that exists at its validation point;
+    it does not attest descendant contents. Hostile same-UID writers require
+    an isolated account or container/mount namespace.
+    """
+    parent_stat = os.fstat(parent_fd)
+    writable_by_others = bool(parent_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+    if not writable_by_others:
+        return
+    if not parent_stat.st_mode & stat.S_ISVTX:
+        raise SpecEngineError(
+            f"generate_app: target_dir parent {final_root.parent} is group/world writable without the "
+            "sticky bit. POSIX cannot bind an inspected stage or target inode to a later rename in "
+            "that directory; choose a private parent directory instead."
+        )
+    if expected_target_identity is not None and expected_target_identity.st_uid != os.geteuid():
+        raise SpecEngineError(
+            f"generate_app: target_dir {final_root} is in a shared sticky parent but is not owned by "
+            "the current account. Refusing a publication another account could race."
         )
 
-    if not aside.exists():
-        # The overwhelmingly common case: no prior swap was ever
-        # interrupted (either none was ever attempted against this
-        # `target_dir`, or the last one that was ran to completion,
-        # cleanup included). Nothing to reconcile.
-        return
 
-    if not aside.is_dir():
+def _assert_entry_matches_fd(parent_fd: int, name: str, expected_fd: int, display_path: Path, kind: str) -> None:
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
         raise SpecEngineError(
-            f"generate_app: {aside} exists but is not a directory. This path is reserved for "
-            "_publish_staged_app()'s rename-aside-swap recovery and nothing in this module ever "
-            "creates it as anything else — refusing to guess whether it is safe to restore into "
-            f"{final_root} or delete outright. Move or remove {aside} by hand (after confirming "
-            "what it actually is) before regenerating."
-        )
-
-    if not final_root.exists():
-        # Interrupted between the two os.replace() calls: the original
-        # content is intact in `aside`; `final_root` is absent. Restore
-        # it FIRST so this run — and every check `generate_app()` makes
-        # after this one returns — sees the real, pre-crash state.
-        os.replace(aside, final_root)
-        return
-
-    # `final_root` exists AND `aside` exists: the second rename already
-    # completed (`final_root` holds the fully-published new content) but
-    # the trailing `shutil.rmtree(aside, ...)` cleanup step never ran.
-    # `aside` is stale prior content now — safe to discard.
-    shutil.rmtree(aside, ignore_errors=True)
+            f"_publish_staged_app: {kind} {display_path} disappeared during publication: {exc}."
+        ) from exc
+    _require_stable_identity(observed, os.fstat(expected_fd), display_path, kind)
 
 
-def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_content: bool) -> None:
+def _verify_published_target_before_return(final_root: Path, parent_fd: int, stage_fd: int) -> None:
+    """Fail closed if a publish-time target replacement lands before return.
+
+    The returned ``CodegenResult`` must not describe a tree that was swapped
+    between publish and the final validation. The check is descriptor-backed
+    and any mismatched directory entry is quarantined where possible. A
+    same-UID process can still mutate the result *after* this check (and after
+    return); POSIX provides no primitive to eliminate that separate boundary.
+    """
+    _verify_target_parent_binding(final_root, parent_fd)
+    final_name = _target_name(final_root)
+    try:
+        _assert_entry_matches_fd(parent_fd, final_name, stage_fd, final_root, "published staging directory")
+    except SpecEngineError as exc:
+        quarantine = _quarantine_untrusted_publish_entry(parent_fd, final_name, final_root)
+        location = f" quarantined at {quarantine}" if quarantine is not None else " left untouched"
+        raise SpecEngineError(
+            f"generate_app: target_dir identity changed after publication but before result return; "
+            f"refusing to return paths that may be attacker-controlled and{location}."
+        ) from exc
+
+
+def _quarantine_untrusted_publish_entry(parent_fd: int, name: str, final_root: Path) -> Optional[Path]:
+    """Move a post-rename mismatch out of target_dir without deleting it."""
+    prefix = f".{_target_name(final_root)}.codegen-rejected-"
+    for _ in range(32):
+        quarantine_name = prefix + secrets.token_hex(16)
+        try:
+            os.stat(quarantine_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        else:
+            continue
+        try:
+            os.rename(name, quarantine_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            continue
+        return final_root.parent / quarantine_name
+    return None
+
+
+def _publish_staged_app(
+    stage_name: str,
+    stage_fd: int,
+    final_root: Path,
+    parent_fd: int,
+    *,
+    has_existing_content: bool,
+    expected_target_identity: Optional[os.stat_result],
+) -> None:
     """The ONE moment `generate_app()` ever touches `final_root` (the
-    caller's real `target_dir`): a same-filesystem `os.replace()` — a
-    single atomic rename syscall — swaps the fully-written `stage_root`
+    caller's real `target_dir`): a same-filesystem, descriptor-relative `os.rename()` — a
+    single atomic rename syscall — swaps the fully-written staging tree
     into `final_root`'s place. Nothing before this call has written
     anything to `final_root` itself, so a process killed at any point up
     to (but not including) this call leaves `final_root` exactly as
@@ -923,10 +1625,10 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
     state or the complete new tree, never a mix of the two.
 
     When `final_root` already held real content (`has_existing_content`),
-    a direct `os.replace(stage_root, final_root)` is refused by the OS —
+    a direct rename of the stage onto `final_root` is refused by the OS —
     POSIX `rename(2)` only replaces a directory target that is missing or
     EMPTY, never a non-empty one (verified empirically on this repo's
-    target platforms: `os.replace()` onto an existing non-empty directory
+    target platforms: a rename onto an existing non-empty directory
     raises `OSError: [Errno 66] Directory not empty` on macOS/BSD, or
     `OSError: [Errno 39] Directory not empty` on Linux — the code below
     does not branch on the errno value either way, since the safe
@@ -934,7 +1636,7 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
     true, regardless of platform) — so the prior tree is first atomically
     renamed aside to `_swap_aside_path(final_root)` (still exactly one
     atomic rename; a DETERMINISTIC path, not a random one — see that
-    function's docstring for why), `stage_root` then takes `final_root`'s
+    function's docstring for why), the staging tree then takes `final_root`'s
     place, and the aside is removed.
 
     Between those two renames `final_root` is briefly ABSENT. UNLIKE a
@@ -951,12 +1653,70 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
     is two syscalls with nothing to catch a `SIGKILL` between them; the
     recovery guarantee lives one level up, in `generate_app()`, by
     design."""
+    final_name = _target_name(final_root)
+    stage_display = final_root.parent / stage_name
+    _require_publish_parent_isolation(parent_fd, final_root, expected_target_identity)
+    try:
+        observed_stage = os.stat(stage_name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise SpecEngineError(
+            f"_publish_staged_app: descriptor-anchored staging directory {stage_display} disappeared "
+            f"before publish: {exc}. Refusing to publish an unstable stage."
+        ) from exc
+    _require_stable_identity(observed_stage, os.fstat(stage_fd), stage_display, "staging directory")
+
+    try:
+        current_target = os.stat(final_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        current_target = None
+    except OSError as exc:
+        raise SpecEngineError(f"_publish_staged_app: cannot inspect target_dir {final_root}: {exc}.") from exc
+
+    if expected_target_identity is None:
+        if current_target is not None:
+            raise SpecEngineError(
+                f"_publish_staged_app: target_dir {final_root} appeared after staging began. "
+                "Refusing to replace a concurrently-created target."
+            )
+    else:
+        if current_target is None:
+            raise SpecEngineError(
+                f"_publish_staged_app: target_dir {final_root} disappeared after staging began. "
+                "Refusing to publish over an unstable target."
+            )
+        _require_stable_identity(
+            expected_target_identity, current_target, final_root, "target_dir directory"
+        )
+
     if not has_existing_content:
-        os.replace(stage_root, final_root)
+        try:
+            os.rename(stage_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except OSError as exc:
+            raise SpecEngineError(
+                f"_publish_staged_app: cannot atomically publish staged content into {final_root}: {exc}."
+            ) from exc
+        try:
+            _assert_entry_matches_fd(parent_fd, final_name, stage_fd, final_root, "published staging directory")
+        except SpecEngineError as exc:
+            quarantine = _quarantine_untrusted_publish_entry(parent_fd, final_name, final_root)
+            location = f" quarantined at {quarantine}" if quarantine is not None else " left untouched"
+            raise SpecEngineError(
+                f"_publish_staged_app: stage-name identity changed across the atomic rename into "
+                f"{final_root}; refusing to return a target that may be attacker-controlled and{location}."
+            ) from exc
         return
 
     aside = _swap_aside_path(final_root)
-    if aside.exists():
+    aside_name = aside.name
+    try:
+        os.stat(aside_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise SpecEngineError(
+            f"_publish_staged_app: cannot inspect reserved aside {aside}: {exc}. Refusing to publish."
+        ) from exc
+    else:
         # `_recover_interrupted_publish()` unconditionally reconciles or
         # clears this exact path at the start of every `generate_app()`
         # call, before staging even begins — by construction, it should
@@ -973,17 +1733,56 @@ def _publish_staged_app(stage_root: Path, final_root: Path, *, has_existing_cont
             "(not supported); refusing to publish rather than risk clobbering or losing content."
         )
 
-    os.replace(final_root, aside)
     try:
-        os.replace(stage_root, final_root)
-    except BaseException:
-        # Both renames' preconditions are already satisfied by the time
-        # the first one runs; nothing in this module can make the second
-        # one fail after the first succeeds. Restore rather than leave
-        # `final_root` absent if it somehow does anyway.
-        os.replace(aside, final_root)
-        raise
-    shutil.rmtree(aside, ignore_errors=True)
+        os.rename(final_name, aside_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    except OSError as exc:
+        raise SpecEngineError(
+            f"_publish_staged_app: cannot atomically preserve existing target_dir at {aside}: {exc}."
+        ) from exc
+    try:
+        # Check the destination of the first rename, not merely the source
+        # observed before it. A race here leaves final_root absent and stops
+        # before the staged tree can be published.
+        expected_target_fd = _open_existing_directory_entry(
+            parent_fd, aside_name, aside, expected_target_identity
+        )
+    except SpecEngineError as exc:
+        raise SpecEngineError(
+            f"_publish_staged_app: target_dir identity changed across preservation rename to {aside}. "
+            "Staged content was not published; inspect the reserved aside manually."
+        ) from exc
+    else:
+        os.close(expected_target_fd)
+    try:
+        os.rename(stage_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    except BaseException as exc:
+        # Do not restore with a pathname rename: another writer could swap
+        # the reserved aside path after this function observed it. Preserve
+        # the prior tree for explicit operator recovery instead.
+        raise SpecEngineError(
+            f"_publish_staged_app: publishing staged content failed after preserving the prior "
+            f"target_dir at {aside}. Automatic restore is disabled because that reserved path could "
+            "be replaced concurrently; inspect and restore it manually."
+        ) from exc
+    try:
+        _assert_entry_matches_fd(parent_fd, final_name, stage_fd, final_root, "published staging directory")
+    except SpecEngineError as exc:
+        quarantine = _quarantine_untrusted_publish_entry(parent_fd, final_name, final_root)
+        location = f" quarantined at {quarantine}" if quarantine is not None else " left untouched"
+        raise SpecEngineError(
+            f"_publish_staged_app: stage-name identity changed across the atomic rename into {final_root}; "
+            f"the prior target remains at {aside}, and the mismatched published entry was{location}."
+        ) from exc
+    try:
+        _remove_directory_tree_at(parent_fd, aside_name)
+    except OSError as exc:
+        # The new app is live. Preserve an unremoved aside rather than
+        # attempting a second pathname cleanup; next invocation stops on the
+        # reserved recovery path and asks for explicit operator handling.
+        raise SpecEngineError(
+            f"_publish_staged_app: new app published at {final_root}, but could not safely remove "
+            f"reserved prior-content directory {aside}: {exc}. Inspect it manually before regenerating."
+        ) from exc
 
 
 # --------------------------------------------------------------------------
