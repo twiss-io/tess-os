@@ -38,6 +38,23 @@
 // its own file (rather than appended to that already-420-line file) since
 // #146 is its own tracked, numbered issue with its own named vectors.
 //
+// ★★ PR #170 second security re-review (Reid HIGH) — WIDENED beyond #146's
+// original Cf-only scope. `\p{Cf}` is exhaustive over Unicode's
+// format-control block but NOT over the full Default_Ignorable_Code_Point
+// derived property: the Hangul filler family (U+115F HANGUL CHOSEONG
+// FILLER, U+1160 HANGUL JUNGSEONG FILLER, U+3164 HANGUL FILLER — general
+// category `Lo`, not `Cf`, not `\p{M}`) survived the #146 fix untouched and
+// defeated exclusion on this PR's own post-#146-fix code, reproduced live
+// through the REAL `makeCopyFilter` scaffold-copy path — see
+// src/pathnorm.js's header comment for the full risk-language correction
+// (the "inode arm backstops it, not an active leak" framing in issue #146
+// and this PR's original body was empirically disproved) and
+// test/secrets-nested-noise-dir-copy-filter.test.js for the fs-level
+// `makeCopyFilter` proof. `src/pathnorm.js`'s `normalizeComponent` now strips
+// `\p{Default_Ignorable_Code_Point}` (a strict superset of `\p{Cf}`) instead
+// of `\p{Cf}` alone; every test below tagged "PR #170" locks that widening at
+// this file's `isExcludedRel` surface, alongside the pre-existing #146 locks.
+//
 // Every assertion below is FS-independent — pure string input to
 // `isExcludedRel`, no disk I/O, so it runs identically on every CI runner
 // (this repo's Linux ext4 runner included) with no platform gating needed,
@@ -83,6 +100,64 @@ test('★★ #146 regression lock: a combining-only (lone combining mark, no bas
   );
 });
 
+// ★★ HIGH regression lock (Reid, PR #170 second security re-review) —
+// `isExcludedRel`-surface: the Hangul-filler family (U+115F/U+1160/U+3164 —
+// general category `Lo`, part of Unicode's Default_Ignorable_Code_Point
+// derived property but NOT `\p{Cf}` and NOT `\p{M}`) interposed within
+// `.tess/keys/verifiers` must not defeat exclusion, exactly like the three
+// #146 vectors above. Verified directly against the CURRENT (pre-this-fix)
+// PR-170 branch — i.e. AFTER the #146 `\p{Cf}`-only fix already landed —
+// before writing this fix: all three returned `false` (KEPT — the bug).
+// Reid additionally proved this exact vector defeats the REAL scaffold-copy
+// path (`makeCopyFilter`, not just this string-only `isExcludedRel` check)
+// with a live on-disk fixture — see
+// test/secrets-nested-noise-dir-copy-filter.test.js for that fs-level lock.
+test('★★ HIGH regression lock (Reid, PR #170): a Hangul-filler (U+115F HANGUL CHOSEONG FILLER) noise component interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  assert.equal(
+    isExcludedRel('.tess/ᅟ/keys/verifiers/cyra.asc'),
+    true,
+    'a HANGUL CHOSEONG FILLER (U+115F) directory component interposed within the forbidden .tess/keys/verifiers prefix must not defeat exclusion',
+  );
+});
+
+test('★★ HIGH regression lock (Reid, PR #170): a Hangul-filler (U+1160 HANGUL JUNGSEONG FILLER) noise component interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  assert.equal(
+    isExcludedRel('.tess/ᅠ/keys/verifiers/cyra.asc'),
+    true,
+    'a HANGUL JUNGSEONG FILLER (U+1160) directory component interposed within the forbidden .tess/keys/verifiers prefix must not defeat exclusion',
+  );
+});
+
+test('★★ HIGH regression lock (Reid, PR #170): a Hangul-filler (U+3164 HANGUL FILLER) noise component interposed within .tess/keys/verifiers does not defeat exclusion', () => {
+  assert.equal(
+    isExcludedRel('.tess/ㅤ/keys/verifiers/cyra.asc'),
+    true,
+    'a HANGUL FILLER (U+3164) directory component interposed within the forbidden .tess/keys/verifiers prefix must not defeat exclusion',
+  );
+});
+
+// Sweep across every EXCLUDE_DIR_PREFIXES / EXCLUDE_CONTENT_PREFIXES root —
+// the noise component is interposed WITHIN each prefix (breaking its own
+// contiguous string match, the actual vulnerable position — mirroring the
+// exact structural position of the `.tess/<noise>/keys/verifiers` vectors
+// above), NOT merely nested underneath an already-matched prefix (that
+// shape is already safe by construction — whole-subtree `startsWith`
+// matching does not care what is nested further down — see the "already-safe
+// shape" sanity test in test/secrets-nested-noise-dir-copy-filter.test.js).
+// Verified directly against the CURRENT (pre-this-fix) PR-170 branch: all
+// four returned `false` (KEPT — the bug) pre-fix.
+test('★ PR #170: the Hangul-filler noise-component vector is closed against every EXCLUDE_DIR_PREFIXES / EXCLUDE_CONTENT_PREFIXES root, not just one', () => {
+  const vectors = [
+    ['.claude/ᅟ/tess-secrets/token.env', 'EXCLUDE_DIR_PREFIXES: .claude/tess-secrets'],
+    ['.claude/ᅠ/channels/access.json', 'EXCLUDE_DIR_PREFIXES: .claude/channels'],
+    ['.tess/ㅤ/keys/signoffs/xavier.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs'],
+    ['.tess/ᅟ/state/memory/real.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/memory'],
+  ];
+  for (const [p, label] of vectors) {
+    assert.equal(isExcludedRel(p), true, `${label}: Hangul-filler noise component interposed within the prefix must not defeat exclusion — isExcludedRel(${JSON.stringify(p)})`);
+  }
+});
+
 // Every other EXCLUDE_DIR_PREFIXES / EXCLUDE_CONTENT_PREFIXES root is subject
 // to the identical root cause, not just `.tess/keys/verifiers` — the same
 // breadth Reid's HIGH fix (PR #145) itself proved against a second root.
@@ -125,8 +200,11 @@ test('★ #146: multiple noise components/codepoints in the same path do not def
 });
 
 // Sanity: the canonical (noise-free) forms are excluded too, as a baseline —
-// mirrors secrets-casefold-bypass.test.js's own convention.
-test('sanity: canonical (noise-free) forms of every #146 vector path are excluded', () => {
+// mirrors secrets-casefold-bypass.test.js's own convention. Include the
+// Hangul-filler vectors' canonical forms too (same paths as above, minus the
+// noise component) so this sanity check isn't scoped only to the original
+// #146 vectors.
+test('sanity: canonical (noise-free) forms of every #146/PR-170 vector path are excluded', () => {
   for (const p of [
     '.tess/keys/verifiers/cyra.asc',
     '.claude/tess-secrets/token.env',
@@ -149,6 +227,14 @@ test('sanity: canonical (noise-free) forms of every #146 vector path are exclude
 test('negative control (#146 fix): a noise component NOT within any forbidden prefix does not spuriously exclude an ordinary file', () => {
   assert.equal(isExcludedRel('docs/​/notes/README.md'), false, 'an ordinary nested path with a zero-width-space noise component must still be kept');
   assert.equal(isExcludedRel('docs/­/notes/README.md'), false, 'an ordinary nested path with a soft-hyphen noise component must still be kept');
+});
+
+// Same negative control, PR #170 widening: a Hangul-filler noise component
+// NOT within any forbidden prefix must not spuriously exclude an ordinary
+// file either.
+test('negative control (PR #170 fix): a Hangul-filler noise component NOT within any forbidden prefix does not spuriously exclude an ordinary file', () => {
+  assert.equal(isExcludedRel('docs/ᅟ/notes/README.md'), false, 'an ordinary nested path with a HANGUL CHOSEONG FILLER noise component must still be kept');
+  assert.equal(isExcludedRel('docs/ㅤ/notes/README.md'), false, 'an ordinary nested path with a HANGUL FILLER noise component must still be kept');
 });
 
 // ★ The DELIBERATELY REJECTED broader interpretation, made explicit: this

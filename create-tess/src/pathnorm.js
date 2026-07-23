@@ -95,6 +95,42 @@
 // closed — the interposed segment breaks the contiguous comparison while
 // remaining, under the old rule, a "real" segment.
 //
+// ★★ HIGH (Reid, PR #170 second security re-review) — RISK-LANGUAGE
+// CORRECTION. This corrects both issue #146's own "Why it is narrow"
+// section and this PR's original body text, both of which claimed "the
+// inode arm already backstops the real key roots... not an active leak".
+// That claim is FALSE for exactly the vector class named above and was
+// empirically DISPROVED with a real on-disk fixture run through the actual
+// scaffold-copy filter, `makeCopyFilter` — not just the string-only
+// `isExcludedRel` — for BOTH the originally-named vectors (pre-#170 fix)
+// and, before this fix, for the Hangul-filler addition below:
+//   isExcludedRel('.tess/<noise>/keys/verifiers/cyra.asc')       -> false (KEPT)
+//   makeCopyFilter(srcRoot)(<abs path to that file>)             -> true  (COPY — leak)
+// The inode/stat arm in `makeCopyFilter` (ignore.js, `forbiddenStats` +
+// `ancestorStatCache`) walks `src`'s ancestors and compares each one's
+// `(dev, ino)` against the FOUR resolved `EXCLUDE_DIR_PREFIXES` roots. That
+// only catches SAME-DIRECTORY aliasing — a case-fold or NFC/NFD-divergent
+// STRING that still resolves to the identical physical inode as, say,
+// `.tess/keys/verifiers` (the CRITICAL bug PR #145 fixed). It provides
+// **zero** protection when the noise component is a genuinely separate,
+// real, differently-inoded directory interposed BEFORE the forbidden root
+// is ever reached (`.tess/<noise>/keys/verifiers` is never the same
+// directory as `.tess/keys/verifiers` — different inode, full stop) —
+// which is exactly the shape of every vector named in this file, #146's
+// three original vectors included. The accurate statement: the STRING arm
+// (`normalizeComponent`/`normalizePath`, this file) is the ONLY guard for
+// this vector class; the inode arm is a different, narrower control that
+// backstops a different bug (case/Unicode-form aliasing of the SAME
+// directory), not this one (a genuinely nested, separate directory). Any
+// future comment, PR body, or issue in this repo describing this vector
+// class must not repeat the "inode-backstopped, not an active leak"
+// framing — it is empirically false and was the direct cause of #146
+// (correctly) closing as CRITICAL-adjacent-but-deferred when it should have
+// been treated as a live gap. See
+// test/secrets-nested-noise-dir-copy-filter.test.js for the fs-level,
+// real-`makeCopyFilter`-call proof (both pre-fix failing and post-fix
+// passing) that closes this specific mischaracterization.
+//
 // FIX — extend the SAME normalize-to-empty mechanism, not a new one:
 //   1. Strip every Cf-category codepoint from the ENTIRE component (not
 //      only a trailing run) — `\p{Cf}` is exhaustive over Unicode's format-
@@ -136,11 +172,37 @@
 //      for the empirically-verified (buggy-before / correct-after)
 //      regression lock on all three named vectors, plus the café negative
 //      control proving this fix does not regress the existing one.
-const FORMAT_CONTROL_RE = /\p{Cf}/gu;
+// ★★ HIGH FIX (Reid, PR #170) — widen from `\p{Cf}` to
+// `\p{Default_Ignorable_Code_Point}`. THE GAP: `\p{Cf}` is exhaustive over
+// Unicode's format-control block but is NOT a superset of Unicode's
+// Default_Ignorable_Code_Point derived property — HANGUL CHOSEONG FILLER
+// (U+115F), HANGUL JUNGSEONG FILLER (U+1160), and HANGUL FILLER (U+3164)
+// are general category `Lo` (Letter, other) — real, standard, genuinely
+// invisible-when-rendered Unicode characters, NOT `Cf` and NOT `\p{M}` —
+// and survived the #146 fix (`\p{Cf}`-only) completely untouched, on this
+// PR's OWN post-#146-fix code, reproduced live: `.tess/<U+115F>/keys/
+// verifiers/cyra.asc` stayed KEPT by `isExcludedRel` and COPIED by
+// `makeCopyFilter`. `\p{Default_Ignorable_Code_Point}` is a strict superset
+// of `\p{Cf}` (verified: every #146-named vector — ZWSP U+200B, soft hyphen
+// U+00AD, ZWNJ/ZWJ, BOM/ZWNBSP U+FEFF, bidi marks, word joiner — is
+// Default_Ignorable too, so this is a pure widening, not a behavior change
+// for any already-closed vector) that ALSO covers the Hangul filler family
+// and variation selectors, and is natively supported as a Unicode property
+// escape on Node >=18 (this package's own `engines` floor) with no
+// polyfill. Verified directly, alongside this change, that it does NOT
+// match ordinary printable text of any script (café, 日本支店) —
+// Default_Ignorable_Code_Point is specifically the set Unicode itself
+// defines as "should generally be ignored for rendering/processing", the
+// same intent this filter needs. See test/pathnorm.test.js (primitive
+// level), test/secrets-noise-component-bypass.test.js (`isExcludedRel`
+// surface), and test/secrets-nested-noise-dir-copy-filter.test.js
+// (`makeCopyFilter` fs-level surface — the actual scaffold-copy path) for
+// the Hangul-filler regression lock, each verified fail-against-pre-this-fix.
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
 const COMBINING_ONLY_RE = /^\p{M}+$/u;
 
 export function normalizeComponent(c) {
-  const stripped = c.normalize('NFC').toLowerCase().replace(FORMAT_CONTROL_RE, '').replace(/[. ]+$/, '');
+  const stripped = c.normalize('NFC').toLowerCase().replace(DEFAULT_IGNORABLE_RE, '').replace(/[. ]+$/, '');
   return COMBINING_ONLY_RE.test(stripped) ? '' : stripped;
 }
 

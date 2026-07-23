@@ -93,6 +93,39 @@ test('negative control (#146 fix): an ordinary accented component (no Cf/combini
   assert.equal(normalizeComponent('CAFÉ'), 'café');
 });
 
+// ★★ HIGH regression lock (Reid, PR #170 second security re-review) — the
+// primitive-level assertion for the Default_Ignorable_Code_Point widening:
+// a component composed ENTIRELY of a Hangul filler codepoint (U+115F, U+1160,
+// U+3164 — general category `Lo`, NOT `Cf` and NOT `\p{M}`, so the #146 fix's
+// `\p{Cf}`-only strip did NOT catch these) also collapses to the EMPTY
+// STRING. Verified directly against the pre-this-fix module (git stash the
+// `\p{Cf}` -> `\p{Default_Ignorable_Code_Point}` widening, rerun this exact
+// assertion): all three returned the UN-stripped, non-empty component
+// pre-fix — i.e. these vectors survive on the CURRENT (pre-#170-fix) PR-170
+// branch, not just on unpatched `main`.
+test('★★ HIGH regression lock (Reid, PR #170): a component composed entirely of Hangul-filler codepoints normalizes to the empty string', () => {
+  assert.equal(normalizeComponent('ᅟ'), '', 'a lone HANGUL CHOSEONG FILLER (U+115F, Lo, Default_Ignorable) must normalize to empty');
+  assert.equal(normalizeComponent('ᅠ'), '', 'a lone HANGUL JUNGSEONG FILLER (U+1160, Lo, Default_Ignorable) must normalize to empty');
+  assert.equal(normalizeComponent('ㅤ'), '', 'a lone HANGUL FILLER (U+3164, Lo, Default_Ignorable) must normalize to empty');
+  assert.equal(normalizeComponent('ᅟᅠ'), '', 'stacked Hangul fillers (no base) must normalize to empty');
+});
+
+// Embedded (not whole-component) Hangul-filler noise — same closure as the
+// #146 embedded-Cf test above, extended to the widened codepoint set.
+test('★ PR #170: a Hangul-filler codepoint embedded inside an otherwise-ordinary component is stripped, not just a whole-component match', () => {
+  assert.equal(normalizeComponent('kᅟeys'), 'keys', 'an embedded HANGUL CHOSEONG FILLER inside "keys" must be stripped to reveal "keys"');
+  assert.equal(normalizeComponent('verifㅤiers'), 'verifiers', 'an embedded HANGUL FILLER inside "verifiers" must be stripped to reveal "verifiers"');
+});
+
+// Negative control (PR #170 fix): re-confirm the café/日本支店-shaped negative
+// control survives the WIDER Default_Ignorable_Code_Point strip, not just
+// the narrower Cf-only strip #146 shipped with — the widening must not
+// regress ordinary printable Unicode text of any script.
+test('negative control (PR #170 fix): ordinary printable Unicode (no Default_Ignorable/combining-only content) remains unaffected by the widened strip', () => {
+  assert.equal(normalizeComponent('café'), 'café');
+  assert.equal(normalizeComponent('日本支店'), '日本支店');
+});
+
 test('★ NFC/NFD regression lock: normalizeComponent converges NFC-composed and NFD-decomposed forms of the identical grapheme', () => {
   const composed = 'É'; // U+00C9 — single precomposed codepoint
   const decomposed = 'É'.normalize('NFD'); // U+0045 U+0301 — "E" + COMBINING ACUTE ACCENT
@@ -176,6 +209,34 @@ test('★★ #146 regression lock: normalizePath drops a Cf/zero-width/soft-hyph
     normalizePath('.tess/state/​/memory/real.json'),
     '.tess/state/memory/real.json',
     'the same #146 noise-component vector against EXCLUDE_CONTENT_PREFIXES, not just EXCLUDE_DIR_PREFIXES',
+  );
+});
+
+// ★★ HIGH regression lock (Reid, PR #170), primitive level — the FIX itself
+// at normalizePath's join surface: a Hangul-filler noise component
+// interposed WITHIN a forbidden-prefix-shaped path must vanish from the
+// joined path exactly like the #146 Cf vectors above, collapsing back to
+// the canonical form so the (unchanged) downstream `startsWith` prefix
+// match in ignore.js fires correctly. Empirically verified against the
+// pre-#170-fix module (git stash the Default_Ignorable widening): all three
+// vectors below normalized to a STRING CONTAINING the noise codepoint (not
+// the canonical collapsed form) pre-fix — reproducing Reid's exact finding
+// at the primitive level.
+test('★★ HIGH regression lock (Reid, PR #170): normalizePath drops a Hangul-filler noise component interposed within a forbidden-prefix path', () => {
+  assert.equal(
+    normalizePath('.tess/ᅟ/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone HANGUL CHOSEONG FILLER (U+115F) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/ᅠ/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone HANGUL JUNGSEONG FILLER (U+1160) directory component must vanish, not defeat the prefix match',
+  );
+  assert.equal(
+    normalizePath('.tess/ㅤ/keys/verifiers/cyra.asc'),
+    '.tess/keys/verifiers/cyra.asc',
+    'a lone HANGUL FILLER (U+3164) directory component must vanish, not defeat the prefix match',
   );
 });
 
