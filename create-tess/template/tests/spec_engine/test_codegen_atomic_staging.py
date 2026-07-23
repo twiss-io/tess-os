@@ -5,7 +5,7 @@ already claims `codegen_status: "generated"` while other generated files
 are still missing — sitting in `target_dir` if the process is killed
 mid-generation. Also covers the rename-aside-swap recovery mechanism
 (PR #156 review round 2, both reviewers HIGH): a kill between
-`_publish_staged_app()`'s two `os.replace()` calls must not let the
+`_publish_staged_app()`'s two atomic renames must not let the
 NEXT `generate_app()` call silently destroy the orphaned original
 `target_dir` content.
 
@@ -17,7 +17,8 @@ Three classes of proof:
     window (a signal Python cannot catch or clean up after), then assert
     on the resulting state — never a partial mix, and (for the
     rename-aside-swap window specifically) that the orphaned original
-    content is RECOVERED, not destroyed, by the very next call. One test
+    content is PRESERVED for explicit recovery, not destroyed by the next
+    call. One test
     kills right after the VERY FIRST file write; one kills right after
     `.spec-engine/codegen-manifest.json` is written but BEFORE
     `write_scaffold_stub()`'s own writes (`SPEC.md`/`CLAUDE.md`/...) run
@@ -30,14 +31,10 @@ Three classes of proof:
   - **Clean-exception-path test**: a mid-generation `raise` (catchable,
     unlike SIGKILL) must ALSO leave `target_dir` untouched, and must not
     leave an orphaned staging directory behind either.
-  - **Direct unit tests on `_recover_interrupted_publish()`**: the other
-    interrupted-cleanup case (second rename succeeded, trailing
-    `shutil.rmtree(aside, ...)` never ran), the fail-loud path for a
-    genuinely ambiguous non-directory aside state, and the fail-loud path
-    for a symlink planted at the aside path (PR #156 review round 2,
-    Cyra, MEDIUM — a symlink there must never be followed), exercised
-    directly rather than via a subprocess kill (nothing about any of
-    these cases needs a real kill to reproduce).
+  - **Direct unit tests on `_recover_interrupted_publish()`**: an aside
+    from either interrupted state is fail-closed and preserved for manual
+    handling; non-directory/symlink asides and an lstat-then-symlink-swap
+    are denied without letting target_dir point outside its tree.
   - **Direct unit test on `_publish_staged_app()`'s concurrent-call
     guard** (PR #156 review round 2, Reid, LOW — coverage symmetry with
     the `_recover_interrupted_publish()` unit tests above): the aside
@@ -55,9 +52,10 @@ Cyra, CRITICAL: write-through — a `symlinks=True` `copytree` regression)
 or at any other, non-generated path (round 3, Cyra AND Reid,
 independently reproduced, HIGH: read-dereference/disclosure — the
 mirror-image gap in `symlinks=False`, the round-2 revert's own default)
-— is refused outright by `_refuse_symlinks_in_existing_content()` before
-`copytree()` ever runs, closing both vectors with one rule instead of a
-different mitigation for each; and that `CodegenResult.written`'s
+— is refused outright by descriptor-anchored, no-follow staging before
+the content is consumed, closing both vectors with one rule instead of a
+different mitigation for each; that an entry swapped to a symlink during
+that staging is also denied; and that `CodegenResult.written`'s
 returned paths are real, live paths under `target_dir` after publish
 (not stale staging-directory paths).
 """
@@ -69,6 +67,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -336,7 +335,7 @@ def test_kill_right_after_manifest_write_leaves_target_dir_absent_never_partial(
 # --------------------------------------------------------------------------
 # SIGKILL test — the rename-aside-swap window (_publish_staged_app()'s
 # has_existing_content=True branch). PR #156 review round 2, both
-# reviewers HIGH: a kill between the two os.replace() calls must not let
+# reviewers HIGH: a kill between the two atomic renames must not let
 # the NEXT generate_app() call silently destroy the orphaned original
 # target_dir content.
 # --------------------------------------------------------------------------
@@ -385,16 +384,16 @@ plan = Plan(
 approval = sign_local_approval(plan, approved_by="Xavier")
 spec = build_spec(plan, approval)
 
-_orig_replace = os.replace
+_orig_rename = os.rename
 
 
-def _instrumented_replace(src, dst):
-    result = _orig_replace(src, dst)
+def _instrumented_rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    result = _orig_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     # Fires ONLY for the swap's FIRST rename (final_root -> aside): src is
     # target_dir itself. The swap's SECOND rename's src is stage_root, not
     # target_dir, so this match is unambiguous — it can only be the
     # window between the two renames, never before or after it.
-    if str(src) == str(target_path):
+    if src == target_path.name and src_dir_fd is not None:
         print("REACHED_SWAP_ASIDE", flush=True)
         # SIGKILL from the parent lands somewhere in here — unblockable,
         # un-catchable, no Python-level cleanup ever runs. target_dir is
@@ -404,33 +403,34 @@ def _instrumented_replace(src, dst):
     return result
 
 
-os.replace = _instrumented_replace
+os.rename = _instrumented_rename
 
 codegen_module.generate_app(spec, target_dir)
 print("COMPLETED", flush=True)
 '''
 
 
-def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_next_run(tmp_path):
+def test_kill_between_rename_aside_swap_fails_closed_without_losing_original_content(tmp_path):
     """The exact window both reviewers flagged HIGH on PR #156's first
     review round: a kill between `_publish_staged_app()`'s two
-    `os.replace()` calls (the `has_existing_content=True` branch).
+    atomic rename calls (the `has_existing_content=True` branch).
     Pre-populates `target_dir` with sentinel content, SIGKILLs the child
     exactly after the first rename (`target_dir` swapped aside) but
     before the second (`stage_root` swapped in), then runs
     `generate_app()` again — normally, uninstrumented, exactly the
-    natural "just re-run it" post-crash recovery action — and asserts the
-    ORIGINAL sentinel content is RECOVERED (not destroyed) and the final
-    tree is valid.
+    natural "just re-run it" post-crash recovery action.  Automatic
+    restore is deliberately fail-closed: a concurrent writer can replace
+    the reserved aside path after it is inspected but before a pathname
+    rename, so the caller must explicitly inspect and restore the orphan
+    rather than risk turning target_dir into an external symlink.
 
     Before the fix: this second call would see `target_dir` absent, take
     the `has_existing_content=False` fast path, and silently publish
     fresh content straight over the orphaned original — CLAUDE.md's
     sentinel line and README_HUMAN.txt gone forever, no error, no
-    warning. After the fix: `_recover_interrupted_publish()` restores the
-    aside into `target_dir` before this call ever decides
-    `has_existing_content`, so it correctly takes the merge-and-swap path
-    and the sentinel content survives."""
+    warning. After the hardening: `_recover_interrupted_publish()` stops
+    before staging or publishing anything, leaving the original content
+    intact at the reserved aside path for operator recovery."""
     target_dir = tmp_path / "app"
     target_dir.mkdir()
     sentinel_claude_md = "# Human-authored project notes\n\nDo not delete this.\n"
@@ -499,43 +499,25 @@ def test_kill_between_rename_aside_swap_renames_recovers_original_content_on_nex
     assert (aside / "CLAUDE.md").read_text(encoding="utf-8") == sentinel_claude_md
     assert (aside / "README_HUMAN.txt").read_text(encoding="utf-8") == "pre-existing unrelated file"
 
-    # The natural post-crash recovery action: just re-run it, uninstrumented.
+    # The natural post-crash recovery action is denied before staging. This
+    # preserves the original content instead of making an unsafe pathname
+    # restore under a concurrently writable parent directory.
     spec = _rich_spec()
-    result = generate_app(spec, target_dir)
+    with pytest.raises(SpecEngineError, match="automatic recovery is disabled"):
+        generate_app(spec, target_dir)
 
-    assert result.scaffold_plan.codegen_status == "generated"
-    recovered_claude_md = (target_dir / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "Do not delete this." in recovered_claude_md, (
-        "the sentinel line from the pre-existing CLAUDE.md must survive the recover-then-merge — "
-        f"got: {recovered_claude_md!r}"
-    )
-    assert "Human-authored project notes" in recovered_claude_md
-    assert (target_dir / "README_HUMAN.txt").read_text(encoding="utf-8") == "pre-existing unrelated file", (
-        "the pre-existing unrelated file must survive the recover-then-merge, not be silently dropped"
-    )
-
-    # The final tree is a valid, complete generated app — recovery doesn't
-    # just preserve the old content, the regeneration on top of it is
-    # fully correct too.
-    assert (target_dir / "src" / "server.js").is_file()
-    manifest_path = target_dir / ".spec-engine" / "codegen-manifest.json"
-    assert manifest_path.is_file()
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["codegen_status"] == "generated"
+    assert not target_dir.exists(), "fail-closed recovery must not publish a new target_dir"
+    assert (aside / "CLAUDE.md").read_text(encoding="utf-8") == sentinel_claude_md
+    assert (aside / "README_HUMAN.txt").read_text(encoding="utf-8") == "pre-existing unrelated file"
 
     # Exactly one leftover dir remains: the KILLED run's own orphaned stage
     # dir (it held the killed run's fully-generated-but-never-swapped-in
-    # content; nothing in generate_app()'s contract cleans up a killed
-    # process's own staging directory — same accepted disk-litter-but-
-    # zero-data-loss outcome the other two SIGKILL tests above assert on
-    # for their own leftover stage dirs). Critically, the aside/backup
-    # path itself is gone — the recovery run's own publish cleaned it up
-    # after a successful swap, exactly like any other successful publish.
+    # content). The aside remains intentionally for manual recovery; there
+    # must be no third directory from the refused retry.
     remaining = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
-    assert len(remaining) == 1, f"expected exactly the killed run's own orphaned stage dir, found {remaining}"
-    assert remaining[0].name.startswith(".app.codegen-stage-"), (
-        f"the one remaining dir should be the killed run's stage dir, not the aside/backup path: {remaining}"
-    )
+    assert len(remaining) == 2, f"expected only the killed stage and preserved aside, found {remaining}"
+    assert any(path.name == ".app.codegen-prev" for path in remaining)
+    assert any(path.name.startswith(".app.codegen-stage-") for path in remaining)
 
 
 # --------------------------------------------------------------------------
@@ -582,13 +564,10 @@ def test_exception_mid_generation_leaves_target_dir_untouched_and_no_orphan_stag
 # --------------------------------------------------------------------------
 
 
-def test_recover_interrupted_publish_restores_orphaned_aside_when_target_dir_absent(tmp_path):
-    """The primary recovery case, exercised directly rather than via a
-    subprocess kill: `target_dir` absent, its real prior content sitting
-    in the deterministic aside path (as the SIGKILL test above proves a
-    real interrupted swap leaves behind) — recovery must restore it into
-    `target_dir` rather than leave it to be silently overwritten by
-    whatever calls `generate_app()` next."""
+def test_recover_interrupted_publish_fails_closed_on_orphaned_aside_when_target_dir_absent(tmp_path):
+    """An orphaned aside is preserved for explicit operator recovery;
+    recovery must not issue a path-based restore that can be raced into
+    publishing a symlink as target_dir."""
     target_dir = tmp_path / "app"
     assert not target_dir.exists()
 
@@ -596,19 +575,17 @@ def test_recover_interrupted_publish_restores_orphaned_aside_when_target_dir_abs
     aside.mkdir()
     (aside / "CLAUDE.md").write_text("Do not delete this.\n", encoding="utf-8")
 
-    codegen_module._recover_interrupted_publish(target_dir)
+    with pytest.raises(SpecEngineError, match="automatic recovery is disabled"):
+        codegen_module._recover_interrupted_publish(target_dir)
 
-    assert target_dir.is_dir(), "the orphaned aside must be restored into target_dir"
-    assert (target_dir / "CLAUDE.md").read_text(encoding="utf-8") == "Do not delete this.\n"
-    assert not aside.exists(), "the aside path is consumed by the restore, not left behind too"
+    assert not target_dir.exists(), "fail-closed recovery must not create target_dir"
+    assert (aside / "CLAUDE.md").read_text(encoding="utf-8") == "Do not delete this.\n"
 
 
-def test_recover_interrupted_publish_cleans_up_stale_aside_when_target_dir_already_correct(tmp_path):
-    """The other interrupted-cleanup case: the swap's second rename
-    already succeeded (`target_dir` holds the correct, complete new
-    content) but the trailing `shutil.rmtree(aside, ...)` never ran. The
-    stale aside must be discarded — never restored over the
-    already-correct `target_dir`, and never left behind forever either."""
+def test_recover_interrupted_publish_fails_closed_on_stale_aside_when_target_dir_exists(tmp_path):
+    """A leftover aside is not deleted automatically: it could have been
+    replaced after inspection, so recovery leaves both paths for manual
+    inspection rather than deleting the wrong tree."""
     target_dir = tmp_path / "app"
     target_dir.mkdir()
     (target_dir / "current.txt").write_text("real, already-published content", encoding="utf-8")
@@ -617,9 +594,10 @@ def test_recover_interrupted_publish_cleans_up_stale_aside_when_target_dir_alrea
     aside.mkdir()
     (aside / "stale.txt").write_text("stale prior content that must be discarded", encoding="utf-8")
 
-    codegen_module._recover_interrupted_publish(target_dir)
+    with pytest.raises(SpecEngineError, match="automatic recovery is disabled"):
+        codegen_module._recover_interrupted_publish(target_dir)
 
-    assert not aside.exists(), "the stale aside must be cleaned up"
+    assert (aside / "stale.txt").read_text(encoding="utf-8") == "stale prior content that must be discarded"
     assert (target_dir / "current.txt").read_text(encoding="utf-8") == "real, already-published content", (
         "target_dir's already-correct content must be left untouched"
     )
@@ -652,7 +630,7 @@ def test_recover_interrupted_publish_fails_loud_on_symlink_aside(tmp_path):
     branch, making `target_dir` itself become a symlink to wherever the
     planted symlink pointed. A symlink at this exact, reserved path is
     never something `_publish_staged_app()` itself creates (its two
-    `os.replace()` calls only ever move a real directory); recovery must
+    atomic renames only ever move a real directory); recovery must
     treat it as the genuinely ambiguous state it is and fail loud,
     leaving both the symlink and `target_dir` untouched."""
     target_dir = tmp_path / "app"
@@ -668,6 +646,50 @@ def test_recover_interrupted_publish_fails_loud_on_symlink_aside(tmp_path):
 
     assert os.path.islink(aside), "the planted symlink must be left exactly as found, never touched"
     assert not target_dir.exists(), "recovery must never restore/rename a symlink onto target_dir"
+
+
+def test_recover_interrupted_publish_denies_aside_swapped_to_symlink_after_lstat(tmp_path, monkeypatch):
+    """The precise recovery TOCTOU: a real aside is observed, then an
+    attacker swaps it to an external symlink before recovery would act. The
+    fail-closed path must leave target_dir absent rather than rename that
+    symlink into place."""
+    target_dir = tmp_path / "app"
+    aside = codegen_module._swap_aside_path(target_dir)
+    aside.mkdir()
+    (aside / "ordinary.txt").write_text("ordinary prior content", encoding="utf-8")
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    secret_file = outside_dir / "secret.txt"
+    secret_content = "RECOVERY_SWAP_SECRET"
+    secret_file.write_text(secret_content, encoding="utf-8")
+
+    real_stat = codegen_module.os.stat
+    swapped = {"done": False}
+
+    def swap_after_lstat(path, *args, **kwargs):
+        observed = real_stat(path, *args, **kwargs)
+        if (
+            os.fspath(path) == aside.name
+            and kwargs.get("dir_fd") is not None
+            and kwargs.get("follow_symlinks") is False
+            and not swapped["done"]
+        ):
+            (aside / "ordinary.txt").unlink()
+            aside.rmdir()
+            os.symlink(str(outside_dir), str(aside))
+            swapped["done"] = True
+        return observed
+
+    monkeypatch.setattr(codegen_module.os, "stat", swap_after_lstat)
+
+    with pytest.raises(SpecEngineError, match="automatic recovery is disabled"):
+        codegen_module._recover_interrupted_publish(target_dir)
+
+    assert swapped["done"], "sanity: the aside must be replaced after its lstat"
+    assert not target_dir.exists(), "the raced symlink must never become target_dir"
+    assert aside.is_symlink(), "recovery must not consume or follow the raced aside"
+    assert secret_file.read_text(encoding="utf-8") == secret_content
 
 
 # --------------------------------------------------------------------------
@@ -696,16 +718,32 @@ def test_publish_staged_app_fails_loud_when_aside_already_exists(tmp_path):
     final_root.mkdir()
     (final_root / "current.txt").write_text("real, already-published content", encoding="utf-8")
 
-    stage_root = tmp_path / "stage"
-    stage_root.mkdir()
-    (stage_root / "new.txt").write_text("freshly staged content", encoding="utf-8")
-
     aside = codegen_module._swap_aside_path(final_root)
     aside.mkdir()
     (aside / "racer.txt").write_text("another call's in-flight aside content", encoding="utf-8")
 
-    with pytest.raises(SpecEngineError, match="already exists"):
-        codegen_module._publish_staged_app(stage_root, final_root, has_existing_content=True)
+    parent_fd = codegen_module._open_target_parent_safely(final_root)
+    stage_name = None
+    stage_fd = None
+    try:
+        has_existing_content, expected_target_identity = codegen_module._target_has_existing_content(final_root, parent_fd)
+        stage_name, stage_fd = codegen_module._create_staging_directory(final_root, parent_fd)
+        codegen_module._write_file(stage_fd, "new.txt", "freshly staged content")
+
+        with pytest.raises(SpecEngineError, match="already exists"):
+            codegen_module._publish_staged_app(
+                stage_name,
+                stage_fd,
+                final_root,
+                parent_fd,
+                has_existing_content=has_existing_content,
+                expected_target_identity=expected_target_identity,
+            )
+    finally:
+        if stage_name is not None and stage_fd is not None:
+            codegen_module._discard_staging_directory(stage_name, stage_fd, parent_fd)
+            os.close(stage_fd)
+        os.close(parent_fd)
 
     assert (final_root / "current.txt").read_text(encoding="utf-8") == "real, already-published content", (
         "final_root's current content must be left untouched by a refused publish"
@@ -713,7 +751,7 @@ def test_publish_staged_app_fails_loud_when_aside_already_exists(tmp_path):
     assert (aside / "racer.txt").read_text(encoding="utf-8") == "another call's in-flight aside content", (
         "the pre-existing (racing) aside must be left untouched, not clobbered"
     )
-    assert (stage_root / "new.txt").is_file(), "stage_root itself is left as found — nothing consumed it"
+    assert not list(tmp_path.glob(".app.codegen-stage-*")), "the test's private stage should be cleaned up"
 
 
 # --------------------------------------------------------------------------
@@ -768,7 +806,7 @@ def test_regenerate_over_existing_symlink_write_through_is_blocked(tmp_path):
     image on read (see
     `test_regenerate_over_existing_symlink_read_dereference_is_blocked`
     below). The holistic fix refuses ANY symlink found in pre-existing
-    `target_dir` content outright, before `copytree()` ever runs — so
+    `target_dir` content outright, before any existing-content read — so
     this exact symlink, planted at a generated path, is now refused just
     like a symlink at any other path, rather than silently dereferenced
     and defanged. This test now asserts the refusal: a stronger
@@ -820,10 +858,10 @@ def test_regenerate_over_existing_symlink_read_dereference_is_blocked(tmp_path):
     workflow, not a privileged position); broader blast radius (any
     path, not just the fixed generated ones).
 
-    `_refuse_symlinks_in_existing_content()` closes this by refusing ANY
+    Descriptor-anchored no-follow staging closes this by refusing ANY
     symlink anywhere in pre-existing target_dir content, at ANY relative
-    path, before `copytree()` ever runs — the secret's content is never
-    read off disk by this module at all, let alone copied into an
+    path, before it is consumed — the secret's content is never read off
+    disk by this module at all, let alone copied into an
     output tree."""
     spec = _rich_spec()
     target_dir = tmp_path / "app"
@@ -870,6 +908,552 @@ def test_regenerate_over_existing_symlink_read_dereference_is_blocked(tmp_path):
         )
     leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
     assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
+
+
+def test_regenerate_refuses_regular_file_swapped_to_symlink_at_open(tmp_path, monkeypatch):
+    """A path checked as regular but swapped before its no-follow open is
+    denied, rather than dereferencing the replacement and copying a secret
+    from outside target_dir into the staged/published app."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    tracked_file = target_dir / "notes" / "mutable.txt"
+    tracked_file.parent.mkdir(parents=True)
+    tracked_file.write_text("ordinary project note", encoding="utf-8")
+
+    outside_secret = tmp_path / "outside_secret.txt"
+    secret_content = "TOP SECRET CREDENTIAL: never copy this"
+    outside_secret.write_text(secret_content, encoding="utf-8")
+
+    real_open = codegen_module.os.open
+    swapped = {"done": False}
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        if (
+            os.fspath(path) == "mutable.txt"
+            and dir_fd is not None
+            and flags & os.O_NOFOLLOW
+            and not swapped["done"]
+        ):
+            tracked_file.unlink()
+            os.symlink(str(outside_secret), str(tracked_file))
+            swapped["done"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "open", swap_before_open)
+
+    with pytest.raises(SpecEngineError, match="symlink|unstable|cannot safely"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the test must swap the file at the check-then-open boundary"
+    assert outside_secret.read_text(encoding="utf-8") == secret_content
+    assert tracked_file.is_symlink(), "the refused input must not be replaced or followed"
+    assert not (target_dir / "src").exists(), "a refused input must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
+
+
+def test_regenerate_refuses_directory_swapped_to_symlink_at_open(tmp_path, monkeypatch):
+    """A directory swap at the descriptor-open boundary is denied before
+    the replacement directory can be traversed."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    tracked_directory = target_dir / "notes"
+    tracked_directory.mkdir(parents=True)
+    (tracked_directory / "ordinary.txt").write_text("ordinary project note", encoding="utf-8")
+
+    outside_directory = tmp_path / "outside"
+    outside_directory.mkdir()
+    secret_file = outside_directory / "secret.txt"
+    secret_content = "TOP SECRET DIRECTORY CONTENT: never traverse this"
+    secret_file.write_text(secret_content, encoding="utf-8")
+
+    real_open = codegen_module.os.open
+    swapped = {"done": False}
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        if (
+            os.fspath(path) == "notes"
+            and dir_fd is not None
+            and flags & getattr(os, "O_DIRECTORY", 0)
+            and not swapped["done"]
+        ):
+            tracked_directory.rename(target_dir / "notes-original")
+            os.symlink(str(outside_directory), str(tracked_directory))
+            swapped["done"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "open", swap_before_open)
+
+    with pytest.raises(SpecEngineError, match="symlink|unstable|cannot safely"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the test must swap the directory at the descriptor-open boundary"
+    assert secret_file.read_text(encoding="utf-8") == secret_content
+    assert tracked_directory.is_symlink(), "the swapped directory must not be traversed or replaced"
+    assert not (target_dir / "src").exists(), "a refused input must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
+
+
+def test_regenerate_refuses_regular_file_swapped_to_external_regular_file_at_open(tmp_path, monkeypatch):
+    """O_NOFOLLOW is insufficient by itself: swapping in a regular external
+    file still opens successfully. The descriptor must match the inode that
+    was inspected before any bytes are copied."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    tracked_file = target_dir / "notes" / "mutable.txt"
+    tracked_file.parent.mkdir(parents=True)
+    tracked_file.write_text("ordinary project note", encoding="utf-8")
+
+    outside_secret = tmp_path / "outside" / "secret.txt"
+    outside_secret.parent.mkdir()
+    secret_content = "FILE_SWAP_SECRET"
+    outside_secret.write_text(secret_content, encoding="utf-8")
+
+    real_open = codegen_module.os.open
+    swapped = {"done": False}
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        if (
+            os.fspath(path) == "mutable.txt"
+            and dir_fd is not None
+            and flags & os.O_NOFOLLOW
+            and not swapped["done"]
+        ):
+            outside_secret.replace(tracked_file)
+            swapped["done"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "open", swap_before_open)
+
+    with pytest.raises(SpecEngineError, match="changed identity"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the external regular file must replace the checked entry"
+    assert tracked_file.read_text(encoding="utf-8") == secret_content
+    assert not (target_dir / "src").exists(), "a rejected swap must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a rejected swap must not leave a staging directory: {leftovers}"
+    for candidate in tmp_path.rglob("*"):
+        if candidate == tracked_file or candidate.is_symlink() or not candidate.is_file():
+            continue
+        assert secret_content not in candidate.read_text(encoding="utf-8", errors="ignore")
+
+
+def test_regenerate_refuses_directory_swapped_to_external_directory_at_open(tmp_path, monkeypatch):
+    """A real external directory, not just a symlink, cannot replace an
+    inspected child directory before descriptor acquisition."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    tracked_directory = target_dir / "notes"
+    tracked_directory.mkdir(parents=True)
+    (tracked_directory / "ordinary.txt").write_text("ordinary project note", encoding="utf-8")
+
+    outside_directory = tmp_path / "outside"
+    outside_directory.mkdir()
+    secret_file = outside_directory / "secret.txt"
+    secret_content = "DIR_SWAP_SECRET"
+    secret_file.write_text(secret_content, encoding="utf-8")
+
+    real_open = codegen_module.os.open
+    swapped = {"done": False}
+
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+        if (
+            os.fspath(path) == "notes"
+            and dir_fd is not None
+            and flags & getattr(os, "O_DIRECTORY", 0)
+            and not swapped["done"]
+        ):
+            tracked_directory.rename(target_dir / "notes-original")
+            outside_directory.replace(tracked_directory)
+            swapped["done"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "open", swap_before_open)
+
+    with pytest.raises(SpecEngineError, match="changed identity"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the external directory must replace the checked entry"
+    assert (tracked_directory / "secret.txt").read_text(encoding="utf-8") == secret_content
+    assert not (target_dir / "src").exists(), "a rejected swap must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a rejected swap must not leave a staging directory: {leftovers}"
+
+
+def test_regenerate_refuses_hardlinked_existing_file(tmp_path):
+    """A target_dir hardlink can name a file owned outside the tree without
+    being a symlink. Reject it because safe provenance cannot be established."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+    outside_secret = tmp_path / "outside_secret.txt"
+    secret_content = "HARDLINK_SECRET"
+    outside_secret.write_text(secret_content, encoding="utf-8")
+    planted_link = target_dir / "notes" / "shared.txt"
+    planted_link.parent.mkdir()
+    os.link(outside_secret, planted_link)
+    assert planted_link.stat().st_nlink == 2, "sanity: the test requires a real hard link"
+
+    with pytest.raises(SpecEngineError, match="hard links"):
+        generate_app(spec, target_dir)
+
+    assert outside_secret.read_text(encoding="utf-8") == secret_content
+    assert planted_link.stat().st_nlink == 2
+    assert not (target_dir / "src").exists(), "a hardlink ingress must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a rejected hardlink must not leave a staging directory: {leftovers}"
+
+
+def test_regenerate_refuses_ancestor_symlink_before_creating_staging(tmp_path):
+    """A symlinked ancestor must be denied before target_dir recovery,
+    staging, or copy can touch the external directory it points at."""
+    spec = _rich_spec()
+    safe_parent = tmp_path / "safe"
+    safe_parent.mkdir()
+    outside_parent = tmp_path / "outside"
+    outside_parent.mkdir()
+    external_target = outside_parent / "app"
+    external_target.mkdir()
+    secret_file = external_target / "secret.txt"
+    secret_content = "ANCESTOR_ESCAPE_SECRET"
+    secret_file.write_text(secret_content, encoding="utf-8")
+    alias = safe_parent / "alias"
+    os.symlink(str(outside_parent), str(alias))
+
+    with pytest.raises(SpecEngineError, match="ancestor symlink"):
+        generate_app(spec, alias / "app")
+
+    assert secret_file.read_text(encoding="utf-8") == secret_content
+    assert not (external_target / "src").exists(), "no generated app may appear under the external target"
+    assert not list(outside_parent.glob(".app.codegen-stage-*")), "no staging dir may be created externally"
+
+
+def test_regenerate_keeps_stage_and_publish_on_stable_parent_after_ancestor_replacement(tmp_path, monkeypatch):
+    """The ancestor check itself must not be the security boundary.
+
+    This deterministically replaces ``safe`` *after* its no-follow child FD
+    has been acquired but before staging. A lexical implementation would now
+    mkdir/write/publish below ``outside``. Descriptor-anchored staging and
+    rename stay inside the original, renamed directory; the final lexical
+    binding check then fails closed instead of returning paths that resolve
+    through the attacker-controlled symlink.
+    """
+    spec = _rich_spec()
+    safe_parent = tmp_path / "safe"
+    safe_parent.mkdir()
+    original_parent = tmp_path / "safe-original"
+    outside_parent = tmp_path / "outside"
+    outside_parent.mkdir()
+    outside_secret = outside_parent / "secret.txt"
+    secret_content = "ANCESTOR_REPLACEMENT_SECRET"
+    outside_secret.write_text(secret_content, encoding="utf-8")
+    target_dir = safe_parent / "app"
+
+    real_open = codegen_module.os.open
+    swapped = {"done": False}
+
+    def replace_ancestor_after_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            os.fspath(path) == "safe"
+            and dir_fd is not None
+            and flags & getattr(os, "O_DIRECTORY", 0)
+            and not swapped["done"]
+        ):
+            safe_parent.rename(original_parent)
+            os.symlink(str(outside_parent), str(safe_parent))
+            swapped["done"] = True
+        return descriptor
+
+    monkeypatch.setattr(codegen_module.os, "open", replace_ancestor_after_open)
+
+    with pytest.raises(SpecEngineError, match="ancestor symlink|unstable|target_dir ancestor"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the lexical ancestor must be replaced after FD acquisition"
+    assert safe_parent.is_symlink(), "the replacement must remain visible at the lexical path"
+    assert outside_secret.read_text(encoding="utf-8") == secret_content
+    assert not (outside_parent / "app").exists(), "no generated app may be published through the replacement"
+    assert not list(outside_parent.glob(".app.codegen-stage-*")), "staging must never be created outside"
+    assert (original_parent / "app" / "src" / "server.js").is_file(), (
+        "the FD-anchored publish may complete in the original parent, but must not be reported as a live "
+        "lexical target after the ancestor replacement"
+    )
+
+
+def test_regenerate_quarantines_stage_name_replaced_at_publish_boundary(tmp_path, monkeypatch):
+    """A raced stage-name replacement must never become target_dir output.
+
+    POSIX rename cannot accept an already-open source directory FD. The
+    publish path therefore verifies the destination against the held stage FD
+    immediately after rename, then moves a mismatch to a reserved quarantine
+    name and raises rather than returning an attacker-controlled app.
+    """
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    sentinel = tmp_path / "sentinel"
+    sentinel.mkdir()
+    (sentinel / "marker.txt").write_text("STAGE_REPLACEMENT_SENTINEL", encoding="utf-8")
+
+    real_rename = codegen_module.os.rename
+    swapped = {"done": False}
+
+    def replace_stage_before_rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if (
+            src_dir_fd is not None
+            and dst_dir_fd is not None
+            and os.fspath(src).startswith(".app.codegen-stage-")
+            and os.fspath(dst) == "app"
+            and not swapped["done"]
+        ):
+            stage_path = tmp_path / os.fspath(src)
+            stage_path.rename(tmp_path / "captured-real-stage")
+            sentinel.replace(stage_path)
+            swapped["done"] = True
+        return real_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "rename", replace_stage_before_rename)
+
+    with pytest.raises(SpecEngineError, match="stage-name identity changed"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: the stage name must be replaced at rename time"
+    assert not target_dir.exists(), "a replaced stage must not be left published at target_dir"
+    quarantines = list(tmp_path.glob(".app.codegen-rejected-*"))
+    assert len(quarantines) == 1, f"mismatched stage must be quarantined, found {quarantines}"
+    assert (quarantines[0] / "marker.txt").read_text(encoding="utf-8") == "STAGE_REPLACEMENT_SENTINEL"
+
+
+def test_regenerate_quarantines_final_replaced_after_publish_boundary(tmp_path, monkeypatch):
+    """A final-name replacement after rename is not returned as generated output."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    sentinel = tmp_path / "sentinel"
+    sentinel.mkdir()
+    (sentinel / "marker.txt").write_text("FINAL_REPLACEMENT_SENTINEL", encoding="utf-8")
+
+    real_rename = codegen_module.os.rename
+    real_stat = codegen_module.os.stat
+    published = {"done": False}
+    swapped = {"done": False}
+
+    def mark_publish(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        result = real_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        if (
+            src_dir_fd is not None
+            and dst_dir_fd is not None
+            and os.fspath(src).startswith(".app.codegen-stage-")
+            and os.fspath(dst) == "app"
+        ):
+            published["done"] = True
+        return result
+
+    def replace_final_before_post_rename_identity_check(path, *args, **kwargs):
+        if (
+            published["done"]
+            and os.fspath(path) == "app"
+            and kwargs.get("dir_fd") is not None
+            and kwargs.get("follow_symlinks") is False
+            and not swapped["done"]
+        ):
+            target_dir.rename(tmp_path / "captured-real-final")
+            sentinel.replace(target_dir)
+            swapped["done"] = True
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(codegen_module.os, "rename", mark_publish)
+    monkeypatch.setattr(codegen_module.os, "stat", replace_final_before_post_rename_identity_check)
+
+    with pytest.raises(SpecEngineError, match="stage-name identity changed"):
+        generate_app(spec, target_dir)
+
+    assert published["done"] and swapped["done"], "sanity: final replacement must occur after publish rename"
+    assert not target_dir.exists(), "a replaced final must be quarantined before generate_app returns"
+    quarantines = list(tmp_path.glob(".app.codegen-rejected-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "marker.txt").read_text(encoding="utf-8") == "FINAL_REPLACEMENT_SENTINEL"
+
+
+def test_regenerate_refuses_hardlink_inserted_before_exclusive_generated_leaf_create(tmp_path, monkeypatch):
+    """A generated write must not truncate a hardlink raced into staging.
+
+    The old lstat-then-O_TRUNC writer could be redirected to this external
+    inode after inspection. The new writer removes only its staging name and
+    requires O_EXCL creation, so a link inserted between those steps makes
+    generation fail closed without modifying the external file.
+    """
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    external_file = tmp_path / "external-sensitive.js"
+    original_content = "EXTERNAL CONTENT MUST NEVER BE TRUNCATED"
+    external_file.write_text(original_content, encoding="utf-8")
+
+    real_open = codegen_module.os.open
+    raced = {"done": False}
+
+    def insert_hardlink_before_exclusive_open(path, flags, mode=0o777, *, dir_fd=None):
+        if (
+            path == "entity0.js"
+            and dir_fd is not None
+            and flags & os.O_CREAT
+            and flags & os.O_EXCL
+            and not raced["done"]
+        ):
+            os.link(external_file, path, dst_dir_fd=dir_fd, follow_symlinks=False)
+            raced["done"] = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(codegen_module.os, "open", insert_hardlink_before_exclusive_open)
+
+    with pytest.raises(SpecEngineError, match="appeared while creating it exclusively"):
+        generate_app(spec, target_dir)
+
+    assert raced["done"], "sanity: inject the hardlink at the generated leaf creation boundary"
+    assert external_file.read_text(encoding="utf-8") == original_content
+    assert not target_dir.exists(), "the failed stage must never be published"
+    assert not list(tmp_path.glob(".app.codegen-stage-*")), "failed generation must clean the staged hardlink"
+
+
+def test_regenerate_rejects_same_uid_final_replaced_before_return_validation(tmp_path, monkeypatch):
+    """A detected root-entry mismatch before return is quarantined and fails.
+
+    This is deliberately a narrow regression test, not a general same-UID
+    guarantee: a process sharing the account can still alter child entries in
+    a valid root at any time, which needs OS-level isolation to control.
+    """
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    sentinel = tmp_path / "sentinel"
+    sentinel.mkdir()
+    (sentinel / "marker.txt").write_text("SAME_UID_PRE_RETURN_SENTINEL", encoding="utf-8")
+
+    real_final_validation = codegen_module._verify_published_target_before_return
+    swapped = {"done": False}
+
+    def replace_final_before_return_validation(final_root, parent_fd, stage_fd):
+        target_dir.rename(tmp_path / "captured-real-final")
+        sentinel.replace(target_dir)
+        swapped["done"] = True
+        return real_final_validation(final_root, parent_fd, stage_fd)
+
+    monkeypatch.setattr(
+        codegen_module, "_verify_published_target_before_return", replace_final_before_return_validation
+    )
+
+    with pytest.raises(SpecEngineError, match="before result return"):
+        generate_app(spec, target_dir)
+
+    assert swapped["done"], "sanity: a same-UID final replacement must be injected before return validation"
+    assert not target_dir.exists(), "the injected final must be quarantined instead of returned as output"
+    quarantines = list(tmp_path.glob(".app.codegen-rejected-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "marker.txt").read_text(encoding="utf-8") == "SAME_UID_PRE_RETURN_SENTINEL"
+
+
+def test_regenerate_never_changes_process_global_cwd(tmp_path, monkeypatch):
+    """Generated writes receive a stage FD; unrelated threads keep the caller cwd."""
+    spec = _rich_spec()
+    caller_cwd = os.getcwd()
+    observed_cwds = []
+    started = threading.Event()
+    sampled = threading.Event()
+
+    def observe_cwd():
+        assert started.wait(timeout=5)
+        observed_cwds.append(os.getcwd())
+        sampled.set()
+
+    observer = threading.Thread(target=observe_cwd)
+    observer.start()
+    real_write_file = codegen_module._write_file
+
+    def observe_during_generated_write(root_fd, rel_path, content):
+        assert isinstance(root_fd, int), "generated writers must receive a descriptor, not a cwd-relative Path"
+        started.set()
+        assert sampled.wait(timeout=5)
+        return real_write_file(root_fd, rel_path, content)
+
+    monkeypatch.setattr(codegen_module, "_write_file", observe_during_generated_write)
+    generate_app(spec, tmp_path / "app")
+    observer.join(timeout=5)
+
+    assert not observer.is_alive()
+    assert observed_cwds == [caller_cwd]
+    assert os.getcwd() == caller_cwd
+
+
+def test_regenerate_refuses_nonsticky_shared_publish_parent_before_staging(tmp_path):
+    """A non-sticky shared parent has no POSIX inode-bound rename guarantee."""
+    spec = _rich_spec()
+    shared_parent = tmp_path / "shared"
+    shared_parent.mkdir()
+    shared_parent.chmod(0o777)
+    target_dir = shared_parent / "app"
+
+    try:
+        with pytest.raises(SpecEngineError, match="group/world writable without the sticky bit"):
+            generate_app(spec, target_dir)
+    finally:
+        shared_parent.chmod(0o700)
+
+    assert not target_dir.exists()
+    assert not list(shared_parent.glob(".app.codegen-stage-*"))
+
+
+@pytest.mark.parametrize(
+    ("sizes", "expected_error"),
+    [([65], "per-file"), ([40, 40], "aggregate")],
+)
+def test_regenerate_refuses_existing_content_above_ingress_budget(tmp_path, monkeypatch, sizes, expected_error):
+    """Existing content that exceeds either finite ingress budget is denied
+    before generation/publish, rather than consuming unbounded staging space."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+    for index, size in enumerate(sizes):
+        (target_dir / f"existing-{index}.txt").write_bytes(b"x" * size)
+
+    monkeypatch.setattr(codegen_module, "_MAX_EXISTING_CONTENT_FILE_BYTES", 64)
+    monkeypatch.setattr(codegen_module, "_MAX_EXISTING_CONTENT_TOTAL_BYTES", 64)
+
+    with pytest.raises(SpecEngineError, match=expected_error):
+        generate_app(spec, target_dir)
+
+    assert not (target_dir / "src").exists(), "an over-budget input must not publish generated content"
+    assert [path.stat().st_size for path in sorted(target_dir.glob("existing-*.txt"))] == sizes
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a refused regeneration must not leave an orphaned staging directory: {leftovers}"
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_error"),
+    [("entries", "entry"), ("depth", "depth")],
+)
+def test_regenerate_refuses_existing_content_above_structural_ingress_budgets(
+    tmp_path, monkeypatch, kind, expected_error
+):
+    """Zero-byte trees are bounded by entry count and depth as well as by
+    byte budgets, preventing metadata-only staging exhaustion."""
+    spec = _rich_spec()
+    target_dir = tmp_path / "app"
+    target_dir.mkdir()
+
+    if kind == "entries":
+        monkeypatch.setattr(codegen_module, "_MAX_EXISTING_CONTENT_ENTRY_COUNT", 2)
+        for index in range(3):
+            (target_dir / f"zero-{index}.txt").touch()
+    else:
+        monkeypatch.setattr(codegen_module, "_MAX_EXISTING_CONTENT_TREE_DEPTH", 2)
+        (target_dir / "one" / "two" / "three").mkdir(parents=True)
+
+    with pytest.raises(SpecEngineError, match=expected_error):
+        generate_app(spec, target_dir)
+
+    assert not (target_dir / "src").exists(), "an over-budget tree must not publish generated content"
+    leftovers = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith(".app.codegen-")]
+    assert leftovers == [], f"a rejected tree must not leave a staging directory: {leftovers}"
 
 
 def test_result_written_paths_are_real_live_paths_under_target_dir_after_publish(tmp_path):
