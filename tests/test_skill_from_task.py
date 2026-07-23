@@ -366,7 +366,9 @@ def test_real_shipped_skills_have_the_same_frontmatter_fence_shape():
     files this scaffold is meant to fit alongside — proves the generated
     file's `---\\n...\\n---\\n` fence convention matches the actual format,
     not an invented lookalike."""
-    real_skill = REPO_ROOT / ".claude" / "skills" / "browser-use" / "SKILL.md"
+    real_skills = sorted((REPO_ROOT / ".claude" / "skills").glob("*/SKILL.md"))
+    assert real_skills, "the shipped skill set must contain at least one SKILL.md"
+    real_skill = real_skills[0]
     assert real_skill.is_file()
     text = real_skill.read_text(encoding="utf-8")
     fm = _frontmatter(text)

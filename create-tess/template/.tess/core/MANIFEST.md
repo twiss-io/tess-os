@@ -247,9 +247,6 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 | Core file | Live path | Tier |
 |---|---|---|
 | `skills/3d-web-experience/SKILL.md` | `.claude/skills/3d-web-experience/SKILL.md` | normal |
-| `skills/browser-use/SKILL.md` | `.claude/skills/browser-use/SKILL.md` | normal |
-| `skills/browser-use/references/cdp-python.md` | `.claude/skills/browser-use/references/cdp-python.md` | normal |
-| `skills/browser-use/references/multi-session.md` | `.claude/skills/browser-use/references/multi-session.md` | normal |
 | `skills/design-taste-frontend/SKILL.md` | `.claude/skills/design-taste-frontend/SKILL.md` | normal |
 | `skills/full-output-enforcement/SKILL.md` | `.claude/skills/full-output-enforcement/SKILL.md` | normal |
 | `skills/high-end-visual-design/SKILL.md` | `.claude/skills/high-end-visual-design/SKILL.md` | normal |
@@ -347,4 +344,3 @@ doctrine text.
 |---|---|---|
 | `MANIFEST.md` | `—` | normal |
 | `settings-core.json` | `.claude/settings.json` | normal |
-
