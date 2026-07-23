@@ -17,6 +17,14 @@ A `vault://` reference is a safe, opaque pointer. The raw value never enters
 a subagent prompt, dispatch transcript, or log. This is the primary wall
 against credential leakage — not the dispatch scan hook (which is backstop only).
 
+`vault://github/token` and `github/token` are two spellings of the same
+reference. New vault entries are stored canonically as `github/token`; the
+prefix remains the recommended form in prose and dispatches because it makes
+the pointer unmistakable. Existing older entries stored with a `vault://`
+prefix continue to resolve. Review `tessctl vault migrate-refs` first, then
+use `--apply --plan <dry-run-id>` only if its dry-run plan is unambiguous —
+migration never guesses between duplicates or deletes a secret.
+
 ---
 
 ## How Agents Resolve a Ref
@@ -61,6 +69,7 @@ around: restructure the prompt to use a `vault://` ref instead.
 | `tessctl vault set <ref>` | Store a secret (stdin or TTY prompt — never argv) |
 | `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, pipe only) |
 | `tessctl vault list` | List all refs (no values shown) |
+| `tessctl vault migrate-refs` | Dry-run legacy `vault://` storage-key normalization; add `--apply --plan <dry-run-id>` only after review |
 | `tessctl vault exec --ref <ref> -- <cmd>` | Inject secret into child env JIT |
 | `tessctl vault rotate <ref>` | Re-encrypt under a new value |
 | `tessctl vault rm <ref>` | Delete a ref from the vault |
