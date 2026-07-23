@@ -22,6 +22,22 @@ not just the templated 3. This test seeds REAL shipped core content
 touched by issue #21's content fix and both OUTSIDE the `_NAME_BEARING` list
 — so the assertions exercise the actually-shipped doctrine, not a synthetic
 stand-in that could pass while the real files still regress.
+
+Follow-up audit (same issue, continued fix): the original content pass swept
+`conductor/**`, `agents/**`, and `.claude/commands/**` but missed three
+JSON render surfaces that go through the exact same `apply_token_sub()` path
+— `apply_token_sub` substitutes on raw text regardless of file extension, so
+JSON is just as live as markdown here: `.tess/core/settings-core.json` (a
+literal "Tess" inside the `PostToolUse` hook's embedded systemMessage JSON
+string) and two `core/contracts/**` schemas —
+`.tess/core/contracts/crew-plan.schema.json` and
+`.tess/core/contracts/verdict.schema.json` — both quoting doctrine prose
+that itself already carried the token (`conductor/orchestra-model.md`,
+`conductor/verification-routing.md`) but hardcoded the literal name in their
+own `description` fields. `test_rename_propagates_to_previously_hardcoded_contract_schema`
+below proves the fix on `core/contracts/**` — a third distinct
+`owned_globs` entry — the same way the two tests above prove it for
+`conductor/**` and `.claude/commands/**`.
 """
 from __future__ import annotations
 
@@ -29,6 +45,7 @@ from conftest import REPO_ROOT
 
 _REAL_CONDUCTOR = REPO_ROOT / ".tess" / "core" / "conductor"
 _REAL_COMMANDS = REPO_ROOT / ".tess" / "core" / "commands"
+_REAL_CONTRACTS = REPO_ROOT / ".tess" / "core" / "contracts"
 
 # Minimal CLAUDE.md render surface — required so the claude-code target's
 # `_do_render()` compile step (CLAUDE.md/.claude/settings.json) doesn't error
@@ -67,6 +84,12 @@ def _seed(project):
         ".claude/commands/help.md",
         (_REAL_COMMANDS / "help.md").read_text(encoding="utf-8"),
         core_key=".tess/core/commands/help.md",
+    )
+    project.add(
+        "core/contracts/verdict.schema.json",
+        (_REAL_CONTRACTS / "verdict.schema.json").read_text(encoding="utf-8"),
+        core_key=".tess/core/contracts/verdict.schema.json",
+        tier="security",
     )
 
     project.write()
@@ -131,6 +154,34 @@ def test_rename_propagates_to_previously_hardcoded_command_file(project, run_cli
     assert "for the Tess command system" not in after
 
     _assert_clean(run_cli, root, "after rename (.claude/commands/help.md)")
+
+
+def test_rename_propagates_to_previously_hardcoded_contract_schema(project, run_cli):
+    """Same regression again, proven on `core/contracts/**` — a THIRD
+    distinct owned_globs entry, and the first non-markdown one exercised
+    here. `apply_token_sub()` substitutes on raw text regardless of file
+    extension, so a JSON Schema `description` field quoting doctrine prose
+    is just as live a render surface as a conductor/** .md file — the
+    follow-up audit found `verdict.schema.json` (and `crew-plan.schema.json`)
+    still hardcoding the literal name where they quote
+    conductor/verification-routing.md's (already-tokenized) prose."""
+    _seed(project)
+    root = project.root
+
+    before = project.read_live("core/contracts/verdict.schema.json")
+    assert "never Tess's summary of those artifacts" in before
+
+    r = run_cli(root, "rename", "Atlas")
+    assert r.returncode == 0, f"rename failed:\n{r.stdout}\n{r.stderr}"
+
+    after = project.read_live("core/contracts/verdict.schema.json")
+    assert "never Atlas's summary of those artifacts" in after, (
+        "rename did not propagate into core/contracts/verdict.schema.json — "
+        "the JSON-contracts corner of the issue #21 gap has regressed"
+    )
+    assert "never Tess's summary of those artifacts" not in after
+
+    _assert_clean(run_cli, root, "after rename (core/contracts/verdict.schema.json)")
 
 
 def test_rename_noop_still_leaves_previously_hardcoded_file_clean(project, run_cli):

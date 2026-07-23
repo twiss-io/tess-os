@@ -46,6 +46,25 @@ All notable changes to Tess OS are documented here. This project adheres to
     tier:security) and a REAL `.claude/commands/**` file (`help.md`) — both
     outside the old 3-file subset — with `doctor`/`verify` staying clean
     (fails without the engine fix, confirmed by temporarily reverting it).
+  - **Follow-up audit (build-review pass):** the initial content sweep
+    missed three JSON render surfaces `apply_token_sub()` already covers
+    (it substitutes on raw text regardless of file extension) —
+    `.tess/core/settings-core.json`'s `PostToolUse` hook systemMessage
+    ("If you are Tess: send a Telegram update…") and two `core/contracts/**`
+    schemas (`crew-plan.schema.json`, `verdict.schema.json`) that quoted
+    already-tokenized doctrine prose (`orchestra-model.md`,
+    `verification-routing.md`) but hardcoded the literal name where they
+    quoted it. `tess.lock` re-baselined for the 3 files via
+    `tessctl lock --regen --only <path> --yes` (surgical, not a full
+    re-baseline). New test added to
+    `tests/test_issue21_doctrine_name_propagation.py` proving the rename
+    propagates into `core/contracts/verdict.schema.json`, a third distinct
+    `owned_globs` entry; new test added to `tests/test_render.py` proving
+    the real, shipped `settings-core.json` carries the token;
+    `tests/test_contracts_wiring.py`'s core/live byte-equality check
+    updated to compare against `render_core_to_live()`'s actual output
+    rather than a raw byte diff (its prior premise — these schemas never
+    carry template tokens — no longer holds for these two).
 - **`create-tess` — bundled the scaffold template into the npm package, fixing
   the DEFAULT `npm create tess` flow (100% broken through 0.1.3), P0 G-01.**
   Root cause: the default (zero-flag) flow depended on a runtime

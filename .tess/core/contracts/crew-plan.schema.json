@@ -55,7 +55,7 @@
         "escalations": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "§3.1 — conditions that bounce the whole mission back to Tess/the operator."
+          "description": "§3.1 — conditions that bounce the whole mission back to {{ASSISTANT_NAME}}/the operator."
         }
       },
       "required": ["mission_id", "outcome_owner", "outcome_type", "stages", "synthesis", "escalations"],

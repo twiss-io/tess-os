@@ -14,6 +14,8 @@ import json
 
 import pytest
 
+from conftest import REPO_ROOT
+
 
 def test_apply_token_sub(engine, project):
     out = engine.apply_token_sub("root is {{TESS_ROOT}} ok", project.root)
@@ -72,6 +74,33 @@ def test_render_settings_json_substitutes_and_validates(engine, project):
     parsed = json.loads(out)
     assert parsed["root"] == str(project.root)
     assert parsed["n"] == 1
+
+
+def test_render_settings_json_real_core_file_carries_assistant_name_token(engine, project):
+    """Issue #21 follow-up: the REAL shipped `.tess/core/settings-core.json`
+    once hardcoded the literal default name inside the `PostToolUse` hook's
+    embedded systemMessage JSON string ("If you are Tess: send a Telegram
+    update..."), instead of the `{{ASSISTANT_NAME}}` token every other
+    render surface uses — so a renamed conductor's own settings.json still
+    told it to act as "Tess". `render_settings_json` -> `apply_token_sub`
+    substitutes on raw text regardless of file type; this proves the ACTUAL
+    shipped file (not a synthetic stand-in) round-trips the token rather
+    than shipping a literal name that can never be renamed."""
+    real = (REPO_ROOT / ".tess" / "core" / "settings-core.json").read_text(encoding="utf-8")
+    assert "{{ASSISTANT_NAME}}" in real, (
+        "settings-core.json's PostToolUse hook no longer carries the "
+        "{{ASSISTANT_NAME}} token — issue #21 has regressed"
+    )
+    assert "If you are Tess" not in real
+
+    src = project.root / ".tess" / "core" / "settings-core.json"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(real, encoding="utf-8")
+
+    out = engine.render_settings_json(project.root)
+    json.loads(out)  # still valid JSON after substitution
+    assert "If you are Atlas" not in out  # sanity: default profile, not yet renamed
+    assert "If you are Tess" in out  # default profile renders the default name
 
 
 def test_render_settings_json_rejects_invalid_json(engine, project):

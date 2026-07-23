@@ -5649,7 +5649,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:07e8e83b4128ab0d33476c92ce7773e5b1e0fa29f92209f7fdc5567cdd98f590
+    base_sha: sha256:0388df1bbd575bb5ab3407aadf36acd9253863f3cf4f06175822a4c2e990e82a
     live_path: .claude/settings.json
     render: rendered
     last_updated: 2026-06-27 10:00:00+00:00
@@ -5993,13 +5993,13 @@ files:
   .tess/core/contracts/crew-plan.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:00281ca40d01c14667e154efe896e9b04e52ca1a5fe167d9ea20280cb6c6b3a8
+    base_sha: sha256:537fc0d4c6fa3391380f085ab7730245fe955e71d1fb85057dc3a52af743e3e4
     live_path: core/contracts/crew-plan.schema.json
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/verdict.schema.json:
     status: core-managed
     tier: security
-    base_sha: sha256:834c4ab0ac781350cdce2987f699ae6757c6c48b3f85df9751c6004ea9583566
+    base_sha: sha256:d070765f8be004f33a250cbafd09edee05d54420dd9222850f62132db612deb5
     live_path: core/contracts/verdict.schema.json
     last_updated: 2026-07-07 00:00:00+00:00
   .tess/core/contracts/return-manifest.schema.json:
