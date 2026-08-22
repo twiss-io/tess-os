@@ -1,7 +1,7 @@
 {
   "name": "create-tess",
   "version": "0.1.4",
-  "description": "Gamified first-run wizard for Tess OS — npm create tess. Name yourself, choose a world, pick a starter squad of real agents, name your conductor, and land inside a working agent OS.",
+  "description": "Local-first setup wizard for Tess OS, a governed coding-agent harness with fail-closed review boundaries.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -30,6 +30,8 @@
     "tess-os",
     "create-tess",
     "claude-code",
+    "codex",
+    "agent-governance",
     "agents",
     "agent-orchestration",
     "scaffold",

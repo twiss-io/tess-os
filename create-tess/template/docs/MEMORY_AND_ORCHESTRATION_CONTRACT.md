@@ -250,22 +250,19 @@ exposure attempt, capability expansion, self-approval attempt, unapproved
 Cloud upload, or unsupported-adapter claim must be denied and leave an
 auditable result.
 
-## Deferred decisions for the operator
+## Accepted defaults and remaining implementation choices
 
-These are deliberately not decided by this document or an agent implementation:
+The operator has accepted the fail-closed baseline in
+[`AEC_GOVERNANCE_DEFAULTS.md`](AEC_GOVERNANCE_DEFAULTS.md): local-only data,
+no automatic Cloud sync/indexing/routing, AEC-C0/T0 fallback, seven-day local
+redacted-metadata retention as a future implementation contract, no durable
+raw AEC content, no ambient credentials, and a zero-spend hard stop.
 
-- scope and tenancy model, including who may read, retain, export, or delete
-  durable memory;
-- retrieval eligibility, default retention, promotion from work context, and
-  deletion/expiry semantics;
-- Cloud data residency, encryption/custody, synchronization topology, and
-  incident-response commitments;
-- future Vault custody, recovery/escrow, revocation, rotation, and break-glass
-  design;
-- receipt provenance, attestation/signing, ledger storage, and audit access;
-- graph scheduler isolation, budget accounting, cancellation, and delegation
-  depth; and
-- the independent evidence and external controls needed for a C4 claim.
+Implementations must still produce reviewable designs for tenant isolation,
+retrieval authorization, verified deletion, Cloud residency and custody,
+Vault recovery/rotation/revocation, receipt provenance, scheduler isolation,
+and independent AEC-C4/T3 evidence. The defaults decide how absence or ambiguity
+is handled; they do not claim those mechanisms are built.
 
 ## Claim audit
 

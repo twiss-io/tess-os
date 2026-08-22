@@ -20,9 +20,10 @@ trail under `.tess/state/` that you can read yourself, no proprietary memory
 store to trust blindly. And when a change needs a "prove it," Tess OS can
 hand you a real [Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed,
 chain-linked, and designed to be checked by a standalone verifier that
-doesn't take Tess OS's own word for it. That verifier runs today; the
-human-owned key custody it depends on for that independence is still being
-built — see [Important limits today](#important-limits-today) before
+doesn't take Tess OS's own word for it. That verifier runs today; the current
+policy registers Cyra's public verifier key, while private-key custody and
+covering approval remain external to the repository and the sign-off registry
+is still empty. See [Important limits today](#important-limits-today) before
 treating a receipt as a production trust guarantee.
 
 None of that makes the underlying model smarter. Tess OS is a local
@@ -69,17 +70,24 @@ recorded, and how to reproduce it, is in [docs/demo/](docs/demo/README.md).
 ## Important limits today
 
 Tess OS is deliberately fail-closed when no covering approval exists. The
-shipped policy intentionally has empty verifier and sign-off registries, so a
-message such as **"no covering APPROVE verdict found"** is an expected block,
-not an invitation to create a key or work around the gate.
+current policy registers Cyra's public verifier key; `signoff_keys` remains
+empty. A message such as **"no covering APPROVE verdict found"** is an
+expected block, not an invitation to create a key, sign the candidate's own
+work, or work around the gate.
 
-Two production prerequisites remain unresolved:
+The live GitHub `main` ruleset now requires the App-bound `tessctl gate ci`
+check and the repository's CI checks with strict up-to-date-branch enforcement
+(verified 2026-08-22). That external rule is an active control, not a remaining
+setup step.
 
-1. The first verifier/sign-off trust anchor needs an external, human-owned
-   custody design. Candidate repository content must never establish the
-   authority that approves itself.
-2. GitHub must make the real gate and CI results required checks before a gate
-   can protect a branch. That enforcement is not configured today.
+Production limitations remain:
+
+1. The registered verifier's private-key custody and every covering approval
+   must remain independent of candidate repository content; a producer still
+   cannot clear its own work.
+2. The human sign-off registry is empty, so Rule-18 hard-floor actions remain
+   unavailable through repository evidence alone.
+3. Multi-push policy reduction remains a disclosed, untested adversarial case.
 
 Until both are complete, a passing local command or GitHub Action is useful
 engineering evidence, but not a production admission control. The committed
@@ -88,19 +96,21 @@ Multi-push policy reduction is a disclosed but untested case, and is not
 included in that score. The score is disclosed evidence, not a
 production-readiness certificate.
 
-Do **not** generate, register, or sign a verifier or sign-off key to clear a
-gate. Key custody is a designated human ceremony owned by Xavier. See
+Do **not** generate, register, or sign an additional verifier or sign-off key
+to clear a gate, and never use the registered verifier to approve its own
+candidate. Key custody is a designated human ceremony owned by Xavier. See
 [Gate operation and custody](docs/GATE_QUICKSTART.md).
 
 ## Supported surfaces
 
 | Surface | Status | What that means |
 |---|---|---|
-| Claude Code | **Native integration, uncertified preview** | Tess OS has a reference render target and driver. This is not yet a production-certified protected workflow. |
-| Codex | **Pilot** | Tess OS can render Codex project files and has a driver, but the driver is not live-tested against native event samples and has no native-parity certification. |
-| Generic `AGENTS.md` tools | **Interoperability baseline** | Tess OS can emit instructions and plain prompts. This does not prove native orchestration, tool control, or feature parity in every host. |
-| Perplexity | **Not supported as a Tess OS adapter** | There is no repository adapter or driver. A future bounded, read-only research-worker role is under consideration; it is not a coding-harness integration. |
-| Gemini and other platforms | **Not supported** | A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
+| Claude Code | **Preview** | Tess OS has a reference render target and driver. This is not yet a production-certified protected workflow. |
+| Codex | **Preview** | Tess OS can render Codex project files and has a driver, but the driver is not live-tested against native event samples and has no native-parity certification. |
+| Generic `AGENTS.md` tools | **Preview** | Tess OS can emit instructions and plain prompts. This does not prove native orchestration, tool control, or feature parity in every host. |
+| Perplexity | **Unsupported** | There is no repository adapter or driver. A future bounded, read-only research-worker role is under consideration; it is not a coding-harness integration. |
+| Gemini and other platforms | **Unsupported** | A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
+| Agent Execution Contract governance defaults | **Planned** | The C/T assurance, local-data, zero-spend, credential, retention, Cloud, Memory, and Vault defaults are accepted as a non-enforcing contract; runtime grading and enforcement are not implemented. See [AEC governance defaults](docs/AEC_GOVERNANCE_DEFAULTS.md). |
 | Tess Cloud | **Planned** | A separate, optional cloud-sync product; it does not exist in this repository and will depend on stable Tess OS contracts. |
 | Tess Vault | **Planned** | A separate agent-era secret-capability product; it is not a required Tess OS service and must not expose secrets to agents, evidence, or memory. |
 
