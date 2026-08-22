@@ -2,7 +2,7 @@
 """
 gate-arena/bypass/run_bypass_corpus.py — Layer A orchestrator.
 
-Runs all 10 attack classes in `attacks.py` against fresh fixture repos (real
+Runs every attack class in `attacks.py` against fresh fixture repos (real
 git, real gpg, the real `.tess/bin/tessctl` engine copied verbatim from this
 checkout), and writes:
   - gate-arena/results/bypass-scorecard.json  (raw, machine-readable)
@@ -62,6 +62,19 @@ def main():
         "blocked": blocked_count,
         "slipped_through": total - blocked_count,
         "outcomes": outcomes,
+        "disclosures": [
+            "A14 proves normal-PR attenuation is blocked, and A15 proves candidate "
+            "content cannot establish or rotate verifier/sign-off authority for a "
+            "later push. "
+            "The live App-bound ruleset is active, strict, and has no configured "
+            "bypass. Its external policy-epoch reset/custody path is not implemented, "
+            "and the recorded push-2 pass is a counterfactual after an owner first "
+            "changes/defeats that external rule and forces push 1 to land."
+        ] if any(
+            o.get("id") in ("A14", "A15")
+            and o.get("evidence", {}).get("complete_production_closure") is False
+            for o in outcomes
+        ) else [],
     }
     (RESULTS_DIR / "bypass-scorecard.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
@@ -75,6 +88,8 @@ def main():
         f"against a fixture policy forked verbatim from this repo's own shipped "
         f"`core/policy/policy.yaml`.\n"
     )
+    for disclosure in raw["disclosures"]:
+        lines.append(f"**Disclosure:** {disclosure}\n")
     lines.append("| ID | Attack | Result | Mechanism |")
     lines.append("|---|---|---|---|")
     for o in outcomes:

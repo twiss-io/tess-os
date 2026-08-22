@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-07-17T04:43:28.026493+00:00",
-  "total_attacks": 12,
-  "blocked": 12,
+  "generated_at": "2026-08-22T08:48:14.912847+00:00",
+  "total_attacks": 15,
+  "blocked": 15,
   "slipped_through": 0,
   "outcomes": [
     {
@@ -42,7 +42,20 @@
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 5
+          "changed_paths_count": 5,
+          "receipts_emitted": [],
+          "receipt_gaps": [
+            {
+              "rule_id": "tess-os-security-tier-doctrine",
+              "decision_kind": "verdict",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            },
+            {
+              "rule_id": "credentials",
+              "decision_kind": "signoff",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            }
+          ]
         },
         "clears_with_real_signoff": true
       }
@@ -52,12 +65,14 @@
       "name": "policy-tamper in the same push (self-gating rule deleted)",
       "description": "Delete policy.yaml's own self-gating rule (protecting core/policy/**) AND ship an unreviewed prod-src change, both in one commit.",
       "blocked": true,
-      "mechanism": "policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** \u2014 MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) \u2014 result: BLOCKED (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'])",
+      "mechanism": "policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** \u2014 MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) \u2014 result: BLOCKED (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'])",
       "evidence": {
         "gate_result": {
           "phase": "ci",
           "blocked": true,
           "reasons": [
+            "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted",
+            "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
             "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
           ],
@@ -238,9 +253,119 @@
           "phase": "ci",
           "blocked": false,
           "reasons": [],
-          "changed_paths_count": 4
+          "changed_paths_count": 4,
+          "receipts_emitted": [],
+          "receipt_gaps": [
+            {
+              "rule_id": "tess-os-security-tier-doctrine",
+              "decision_kind": "verdict",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            },
+            {
+              "rule_id": "credentials",
+              "decision_kind": "signoff",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            }
+          ]
         }
       }
+    },
+    {
+      "id": "A13",
+      "name": "protected type swap, deletion, and rename",
+      "description": "Replace a governed regular blob with a symlink, then independently delete policy/lock controls and rename the trusted lock from the same immutable base.",
+      "blocked": true,
+      "mechanism": "Git reports the protected path as type-change T and control removals as D; ACDMRT --no-renames ingress includes both and refuses to hide a protected source behind an R100 destination. Type swap blocked=True (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']); policy/lock deletion blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'POLICY_INVALID: the effective policy is invalid']); protected-source rename blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted']).",
+      "evidence": {
+        "type_swap_gate_result": {
+          "phase": "ci",
+          "blocked": true,
+          "reasons": [
+            "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+          ],
+          "changed_paths_count": 1
+        },
+        "control_deletion_gate_result": {
+          "phase": "ci",
+          "blocked": true,
+          "reasons": [
+            "SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted",
+            "SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted",
+            "POLICY_INVALID: the effective policy is invalid"
+          ],
+          "changed_paths_count": 2
+        },
+        "control_rename_gate_result": {
+          "phase": "ci",
+          "blocked": true,
+          "reasons": [
+            "SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted"
+          ],
+          "changed_paths_count": 2
+        }
+      }
+    },
+    {
+      "id": "A14",
+      "name": "multi-push policy attenuation",
+      "description": "Use a genuinely signed policy-review verdict in push 1 to remove a rule, then exploit the weaker base in push 2.",
+      "blocked": true,
+      "mechanism": "Normal push 1 was BLOCKED even with a valid fixture signature because attenuation requires an external policy epoch (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']). The live ruleset is active, strict, App-bound, and has no configured bypass. Counterfactual only after an owner first changes/defeats that external rule and forces push 1 to land: push 2 blocked=False. The external epoch-reset path is not implemented.",
+      "evidence": {
+        "normal_push1": {
+          "phase": "ci",
+          "blocked": true,
+          "reasons": [
+            "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted"
+          ],
+          "changed_paths_count": 2
+        },
+        "forced_land_push2_counterfactual": {
+          "phase": "ci",
+          "blocked": false,
+          "reasons": [],
+          "changed_paths_count": 2,
+          "receipts_emitted": [],
+          "receipt_gaps": []
+        },
+        "complete_production_closure": false
+      }
+    },
+    {
+      "id": "A15",
+      "name": "multi-push trust-registry bootstrap",
+      "description": "Rotate a verifier trust anchor in push 1 so a later push could inherit attacker-selected authority from BASE.",
+      "blocked": true,
+      "mechanism": "Normal push 1 was BLOCKED: ['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']. Any verifier_keys or signoff_keys delta requires an external policy epoch; no in-band reset or candidate trust bootstrap exists. Counterfactual after an owner defeats the external rule and forces push 1 to land: rotated-authority push 2 blocked=False.",
+      "evidence": {
+        "normal_push1": {
+          "phase": "ci",
+          "blocked": true,
+          "reasons": [
+            "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted"
+          ],
+          "changed_paths_count": 2
+        },
+        "forced_land_rotated_authority_push2_counterfactual": {
+          "phase": "ci",
+          "blocked": false,
+          "reasons": [],
+          "changed_paths_count": 3,
+          "receipts_emitted": [],
+          "receipt_gaps": [
+            {
+              "rule_id": "prod-src",
+              "decision_kind": "verdict",
+              "reason_code": "RECEIPT_EMIT_FAILED"
+            }
+          ]
+        },
+        "new_key_generated": false,
+        "complete_production_closure": false
+      }
     }
+  ],
+  "disclosures": [
+    "A14 proves normal-PR attenuation is blocked, and A15 proves candidate content cannot establish or rotate verifier/sign-off authority for a later push. The live App-bound ruleset is active, strict, and has no configured bypass. Its external policy-epoch reset/custody path is not implemented, and the recorded push-2 pass is a counterfactual after an owner first changes/defeats that external rule and forces push 1 to land."
   ]
 }

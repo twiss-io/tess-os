@@ -70,10 +70,12 @@ recorded, and how to reproduce it, is in [docs/demo/](docs/demo/README.md).
 ## Important limits today
 
 Tess OS is deliberately fail-closed when no covering approval exists. The
-current policy registers Cyra's public verifier key; `signoff_keys` remains
-empty. A message such as **"no covering APPROVE verdict found"** is an
-expected block, not an invitation to create a key, sign the candidate's own
-work, or work around the gate.
+current source policy registers Cyra's public verifier key and has an empty
+sign-off registry; `create-tess` deliberately resets both registries to empty
+for every fresh scaffold. No private verifier/sign-off key is shipped. A
+message such as **"no covering APPROVE verdict found"** is therefore an
+expected block when no valid covering artifact already exists, not an
+invitation to create a key or work around the gate.
 
 The live GitHub `main` ruleset now requires the App-bound `tessctl gate ci`
 check and the repository's CI checks with strict up-to-date-branch enforcement
@@ -82,19 +84,28 @@ setup step.
 
 Production limitations remain:
 
-1. The registered verifier's private-key custody and every covering approval
-   must remain independent of candidate repository content; a producer still
+1. Trust-anchor issuance, rotation, private-key custody, and every covering
+   approval must remain independent of candidate repository content. Any
+   `verifier_keys` or `signoff_keys` delta is denied in an ordinary PR and
+   requires the unimplemented external policy-epoch path; a producer still
    cannot clear its own work.
 2. The human sign-off registry is empty, so Rule-18 hard-floor actions remain
    unavailable through repository evidence alone.
-3. Multi-push policy reduction remains a disclosed, untested adversarial case.
+3. This NO-MERGE proposal blocks normal-PR multi-push policy attenuation, but
+   the external policy-epoch reset/custody path is not implemented.
 
-Until both are complete, a passing local command or GitHub Action is useful
-engineering evidence, but not a production admission control. The committed
-`gate-arena` scorecard on `main` reports **12/12 attacks blocked**.
-Multi-push policy reduction is a disclosed but untested case, and is not
-included in that score. The score is disclosed evidence, not a
-production-readiness certificate.
+Until the remaining custody and policy-epoch paths are complete, a passing
+local command or GitHub Action is useful engineering evidence, but is not by
+itself a production-readiness certificate. The committed
+`gate-arena` scorecard on this NO-MERGE proposal reports **15/15 scripted
+attempts blocked**. A14 proves the normal-PR policy-reduction path is denied,
+and A15 denies a two-push trust-registry bootstrap, while explicitly recording
+that external policy-epoch custody and
+resistance to a hostile repository owner changing the external ruleset remain
+outside the corpus. The live ruleset is active, strict, and has no configured
+bypass; that does not make an in-repo test a proof against later owner-level
+ruleset removal. The score is disclosed evidence, not a production-readiness
+certificate.
 
 Do **not** generate, register, or sign an additional verifier or sign-off key
 to clear a gate, and never use the registered verifier to approve its own

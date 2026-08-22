@@ -13,13 +13,13 @@ unit tests already exercise, just end-to-end and publicly re-runnable rather
 than pytest-internal.
 
 Key design choice worth stating up front: this arena's fixture policy
-FORKS the real, shipped `core/policy/policy.yaml` (verbatim `rules`,
+FORKS the real, current `core/policy/policy.yaml` (verbatim `rules`,
 `hard_floor_rules`, and the `tess-os-security-tier-doctrine` self-gating
 globs) and only ADDS one ordinary rule (`prod-src`, for tests that need a
 non-self-referential path to gate) plus real generated keys for Reid/Cyra/
-Quinn (the shipped file deliberately ships `verifier_keys: {}` — see its own
-header comment — so a fresh arena run has to onboard real keys before any
-of the self-gating tests mean anything). This is not a synthetic invention:
+Quinn (current main already registers Cyra's public key; the fixture replaces
+the registry with throwaway test-only public identities so every signed test
+is isolated and reproducible). This is not a synthetic invention:
 attacks 3 and 8 below test THIS repo's actual shipped self-protection glob
 list, not a toy policy.
 """
@@ -325,10 +325,10 @@ def write_signed_signoff(root: Path, rule_id: str, category: str, authorized_by:
 # ---------------------------------------------------------------------------
 
 def _forked_policy_dict(verifier_keys: dict, signoff_keys: dict = None) -> dict:
-    """Load the REAL, shipped core/policy/policy.yaml verbatim and only
-    (a) populate verifier_keys (shipped empty on purpose — see the file's
-    own header), (a2) populate signoff_keys likewise (honesty-capstone-
-    audit-2026-07-08 §3-d — also shipped empty by design), and (b) add one
+    """Load the REAL, current core/policy/policy.yaml and only
+    (a) replace verifier_keys with isolated throwaway arena identities,
+    (a2) populate signoff_keys likewise (honesty-capstone-audit-2026-07-08
+    §3-d; current source signoff_keys is empty), and (b) add one
     ordinary, non-self-referential rule (`prod-src`) so attacks that need a
     plain application-code path to gate have one, without inventing a
     synthetic self-gating policy. The real `tess-os-security-tier-doctrine`

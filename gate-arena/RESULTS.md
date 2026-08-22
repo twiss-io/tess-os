@@ -5,6 +5,30 @@ Committed to `goal-gate-arena`, built per
 Read `PRE_REGISTERED_CAVEAT.md` — committed before any Layer B result
 existed — for the binding rules this write-up follows.
 
+## Addendum (2026-08-22) — A13/A14/A15 normal-path hardening
+
+The current corpus records **15/15 scripted attempts blocked**. A13 adds the
+protected regular-to-symlink type-change path, policy/trusted-lock deletion,
+and rename-safe ingress that preserves both the protected source and the
+destination. A14 proves that an ordinary PR
+cannot use an otherwise valid signed policy review to remove an established
+rule: the immutable BASE-to-HEAD comparison returns
+`POLICY_EPOCH_RESET_REQUIRED` before that weakened policy can become the next
+normal base. A15 proves that an ordinary PR also cannot add, remove, rename,
+or rotate either approval trust registry so that attacker-selected authority
+becomes trusted from BASE on a later push.
+
+This is deliberately not reported as complete A14 production closure. The
+external policy-epoch reset verifier/custody path is specified but not
+implemented, and the A14 case records that if an administrator forcibly lands
+the rejected attenuation, the second payload becomes ungoverned. Required
+GitHub rule enforcement is currently active, strict, App-bound, and has no
+configured bypass; the counterfactual requires an owner first changing or
+defeating that external control. An independently anchored epoch-reset
+authority remains unimplemented.
+
+---
+
 ## Addendum (2026-07-08, honesty-capstone-audit-2026-07-08) — reconciled to 12/12
 
 **Superseded by the fixes below; original 8/10 write-up preserved

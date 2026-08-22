@@ -217,10 +217,10 @@ def test_policy_tamper_deletes_self_gate_rule_same_push_is_blocked(tamper_repo, 
     # stable decision codes and an aggregate count, never attacker-controlled
     # path values or internal A-series diagnostics.
     assert payload["changed_paths_count"] == 2
-    assert payload["reasons"] == [
-        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
-        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
-    ]
+    assert "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted" in payload["reasons"]
+    assert payload["reasons"].count(
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ) == 2
     assert "core/policy/policy.yaml" not in json.dumps(payload)
     assert "src/prod/app.py" not in json.dumps(payload)
 
@@ -251,10 +251,10 @@ def test_policy_tamper_narrows_globs_same_push_is_blocked(tamper_repo, run_cli):
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
     assert payload["changed_paths_count"] == 2
-    assert payload["reasons"] == [
-        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
-        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found",
-    ]
+    assert "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted" in payload["reasons"]
+    assert payload["reasons"].count(
+        "COVERING_APPROVAL_MISSING: no covering APPROVE verdict found"
+    ) == 2
     assert "src/prod/app.py" not in json.dumps(payload)
     assert "core/policy/policy.yaml" not in json.dumps(payload)
 
@@ -308,9 +308,10 @@ def test_policy_widened_allowed_verifiers_same_push_is_blocked(tamper_repo, run_
     # immutable-BASE verification rejects the candidate-only Quinn anchor.
     # The public result preserves only that stable decision code, not paths,
     # verifier names, or key diagnostics.
-    assert payload["reasons"] == [
-        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
-    ]
+    assert payload["reasons"].count(
+        "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted"
+    ) == 2  # both allowed-verifier widening and registry bootstrap are denied
+    assert "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid" in payload["reasons"]
     assert "core/policy/policy.yaml" not in json.dumps(payload)
     assert "src/prod/app.py" not in json.dumps(payload)
     assert "Quinn" not in json.dumps(payload)
@@ -347,7 +348,8 @@ def test_policy_verifier_key_swap_same_push_is_blocked(tamper_repo, run_cli, eng
     payload = json.loads(r.stdout)
     assert payload["blocked"] is True
     assert payload["reasons"] == [
-        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid"
+        "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted",
+        "VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid",
     ]
     assert "core/policy/policy.yaml" not in json.dumps(payload)
     assert "Cyra" not in json.dumps(payload)

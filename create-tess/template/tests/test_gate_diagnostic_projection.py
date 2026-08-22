@@ -49,6 +49,7 @@ def test_unknown_wrapped_reason_stays_redacted(engine):
             "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
             "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
             "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
+            "INTERNAL_ERROR_REDACTED: an internal failure was redacted",
         ],
         "changed_paths_count": 1,
     }

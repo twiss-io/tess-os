@@ -1,5 +1,5 @@
 """
-gate-arena/bypass/attacks.py — the 12 scripted bypass-attempt classes.
+gate-arena/bypass/attacks.py — the scripted bypass-attempt classes.
 
 Each attack function takes a fresh `lib.FixtureRepo` and returns a dict:
     {
@@ -29,6 +29,8 @@ import json
 import shutil
 import time
 from pathlib import Path
+
+import yaml
 
 from lib import (
     FixtureRepo, base_verdict, blob_sha, commit_all, git, head_sha,
@@ -753,6 +755,219 @@ def attack_A12_hard_floor_signoff_forgery(base_dir: Path, engine) -> dict:
         fx.teardown()
 
 
+def attack_A13_protected_type_swap(base_dir: Path, engine) -> dict:
+    """Protected type swaps and security-control deletions stay governed."""
+    fx = _new_fixture(base_dir, engine, "A13")
+    try:
+        base = fx.base_sha
+        (fx.root / "docs").mkdir()
+        (fx.root / "docs" / "payload.py").write_text("print('ungoverned target')\n", encoding="utf-8")
+        (fx.root / ".tess" / "tess.lock").write_text(
+            "framework: {}\nfiles: {}\n", encoding="utf-8",
+        )
+        commit_all(fx.root, "add A13 baselines")
+        base = head_sha(fx.root)
+        protected = fx.root / "src" / "prod" / "app.py"
+        protected.unlink()
+        protected.symlink_to("../../docs/payload.py")
+        head = commit_all(fx.root, "A13 regular-to-symlink protected type swap")
+        _r, payload = fx.gate_ci(base, head)
+        type_blocked = payload["blocked"]
+
+        # Independent reverse direction from the same immutable base: Git D
+        # status must not disappear from ingress. Policy + trusted-lock
+        # deletion is unsatisfiable on the normal PR path.
+        git(fx.root, "checkout", "-q", "-B", "a13-deletion", base)
+        shutil.rmtree(fx.root / ".tess" / "trace", ignore_errors=True)
+        (fx.root / "core" / "policy" / "policy.yaml").unlink()
+        (fx.root / ".tess" / "tess.lock").unlink()
+        deletion_head = commit_all(fx.root, "A13 delete policy and trusted lock")
+        _rd, deletion_payload = fx.gate_ci(base, deletion_head)
+        deletion_blocked = deletion_payload["blocked"] and (
+            "SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted"
+            in deletion_payload["reasons"]
+        )
+
+        # Git's default R100 presentation names only the destination in
+        # `--name-only` output. The gate disables rename collapsing so the
+        # protected source becomes an explicit D and cannot disappear.
+        git(fx.root, "checkout", "-q", "-B", "a13-rename", base)
+        shutil.rmtree(fx.root / ".tess" / "trace", ignore_errors=True)
+        git(fx.root, "mv", ".tess/tess.lock", "docs/moved-tess.lock")
+        rename_head = commit_all(fx.root, "A13 rename trusted lock to ungoverned path")
+        _rr, rename_payload = fx.gate_ci(base, rename_head)
+        rename_blocked = rename_payload["blocked"] and (
+            "SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted"
+            in rename_payload["reasons"]
+        )
+        blocked = type_blocked and deletion_blocked and rename_blocked
+        return {
+            "id": "A13",
+            "name": "protected type swap, deletion, and rename",
+            "description": (
+                "Replace a governed regular blob with a symlink, then independently "
+                "delete policy/lock controls and rename the trusted lock from the "
+                "same immutable base."
+            ),
+            "blocked": blocked,
+            "mechanism": (
+                "Git reports the protected path as type-change T and control removals as D; "
+                "ACDMRT --no-renames ingress includes both and refuses to hide a protected "
+                "source behind an R100 destination. "
+                f"Type swap blocked={type_blocked} ({payload['reasons']}); policy/lock "
+                f"deletion blocked={deletion_payload['blocked']} "
+                f"({deletion_payload['reasons']}); protected-source rename "
+                f"blocked={rename_payload['blocked']} ({rename_payload['reasons']})."
+            ),
+            "evidence": {
+                "type_swap_gate_result": payload,
+                "control_deletion_gate_result": deletion_payload,
+                "control_rename_gate_result": rename_payload,
+            },
+        }
+    finally:
+        fx.teardown()
+
+
+def attack_A14_multi_push_policy_attenuation(base_dir: Path, engine) -> dict:
+    """Normal push 1 cannot establish a weaker base for push 2."""
+    fx = _new_fixture(base_dir, engine, "A14")
+    try:
+        base = fx.base_sha
+        policy_path = fx.root / "core" / "policy" / "policy.yaml"
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        policy["policy"]["rules"] = [
+            rule for rule in policy["policy"]["rules"] if rule.get("id") != "prod-src"
+        ]
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+        # A genuine fixture Reid approval covers the policy bytes. The A14
+        # monotonic floor must still refuse attenuation; a normal verdict is
+        # not a policy-epoch reset.
+        policy_blob = blob_sha(fx.root, "core/policy/policy.yaml")
+        verdict = base_verdict(
+            ["core/policy/**"], {"core/policy/policy.yaml": policy_blob}, verifier="Reid",
+        )
+        verdict["signature"] = fx.sign(verdict, "Reid")
+        write_verdict(fx.root, "verdicts/a14-policy.verdict.md", verdict)
+        head1 = commit_all(fx.root, "A14 push 1: validly reviewed policy attenuation")
+        _r1, push1 = fx.gate_ci(base, head1)
+
+        # Counterfactual forced-land evidence: the live App-bound ruleset is
+        # active, strict, and has no configured bypass, so a normal actor
+        # cannot do this. If a repository owner first changes/defeats that
+        # external control and forcibly makes head1 the base, the second
+        # payload is no longer covered. This is why hostile-owner resistance
+        # is outside the deterministic corpus and the future external
+        # epoch-reset authority remains part of closure.
+        (fx.root / "src" / "prod" / "app.py").write_text(
+            "print('A14 push 2 unreviewed payload')\n", encoding="utf-8",
+        )
+        head2 = commit_all(fx.root, "A14 push 2: exploit attenuated base")
+        _r2, forced_push2 = fx.gate_ci(head1, head2)
+
+        blocked = push1["blocked"] is True
+        return {
+            "id": "A14",
+            "name": "multi-push policy attenuation",
+            "description": (
+                "Use a genuinely signed policy-review verdict in push 1 to remove a rule, "
+                "then exploit the weaker base in push 2."
+            ),
+            "blocked": blocked,
+            "mechanism": (
+                f"Normal push 1 was {'BLOCKED' if push1['blocked'] else 'NOT BLOCKED'} even "
+                "with a valid fixture signature because attenuation requires an external "
+                f"policy epoch ({push1['reasons']}). The live ruleset is active, strict, "
+                "App-bound, and has no configured bypass. Counterfactual only after an "
+                "owner first changes/defeats that external rule and forces push 1 to land: "
+                f"push 2 blocked={forced_push2['blocked']}. The external epoch-reset path "
+                "is not implemented."
+            ),
+            "evidence": {
+                "normal_push1": push1,
+                "forced_land_push2_counterfactual": forced_push2,
+                "complete_production_closure": False,
+            },
+        }
+    finally:
+        fx.teardown()
+
+
+def attack_A15_multi_push_trust_registry_bootstrap(base_dir: Path, engine) -> dict:
+    """A normal push cannot install authority that becomes trusted at next BASE."""
+    fx = _new_fixture(base_dir, engine, "A15")
+    try:
+        base = fx.base_sha
+        policy_path = fx.root / "core" / "policy" / "policy.yaml"
+        policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        # Rotate Quinn's registered authority to Cyra's already-valid fixture
+        # public key. No new key is generated: if this normal PR landed, a
+        # later verdict claiming Quinn but signed by Cyra would verify from
+        # the new BASE.
+        policy["policy"]["verifier_keys"]["Quinn"] = dict(
+            policy["policy"]["verifier_keys"]["Cyra"]
+        )
+        policy_path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+
+        policy_blob = blob_sha(fx.root, "core/policy/policy.yaml")
+        policy_verdict = base_verdict(
+            ["core/policy/**"], {"core/policy/policy.yaml": policy_blob}, verifier="Reid",
+        )
+        policy_verdict["signature"] = fx.sign(policy_verdict, "Reid")
+        write_verdict(fx.root, "verdicts/a15-policy.verdict.md", policy_verdict)
+        head1 = commit_all(
+            fx.root, "A15 push 1: validly reviewed verifier authority rotation",
+        )
+        _r1, push1 = fx.gate_ci(base, head1)
+
+        # Counterfactual forced land: prove the registry delta is not merely
+        # cosmetic. From head1 as BASE, Cyra's fixture private key can now
+        # authenticate a verdict that claims Quinn, the verifier allowed by
+        # prod-src. The live external rule prevents this forced land in the
+        # normal path; the pass below is disclosed, not counted as a slip.
+        (fx.root / "src" / "prod" / "app.py").write_text(
+            "print('A15 push 2 via rotated authority')\n", encoding="utf-8",
+        )
+        app_blob = blob_sha(fx.root, "src/prod/app.py")
+        payload_verdict = base_verdict(
+            ["src/prod/**"], {"src/prod/app.py": app_blob}, verifier="Quinn",
+        )
+        payload_verdict["signature"] = fx.sign(payload_verdict, "Cyra")
+        write_verdict(fx.root, "verdicts/a15-payload.verdict.md", payload_verdict)
+        head2 = commit_all(fx.root, "A15 push 2: use rotated verifier authority")
+        _r2, forced_push2 = fx.gate_ci(head1, head2)
+
+        blocked = push1["blocked"] and (
+            "POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted"
+            in push1["reasons"]
+        ) and forced_push2["blocked"] is False and forced_push2.get("reasons") == []
+        return {
+            "id": "A15",
+            "name": "multi-push trust-registry bootstrap",
+            "description": (
+                "Rotate a verifier trust anchor in push 1 so a later push "
+                "could inherit attacker-selected authority from BASE."
+            ),
+            "blocked": blocked,
+            "mechanism": (
+                f"Normal push 1 was {'BLOCKED' if push1['blocked'] else 'NOT BLOCKED'}: "
+                f"{push1['reasons']}. Any verifier_keys or signoff_keys delta requires "
+                "an external policy epoch; no in-band reset or candidate trust bootstrap exists. "
+                "Counterfactual after an owner defeats the external rule and forces push 1 "
+                f"to land: rotated-authority push 2 blocked={forced_push2['blocked']}."
+            ),
+            "evidence": {
+                "normal_push1": push1,
+                "forced_land_rotated_authority_push2_counterfactual": forced_push2,
+                "new_key_generated": False,
+                "complete_production_closure": False,
+            },
+        }
+    finally:
+        fx.teardown()
+
+
 ALL_ATTACKS = [
     attack_A1_no_verify_local_bypass,
     attack_A2_hard_floor_valid_verdict_insufficient,
@@ -766,4 +981,7 @@ ALL_ATTACKS = [
     attack_A10_shape_attacks,
     attack_A11_same_push_engine_tamper,
     attack_A12_hard_floor_signoff_forgery,
+    attack_A13_protected_type_swap,
+    attack_A14_multi_push_policy_attenuation,
+    attack_A15_multi_push_trust_registry_bootstrap,
 ]

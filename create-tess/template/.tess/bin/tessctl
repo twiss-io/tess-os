@@ -9710,6 +9710,16 @@ _DECISION_MESSAGES = {
     "HARD_FLOOR_UNSATISFIED": "a required hard-floor sign-off is not valid",
     "BASE_REQUIRED": "an immutable BASE commit is required",
     "ADMISSION_EVENT_SOURCE_REQUIRED": "an authoritative admission event source is required",
+    "POLICY_EPOCH_RESET_REQUIRED": "normal PR policy attenuation is not permitted",
+    "IMMUTABLE_RANGE_REQUIRED": "exactly one immutable BASE-to-HEAD range is required",
+    "IMMUTABLE_RANGE_INVALID": "the immutable BASE-to-HEAD range is invalid",
+    "MERGE_BASE_MISMATCH": "BASE is not the governed subject's merge-base",
+    "IMMUTABLE_HEAD_REQUIRED": "exactly one immutable candidate HEAD is required",
+    "IMMUTABLE_POLICY_SCHEMA_MISSING": "candidate HEAD has no policy schema",
+    "IMMUTABLE_BASE_POLICY_REQUIRED": "an immutable BASE policy is required",
+    "IMMUTABLE_BASE_POLICY_INVALID": "the immutable BASE policy is invalid",
+    "IMMUTABLE_BASE_POLICY_SCHEMA_MISSING": "immutable BASE has no policy schema",
+    "SECURITY_CONTROL_DELETION": "normal PR security-control deletion is not permitted",
     "INTERNAL_ERROR_REDACTED": "an internal failure was redacted",
     # PR-2 (Agent Receipt EMIT wiring) — NEVER a block reason (this code is
     # never present in `result["reasons"]`/`blocked`, only in the separate,
@@ -9726,6 +9736,7 @@ _DECISION_REASON_WRAPPERS = (
     "[renderer-base] ",
     "[contract] ",
     "[gate] ",
+    "[policy] ",
 )
 
 
@@ -9751,7 +9762,22 @@ def _decision_reason_code(raw_reason: object) -> str:
         return "CONTRACT_INVALID"
     if text.startswith("ADMISSION_EVENT_SOURCE_REQUIRED:"):
         return "ADMISSION_EVENT_SOURCE_REQUIRED"
-    if text.startswith("[policy]") or lower.startswith("cannot load policy"):
+    for code in (
+        "POLICY_EPOCH_RESET_REQUIRED", "IMMUTABLE_RANGE_REQUIRED",
+        "IMMUTABLE_RANGE_INVALID", "MERGE_BASE_MISMATCH",
+        "IMMUTABLE_HEAD_REQUIRED", "IMMUTABLE_POLICY_SCHEMA_MISSING",
+        "IMMUTABLE_BASE_POLICY_REQUIRED", "IMMUTABLE_BASE_POLICY_INVALID",
+        "IMMUTABLE_BASE_POLICY_SCHEMA_MISSING", "SECURITY_CONTROL_DELETION",
+    ):
+        if text.startswith(f"{code}:"):
+            return code
+    if (
+        text.startswith("[policy]")
+        or lower.startswith("cannot load policy")
+        or "no policy instance found at immutable head" in lower
+        or "at immutable head is unreadable" in lower
+        or "at immutable head fails schema/lint" in lower
+    ):
         return "POLICY_INVALID"
     if "git_operation_failed" in lower or text.startswith("tessctl gate: `git "):
         return "GIT_OPERATION_FAILED"
@@ -9863,7 +9889,10 @@ def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: s
     LOOKS like a contract is never silently skipped."""
     abs_path = root / rel_path
     if not abs_path.exists():
-        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+        # Deletions have no candidate bytes to schema-validate. They remain
+        # in ACDMRT ingress and are governed separately by BASE policy;
+        # policy/gate/lock control deletion is denied explicitly.
+        return []
     try:
         schema = load_contract_schema(root, contract_type)
         instance = load_contract_instance(abs_path)
@@ -9909,15 +9938,30 @@ def _gate_run_git(root: Path, *args: str) -> str:
 
 
 def _gate_changed_paths_staged(root: Path) -> list:
-    """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    """Pre-commit mode: files staged for the next commit.
+
+    Rename detection is deliberately disabled. Git's R100 `--name-only`
+    presentation can emit only the destination and hide a protected source;
+    treating a rename as D+A keeps both sides visible to policy matching.
+    """
+    out = _gate_run_git(
+        root, "diff", "--cached", "--no-renames", "--name-only",
+        "--diff-filter=ACDMRT",
+    )
     return [line for line in out.splitlines() if line.strip()]
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
-    when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    when given --base/--head, and internally for the stdin protocol).
+
+    `--no-renames` is a security property: a protected source moved to an
+    ungoverned destination must remain an explicit deletion plus addition.
+    """
+    out = _gate_run_git(
+        root, "diff", "--no-renames", "--name-only", "--diff-filter=ACDMRT",
+        base, head,
+    )
     return [line for line in out.splitlines() if line.strip()]
 
 
@@ -10131,6 +10175,259 @@ def _gate_load_policy_at_base(root: Path, base_shas: list) -> dict | None:
     """
     instance, _base_sha = _gate_load_policy_at_base_with_ref(root, base_shas)
     return instance
+
+
+def _gate_load_policy_at_base_strict(
+    root: Path, base_shas: list,
+) -> tuple[dict | None, str | None, list[str]]:
+    """Load and validate the established policy from one immutable BASE.
+
+    The tolerant historical loader above remains available to diagnostic
+    callers. Authoritative ship-gate evaluation uses this stricter boundary:
+    once a real BASE commit exists, a missing, unreadable, or invalid policy
+    cannot silently erase the security floor used for A14 comparison. The
+    only policy-less state accepted here is Git's explicit empty-tree object,
+    which is the distinct, verifiable bootstrap subject for a new ref.
+    """
+    if len(base_shas or []) != 1:
+        return None, None, [
+            "IMMUTABLE_BASE_POLICY_REQUIRED: authoritative evaluation requires "
+            "exactly one immutable BASE policy"
+        ]
+    base = base_shas[0]
+    if base == EMPTY_TREE_SHA:
+        return None, base, []
+    try:
+        base = _gate_run_git(root, "rev-parse", f"{base}^{{commit}}").strip()
+    except GateSpineError:
+        return None, None, [
+            "IMMUTABLE_BASE_POLICY_INVALID: BASE commit resolution failed closed"
+        ]
+    for name in POLICY_INSTANCE_CANDIDATES:
+        rel = f"{POLICY_DIR}/{name}"
+        text = _gate_git_show_at_ref(root, base, rel)
+        if text is None:
+            continue
+        try:
+            instance = _parse_contract_instance_text(text, Path(name).suffix, rel)
+            schema_text = _gate_git_show_at_ref(
+                root, base, f"{CONTRACTS_DIR}/{CONTRACT_SCHEMAS['policy']}",
+            )
+            if schema_text is None:
+                return None, base, [
+                    "IMMUTABLE_BASE_POLICY_SCHEMA_MISSING: immutable BASE has no "
+                    "policy schema; fail-closed"
+                ]
+            schema = json.loads(schema_text)
+        except (ContractError, json.JSONDecodeError) as e:
+            return None, base, [
+                f"IMMUTABLE_BASE_POLICY_INVALID: immutable BASE policy is unreadable: {e}"
+            ]
+        errors = schema_validate(instance, schema, schema, root / CONTRACTS_DIR)
+        errors += _lint_contract("policy", instance)
+        if errors:
+            return None, base, [
+                "IMMUTABLE_BASE_POLICY_INVALID: immutable BASE policy fails "
+                f"schema/lint: {error}"
+                for error in errors
+            ]
+        return instance, base, []
+    return None, base, [
+        "IMMUTABLE_BASE_POLICY_REQUIRED: no policy instance exists at immutable "
+        "BASE; fail-closed"
+    ]
+
+
+def _gate_load_policy_at_head(
+    root: Path, head_shas: list,
+) -> tuple[dict | None, str | None, list[str]]:
+    """Load and validate the candidate policy from one immutable HEAD tree."""
+    if len(head_shas or []) != 1:
+        return None, None, [
+            "IMMUTABLE_HEAD_REQUIRED: authoritative gate evaluation requires exactly "
+            "one pushed HEAD; multi-ref or missing-head evaluation fails closed"
+        ]
+    head = head_shas[0]
+    for name in POLICY_INSTANCE_CANDIDATES:
+        rel = f"{POLICY_DIR}/{name}"
+        text = _gate_git_show_at_ref(root, head, rel)
+        if text is None:
+            continue
+        try:
+            instance = _parse_contract_instance_text(text, Path(name).suffix, rel)
+            schema_text = _gate_git_show_at_ref(
+                root, head, f"{CONTRACTS_DIR}/{CONTRACT_SCHEMAS['policy']}",
+            )
+            if schema_text is None:
+                return None, head, [
+                    "IMMUTABLE_POLICY_SCHEMA_MISSING: candidate HEAD has no policy schema; "
+                    "fail-closed"
+                ]
+            schema = json.loads(schema_text)
+        except (ContractError, json.JSONDecodeError) as e:
+            return None, head, [f"{rel} at immutable HEAD is unreadable: {e}"]
+        errors = schema_validate(instance, schema, schema, root / CONTRACTS_DIR)
+        errors += _lint_contract("policy", instance)
+        if errors:
+            return None, head, [f"{rel} at immutable HEAD fails schema/lint: {e}" for e in errors]
+        return instance, head, []
+    return None, head, [
+        f"no policy instance found at immutable HEAD {head!r} under "
+        f"{POLICY_DIR}/policy.{{yaml,yml,json}} — fail-closed"
+    ]
+
+
+def _gate_policy_attenuation_reasons(
+    baseline_instance: dict | None, candidate_instance: dict | None,
+) -> list[str]:
+    """Detect normal-PR attempts to reduce established gate coverage.
+
+    A14 is a history attack: an approved first PR narrows policy, then a
+    later PR exploits the newly-weak baseline. Per-change verdict binding
+    cannot repair that after the first PR lands. The normal-PR rule is
+    therefore monotonic. Trust registries are stricter still: any ordinary-PR
+    addition, removal, identity rename, fingerprint rotation, or public-key
+    path change would establish authority for a later push, so both registries
+    must remain byte-for-data equal to BASE. A future externally anchored
+    ``policy_epoch`` reset may authorize such a change, but no reset acceptance
+    path exists here.
+    """
+    if not isinstance(baseline_instance, dict) or not isinstance(candidate_instance, dict):
+        return []
+    base_policy = baseline_instance.get("policy") or {}
+    new_policy = candidate_instance.get("policy") or {}
+    reasons: list[str] = []
+
+    for registry in ("verifier_keys", "signoff_keys"):
+        # Presence is part of the epoch-bound contract. The schema permits an
+        # omitted empty registry, but an ordinary PR may not rewrite the BASE
+        # representation from present-empty to absent (or vice versa) while
+        # claiming exact registry equality.
+        baseline_registry = (registry in base_policy, base_policy.get(registry))
+        candidate_registry = (registry in new_policy, new_policy.get(registry))
+        if baseline_registry != candidate_registry:
+            reasons.append(
+                f"trust registry {registry!r} changed; normal PRs cannot establish, "
+                "remove, rename, or rotate approval authority"
+            )
+
+    def by_id(items):
+        return {
+            item.get("id"): item
+            for item in (items or [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+
+    base_rules = by_id(base_policy.get("rules"))
+    new_rules = by_id(new_policy.get("rules"))
+    for rule_id, old in sorted(base_rules.items()):
+        if not old.get("require_verdict"):
+            continue
+        new = new_rules.get(rule_id)
+        if new is None:
+            reasons.append(f"rule {rule_id!r} was removed")
+            continue
+        if not new.get("require_verdict"):
+            reasons.append(f"rule {rule_id!r} disabled require_verdict")
+        removed_globs = sorted(set(old.get("globs") or []) - set(new.get("globs") or []))
+        if removed_globs:
+            reasons.append(f"rule {rule_id!r} removed or rewrote established glob(s): {removed_globs}")
+        removed_classes = sorted(
+            set(old.get("classification") or []) - set(new.get("classification") or [])
+        )
+        if removed_classes:
+            reasons.append(f"rule {rule_id!r} removed classification(s): {removed_classes}")
+        old_allowed = set(old.get("allowed_verifiers") or [])
+        new_allowed = set(new.get("allowed_verifiers") or [])
+        widened = sorted(new_allowed - old_allowed)
+        if widened:
+            reasons.append(f"rule {rule_id!r} widened allowed_verifiers: {widened}")
+
+    base_floor = by_id(base_policy.get("hard_floor_rules"))
+    new_floor = by_id(new_policy.get("hard_floor_rules"))
+    for rule_id, old in sorted(base_floor.items()):
+        new = new_floor.get(rule_id)
+        if new is None:
+            reasons.append(f"hard-floor rule {rule_id!r} was removed")
+            continue
+        if new.get("category") != old.get("category"):
+            reasons.append(f"hard-floor rule {rule_id!r} changed category")
+        removed_globs = sorted(set(old.get("globs") or []) - set(new.get("globs") or []))
+        if removed_globs:
+            reasons.append(
+                f"hard-floor rule {rule_id!r} removed or rewrote established glob(s): {removed_globs}"
+            )
+    return reasons
+
+
+def _gate_validate_single_range(root: Path, base_shas: list, head_shas: list) -> list[str]:
+    """Require one immutable, ancestry-consistent base-to-head subject."""
+    if not base_shas and not head_shas:
+        return []
+    if len(base_shas or []) != 1 or len(head_shas or []) != 1:
+        return [
+            "IMMUTABLE_RANGE_REQUIRED: authoritative evaluation requires exactly one "
+            "BASE and one HEAD; multi-ref ranges fail closed"
+        ]
+    try:
+        head = _gate_run_git(root, "rev-parse", f"{head_shas[0]}^{{commit}}").strip()
+        if base_shas[0] == EMPTY_TREE_SHA:
+            return []
+        base = _gate_run_git(root, "rev-parse", f"{base_shas[0]}^{{commit}}").strip()
+        merge_base = _gate_run_git(root, "merge-base", base, head).strip()
+    except GateSpineError:
+        return ["IMMUTABLE_RANGE_INVALID: BASE/HEAD commit resolution failed closed"]
+    if merge_base.lower() != base.lower():
+        return [
+            "MERGE_BASE_MISMATCH: supplied BASE is not the immutable merge-base of "
+            "the governed BASE-to-HEAD subject; update/rebase before review"
+        ]
+    return []
+
+
+_GATE_IMMUTABLE_CONTROL_DELETION_GLOBS = (
+    "core/policy/**",
+    "core/contracts/policy.schema.json",
+    ".tess/bin/**",
+    "tessctl",
+    ".tess/tess.lock",
+    ".github/workflows/tess-gate.yml",
+)
+
+
+def _gate_security_control_deletion_reasons(
+    root: Path, base_shas: list, head_shas: list,
+) -> list[str]:
+    """Reject removal of the controls that define or execute the gate.
+
+    Ordinary protected-file deletion still flows through policy coverage and
+    may be reviewed like any other governed change. Deleting the policy,
+    policy schema, trusted lock, gate engine, gate wrapper, or ship-gate
+    workflow removes part of the enforcement boundary itself, so the normal
+    PR path cannot authorize it. Rename detection is disabled so moving one
+    of those controls to an ungoverned destination still exposes the protected
+    source as a deletion. A future external policy-epoch mechanism may carry a
+    deliberate retirement/migration; no in-band reset exists here.
+    """
+    if len(base_shas or []) != 1 or len(head_shas or []) != 1:
+        return []
+    if base_shas[0] == EMPTY_TREE_SHA:
+        return []
+    try:
+        deleted = _gate_run_git(
+            root, "diff", "--no-renames", "--name-only", "--diff-filter=D",
+            base_shas[0], head_shas[0],
+        ).splitlines()
+    except GateSpineError:
+        return [
+            "GIT_OPERATION_FAILED: security-control deletion discovery failed closed"
+        ]
+    return [
+        "SECURITY_CONTROL_DELETION: normal PRs may not delete policy/gate/lock "
+        f"control path {path!r}; no in-band reset path exists"
+        for path in sorted({p.strip() for p in deleted if p.strip()})
+        if path_matches_globs(path, _GATE_IMMUTABLE_CONTROL_DELETION_GLOBS)
+    ]
 
 
 def _gate_merge_rule_restrictive(new_rule: dict, base_rule: dict) -> dict:
@@ -11287,9 +11584,18 @@ def _gate_run_ship_check(
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
 
-    reasons = [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
+    reasons = _gate_validate_single_range(root, base_shas or [], head_shas or [])
+    if reasons:
+        return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+    reasons += _gate_security_control_deletion_reasons(
+        root, base_shas or [], head_shas or [],
+    )
+    reasons += [f"[contract] CONTRACT_INVALID: {v}" for v in _gate_validate_contracts(root, changed_paths)]
 
-    policy_instance, policy_errors = _gate_load_policy(root)
+    if head_shas:
+        policy_instance, _policy_head, policy_errors = _gate_load_policy_at_head(root, head_shas)
+    else:
+        policy_instance, policy_errors = _gate_load_policy(root)
     if policy_errors:
         reasons += [f"[policy] {e}" for e in policy_errors]
         # Fail-closed: an untrusted policy means we cannot safely know what
@@ -11302,12 +11608,28 @@ def _gate_run_ship_check(
     # module's "A3 FIX — policy self-tamper" comment block above
     # `_gate_git_show_at_ref` for the full rationale. `base_shas` is None
     # for pre-commit-style callers (there is no "push" yet to have a base
-    # ref); `_gate_load_policy_at_base` treats an empty/missing list as "no
-    # baseline available," which degrades to the pre-fix, NEW-policy-only
-    # behavior — never a security regression, just no additional coverage.
-    baseline_policy_instance, baseline_policy_ref = _gate_load_policy_at_base_with_ref(
-        root, base_shas or [],
-    )
+    # ref). Authoritative range evaluation MUST recover and validate that
+    # immutable BASE policy; otherwise an invalid BASE would silently erase
+    # the A14 comparison floor. Only the explicit empty-tree bootstrap has no
+    # established policy. Pre-commit-style callers have no immutable range
+    # and retain the local policy path above.
+    if base_shas:
+        baseline_policy_instance, baseline_policy_ref, baseline_policy_errors = (
+            _gate_load_policy_at_base_strict(root, base_shas)
+        )
+        if baseline_policy_errors:
+            reasons += [f"[policy] {e}" for e in baseline_policy_errors]
+            return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+    else:
+        baseline_policy_instance, baseline_policy_ref = None, None
+
+    attenuation = _gate_policy_attenuation_reasons(baseline_policy_instance, policy_instance)
+    if attenuation:
+        reasons += [
+            "[policy] POLICY_EPOCH_RESET_REQUIRED: normal PRs may not attenuate the "
+            f"established security floor ({reason}); no in-band reset path exists"
+            for reason in attenuation
+        ]
 
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
     if baseline_policy_instance is not None:
