@@ -1,0 +1,121 @@
+{
+  "schema_version": "tess.aec-support-policy.v1",
+  "document_status": "available",
+  "runtime_enforcement_status": "planned",
+  "default_assurance": {
+    "completeness": "AEC-C0",
+    "trust": "T0"
+  },
+  "security_tiers": [
+    {
+      "tier": "local-informational",
+      "minimum": {"completeness": "AEC-C1", "trust": "T0"},
+      "implementation_status": "planned",
+      "required_evidence": ["producer-identity", "declared-outcome"]
+    },
+    {
+      "tier": "auditable-non-protected",
+      "minimum": {"completeness": "AEC-C2", "trust": "T1"},
+      "implementation_status": "planned",
+      "required_evidence": ["bounded-inputs", "bounded-outputs", "tool-result-record", "workspace-revision"]
+    },
+    {
+      "tier": "protected-repository",
+      "minimum": {"completeness": "AEC-C3", "trust": "T2"},
+      "implementation_status": "planned",
+      "required_evidence": [
+        "runtime-identity",
+        "workspace-before-after",
+        "tool-call-outcomes",
+        "independent-execution-receipt",
+        "immutable-artifact-binding"
+      ]
+    },
+    {
+      "tier": "release-high-security",
+      "minimum": {"completeness": "AEC-C4", "trust": "T3"},
+      "implementation_status": "planned",
+      "required_evidence": [
+        "runtime-identity",
+        "workspace-before-after",
+        "tool-call-outcomes",
+        "independent-execution-receipt",
+        "immutable-artifact-binding",
+        "independent-conformance",
+        "human-owned-trust-anchor",
+        "vcs-required-check",
+        "candidate-cannot-self-authorize",
+        "published-audit-summary"
+      ]
+    }
+  ],
+  "trust_boundary": {
+    "same_user_ceiling": "T1",
+    "above_t1_requires": ["independent-execution-receipt", "immutable-artifact-binding"],
+    "adapter_capability_levels_do_not_satisfy_aec": true
+  },
+  "data_defaults": {
+    "storage_scope": "local-only",
+    "cloud_sync": "disabled",
+    "automatic_external_model_routing": "disabled",
+    "automatic_indexing": "disabled",
+    "excluded_index_paths": [
+      "clients/**",
+      "kb/**",
+      ".tess/state/**",
+      "operator/**",
+      "**/vault/**",
+      ".tess/keys/**",
+      ".tess/gate/signoffs/**"
+    ],
+    "excluded_durable_categories": [
+      "raw-prompt",
+      "raw-tool-result",
+      "secret-value",
+      "credential-material",
+      "private-key",
+      "access-token",
+      "refresh-token",
+      "session-cookie",
+      "unredacted-client-content"
+    ]
+  },
+  "retention": {
+    "raw_aec_content": "denied",
+    "minimal_redacted_metadata_days": 7,
+    "permanent_artifacts": "explicit-operator-setting-required",
+    "implementation_status": "planned"
+  },
+  "provider_execution": {
+    "default": "disabled",
+    "required_per_run_declarations": ["endpoint", "region", "provider-retention-mode", "tool-profile"]
+  },
+  "credentials": {
+    "ambient_environment_inheritance": "denied",
+    "allowlist": "explicit-name-and-class",
+    "reference_lifetime": "short-lived-and-scoped",
+    "secret_material_in_context": "denied"
+  },
+  "cost": {
+    "default_budget_usd": 0,
+    "default_hard_stop": true,
+    "nonzero_requires": ["explicit-owner", "per-run-budget", "cost-scope"]
+  },
+  "products": {
+    "advanced_memory": {
+      "status": "planned",
+      "enabled": false,
+      "required_controls": ["classification", "tenant-isolation", "retention", "verified-deletion", "retrieval-scope", "incident-response"]
+    },
+    "tess_cloud": {
+      "status": "planned",
+      "enabled": false,
+      "required_controls": ["tenancy", "encryption-custody", "classification", "residency", "retention", "verified-deletion", "incident-response", "export"]
+    },
+    "tess_vault": {
+      "status": "planned",
+      "enabled": false,
+      "required_controls": ["tenancy", "custody", "recovery", "rotation", "revocation", "scoped-reference-resolution", "audit", "verified-deletion", "incident-response"]
+    }
+  }
+}

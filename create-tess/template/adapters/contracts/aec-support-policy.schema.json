@@ -1,0 +1,154 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:twiss-io:tess-os:aec-support-policy:v1",
+  "title": "Tess OS advisory Agent Execution Contract support policy v1",
+  "description": "A machine-readable documentation template for future AEC assurance, data, credential, cost, Cloud, Memory, and Vault defaults. It is not runtime enforcement, an approval, a trust anchor, or a provider authorization.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "document_status",
+    "runtime_enforcement_status",
+    "default_assurance",
+    "security_tiers",
+    "trust_boundary",
+    "data_defaults",
+    "retention",
+    "provider_execution",
+    "credentials",
+    "cost",
+    "products"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "tess.aec-support-policy.v1"},
+    "document_status": {"enum": ["available", "preview", "planned", "unsupported"]},
+    "runtime_enforcement_status": {"const": "planned"},
+    "default_assurance": {"$ref": "#/$defs/assurance"},
+    "security_tiers": {
+      "type": "array",
+      "minItems": 4,
+      "items": {"$ref": "#/$defs/securityTier"}
+    },
+    "trust_boundary": {
+      "type": "object",
+      "required": ["same_user_ceiling", "above_t1_requires", "adapter_capability_levels_do_not_satisfy_aec"],
+      "additionalProperties": false,
+      "properties": {
+        "same_user_ceiling": {"const": "T1"},
+        "above_t1_requires": {
+          "type": "array",
+          "items": {"type": "string"},
+          "allOf": [
+            {"contains": {"const": "independent-execution-receipt"}},
+            {"contains": {"const": "immutable-artifact-binding"}}
+          ]
+        },
+        "adapter_capability_levels_do_not_satisfy_aec": {"const": true}
+      }
+    },
+    "data_defaults": {
+      "type": "object",
+      "required": [
+        "storage_scope",
+        "cloud_sync",
+        "automatic_external_model_routing",
+        "automatic_indexing",
+        "excluded_index_paths",
+        "excluded_durable_categories"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "storage_scope": {"const": "local-only"},
+        "cloud_sync": {"const": "disabled"},
+        "automatic_external_model_routing": {"const": "disabled"},
+        "automatic_indexing": {"const": "disabled"},
+        "excluded_index_paths": {"type": "array", "items": {"type": "string"}},
+        "excluded_durable_categories": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "required": ["raw_aec_content", "minimal_redacted_metadata_days", "permanent_artifacts", "implementation_status"],
+      "additionalProperties": false,
+      "properties": {
+        "raw_aec_content": {"const": "denied"},
+        "minimal_redacted_metadata_days": {"const": 7},
+        "permanent_artifacts": {"const": "explicit-operator-setting-required"},
+        "implementation_status": {"const": "planned"}
+      }
+    },
+    "provider_execution": {
+      "type": "object",
+      "required": ["default", "required_per_run_declarations"],
+      "additionalProperties": false,
+      "properties": {
+        "default": {"const": "disabled"},
+        "required_per_run_declarations": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "required": ["ambient_environment_inheritance", "allowlist", "reference_lifetime", "secret_material_in_context"],
+      "additionalProperties": false,
+      "properties": {
+        "ambient_environment_inheritance": {"const": "denied"},
+        "allowlist": {"const": "explicit-name-and-class"},
+        "reference_lifetime": {"const": "short-lived-and-scoped"},
+        "secret_material_in_context": {"const": "denied"}
+      }
+    },
+    "cost": {
+      "type": "object",
+      "required": ["default_budget_usd", "default_hard_stop", "nonzero_requires"],
+      "additionalProperties": false,
+      "properties": {
+        "default_budget_usd": {"const": 0},
+        "default_hard_stop": {"const": true},
+        "nonzero_requires": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "products": {
+      "type": "object",
+      "required": ["advanced_memory", "tess_cloud", "tess_vault"],
+      "additionalProperties": false,
+      "properties": {
+        "advanced_memory": {"$ref": "#/$defs/plannedProduct"},
+        "tess_cloud": {"$ref": "#/$defs/plannedProduct"},
+        "tess_vault": {"$ref": "#/$defs/plannedProduct"}
+      }
+    }
+  },
+  "$defs": {
+    "assurance": {
+      "type": "object",
+      "required": ["completeness", "trust"],
+      "additionalProperties": false,
+      "properties": {
+        "completeness": {"enum": ["AEC-C0", "AEC-C1", "AEC-C2", "AEC-C3", "AEC-C4"]},
+        "trust": {"enum": ["T0", "T1", "T2", "T3"]}
+      }
+    },
+    "securityTier": {
+      "type": "object",
+      "required": ["tier", "minimum", "implementation_status", "required_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "tier": {"enum": ["local-informational", "auditable-non-protected", "protected-repository", "release-high-security"]},
+        "minimum": {"$ref": "#/$defs/assurance"},
+        "implementation_status": {"const": "planned"},
+        "required_evidence": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "plannedProduct": {
+      "type": "object",
+      "required": ["status", "enabled", "required_controls"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"const": "planned"},
+        "enabled": {"const": false},
+        "required_controls": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    }
+  },
+  "$comment": "Validated by the offline advisory tools.aec_support_policy_validator module. This schema is documentation, not a gate or approval input."
+}

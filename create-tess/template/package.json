@@ -1,7 +1,7 @@
 {
   "name": "tess-os",
   "version": "0.1.0",
-  "description": "An orchestration-first agent operating system for Claude Code — a governed organization of specialist agents with an in-place framework upgrade engine.",
+  "description": "A local, fail-closed governance and review harness for observable coding-agent work across supported hosts.",
   "license": "Apache-2.0",
   "private": false,
   "repository": {
@@ -14,6 +14,8 @@
   },
   "keywords": [
     "claude-code",
+    "codex",
+    "agent-governance",
     "agents",
     "agent-orchestration",
     "ai",
