@@ -18,15 +18,32 @@ def test_gate_quickstart_documents_custody_boundary_without_bootstrap_commands()
 
     for required_text in (
         "Technology-preview boundary",
-        "first-key design and GitHub required-check enforcement are still unresolved",
+        "live `twiss-io/tess-os` `main` ruleset now requires the App-bound",
+        "no configured\n> bypass",
         "no covering APPROVE verdict found",
         "generate a key;",
         "register a public key in policy;",
         "write or sign a verdict or sign-off;",
         "candidate repository must never create the trust anchor",
         "There is no self-service bootstrap path documented here.",
+        "Any candidate change to `verifier_keys` or `signoff_keys`",
+        "returns `POLICY_EPOCH_RESET_REQUIRED`",
+        "15/15 scripted",
     ):
         assert required_text in document
+
+    for stale_claim in (
+        "GitHub required-check enforcement are still unresolved",
+        "required GitHub enforcement are in place",
+        "key bootstrap and GitHub admission-control gaps",
+    ):
+        assert stale_claim not in document
+
+    readme = README_PATH.read_text(encoding="utf-8")
+    assert re.search(
+        r"Any\s+`verifier_keys` or `signoff_keys` delta is denied", readme,
+    )
+    assert "15/15 scripted" in readme
 
     bash_blocks = re.findall(r"```bash\n(.*?)\n```", document, flags=re.DOTALL)
     assert bash_blocks == [

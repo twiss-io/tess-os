@@ -1,14 +1,16 @@
 # Layer A — Bypass Corpus Scorecard
 
-Generated: 2026-07-17T04:43:28.026493+00:00
+Generated: 2026-08-22T08:48:14.912847+00:00
 
-**12/12 attacks BLOCKED** (0 slipped through). Every attack ran the real `.tess/bin/tessctl` engine, real `git`, real `gpg`, against a fixture policy forked verbatim from this repo's own shipped `core/policy/policy.yaml`.
+**15/15 attacks BLOCKED** (0 slipped through). Every attack ran the real `.tess/bin/tessctl` engine, real `git`, real `gpg`, against a fixture policy forked verbatim from this repo's own shipped `core/policy/policy.yaml`.
+
+**Disclosure:** A14 proves normal-PR attenuation is blocked, and A15 proves candidate content cannot establish or rotate verifier/sign-off authority for a later push. The live App-bound ruleset is active, strict, and has no configured bypass. Its external policy-epoch reset/custody path is not implemented, and the recorded push-2 pass is a counterfactual after an owner first changes/defeats that external rule and forces push 1 to land.
 
 | ID | Attack | Result | Mechanism |
 |---|---|---|---|
 | A1 | --no-verify local hook bypass | BLOCKED | local pre-push hook bypassed via --no-verify (push rc=0, local_bypass_succeeded=True); CI-equivalent `tessctl gate ci` over the same base..head range BLOCKED it independently — ['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'] |
 | A2 | hard-floor path + valid signed APPROVE verdict | BLOCKED | hard-floor 'credentials' rule matched config.env; a fully valid, correctly-signed Quinn APPROVE verdict was NOT sufficient — blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid']). With a real, cryptographically SIGNED .tess/gate/signoffs/credentials.signoff.json artifact (from a registered policy.signoff_keys identity) plus a covering Reid verdict for the now-governed signoffs directory, the SAME change clears (blocked=False) — proving this is a real escape valve (authenticated human sign-off), not the hard floor being permanently unusable. |
-| A3 | policy-tamper in the same push (self-gating rule deleted) | BLOCKED | policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** — MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) — result: BLOCKED (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']) |
+| A3 | policy-tamper in the same push (self-gating rule deleted) | BLOCKED | policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** — MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) — result: BLOCKED (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']) |
 | A4 | unsigned verdict | BLOCKED | unsigned APPROVE verdict, otherwise perfect (right glob/hashes/verifier) — ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid'] |
 | A5 | wrong-key / mismatched-identity signature | BLOCKED | verdict claims verifier=Quinn but is signed with Reid's key — ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid'] |
 | A6 | tampered-after-signing verdict | BLOCKED | verdict content edited after signing (signed_content_sha256 stale) — ['VERDICT_SIGNATURE_INVALID: a covering verdict signature is invalid'] |
@@ -18,6 +20,9 @@ Generated: 2026-07-17T04:43:28.026493+00:00
 | A10 | shape attacks — master-key glob, empty verifier_keys, expired key | BLOCKED | master_key_glob: BLOCKED — should be rejected at schema/lint time (HIGH-1(b), 'is_overbroad_glob') before it ever reaches covering-verdict discovery \| empty_verifier_keys: BLOCKED — a real signature with nowhere to be checked against must fail-closed, not fail-open \| expired_key: BLOCKED — the key's short (seconds=6) Expire-Date has genuinely elapsed by verification time (waited past the key's own recorded expiration epoch, not a fixed sleep); `_gate_verify_verdict_signature` inspects gpg's own EXPKEYSIG/REVKEYSIG status classification (`_gpg_signing_key_validity_reason`), checked at verification time, not signing time. Empirically: the gate BLOCKED it — an expired verifier key's signature is rejected fail-closed even though the crypto math and exact fingerprint both check out. |
 | A11 | same-push engine tamper (honesty-capstone-audit-2026-07-08 §3-c) | BLOCKED | `.tess/bin/tessctl`'s `_gate_run_ship_check` edited to unconditionally return not-blocked, in the SAME commit as an unreviewed src/prod/app.py change. Naive execution (the pushed tree's OWN engine — exactly what the v2/unpatched CI workflow ran): NOT BLOCKED — slips past naively ({'phase': 'ci', 'blocked': False, 'reasons': [], 'changed_paths_count': 2}). The REAL, committed .github/workflows/tess-gate.yml's own trusted-engine steps (v3 — extracts and runs the engine as it existed at the push's BASE ref, never the pushed tree's copy): BLOCKED (tessctl gate ci — BLOCKED   changed paths: 2     - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found     - COVERING_APPROVAL_MISSING: no covering APPROVE verdict found   refusing (fail-closed) — see README.md 'tessctl gate', conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6) |
 | A12 | hard-floor sign-off forgery (honesty-capstone-audit-2026-07-08 §3-d) | BLOCKED | credentials hard floor matched config.env. Forged (unsigned, shape-valid-only) sign-off: blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in policy.signoff_keys, PLUS a covering Reid verdict for the now-governed signoffs directory itself: blocked=False ([]) — proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable. |
+| A13 | protected type swap, deletion, and rename | BLOCKED | Git reports the protected path as type-change T and control removals as D; ACDMRT --no-renames ingress includes both and refuses to hide a protected source behind an R100 destination. Type swap blocked=True (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']); policy/lock deletion blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'POLICY_INVALID: the effective policy is invalid']); protected-source rename blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted']). |
+| A14 | multi-push policy attenuation | BLOCKED | Normal push 1 was BLOCKED even with a valid fixture signature because attenuation requires an external policy epoch (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']). The live ruleset is active, strict, App-bound, and has no configured bypass. Counterfactual only after an owner first changes/defeats that external rule and forces push 1 to land: push 2 blocked=False. The external epoch-reset path is not implemented. |
+| A15 | multi-push trust-registry bootstrap | BLOCKED | Normal push 1 was BLOCKED: ['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']. Any verifier_keys or signoff_keys delta requires an external policy epoch; no in-band reset or candidate trust bootstrap exists. Counterfactual after an owner defeats the external rule and forces push 1 to land: rotated-authority push 2 blocked=False. |
 
 ## Full mechanism detail
 
@@ -43,7 +48,7 @@ Delete policy.yaml's own self-gating rule (protecting core/policy/**) AND ship a
 
 **Result:** BLOCKED
 
-**Mechanism:** policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** — MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) — result: BLOCKED (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'])
+**Mechanism:** policy.yaml edited to DELETE its own self-gating rule ('tess-os-security-tier-doctrine', which covers core/policy/** — MEDIUM-1) AND the prod-src rule, in the SAME commit as an unreviewed src/prod/app.py change. `_gate_load_policy` reads policy.yaml straight off the checked-out working tree (no base-ref pin, no diff-against-previous-policy check) — result: BLOCKED (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found'])
 
 ### A4 — unsigned verdict
 
@@ -120,3 +125,27 @@ An unsigned, shape-valid-only sign-off (forgeable by any agent that can write a 
 **Result:** BLOCKED
 
 **Mechanism:** credentials hard floor matched config.env. Forged (unsigned, shape-valid-only) sign-off: blocked=True, hard_floor_code_present=True (['HARD_FLOOR_UNSATISFIED: a required hard-floor sign-off is not valid', 'COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']). With the SAME sign-off cryptographically signed by a REAL, registered operator key in policy.signoff_keys, PLUS a covering Reid verdict for the now-governed signoffs directory itself: blocked=False ([]) — proving the mechanism is a real, satisfiable escape valve once AUTHENTICATED, not a hard floor that is either permanently broken or permanently unusable.
+
+### A13 — protected type swap, deletion, and rename
+
+Replace a governed regular blob with a symlink, then independently delete policy/lock controls and rename the trusted lock from the same immutable base.
+
+**Result:** BLOCKED
+
+**Mechanism:** Git reports the protected path as type-change T and control removals as D; ACDMRT --no-renames ingress includes both and refuses to hide a protected source behind an R100 destination. Type swap blocked=True (['COVERING_APPROVAL_MISSING: no covering APPROVE verdict found']); policy/lock deletion blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted', 'POLICY_INVALID: the effective policy is invalid']); protected-source rename blocked=True (['SECURITY_CONTROL_DELETION: normal PR security-control deletion is not permitted']).
+
+### A14 — multi-push policy attenuation
+
+Use a genuinely signed policy-review verdict in push 1 to remove a rule, then exploit the weaker base in push 2.
+
+**Result:** BLOCKED
+
+**Mechanism:** Normal push 1 was BLOCKED even with a valid fixture signature because attenuation requires an external policy epoch (['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']). The live ruleset is active, strict, App-bound, and has no configured bypass. Counterfactual only after an owner first changes/defeats that external rule and forces push 1 to land: push 2 blocked=False. The external epoch-reset path is not implemented.
+
+### A15 — multi-push trust-registry bootstrap
+
+Rotate a verifier trust anchor in push 1 so a later push could inherit attacker-selected authority from BASE.
+
+**Result:** BLOCKED
+
+**Mechanism:** Normal push 1 was BLOCKED: ['POLICY_EPOCH_RESET_REQUIRED: normal PR policy attenuation is not permitted']. Any verifier_keys or signoff_keys delta requires an external policy epoch; no in-band reset or candidate trust bootstrap exists. Counterfactual after an owner defeats the external rule and forces push 1 to land: rotated-authority push 2 blocked=False.

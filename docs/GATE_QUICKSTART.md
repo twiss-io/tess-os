@@ -1,8 +1,10 @@
 # Gate operation and custody
 
 > **Technology-preview boundary:** the current Tess OS gate is fail-closed,
-> but it is not yet a production branch-protection control. The external
-> first-key design and GitHub required-check enforcement are still unresolved.
+> and the live `twiss-io/tess-os` `main` ruleset now requires the App-bound
+> `tessctl gate ci` check with strict up-to-date enforcement and no configured
+> bypass (verified 2026-08-22). External policy-epoch/reset custody remains
+> unresolved; a repository owner could also change that external ruleset.
 
 This page explains how to read the gate safely. It intentionally does **not**
 explain how to generate a verifier key, add a key to policy, or sign an
@@ -17,9 +19,9 @@ committed, content-bound, signed by an already-authorized verifier, and still
 valid for the policy rule.
 
 The intended production design binds every trust input to immutable base/head
-artifacts. Current `main` still has unresolved tree-consistency and type-swap
-hardening identified by the adversarial corpus, so it must not be treated as
-that completed design.
+artifacts. This NO-MERGE proposal adds type/delete/rename-safe ingress and a
+monotonic normal-PR policy floor. It does not implement the external
+policy-epoch reset authority or the final attestation-only approval carrier.
 
 The intended delivery path is:
 
@@ -49,14 +51,18 @@ it without signing a new one:
 ./tessctl verdict verify path/to/existing.verdict.yaml
 ```
 
-Do not use these commands to decide that a production branch is protected.
-They report local or CI evidence only; GitHub required-check enforcement is a
-separate prerequisite.
+Do not use these commands alone to decide that a production branch is
+protected. They report local or CI evidence only. For `twiss-io/tess-os`, the
+required App-bound live ruleset is a separately verified external control; a
+different repository must establish and verify its own ruleset.
 
 ## Expected fail-closed result
 
-Fresh policy registries intentionally contain no verifier or sign-off key. A
-governed change can therefore block with a result such as:
+The current source policy registers Cyra's public verifier key and keeps the
+sign-off registry empty. Fresh `create-tess` scaffolds reset both registries to
+empty, and neither source nor scaffold ships a private key. A governed change
+without an already-valid covering artifact can therefore block with a result
+such as:
 
 ```text
 no covering APPROVE verdict found
@@ -87,17 +93,25 @@ change.
    defect in a normal pull request and re-run the diagnostics.
 
 There is no self-service bootstrap path documented here. A future custody
-runbook may describe the approved ceremony after the external trust-root design
-and required GitHub enforcement are in place.
+runbook may describe the approved ceremony after the external policy-epoch and
+trust-root design is in place.
 
 ## Current status
 
-- `verifier_keys` and `signoff_keys` are intentionally empty in the shipped
-  policy.
-- The committed gate-arena scorecard on `main` is 12/12; A14, the multi-push
-  policy-reduction case, remains open.
-- The key bootstrap and GitHub admission-control gaps mean Tess OS must not
-  yet protect production merges.
+- Current source policy contains Cyra's public verifier registration;
+  `signoff_keys` is empty. Fresh scaffolds reset both registries to empty.
+- Any candidate change to `verifier_keys` or `signoff_keys`—addition,
+  deletion, identity rename, fingerprint rotation, or public-key path
+  change—returns `POLICY_EPOCH_RESET_REQUIRED`. No private key is shipped.
+- The gate-arena scorecard on this NO-MERGE proposal is 15/15 scripted
+  attempts blocked. A14's normal-PR attenuation path and A15's two-push
+  trust-registry bootstrap are denied, but the
+  external policy-epoch custody/reset path remains open.
+- The live `twiss-io/tess-os` ruleset requires the App-bound ship gate, strict
+  freshness, and has no configured bypass. Hostile owner-level ruleset changes
+  remain outside what an in-repo corpus can prevent or prove.
+- External policy-epoch/reset custody remains the production closure gap for
+  legitimate security-floor attenuation.
 
 For the broader support matrix and product boundaries, read
 [Support and status](STATUS.md).
