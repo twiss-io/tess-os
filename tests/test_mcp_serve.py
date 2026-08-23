@@ -375,6 +375,18 @@ _VALID_BRIEF = {
 }
 
 
+_EXTERNAL_RETURN_MANIFEST = {
+    "task_id": "task1",
+    "mission_id": "m1",
+    "agent": "test-agent",
+    "status": "complete",
+    "self_reported_complete": True,
+    "artifacts": [{"path": "/etc/hosts", "description": "external host file"}],
+    "claims": [{"claim": "done", "evidence": "none", "inferred": False}],
+    "flags": [],
+}
+
+
 def test_validate_contract_inline_content_valid(mcp_root):
     client = McpStdio(mcp_root)
     try:
@@ -386,6 +398,26 @@ def test_validate_contract_inline_content_valid(mcp_root):
         payload = resp["result"]["structuredContent"]
         assert payload["valid"] is True, payload["violations"]
         assert payload["violations"] == []
+    finally:
+        client.close()
+
+
+def test_validate_contract_inline_return_manifest_rejects_external_artifact(mcp_root):
+    """MCP validation shares the CLI/gate containment rule, not CWD state."""
+    client = McpStdio(mcp_root)
+    try:
+        _initialize(client)
+        resp = client.request("tools/call", {
+            "name": "validate_contract",
+            "arguments": {
+                "contract_type": "return-manifest",
+                "content": json.dumps(_EXTERNAL_RETURN_MANIFEST),
+                "format": "json",
+            },
+        })
+        payload = resp["result"]["structuredContent"]
+        assert payload["valid"] is False
+        assert any("absolute" in violation for violation in payload["violations"])
     finally:
         client.close()
 
