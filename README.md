@@ -352,6 +352,255 @@ behavior was independently re-verified against the live registry, not
 asserted from the changelog alone. Future releases will be documented the
 same way.
 
+## Quickstart
+
+### `npm create tess` — the founding wizard
+
+`npm create tess@latest` runs a five-axis interactive setup
+(`create-tess/src/journey.js`):
+
+1. **Vibe** — how the session is framed (RPG / Command / Studio). Purely
+   cosmetic: the engine and the install set underneath are identical for
+   every vibe, and the wizard says so out loud on every run.
+2. **Name** — your operator name.
+3. **Squad** — a starter path (`founders` / `builders` / `operators`) that
+   installs a small starter roster plus its orchestrator(s) — see
+   [The specialist roster](#the-specialist-roster) below. The reveal shows
+   exactly who's joining before you continue.
+4. **Conductor** — name your instance's Tess (default `Tess`); rejected if
+   it collides with an agent name already in your chosen squad.
+5. **Pathway** — one of five conductor personas (Chief of Staff, Co-founder,
+   Strategist, Guide, Operator) that shapes how your Tess talks to you.
+
+An optional Telegram step and a recap follow. Nothing is written to disk
+until you confirm the recap — cancelling at any point leaves your target
+directory untouched.
+
+The published `create-tess@0.1.3` package's default flow has the known
+defect described in [npm and source status](#npm-and-source-status) above.
+Until `0.1.4` republishes, run the wizard from a source checkout — the exact
+path this walkthrough was verified against:
+
+```bash
+git clone https://github.com/twiss-io/tess-os.git
+cd tess-os/create-tess
+npm ci
+node bin/create-tess.mjs
+```
+
+The interactive prompts themselves can't be captured as static text, so this
+verified walkthrough instead drives the wizard non-interactively with
+explicit flags — `--yes` plus one flag per axis, the same mechanism the
+wizard's own test suite (`create-tess/test/wizard.test.js`) uses:
+
+```bash
+node bin/create-tess.mjs --yes --operator=Alex --vibe=rpg --path=builders \
+  --pathway=co-founder --conductor=Tess --target=../my-tess-instance
+```
+
+Real, unedited output from that exact command:
+
+```text
+Fetching keystone (bundled template — no network required) …
+
+---------------------------------------------------------
+  Assembling your intelligence system.
+  [ok] Mustering your squad
+  [ok] Marking you as Commander Alex
+  [ok] Attuning Tess to your command
+  [ok] Forging the doctrine
+  [ok] Initialising git repository
+  [ok] Installing gate hooks (tessctl gate install-hooks)
+  [ok] tessctl doctor — OK
+  [ok] tessctl verify — OK
+  [ok] git init — repository created
+  [ok] tessctl gate install-hooks — pre-commit/pre-push hooks + CI workflow live
+
+  ! Local scaffold ready; protected production work remains blocked.
+    This project ships with empty policy registries — fail-closed by
+    design: you register your own verifier and sign-off keys. (The
+    framework maintainer repository separately registers its own
+    verifiers, in its own policy, to govern its own development — that
+    registration is never carried into a scaffolded project.) So
+    a first governed push can fail closed with no covering APPROVE verdict
+    found. Do not bypass or disable the hook to represent a change as
+    protected, or create, register, or sign review authority from this
+    candidate repository. Record the
+    gate output and base/head references, then escalate to Xavier for an
+    external custody decision and required GitHub-check enforcement.
+  *  Local scaffold complete; production protection requires external custody and required GitHub checks.
+
+=========================================================
+Tess — intelligence conductor — online.
+Alex — good to be here, and I'm in this with you, not working for you.
+Here's who's in the room with us: Elena · Ada · Iris · Quinn · Reid · Leah · Eva.
+One orchestrator active: Product & Delivery.
+Hand me anything — a mess or half a thought. I'll frame it, pull the right people,
+and bring you back something worth your time. And if I think we're aiming at the
+wrong thing, I'll say so before we burn a day on it. What's the first move?
+▶  /add-mission [brief]
+=========================================================
+Tip: your squad grows when you're ready.  /list-agents · /add-agent (Eva runs intake).
+```
+
+*A visual (GIF or screenshots) of the actual interactive prompts is a
+planned follow-up (#23), not included in this change: no screen-recording
+tool (`asciinema`, `agg`, `svg-term-cli`) is preinstalled in this
+environment, and a scripted PTY session driving the five interactive
+prompts under `expect` produced garbled, unusable terminal output rather
+than a clean recording within a short time budget — so this PR ships the
+verified static walkthrough above instead of a fabricated or broken-looking
+cast.*
+
+### Raw clone, no npm
+
+```bash
+git clone https://github.com/twiss-io/tess-os.git
+cd tess-os
+cp .env.example .env   # fill in real values only if you use Telegram/Anthropic; NEVER commit .env
+./tessctl init
+./tessctl doctor
+./tessctl verify
+```
+
+### The roster CLI
+
+```bash
+./tessctl roster list
+```
+
+```text
+tessctl roster list
+  installed (7):
+    apolline  athena  eva  founders-office-orchestrator  leah
+    revenue-orchestrator  zelie
+
+  staged / benched (143):
+    ada  adrienne  alessia  alina  alouette
+    amandine  amara  anais  arielle  aurora
+    aveline  beatrice  berenice  bettina  bianca
+    briony  callista  camille  cecily  celeste
+    celine  cerise  clara  clarisse  client-experience-orchestrator
+    clio  colette  coralie  corinne  corisande
+    ... and 113 more
+```
+
+```bash
+./tessctl recruit ada
+```
+
+```text
+tessctl recruit: installed 1 agent(s): ada
+  Run `tessctl doctor` to verify.
+```
+
+```bash
+./tessctl recruit client-experience   # orchestrator shorthand -> client-experience-orchestrator
+```
+
+```text
+tessctl recruit: installed 1 agent(s): client-experience-orchestrator
+  Run `tessctl doctor` to verify.
+```
+
+See [The specialist roster](#the-specialist-roster) below for what "staged"
+and "recruit" mean, and how a persona spec becomes a dispatchable agent.
+
+## The specialist roster
+
+Tess OS ships **144 specialist agent personas** (`agents/<name>/`, one
+directory per persona — a real directory count, not a rounded marketing
+figure) across business and technical guilds, plus **6 outcome
+orchestrators** (`.tess/core/agents-dispatch/*-orchestrator.md`) — **150
+dispatchable entries** total, tracked in `.tess/tess.lock`.
+
+Only a small starter set is active in any given instance; the rest are
+**staged**: a compiled definition exists in `.tess/core/agents-dispatch/`,
+but no live `.claude/agents/<name>.md` file is written for it, so
+`tessctl doctor` and `tessctl verify` both treat an unrecruited persona as
+correct — not a missing-file error. `npm create tess`'s three wizard paths
+each install a different starter set on top of the two universal-base
+agents (Leah and Eva), always on:
+
+| Path | Squad | Orchestrator(s) | Total installed |
+|---|---|---|---|
+| `founders` | Athena, Apolline, Zelie | Founder's Office, Revenue | 7 |
+| `builders` | Elena, Ada, Iris, Quinn, Reid | Product & Delivery | 8 |
+| `operators` | Adrienne, Evangeline, Clio | Operational Reliability, Client Experience | 7 |
+
+(A fourth path, `coding-squad` — Ada, Iris, Reid, Cyra, Quinn, Vega plus
+Product & Delivery — is defined in `.tess/core/roster-paths.json` for a
+coding-only install and reachable directly with
+`tessctl roster apply coding-squad`, but isn't offered by the npm wizard.)
+
+### Anatomy of a persona spec
+
+A persona under `agents/<name>/` is five files:
+
+| File | Contents |
+|---|---|
+| `identity.md` | who they are, their function, when to call them |
+| `personality.md` | how they think, communicate, and work with others |
+| `soul.md` | what drives them, what they stand for |
+| `capabilities.md` | core competencies, output standards, constraints |
+| `README.md` | an index of the four files above |
+
+Excerpt, `agents/ada/identity.md` (trimmed; see the file for the rest):
+
+```markdown
+---
+name: Ada
+role: Lead Backend Engineer
+status: founding coding team
+---
+
+# Identity — Ada
+
+## Who She Is
+
+Ada is the backbone builder. She owns backend logic, APIs, business rules,
+data flow, integrations, authentication logic, and server-side execution.
+She is disciplined, methodical, and deeply committed to building backend
+systems that are stable, extensible, and trustworthy.
+
+## When to Call Ada
+
+Call Ada:
+- When designing or building backend systems, services, or APIs
+- When defining data models, business rules, or server-side workflows
+- When authentication, permissions, or access control logic is involved
+```
+
+### From persona spec to a dispatchable agent
+
+The narrative spec under `agents/<name>/` and the compiled Claude Code
+subagent definition are two separately maintained files — nothing in this
+repo generates one from the other. `.tess/core/agents-dispatch/<name>.md`
+is the definition a harness actually dispatches: YAML frontmatter
+(`name`, `description`, `model`, `lifecycle_status`, `tools`) plus a prose
+body. `tessctl recruit` / `tessctl roster apply` copy that core file into
+the live `.claude/agents/<name>.md` and flip the persona's status in
+`.tess/tess.lock` from `staged` to `core-managed`; the `agents/<name>/`
+narrative spec is never read by the harness at dispatch time — it exists
+for humans and contributors.
+
+```bash
+./tessctl recruit ada
+```
+
+```text
+tessctl recruit: installed 1 agent(s): ada
+  Run `tessctl doctor` to verify.
+```
+
+Orchestrators recruit the same way: by shorthand (bare name, minus
+`-orchestrator`) or by whole starter-path group:
+
+```bash
+./tessctl recruit revenue     # -> revenue-orchestrator
+./tessctl recruit founders    # -> the whole founders squad + its orchestrators
+```
+
 ## Where to start
 
 - [Local development quickstart](https://github.com/twiss-io/tess-os/blob/main/docs/LOCAL_DEV_QUICKSTART.md) — clone, Python
