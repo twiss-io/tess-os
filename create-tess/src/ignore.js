@@ -49,6 +49,10 @@ export const EXCLUDE_NAMES = new Set([
   'vault.age',
   'identity.age',
   'vault.recipients',
+  // Advisory mutation lock. It is runtime state, not template structure;
+  // a local --template-source must never hand a live lock inode to a new
+  // instance (the empty vault directory itself is kept via .gitkeep).
+  '.vault.lock',
   // bare secret / runtime dirs that .gitignore matches at ANY depth
   // (`secrets/`, `tess-secrets/`, `channels/`) — not only the `.claude/`-anchored
   // ones already covered by EXCLUDE_DIR_PREFIXES. Also `operator/secrets`.

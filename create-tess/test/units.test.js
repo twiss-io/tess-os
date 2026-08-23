@@ -134,6 +134,7 @@ test('Quinn-MED: isExcludedRel drops secrets/runtime, keeps template files', () 
     '.claude/vault/vault.age',
     '.claude/vault/vault.recipients',
     '.claude/vault/identity.age',
+    '.claude/vault/.vault.lock',
     '.claude/tess-secrets/secrets.env.json',
     '.claude/channels/access.json',
     '.tess/snapshots/2026-01-01/snap.json',
@@ -318,6 +319,7 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
   w('.claude/vault/vault.age', 'CIPHERTEXT\n');
   w('.claude/vault/vault.recipients', 'age1authorpubkey\n');
   w('.claude/vault/identity.age', 'CIPHERTEXT\n');
+  w('.claude/vault/.vault.lock', 'author live lock state\n');
   w('.claude/tess-secrets/secrets.env.json', '{"GITHUB_TOKEN":"ghp_x"}\n');
   w('.claude/channels/access.json', '{"allow":["x"]}\n');
   w('.tess/snapshots/2026-01-01/snap.json', '{"author":"state"}\n');
@@ -354,6 +356,7 @@ test('Quinn-MED: produced instance from a local source is contamination-free', (
     gone('.claude/vault/vault.age');
     gone('.claude/vault/vault.recipients');
     gone('.claude/vault/identity.age');
+    gone('.claude/vault/.vault.lock');
     gone('.claude/tess-secrets');
     gone('.claude/channels');
     gone('.tess/snapshots/2026-01-01');
