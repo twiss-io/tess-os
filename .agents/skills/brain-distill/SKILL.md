@@ -23,10 +23,13 @@ decisions, stated facts, commitments. You PROPOSE; the verifier decides.
    ```
    python3 scripts/brain/tessbrain.py inbox add --kind <decision|preference|correction|fact|open_loop|skill> \
      --quote "<verbatim words from that line>" --source-ref "brain/journal/<...>.md#L12" \
-     --statement "<one plain sentence; no number or date that is not in the quote>" \
+     [--statement "<only words from the quote; leave it out to use the quote>"] \
      [--entity clients/<slug>] [--register brain/<entity>/decisions] [--tier material]
    ```
 
+   The title and statement may only use words from the quote (rule V10); a
+   rewording, reported speech, a pasted block or something taken back goes
+   to `review` for the operator instead of being accepted.
 5. When done: `python3 scripts/brain/tessbrain.py distilled` (resets the reminder).
 6. Tell the operator in one line what was learned (the command output says
    accepted / active / proposed / review / fail).

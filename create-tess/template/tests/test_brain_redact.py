@@ -72,3 +72,29 @@ def test_plain_prose_untouched():
     text = "Decision: let's go with Postgres for the ledger. The task-list is done by Friday."
     assert redact.redact(text) == (text, {})
     assert redact.scan(text) == []
+
+
+def _env_secrets():
+    v = "Sup3r" + "S3cret" + "ZZZZValue"
+    return {
+        "DB_PASSWORD=%s" % v: v,
+        "GITHUB_TOKEN=%s" % ("abcdef" + "0123456789abcd"): "abcdef" + "0123456789abcd",
+        "client_secret: %s" % ("9f8e7d" + "6c5b4a"): "9f8e7d" + "6c5b4a",
+        'MYSQL_ROOT_PASSWORD="%s"' % ("p@ss" + " w0rd!"): "p@ss" + " w0rd!",
+        "aws_secret_access_key = %s" % ("wJalr" + "XUtnFEMIabcdef"): "wJalr" + "XUtnFEMIabcdef",
+        "postgres://app:%s@db.internal/ledger" % ("pa55" + "word99"): "pa55" + "word99",
+        "Authorization: Bearer %s" % ("abcdefgh" + "ijklmnop1234"): "abcdefgh" + "ijklmnop1234",
+        "hf token %s" % ("hf_" + "a" * 34): "hf_" + "a" * 34,
+    }
+
+
+@pytest.mark.parametrize("line", sorted(_env_secrets()))
+def test_env_and_config_style_credentials_are_redacted(line):
+    out, counts = redact.redact(line)
+    assert _env_secrets()[line] not in out and "<REDACTED:" in out and counts
+    assert redact.scan(line)  # the save/V7 scan sees it too
+
+
+def test_prose_about_tokens_is_not_mangled():
+    for text in ("**On the token:** I'm checking it now.", "the token is short", "secret sauce: none"):
+        assert redact.redact(text) == (text, {})

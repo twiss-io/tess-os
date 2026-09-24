@@ -27,8 +27,9 @@ _INJECTED = __import__("re").compile(r"<channel\s[^>]*>")
 def read_stdin(cfg: Config) -> Dict:
     try:
         raw = sys.stdin.read() if not sys.stdin.isatty() else ""
-    except (OSError, ValueError):
-        raw = ""
+    except (OSError, ValueError) as exc:  # includes UnicodeDecodeError (binary stdin)
+        log_error(cfg, "hook: stdin could not be read or decoded", exc)
+        return {}
     if not raw.strip():
         return {}
     try:

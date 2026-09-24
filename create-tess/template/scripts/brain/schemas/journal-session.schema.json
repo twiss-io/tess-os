@@ -38,7 +38,7 @@
     },
     "source_path": {
       "type": "string",
-      "description": "~-relative transcript path"
+      "description": "<runtime>-transcripts/<file name>: no machine-local path"
     },
     "source_sha256": {
       "type": "string"

@@ -6,13 +6,14 @@ V3 approvals: assistant proposal + principal yes V4 numbers/URLs/emails sourced
 V5 duplicates -> noop; supersedes target valid   V6 external context -> review
 V7 redaction scan clean                          V8 no hypotheticals/questions
 V9 target register inside the speaker's scope
+V10 statement fidelity and V11 context (guards.py) send to review, never accept.
 """
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
 
-from . import cues, frontmatter, lookup, records, redact
+from . import cues, frontmatter, guards, lookup, records, redact
 from .config import Config
 from .textutil import contains, glob_match, normalize, sentences, statement_hash
 
@@ -179,6 +180,11 @@ def check(cfg: Config, cand: Dict) -> Result:
         res.status = "noop"
         res.reasons.append("V5: duplicate of %s" % dup)
         return res
+    held = _guard(cfg, cand, line) if res.status in ("pass", "pending") else None
+    if held:
+        res.status = "review"
+        res.reasons.append(held)
+        return res
     why = "" if res.status != "pass" or cand.get("operator_approved") else (
         EXTERNAL if cand.get("external_context") else _external(cfg, line))
     if why:
@@ -194,3 +200,26 @@ def _v9(cfg: Config, speaker: Optional[str], target: str) -> Optional[str]:
     if not any(glob_match(g, rel) for g in scopes):
         return "V9: target %r is outside %s's scope %s" % (rel, speaker, scopes)
     return None
+
+
+def _following(cfg: Config, line: lookup.JLine) -> str:
+    """The next principal message after `line` in the same session ('' if none yet)."""
+    if line.kind == "turn":
+        return ""
+    later = sorted((l for l in lookup.lines_for(cfg, line.path) if l.kind == "msg" and l.principal
+                    and l.order > line.order), key=lambda l: l.order)
+    return later[0].text if later else ""
+
+
+def _guard(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
+    """V10 (statement fidelity) then V11 (context); skipped once the operator approved it."""
+    kind = cand.get("kind") or ""
+    if cand.get("operator_approved") or kind == "skill":
+        return None
+    source = " ".join([line.text, cand.get("quote") or "", cand.get("approves_quote") or ""]
+                      + list(cand.get("also_quoted") or []))
+    why = guards.fidelity(cand, source)
+    if why or kind not in JUDGED:
+        return why
+    return guards.context(kind, cand.get("quote") or "", line.text, _following(cfg, line),
+                          approval=bool(cand.get("approves_quote")))

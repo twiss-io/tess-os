@@ -19,7 +19,7 @@ def inst(tmp_path):
     slug = re.sub(r"[^A-Za-z0-9]", "-", str(inst))
     fxlib.claude_session(home / "projects" / slug / (SID + ".jsonl"), SID, [
         ("user", "We will publish the newsletter on Tuesdays."),
-        ("user", "Scratch that, we will publish the newsletter on Thursdays."),
+        ("user", "Change of plan: we will publish the newsletter on Thursdays."),
         ("user", "For Acme we keep the invoices monthly, and only in SGD."),
         ("user", "Should the retainer be 2 hours a week?"),
         ("user", "We pay the photographer 1200 per shoot."),
@@ -34,7 +34,7 @@ def decide(inst, *args):
 
 
 def test_decide_syncs_first_and_records_a_resolving_quote(inst):
-    rc, out = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter day")
+    rc, out = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter on Tuesdays")
     assert rc == 0 and out["status"] == "accepted", out
     rec = (inst / out["record"]).read_text()
     assert 'source_ref: "brain/journal/2026/09/24/1400-claude-dec00001.md#L1"' in rec

@@ -127,13 +127,52 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
     return sess
 
 
+def _first_cwd(path: Path) -> str:
+    import json
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(200):
+                raw = fh.readline()
+                if not raw:
+                    break
+                try:
+                    rec = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("cwd"):
+                    return str(rec["cwd"])
+    except OSError:
+        return ""
+    return ""
+
+
+def _inside(cwd: str, root: Path) -> bool:
+    r, c = os.path.realpath(str(root)), os.path.realpath(cwd) if cwd else ""
+    return bool(c) and (c == r or c.startswith(r + os.sep))
+
+
+def subdir_transcripts(root: Path) -> List[Path]:
+    """Sessions started in a SUBDIRECTORY of the instance (`cd clients/acme && claude`):
+    their slug is <slug(root)>-..., so keep only those whose recorded cwd is inside root."""
+    base = default_dirs(root)[0].parent
+    out: List[Path] = []
+    for p in {project_slug(str(root)), project_slug(os.path.realpath(str(root)))}:
+        for d in sorted(base.glob(p + "-*")) if base.is_dir() else []:
+            if d.is_dir():
+                out.extend(t for t in sorted(d.glob("*.jsonl")) if t.is_file() and _inside(_first_cwd(t), root))
+    return out
+
+
 def discover(root: Path, claude_dir: Optional[Path], known: List[str]) -> List[Path]:
-    """Transcripts for this project: a given dir, the project slug dirs, hook-reported paths."""
+    """Transcripts for this project: a given dir, the project slug dirs (root and
+    subdirectories), hook-reported paths."""
     dirs = [Path(claude_dir)] if claude_dir else default_dirs(root)
     found: List[Path] = []
     for d in dirs:
         if d.is_dir():
             found.extend(sorted(p for p in d.glob("*.jsonl") if p.is_file()))
+    if not claude_dir:
+        found.extend(p for p in subdir_transcripts(root) if p not in found)
     for k in known:
         p = Path(k)
         if p.suffix == ".jsonl" and p.is_file() and p not in found:

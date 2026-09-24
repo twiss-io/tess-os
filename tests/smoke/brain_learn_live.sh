@@ -173,7 +173,7 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
   for rt in claude codex; do
     local i=0; for q in "$Q1" "$Q2" "$Q3" "$Q4" "$Q5"; do i=$((i + 1)); ask $rt "$S/zc" "$q" "$S/l11-$rt-q$i.out" & done
   done
-  ask claude "$S/zc0" "$Q1" "$S/l11-neg-q1.out" &
+  ask claude "$S/zc0" "$Q1 Start your answer with the single word FOUND if the files record such a decision, or NONE if they do not." "$S/l11-neg-q1.out" &
   wait
   for rt in claude codex; do
     local n=0 q3=0
@@ -185,7 +185,10 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
     echo "L11 $rt: $n/5 correct (Q3 mandatory: $q3)"
     if [ $n -ge 4 ] && [ $q3 -eq 1 ]; then ok "(L11) $rt zero-context probe"; else no "(L11) $rt zero-context probe"; fi
   done
-  check "(L11) negative control: pre-conversation clone cannot answer Q1" sh -c "! grep -qi postgres '$S/l11-neg-q1.out'"
+  # A correct "not found" answer may list the words it searched for (e.g. "postgres"), so assert
+  # on the structured first word and on the absence of a decision record path instead.
+  check "(L11) negative control: pre-conversation clone cannot answer Q1" sh -c \
+    "sed -n '/[A-Za-z]/{p;q;}' '$S/l11-neg-q1.out' | grep -qiE '^[^A-Za-z]*none' && ! grep -q 'brain/decisions/D-' '$S/l11-neg-q1.out'"
 }
 
 case $RT in

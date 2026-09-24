@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import cues, entities, inbox, index, journal, lookup, promote, records
+from . import cues, entities, guards, inbox, index, journal, lookup, promote, records
 from .config import Config, iso, log_error, read_json, write_json
 from .parsers import claude, codex, gemini
 
@@ -61,24 +61,20 @@ def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Op
     return out
 
 
-def _register(entry, ents: Dict[str, str], session_entities: List[str]) -> str:
+def _register(entry, ents: Dict[str, str]) -> str:
+    """The one entity named in THIS message, else '' (brain/decisions). Session-level
+    mentions are not used: one mention of a client must not file every decision there."""
     named = [eid for eid, name in ents.items() if cues.mentions(entry.text, name)]
-    if len(named) == 1:
-        return named[0]
-    if not named and len(session_entities) == 1:
-        return session_entities[0]
-    return ""
+    return named[0] if len(named) == 1 else ""
 
 
 def cue_candidates(cfg: Config, sess, new_entries, ents: Dict[str, str]) -> List[Dict]:
-    sess_ents = sorted({eid for e in new_entries if e.kind == "msg" and e.principal
-                        for eid, name in ents.items() if cues.mentions(e.text, name)})
     out = []
     for e in new_entries:
         if e.kind != "msg" or not e.principal:
             continue
         for hit in cues.scan_text(e.text):
-            entity = _register(e, ents, sess_ents) if hit.kind in ("decision", "open_loop") else ""
+            entity = _register(e, ents) if hit.kind in ("decision", "open_loop") else ""
             at = iso(cfg.local(e.at)) if e.at else ""
             cand = inbox.new_candidate(
                 cfg, KIND_MAP[hit.kind], hit.sentence, hit.quote, detected_by="cue", source_ref=e.ref,
@@ -186,6 +182,7 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
         srcs = sources(cfg, runtime, claude_dir, codex_home, also_cwd, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
     cands: List[Dict] = []
+    taken_back: List[str] = []
     for path, parser in srcs:
         try:
             sess, new, commit = journal.update(cfg, path, parser, ents)
@@ -199,10 +196,31 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
         if sess is not None:
             summary["journaled"] += 1
             cands += found
+            taken_back += [e.ref for e in new if e.kind == "msg" and e.principal and guards.takes_back(e.text)]
     summary["candidates"] = len(cands)
     summary["outcomes"] = inbox.process_all(cfg)
+    summary["held"] = held_by_takeback(cfg, taken_back)
     summary["rechecked"] = _onboarding_records(cfg) + promote.recheck_pending(cfg)
     summary["onboarding_unverified"] = verify_onboarding(cfg)
     rc, msgs = index.regenerate(cfg)
     summary["index"] = {"rc": rc, "messages": msgs}
     return summary
+
+
+def held_by_takeback(cfg: Config, refs: List[str]) -> List[Dict]:
+    """"Scratch that" in a later principal message: the previous principal message's
+    auto-promoted, unconfirmed decisions/preferences go back to review (proposed)."""
+    out: List[Dict] = []
+    for ref in refs:
+        path, _, label = ref.partition("#")
+        msgs = sorted((l for l in lookup.lines_for(cfg, path) if l.kind == "msg" and l.principal),
+                      key=lambda l: l.order)
+        prev = [l for i, l in enumerate(msgs) if i + 1 < len(msgs) and msgs[i + 1].label == label]
+        if not prev:
+            continue
+        for rec in records.all_records(cfg):
+            if (str(rec.meta.get("source_ref") or "") == prev[0].ref and rec.kind in ("decision", "preference")
+                    and rec.status in ("accepted", "active") and rec.meta.get("confirmed") is False):
+                records.update_fields(rec, {"status": "proposed"})
+                out.append({"record": rec.id, "status": "proposed", "reason": "V11: taken back at %s" % ref})
+    return out

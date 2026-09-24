@@ -96,3 +96,25 @@ def test_no_external_channel_is_attributed(tmp_path):
     p = tmp_path / "s.jsonl"
     p.write_text("".join(json.dumps(dict(r, sessionId="s1")) + "\n" for r in recs))
     assert [m.raw_speaker for m in claude.parse(p).msgs] == []
+
+
+def test_claude_sessions_started_in_a_subdirectory_are_swept(tmp_path):
+    """`cd clients/acme && claude` writes to ~/.claude/projects/<slug(root)>-clients-acme: no hooks fire
+    there, so the sweep must find it, keeping only transcripts whose cwd is inside the instance."""
+    import re
+    inst = Path(fxlib.make(str(tmp_path / "fx")))
+    home = tmp_path / "ch"
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(inst))
+    sub = str(inst / "brain" / "clients" / "acme")
+    fxlib.claude_session(home / "projects" / (slug + "-brain-clients-acme") / "sub00001.jsonl", "sub00001-x",
+                         [("user", "Decision: let's go with Tailwind for the Acme site.")], cwd=sub)
+    fxlib.claude_session(home / "projects" / (slug + "-sibling") / "sib00001.jsonl", "sib00001-x",
+                         [("user", "Decision: let's go with Bootstrap elsewhere.")], cwd=str(inst) + "-sibling")
+    env = {"CLAUDE_CONFIG_DIR": str(home)}
+    st = json.loads(fxlib.cli(inst, "--json", "status", "--json", env=env).stdout)
+    assert st["unjournaled"] >= 1
+    r = fxlib.cli(inst, "sync", "--runtime", "claude", env=env)
+    assert r.returncode == 0, r.stderr
+    text = "".join(p.read_text() for p in (inst / "brain/journal").rglob("*-claude-*.md"))
+    assert "Tailwind" in text and "Bootstrap" not in text
+    assert "cwd: \"brain/clients/acme\"" in text  # relative: no machine-local path committed

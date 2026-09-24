@@ -6,8 +6,9 @@ description: "Record a decision in the Tess brain, in the principal's exact word
 # brain-decide
 
 A decision is recorded only with the decider's **verbatim** words. A script (the
-verifier, rules V1-V9) checks the quote against the journal, the speaker,
-every number, scope, and hypotheticals before anything is written.
+verifier, rules V1-V11) checks the quote against the journal, the speaker,
+every number, scope, hypotheticals, and that the title and statement say only
+what the quote says, before anything is written.
 
 ## Steps
 
@@ -23,8 +24,8 @@ every number, scope, and hypotheticals before anything is written.
    ```
    python3 scripts/brain/tessbrain.py decide \
      --register brain/decisions \
-     --title "<short title using only words and numbers from the quote>" \
-     --statement "We will <what was decided>" \
+     --title "<short title using only words from the quote>" \
+     --statement "<the principal's sentence, or leave out --statement>" \
      --quote "<the principal's exact words>" \
      [--supersedes D-YYYYMMDD-HHMM-slug] [--tier material] [--kind decision|requirement|constraint|question]
    ```
@@ -37,16 +38,22 @@ every number, scope, and hypotheticals before anything is written.
    - When the principal approved something YOU proposed ("yes, do that"), pass
      `--approves-quote "<your proposal, verbatim>"` and the principal's short
      approval as `--quote`.
-5. Read the result. `accepted` or `proposed` = recorded. `fail` lists the rule
-   that refused it: fix the quote (it must be their words) or tell the
-   operator plainly that it was not recorded and why.
+   - The title and statement may only use the quote's own words (rule V10).
+     Leaving out `--statement` uses the quote itself. A rewording goes to
+     `review` and is not accepted until the operator approves it.
+5. Read the result. `accepted` or `proposed` = recorded. `review` = held for
+   the operator (say so, with the reason). `fail` lists the rule that refused
+   it: fix the quote (it must be their words) or tell the operator plainly
+   that it was not recorded and why.
 
 ## Never
 
 - Never record your own suggestion, a question, "what if ...", "maybe ...",
   "thinking out loud", or something the principal only discussed.
-- Never invent or paraphrase a quote. If you cannot find their exact words,
-  ask them to state the decision.
+- Never invent or paraphrase a quote, a title or a statement. If you cannot
+  find their exact words, ask them to state the decision.
+- Never record something the principal reported someone else saying, pasted
+  in (notes, an email), or took back ("scratch that").
 - Never put a number, date, URL or amount in `--title`/`--statement` that is
   not in the quote (rule V4 rejects it).
 - Never edit an accepted decision file. Supersede it.

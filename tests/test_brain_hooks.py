@@ -138,3 +138,23 @@ def test_hooks_never_write_git(inst):
               if event != "session-start" else (STDIN / "session_start.json").read_text())
     time.sleep(0.5)
     assert fxlib.run(str(inst), "rev-parse", "HEAD").stdout == head
+
+
+def test_binary_stdin_is_logged_not_swallowed(inst):
+    log = inst / ".tess/state/brain/errors.log"
+    before = len(log.read_text().splitlines()) if log.exists() else 0
+    env = dict(os.environ, TESS_BRAIN_NO_BACKFILL="1", CLAUDE_CONFIG_DIR=str(inst / ".none"),
+               CODEX_HOME=str(inst / ".none"))
+    r = subprocess.run([sys.executable, fxlib.TESSBRAIN, "--root", str(inst), "hook", "stop", "--runtime", "claude"],
+                       input=bytes(range(128, 256)) * 20, capture_output=True, env=env, timeout=30)
+    assert r.returncode == 0
+    assert len(log.read_text().splitlines()) == before + 1
+
+
+def test_codex_hook_lines_are_guarded(tmp_path):
+    cmds = [h["command"] for ev in json.loads((Path(fxlib.REPO) / ".codex/hooks.json").read_text())["hooks"].values()
+            for group in ev for h in group["hooks"]]
+    assert len(cmds) == 3
+    for cmd in cmds:  # outside a git work tree: no error, exit 0
+        r = subprocess.run(cmd, shell=True, cwd=str(tmp_path), input="{}", capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0 and "No such file" not in r.stderr, (cmd, r.stderr)

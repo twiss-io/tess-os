@@ -30,9 +30,17 @@ class Entry:
             setattr(self, k, kw.get(k))
 
 
-def _tilde(path: str) -> str:
-    home = str(Path.home())
-    return "~" + path[len(home):] if path and path.startswith(home) else path
+def _rel_file(cfg: Config, path: str) -> str:
+    """A touched file relative to the instance root; outside it, only the file name."""
+    real = os.path.realpath(os.path.join(sess_root(cfg), path)) if path else ""
+    root = os.path.realpath(str(cfg.root))
+    if real.startswith(root + os.sep):
+        return Path(os.path.relpath(real, root)).as_posix()
+    return "(outside the instance) %s" % os.path.basename(path or "")
+
+
+def sess_root(cfg: Config) -> str:
+    return str(cfg.root)
 
 
 def _hhmm(cfg: Config, at: str) -> str:
@@ -113,7 +121,7 @@ def _body(sess: Session, part: List[Entry], through: int, title: str, with_text:
     if with_text:
         out += ["## Messages", ""] + (msgs or ["(none)"]) + ["", "## Replies", ""] + (reps or ["(none)"]) + [""]
     out += ["## Heuristic flags", ""] + (_flags(part, with_text) or ["(none)"]) + [""]
-    out += ["## Files touched", ""] + (["- %s" % _tilde(f) for f in files] or ["(none)"]) + [""]
+    out += ["## Files touched", ""] + (["- %s" % f for f in files] or ["(none)"]) + [""]
     return "\n".join(out)
 
 
@@ -128,9 +136,10 @@ def render(cfg: Config, sess: Session, entity_ids: List[str], git_head: str,
     last_at = entries[-1].at if entries else sess.started_at
     meta = {
         "schema": 1, "type": "journal-session", "runtime": sess.runtime, "runtime_version": sess.runtime_version,
-        "session_id": sess.session_id, "source_path": _tilde(os.path.realpath(str(sess.path))), "source_sha256": sess.prefix_sha256,
+        "session_id": sess.session_id, "source_path": "%s-transcripts/%s" % (sess.runtime, Path(sess.path).name),
+        "source_sha256": sess.prefix_sha256,
         "started_at": _iso_local(cfg, sess.started_at), "updated_at": _iso_local(cfg, last_at),
-        "cwd": _tilde(sess.cwd), "git_branch": sess.git_branch, "git_head": git_head,
+        "cwd": _rel_cwd(cfg, sess.cwd), "git_branch": sess.git_branch, "git_head": git_head,
         "entities": entity_ids, "external_context": bool(sess.external_context),
         "redactions": redact.total(counts), "speakers": sorted({e.speaker for e in humans if e.principal}),
         "turns": len([e for e in humans if e.principal]),
@@ -142,7 +151,7 @@ def render(cfg: Config, sess: Session, entity_ids: List[str], git_head: str,
             e.ref = "brain/%s#%s" % (rel, e.label)
         title = "Session %s %s %s%s" % (meta["started_at"][:16].replace("T", " "), sess.runtime,
                                          sess.session_id[:8], "" if i == 1 else " (part %d)" % i)
-        files = sess.files if i == len(parts) else []
+        files = [_rel_file(cfg, f) for f in sess.files] if i == len(parts) else []
         m = dict(meta, part=i)
         full = frontmatter.dump(m, _body(sess, part, sess.last_ordinal, title, True, files), ORDER)
         if policy == "stub-only":
@@ -153,6 +162,18 @@ def render(cfg: Config, sess: Session, entity_ids: List[str], git_head: str,
         else:
             out.append((rel, full, None))
     return out
+
+
+def _rel_cwd(cfg: Config, cwd: str) -> str:
+    """cwd relative to the instance root: no machine-local absolute path is committed."""
+    if not cwd:
+        return ""
+    root, real = os.path.realpath(str(cfg.root)), os.path.realpath(cwd)
+    if real == root:
+        return "."
+    if real.startswith(root + os.sep):
+        return Path(os.path.relpath(real, root)).as_posix()
+    return "(outside the instance)"
 
 
 def _iso_local(cfg: Config, at: str) -> str:
@@ -180,13 +201,14 @@ def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str]):
     cur = cursors(cfg).get(key) or {}
     through = int(cur.get("through") or 0)
     n = count_lines(path)
-    if n <= through:
+    revived = _revived(cfg, cur)
+    if n <= through and not revived:
         return noop
     sess = parser(path, upto=n)
     built = build_entries(cfg, sess)
     entries = built[0]
     if not [e for e in entries if e.kind == "msg"]:
-        return None, [], lambda: _save_cursor(cfg, key, sess, "")
+        return None, [], lambda: _save_cursor(cfg, key, sess, "", entries)
     rel0 = base_relpath(cfg, sess)
     if not cur:
         through = _marker_through(cfg, rel0)
@@ -199,7 +221,19 @@ def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str]):
         if local is not None:
             cfg.ensure_state()
             write_text_if_changed(cfg.state / rel, local)
-    return sess, [e for e in entries if e.ordinal > through], lambda: _save_cursor(cfg, key, sess, rel0)
+    new = [e for e in entries if e.ordinal > through or e.ordinal in revived]
+    return sess, new, lambda: _save_cursor(cfg, key, sess, rel0, entries)
+
+
+def _revived(cfg: Config, cur: Dict) -> set:
+    """Ordinals omitted as non-principal last time whose speaker now resolves (for
+    example after git user.email is fixed): re-journaled instead of lost."""
+    out = set()
+    for ordinal, raw in cur.get("omitted") or []:
+        slug = cfg.resolve_speaker(str(raw))
+        if slug and cfg.consents(slug):
+            out.add(int(ordinal))
+    return out
 
 
 def _marker_through(cfg: Config, rel: str) -> int:
@@ -221,9 +255,10 @@ def _existing_head(cfg: Config, rel: str) -> str:
     return ""
 
 
-def _save_cursor(cfg: Config, key: str, sess: Session, rel: str) -> None:
+def _save_cursor(cfg: Config, key: str, sess: Session, rel: str, entries: List[Entry]) -> None:
     cfg.ensure_state()
     data = cursors(cfg)
     data[key] = {"through": sess.last_ordinal, "session_id": sess.session_id, "runtime": sess.runtime,
-                 "journal": ("brain/" + rel) if rel else ""}
+                 "journal": ("brain/" + rel) if rel else "",
+                 "omitted": [[e.ordinal, e.speaker] for e in entries if e.kind == "msg" and not e.principal]}
     write_json(cfg.state / "cursors.json", data)

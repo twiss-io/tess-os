@@ -54,8 +54,8 @@ session start in the operator's timezone. Past 256 KB the session continues
 in a `-2` file.
 
 **Front matter:** `schema, type: journal-session, runtime, runtime_version,
-session_id, part, source_path (~-relative), source_sha256, started_at,
-updated_at, cwd, git_branch, git_head, entities, external_context, redactions,
+session_id, part, source_path (`<runtime>-transcripts/<file name>`), source_sha256, started_at,
+updated_at, cwd (relative to the instance root), git_branch, git_head, entities, external_context, redactions,
 speakers, turns`. Schema: `scripts/brain/schemas/journal-session.schema.json`.
 
 **Body:**
@@ -79,6 +79,10 @@ system reminders, injected `AGENTS.md`/`CLAUDE.md` text and command output.
 **Append-only.** A cursor in `.tess/state/brain/cursors.json` (with the
 `through=` marker as a fallback) means a re-run with no new records leaves
 every file byte-identical. New records only add lines, and labels never move.
+No machine-local path is committed: `cwd` and touched files are relative to
+the instance root. A line omitted as non-principal (for example while this
+machine's `git user.email` matches no principal) is remembered in the cursor
+and journaled at the next sync once the speaker resolves; it is not lost.
 
 **Policy** (`capture.journal` in brain.json): `commit-redacted` (default for
 personal and agency) commits the file; `stub-only` (default for organisation)
@@ -96,7 +100,11 @@ hand-written note, an inbox candidate or a record. Each match becomes
 `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_` tokens; `sk-`, `sk-proj-` and
 `sk-ant-` keys; Google `AIza` keys; Slack `xox[abprs]-` tokens; Stripe
 `sk_live_`/`rk_live_` keys; JWTs; chat-bot tokens (`<8-10 digits>:<35 chars>`);
-`password|passwd|secret|token|api_key` followed by `:` or `=` and a value;
+env and config style credentials: any key containing `password`, `passwd`,
+`pwd`, `secret`, `token`, `api_key` or `access_key` (so `DB_PASSWORD=`,
+`GITHUB_TOKEN=`, `client_secret:`, `aws_secret_access_key =`), followed by
+`:` or `=` and a value of at least 6 characters; the password in a URL
+(`postgres://user:<password>@host`); `Bearer <token>`; Hugging Face `hf_` tokens;
 Singapore NRIC/FIN numbers; Luhn-valid card numbers of 13 to 19 digits; and
 labelled IBAN and bank account numbers.
 
@@ -117,9 +125,9 @@ that a sentence is put in the wrong category, never that words are invented.
 | open loop | `remind me`; `follow up`; `waiting for/on`; `by <weekday>` |
 
 - A sentence with a currency amount gets `tier: material`.
-- **Register.** A decision goes to an entity's `decisions/` folder when exactly
-  one entity name appears in the message, or when the session's new principal
-  lines name exactly one entity. Otherwise it goes to `brain/decisions/`.
+- **Register.** A decision goes to an entity's `decisions/` folder only when
+  exactly one entity name appears in that same message. Otherwise it goes to
+  `brain/decisions/`. Mentions elsewhere in the session are not used.
 - **Nudge.** In Claude Code, and in Codex after its hooks are approved, the
   prompt hook prints at most two lines when the current prompt contains a
   cue: `[brain] possible decision: "...". It is recorded automatically after
@@ -127,7 +135,7 @@ that a sentence is put in the wrong category, never that words are invented.
   turns it adds: `[brain] 10 turns since last distill: run brain-distill after
   answering.`
 
-## Verifier (V1-V9)
+## Verifier (V1-V11)
 
 Every candidate goes through the verifier, whoever proposed it: the cue pass,
 `brain-distill`, `decide`, `remember`, onboarding or the operator. A candidate
@@ -145,6 +153,12 @@ that fails any rule is rejected and kept, with its reasons, in
 | V7 | The redaction scan of the quote, statement, title and approval is clean |
 | V8 | A decision or preference whose sentence ends with `?`, or has `if / would / could / might / maybe / perhaps / what if / suppose / hypothetically / let's say / in theory / thinking out loud` before its verb, is rejected as `hypothetical`. The same happens when the next sentence says "just thinking out loud" |
 | V9 | The target register, relative to `brain/`, matches one of the speaker's `scope` globs |
+| V10 | **Statement fidelity.** Every content word of the title and statement appears in the quote or the cited line, and every negation in the quote (`not`, `never`, `stop`, `drop` ...) survives into the statement. A real quote paired with an invented or paraphrased statement goes to **review**; it is never accepted until the operator approves the wording |
+| V11 | **Context.** Goes to review instead of auto-accepting when the sentence is reported speech (`Sam said: ...`, `they decided`, a quoted utterance of 3+ words), the message is a pasted block (more than 3 lines, a `>` quote, or `here are the ... notes/email/transcript`), the statement is taken back later in the same message or in the next principal message (`just kidding`, `scratch that`, `never mind`, `not decided` ...), or a decision is content-free (`Yes, go ahead.`). A take-back that arrives after the earlier message was already promoted moves that unconfirmed record back to `proposed` |
+
+V1-V9 reject. V10 and V11 hold: the candidate waits in `brain-review` and
+nothing reaches START HERE, `profile.md` or the registers as accepted until
+the operator approves it in their own words.
 
 **Pending verification.** When the quote is found only in `turns.jsonl` (the
 current turn, before the runtime's transcript is journaled), the record is

@@ -134,3 +134,26 @@ def test_cursor_falls_back_to_marker(inst):
     (inst / ".tess/state/brain/cursors.json").unlink()
     out = _synced(inst)
     assert out["candidates"] == 0 or all(o["status"] == "noop" for o in out["outcomes"])
+
+
+def test_lines_omitted_for_an_unknown_identity_are_journaled_once_it_resolves(tmp_path):
+    inst = Path(fxlib.make(str(tmp_path / "fx")))
+    fxlib.run(str(inst), "config", "user.email", "probe.new-laptop@example.invalid")
+    cdir = tmp_path / "claude"
+    fxlib.claude_session(cdir / "rev00001.jsonl", "rev00001-x", [("user", "Decision: let's go with Redis for the cache.")])
+    assert fxlib.sync_dir(inst, cdir).returncode == 0
+    j = next((inst / "brain/journal").rglob("*-rev00001.md"))
+    assert "omitted: no consent" in j.read_text() and not list((inst / "brain").rglob("D-*redis*.md"))
+    fxlib.run(str(inst), "config", "user.email", "probe@example.invalid")
+    out = json.loads(fxlib.sync_dir(inst, cdir).stdout)
+    assert out["journaled"] == 1
+    assert "let's go with Redis for the cache" in j.read_text() and "omitted" not in j.read_text()
+    assert list((inst / "brain").rglob("D-*redis*.md"))
+    before = j.read_bytes()
+    assert json.loads(fxlib.sync_dir(inst, cdir).stdout)["journaled"] == 0 and j.read_bytes() == before
+
+
+def test_front_matter_has_no_machine_local_paths(inst):
+    _synced(inst)
+    text = (inst / JOURNAL).read_text()
+    assert "source_path: \"claude-transcripts/" in text and "/Users/" not in text and "~/" not in text

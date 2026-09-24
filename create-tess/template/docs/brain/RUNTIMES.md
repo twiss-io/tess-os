@@ -95,6 +95,12 @@ they keep their own provider memory. Importing their exports is v0.2.1.
     at most 2 nudge lines.
   - Stop (`async`) starts a detached `sync` of that transcript and returns at
     once.
+- **Where hooks fire.** Project hooks load only when Claude Code is started at
+  the instance root. A session started in a subdirectory (`cd clients/acme &&
+  claude`) runs no brain hooks, but it is still noted: `sync`, `status` and the
+  next root session's backfill also sweep `~/.claude/projects/<root slug>-*`
+  and keep the transcripts whose recorded `cwd` is inside the instance. Until
+  then `status` lists it as un-journaled.
 - **Trust.** One workspace-trust click. `claude -p` runs project hooks. On
   the test machine, an untrusted `-p` run printed "Ignoring N
   permissions.allow entries" but still ran the hooks.
@@ -115,8 +121,11 @@ they keep their own provider memory. Importing their exports is v0.2.1.
   or inside a path in `capture.also_cwd`. User text comes from `event_msg`
   `user_message`, and unknown record types are skipped.
 - **Per-turn, after trust.** `.codex/hooks.json` has SessionStart,
-  UserPromptSubmit and Stop, each `sh -c 'exec python3 "$(git rev-parse
-  --show-toplevel)/scripts/brain/tessbrain.py" hook <event> --runtime codex'`.
+  UserPromptSubmit and Stop, each `sh -c 'r=$(git rev-parse --show-toplevel
+  2>/dev/null) && f="$r/scripts/brain/tessbrain.py" && [ -f "$f" ] && exec
+  python3 "$f" hook <event> --runtime codex; exit 0'` (Stop also prints `{}`
+  on the fallback path). Outside a git work tree, or without the script, each
+  line is a no-op.
   Codex runs project hooks only in a trusted project, after the operator
   approves them in `/hooks`. The approval is hash-pinned, so these lines never
   change.
@@ -186,6 +195,8 @@ project folder they create, afterwards.
 ## Known gaps in v0.2.0
 
 - Claude Code under `--bare` runs no hooks and loads no CLAUDE.md.
+- Claude Code started in a subdirectory runs no brain hooks; it is captured
+  by the sweep at the next `sync`, `status` or root session.
 - Codex's first session in a fresh clone runs no hooks, so it is captured by
   the sweep.
 - Gemini has no brain hooks.

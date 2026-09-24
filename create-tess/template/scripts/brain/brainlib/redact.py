@@ -25,9 +25,17 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")),
     ("bot-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
     ("nric", re.compile(r"\b[STFGM]\d{7}[A-Z]\b")),
+    ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
+    ("uri-userinfo", re.compile(r"(?i)(?<=://)[^\s:@/<>]+:[^\s@/<>]+(?=@)")),
+    ("bearer", re.compile(r"(?i)(?<=\bBearer\s)(?!<REDACTED:)[A-Za-z0-9._~+/=-]{16,}")),
 ]
+# Env/config style credentials: DB_PASSWORD=..., GITHUB_TOKEN=..., client_secret: ...,
+# aws_secret_access_key = ... (the key may be underscore- or dash-joined, any case).
+# The value must be 6+ characters and not start with markup, so prose such as
+# "**On the token:** I'm ..." is left alone.
 _CREDENTIAL = re.compile(
-    r"(?i)\b(password|passwd|secret|token|api[_-]?key)(\s*[:=]\s*)(?!<REDACTED:)([^\s<]\S*)")
+    r"(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)"
+    r"[A-Za-z0-9_]*)([\"']?\s*[:=]\s*)(?!<REDACTED:)(\"[^\"\n]{6,}\"|'[^'\n]{6,}'|[^\s<*_`\"'][^\s<]{5,})")
 _CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
 _BANK = re.compile(
     r"(?i)\b(iban|bank account(?: (?:no|number))?|account (?:no|number)|acct(?: no)?)\b"
