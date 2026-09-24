@@ -8,6 +8,9 @@ the authoritative version is pinned back to live, the attempted edit is parked i
 
 from __future__ import annotations
 
+import io
+import sys
+
 import pytest
 
 from conftest import ns
@@ -52,8 +55,16 @@ def test_approve_requires_rationale(project):
     assert project.read_live(LR) == AUTHORITATIVE
 
 
-def test_approve_with_rationale_applies_edit(project):
+class _TTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_approve_with_rationale_applies_edit(project, monkeypatch):
     _quarantine_setup(project)
+    # v0.2: approve needs a human at a terminal who types the path back.
+    monkeypatch.setattr(sys, "stdin", _TTY(LR + "\n"))
+    monkeypatch.setattr(sys, "stdout", _TTY())
     project.mod.cmd_approve(
         ns(path=LR, rationale="operator authorized this tightening"),
         project.root,
