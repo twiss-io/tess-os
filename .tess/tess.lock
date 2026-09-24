@@ -5397,7 +5397,7 @@ files:
   .tess/core/conductor/channel-guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:cd745d5d79bc6d4e8d78791ae0f0994a725503d3b23683d44877e372cbd6e631
+    base_sha: sha256:8ffdea289352d46fb620003b6a9745bffd50948a4b4ef4222a96e91908797c31
     live_path: conductor/channel-guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/commands.md:
@@ -5421,7 +5421,7 @@ files:
   .tess/core/conductor/dispatch-brief.md:
     status: core-managed
     tier: security
-    base_sha: sha256:507a017e8f8d5aa72d9905a8dd795099e657939c7ef9dad0c171e1843cb79844
+    base_sha: sha256:bc0d713d3642073be58409f3536df01d96cd957053893bb4d233147966957442
     live_path: conductor/dispatch-brief.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/doctrine.md:
@@ -5439,7 +5439,7 @@ files:
   .tess/core/conductor/guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:5b05c6e41f2fef0970f51c045115645b7f38dc9ea37fb0a3a397af143789ee89
+    base_sha: sha256:75afb2511e95151c7190f4ee39f6995a1db7c2aa372741b18f58aad44041625b
     live_path: conductor/guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/hook-testing-protocol.md:
@@ -5565,7 +5565,7 @@ files:
   .tess/core/conductor/playbooks/l99-merge-discipline.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:21383d068fd131bb7175e0a1351819160cf7d0b5e04370862ec71a11ec0a7278
+    base_sha: sha256:a77dd8c48ed8d9d2d7268bac5eae76c6173e66452ed5f0b8fef04dbfd561aa77
     live_path: conductor/playbooks/l99-merge-discipline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/product-build-mission.md:
@@ -5712,7 +5712,7 @@ files:
   .tess/core/templates/claude-md/directory.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:aa42d0a0dbc9faac4c18acb0bc685ab7302b86163353b3fd98edeb5556cfbbd1
+    base_sha: sha256:650c4c0966fe292de91b8c4732ccac2afd8e4363e4a2105e512a3adbd22bac41
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00

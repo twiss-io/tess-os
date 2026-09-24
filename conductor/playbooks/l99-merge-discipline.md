@@ -30,7 +30,7 @@ All of these must be true:
 - The PR is part of a recognised audit fix wave (L99, godmode, security retro) or a trivial defensive fix.
 - CI is **green** (mandatory — never merge against red).
 - The PR is scoped to the audit finding it closes (no scope creep).
-- Base branch is correct ([backend deploys only from `main`](../../CLAUDE.md); dashboard prod rules apply — never merge `main` on dashboard).
+- Base branch is correct: each repository's documented deploy branch and branch rules apply (for example, a service that deploys only from `main`, or a repository whose production branch must never receive a direct merge of `main`).
 - No unresolved conflict with an earlier PR in the same wave (see sequencing).
 - The change is **not** in the Rule 18 hard-floor set (credentials, money movement, destructive prod data ops, client-external factual claims).
 
@@ -42,7 +42,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 
 1. **Same-file PRs merge in series, not parallel.** List all PRs touching the same path. After each merge, the next PR's branch needs `gh pr update-branch` (or rebase) before its CI is meaningful.
 2. **Backend deploy stagger.** Wait ≥5 minutes between back-to-back backend deploys (config:cache / scheduler boot race). Same-repo backend PRs queue with explicit `sleep 300` between merges.
-3. **Cross-repo PRs run parallel.** dashboard, backend, iOS, Android, workjoy have independent deploy pipelines and no shared state — merge concurrently.
+3. **Cross-repo PRs run parallel.** Repositories with independent deploy pipelines and no shared state (for example, a web frontend, a backend service and mobile apps) can merge concurrently.
 4. **Pre-merge conflict check.** Before merging a PR, check whether it touches files an already-merged PR in the same wave changed. If yes, `gh pr update-branch` (rebase) the later PR **before** merging it, so an earlier merge cannot be silently undone.
 5. **Branch-divergence audit.** Run `git diff HEAD...origin/main --stat` (and `git ls-remote` before any rebase + `--force-with-lease`) so a stale branch doesn't drop main's files.
 

@@ -236,6 +236,7 @@ The tree above says what exists. This says where new files go. It binds Tess, ev
 | Session / continuity handover | `<kb>/wiki/missions/YYYY-MM-DD-session-handoff[-slug].md` |
 | Superseded but still-cited document | `<kb>/wiki/archive/YYYY-MM-DD-<name>.md` |
 | Open-project state card | `memory/projects/<slug>.md` (compiled into `memory/registry.md`; schema in `memory/README.md`) |
+| Code, config or framework change in a repository | the repository path and branch the brief names; the deliverable is a commit or pull request, not a new document |
 | Doctrine addition by the operator | `conductor/<file>.local.md`, appended to the rendered file and kept by `tessctl update` (never folded into a security-tier file) |
 | Throwaway scratch, interim per-agent artifact | the session scratchpad the runtime supplies, **never inside the repo** |
 | Operator- or client-supplied source material | `<kb>/raw/`: **agents never write here; humans only** |
@@ -244,7 +245,7 @@ The tree above says what exists. This says where new files go. It binds Tess, ev
 
 **Never default to the working directory.** A brief that names no destination, and fits no row above, is incomplete: stop and ask.
 
-**Placed is not the same as kept.** A file written under `kb/` or `clients/*/kb/` must be `git add`ed in the same session that created it, with a path-scoped add (never `git add -A`).
+**Placed is not the same as committed.** `kb/**` and every client folder under `clients/` except `clients/_template/` are private overlay data (see `docs/DATA_LEAK_SAFETY.md`). They are gitignored, and the publish-clean pre-commit guard blocks them. Never commit them to a shared or public remote. Never force them in with `git add -f`, and never use `git commit --no-verify` to get past the guard (that also skips the secret scan). An operator who backs up the overlay does so outside this repository's git history, in a private store they control.
 
 ---
 

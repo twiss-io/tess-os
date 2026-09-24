@@ -185,6 +185,10 @@ kb/raw/*
 !kb/raw/.gitkeep
 kb/lint/*
 !kb/lint/.gitkeep
+# research outputs (File Placement Contract row `<kb>/research/`) are
+# operator/client data exactly like raw/ and wiki/ content.
+kb/research/*
+!kb/research/.gitkeep
 # wiki: ignore ALL content, keep only the section-dir placeholders.
 #
 # DATA-LEAK-SAFETY (issue #92): kb/wiki/index.md and kb/wiki/log.md were

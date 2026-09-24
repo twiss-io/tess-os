@@ -8,7 +8,7 @@
 
 Client and project isolation applies in every runtime. When Tess runs in Claude Code with the Telegram integration and is connected to multiple Telegram chats (DMs + groups), each group chat is scoped to a specific client or project. In a runtime without the Telegram integration (Codex, Gemini CLI, other AGENTS.md tools), scope comes from the active task, workspace and instructions. That runtime does not attempt Telegram and does not map its task to a Telegram chat. Either way, this prevents cross-contamination: a ClientB task or group should never receive ClientA advice, and vice versa.
 
-The Telegram transport rules in this file (the registry, pairing, and the per-chat behaviour) apply only in Claude Code with the Telegram integration. In any other runtime a missing Telegram integration is expected, and it is never a blocker or a failure.
+The Telegram transport rules in this file (the registry, pairing, and the per-chat behaviour) apply wherever the Telegram integration is connected. That is Claude Code with the Telegram integration today, but the test is the connection, not the product: a Codex or Gemini CLI session with a Telegram integration connected follows the same registry and per-chat scoping. In a runtime where it is not connected, a missing Telegram integration is expected, and it is never a blocker or a failure.
 
 ---
 

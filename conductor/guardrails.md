@@ -168,6 +168,8 @@ Whenever instructions alter operating logic — new rules, revised phases, updat
 
 ## Rule 10 — Use the Active Runtime's Native Communication Channel
 
+Which section applies depends on whether the Telegram integration is connected in the session, not on the product name. A Codex or Gemini CLI session with a Telegram integration connected follows the first section and the chat-scoping registry in [channel guardrails](channel-guardrails.md). Rule 1a stays limited to Claude Code, as it states.
+
 ### Claude Code with the Telegram integration
 
 Telegram is not optional here. It is the primary communication channel for ALL work. Every action, every status, every result goes through Telegram. No exceptions.
@@ -267,7 +269,7 @@ Every mission and every significant system change must leave a trail in four lay
 1. **Mission record** — the dispatch briefs ([dispatch-brief.md](dispatch-brief.md)), per-attempt retry analyses ([subagent-failure-protocol.md](subagent-failure-protocol.md)), and verification verdicts ([verification-routing.md](verification-routing.md)) for a mission are appended to `kb/wiki/missions/` on mission close.
 2. **Incident log** — `memory/feedback_*` files, maintained per session as currently practiced. This is the de facto system of record for incidents and lessons, and it functions well. Declare it as such; do not duplicate it into the wiki.
 3. **System log** — a mechanical SessionEnd stub appended to `kb/wiki/log.md` whenever dirty files or new commits exist (stub: date, modified files, last commit SHA). This layer is hook-maintained, not model-compliance-maintained; Clio expands stubs on request. Until the SessionEnd hook ships (tracked outside this doctrine), append the minimal stub manually at session close.
-4. **Continuity handover**: a session or continuity handover is written to `<kb>/wiki/missions/YYYY-MM-DD-session-handoff[-slug].md` (see the File Placement Contract in CLAUDE.md) and staged in git before the session ends. It is never left at the repo root. Client sessions use `clients/<Client>/kb/wiki/missions/` under the same model.
+4. **Continuity handover**: a session or continuity handover is written to `<kb>/wiki/missions/YYYY-MM-DD-session-handoff[-slug].md` (see the File Placement Contract in CLAUDE.md) before the session ends. It is never left at the repo root. Client sessions use `clients/<Client>/kb/wiki/missions/` under the same model. The handover is private overlay data: it stays out of git under the File Placement Contract's overlay rule ("Placed is not the same as committed") and `docs/DATA_LEAK_SAFETY.md`.
 
 Client deliverable sessions log to the relevant `clients/[client]/kb/wiki/` under the same four-layer model.
 
@@ -281,6 +283,8 @@ Every upgrade, improvement, memory addition, or skill change to the Tess system 
 
 1. **Git commit + push** — all changed files committed to Git and pushed to the remote. No local-only commits.
 2. **Documentation trail** — the relevant layers of the Rule 16 four-layer trail are satisfied (mission record on mission close, incident lessons to `memory/`, system-log stub in `kb/wiki/log.md`, continuity handover under `<kb>/wiki/missions/`).
+
+**Step 1 never covers private overlay data.** `kb/**` and every client folder under `clients/` except `clients/_template/` are private overlay data, even when a step 2 record lives there. They are gitignored and blocked by the publish-clean guard. They are never committed to this repository or pushed to a shared or public remote, never forced in with `git add -f`, and never committed with `--no-verify`. See the File Placement Contract's overlay rule in CLAUDE.md and `docs/DATA_LEAK_SAFETY.md`.
 
 > **Supersession note (2026-06-10, Tess OS reform — operator-authorized):** step 2 previously required a hand-written wiki log or concept entry for every change; it now points at the Rule 16 layered trail. Step 1 (commit + push) is unchanged.
 
