@@ -91,6 +91,11 @@ def real_engine_root(tmp_path):
     .tess/bin/), one initial commit — the pristine, untampered baseline."""
     dst = tmp_path / "os"
     shutil.copytree(REPO_ROOT, dst, ignore=_COPY_IGNORE)
+    # The scenarios here are "no covering verdict". The maintainers' own committed
+    # verdicts (reviews/verdicts/) cover the engine at its current content, so a copy
+    # carrying them turns the expected COVERING_APPROVAL_MISSING into
+    # VERDICT_CONTENT_STALE. Drop them, as create-tess drops them from scaffolds.
+    shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     assert (dst / WORKFLOW_REL).exists()
     assert (dst / ".tess" / "bin" / "tessctl").exists()
     _git(dst, "init", "-q")

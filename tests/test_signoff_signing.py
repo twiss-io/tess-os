@@ -179,6 +179,10 @@ def signoffs_dir_repo(tmp_path):
     dst = tmp_path / "os"
     ignore = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycache__")
     shutil.copytree(REPO_ROOT, dst, ignore=ignore)
+    # "No covering verdict" scenarios: drop the maintainers' committed verdicts
+    # (reviews/verdicts/), which would otherwise cover the engine and turn
+    # COVERING_APPROVAL_MISSING into VERDICT_CONTENT_STALE.
+    shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     _init_repo(dst)
     _git(dst, "add", "-A")
     _git(dst, "commit", "-q", "-m", "initial (real shipped tree)")
