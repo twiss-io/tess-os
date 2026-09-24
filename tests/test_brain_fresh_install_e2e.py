@@ -59,8 +59,7 @@ def test_install_onboard_apply_commit(installed):
     assert init.returncode == 0, init.stderr
     applied = onboard(root, "apply")
     assert applied.returncode == 0, applied.stdout + applied.stderr
-    expected = (h.FIXTURES / ("expected-tree-%s.txt" % mode)).read_text().split()
-    assert h.tree(root) == expected
+    h.assert_expected_tree(root, mode)
     doctor = run([str(root / "tessctl"), "doctor"], root)
     assert doctor.stdout.strip().splitlines()[-1].startswith("doctor: OK"), doctor.stdout[-2000:]
     verify = run([str(root / "tessctl"), "verify"], root)

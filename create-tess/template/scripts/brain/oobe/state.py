@@ -194,6 +194,8 @@ def load_brain(root: Path) -> Optional[Dict[str, Any]]:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise BrainError("brain/brain.json cannot be read (%s); restore it from git" % exc, 2)
     except ValueError as exc:
         raise BrainError("brain/brain.json is not valid JSON (%s); fix or restore it from git" % exc, 2)
     if not isinstance(data, dict) or data.get("kind") != "tess-brain":

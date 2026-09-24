@@ -64,6 +64,16 @@ def message(root: Path) -> Optional[str]:
     return None
 
 
+def unreadable_line(root: Path) -> Optional[str]:
+    """A broken brain.json must not look like a healthy, onboarded brain."""
+    if not os.path.lexists(str(root / state.BRAIN_JSON)):
+        return None
+    return ("BRAIN FILE UNREADABLE: brain/brain.json exists but cannot be read as a tess-brain file "
+            "(details in .tess/state/brain/errors.log). Tell the operator first, before anything "
+            "else, and offer to restore it from git (`git log -- brain/brain.json`, then "
+            "`git checkout -- brain/brain.json`). Do not onboard or record anything until it is fixed.")
+
+
 def session_start(root: Path, runtime: str) -> int:
     _drain_stdin()
     if os.environ.get("TESS_BRAIN_QUIET") or os.environ.get("TESS_HEADLESS"):
@@ -72,7 +82,7 @@ def session_start(root: Path, runtime: str) -> int:
         text = message(root)
     except state.BrainError as exc:
         state.log_error(root, "hook session-start: %s" % exc, runtime)
-        return 0
+        text = unreadable_line(root)
     if not text:
         return 0
     nonce = os.environ.get("TESS_BRAIN_TEST_NONCE")

@@ -128,6 +128,7 @@ def cmd_add(root: Path, a) -> int:
     dest = entities.add(plan, brain, ctx, a.kind, a.name, parent=a.parent, mode=a.mode, extra=extra)
     if a.kind == "seat":
         chart.write(plan)
+    records.probe_refresh(plan, brain)
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
     print("%s %s -> %s (not committed yet: save with the brain-save skill or git)" % (a.kind, a.name, dest))
@@ -151,6 +152,7 @@ def cmd_add_mode(root: Path, a) -> int:
     rid = records.mode_decision(plan, brain, ctx, slug="add-mode-%s" % mode,
                                 title="Add brain mode: %s" % mode, entry=entry)
     entities.update_mode_line(plan, apply.modes_line(brain["modes"]))
+    records.probe_refresh(plan, brain)
     if not a.dry_run:
         state.save_brain(root, brain)
     for action, path in plan.actions:
@@ -163,6 +165,8 @@ def cmd_defer(root: Path, a) -> int:
     brain = _brain_or_new(root)
     if brain["onboarding"].get("status") in ("complete", "skipped"):
         raise state.BrainError("onboarding is already complete", 3)
+    if not 1 <= a.days <= 90:
+        raise state.BrainError("defer --days must be between 1 and 90 (got %d)" % a.days, 2)
     when = _dt.datetime.now().astimezone() + _dt.timedelta(days=a.days)
     brain["onboarding"].update({"status": "deferred", "remind_after": when.replace(microsecond=0).isoformat()})
     state.save_brain(root, brain)

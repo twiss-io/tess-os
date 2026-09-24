@@ -2,8 +2,9 @@
 
 Create-if-absent and idempotent: a second apply changes nothing and leaves
 `git status --porcelain` empty. Refuses (exit 3) when onboarding is not fully
-answered or when run in the Tess OS source repo. Never pushes and never uses
---no-verify: the first push of a new instance is a documented operator step.
+answered or when run in the Tess OS source repo. Never pushes and never
+bypasses a git hook: the first push of a new instance is a documented
+operator step (docs/brain/ONBOARDING.md, section 8), not something this tool runs.
 """
 from __future__ import annotations
 
@@ -15,10 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import answers, chart, entities, gitignore, records, scaffold, state
-from .slug import one_line, slugify
+from .slug import name_key, one_line, slugify
 
-SEED_PUSH = ("First push of a new instance (run it yourself, once, after reading `git log`): "
-             "git push --no-verify -u origin main")
+SEED_PUSH = ("First push of a new instance: a one-time step you run yourself after reading `git log`; "
+             "the exact command is in docs/brain/ONBOARDING.md, section 8 (The one-time seed push). "
+             "Tess never runs it.")
 
 
 def value(brain: Dict[str, Any], field: str, default: Any = None) -> Any:
@@ -101,7 +103,8 @@ def scaffold_modes(plan: scaffold.Plan, brain: Dict[str, Any], ctx: Dict[str, An
         manifest = scaffold.load_manifest("modes", mode)
         entities.add_base(plan, manifest, ctx)
         for seed in manifest.get("seed", []):
-            for name in (value(brain, seed["field"], []) or [])[: seed.get("max", 50)]:
+            names = [n for n in value(brain, seed["field"], []) or [] if name_key(n)]
+            for name in names[: seed.get("max", 50)]:
                 entities.add(plan, brain, ctx, seed["kind"], name, mode=mode, extra=_seed_extra(ctx, seed))
     seed_preset_kinds(plan, brain, ctx, modes)
 
@@ -217,6 +220,7 @@ def run(root: Path, dry: bool = False, final_status: str = "complete") -> Dict[s
     chart.write(plan)
     rid = records.mode_decision(plan, brain, ctx)
     records.probe_seed(plan, brain, rid)
+    records.probe_refresh(plan, brain)
     onb = brain["onboarding"]
     if not done_before:
         onb.update({"status": final_status, "step": state.TOTAL_STEPS,

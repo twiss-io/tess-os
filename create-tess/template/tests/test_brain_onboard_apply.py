@@ -117,7 +117,8 @@ def test_add_is_create_only_and_indexes_first(tmp_path):
 def test_add_mode_never_moves_and_records_decision(tmp_path):
     root = h.mini_instance(tmp_path)
     assert h.onboard_fixture(root, "agency-solo").returncode == 0
-    before = {p: sha(root / p) for p in h.tree(root) if not p.endswith(("brain.json", "START-HERE.md"))}
+    moving = ("brain.json", "START-HERE.md", "probe.json")  # indexes/expectations, never content
+    before = {p: sha(root / p) for p in h.tree(root) if not p.endswith(moving)}
     done = h.onboard(root, "add-mode", "personal", "--quote", "Add my personal life too.")
     assert done.returncode == 0, done.stderr
     brain = json.loads((root / "brain" / "brain.json").read_text())
@@ -175,7 +176,8 @@ def _front_matter(text: str):
 
 
 def test_decision_uses_the_single_learn_record_format(tmp_path):
-    assert not (h.BRAIN_TOOLS / "templates" / "records").exists(), "records/** belongs to ws-learn"
+    # templates/records/** belongs to ws-learn; the body below is FALLBACK_BODY or ws-learn's
+    # decision template, which share these section lines (either may be installed).
     root = h.mini_instance(tmp_path)
     assert h.onboard_fixture(root, "agency-solo").returncode == 0
     keys, meta, body = _front_matter(
@@ -223,3 +225,53 @@ def test_decision_round_trips_through_learn_frontmatter_when_installed(tmp_path)
     assert (rec.id, rec.status, rec.kind) == ("D-20260924-1015-brain-mode", "pending-verification", "decision")
     assert rec.meta["detected_by"] == "onboarding"
     assert rec.meta["source_quote"] == "An agency: I run a small consultancy serving outside clients."
+
+
+# ---- names: non-Latin scripts, collisions, empty names, table escaping --------------------
+
+def _agency_with_clients(tmp_path, clients):
+    data = json.loads((h.FIXTURES / "answers-agency-solo.json").read_text())
+    for item in data["answers"]:
+        if item["field"] == "clients":
+            item["value"] = clients
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps(data, ensure_ascii=False))
+    root = h.mini_instance(tmp_path)
+    assert h.onboard(root, "init", "--non-interactive", "--answers", str(path)).returncode == 0
+    return root
+
+
+def test_non_latin_clients_at_onboarding_each_get_their_own_entity(tmp_path):
+    root = _agency_with_clients(tmp_path, ["\u5317\u4eac\u54a8\u8be2", "\u4e0a\u6d77\u8d38\u6613"])
+    assert h.onboard(root, "apply").returncode == 0
+    dirs = sorted(p.name for p in (root / "brain" / "clients").iterdir())
+    assert len(dirs) == 2 and all(d.startswith("e-") for d in dirs), dirs
+    start = (root / "brain" / "START-HERE.md").read_text()
+    assert "| \u5317\u4eac\u54a8\u8be2 | client |" in start and "| \u4e0a\u6d77\u8d38\u6613 | client |" in start
+    assert "item" not in dirs
+
+
+def test_add_never_reports_another_entity_as_existing(tmp_path):
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    seen = set()
+    for name in ("\u6771\u4eac\u5546\u4e8b", "\u041c\u043e\u0441\u043a\u0432\u0430 \u0413\u0440\u0443\u043f\u043f",
+                 "\u0634\u0631\u0643\u0629", "Caf\u00e9", "Cafe"):
+        done = h.onboard(root, "add", "client", name)
+        assert done.returncode == 0 and "skipped (exists)" not in done.stdout, (name, done.stdout)
+        dest = done.stdout.strip().splitlines()[-1].split(" -> ")[1].split(" ")[0]
+        assert dest not in seen
+        seen.add(dest)
+    assert "brain/clients/cafe-2" in seen
+    again = h.onboard(root, "add", "client", "Caf\u00e9")
+    assert again.returncode == 0 and "skipped (exists): brain/clients/cafe/AGENTS.md" in again.stdout
+
+
+def test_add_rejects_empty_names_and_escapes_table_pipes(tmp_path):
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    for bad in ("", "   ", "..."):
+        done = h.onboard(root, "add", "client", bad)
+        assert done.returncode == 2 and "no letters or digits" in done.stderr, bad
+    assert h.onboard(root, "add", "client", "Foo | Bar").returncode == 0
+    assert "| Foo \\| Bar | client |" in (root / "brain" / "START-HERE.md").read_text()

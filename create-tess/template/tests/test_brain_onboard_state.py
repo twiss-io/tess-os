@@ -143,10 +143,33 @@ def test_hook_never_fails_on_corrupt_brain_json(tmp_path):
     (root / "brain").mkdir()
     (root / "brain" / "brain.json").write_text("{not json")
     done = hook(root)
-    assert done.returncode == 0 and done.stdout == ""
+    assert done.returncode == 0
+    ctx = json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith("BRAIN FILE UNREADABLE") and "ONBOARDING PENDING" not in ctx
     log = root / ".tess" / "state" / "brain" / "errors.log"
     assert "not valid JSON" in log.read_text()
     assert (root / ".tess" / "state" / "brain" / ".gitignore").read_text() == "*\n"
+
+
+@pytest.mark.parametrize("shape", ["empty", "directory", "not-a-brain"])
+def test_hook_reports_every_unreadable_brain_json_shape(tmp_path, shape):
+    root = h.mini_instance(tmp_path)
+    path = root / "brain" / "brain.json"
+    path.parent.mkdir()
+    if shape == "directory":
+        path.mkdir()
+    else:
+        path.write_text("" if shape == "empty" else '{"kind": "other"}')
+    done = hook(root)
+    assert done.returncode == 0 and "BRAIN FILE UNREADABLE" in done.stdout
+
+
+@pytest.mark.parametrize("days,rc", [("-5", 2), ("0", 2), ("100000", 2), ("91", 2), ("1", 0), ("90", 0)])
+def test_defer_days_is_clamped(tmp_path, days, rc):
+    root = h.mini_instance(tmp_path)
+    done = h.onboard(root, "defer", "--days", days)
+    assert done.returncode == rc, done.stderr
+    assert (status(root)["status"] == "deferred") == (rc == 0)
 
 
 def test_completed_instance_hook_silent_until_profile_missing(tmp_path):

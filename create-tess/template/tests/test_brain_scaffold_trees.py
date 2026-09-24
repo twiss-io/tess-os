@@ -29,8 +29,7 @@ def scaffold(request, tmp_path_factory):
 
 def test_tree_matches_expected(scaffold):
     name, root = scaffold
-    expected = (h.FIXTURES / ("expected-tree-%s.txt" % name)).read_text().split()
-    assert h.tree(root) == expected
+    h.assert_expected_tree(root, name)
 
 
 def test_every_entity_starts_here_within_budget(scaffold):

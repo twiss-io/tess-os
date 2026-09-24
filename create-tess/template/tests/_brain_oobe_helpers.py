@@ -110,3 +110,27 @@ def onboard_fixture(root: Path, name: str) -> subprocess.CompletedProcess:
     done = onboard(root, "init", "--non-interactive", "--answers", str(FIXTURES / ("answers-%s.json" % name)))
     assert done.returncode == 0, done.stdout + done.stderr
     return onboard(root, "apply")
+
+
+# Files ws-learn adds to a fresh brain when it is installed (integration: gem -> oobe -> learn):
+# its brain/README.md core seed (copied by apply) and the indexes `tessbrain.py index` generates.
+LEARN_SEED = "templates/core/brain/README.md"
+LEARN_GENERATED = ("brain/journal/INDEX.md",)
+
+
+def learn_installed(root: Optional[Path] = None) -> bool:
+    return ((root / "scripts" / "brain") if root else BRAIN_TOOLS).joinpath("tessbrain.py").exists()
+
+
+def assert_expected_tree(root: Path, name: str) -> None:
+    """The committed expected tree, plus ws-learn's own seeds when (and only when) it is installed."""
+    expected = set((FIXTURES / ("expected-tree-%s.txt" % name)).read_text().split())
+    got = set(tree(root))
+    tools = root / "scripts" / "brain"
+    allowed = set()
+    if (tools / LEARN_SEED).exists():
+        expected.add("brain/README.md")
+    if learn_installed(root) and not os.environ.get("TESS_BRAIN_NO_LEARN"):
+        allowed.update(LEARN_GENERATED)
+    assert expected <= got, "missing: %s" % sorted(expected - got)
+    assert got - expected <= allowed, "unexpected: %s" % sorted(got - expected - allowed)

@@ -9,12 +9,13 @@ a half-finished add is still reachable from the map.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional
 
 from . import scaffold, state
-from .slug import one_line, slugify
+from .slug import cell, name_key, one_line, slugify
 
 START_HERE = "brain/START-HERE.md"
 
@@ -77,7 +78,7 @@ def link(from_file: str, target: str) -> str:
 def create_entity(plan: scaffold.Plan, template: str, rel_dir: str, ctx: Dict[str, Any]) -> None:
     """Index row first, then files (create-only), then the import shims."""
     agents = "%s/AGENTS.md" % rel_dir
-    row = "| %s | %s | [%s](%s) |" % (ctx["name"], ctx["kind"], agents, link(START_HERE, agents))
+    row = "| %s | %s | [%s](%s) |" % (cell(ctx["name"]), ctx["kind"], agents, link(START_HERE, agents))
     insert_row(plan, START_HERE, "## Entities", row, "](%s)" % link(START_HERE, agents))
     scaffold.materialize(plan, template, rel_dir, ctx)
     scaffold.add_shims(plan, rel_dir)
@@ -86,22 +87,64 @@ def create_entity(plan: scaffold.Plan, template: str, rel_dir: str, ctx: Dict[st
 def create_card(plan: scaffold.Plan, template: str, rel_file: str, index_rel: str,
                 ctx: Dict[str, Any]) -> None:
     target = link(index_rel, rel_file)
-    row = "| %s (%s) | [%s](%s) |" % (ctx["name"], ctx["kind"], target, target)
+    row = "| %s (%s) | [%s](%s) |" % (cell(ctx["name"]), ctx["kind"], target, target)
     insert_row(plan, index_rel, "## Where things are", row, "](%s)" % target)
     scaffold.materialize(plan, template, rel_file, ctx)
+
+
+def existing_name(path) -> Optional[str]:
+    """The `name:` front-matter value of an existing entity/card file, if any."""
+    try:
+        head = path.read_text(encoding="utf-8").split("\n", 40)[:40]
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in head:
+        if line.startswith("name: "):
+            raw = line[len("name: "):].strip()
+            try:
+                return str(json.loads(raw))
+            except ValueError:
+                return raw
+    return None
+
+
+def claim_slug(plan: scaffold.Plan, spec: Dict[str, Any], name: str, parent: str) -> str:
+    """The slug for `name`: the base slug unless a DIFFERENT entity already holds it.
+
+    Same entity (same name_key, or a hand-made file with no `name:`) keeps the
+    base slug, so the caller reports 'skipped (exists)' and changes nothing.
+    A different display name gets -2, -3, ...: never 'skipped' for another entity.
+    """
+    base = slugify(name)
+    claimed = plan.__dict__.setdefault("claimed", {})
+    for n in range(1, 100):
+        slug = base if n == 1 else "%s-%d" % (base, n)
+        dest = spec["dest"].format(slug=slug, parent=parent)
+        target = dest + "/AGENTS.md" if spec.get("entity") else dest
+        other = claimed.get(target)
+        if other is None and (plan.root / target).exists():
+            other = existing_name(plan.root / target) or name
+        if other is None or name_key(other) == name_key(name):
+            claimed[target] = name
+            return slug
+    raise state.BrainError("too many entities share the slug %r" % base, 3)
 
 
 def add(plan: scaffold.Plan, brain: Dict[str, Any], base_ctx: Dict[str, Any], kind: str,
         name: str, parent: Optional[str] = None, mode: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None) -> str:
     """Create one entity or card of `kind`. Returns its repo-relative path."""
+    name = " ".join(str(name).split())
+    if not name_key(name):
+        raise state.BrainError("add %s: the name %r has no letters or digits" % (kind, name), 2)
     spec = kind_spec(brain, kind, mode)
-    slug = slugify(name)
     if spec.get("needs_parent") and not parent:
         raise state.BrainError("add %s needs --in <%s-slug>" % (kind, spec["needs_parent"]), 2)
-    fields = {"slug": slug, "parent": slugify(parent) if parent else ""}
+    base = slugify(name)
+    fields = {"parent": slugify(parent) if parent else ""}
+    fields["slug"] = slug = claim_slug(plan, spec, name, fields["parent"])
     template = spec["template"]
-    if slug in spec.get("private_slugs", []):
+    if base in spec.get("private_slugs", []):
         template = spec.get("private_template", template)
     dest = spec["dest"].format(**fields)
     ctx = entity_ctx(base_ctx, kind, name, slug, dest, extra)
@@ -110,7 +153,7 @@ def add(plan: scaffold.Plan, brain: Dict[str, Any], base_ctx: Dict[str, Any], ki
         create_entity(plan, template, dest, ctx)
     else:
         create_card(plan, template, dest, spec["index"].format(**fields), ctx)
-    if slug in spec.get("private_slugs", []) and not plan.dry:
+    if base in spec.get("private_slugs", []) and not plan.dry:
         state.ensure_local_dir(plan.root / "brain" / ".private")
         (plan.root / "brain" / ".private" / "areas" / slug).mkdir(parents=True, exist_ok=True)
     return dest

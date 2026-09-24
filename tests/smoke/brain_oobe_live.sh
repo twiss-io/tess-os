@@ -10,7 +10,8 @@
 #   <scratch>/smoke/<rt>-*.txt  every model reply, verbatim
 # Env: GEM=<gemini binary> (default: gemini on PATH), CLAUDE_MODEL (haiku),
 # CODEX_MODEL (gpt-5.5), SMOKE_TIMEOUT seconds per call (300).
-# A model-level result is reported as "k of 3 runs"; exit 1 if any check fails.
+# Each model-level check (hi, task-first, identity) is reported as "k of 3 runs" and
+# passes at k >= 2; exit 1 if any check fails.
 set -u
 RT="${1:-}"; S="${2:-}"
 if [ -z "$RT" ] || [ -z "$S" ]; then echo "usage: $0 claude|codex|gemini|all <scratch-dir>" >&2; exit 2; fi
@@ -83,15 +84,38 @@ three_hi() {  # three_hi <rt> <dir> <prefix>
   for i in 1 2 3; do "$1_ask" "$2" "$3-$i.txt" "hi"; done
 }
 
+TASK='Can you summarise what this repo is in two sentences?'
+IDENT='Before we start: what is your name, and name three slash commands or skills you have here?'
+
+task_first() {  # task_first <rt> <dir> <prefix> <label>: a real task as the first message
+  local i k
+  for i in 1 2 3; do "$1_ask" "$2" "$3-$i.txt" "$TASK"; done
+  k=$(count_q1 "$3"); [ "$k" -ge 2 ] && pass "$4 task-first onboarding: $k of 3" || fail "$4 task-first onboarding: $k of 3"
+}
+
+ident_ok() {  # ident_ok <rt> <file>: names Tess, plus the runtime's Tess-specific commands/skills
+  grep -q Tess "$2" || return 1
+  if [ "$1" = claude ]; then
+    [ "$(grep -Eo '/add-mission|/wake|/close|/help|brain-onboard' "$2" | sort -u | wc -l | tr -d ' ')" -ge 2 ]
+  else
+    grep -Eq 'brain-onboard|tess-[a-z]' "$2"
+  fi
+}
+
+identity() {  # identity <rt> <dir> <prefix> <label>: k of 3 single calls
+  local i k=0
+  for i in 1 2 3; do "$1_ask" "$2" "$3-$i.txt" "$IDENT"; ident_ok "$1" "$3-$i.txt" && k=$((k + 1)); done
+  [ "$k" -ge 2 ] && pass "$4 identity + commands/skills: $k of 3" || fail "$4 identity + commands/skills: $k of 3"
+}
+
 smoke_claude() {
   command -v claude >/dev/null || { fail "claude CLI not on PATH"; return; }
   local fresh="$S/live-claude-fresh" onb="$S/live-claude-done" o="$S/smoke/claude"
   scaffold "$fresh" && scaffold "$onb" onboard || return
   three_hi claude "$fresh" "$o-hi"
   local k; k=$(count_q1 "$o-hi"); [ "$k" -ge 2 ] && pass "O9 claude onboarding: $k of 3" || fail "O9 claude onboarding: $k of 3"
-  claude_ask "$fresh" "$o-ident.txt" 'Before we start: what is your name, and name three slash commands or skills you have here?'
-  local c; c=$(grep -Eo '/add-mission|/wake|/close|/help|brain-onboard' "$o-ident.txt" | sort -u | wc -l | tr -d ' ')
-  grep -q Tess "$o-ident.txt" && [ "$c" -ge 2 ] && pass "O9 claude identity + commands ($c named)" || fail "O9 claude identity + commands ($c named)"
+  task_first claude "$fresh" "$o-task" O9
+  identity claude "$fresh" "$o-ident" O9
   claude_ask "$fresh" "$o-nonce.txt" 'List every token matching [A-Z]+-NONCE-[A-Z0-9]+ that you can see.'
   grep -q 'OOBE-NONCE-7Q' "$o-nonce.txt" && pass "O9 claude hook visibility (nonce seen)" || fail "O9 claude hook visibility"
   three_hi claude "$onb" "$o-neg"
@@ -104,9 +128,8 @@ smoke_codex() {
   scaffold "$fresh" && scaffold "$onb" onboard || return
   three_hi codex "$fresh" "$o-hi"
   local k; k=$(count_q1 "$o-hi"); [ "$k" -ge 2 ] && pass "O10 codex onboarding: $k of 3" || fail "O10 codex onboarding: $k of 3"
-  codex_ask "$fresh" "$o-ident.txt" 'Before we start: what is your name, and name three slash commands or skills you have here?'
-  grep -q Tess "$o-ident.txt" && grep -q 'brain-onboard' "$o-ident.txt" && grep -Eq 'tess-[a-z]' "$o-ident.txt" \
-    && pass "O10 codex identity + skills" || fail "O10 codex identity + skills"
+  task_first codex "$fresh" "$o-task" O10
+  identity codex "$fresh" "$o-ident" O10
   three_hi codex "$onb" "$o-neg"
   k=$(count_q1_only "$o-neg"); [ "$k" -eq 0 ] && pass "O10 codex negative control: 0 of 3" || fail "O10 codex negative control: $k of 3 asked Q1"
 }
@@ -131,6 +154,7 @@ PY
   if [ -z "${GEMINI_API_KEY:-}" ]; then echo "Gemini model-level smoke: UNVERIFIED (no auth)"; return; fi
   three_hi gemini "$fresh" "$o-hi"
   local k; k=$(count_q1 "$o-hi"); [ "$k" -ge 2 ] && pass "O11 gemini onboarding: $k of 3" || fail "O11 gemini onboarding: $k of 3"
+  task_first gemini "$fresh" "$o-task" O11
 }
 
 yaml_python_path

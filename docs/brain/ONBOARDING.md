@@ -42,7 +42,7 @@ without running it).
 
 | Layer | Claude Code | Codex CLI | Gemini CLI | Label |
 |---|---|---|---|---|
-| BOOT rule in the entry file ("if `brain/brain.json` is missing or onboarding is not complete, your first reply is the next onboarding question") | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` -> `AGENTS.md` | I |
+| BOOT rule in the entry file ("if `brain/brain.json` is missing or onboarding is not complete, your first reply ends with the next onboarding question"; a first message that is a task gets a short answer first, then the question) | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` -> `AGENTS.md` | I |
 | `brain-onboard` skill, whose description starts "START HERE when brain/brain.json is missing or onboarding is not complete" | `.claude/skills/` | `.agents/skills/` | `.agents/skills/` | I |
 | SessionStart hook line `ONBOARDING PENDING (step k/7): ...` from `onboard.py hook session-start` | after trust | v0.2.1 | v0.2.1 | M/T |
 | Launcher start prompt (`claude "/brain-onboard"`, `codex '$brain-onboard'`, `gemini -i "Use the brain-onboard skill."`) | yes | yes | yes | M |
@@ -50,6 +50,10 @@ without running it).
 The hook is silent in the Tess OS source repo, once onboarding is complete or
 skipped, while it is deferred, and under `TESS_BRAIN_QUIET=1` or
 `TESS_HEADLESS=1`.
+
+If `brain/brain.json` exists but cannot be read (corrupt, empty, not a
+tess-brain file), the hook says `BRAIN FILE UNREADABLE` instead of staying
+silent, so the session knows to restore it from git first.
 
 ## 3. The interview: seven steps, one question per turn
 
@@ -96,8 +100,8 @@ A second `apply` changes nothing. `--dry-run` shows what would be created.
 
 - **Resume.** State lives in tracked `brain/brain.json`, so any runtime on any
   machine resumes at the saved step, and a clone never re-onboards.
-- **Defer.** "later": `onboard.py defer --days 7`. The reminder returns when
-  `remind_after` passes.
+- **Defer.** "later": `onboard.py defer --days 7` (1 to 90 days). The
+  reminder returns when `remind_after` passes.
 - **Skip.** "skip onboarding": `onboard.py skip --quote "..."` sets up the
   personal layer with defaults and records the skip.
 
@@ -126,7 +130,13 @@ framework repository, and writes `brain/brain.json` with status `pending`.
 | check the brain answers from files alone | `python3 scripts/brain/probe.py --static` |
 
 `add` writes the index row first, creates only, and prints `skipped (exists)`
-for anything already there.
+when that same entity is already there. A different entity whose name makes
+the same folder name gets `-2`, `-3`, ... instead, and names in scripts with
+no ASCII form (Chinese, Japanese, Cyrillic, Arabic, ...) get a folder name
+ending in a short hash of the name, so no entity is ever lost or merged into
+another. A name with no letters or digits is refused. `add` and `add-mode`
+also keep `brain/probe.json` current, so the probe stays green as the brain
+grows.
 
 ## 8. The one-time seed push
 

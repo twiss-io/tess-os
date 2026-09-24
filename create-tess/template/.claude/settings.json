@@ -17,7 +17,7 @@
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && exec python3 \"$f\" hook prompt --runtime claude || exit 0'",
+            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook prompt --runtime claude || exit 0'",
             "timeout": 3
           }
         ]
@@ -109,12 +109,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/onboard.py\"; [ -f \"$f\" ] && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
+            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/onboard.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
+            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
             "timeout": 5
           }
         ]
@@ -125,7 +125,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && exec python3 \"$f\" hook stop --runtime claude || exit 0'",
+            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook stop --runtime claude || exit 0'",
             "async": true,
             "timeout": 30
           }

@@ -21,7 +21,8 @@ LIVE = REPO / ".claude" / "settings.json"
 
 
 def line(script: str, event: str) -> str:
-    return ("sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/%s\"; [ -f \"$f\" ] && exec python3 \"$f\" "
+    return ("sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/%s\"; [ -f \"$f\" ] && "
+            "command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" "
             "hook %s --runtime claude || exit 0'" % (script, event))
 
 
@@ -101,3 +102,16 @@ def test_hook_line_is_a_guarded_noop_without_its_script(tmp_path, key):
                           env={"CLAUDE_PROJECT_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True, timeout=10)
     assert done.returncode == 0 and done.stdout == "" and done.stderr == ""
+
+
+@pytest.mark.parametrize("key", sorted(FROZEN))
+def test_hook_line_exits_zero_when_python3_is_missing(tmp_path, key):
+    """A failed `exec` ends sh before `|| exit 0` runs (rc 127); the guard prevents it."""
+    script = "onboard.py" if key == "onboard_start" else "tessbrain.py"
+    (tmp_path / "scripts" / "brain").mkdir(parents=True)
+    (tmp_path / "scripts" / "brain" / script).write_text("raise SystemExit(9)\n")
+    (tmp_path / "nobin").mkdir()
+    done = subprocess.run(["/bin/sh", "-c", FROZEN[key].split("sh -c ", 1)[1].strip("'")],
+                          env={"CLAUDE_PROJECT_DIR": str(tmp_path), "PATH": str(tmp_path / "nobin")},
+                          capture_output=True, text=True, timeout=10)
+    assert done.returncode == 0 and done.stdout == "", (done.returncode, done.stderr)
