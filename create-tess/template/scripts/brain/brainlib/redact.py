@@ -23,7 +23,7 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("slack", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
     ("stripe", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{16,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")),
-    ("telegram-bot", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
+    ("bot-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
     ("nric", re.compile(r"\b[STFGM]\d{7}[A-Z]\b")),
 ]
 _CREDENTIAL = re.compile(

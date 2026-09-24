@@ -27,7 +27,7 @@ def base(kind, n, ts, sid=SID, **kw):
 
 
 def channel(user, uid, msg_id, ts, text):
-    return ('<channel source="plugin:telegram:telegram" chat_id="-100200300" message_id="%s" user="%s" '
+    return ('<channel source="plugin:chat:chat" chat_id="-1" message_id="%s" user="%s" '
             'user_id="%s" ts="%s">%s</channel>' % (msg_id, user, uid, ts, text))
 
 

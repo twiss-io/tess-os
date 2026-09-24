@@ -70,7 +70,7 @@ def test_people_deny_list_key_and_nric_value(inst):
 
 
 def test_agents_chain_and_entity_budgets(inst):
-    (inst / "AGENTS.md").write_text("# root\n" + ("x" * 99 + "\n") * 200)  # 20 KB
+    (inst / "AGENTS.md").write_text("# root\n" + ("x" * 99 + "\n") * 220)  # 22 KB
     acme = inst / "brain/clients/acme/AGENTS.md"
     acme.write_text(acme.read_text() + ("y" * 79 + "\n") * 45)  # entity now ~5.3 KB, chain > 24 KiB
     rc, out = lint(inst)

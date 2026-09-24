@@ -13,7 +13,7 @@ SID = "ver00001-aaaa-4bbb-8ccc-000000000001"
 def inst(tmp_path):
     bj = json.loads(Path(fxlib.HERE, "brain.json").read_text())
     bj["principals"].append({"slug": "ada", "role": "advisor", "decides": False, "scope": ["**"],
-                             "aliases": ["telegram:7777"], "journal_consent": "shared"})
+                             "aliases": [], "journal_consent": "shared"})
     p = tmp_path / "bj.json"
     p.write_text(json.dumps(bj))
     inst = Path(fxlib.make(str(tmp_path / "fx"), brain_json=str(p)))
@@ -22,13 +22,13 @@ def inst(tmp_path):
         ("user", "We  should keep the “weekly” report format going forward."),
         ("assistant", "I propose we move the retainer review to the first Monday of each month."),
         ("user", "yes, do that"),
-        ("tg:7777", "Decision: let's use Linear for tickets."),
         ("assistant", "Another idea: switch the newsletter to fortnightly."),
         ("user", "Unrelated question about lunch."),
         ("user", "Also unrelated."),
         ("user", "ok fine"),
     ])
     assert fxlib.sync_dir(inst, cdir).returncode == 0
+    fxlib.note(inst, "ada", "Decision: let's use Linear for tickets.")  # a principal who does not decide
     return inst
 
 
@@ -118,6 +118,6 @@ def test_unknown_git_user_is_not_credited_to_a_principal(tmp_path):
     fxlib.sync_fixture(inst)
     text = (inst / "brain/journal/2026/09/24/1405-claude-11111111.md").read_text()
     assert "[non-principal operator omitted: no consent]" in text and "Postgres" not in text
-    assert "[L2 14:10 sam telegram] Decision: we'll use the blue logo for Acme." in text  # channel alias still maps
+    assert "blue logo" not in text
     st = fxlib.cli(inst, "status").stdout
     assert "matches no principal's git_emails" in st
