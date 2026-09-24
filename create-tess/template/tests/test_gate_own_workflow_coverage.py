@@ -146,6 +146,10 @@ def real_workflow_root(tmp_path):
     real base/head pair against the actually-shipped tree."""
     dst = tmp_path / "os"
     shutil.copytree(REPO_ROOT, dst, ignore=_COPY_IGNORE)
+    # The premise of these tests is "no covering verdict". Drop any real
+    # verdicts the shipped tree carries, or a verdict covering the edited
+    # path turns the expected COVERING_APPROVAL_MISSING into VERDICT_CONTENT_STALE.
+    shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     assert (dst / WORKFLOW_REL).exists(), "fixture must include the real workflow file"
 
     env = {
