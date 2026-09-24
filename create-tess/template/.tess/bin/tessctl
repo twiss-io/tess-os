@@ -2845,6 +2845,13 @@ def doctor_check_file(core_key: str, attrs: dict, root: Path) -> dict:
                 result["issues"].append(
                     "SECURITY-TIER ALERT — security doctrine edited without quarantine/approval"
                 )
+            elif is_sec and file_status == "patch-override":
+                # v0.2 (Cyra fix round 2): `override` has no tier check; a
+                # security-tier override is an error, never 'doctor: OK'.
+                result["issues"].append(
+                    "SECURITY-TIER ALERT — security doctrine kept by a patch-override; "
+                    "overrides never cover security-tier files (capture + approve)"
+                )
 
     return result
 
@@ -3119,7 +3126,13 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         # customization, like locally-modified: kept with a WARN, never
         # reported as uncaptured drift and never a reason to reach for --force.
         # (5c2d698 silently reverted it to core.)
-        if status == "patch-override":
+        # v0.2 (Cyra fix round 2): NOT for a security-tier path. `override`
+        # has no tier check, so it must not become a one-command bypass of
+        # capture -> quarantine -> approve: a security-tier override falls
+        # through to the drift gate below (WOULD CLOBBER, or REFUSED under
+        # --force), exit non-zero.
+        if (status == "patch-override"
+                and not (live_rel in security_live and live_rel not in render_generated)):
             counts["skipped_locally_modified"] += 1
             if live_rel not in _restore_warned:
                 _restore_warned.add(live_rel)
@@ -3142,6 +3155,10 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
             if is_sec or not force:
                 drift_seen.add(live_rel)
                 counts["drift_paths"].append(live_rel)
+                if is_sec and status == "patch-override":
+                    print(f"  NOTE  {live_rel} [SECURITY] has a patch-override in tess.lock; "
+                          f"an override never keeps a security-tier edit (use `tessctl "
+                          f"capture` then `tessctl approve` to accept it)")
                 if is_sec and force:
                     counts["refused_security"] += 1
                     print(
@@ -4627,6 +4644,14 @@ def cmd_doctor(args, root: Path) -> None:
                  and _render_output_drift_kind(root, lock, r["live_path"]) == "stale")
     }
     security_drift = len(_sec_drift_live_set)
+    # v0.2 (Cyra fix round 2): a security-tier file kept by a patch-override
+    # is a security alert and a failure (override has no tier check).
+    _sec_override_live_set = {
+        r["live_path"] for r in results
+        if r.get("is_security") and r.get("drift")
+        and r.get("lock_status") == "patch-override" and r.get("live_path")
+    }
+    security_drift += len(_sec_override_live_set)
 
     print(
         f"pristine: {pristine}  |  staged (benched): {staged_count}  |  "
@@ -4727,7 +4752,8 @@ def cmd_doctor(args, root: Path) -> None:
 
     blocking = (drift_count > 0 or quarantined_count > 0
                 or core_tamper_count > 0 or missing_count > 0
-                or doctrine_leak_count > 0 or integrity_count > 0)
+                or doctrine_leak_count > 0 or integrity_count > 0
+                or bool(_sec_override_live_set))
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
@@ -4764,6 +4790,12 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"\ndoctor: FAIL — {doctrine_leak_count} worker-profile doctrine leak(s) detected. "
               f"Orchestration doctrine (\"always dispatch\", RULE ZERO, etc.) must never reach "
               f"a single-agent harness's doctrine digest — fix the template/fragment and re-render.")
+        sys.exit(1)
+    if _sec_override_live_set:
+        print(f"\ndoctor: FAIL — {len(_sec_override_live_set)} security-tier file(s) kept by a "
+              f"patch-override: " + ", ".join(sorted(_sec_override_live_set)) + ". An override "
+              f"never covers security doctrine: `tessctl reset <path>` to discard, or "
+              f"`tessctl capture <path>` then `tessctl approve` to accept.")
         sys.exit(1)
     if integrity_count > 0:
         print(f"\ndoctor: FAIL — {integrity_count} integrity issue(s): untracked .tess/core "
@@ -6910,12 +6942,16 @@ def cmd_rollback(args, root: Path) -> None:
                          if not p.is_dir() and p.name not in ("tess.lock.snapshot", ".kind")]
             undo_rels.append(LOCK_FILE)
         undo_id = snapshot_paths(root, undo_rels, "pre-rollback")
-        print(f"  current state saved to {SNAPSHOTS_DIR}/{undo_id}  "
-              f"(undo this rollback: `tessctl rollback --to {undo_id}`)")
         try:
             _rollback_apply(root, snap, manifest)
         finally:
-            _finish_snapshot(root, undo_id, verbose=False)
+            # v0.2 (Cyra fix round 2): name the undo id only once it is known
+            # to exist; a rollback that changed nothing discards it.
+            if _finish_snapshot(root, undo_id, verbose=False):
+                print(f"  previous state saved to {SNAPSHOTS_DIR}/{undo_id}  "
+                      f"(undo this rollback: `tessctl rollback --to {undo_id}`)")
+            else:
+                print("  nothing changed; no undo snapshot")
     finally:
         _ACTIVE_SNAPSHOTS.discard(snap.name)
 
@@ -7650,10 +7686,12 @@ def cmd_reset(args, root: Path) -> None:
     status = (effective_live_status(lock, live_rel) if live_rel
               else attrs.get("status", "core-managed"))
 
-    if status not in ("locally-modified", "core-managed"):
+    # v0.2 (Cyra fix round 2): patch-override is a captured edit too, and
+    # reset is the discard restore's security-tier refusal points at.
+    if status not in ("locally-modified", "core-managed", "patch-override"):
         sys.exit(
             f"tessctl reset: {live_rel} has status {status!r} — reset only applies to\n"
-            f"  locally-modified files (or already-pristine core-managed files).\n"
+            f"  locally-modified / patch-override files (or core-managed files).\n"
             f"  For quarantined: use `tessctl approve` or restore manually.\n"
             f"  For user-published: use `tessctl publish --force {live_rel}` to re-seed from core."
         )

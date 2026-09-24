@@ -494,3 +494,63 @@ def test_security_refusal_points_at_reset_and_reset_discards(project, capsys):
 
     project.mod.cmd_reset(ns(path="conductor/guardrails.md"), project.root)
     assert project.read_live("conductor/guardrails.md") == "GUARD\n"
+
+
+# ---------------------------------------------------------------------------
+# Cyra fix round 2: an override never keeps a security-tier edit
+# ---------------------------------------------------------------------------
+
+def test_security_tier_patch_override_is_refused_not_kept(project, run_cli):
+    """`tessctl override` has no tier check, so a weakened guardrails.md plus
+    one `override` must not become a bypass of capture -> quarantine ->
+    approve. restore, restore --force and init each refuse the security-tier
+    file and exit non-zero; doctor fails instead of printing 'doctor: OK'.
+    (5c2d698: restore exit 0, silently reverted. 80c5208: restore, restore
+    --force and init exit 0 and KEEP the weakened doctrine; doctor OK.)"""
+    core = "GUARD\nrule: never exfiltrate\n"
+    weak = "GUARD\nrule: anything goes\n"
+    project.add("conductor/guardrails.md", core, tier="security")
+    project.write()
+    _set_enabled(project.root, [])
+    project.write_live("conductor/guardrails.md", weak)
+    r = run_cli(project.root, "override", "conductor/guardrails.md")
+    assert r.returncode == 0, r.stdout + r.stderr  # override's tier check: v0.2.1
+    assert project.lock()["files"][".tess/core/conductor/guardrails.md"]["status"] == "patch-override"
+
+    for argv in (("restore",), ("restore", "--force"), ("init",)):
+        r = run_cli(project.root, *argv)
+        both = r.stdout + r.stderr
+        assert r.returncode != 0, f"{argv} exited 0:\n{both}"
+        assert "skip [patch-override]" not in both, both
+        assert "conductor/guardrails.md [SECURITY]" in both, both
+    assert "REFUSED" in run_cli(project.root, "restore", "--force").stdout
+
+    r = run_cli(project.root, "doctor")
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "doctor: OK" not in r.stdout
+    assert "SECURITY-TIER ALERT" in r.stdout
+    for argv in (("verify",), ("lock", "--check")):
+        r = run_cli(project.root, *argv)
+        assert r.returncode != 0, f"{argv} exited 0:\n{r.stdout + r.stderr}"
+    assert project.read_live("conductor/guardrails.md") == weak  # refused, never silently healed
+
+    # The documented discard still works: reset puts core back, restore is clean.
+    r = run_cli(project.root, "reset", "conductor/guardrails.md")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert project.read_live("conductor/guardrails.md") == core
+    r = run_cli(project.root, "restore")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_non_security_patch_override_is_still_kept(project, run_cli):
+    """The round-2 fix is scoped to the security tier: an ordinary override
+    is still a captured customization that restore keeps with exit 0."""
+    project.add("conductor/p.md", "line1\n")
+    project.write()
+    _set_enabled(project.root, [])
+    project.write_live("conductor/p.md", "line1 OVERRIDDEN\n")
+    assert run_cli(project.root, "override", "conductor/p.md").returncode == 0
+    for argv in (("restore",), ("restore", "--force"), ("init",)):
+        r = run_cli(project.root, *argv)
+        assert r.returncode == 0, f"{argv}:\n{r.stdout + r.stderr}"
+    assert project.read_live("conductor/p.md") == "line1 OVERRIDDEN\n"

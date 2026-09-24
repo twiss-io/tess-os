@@ -469,3 +469,21 @@ def test_rollback_with_out_of_tree_symlinked_dir_completes(project, tmp_path_fac
     assert "rollback: complete" in out
     assert project.read_live("conductor/a.md") == "core a\n"
     assert (outside / "s.md").read_text() == "OUTSIDE BYTES\n"
+
+
+def test_rollback_that_changes_nothing_names_no_undo_id(project, capsys):
+    """Cyra fix round 2: a rollback that changes nothing discards its
+    pre-rollback snapshot, so it must not print an undo id for it
+    (80c5208 printed `rollback --to <ts>-pre-rollback` for a deleted dir)."""
+    project.add("conductor/a.md", "core a\n")
+    project.write()
+    root = project.root
+    sid = project.mod.snapshot_paths(root, ["conductor/a.md"], "render")
+    project.mod._ACTIVE_SNAPSHOTS.discard(sid)
+    capsys.readouterr()
+
+    project.mod.cmd_rollback(ns(to=sid), root)
+    out = capsys.readouterr().out
+    assert "undo this rollback" not in out, out
+    assert "nothing changed; no undo snapshot" in out
+    assert not [p for p in _snaps(project).iterdir() if p.name.endswith("-pre-rollback")]
