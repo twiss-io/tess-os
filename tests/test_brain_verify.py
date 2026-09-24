@@ -117,7 +117,7 @@ def test_unknown_git_user_is_not_credited_to_a_principal(tmp_path):
     fxlib.run(str(inst), "config", "user.email", "someone-else@example.invalid")
     fxlib.sync_fixture(inst)
     text = (inst / "brain/journal/2026/09/24/1405-claude-11111111.md").read_text()
-    assert "[non-principal operator omitted: no consent]" in text and "Postgres" not in text
+    assert "[non-principal operator omitted: no consent]" in text and "Firebird" not in text
     assert "blue logo" not in text
     st = fxlib.cli(inst, "status").stdout
     assert "matches no principal's git_emails" in st

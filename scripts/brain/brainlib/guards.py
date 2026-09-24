@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Set
 
+from . import takeback
 from .textutil import normalize, sentences
 
 _WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
@@ -40,9 +41,6 @@ _QUOTED = re.compile(r"[\"“][^\"”]*\S\s+\S+\s+\S[^\"”]*[\"”]")  # a quot
 _PASTE_INTRO = re.compile(
     r"(?i)\bhere(?:'s| is| are)\b.{0,60}\b(notes?|e-?mails?|transcript|minutes|messages?|thread|summary|chat|"
     r"memo|doc(?:ument)?)\b")
-_TAKEBACK = re.compile(
-    r"(?i)\b(just kidding|jk|scratch that|never ?mind|ignore that|disregard that|forget that|undo that|"
-    r"not decided|haven't decided|have not decided|not sure yet|take that back)\b")
 
 
 def _stem(w: str) -> str:
@@ -112,15 +110,18 @@ def context(kind: str, quote: str, text: str, following: str, approval: bool = F
         return "V11: reported speech or a quotation, not the principal deciding"
     if _pasted(text, quote):
         return "V11: part of a pasted block (notes, email, transcript); the operator confirms it in review"
-    rest = " ".join(sents[i + 1:]) if i >= 0 else ""
-    nxt = " ".join(sentences(following)[:2])
-    if _TAKEBACK.search(rest) or _TAKEBACK.search(nxt):
+    rest = "\n".join(sents[i + 1:]) if i >= 0 else ""
+    if takeback.taken_back(sentence, rest, following or ""):
         return "V11: taken back in the same or the next message"
     if kind == "decision" and not approval and len([w for w in words(sentence) if w not in FILLER]) < 3:
         return "V11: content-free approval; the operator says what was approved in review"
+    if kind in ("preference", "correction") and takeback.content_free(sentence):
+        return "V11: content-free %s; the operator says what they meant in review" % kind
+    if kind == "decision" and not approval:
+        return takeback.conditional(sentence)
     return None
 
 
-def takes_back(text: str) -> bool:
-    """Does this principal message open by taking the previous statement back?"""
-    return bool(_TAKEBACK.search(" ".join(sentences(text)[:2])))
+def takes_back(target: str, text: str) -> bool:
+    """Does this principal message open by taking the statement `target` back?"""
+    return takeback.taken_back(target, "", text)

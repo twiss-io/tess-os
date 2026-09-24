@@ -12,8 +12,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SID = "11111111-aaaa-4bbb-8ccc-000000000001"
 SID2 = "22222222-aaaa-4bbb-8ccc-000000000002"
 CWD = "/work/fx"
-SCRIPT = ("Decision: let's go with Postgres for the ledger. From now on, always answer in bullet points. "
-          "No, that's wrong: the client's timezone is SGT, not UTC. If we went with MongoDB instead, would that "
+SCRIPT = ("Decision: let's go with Firebird for the widget ledger. From now on, always answer in bullet points. "
+          "No, that's wrong: the client's timezone is SGT, not UTC. If we went with CouchDB instead, would that "
           "be faster? Just thinking out loud. Remind me to send the pricing note to Sam by Friday. "
           "For the form, NRIC S1234567D and test card 4111 1111 1111 1111.")
 

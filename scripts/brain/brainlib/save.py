@@ -117,11 +117,13 @@ def run(cfg: Config, message: str, dry_run: bool = False) -> Dict:
         return out
     g = _gitleaks(cfg)
     if g:
-        out["error"] = g
+        out["error"] = g + "\n(unstaged again; nothing was committed)"
+        gitutil.run(cfg.root, ["reset", "-q", "--"] + paths)
         return out
     rc, so, se = gitutil.run(cfg.root, ["commit", "-m", message or "brain: save", "--only", "--"] + paths, timeout=300)
     if rc != 0:
         out["error"] = "git commit refused (the repository's hooks ran): %s" % (so + se).strip()[-1500:]
+        gitutil.run(cfg.root, ["reset", "-q", "--"] + paths)
         return out
     out.update(ok=True, committed=gitutil.head(cfg.root))
     return _push(cfg, out, dry_run)
@@ -132,11 +134,11 @@ def _push(cfg: Config, out: Dict, dry_run: bool) -> Dict:
         out["notes"].append("autopush is off: push when you are ready (save.autopush in brain/brain.json)")
         return out
     name = str(cfg.remote.get("name") or "origin")
-    url = gitutil.remote_url(cfg.root, name)
-    if not url:
+    urls = gitutil.push_urls(cfg.root, name)
+    if not urls:
         out["notes"].append("no git remote %r; add a PRIVATE remote to back up the brain" % name)
         return out
-    why = push_verdict(cfg, url)
+    why = next((w for w in (push_verdict(cfg, u) for u in urls) if w), "")
     if why:
         out["notes"].append("not pushed: " + why)
         return out

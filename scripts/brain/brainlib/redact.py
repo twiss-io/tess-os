@@ -24,7 +24,11 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("stripe", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{16,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")),
     ("bot-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
-    ("nric", re.compile(r"\b[STFGM]\d{7}[A-Z]\b")),
+    ("nric", re.compile(r"(?i)\b[STFGM]\d{7}[A-Z]\b")),
+    ("slack-webhook", re.compile(r"(?i)https?://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]+")),
+    ("npm", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("sendgrid", re.compile(r"\bSG\.[A-Za-z0-9_-]{16,32}\.[A-Za-z0-9_-]{16,64}")),
+    ("twilio", re.compile(r"\bSK[0-9a-fA-F]{32}\b")),
     ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
     ("uri-userinfo", re.compile(r"(?i)(?<=://)[^\s:@/<>]+:[^\s@/<>]+(?=@)")),
     ("bearer", re.compile(r"(?i)(?<=\bBearer\s)(?!<REDACTED:)[A-Za-z0-9._~+/=-]{16,}")),
@@ -34,8 +38,14 @@ _PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
 # The value must be 6+ characters and not start with markup, so prose such as
 # "**On the token:** I'm ..." is left alone.
 _CREDENTIAL = re.compile(
-    r"(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)"
+    r"(?i)(?<![A-Za-z0-9])([A-Za-z0-9_.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"private[_-]?key|account[_-]?key|shared[_-]?access[_-]?key)"
     r"[A-Za-z0-9_]*)([\"']?\s*[:=]\s*)(?!<REDACTED:)(\"[^\"\n]{6,}\"|'[^'\n]{6,}'|[^\s<*_`\"'][^\s<]{5,})")
+# Natural language: "my password is hunter22", "the aws secret is <40 chars>". The value must look
+# like a secret (a digit or symbol, or 16+ characters), so "the token is expired" is left alone.
+_SAID = re.compile(
+    r"(?i)\b((?:password|passwd|passcode|pin|secret(?: access)?(?: key)?|token|api key|access key|private key)"
+    r"\s+(?:is|was|=|:)\s+)(?!<REDACTED:)([\"']?)([^\s\"'<]{6,})\2")
 _CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
 _BANK = re.compile(
     r"(?i)\b(iban|bank account(?: (?:no|number))?|account (?:no|number)|acct(?: no)?)\b"
@@ -75,6 +85,14 @@ def redact(text: str) -> Tuple[str, Dict[str, int]]:
         counts["credential"] = counts.get("credential", 0) + 1
         return m.group(1) + m.group(2) + MARK % "credential"
     text = _CREDENTIAL.sub(cred, text)
+
+    def said(m):
+        value = m.group(3).rstrip(".,;!?")
+        if not (re.search(r"[\d\W_]", value) or len(value) >= 16):
+            return m.group(0)
+        counts["credential"] = counts.get("credential", 0) + 1
+        return m.group(1) + MARK % "credential" + m.group(3)[len(value):]
+    text = _SAID.sub(said, text)
 
     def card(m):
         if luhn_ok(m.group(0)):

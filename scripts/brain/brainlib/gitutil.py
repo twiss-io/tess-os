@@ -65,6 +65,12 @@ def remote_url(root: Path, name: str) -> str:
     return out.strip() if rc == 0 else ""
 
 
+def push_urls(root: Path, name: str) -> List[str]:
+    """Every URL `git push <name>` writes to (pushurl and pushInsteadOf applied)."""
+    rc, out, _ = run(root, ["remote", "get-url", "--push", "--all", name])
+    return [u.strip() for u in out.splitlines() if u.strip()] if rc == 0 else []
+
+
 def unpushed(root: Path) -> Tuple[int, str]:
     """(count, note). Commits on HEAD not on its upstream (or on no remote at all)."""
     rc, out, _ = run(root, ["rev-list", "--count", "@{u}..HEAD"])

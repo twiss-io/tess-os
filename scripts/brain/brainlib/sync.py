@@ -196,7 +196,7 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
         if sess is not None:
             summary["journaled"] += 1
             cands += found
-            taken_back += [e.ref for e in new if e.kind == "msg" and e.principal and guards.takes_back(e.text)]
+            taken_back += [e.ref for e in new if e.kind == "msg" and e.principal]
     summary["candidates"] = len(cands)
     summary["outcomes"] = inbox.process_all(cfg)
     summary["held"] = held_by_takeback(cfg, taken_back)
@@ -207,9 +207,12 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
     return summary
 
 
+JUDGED_BACK = ("decision", "preference", "correction")
+
+
 def held_by_takeback(cfg: Config, refs: List[str]) -> List[Dict]:
-    """"Scratch that" in a later principal message: the previous principal message's
-    auto-promoted, unconfirmed decisions/preferences go back to review (proposed)."""
+    """A take-back at the start of a later principal message ("Wait, no.", "not Heroku after all"):
+    the previous message's auto-promoted, unconfirmed records it targets go back to review (proposed)."""
     out: List[Dict] = []
     for ref in refs:
         path, _, label = ref.partition("#")
@@ -218,9 +221,12 @@ def held_by_takeback(cfg: Config, refs: List[str]) -> List[Dict]:
         prev = [l for i, l in enumerate(msgs) if i + 1 < len(msgs) and msgs[i + 1].label == label]
         if not prev:
             continue
+        nxt = [l.text for l in msgs if l.label == label][0]
         for rec in records.all_records(cfg):
-            if (str(rec.meta.get("source_ref") or "") == prev[0].ref and rec.kind in ("decision", "preference")
-                    and rec.status in ("accepted", "active") and rec.meta.get("confirmed") is False):
+            if (str(rec.meta.get("source_ref") or "") == prev[0].ref and rec.kind in JUDGED_BACK
+                    and rec.status in ("accepted", "active") and rec.meta.get("confirmed") is False
+                    and guards.takes_back(str(rec.meta.get("source_quote") or rec.meta.get("statement") or ""),
+                                          nxt)):
                 records.update_fields(rec, {"status": "proposed"})
                 out.append({"record": rec.id, "status": "proposed", "reason": "V11: taken back at %s" % ref})
     return out
