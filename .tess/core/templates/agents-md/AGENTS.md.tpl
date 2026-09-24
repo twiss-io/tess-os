@@ -9,7 +9,8 @@
 > ceremony command table) into a harness like this one does not help — and
 > once caused a weak model to attempt a nested subagent spawn on a task
 > that only asked for `python3 --version`. Nothing below is a performance
-> claim: every section is a repo/gate fact or a safety floor. See
+> claim: every section is a repo/gate fact, a safety floor, or a statement
+> of which `CLAUDE.md` rules do not apply to you. See
 > `RenderTarget.doctrine_profile` in `.tess/bin/tessctl`.
 
 ## This Project
@@ -22,6 +23,12 @@ are flagged as uncaptured drift).
 {{OPERATOR_BUILD_FACTS}}
 
 {{WORKER_HARD_FLOOR}}
+
+{{WORKER_DISPATCH_SCOPE}}
+
+{{WORKER_CHANNEL}}
+
+{{WORKER_FILE_PLACEMENT}}
 
 {{WORKER_GATE_COMPLIANCE}}
 
