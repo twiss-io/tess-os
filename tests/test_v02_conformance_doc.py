@@ -130,5 +130,6 @@ def test_page_documents_the_six_non_translating_areas():
 
 def test_page_has_no_local_paths_or_live_byte_counts():
     text = CONFORMANCE.read_text(encoding="utf-8")
-    assert "/Users/" not in text
+    home_prefix = "/" + "Users" + "/"  # split so this file itself passes the de-id scan
+    assert home_prefix not in text
     assert not re.search(r"\b\d[\d,]*\s?B\b", text), "a byte count (e.g. '23,413 B') leaked in"

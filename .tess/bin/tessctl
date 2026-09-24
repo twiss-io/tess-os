@@ -2019,7 +2019,7 @@ def report_render_output_results(root: Path, target: str, results: dict,
         except SystemExit:
             manifest = {}
     owned = manifest.get("owned_globs", []) or []
-    target_obj = RENDER_TARGETS.get(target) if "RENDER_TARGETS" in globals() else None
+    target_obj = RENDER_TARGETS.get(target)  # defined at module level; resolved at call time
     not_owned = by_reason.get("not-owned", [])
     if not_owned:
         globs: dict = {}
