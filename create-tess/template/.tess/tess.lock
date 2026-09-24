@@ -6435,3 +6435,39 @@ render_outputs:
     target: gemini
     status: rendered
     rendered_sha: sha256:1fa5853480dce7190c3c2ff900211baf990a535675f90f1b0eee95e76ed924bc
+  .codex/agents/ada.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:03bdb09bbc267f5b7f1e3da944978c74787ec2fbf77078e1b4049349b3d2a7cc
+  .codex/agents/clio.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:f7fdcb2a605ee2fb621e3c8db60d4dbf98d3d7dfe2aebd15c0f26464ddf38018
+  .codex/agents/cyra.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:b4c558b4e5b3fad15d46d9856fbb583f111ab4149f305e6a43f9b473613624e3
+  .codex/agents/iris.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:b40091dfafba6b9d6809507d455515e23ade8f1e7f24df8d1c7c157fc5784bd5
+  .codex/agents/leah.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:878b952a8a49484e4460c463e4fec2e4a1dd9fa70f15045a3a451e77669eca20
+  .codex/agents/morwenna.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:1b4107e4bd2fa9d4d95fbd6746c7c62014fd494e74646b0088864a916b7a8e7d
+  .codex/agents/quinn.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:9f9409a5cb207a8b642fd396532f7314b014d40504566598d813891f35a3165e
+  .codex/agents/reid.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:a40f690c9d5e1e0d198b5f00c979f097fa26d1e5a1262442b3e1e2b5e756f556
+  .codex/agents/vega.toml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:d49de7b1de107efe6b3eb50bc83cece5593d91a6117830468889449f57a97473
