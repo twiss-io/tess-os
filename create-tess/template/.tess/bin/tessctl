@@ -422,8 +422,8 @@ CLAUDE_TOKEN_MAP = {
 #     HELPING a single-agent harness, so nothing here ships on a
 #     performance bet, only facts (the gate exists; don't touch its files)
 #     and a safety floor (unmeasured on purpose, kept for consequence).
-#   - {{HARNESS_NOTE}} documents the `.codex/prompts/**` / `prompts/**`
-#     command-body mirrors (unchanged — a fact about what's on disk, not
+#   - {{HARNESS_NOTE}} documents the `.agents/skills/tess-*/` / `prompts/**`
+#     command-body renders (unchanged — a fact about what's on disk, not
 #     doctrine).
 #   - {{WORKER_SESSION_MEMORY}} (Phase 0.3, docs/STATE_LAYER.md) points a
 #     worker harness at the ONE cross-harness memory store
@@ -459,13 +459,24 @@ CLAUDE_TOKEN_MAP = {
 # dropped for a different reason — not harmful, just heavy (~45 lines) —
 # to keep this always-mounted digest inside its ~40-60 line budget; the
 # repo's own README (or {{OPERATOR_BUILD_FACTS}} below) is the right place
-# for layout facts a worker harness actually needs. `.codex/prompts/*.md` /
+# for layout facts a worker harness actually needs. `.agents/skills/tess-*/` /
 # `prompts/*.md` still mirror every command body verbatim (unchanged — see
 # CodexRenderTarget/GenericRenderTarget.render()); only AGENTS.md's own
 # always-mounted digest is re-scoped. Auditing the mirrored command bodies
 # themselves is future work (2026-07-07 reckoning §2.5), not part of this fix.
+#   - {{WORKER_DISPATCH_SCOPE}} / {{WORKER_CHANNEL}} / {{WORKER_FILE_PLACEMENT}}
+#     (v0.2.0, ws-doc worker fragments): three scope facts a worker needs
+#     so the orchestrator-only rules in CLAUDE.md are not misapplied to it —
+#     the dispatch rule binds only the conductor session (a worker executes
+#     directly), Telegram is a Claude Code conductor channel (a worker
+#     reports through its own runtime), and where new files go. Each is
+#     phrased without any WORKER_DOCTRINE_DENYLIST phrase: they tell a
+#     worker what does NOT apply to it, never how to dispatch.
 AGENTS_TOKEN_MAP = {
     "{{WORKER_HARD_FLOOR}}":       ".tess/core/templates/agents-md/worker-hard-floor.md",
+    "{{WORKER_DISPATCH_SCOPE}}":   ".tess/core/templates/agents-md/worker-dispatch-scope.md",
+    "{{WORKER_CHANNEL}}":          ".tess/core/templates/agents-md/worker-channel.md",
+    "{{WORKER_FILE_PLACEMENT}}":   ".tess/core/templates/agents-md/worker-file-placement.md",
     "{{WORKER_GATE_COMPLIANCE}}":  ".tess/core/templates/agents-md/gate-compliance.md",
     "{{HARNESS_NOTE}}":            ".tess/core/templates/agents-md/harness-note.md",
     "{{WORKER_SESSION_MEMORY}}":   ".tess/core/templates/agents-md/session-memory.md",
@@ -474,6 +485,28 @@ AGENTS_TOKEN_MAP = {
 AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
 COMMANDS_CORE_DIR = ".tess/core/commands"
+
+# v0.2.0 (ws-rt) — Codex commands as Agent Skills. Codex never loads a
+# project-scoped `.codex/prompts/` (openai/codex#9848, closed NOT_PLANNED);
+# it DOES scan `.agents/skills/<name>/SKILL.md` from the working directory up
+# to the repo root (https://learn.chatgpt.com/docs/build-skills.md). So the
+# `codex` target renders each `.tess/core/commands/<name>.md` as
+# `.agents/skills/tess-<name>/SKILL.md` (Agent Skills frontmatter: name +
+# description) plus `agents/openai.yaml` (Codex invocation policy: explicit
+# `$tess-<name>` only, mirroring a Claude Code slash command, which the user
+# invokes by name). The `tess-` prefix keeps these inside ONE owned glob,
+# AGENT_SKILL_OWNED_GLOB, which beats the manifest's `.agents/**` never_touch
+# (owned_globs > never_touch), so user-authored skills under `.agents/skills/`
+# stay unreachable to the write gate. `.codex/prompts/<name>.md` is RETIRED:
+# no longer rendered, reported by `tessctl render`, never deleted.
+AGENT_SKILLS_DIR = ".agents/skills"
+AGENT_SKILL_PREFIX = "tess-"
+AGENT_SKILL_OWNED_GLOB = ".agents/skills/tess-*/**"
+AGENT_SKILL_OPENAI_YAML = "agents/openai.yaml"
+RETIRED_CODEX_PROMPTS_DIR = ".codex/prompts"
+# Where the command bodies were AUTHORED to live (their relative links are
+# written against this directory) — used to rebase links into a skill dir.
+COMMAND_AUTHORED_DIR = ".claude/commands"
 
 OPERATOR_TOKEN_MAP = {
     "{{OPERATOR_IDENTITY}}":    "operator/identity-stub.md",
@@ -1281,8 +1314,8 @@ def _command_names(root: Path) -> list:
 
 
 def _render_command_prompt_bytes(root: Path, name: str) -> bytes | None:
-    """The bytes a harness's native-prompt mirror (`.codex/prompts/<name>.md`
-    or `prompts/<name>.md`) should contain for command `name` — the command
+    """The bytes the generic target's plain prompt mirror (`prompts/<name>.md`;
+    the codex target used this for `.codex/prompts/<name>.md` before v0.2.0) should contain for command `name` — the command
     body verbatim, through the same generic {{TOKEN}} substitution every
     other rendered artifact gets (apply_token_sub is a no-op today: no
     shipped command body contains a `{{...}}` token, but this keeps the
@@ -1331,7 +1364,7 @@ def render_agents_md(root: Path) -> str:
     operator-fillable, empty-by-default zone for the one class of
     "environment fact" this framework cannot know on a downstream project's
     behalf: ITS build/test/lint commands — see AGENTS_OPERATOR_TOKEN_MAP).
-    `.codex/prompts/*.md` / `prompts/*.md` still mirror every command body
+    `.agents/skills/tess-*/SKILL.md` / `prompts/*.md` still carry every command body
     verbatim, unchanged — only this always-mounted digest's own payload is
     re-scoped.
     """
@@ -1389,6 +1422,157 @@ def render_codex_config_toml(root: Path) -> str:
             f"{{{{TOKEN}}}} after substitution"
         )
     return rendered
+
+
+# ---------------------------------------------------------------------------
+# Agent Skills rendering (v0.2.0 — the `codex` target's command surface; see
+# AGENT_SKILLS_DIR above for why skills replace `.codex/prompts/`).
+# Pure byte renderers: same core + operator state -> same bytes.
+# ---------------------------------------------------------------------------
+
+_MD_LINK_TARGET_RE = re.compile(r"(\]\()([^)\s]+)(\))")
+_AGENT_SKILL_DESCRIPTION_MAX = 1024  # Agent Skills spec limit (agentskills.io)
+
+
+def agent_skill_name(command_name: str) -> str:
+    """`wake` -> `tess-wake` (the skill's frontmatter `name` AND its
+    directory name — the Agent Skills spec requires the two to match)."""
+    return f"{AGENT_SKILL_PREFIX}{command_name}"
+
+
+def agent_skill_dir(command_name: str) -> str:
+    return f"{AGENT_SKILLS_DIR}/{agent_skill_name(command_name)}"
+
+
+def _split_command_frontmatter(text: str) -> tuple:
+    """(frontmatter dict, body) for a `.tess/core/commands/*.md` file. A
+    missing or unparseable frontmatter block yields ({}, text)."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            try:
+                meta = yaml.safe_load(text[4:end]) or {}
+            except yaml.YAMLError:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            return meta, text[end + len("\n---\n"):]
+    return {}, text
+
+
+def _rebase_command_links(body: str, name: str, command_names: set) -> str:
+    """Rewrite relative Markdown link targets in a command body (authored to
+    live at COMMAND_AUTHORED_DIR) so they still resolve from the skill's own
+    directory. A link to a sibling command (`add-mission.md`) points at that
+    command's rendered skill. Absolute URLs, anchors, root-absolute paths and
+    targets that would escape the repo are left untouched."""
+    import posixpath
+
+    skill_dir = agent_skill_dir(name)
+
+    def _sub(m):
+        target = m.group(2)
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target) or target.startswith(("#", "/")):
+            return m.group(0)
+        path, sep, frag = target.partition("#")
+        if not path:
+            return m.group(0)
+        repo_rel = posixpath.normpath(posixpath.join(COMMAND_AUTHORED_DIR, path))
+        if repo_rel == ".." or repo_rel.startswith("../"):
+            return m.group(0)
+        parent, base = posixpath.split(repo_rel)
+        if parent == COMMAND_AUTHORED_DIR and base.endswith(".md") and base[:-3] in command_names:
+            repo_rel = f"{agent_skill_dir(base[:-3])}/SKILL.md"
+        return m.group(1) + posixpath.relpath(repo_rel, skill_dir) + sep + frag + m.group(3)
+
+    return _MD_LINK_TARGET_RE.sub(_sub, body)
+
+
+def render_agent_skill_md(root: Path, name: str) -> bytes | None:
+    """
+    The bytes of `.agents/skills/tess-<name>/SKILL.md` for command `name`, or
+    None if `.tess/core/commands/<name>.md` does not exist.
+
+    Frontmatter carries ONLY the two fields the Agent Skills spec requires
+    (`name`, `description`), so every runtime that reads `.agents/skills/`
+    (Codex, Gemini CLI, Cursor, Copilot CLI, OpenCode, Amp) can parse it. The
+    description is emitted as a JSON string, which is also a valid YAML
+    double-quoted scalar, so colons, quotes or em-dashes never break the YAML.
+    The command body follows verbatim (through apply_token_sub, like every
+    other rendered artifact) with its relative links rebased onto the skill
+    directory. Like _render_command_prompt_bytes, it never calls
+    render_core_to_live() (that would recurse into this target).
+    """
+    core_path = root / COMMANDS_CORE_DIR / f"{name}.md"
+    if not core_path.exists():
+        return None
+    text = apply_token_sub(core_path.read_text(encoding="utf-8"), root)
+    meta, body = _split_command_frontmatter(text)
+    description = " ".join(str(meta.get("description") or "").split())
+    if not description:
+        description = f"Tess OS command /{name}."
+    if len(description) > _AGENT_SKILL_DESCRIPTION_MAX:
+        description = description[: _AGENT_SKILL_DESCRIPTION_MAX - 3].rstrip() + "..."
+    raw_hint = meta.get("argument-hint") or ""
+    if isinstance(raw_hint, list):  # `argument-hint: [brief]` parses as a YAML list
+        raw_hint = "[" + ", ".join(str(x) for x in raw_hint) + "]"
+    hint = " ".join(str(raw_hint).split())
+    skill = agent_skill_name(name)
+    header = [
+        "---",
+        f"name: {skill}",
+        f"description: {json.dumps(description, ensure_ascii=False)}",
+        "---",
+        "",
+        f"<!-- Rendered by `tessctl render --target codex` from "
+        f"{COMMANDS_CORE_DIR}/{name}.md. Regenerate; do not hand-edit. -->",
+        "",
+        f"Tess OS command `/{name}`, packaged as an Agent Skill. Run it only "
+        f"when the user asks for it by name (`${skill}` in Codex).",
+    ]
+    if "$ARGUMENTS" in body:
+        expected = f" (expected: `{hint}`)" if hint else ""
+        header += [
+            "",
+            f"`$ARGUMENTS` below stands for the text the user supplied with "
+            f"the request{expected}.",
+        ]
+    rebased = _rebase_command_links(body.lstrip("\n"), name, set(_command_names(root)))
+    if not rebased.endswith("\n"):
+        rebased += "\n"
+    return ("\n".join(header) + "\n\n" + rebased).encode("utf-8")
+
+
+_AGENT_SKILL_OPENAI_YAML_BYTES = (
+    "# Rendered by `tessctl render --target codex`. Regenerate; do not hand-edit.\n"
+    "# Codex invocation policy (https://learn.chatgpt.com/docs/build-skills.md):\n"
+    "# a Tess command runs only when the user names it (`$tess-<command>`),\n"
+    "# the same way a Claude Code slash command does; Codex never picks it\n"
+    "# implicitly from the task description.\n"
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+).encode("utf-8")
+
+
+def render_agent_skill_openai_yaml(root: Path, name: str) -> bytes | None:
+    """The bytes of `.agents/skills/tess-<name>/agents/openai.yaml`, or None
+    if the command does not exist in core."""
+    if not (root / COMMANDS_CORE_DIR / f"{name}.md").exists():
+        return None
+    return _AGENT_SKILL_OPENAI_YAML_BYTES
+
+
+def _agent_skill_command_for(live_rel: str) -> tuple:
+    """(command name, file within the skill dir) for a path under
+    `.agents/skills/tess-*/`, else (None, None)."""
+    prefix = f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}"
+    if not live_rel.startswith(prefix):
+        return None, None
+    skill_dir, _, inner = live_rel[len(AGENT_SKILLS_DIR) + 1:].partition("/")
+    name = skill_dir[len(AGENT_SKILL_PREFIX):]
+    if not name or not inner:
+        return None, None
+    return name, inner
 
 
 # ---------------------------------------------------------------------------
@@ -1835,7 +2019,7 @@ def report_render_output_results(root: Path, target: str, results: dict,
         except SystemExit:
             manifest = {}
     owned = manifest.get("owned_globs", []) or []
-    target_obj = RENDER_TARGETS.get(target) if "RENDER_TARGETS" in globals() else None
+    target_obj = RENDER_TARGETS.get(target)
     not_owned = by_reason.get("not-owned", [])
     if not_owned:
         globs: dict = {}
@@ -2789,6 +2973,19 @@ def _do_render(root: Path, verbose: bool = False) -> None:
 #                    implementation returns an empty set.
 # ---------------------------------------------------------------------------
 
+def _report_render_statuses(results: dict, groups: list, verbose: bool) -> None:
+    """Print one `rendered` line per artifact group that had at least one
+    output written or already current (verbose only). Skipped outputs are
+    reported by write_render_outputs() itself (report_render_output_results:
+    one line per missing owned glob, one per kept file), so they are not
+    repeated here. `groups`: [(label, predicate(rel) -> bool)]."""
+    if not verbose:
+        return
+    for label, pred in groups:
+        if any(pred(r) and not str(res).startswith("skipped:") for r, res in results.items()):
+            print(f"  rendered  {label}")
+
+
 class RenderTarget:
     """Base adapter seam. Subclass per harness (claude-code, codex, gemini, generic)."""
 
@@ -2836,11 +3033,19 @@ class RenderTarget:
         empty set (a copy-only target need not override this)."""
         return set()
 
+    def retired_paths(self, root: Path) -> set:
+        """v0.2.0: live paths this target USED to render and no longer does
+        (e.g. codex's `.codex/prompts/<name>.md`). `tessctl render` reports
+        any that still exist on disk and NEVER deletes them — they may carry
+        an operator's own edits, and removing files is the operator's call.
+        Never overlaps render_generated_paths(). Base: empty set."""
+        return set()
+
     def doctrine_digest_paths(self, root: Path) -> set:
         """G3: the subset of render_generated_paths() that carries actual
         DOCTRINE PROSE (Rule Zero / hard floor / system laws / etc.), as
         opposed to mirrored, individually-authored artifacts this target
-        also happens to write (e.g. Codex/generic's 26 `.codex/prompts/*.md`
+        also happens to write (e.g. Codex/generic's 26 `.agents/skills/tess-*/SKILL.md`
         / `prompts/*.md` command-body mirrors — each is its OWN authored
         file with its own review history, not a copy of THIS target's
         doctrine digest, and auditing them for orchestration-doctrine leakage
@@ -2876,7 +3081,7 @@ class ClaudeCodeRenderTarget(RenderTarget):
     existing tests (test_render_ordering_guard.py, test_tracked_render_e2e.py)
     already rely on staying distinct and correctly sequenced inside `update`.
     A future target with its own copy-only outputs (e.g. Codex's
-    `.codex/prompts/*` mirroring the 26 command bodies) implements that copy
+    `.agents/skills/tess-*` rendering the 26 command bodies) implements that copy
     step inside its OWN render() rather than reusing `_do_restore` (which is
     Claude-Code-shaped: it writes unconditionally to `.claude/**`, `agents/**`,
     `conductor/**`, `core/contracts/**`).
@@ -2929,61 +3134,74 @@ class ClaudeCodeRenderTarget(RenderTarget):
 
 class CodexRenderTarget(RenderTarget):
     """
-    Tier B target (Phase 2 — docs/ULTIMATE_FRAMEWORK_PLAN.md Part B §B.2;
+    Tier B target (Phase 2; commands re-targeted to Agent Skills in v0.2.0 —
     full artifact map in adapters/codex/README.md). Compiles:
 
       * `AGENTS.md` — render_agents_md(root). SHARED with `generic` (see
         that function's docstring) — byte-identical regardless of which of
         the two targets is enabled.
-      * `.codex/prompts/*.md` — one per `.tess/core/commands/*.md` command
-        body, mirrored into Codex's native custom-prompt convention. This is
-        this target's OWN copy-phase (adapters/README.md "Adding Phase 2/3
-        targets" step 6) — `_do_restore` is Claude-Code-shaped and does not
-        reach `.codex/**`, so Codex needs its own render()-driven copy, not
-        a reuse of restore's generic loop.
+      * `.agents/skills/tess-<name>/SKILL.md` + `agents/openai.yaml` — one
+        Agent Skill per `.tess/core/commands/*.md` command body
+        (render_agent_skill_md / render_agent_skill_openai_yaml). Codex scans
+        `.agents/skills` from cwd up to the repo root; it never loads a
+        project-scoped `.codex/prompts/` (openai/codex#9848, NOT_PLANNED), so
+        the pre-0.2 prompt mirrors are now RETIRED (retired_paths(): reported
+        by render, never deleted). This is the target's OWN copy-phase —
+        `_do_restore` is Claude-Code-shaped and does not reach these paths.
       * `.codex/config.toml` — render_codex_config_toml(root); a project-
         scoped `approval_policy`/`sandbox_mode` default Codex only honors
         for a project the operator has marked trusted.
 
-    `.codex/prompts/*.md` are intentionally NOT individually tess.lock-
-    tracked: the underlying `.tess/core/commands/*.md` source is ALREADY
-    base_sha-pinned by the claude-code target's own (pre-existing)
-    `.claude/commands/**` lock entries, and the lock schema has no way to
-    give a SECOND live destination to an already-tracked core_key without
-    either duplicating the core bytes under a new path (a real drift risk —
-    two sources of truth for one doctrine file) or widening `live_path` to a
-    list across every lock consumer in this file (a much larger, riskier
-    change for this phase). Instead, doctor/verify/`lock --check` drift-check
-    these paths via the untracked-render-generated pass — see
-    `_check_untracked_render_generated()` below `render_generated_live_paths()`.
+    The skills are intentionally NOT individually tess.lock-tracked: the
+    underlying `.tess/core/commands/*.md` source is ALREADY base_sha-pinned
+    by the claude-code surface's own `.claude/commands/**` lock entries (the
+    lock schema gives one core_key exactly one live_path). doctor/verify/
+    `lock --check` drift-check them via `_check_untracked_render_generated()`.
+    Does NOT render `.codex/agents/` (no worker-profile agent set exists) or
+    `.codex/hooks.json` (hook translation is v0.2.1+; adapters/CONFORMANCE.md).
     """
 
     name = "codex"
-    doctrine_profile = "worker"  # G3: Codex has no in-session subagent tool —
+    doctrine_profile = "worker"  # G3: Tess renders no Codex agent roster, so
                                  # "always dispatch" would be false here.
 
     def live_globs(self) -> list:
-        return ["AGENTS.md", ".codex/prompts/**", ".codex/config.toml"]
+        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml"]
 
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
 
+    def _outputs(self, root: Path) -> list:
+        """[(live_rel, bytes)] in write order — the single source for
+        render(), expected_live_bytes() and render_generated_paths()."""
+        out = [("AGENTS.md", render_agents_md(root).encode("utf-8"))]
+        for name in _command_names(root):
+            skill = render_agent_skill_md(root, name)
+            if skill is None:
+                continue
+            out.append((f"{agent_skill_dir(name)}/SKILL.md", skill))
+            out.append((
+                f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}",
+                render_agent_skill_openai_yaml(root, name),
+            ))
+        out.append((".codex/config.toml", render_codex_config_toml(root).encode("utf-8")))
+        return out
+
     def render(self, root: Path, verbose: bool = False) -> dict:
-        # v0.2 eng-b: all outputs go through write_render_outputs (status,
-        # hand-edit, symlink and not-owned protection; render records).
-        outputs = {"AGENTS.md": render_agents_md(root).encode("utf-8")}
-        names = _command_names(root)
-        for name in names:
-            body = _render_command_prompt_bytes(root, name)
-            if body is not None:
-                outputs[f".codex/prompts/{name}.md"] = body
-        outputs[".codex/config.toml"] = render_codex_config_toml(root).encode("utf-8")
-        write_render_outputs(root, self.name, outputs, verbose=verbose,
-                             required=("AGENTS.md",))
-        if verbose:
-            print(f"  rendered  AGENTS.md")
-            print(f"  rendered  .codex/prompts/** ({len(names)} prompts)")
-            print(f"  rendered  .codex/config.toml")
+        # v0.2: every output goes through eng-b's write_render_outputs
+        # (status, hand-edit, symlink and not-owned protection + the
+        # tess.lock render_outputs records). AGENTS.md is required: an
+        # install that does not own it has a corrupted manifest.
+        results = write_render_outputs(root, self.name, dict(self._outputs(root)),
+                                       verbose=verbose, required=("AGENTS.md",))
+        n_skills = sum(1 for r in results if r.endswith("/SKILL.md"))
+        _report_render_statuses(results, [
+            ("AGENTS.md", lambda r: r == "AGENTS.md"),
+            (f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}*/ ({n_skills} skills)",
+             lambda r: r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}")),
+            (".codex/config.toml", lambda r: r == ".codex/config.toml"),
+        ], verbose)
+        _retire_render_outputs(root, self)
         return {"target": self.name, "status": "rendered"}
 
     def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
@@ -2991,24 +3209,33 @@ class CodexRenderTarget(RenderTarget):
             return render_agents_md(root).encode("utf-8")
         if live_rel == ".codex/config.toml":
             return render_codex_config_toml(root).encode("utf-8")
-        if live_rel.startswith(".codex/prompts/") and live_rel.endswith(".md"):
-            name = live_rel[len(".codex/prompts/"):-len(".md")]
-            return _render_command_prompt_bytes(root, name)
+        name, inner = _agent_skill_command_for(live_rel)
+        if name is not None:
+            if inner == "SKILL.md":
+                return render_agent_skill_md(root, name)
+            if inner == AGENT_SKILL_OPENAI_YAML:
+                return render_agent_skill_openai_yaml(root, name)
         return None
 
     def render_generated_paths(self, root: Path) -> set:
         paths = {"AGENTS.md", ".codex/config.toml"}
-        paths.update(f".codex/prompts/{name}.md" for name in _command_names(root))
+        for name in _command_names(root):
+            paths.add(f"{agent_skill_dir(name)}/SKILL.md")
+            paths.add(f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}")
         return paths
+
+    def retired_paths(self, root: Path) -> set:
+        return {f"{RETIRED_CODEX_PROMPTS_DIR}/{name}.md" for name in _command_names(root)}
 
 
 class GenericRenderTarget(RenderTarget):
     """
     Tier C target (Phase 2 — adapters/generic/README.md): the "plug-and-play
     for any AGENTS.md-reading agent" target — no harness-specific dispatch
-    mechanics assumed (rules-file-only assistants: Cursor, Copilot-class;
-    see adapters/README.md "Capability tiers"). Compiles the SAME AGENTS.md
-    as `codex` (render_agents_md — see its docstring on why AGENTS.md is
+    mechanics assumed (see adapters/CONFORMANCE.md for which runtimes read
+    AGENTS.md natively and which need a pointer, e.g. Aider's
+    `read: [AGENTS.md]`). Compiles the SAME AGENTS.md as `codex`
+    (render_agents_md — see its docstring on why AGENTS.md is
     harness-neutral) plus `prompts/*.md`, a plain, tool-agnostic mirror of
     `.tess/core/commands/**` with no frontmatter conventions assumed of the
     reading tool.
@@ -3023,19 +3250,23 @@ class GenericRenderTarget(RenderTarget):
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
 
-    def render(self, root: Path, verbose: bool = False) -> dict:
-        # v0.2 eng-b: all outputs go through write_render_outputs.
-        outputs = {"AGENTS.md": render_agents_md(root).encode("utf-8")}
-        names = _command_names(root)
-        for name in names:
+    def _outputs(self, root: Path) -> list:
+        out = [("AGENTS.md", render_agents_md(root).encode("utf-8"))]
+        for name in _command_names(root):
             body = _render_command_prompt_bytes(root, name)
             if body is not None:
-                outputs[f"prompts/{name}.md"] = body
-        write_render_outputs(root, self.name, outputs, verbose=verbose,
-                             required=("AGENTS.md",))
-        if verbose:
-            print(f"  rendered  AGENTS.md")
-            print(f"  rendered  prompts/** ({len(names)} prompts)")
+                out.append((f"prompts/{name}.md", body))
+        return out
+
+    def render(self, root: Path, verbose: bool = False) -> dict:
+        # v0.2: every output goes through eng-b's write_render_outputs.
+        results = write_render_outputs(root, self.name, dict(self._outputs(root)),
+                                       verbose=verbose, required=("AGENTS.md",))
+        n_prompts = sum(1 for r in results if r.startswith("prompts/"))
+        _report_render_statuses(results, [
+            ("AGENTS.md", lambda r: r == "AGENTS.md"),
+            (f"prompts/** ({n_prompts} prompts)", lambda r: r.startswith("prompts/")),
+        ], verbose)
         return {"target": self.name, "status": "rendered"}
 
     def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
@@ -3053,8 +3284,10 @@ class GenericRenderTarget(RenderTarget):
 
 
 # ---------------------------------------------------------------------------
-# GEMINI TARGET (v0.2.0) — Gemini CLI render target, conformance level
-# Partial. Artifact map, doc citations (URL + line for every format claim)
+# GEMINI TARGET (v0.2.0) — Gemini CLI render target, runtime level
+# Advisory (adapters/CONFORMANCE.md: doctrine and commands load natively,
+# nothing Tess ships blocks a Gemini tool call). Artifact map, doc
+# citations (URL + line for every format claim)
 # and the list of gates that are NOT translated: adapters/gemini/README.md.
 # Formats were checked against the Gemini CLI docs at tag v0.61.0 (identical
 # to main on 2026-09-24) and against the v0.61.0 npm bundle's own loaders.
@@ -3241,7 +3474,7 @@ def _gemini_symlink_on_path(root: Path, live_rel: str) -> bool:
 
 class GeminiRenderTarget(RenderTarget):
     """
-    Gemini CLI target (v0.2.0, conformance level Partial — see
+    Gemini CLI target (v0.2.0, runtime level Advisory — see
     adapters/gemini/README.md and adapters/CONFORMANCE.md). Compiles:
 
       * `AGENTS.md` — render_agents_md(root), shared byte-for-byte with the
@@ -3421,6 +3654,53 @@ def render_generated_live_paths(root: Path) -> frozenset:
     return frozenset(paths)
 
 
+def retired_render_paths(root: Path) -> frozenset:
+    """
+    v0.2.0: the union of every ENABLED target's retired_paths(root), minus
+    anything an enabled target still generates (a path another target still
+    renders is not retired). Declared paths — existence is not checked here;
+    callers that report filter to what is on disk. Nothing in tessctl
+    deletes these.
+    """
+    retired: set = set()
+    for target in enabled_render_targets(root).values():
+        retired |= target.retired_paths(root)
+    return frozenset(retired - set(render_generated_live_paths(root)))
+
+
+def _retire_render_outputs(root: Path, target) -> list:
+    """
+    v0.2.0: settle `target`'s retired outputs after its render.
+      * Print ONE line if any still exist on disk. Never delete them: once
+        retired they are the operator's files (they may carry edits).
+      * Drop their tess.lock render_outputs records (eng-b), if any: Tess no
+        longer renders or protects them, so a record would claim ownership
+        of a file nothing manages.
+    Returns the sorted list of retired paths present on disk.
+    """
+    retired = set(target.retired_paths(root))
+    present = sorted(rel for rel in retired if os.path.lexists(root / rel))
+    if present:
+        dirs = sorted({rel.rsplit("/", 1)[0] + "/" for rel in present})
+        print(
+            f"  retired   {', '.join(dirs)} — {len(present)} file(s) left in place, "
+            f"no longer rendered by target {target.name!r}"
+            + (" (Codex never loads project-scoped prompts, openai/codex#9848; "
+               "use the $tess-<command> skills instead)" if target.name == "codex" else "")
+            + ". Delete them yourself when ready."
+        )
+    if retired and (root / LOCK_FILE).exists():
+        lock = load_lock(root)
+        sec = lock.get(RENDER_OUTPUTS_KEY)
+        if isinstance(sec, dict):
+            stale = sorted(rel for rel in retired if rel in sec)
+            if stale:
+                for rel in stale:
+                    del sec[rel]
+                save_lock(root, lock)
+    return present
+
+
 # ---------------------------------------------------------------------------
 # Worker-profile denylist drift check (G3 — 2026-07-08, the 2026-07-07
 # honest reckoning). Cheap, mechanical protection so a future edit to
@@ -3488,7 +3768,7 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     """
     Phase 2 (Codex + generic targets): drift-check a render target's
     compiled artifacts that have NO individual tess.lock entry of their own —
-    e.g. CodexRenderTarget's 26 `.codex/prompts/*.md` mirrors of the SAME
+    e.g. CodexRenderTarget's 26 `.agents/skills/tess-*/SKILL.md` renders of the SAME
     `.tess/core/commands/*.md` bodies the claude-code surface already tracks
     under a DIFFERENT live_path (`.claude/commands/*.md`).
 
@@ -3562,7 +3842,7 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     docstrings). Without this exclusion, enabling both targets but only
     ever running `render --target generic` would make AGENTS.md's mere
     presence "prove" codex has rendered too, false-flagging codex's own,
-    never-yet-rendered `.codex/config.toml` / `.codex/prompts/*.md` as
+    never-yet-rendered `.codex/config.toml` / `.agents/skills/tess-*/**` as
     "deleted."
 
     LOW (noted, not fixed here): a DISABLED target's artifacts are excluded

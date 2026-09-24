@@ -1,5 +1,5 @@
 """
-v0.2.0 — Gemini CLI render target (`gemini`, conformance level Partial).
+v0.2.0 — Gemini CLI render target (`gemini`, runtime level Advisory).
 
 What this suite pins (adapters/gemini/README.md has the doc citations):
 

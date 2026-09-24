@@ -1,0 +1,20 @@
+---
+name: tess-feedback
+description: "Capture and apply feedback to the system — refine orchestration, output, crew, or tone based on the operator's input."
+---
+
+<!-- Rendered by `tessctl render --target codex` from .tess/core/commands/feedback.md. Regenerate; do not hand-edit. -->
+
+Tess OS command `/feedback`, packaged as an Agent Skill. Run it only when the user asks for it by name (`$tess-feedback` in Codex).
+
+`$ARGUMENTS` below stands for the text the user supplied with the request (expected: `[feedback]`).
+
+# /feedback
+
+Apply this feedback to the system: **$ARGUMENTS**
+
+1. **Classify** the feedback — orchestration, output quality, crew, tone, or doctrine.
+2. **Apply it** for the session immediately.
+3. **Persist it** if it should outlast the session: update the relevant doctrine file under [conductor/](../../../conductor/README.md) (sync doctrine on changes) and/or record a memory note. Commit + push doctrine changes and log to `kb/wiki/`.
+
+Radical honesty applies — if the feedback conflicts with a guardrail or system law, surface the tension rather than silently overriding. Structural doctrine changes that affect safety gate on the operator's explicit confirmation.

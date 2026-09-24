@@ -10,7 +10,7 @@
     {"kind": "status-page", "path": "docs/STATUS.md", "note": "Records the support level and limits of each runtime surface."}
   ],
   "limits": [
-    "C2 is manual-gated compatibility (conformance level Partial), not native parity with Claude Code or protected-workflow certification.",
+    "C2 is manual-gated compatibility (runtime level Advisory in adapters/CONFORMANCE.md), not native parity with Claude Code or protected-workflow certification.",
     "No Tess hook is translated: in-session gates do not run under Gemini CLI; the ship-gate runs at git pre-push and in CI.",
     "Project context and commands load only in a trusted folder; the workspace policy tier is not rendered (gemini-cli issue 18186).",
     "Verified by install, help, config smoke and the CLI's own loaders only; no live model run and no local process driver.",

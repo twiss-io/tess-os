@@ -1,0 +1,3 @@
+### Communication Channel
+
+Report through this runtime's own channel: its progress/commentary stream while you work, and one self-contained final answer when you finish. Telegram is the conductor's channel inside Claude Code only. Do not attempt a Telegram send, do not log or retry a missing one, and never treat the absence of Telegram as a blocker, a degraded state or a task failure. Changing the transport does not change the isolation duty: keep client and project boundaries exactly as the active task, workspace and instructions set them, and never carry one client's data into another's output.

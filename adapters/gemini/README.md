@@ -1,7 +1,10 @@
 # Adapter — Gemini CLI (`gemini` render target)
 
-> **Level: Partial.** Tess doctrine and commands load natively in Gemini CLI.
-> None of Tess's in-session gates run there: no Tess hook is translated.
+> **Level: Advisory** (the [CONFORMANCE](../CONFORMANCE.md) scale). Tess
+> doctrine and commands load natively in Gemini CLI, but nothing Tess ships
+> can block a Gemini tool call: no Tess hook is translated. (Partial on that
+> scale needs some enforcement that Tess renders, as Codex gets its sandbox
+> and approval settings; Gemini gets none.)
 > The ship-gate is still enforced at git pre-push and in CI, like for every
 > runtime. The target was verified against Gemini CLI **0.61.0** (docs at
 > tag `v0.61.0`, identical to `main` on 2026-09-24) with an install, help and

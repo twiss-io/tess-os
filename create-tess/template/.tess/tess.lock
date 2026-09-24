@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-23T21:18:06.158651Z'
+  last_updated: '2026-09-24T05:25:57.367799Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:299fc410d8073a35fd3823f93329cf49ee656ae7917e7ac288a4121cd7dca5d3
+    base_sha: sha256:4bd95c63da496bdb68ca959afe6e1800216616a124b9c1336e09287ec3405696
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -5740,7 +5740,7 @@ files:
   .tess/core/templates/agents-md/AGENTS.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:fddbaabb20fc7002890b84071f4cf7f5dee82bebc00de8f3f0adb27fed6415d2
+    base_sha: sha256:70cece2ca84207f13c24ed382a2ad4a781970bb8f381c9d777e888fa1f2915b5
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
@@ -5761,24 +5761,45 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:caf7e2b85edd140a03c3a6b8aea28f774123505ab01f759d359225201b45d952
+    base_sha: sha256:e1431d1f29557bb8aed4d9152b094273911f3bf819ecc760aea1a0723af543a8
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
   .tess/core/templates/agents-md/session-memory.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c8771e865f9a2530dbe3bc2de90ffab9c1871a4459b6197c60f5bbadd1f960bc
+    base_sha: sha256:68080b6ea409c5bd976c54d34ce59ac37a3708d040600f2c3db45eff9c10c938
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
   .tess/core/templates/agents-md/shared-tasks.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f39e7be41982315950ff6bff33e85a0dfe5fd4cb3869867a608b411d2c1b21d0
+    base_sha: sha256:c486fffc158da74eb1df78c67af50252d4184037ce694862c94fc02b280c5db1
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
+  .tess/core/templates/agents-md/worker-channel.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:6507f4520844f1ebc554855e9b849e7ada7e0f2c70c013a36c2489dd4ecfce8c
+    live_path: null
+    render: fragment
+    last_updated: 2026-09-24 00:00:00+00:00
+  .tess/core/templates/agents-md/worker-dispatch-scope.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:561aedeb9b2cb4ab08c76ec67d8e8723f2bbf45f594b4f623a22ca1e2ca22ea6
+    live_path: null
+    render: fragment
+    last_updated: 2026-09-24 00:00:00+00:00
+  .tess/core/templates/agents-md/worker-file-placement.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:2774dea936a495e96adbeef55db93539a097f5b7f24d29273065739d75b67a7c
+    live_path: null
+    render: fragment
+    last_updated: 2026-09-24 00:00:00+00:00
   .tess/core/templates/agents-md/worker-hard-floor.md:
     status: core-managed
     tier: normal
@@ -6075,115 +6096,219 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:d15f3cd2be014672efbdca3795044974740f819aae0188a239e74f4ae13394b0
-  .codex/prompts/add-agent.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:62ef6a2706b08c26b888c32ca2e72c38167614ea6f7ff55677d644dccb2b082f
-  .codex/prompts/add-mission.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:5701cffa2c77612cbb7a4774f3c1f886ee2debda883c5acc27855c01d5b0f13c
-  .codex/prompts/brainstorm.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:dc28402c85498df53cc373fdaeb50a8f143ae4479f259c975a6f2f4f442038d1
-  .codex/prompts/close.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:634923e372abd92734efac3cc021170dd7895f863bb6b194c6eab6082a8ae155
-  .codex/prompts/code-red.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:9c77754164c7a4591ab67d996a595e5c0e068eb6b2753a1213f20b74c6e9f07b
-  .codex/prompts/cx-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:27f25cd2b976d04ad5478d8a620455fb664ee4f2d17ac9b5a68593af8ad688ca
-  .codex/prompts/feedback.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:ab238ebb9f66337e371f2638f08646481a099b4b78be991d8fae31dbf172c6d6
-  .codex/prompts/finalize.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:16f37783291f8b7dbb3db89ee0b9067513be783db568a43d5a3e6f7fa7f32278
-  .codex/prompts/founder-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:76032c7d5c815910b6523e431aa8847999b5d8fc390baf7c1022a4ba1beb9bf6
-  .codex/prompts/help.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:82cc7b10b0f664573a27ad0ca12218c45e034d873de6b1f27394af8b746c3818
-  .codex/prompts/initiate.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:aa006fd9f083d25babac3a6efcf7d69f1287cd94ddfe3f8c5bc0c8736883cb18
-  .codex/prompts/list-agents.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:eda6b3dd3b1f9d07848bc457ce4cc04af3412543f1218e16a14f37e5f05be31e
-  .codex/prompts/ops-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:cac683197298bd364da5130f1b5bd7a3b27c3d020b581440ea0e233488af1649
-  .codex/prompts/product-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:498abc3e8e10fdcb1e2c75b4d8281397f0f265d2cc986a9c440683f0dfbdea98
-  .codex/prompts/remove-agent.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:395d5fe117c9b7ac4cf46466847b14db651fcb96e8c12b6c03c38c9c624a6ca4
-  .codex/prompts/reset.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:727e4e4376e885c8c331b68eb23f49d7d098f506c66e49bd5617dfcb126f5d41
-  .codex/prompts/revenue-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:b13555995148166dfff1d5c9ed669f38fbe53ab3faab3fb507f849554381c588
-  .codex/prompts/review-mission.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:f29094883189710b4b9e9294590140fcbc28ca2cdb6d6dc5be4cec7701e03f2a
-  .codex/prompts/route-mission.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:f3a810d2472dc357a9a279cba95f880499c1c754f9f91133c39756d4b99c9245
-  .codex/prompts/show-active-guilds.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:d087312abd09f7cafb1dc13d087a6a231fcc0f0c3e1f1c0e375cfc206c9ae906
-  .codex/prompts/show-next-moves.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:4a3b269ddb6de066d3286b5ceb65291d5775b9aa284e61ad204ef6cd1f67f47a
-  .codex/prompts/show-owner.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:b9e1ea1d4faec83a6be4384362d1286dd4c79b60521efc3ac85a1ca61a5ad428
-  .codex/prompts/show-risks.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:c422eb07888c35d6ce9c06c4d42e15cea2f3d93b2d28b4d0ef4f8c2b4d71209e
-  .codex/prompts/strategic-mode.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:bbfb87d4ae7ab4230edf9c769472fa788522643bf35aeca72d06224f128de079
-  .codex/prompts/summary.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:90e21d963a3656e461b1281449e3f9c00746deb584773aa0a9739063f4078968
-  .codex/prompts/wake.md:
-    target: codex
-    status: rendered
-    rendered_sha: sha256:f21afca3599ebbc011425f6db8fcd91539a2977bee39f23f9c53f5ddab46cc46
+    rendered_sha: sha256:7c24805a51d69d626f43e49561569fd268104d0dc593884eb7d9f349dfd95b5c
   .codex/config.toml:
     target: codex
     status: rendered
     rendered_sha: sha256:dd9d53ffd6b2e3ff275414a01ed989b2b09e5fb45852f26d37909d0d107ee439
+  .agents/skills/tess-add-agent/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:4cc3449ac28416f0800c3df1413c32d3ff47898a9e08858123cbe19bf97b28ac
+  .agents/skills/tess-add-agent/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-add-mission/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:cadd5b01098d6807431a74f6aea699df2d494f77117578dddfe6294b93667fd7
+  .agents/skills/tess-add-mission/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-brainstorm/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:e054af939eff350ef571b3515e2949f03448407522fa40fb6ab15564f6556f9d
+  .agents/skills/tess-brainstorm/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-close/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:521daf8477887a6cd73429b3a4e6c17acd1bb93c51a182dceb81b24b190e107d
+  .agents/skills/tess-close/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-code-red/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:f3bb168c43d9013bb2f77e71103e4d93e212e6d316899a2d4f912709e993fa92
+  .agents/skills/tess-code-red/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-cx-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:34060cf1052e55869eb25113a5099c9d8134ef294f2f2938aa8eb1d702295fd7
+  .agents/skills/tess-cx-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-feedback/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:6a78316e13490f747a240d6571e3599b503ac2ac57c7055cc30ffeffc2c1cc68
+  .agents/skills/tess-feedback/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-finalize/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:09730b095f88e4b67a95e546b35ba62648a6e3bdbb5dbe733236f351dbd2c680
+  .agents/skills/tess-finalize/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-founder-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:15cfd4070f33c6539ba094b8a0c6ae2a8996cb4ad4d6fab91f6988972ff2a41c
+  .agents/skills/tess-founder-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-help/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:ec11ae0196907ed4ae996c69c074c51fc6f107c0a99f8cad44e50f87f8a1a93a
+  .agents/skills/tess-help/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-initiate/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:c8666b7de2776812922763c815f80844ead3075497f9c8af5b99081ab6ad6cea
+  .agents/skills/tess-initiate/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-list-agents/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:8c1e20f817681d625ae328a4f16d5c69e06c2bf679fd780a9dd002169379ed62
+  .agents/skills/tess-list-agents/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-ops-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:cc8968deb4bad13972052f79cbc579bd46a25a4842b5e71433fb99755b915a4c
+  .agents/skills/tess-ops-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-product-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:63abec5e70549bb032737ed43bc970fa4ac8b467e144cf43b010ececaaab797d
+  .agents/skills/tess-product-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-remove-agent/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:40fd3df5c50edde060b0d49fa973d1cdf5f166d169b5d8dd7df0e063d7c0383f
+  .agents/skills/tess-remove-agent/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-reset/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:7496287491253f3c868e9300903ce6c8373d462e080ae4534bc3de36175a9b6f
+  .agents/skills/tess-reset/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-revenue-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:bec0183254e23b6aaef2b35611aedf45ff58cdded93c6ec8768f3b772f54e1c0
+  .agents/skills/tess-revenue-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-review-mission/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:b9d429dc219c73eecdef8d4af2c25c8689e58b401e7a9757cad789a1a1489c30
+  .agents/skills/tess-review-mission/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-route-mission/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:126a61245cb9e1c3bb4ada9b762e86164b37b592d55decdb00741869ad161144
+  .agents/skills/tess-route-mission/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-show-active-guilds/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:4d29572b9454d1d4347674ce4746188a4bdfdb96b73c1e45d66c447b1b8c7d2a
+  .agents/skills/tess-show-active-guilds/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-show-next-moves/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:d457eeeec1f217f944fdfcf02ac14095990609f91ce681393f5bf5c7b394c35d
+  .agents/skills/tess-show-next-moves/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-show-owner/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:fe0aa37cb3e876f06e34b3a9e46ba52bef29a511fc209612e261c822ea59dc98
+  .agents/skills/tess-show-owner/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-show-risks/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:c7d8a1a489c627be873356569c3b95bfafde0939e6ba444d3b83b6d25d3d330f
+  .agents/skills/tess-show-risks/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-strategic-mode/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:08769718663073ac3a97bb48f243d65cc86b8e4e00d36ab4167c367a725d3589
+  .agents/skills/tess-strategic-mode/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-summary/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:4110b8f1f1c96071578d949e94c06d3ed04e45cc50a309b323d59c8be0f41455
+  .agents/skills/tess-summary/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
+  .agents/skills/tess-wake/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:15ef6d2c129f7678e4e6a690d21f641830713af6eee391e13f0fcb1345895545
+  .agents/skills/tess-wake/agents/openai.yaml:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3910a9ed38c9e670c8fd42a95a598507dfc2bd2abea3b2ccbd54d8686fd5e8a8
   GEMINI.md:
     target: gemini
     status: rendered
