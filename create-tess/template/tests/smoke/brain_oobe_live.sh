@@ -97,8 +97,8 @@ ident_ok() {  # ident_ok <rt> <file>: the spec's identity + commands assertion, 
   grep -q Tess "$2" || return 1
   if [ "$1" = claude ]; then  # O9: 'Tess' and >=2 of /add-mission|/wake|/close|/help|brain-onboard
     [ "$(grep -Eo '/add-mission|/wake|/close|/help|brain-onboard' "$2" | sort -u | wc -l | tr -d ' ')" -ge 2 ]
-  else  # O10: 'Tess' AND 'brain-onboard' AND >=1 'tess-' skill (all three, not either)
-    grep -q 'brain-onboard' "$2" && grep -Eq 'tess-[a-z]' "$2"
+  else  # O10: 'Tess' AND 'brain-onboard' AND >=1 real 'tess-' skill (all three, not either)
+    grep -q 'brain-onboard' "$2" && grep -Eq 'tess-(wake|help|close|add-mission|summary)' "$2"
   fi
 }
 

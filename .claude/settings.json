@@ -2,8 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(git*)",
-      "Bash(python3 scripts/brain/onboard.py:*)",
-      "Bash(python3 scripts/brain/tessbrain.py:*)"
+      "Bash(python3 scripts/brain/onboard.py:*)"
     ]
   },
   "autoMemoryEnabled": false,

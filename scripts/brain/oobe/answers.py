@@ -9,6 +9,7 @@ the literal flag text as their quote and runtime "cli"; defaults filled by
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from . import state
@@ -173,6 +174,19 @@ def parse_principals(raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+# A URL whose authority carries userinfo (user:token@host) would put a credential
+# into brain.json, the decision records and git history. The SSH form
+# git@host:owner/repo has no '://' and stays allowed.
+_USERINFO_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#]*@")
+CREDENTIAL_URL_ERROR = ("refused: a URL with credentials before '@' (user:token@host) would be "
+                        "committed to brain/; use SSH or a credential helper")
+
+
+def refuse_credential_url(text: Any) -> None:
+    if _USERINFO_URL.search(str(text or "")):
+        raise state.BrainError(CREDENTIAL_URL_ERROR)
+
+
 def parse_value(field: str, raw: Any, brain: Dict[str, Any]) -> Any:
     if field == "mode":
         return parse_modes(raw)
@@ -191,6 +205,8 @@ def parse_value(field: str, raw: Any, brain: Dict[str, Any]) -> Any:
         raise state.BrainError("unknown timezone %r (use an IANA name like Europe/Lisbon)" % text)
     if field == "remote_url" and text.lower() in ("", "later", "none", "no"):
         return None
+    if field == "remote_url":
+        refuse_credential_url(text)
     if not text and field in ("operator_name", "agency_name", "org_name"):
         raise state.BrainError("%s cannot be empty" % field)
     return text
@@ -232,6 +248,7 @@ def record(brain: Dict[str, Any], field: str, raw: Any, quote: str, runtime: str
         raise state.BrainError("unknown field %r; fields: %s" % (field, ", ".join(sorted(FIELD_STEP))))
     if runtime not in ("default",) and not str(quote).strip():
         raise state.BrainError("--quote is required: the operator's verbatim words for this answer")
+    refuse_credential_url(quote)
     value = parse_value(field, raw, brain)
     onb = brain.setdefault("onboarding", {})
     entry = {"value": value, "quote": str(quote), "at": at or state.now_iso(brain.get("timezone")),

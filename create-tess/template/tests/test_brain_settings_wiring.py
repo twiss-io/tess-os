@@ -47,7 +47,8 @@ def test_auto_memory_off_and_permissions(settings):
     assert settings["autoMemoryEnabled"] is False
     allow = settings["permissions"]["allow"]
     assert "Bash(python3 scripts/brain/onboard.py:*)" in allow
-    assert "Bash(python3 scripts/brain/tessbrain.py:*)" in allow
+    # tessbrain.py ships with ws-learn, which adds its own permission; this tree has no such file.
+    assert not any("tessbrain.py" in entry for entry in allow)
     assert allow[0] == "Bash(git*)", "pre-existing entries kept first"
 
 

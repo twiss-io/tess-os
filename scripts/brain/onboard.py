@@ -152,6 +152,7 @@ def cmd_add(root: Path, a) -> int:
 
 
 def cmd_add_mode(root: Path, a) -> int:
+    answers.refuse_credential_url(a.quote)
     brain = _require_complete(root)
     mode = answers.parse_modes(a.mode)[0]
     if mode in brain.get("modes", []):
@@ -191,6 +192,7 @@ def cmd_defer(root: Path, a) -> int:
 
 
 def cmd_skip(root: Path, a) -> int:
+    answers.refuse_credential_url(a.quote)
     brain = _brain_or_new(root)
     if "mode" not in answers.answered(brain):
         answers.record(brain, "mode", "personal", a.quote, a.runtime or "cli", "", "")

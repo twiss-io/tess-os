@@ -17,11 +17,18 @@ TRACKED = [
     "brain/clients/acme/AGENTS.md", "brain/clients/acme/kb/research/x.md",
     "brain/decisions/D-x.md", "memory/projects/x.md",
     "brain/clients/acme/admin/README.md", "brain/org/seats/founder-ceo.md",
+    "brain/org/clients/acme/admin/README.md",
+    "brain/life/areas/health/AGENTS.md", "brain/life/areas/health/CLAUDE.md",
+    "brain/life/areas/health/GEMINI.md", "brain/life/areas/money/AGENTS.md",
+    "brain/life/areas/money/CLAUDE.md", "brain/life/areas/money/GEMINI.md",
+    "brain/life/areas/fitness/notes.md",
 ]
 IGNORED = [
     ".tess/state/brain/turns.jsonl", "brain/.private/x", ".private/x",
     "brain/clients/acme/admin/contract.pdf", ".env", "brain/clients/acme/repos/app/x.py",
     "brain/life/areas/health/.private/labs.md", "scripts/brain/oobe/__pycache__/x.pyc",
+    "brain/org/clients/acme/admin/contract.pdf", "brain/org/units/ops/clients/acme/admin/nda.pdf",
+    "brain/life/areas/health/labs-2026.md", "brain/life/areas/money/statements/2026-09.pdf",
 ]
 
 

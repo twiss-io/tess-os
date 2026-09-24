@@ -35,6 +35,7 @@ def _ident_ok(rt: str, reply: str, tmp_path: Path) -> bool:
     ("I'm Tess. Skills: brain-onboard and brain-save.", False),       # no tess- skill
     ("I'm your assistant: brain-onboard, tess-wake.", False),         # no Tess
     ("I'm Tess. I can help with code review and planning.", False),
+    ("I'm Tess. Skills: brain-onboard, tess-foo.", False),           # not a real tess- skill
 ])
 def test_codex_matcher_is_o10_as_written(reply, ok, tmp_path):
     assert _ident_ok("codex", reply, tmp_path) is ok
