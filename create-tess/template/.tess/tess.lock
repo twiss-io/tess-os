@@ -4533,7 +4533,7 @@ files:
   .tess/core/conductor/release-process.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:fcbe2a84fd47616a637f04f6c4705b9c2005e2bafb5b217551a561679e1ada08
+    base_sha: sha256:672284c3c09c79541a61e3bedbfd705b9e7050a1b22da1dd1c8fb58f479ea69c
     live_path: conductor/release-process.md
     last_updated: '2026-06-29T02:22:00.000000Z'
   .tess/core/conductor/verdict-signing.md:
@@ -6070,7 +6070,7 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:7db22951764cdc8d81bf8afdfcb47f64fbbd1e3d46f21bb8c7a995b7eec5477c
+    base_sha: sha256:10c1d16cdcfa31ebe1caebffc3510a089d618f7cd4755e333f6de986bddf8b50
     live_path: core/policy/policy.yaml
     last_updated: '2026-07-06T22:50:20.142367Z'
   .tess/core/contracts/task.schema.json:

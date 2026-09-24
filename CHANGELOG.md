@@ -5,21 +5,35 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
-### Changed
-- **Roster: ten roles + lens library (v0.2).** The roster is now the same for
-  every use case: the conductor (Tess, renameable) plus nine dispatchable roles
-  defined by permissions, model tier and isolation: Ada (builder), Morwenna
-  (explorer, cheaper model, read-only), Leah (researcher, read-only + web),
-  Reid (code reviewer), Quinn (QA), Cyra (security + verdict signer), Clio
-  (scribe, brain paths only, every claim sourced), Vega (release/devops, only
-  behind the gate) and Iris (designer). The other 141 former dispatch personas
-  (including the six outcome orchestrators, Eva, Verity, Maialen and Lysandra)
-  are lenses in `conductor/lenses/` (index: `docs/LENSES.md`), loaded into a
-  role's brief on demand; they are no longer registered agents. Every starter
-  path installs the same nine roles and only suggests different default
-  lenses. Verification routing maps to Reid, Quinn and Cyra (with lenses for
-  research, evidence and creative review). The codex render target now also
-  emits `.codex/agents/<name>.toml` for each installed role.
+## [0.2.0] — 2026-09-24
+
+<!-- release-notes:start -->
+**Tess OS v0.2.0: a safer engine, three native runtimes, and an honest account of what is enforced.**
+
+**Runtimes (per-runtime levels, see `adapters/CONFORMANCE.md`; this is not a parity claim):**
+- **Claude Code: Enforced** (reference). Hooks and the ship-gate enforce Tess gates.
+- **Codex: Partial.** Tess commands render as `.agents/skills/tess-*` skills plus AGENTS.md; Codex does not run Tess hooks.
+- **Gemini CLI: Partial.** New render target: project context via AGENTS.md, commands as `.gemini/commands/tess/*.toml` (`/tess:<cmd>`), hooks only where Gemini's documented events match. Verified against the Gemini CLI docs and a no-auth CLI smoke test, not an authenticated model run.
+- **Any other AGENTS.md-compatible tool: Advisory.** Doctrine is text the model may follow; nothing is enforced.
+
+**Engine:** snapshots before every write-back plus `tessctl rollback`; init/restore/render refuse to overwrite drifted files; render outputs are tracked in `tess.lock` (`render_outputs`), so a hand-edited AGENTS.md or skill is preserved and reported as `skipped:<reason>`; a symlink write gate; `tessctl approve` needs an interactive terminal.
+
+**Contract changes for adopters:**
+- `init`, `restore` and `render` now refuse on drift instead of overwriting; `approve` fails without a TTY.
+- `.codex/prompts/*` are retired (reported, never deleted). An upgraded 0.1.x install keeps `.agents/**` in `never_touch`, so Codex skills are `skipped:not-owned` until you add `.agents/skills/tess-*/**` to `owned_globs`; render and doctor print that exact glob. New installs ship it.
+- `tess.lock` may carry an optional `render_outputs` section; absent is valid.
+- Upgrade order: `gpg --import .tess/keys/twiss-release-key.asc`, `tessctl self-update --ref v0.2.0`, then `tessctl update --ref v0.2.0` (conductor/release-process.md).
+
+**Also:** de-identified product text and a generic in-repo operator profile (`tessctl update` no longer installs the maintainer's own profile); 20 Dependabot alerts closed; `create-tess --force` preflight and backup; a release workflow that can pass (annotated-tag restore, gitleaks scoped to the tag's history, notes from this summary).
+
+**How this release was approved (read this):**
+- v0.2.0 approvals were signed with an **agent-held verifier key**: the registered Cyra key (F9321F92…76E8) has no passphrase and is reachable by the AI agents that built, reviewed and merged this release under the maintainer's direction. Custody hardening (passphrase or hardware key, human sign-off, the #76 topology) is the first v0.2.1 item.
+- Enforcement is process-only: the ruleset requires 0 human approvals and the maintainer's admin token on the build machine is reachable by agents, so "an independent verifier signed it" is a process claim, not a GitHub-enforced one.
+- The **P0 type-swap gate bypass (#71 lineage) remains open** in v0.2.0. Its fix, PR #181, is deferred to v0.2.1 because it freezes the verifier and sign-off registries with no reset authority, which would lock in the agent-held key.
+- Assurance is thin in places: every fixed bug has a regression test proven to fail on the 0.1.x engine (5c2d698), but review was done by AI verifier agents, the Gemini row rests on docs plus a no-auth smoke test, and the real over-the-wire upgrade is checked against the GitHub tag after tagging; npm follows only if that gate passes.
+
+**Deferred to v0.2.1:** verifier-key custody hardening; PR #181 (monotonic policy, P0 fix); extending path protection to the create-tess template's engine, policy and workflows; adopting an existing instance (`tessctl adopt`); manifest auto-migration; `output-path-guard.sh`; renaming sample test fixtures that still carry a personal name; Codex/Gemini hook translation beyond documented events; model routing (#19).
+<!-- release-notes:end -->
 
 ### Fixed
 - **`create-tess` — bundled the scaffold template into the npm package, fixing

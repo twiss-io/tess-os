@@ -151,30 +151,33 @@ policy:
       allowed_verifiers: [Reid, Quinn]
 
   # verifier_keys — Phase 2b's ALLOWED-KEY SET (core/contracts/policy.schema.json
-  # $defs.VerifierKeyEntry). DELIBERATELY EMPTY in this shipped default, same
-  # "hand-authored per project, do NOT fabricate" posture as every other
-  # placeholder in this file — honest disclosure, not an oversight:
+  # $defs.VerifierKeyEntry). Hand-authored per project, never fabricated. The
+  # Tess OS source repository registers its own maintainers' verifier key(s)
+  # here to gate its own development. `npm create tess` resets this map to
+  # `{}` in every scaffolded project (create-tess/src/policy-reset.js), so a
+  # new project starts with NO trusted verifier until its operator registers
+  # their own:
   #
   #   Until a real entry exists here for a given verifier name, NO signature
   #   can ever verify for that verifier (there is no key to check it against),
   #   so NONE of that verifier's verdicts can ever cover a path — fail-closed,
-  #   not fail-open. Concretely: `tess-os-security-tier-doctrine` above already
-  #   names Reid + Cyra as its allowed_verifiers; until this project's real
-  #   maintainers generate and register Reid's and Cyra's actual signing keys
-  #   below, that rule is UNSATISFIABLE by any verdict — every future change to
-  #   conductor/guardrails.md, core/policy/**, etc. requires the hard-floor-
-  #   style manual escalation this file's own header already documents for an
-  #   unmet rule, not a silent bypass. This is a deliberate, disclosed
-  #   consequence of shipping verdict signing without also fabricating a
-  #   throwaway "Reid" identity that could be mistaken for a real trust anchor.
+  #   not fail-open. Concretely: `tess-os-security-tier-doctrine` above names
+  #   Reid + Cyra as its allowed_verifiers; a verifier with no entry below can
+  #   never satisfy that rule, and with an empty map the rule is UNSATISFIABLE
+  #   by any verdict — every change to conductor/guardrails.md,
+  #   core/policy/**, etc. then requires the hard-floor-style manual
+  #   escalation this file's own header documents for an unmet rule, not a
+  #   silent bypass. This is a deliberate, disclosed consequence of shipping
+  #   verdict signing without also fabricating a throwaway identity that
+  #   could be mistaken for a real trust anchor.
   #
   # Trust-anchor registration is deliberately NOT a self-service policy edit,
   # key-generation command, lockfile re-pin, or candidate-pull-request step.
   # An unreviewed candidate cannot establish the authority that clears its
   # own gate. The first anchor, recovery, rotation, and any user-facing Trust
-  # Center are Xavier-owned, user-present custody decisions; until that design
-  # exists, `TRUST_BOOTSTRAP_REQUIRED` is the correct outcome. See
-  # docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md.
+  # Center are user-present custody decisions owned by the project's human
+  # operator; until that design exists, `TRUST_BOOTSTRAP_REQUIRED` is the
+  # correct outcome. See docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md.
   verifier_keys:
     Cyra:
       fingerprint: "F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8"
@@ -202,9 +205,9 @@ policy:
   #   — fail-closed, not fail-open. Concretely: with signoff_keys shipped
   #   empty, EVERY hard-floor category below is UNSATISFIABLE by any sign-off
   #   until this project's real operator generates and registers their own
-  #   signing key — the same deliberate, disclosed consequence
-  #   verifier_keys: {} already documents above, applied to the sign-off
-  #   escape valve.
+  #   signing key — the same deliberate, disclosed consequence documented
+  #   above for an empty verifier_keys map, applied to the sign-off escape
+  #   valve.
   #
   # Sign-off authority has the same boundary: it is not created through a
   # candidate change, manual policy edit, key-generation command, or lockfile
