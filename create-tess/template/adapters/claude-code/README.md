@@ -83,9 +83,9 @@ either way for this profile.
 ## Adding a Phase 2/3 target
 
 See `adapters/README.md` "Adding Phase 2 / Phase 3 targets" for the general
-steps. A Codex target, for example, would NOT be a subclass of
+steps. The Codex target, for example, is NOT a subclass of
 `ClaudeCodeRenderTarget` — it renders a different artifact set
-(`AGENTS.md`, `~/.codex/prompts/*.md`, a `config.toml` fragment) from a
+(`AGENTS.md`, `.agents/skills/tess-*/`, a `config.toml` fragment) from a
 partially-different core source (the same `core/doctrine/`, `core/roster/`,
 `core/commands/` content, de-Claude-ified per the plan's §B.2, but its own
 copy-phase) — it is a sibling `RenderTarget` subclass, not a specialization

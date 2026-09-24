@@ -23,7 +23,7 @@
 | `.tess/core/templates/client/_template/**` | `clients/_template/**` |
 | `.tess/core/templates/agents-md/AGENTS.md.tpl` + `harness-note.md` | `AGENTS.md` (Phase 2 — core-internal, `live_path: null`; see below) |
 | `.tess/core/templates/agents-md/codex-config.toml.tpl` | `.codex/config.toml` (Phase 2 — core-internal, `live_path: null`; see below) |
-| `.tess/core/commands/*.md` | `.claude/commands/*.md` (tracked) **and** `.codex/prompts/*.md` + `prompts/*.md` (Phase 2 — untracked-render-generated, see below) |
+| `.tess/core/commands/*.md` | `.claude/commands/*.md` (tracked) **and** `.agents/skills/tess-*/SKILL.md` (v0.2.0 codex target; replaces the retired `.codex/prompts/*.md`) + `prompts/*.md` (untracked-render-generated, see below) |
 | `.tess/core/contracts/**` | `core/contracts/**` (Phase 1) |
 | `.tess/core/MANIFEST.md` | — (core index, not a live doctrine path) |
 
@@ -288,8 +288,8 @@ source, `core/contracts/**` is the resolved live output.
 
 ## templates/agents-md/ — Phase 2: Codex + generic render-target templates
 
-`AGENTS.md`, `.codex/prompts/**`, `.codex/config.toml`, and `prompts/**` are
-rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
+`AGENTS.md`, `.agents/skills/tess-*/**` (v0.2.0; `.codex/prompts/**` is
+retired), `.codex/config.toml`, and `prompts/**` are rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
 `adapters/codex/README.md` + `adapters/generic/README.md`). `codex` is now
 enabled by default (issue #118 — `tess.manifest.json`'s `render_targets.enabled`
 is `["claude-code", "codex"]`; see that key's own `_doc`); `generic` remains
@@ -322,6 +322,9 @@ used for its own exit code.
 |---|---|---|
 | `templates/agents-md/AGENTS.md.tpl` | `null` (core-internal) | normal |
 | `templates/agents-md/worker-hard-floor.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-dispatch-scope.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-channel.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-file-placement.md` | `null` (core-internal) | normal |
 | `templates/agents-md/gate-compliance.md` | `null` (core-internal) | normal |
 | `templates/agents-md/harness-note.md` | `null` (core-internal) | normal |
 | `templates/agents-md/session-memory.md` | `null` (core-internal) | normal |

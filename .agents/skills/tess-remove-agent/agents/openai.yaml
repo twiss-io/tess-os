@@ -1,0 +1,7 @@
+# Rendered by `tessctl render --target codex`. Regenerate; do not hand-edit.
+# Codex invocation policy (https://learn.chatgpt.com/docs/build-skills.md):
+# a Tess command runs only when the user names it (`$tess-<command>`),
+# the same way a Claude Code slash command does; Codex never picks it
+# implicitly from the task description.
+policy:
+  allow_implicit_invocation: false

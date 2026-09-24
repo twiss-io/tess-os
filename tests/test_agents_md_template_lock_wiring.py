@@ -47,6 +47,11 @@ _AGENTS_MD_FRAGMENT_FILES = [
     "session-memory.md",
     "shared-tasks.md",
     "worker-hard-floor.md",
+    # v0.2.0 (ws-rt): the three worker fragments (dispatch scope, channel,
+    # file placement) get the same core-internal lock wiring.
+    "worker-dispatch-scope.md",
+    "worker-channel.md",
+    "worker-file-placement.md",
 ]
 
 _COPY_IGNORE = shutil.ignore_patterns(
