@@ -44,17 +44,15 @@ def test_second_run_is_byte_identical(inst):
     assert st == "", st
 
 
-def test_messages_verbatim_redacted_and_attributed(inst):
+def test_messages_verbatim_redacted_and_injected_channels_skipped(inst):
     _synced(inst)
     text = (inst / JOURNAL).read_text()
     assert "[L1 14:05 probe cli] Decision: let's go with Postgres for the ledger." in text
-    assert "[L2 14:10 sam telegram] Decision: we'll use the blue logo for Acme." in text
-    assert "[non-principal telegram:999 omitted: no consent]" in text
-    assert "let's ship it tonight" not in text
+    assert "blue logo" not in text and "let's ship it tonight" not in text  # plugin-injected: not journaled
     assert "<REDACTED:nric>" in text and "<REDACTED:card>" in text
     assert not re.search(r"[STFGM]\d{7}[A-Z]", text)
     assert "system-reminder" not in text and "always dispatch" not in text
-    assert "[L4 14:12 probe cli] /wake" in text
+    assert "[L2 14:12 probe cli] /wake" in text
     assert "Request interrupted" not in text
 
 
@@ -63,7 +61,7 @@ def test_front_matter_and_marker(inst):
     text = (inst / JOURNAL).read_text()
     assert text.startswith("---\nschema: 1\ntype: \"journal-session\"\nruntime: \"claude\"")
     assert re.search(r"<!-- tess:session runtime=claude id=11111111-aaaa-4bbb-8ccc-000000000001 through=\d+ -->", text)
-    assert 'speakers: ["probe", "sam"]' in text
+    assert 'speakers: ["probe"]' in text
     assert "external_context: false" in text
     ext = (inst / "brain/journal/2026/09/24/1000-claude-22222222.md").read_text()
     assert "external_context: true" in ext
@@ -100,7 +98,7 @@ def test_append_only_labels_never_move(inst, tmp_path):
     after = (inst / JOURNAL).read_text()
     msgs_after = [l for l in after.splitlines() if l.startswith("[L")]
     assert msgs_after[: len(msgs_before)] == msgs_before
-    assert msgs_after[-1] == "[L5 14:30 probe cli] One more thing for later."
+    assert msgs_after[-1] == "[L3 14:30 probe cli] One more thing for later."
 
 
 def test_split_at_size_limit(inst, monkeypatch):

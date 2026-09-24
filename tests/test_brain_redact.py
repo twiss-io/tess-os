@@ -22,7 +22,7 @@ def _planted():
         "slack": "xox" + "b-" + "1" * 12 + "-abcdefghij",
         "stripe": "sk_" + "live_" + "c" * 24,
         "jwt": "eyJ" + "h" * 12 + ".eyJ" + "p" * 12 + ".sig",
-        "telegram-bot": "123456789:" + "A" * 35,
+        "bot-token": "123456789:" + "A" * 35,
         "nric": "S" + "1234567" + "D",
     }
 

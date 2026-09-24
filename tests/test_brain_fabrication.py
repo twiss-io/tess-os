@@ -19,7 +19,6 @@ from brainlib import lookup  # noqa: E402
 from brainlib.config import Config  # noqa: E402
 
 SID = "fab00001-aaaa-4bbb-8ccc-000000000001"
-SAM = "fab00002-aaaa-4bbb-8ccc-000000000002"
 EXT = "fab00003-aaaa-4bbb-8ccc-000000000003"
 
 
@@ -34,8 +33,6 @@ def world(tmp_path_factory):
         ("user", "Yes, approve the retainer for Acme this month."),
         ("user", "If we went with MongoDB instead, would that be faster?"),
     ])
-    fxlib.claude_session(cdir / (SAM + ".jsonl"), SAM, [("tg:4242", "Decision: we'll switch to the green palette.")],
-                         start_minute=10)
     ext = fxlib.claude_session(cdir / (EXT + ".jsonl"), EXT, [("user", "The Acme store runs on Shopify Plus.")],
                                start_minute=20)
     with open(ext, "a") as fh:  # the session searched the web: external context
@@ -45,7 +42,8 @@ def world(tmp_path_factory):
                  + "\n")
     r = fxlib.sync_dir(inst, cdir)
     assert r.returncode == 0, r.stdout + r.stderr
-    return {"inst": inst, "sync": json.loads(r.stdout), "learned0": _learned(inst)}
+    note = fxlib.note(inst, "sam", "Decision: we'll switch to the green palette.")  # sam's words, by note
+    return {"inst": inst, "sync": json.loads(r.stdout), "note": json.loads(note.stdout), "learned0": _learned(inst)}
 
 
 def _learned(inst):
@@ -96,7 +94,7 @@ def test_hypothetical_is_refused(world):
 
 
 def test_principal_outside_scope_is_refused(world):
-    outcomes = [o for o in world["sync"]["outcomes"] if "green palette" in o["statement"]]
+    outcomes = [o for o in world["note"]["outcomes"] if "green palette" in o["statement"]]
     assert outcomes and outcomes[0]["status"] == "fail" and outcomes[0]["reasons"][0].startswith("V9")
     rc, out = _add(world["inst"], "--kind", "decision", "--quote", "we'll switch to the green palette",
                    "--register", "brain/decisions", "--speaker", "sam")

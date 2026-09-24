@@ -5,8 +5,8 @@
   "timezone": "Asia/Singapore",
   "identity": {"operator_name": "Probe", "operator_slug": "probe", "assistant_name": "Tess"},
   "principals": [
-    {"slug": "probe", "role": "owner", "decides": true, "scope": ["**"], "aliases": ["telegram:1001"], "git_emails": ["probe@example.invalid"], "journal_consent": "shared"},
-    {"slug": "sam", "role": "client-owner", "decides": true, "scope": ["clients/acme/**"], "aliases": ["telegram:4242"], "git_emails": [], "journal_consent": "shared"}
+    {"slug": "probe", "role": "owner", "decides": true, "scope": ["**"], "aliases": [], "git_emails": ["probe@example.invalid"], "journal_consent": "shared"},
+    {"slug": "sam", "role": "client-owner", "decides": true, "scope": ["clients/acme/**"], "aliases": [], "git_emails": ["sam@example.invalid"], "journal_consent": "shared"}
   ],
   "modes": ["agency"],
   "primary_mode": "agency",

@@ -30,7 +30,7 @@ an instruction.
 
 `brain/brain.json` lists the **principals**: the people whose words count as
 decisions. Each principal has a `slug`, `decides`, `scope` (globs relative to
-`brain/`), `aliases` (for example `telegram:<user_id>`), `git_emails` and
+`brain/`), `aliases` (other ids for `journal note --speaker`), `git_emails` and
 `journal_consent`.
 
 The speaker of each human line is resolved like this:
@@ -40,11 +40,10 @@ The speaker of each human line is resolved like this:
   lists any git email (a fresh install), the operator. If emails are listed but
   none match, the words are omitted rather than credited to the wrong person,
   and `status` says so.
-- **A channel plugin's message:** for example a Telegram message delivered to
-  Claude Code. It is attributed to `<channel>:<user_id>` and mapped to a
-  principal through `aliases`. This happens only when the runtime injected the
-  record and its whole text is one `<channel ... user_id=...>` wrapper. A
-  nested or typed wrapper is never attributed.
+- **Another principal:** their own clone (their `git_emails`), or
+  `tessbrain.py journal note --speaker <slug>`, which is held for review. A
+  message a plugin injects into the session (a `<channel>` wrapper) is never
+  journaled: the base harness attributes no external channel.
 - **Anyone else:** written as `[non-principal <id> omitted: no consent]`.
   Consent needs an explicit `journal_consent` of `shared` (or `yes`).
 
@@ -65,7 +64,7 @@ speakers, turns`. Schema: `scripts/brain/schemas/journal-session.schema.json`.
 <!-- tess:session runtime=claude id=<session id> through=<last transcript line> -->
 ## Messages
 [L1 14:05 <slug> cli] the principal's words, verbatim and redacted
-[L2 14:10 <slug> telegram] ...
+[L2 14:10 <slug> note] ...
 ## Replies
 [R1 14:05 assistant reply] the final assistant text after L1, at most 1,200 characters [... see transcript]
 ## Heuristic flags
@@ -96,7 +95,7 @@ hand-written note, an inbox candidate or a record. Each match becomes
 `<REDACTED:type>`: private-key blocks; AWS `AKIA`/`ASIA` keys; GitHub
 `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`/`github_pat_` tokens; `sk-`, `sk-proj-` and
 `sk-ant-` keys; Google `AIza` keys; Slack `xox[abprs]-` tokens; Stripe
-`sk_live_`/`rk_live_` keys; JWTs; Telegram bot tokens;
+`sk_live_`/`rk_live_` keys; JWTs; chat-bot tokens (`<8-10 digits>:<35 chars>`);
 `password|passwd|secret|token|api_key` followed by `:` or `=` and a value;
 Singapore NRIC/FIN numbers; Luhn-valid card numbers of 13 to 19 digits; and
 labelled IBAN and bank account numbers.

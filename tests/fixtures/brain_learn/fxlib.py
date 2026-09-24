@@ -76,7 +76,7 @@ def commit_all(root, msg="probe"):
 
 def claude_session(path, sid, turns, start_minute=0, cwd="/work/fx"):
     """Write a synthetic Claude transcript. turns: [(role, text)] with role in
-    user | assistant | tg:<user_id> (a Telegram channel turn). One minute apart,
+    user | assistant | chan:<user_id> (a plugin-injected channel turn, never journaled). One minute apart,
     starting 2026-09-24T06:<start_minute>Z (14:<start_minute> SGT)."""
     import json as _json
     recs = []
@@ -86,9 +86,9 @@ def claude_session(path, sid, turns, start_minute=0, cwd="/work/fx"):
                 "uuid": "u-%s-%d" % (sid[:4], i), "isSidechain": False}
         if role == "assistant":
             base.update(type="assistant", message={"role": "assistant", "content": [{"type": "text", "text": text}]})
-        elif role.startswith("tg:"):
-            uid = role[3:]
-            body = ('<channel source="plugin:telegram:telegram" chat_id="-1" message_id="%d" user="u%s" '
+        elif role.startswith("chan:"):
+            uid = role[5:]
+            body = ('<channel source="plugin:chat:chat" chat_id="-1" message_id="%d" user="u%s" '
                     'user_id="%s" ts="%s">%s</channel>' % (i, uid, uid, ts, text))
             base.update(type="user", isMeta=True, promptSource="system", message={"role": "user", "content": body})
         else:
@@ -112,3 +112,8 @@ def journal_of(root, sid):
     import glob
     hits = glob.glob(os.path.join(str(root), "brain", "journal", "*", "*", "*", "*-%s.md" % sid[:8]))
     return hits[0] if hits else None
+
+
+def note(root, speaker, text, env=None):
+    """`journal note --speaker`: how another principal's words enter in these tests (held for review)."""
+    return cli(root, "--json", "journal", "note", "--speaker", speaker, "--text", text, env=env)
