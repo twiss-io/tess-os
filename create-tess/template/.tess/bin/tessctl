@@ -1664,6 +1664,102 @@ def is_enforcement_render_output(rel: str) -> bool:
     return str(rel).replace(os.sep, "/") in ENFORCEMENT_RENDER_OUTPUTS
 
 
+# Statuses that would KEEP a local edit to an enforcement render output
+# (capture, override, hold). They are never honoured on one: `tessctl capture`
+# and `tessctl override` refuse these files, and render/restore/init/update
+# re-pin the core render and clear a status left by an older install.
+ENFORCEMENT_IGNORED_STATUSES = frozenset({"locally-modified", "patch-override", "held"})
+
+
+def _enforcement_stale_statuses(lock: dict, rel: str) -> list:
+    """The capture/override/held statuses recorded on enforcement render
+    output `rel` (tess.lock entries sharing it, and its render_outputs
+    record), sorted. [] for a non-enforcement path."""
+    rel = str(rel).replace(os.sep, "/")
+    if not is_enforcement_render_output(rel):
+        return []
+    found = {(a.get("status") or "") for _k, a in _entries_for_live_path(lock, rel)}
+    rec = render_output_record(lock, rel)
+    if rec is not None:
+        found.add(rec.get("status") or "")
+    return sorted(found & ENFORCEMENT_IGNORED_STATUSES)
+
+
+def _clear_enforcement_stale_statuses(lock: dict, rel: str) -> list:
+    """Reset every capture/override/held status on enforcement render output
+    `rel` (entries -> core-managed, record -> rendered). Mutates `lock`;
+    returns the statuses cleared."""
+    stale = _enforcement_stale_statuses(lock, rel)
+    if not stale:
+        return []
+    for _k, a in _entries_for_live_path(lock, rel):
+        if (a.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES:
+            a["status"] = "core-managed"
+            for _f in ("captured_at", "captured_by", "override_diff", "override_recorded_at"):
+                a.pop(_f, None)
+    rec = render_output_record(lock, rel)
+    if rec is not None and (rec.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES:
+        rec["status"] = "rendered"
+    return stale
+
+
+ENFORCEMENT_BYPASS_MARKER = "ENFORCEMENT BYPASS"
+
+
+def _refuse_enforcement_status_change(cmd: str, rel: str) -> None:
+    """capture / override on an enforcement render output: refused (exit 1)."""
+    sys.exit(f"tessctl {cmd}: {rel} is runtime-enforcement config rendered by Tess; "
+             f"`tessctl {cmd}` would keep a local edit to it (e.g. stripped hooks) through "
+             f"every render. Refused. Put the change in {_enforcement_edit_home(rel)}, then "
+             f"run `tessctl render` to restore {rel}.")
+
+
+def _enforcement_lock_fingerprint(lock: dict) -> str:
+    """The statuses of every tess.lock entry behind an enforcement render
+    output, for callers that save the lock only when it changed."""
+    files = (lock or {}).get("files") or {}
+    return json.dumps(sorted(
+        (k, a.get("status"), a.get("live_path")) for k, a in files.items()
+        if isinstance(a, dict) and is_enforcement_render_output(a.get("live_path") or "")),
+        default=str)
+
+
+def _enforcement_hook_findings(root: Path, lock: dict) -> list:
+    """doctor: [(rel, problem)] for every enforcement render output of an
+    enabled target that carries a capture/override/held status, and for a
+    .claude/settings.json whose live hooks lack a hook the render carries
+    (or that sets disableAllHooks)."""
+    out = []
+    for rel in sorted(p for p in render_generated_live_paths(root)
+                      if is_enforcement_render_output(p)):
+        stale = _enforcement_stale_statuses(lock, rel)
+        if stale:
+            out.append((rel, f"carries a {'/'.join(stale)} status (capture/override/hold); "
+                             f"Tess ignores it on runtime-enforcement config"))
+        live = root / rel
+        if rel != ".claude/settings.json" or not live.is_file():
+            continue
+        try:
+            want = (json.loads(render_settings_json(root)) or {}).get("hooks") or {}
+        except (SystemExit, Exception):  # noqa: BLE001 — no render, nothing to compare
+            continue
+        try:
+            got_doc = json.loads(live.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — unparsable settings has no hooks
+            got_doc = None
+        if not isinstance(got_doc, dict):
+            out.append((rel, "is not a JSON object, so it carries none of the rendered hooks"))
+            continue
+        got = got_doc.get("hooks") if isinstance(got_doc.get("hooks"), dict) else {}
+        missing = sorted(ev for ev, groups in want.items()
+                         if any(g not in (got.get(ev) or []) for g in (groups or [])))
+        if missing:
+            out.append((rel, "lacks rendered hooks: " + ", ".join(missing)))
+        if got_doc.get("disableAllHooks"):
+            out.append((rel, "sets disableAllHooks"))
+    return out
+
+
 def _enforcement_edit_home(rel: str) -> str:
     """Where a local change to an enforcement render output belongs."""
     rel = str(rel).replace(os.sep, "/")
@@ -1718,6 +1814,10 @@ def render_output_status(lock: dict, rel: str) -> str:
     if _entries_for_live_path(lock, rel):
         candidates.append(effective_live_status(lock, rel))
     protective = [s for s in candidates if s in _RENDER_SKIP_REASON]
+    if is_enforcement_render_output(rel):
+        # Runtime-enforcement config never keeps a captured / overridden /
+        # held edit: render re-pins it (see ENFORCEMENT_IGNORED_STATUSES).
+        protective = [s for s in protective if s not in ENFORCEMENT_IGNORED_STATUSES]
     if not protective:
         return "rendered"
     # 'foreign' is a record-only status: rank it with user-created.
@@ -1816,6 +1916,12 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
     status = render_output_status(lock, rel)
     if status in _RENDER_SKIP_REASON and not quarantined:
         return f"skipped:{_RENDER_SKIP_REASON[status]}"
+    # Runtime-enforcement config with a capture/override/held status (e.g.
+    # left by an older install): that status is ignored — the file is
+    # re-pinned to the core render like a quarantined one, and the status
+    # is cleared so nothing keeps a stripped-hooks edit.
+    enforcement_stale = _enforcement_stale_statuses(lock, rel)
+    repin = quarantined or bool(enforcement_stale)
 
     new_sha = sha256_bytes(data)
     changed = False
@@ -1825,13 +1931,14 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
         current = live.read_bytes()
         if current == data:
             if can_record:
-                changed = _set_render_output_record(lock, rel, target, new_sha)
+                changed = _clear_render_output_enforcement(lock, rel, enforcement_stale)
+                changed = _set_render_output_record(lock, rel, target, new_sha) or changed
                 if own_lock and changed:
                     save_lock(root, lock)
             return "unchanged"
         rec = render_output_record(lock, rel)
         stale_render = rec is not None and rec.get("rendered_sha") == sha256_bytes(current)
-        if quarantined:
+        if repin:
             snapshot_single_file(root, rel)
         elif not stale_render:
             if not force:
@@ -1843,10 +1950,24 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
 
     guarded_write(root, rel, data, op="render", manifest=manifest)
     if can_record:
-        changed = _set_render_output_record(lock, rel, target, new_sha)
+        changed = _clear_render_output_enforcement(lock, rel, enforcement_stale)
+        changed = _set_render_output_record(lock, rel, target, new_sha) or changed
         if own_lock and changed:
             save_lock(root, lock)
     return "written"
+
+
+def _clear_render_output_enforcement(lock: dict, rel: str, stale: list) -> bool:
+    """write_render_output: once enforcement output `rel` holds the core
+    render, clear the ignored capture/override/held status and say so."""
+    if not stale:
+        return False
+    _clear_enforcement_stale_statuses(lock, rel)
+    print(f"  RE-PINNED  {rel}  — runtime-enforcement config: its {'/'.join(stale)} status "
+          f"is ignored and was cleared; the core render is restored "
+          f"(the replaced bytes are in .tess/snapshots). Put local changes in "
+          f"{_enforcement_edit_home(rel)}.")
+    return True
 
 
 def write_render_outputs(root: Path, target: str, outputs: dict, *,
@@ -1865,6 +1986,7 @@ def write_render_outputs(root: Path, target: str, outputs: dict, *,
     manifest = load_manifest(root)
     lock = _load_lock_or_empty(root)
     before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+    before += _enforcement_lock_fingerprint(lock)
     results: dict = {}
     try:
         for rel, data in outputs.items():
@@ -1876,6 +1998,7 @@ def write_render_outputs(root: Path, target: str, outputs: dict, *,
                     f"render target {target!r} cannot write its doctrine output")
     finally:
         after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        after += _enforcement_lock_fingerprint(lock)
         if lock and "files" in lock and after != before:
             save_lock(root, lock)
     report_render_output_results(root, target, results, verbose=verbose, manifest=manifest)
@@ -2097,6 +2220,12 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
         _print_not_owned_render_globs(root)
         if fix and _repin_quarantined_render_outputs(root, lock):
             _pull_render_outputs_from_disk(root, lock)
+        if fix and any(_enforcement_stale_statuses(lock, lp)
+                       for lp in render_generated_live_paths(root)):
+            print("\n--fix: re-pinning runtime-enforcement config that carries a "
+                  "capture/override/hold status …")
+            _render_enabled_targets(root, verbose=True)
+            _pull_render_outputs_from_disk(root, lock)
     # A render output with NO tess.lock entry that the operator protected
     # through render_outputs (`tessctl publish AGENTS.md`, held, foreign,
     # locally-modified) is expected to diverge from the render: reclassify
@@ -2115,6 +2244,22 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
         r["issues"] = [f"render output is {st} (render_outputs) — divergence from the render is expected"]
         if was_error and not _doctor_result_is_error(r):
             adjust -= 1
+    # Runtime-enforcement config that lost its rendered hooks, or carries a
+    # capture/override/hold status: always a FAILURE (cmd_doctor counts the
+    # ENFORCEMENT_BYPASS_MARKER rows in human mode).
+    for rel, problem in _enforcement_hook_findings(root, lock):
+        if path_filter and rel != path_filter:
+            continue
+        results.append({
+            "core_key": None, "live_path": rel, "lock_status": "enforcement",
+            "drift": False,
+            "issues": [f"{ENFORCEMENT_BYPASS_MARKER} — {rel} {problem}. Remedy: "
+                       f"`tessctl render` (or `tessctl doctor --fix`) re-pins the core "
+                       f"render; if it reports KEEP (hand edit), delete {rel} and re-run "
+                       f"`tessctl render`. Local changes belong in "
+                       f"{_enforcement_edit_home(rel)}."],
+        })
+        adjust += 1
     findings = [f for f in _lock_status_consistency_findings(lock)
                 if not path_filter or f["live_path"] == path_filter]
     if not findings:
@@ -2225,6 +2370,16 @@ def _pull_render_outputs_from_disk(root: Path, lock: dict) -> None:
     disk = load_lock(root)
     if RENDER_OUTPUTS_KEY in disk:
         lock[RENDER_OUTPUTS_KEY] = disk[RENDER_OUTPUTS_KEY]
+    # ...and the enforcement-output statuses render cleared (a re-pinned
+    # .claude/settings.json must not get its old captured status back).
+    disk_files = disk.get("files") or {}
+    for k, a in (lock.get("files") or {}).items():
+        d = disk_files.get(k)
+        if (isinstance(a, dict) and isinstance(d, dict)
+                and is_enforcement_render_output(a.get("live_path") or "")
+                and (a.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES
+                and (d.get("status") or "core-managed") not in ENFORCEMENT_IGNORED_STATUSES):
+            lock["files"][k] = d
 
 
 def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> list:
@@ -2261,6 +2416,8 @@ def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> li
         status = effective_live_status(lock, rel)
         if status not in ("locally-modified", "patch-override"):
             continue
+        if is_enforcement_render_output(rel):
+            continue   # never kept: Step 7 re-pins it to the (new) core render
         compiled = False
         for t in targets:
             try:
@@ -2779,6 +2936,8 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
         # shares this live_path (most protective wins). A published CLAUDE.md
         # is no longer overwritten through its still-core-managed fragments.
         status = effective_live_status(lock, live_rel)
+        if status in ENFORCEMENT_IGNORED_STATUSES and is_enforcement_render_output(live_rel):
+            status = "core-managed"   # never kept: the render step re-pins it
 
         # Skip user-owned and staged (benched) statuses
         if status in ("user-published", "held", "user-created", "staged"):
@@ -2960,6 +3119,7 @@ def _do_render(root: Path, verbose: bool = False) -> None:
                               render_core_to_live(_c, root / _l, root))
 
     before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+    before += _enforcement_lock_fingerprint(lock)
     results: dict = {}
     _name_bearing_live = {lr for _ck, lr in _NAME_BEARING}
     try:
@@ -2989,6 +3149,7 @@ def _do_render(root: Path, verbose: bool = False) -> None:
                 print(f"  rendered  {rel}{suffix}")
     finally:
         after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        after += _enforcement_lock_fingerprint(lock)
         if lock and "files" in lock and after != before:
             save_lock(root, lock)
     report_render_output_results(root, "claude-code", results, verbose=verbose,
@@ -3740,7 +3901,8 @@ def _doctor_result_is_error(r: dict) -> bool:
     if not is_error:
         for issue in r["issues"]:
             if ("UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue
-                    or "missing" in issue.lower() or "DOCTRINE LEAK" in issue):
+                    or "missing" in issue.lower() or "DOCTRINE LEAK" in issue
+                    or ENFORCEMENT_BYPASS_MARKER in issue):
                 is_error = True
                 break
     return is_error
@@ -4199,10 +4361,22 @@ def cmd_doctor(args, root: Path) -> None:
     blocking = (drift_count > 0 or quarantined_count > 0
                 or core_tamper_count > 0 or missing_count > 0
                 or doctrine_leak_count > 0)
+    # v0.2 eng-b: runtime-enforcement config without its hooks, or holding a
+    # capture/override/hold status (_doctor_engb_findings rows).
+    enforcement_bypass = sorted({
+        r.get("live_path") for r in results
+        if any(ENFORCEMENT_BYPASS_MARKER in i for i in (r.get("issues") or []))})
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
               f"Restore .tess/core from git or run `tessctl rollback`.")
+        sys.exit(1)
+    if enforcement_bypass:
+        print(f"\ndoctor: FAIL — runtime enforcement weakened in {len(enforcement_bypass)} "
+              f"file(s): {', '.join(enforcement_bypass)}. Run `tessctl render` (or "
+              f"`tessctl doctor --fix`) to re-pin the core render with its hooks; a hand "
+              f"edit is kept by render, so delete the file first. Local changes belong in "
+              f".claude/settings.local.json or an operator stub — never capture/override.")
         sys.exit(1)
     if quarantined_count > 0:
         print(f"\ndoctor: FAIL — {quarantined_count} quarantined file(s) awaiting the operator approval.")
@@ -4317,6 +4491,13 @@ def _capture_file(core_key: str, live_rel: str, root: Path, lock: dict,
         print(f"  WARN  live file not found: {live_rel}")
         return False
 
+    # v0.2 eng-b: runtime-enforcement config is never captured — a captured
+    # hook-stripped .claude/settings.json would survive every render.
+    if is_enforcement_render_output(live_rel):
+        print(f"  REFUSED  {live_rel}  — runtime-enforcement config is never captured; "
+              f"put local changes in {_enforcement_edit_home(live_rel)} and run `tessctl render`")
+        return False
+
     expected_bytes = render_core_to_live(core_path, live_path, root) if core_path.exists() else b""
     live_bytes = live_path.read_bytes()
 
@@ -4395,6 +4576,17 @@ def cmd_capture(args, root: Path) -> None:
     files = lock.get("files", {})
     captured = 0
     _capture_seen: set = set()   # v0.2 eng-b: one capture per live file
+
+    # v0.2 eng-b: `capture <enforcement output>` is refused outright (by live
+    # path or by the core key behind it); a bulk scan skips those files
+    # with a REFUSED line (_capture_file).
+    if target_path:
+        _tp_live = target_path
+        _tp_attrs = files.get(target_path)
+        if isinstance(_tp_attrs, dict) and _tp_attrs.get("live_path"):
+            _tp_live = _tp_attrs["live_path"]
+        if is_enforcement_render_output(_tp_live):
+            _refuse_enforcement_status_change("capture", _tp_live)
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
@@ -6293,7 +6485,13 @@ def cmd_override(args, root: Path) -> None:
             break
 
     if not core_key:
+        if is_enforcement_render_output(target_path):
+            _refuse_enforcement_status_change("override", target_path)
         sys.exit(f"tessctl override: path not found in tess.lock: {target_path}")
+    # v0.2 eng-b: a patch-override on runtime-enforcement config would keep
+    # the edit (e.g. stripped hooks) through every render — refused.
+    if is_enforcement_render_output(live_rel):
+        _refuse_enforcement_status_change("override", live_rel)
 
     core_path = root / core_key
     live_path = root / live_rel

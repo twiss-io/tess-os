@@ -326,14 +326,29 @@ def test_write_render_output_status_and_foreign(project, engine):
     assert engine.write_render_output(root, "prompts/wake.md", b"tess prompt\n", "generic") \
         == "skipped:foreign"
 
-    # explicit statuses win, force never overrides them
+    # explicit statuses win, force never overrides them (a non-enforcement
+    # render output: a codex prompt)
+    plain = _unlocked_plain_render_output(engine, root)
     for status in ("user-published", "locally-modified", "held", "foreign"):
+        lock = engine.load_lock(root)
+        lock["render_outputs"][plain]["status"] = status
+        engine.save_lock(root, lock)
+        assert engine.write_render_output(root, plain, b"x\n", "codex",
+                                          force=True) == f"skipped:{status}"
+    assert engine.render_output_status(engine.load_lock(root), plain) == "foreign"
+
+    # runtime-enforcement config (.codex/config.toml) never keeps a
+    # captured / held edit: those statuses are ignored and cleared
+    for status in ("locally-modified", "held"):
         lock = engine.load_lock(root)
         lock["render_outputs"][".codex/config.toml"]["status"] = status
         engine.save_lock(root, lock)
-        assert engine.write_render_output(root, ".codex/config.toml", b"x\n", "codex",
-                                          force=True) == f"skipped:{status}"
-    assert engine.render_output_status(engine.load_lock(root), ".codex/config.toml") == "foreign"
+        assert engine.render_output_status(engine.load_lock(root), ".codex/config.toml") \
+            == "rendered"
+        assert engine.write_render_output(root, ".codex/config.toml", b"x\n", "codex") \
+            in ("written", "unchanged")
+        assert engine.render_output_record(engine.load_lock(root),
+                                           ".codex/config.toml")["status"] == "rendered"
 
 
 def _unlocked_plain_render_output(engine, root):
