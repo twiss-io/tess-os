@@ -6,7 +6,7 @@
   "status": "preview",
   "capabilities": ["instruction-rendering", "prompt-artifacts", "config-fragment", "local-process-driver"],
   "evidence": [
-    {"kind": "repository-source", "path": "adapters/codex/README.md", "note": "Documents the rendered AGENTS.md, config, prompt artifacts, and local process-driver boundary."},
+    {"kind": "repository-source", "path": "adapters/codex/README.md", "note": "Documents the rendered AGENTS.md, config, Agent Skills (.agents/skills/tess-*), and local process-driver boundary."},
     {"kind": "status-page", "path": "docs/STATUS.md", "note": "Records that Codex has no protected-workflow or native-parity certification."}
   ],
   "limits": [

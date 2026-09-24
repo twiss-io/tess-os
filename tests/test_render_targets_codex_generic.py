@@ -363,17 +363,29 @@ def test_idempotent_repeat_render_no_drift(project, run_cli):
 # The manifest write gate is honored — a target cannot bypass it
 # ---------------------------------------------------------------------------
 
-def test_codex_render_honors_manifest_write_gate(project, engine):
+def test_codex_render_honors_manifest_write_gate(project, engine, capsys):
+    """v0.2.0 (must_fix #2): a render output outside owned_globs is SKIPPED
+    and reported ('not-owned'), never written — the write gate itself is
+    unchanged and the manifest is never rewritten to make room."""
     _seed_agents(project)
     project.write()
     manifest_path = project.root / "tess.manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["owned_globs"] = [g for g in manifest["owned_globs"] if g != "AGENTS.md"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_bytes = manifest_path.read_bytes()
 
     target = engine.RENDER_TARGETS["codex"]
+    target.render(project.root, verbose=True)
+    out = capsys.readouterr().out
+    assert not (project.root / "AGENTS.md").exists()
+    assert "skipped   AGENTS.md" in out and "not-owned" in out, out
+    assert manifest_path.read_bytes() == manifest_bytes
+    # The owned siblings still render.
+    assert (project.root / ".codex" / "config.toml").exists()
+    # And the gate itself still refuses a direct, unowned write.
     with pytest.raises(engine.GateError):
-        target.render(project.root, verbose=False)
+        engine.guarded_write(project.root, "AGENTS.md", b"x", op="render")
 
 
 # ---------------------------------------------------------------------------

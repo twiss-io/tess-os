@@ -422,8 +422,8 @@ CLAUDE_TOKEN_MAP = {
 #     HELPING a single-agent harness, so nothing here ships on a
 #     performance bet, only facts (the gate exists; don't touch its files)
 #     and a safety floor (unmeasured on purpose, kept for consequence).
-#   - {{HARNESS_NOTE}} documents the `.codex/prompts/**` / `prompts/**`
-#     command-body mirrors (unchanged — a fact about what's on disk, not
+#   - {{HARNESS_NOTE}} documents the `.agents/skills/tess-*/` / `prompts/**`
+#     command-body renders (unchanged — a fact about what's on disk, not
 #     doctrine).
 #   - {{WORKER_SESSION_MEMORY}} (Phase 0.3, docs/STATE_LAYER.md) points a
 #     worker harness at the ONE cross-harness memory store
@@ -459,7 +459,7 @@ CLAUDE_TOKEN_MAP = {
 # dropped for a different reason — not harmful, just heavy (~45 lines) —
 # to keep this always-mounted digest inside its ~40-60 line budget; the
 # repo's own README (or {{OPERATOR_BUILD_FACTS}} below) is the right place
-# for layout facts a worker harness actually needs. `.codex/prompts/*.md` /
+# for layout facts a worker harness actually needs. `.agents/skills/tess-*/` /
 # `prompts/*.md` still mirror every command body verbatim (unchanged — see
 # CodexRenderTarget/GenericRenderTarget.render()); only AGENTS.md's own
 # always-mounted digest is re-scoped. Auditing the mirrored command bodies
@@ -1313,8 +1313,8 @@ def _command_names(root: Path) -> list:
 
 
 def _render_command_prompt_bytes(root: Path, name: str) -> bytes | None:
-    """The bytes a harness's native-prompt mirror (`.codex/prompts/<name>.md`
-    or `prompts/<name>.md`) should contain for command `name` — the command
+    """The bytes the generic target's plain prompt mirror (`prompts/<name>.md`;
+    the codex target used this for `.codex/prompts/<name>.md` before v0.2.0) should contain for command `name` — the command
     body verbatim, through the same generic {{TOKEN}} substitution every
     other rendered artifact gets (apply_token_sub is a no-op today: no
     shipped command body contains a `{{...}}` token, but this keeps the
@@ -1363,7 +1363,7 @@ def render_agents_md(root: Path) -> str:
     operator-fillable, empty-by-default zone for the one class of
     "environment fact" this framework cannot know on a downstream project's
     behalf: ITS build/test/lint commands — see AGENTS_OPERATOR_TOKEN_MAP).
-    `.codex/prompts/*.md` / `prompts/*.md` still mirror every command body
+    `.agents/skills/tess-*/SKILL.md` / `prompts/*.md` still carry every command body
     verbatim, unchanged — only this always-mounted digest's own payload is
     re-scoped.
     """
@@ -2446,20 +2446,27 @@ def _render_target_write(root: Path, live_rel: str, data: bytes, target: str) ->
     generic; claude-code writes through _do_render). Returns 'written',
     'unchanged' or 'skipped:<reason>'.
 
-    Pre-ckpt/eng-b-1 fallback: refuse to write THROUGH a symlink at the
-    final path component (lstat — the gate only checks directory
-    components), skip a byte-identical file, otherwise guarded_write (the
-    manifest write gate raises GateError on a path outside owned_globs).
+    Pre-ckpt/eng-b-1 fallback with the same contract as eng-b's
+    write_render_output for the two cases a target can hit here:
+      * a path outside owned_globs (e.g. `.agents/skills/tess-*` on an
+        install whose manifest predates v0.2.0) -> 'skipped:not-owned', no
+        write, no manifest change (the gate itself is unchanged; every
+        other gate denial still raises GateError);
+      * a symlink at the final path component (lstat — the gate only
+        checks directory components) -> 'skipped:symlink', never written
+        through.
+    A byte-identical file is 'unchanged'; anything else goes through
+    guarded_write.
     """
     live_path = root / live_rel
+    manifest = load_manifest(root)
+    if not path_matches_globs(live_rel, manifest.get("owned_globs", [])):
+        return "skipped:not-owned"
     if os.path.islink(live_path):
-        raise GateError(
-            f"tessctl render: WRITE REFUSED — {live_rel!r} is a symlink "
-            f"(target {target!r} never writes through a symlink)."
-        )
+        return "skipped:symlink"
     if live_path.is_file() and live_path.read_bytes() == data:
         return "unchanged"
-    guarded_write(root, live_rel, data, op="render")
+    guarded_write(root, live_rel, data, op="render", manifest=manifest)
     return "written"
 
 
@@ -2554,7 +2561,7 @@ class RenderTarget:
         """G3: the subset of render_generated_paths() that carries actual
         DOCTRINE PROSE (Rule Zero / hard floor / system laws / etc.), as
         opposed to mirrored, individually-authored artifacts this target
-        also happens to write (e.g. Codex/generic's 26 `.codex/prompts/*.md`
+        also happens to write (e.g. Codex/generic's 26 `.agents/skills/tess-*/SKILL.md`
         / `prompts/*.md` command-body mirrors — each is its OWN authored
         file with its own review history, not a copy of THIS target's
         doctrine digest, and auditing them for orchestration-doctrine leakage
@@ -2590,7 +2597,7 @@ class ClaudeCodeRenderTarget(RenderTarget):
     existing tests (test_render_ordering_guard.py, test_tracked_render_e2e.py)
     already rely on staying distinct and correctly sequenced inside `update`.
     A future target with its own copy-only outputs (e.g. Codex's
-    `.codex/prompts/*` mirroring the 26 command bodies) implements that copy
+    `.agents/skills/tess-*` rendering the 26 command bodies) implements that copy
     step inside its OWN render() rather than reusing `_do_restore` (which is
     Claude-Code-shaped: it writes unconditionally to `.claude/**`, `agents/**`,
     `conductor/**`, `core/contracts/**`).
@@ -2671,7 +2678,7 @@ class CodexRenderTarget(RenderTarget):
     """
 
     name = "codex"
-    doctrine_profile = "worker"  # G3: Codex has no in-session subagent tool —
+    doctrine_profile = "worker"  # G3: Tess renders no Codex agent roster, so
                                  # "always dispatch" would be false here.
 
     def live_globs(self) -> list:
@@ -2971,7 +2978,7 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     """
     Phase 2 (Codex + generic targets): drift-check a render target's
     compiled artifacts that have NO individual tess.lock entry of their own —
-    e.g. CodexRenderTarget's 26 `.codex/prompts/*.md` mirrors of the SAME
+    e.g. CodexRenderTarget's 26 `.agents/skills/tess-*/SKILL.md` renders of the SAME
     `.tess/core/commands/*.md` bodies the claude-code surface already tracks
     under a DIFFERENT live_path (`.claude/commands/*.md`).
 
@@ -3045,7 +3052,7 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     docstrings). Without this exclusion, enabling both targets but only
     ever running `render --target generic` would make AGENTS.md's mere
     presence "prove" codex has rendered too, false-flagging codex's own,
-    never-yet-rendered `.codex/config.toml` / `.codex/prompts/*.md` as
+    never-yet-rendered `.codex/config.toml` / `.agents/skills/tess-*/**` as
     "deleted."
 
     LOW (noted, not fixed here): a DISABLED target's artifacts are excluded
