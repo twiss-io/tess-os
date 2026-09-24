@@ -5601,7 +5601,7 @@ files:
   .tess/core/conductor/user-profile.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:aba2cabf8a5dce62d5a95470611bcc78f70a7ea7807aadd509486de975277e75
+    base_sha: sha256:2df783d44079c52a892a7b2e28c52b46749cff04d854eec43a7e218654b7b820
     live_path: conductor/user-profile.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/verification-routing.md:
