@@ -69,12 +69,23 @@ def test_stop_hook_is_async_write_only(settings):
     assert groups == [{"hooks": [{"type": "command", "command": FROZEN["stop"], "async": True, "timeout": 30}]}]
 
 
-def test_existing_hooks_untouched(settings):
-    pre = settings["hooks"]["PreToolUse"]
-    assert [g["matcher"] for g in pre] == ["mcp__plugin_telegram_telegram__reply",
-                                           "mcp__plugin_telegram_telegram__edit_message",
-                                           "^(Task|Agent)$", "^(Bash|Edit|Write)$"]
-    assert "SessionEnd" in settings["hooks"] and "PostToolUse" in settings["hooks"]
+def test_brain_wiring_touches_only_its_three_events(settings):
+    """Additive only: brain commands live in SessionStart / UserPromptSubmit / Stop and nowhere else.
+
+    Deliberately names no other workstream's hooks, so removing or changing them
+    elsewhere (for example the v0.2 base-harness channel removal) never breaks this.
+    """
+    brain_events = set()
+    for event, groups in settings["hooks"].items():
+        for group in groups:
+            for hook in group.get("hooks", []):
+                if "scripts/brain/" in hook.get("command", ""):
+                    brain_events.add(event)
+    assert brain_events == {"SessionStart", "UserPromptSubmit", "Stop"}
+    frozen = set(FROZEN.values())
+    brain_cmds = [x["command"] for e in brain_events for g in settings["hooks"][e] for x in g["hooks"]
+                  if "scripts/brain/" in x["command"]]
+    assert sorted(brain_cmds) == sorted(frozen)
 
 
 def test_lock_pins_new_settings_bytes():
