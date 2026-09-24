@@ -14,8 +14,9 @@ import pytest
 from fixtures.brain_learn import fxlib
 
 SID = "grd00001-aaaa-4bbb-8ccc-000000000001"
+SOLO = "grd00002-aaaa-4bbb-8ccc-000000000002"  # one decision per session: nothing later can switch it
+SOLO2 = "grd00003-aaaa-4bbb-8ccc-000000000003"
 TURNS = [
-    ("user", "Decision: let's go with Postgres for the ledger."),
     ("user", "Let's use the monthly plan for Acme."),
     ("user", "Sam said: we've decided to use Oracle for the warehouse."),
     ("user", "Here are the client's meeting notes:\nWe decided to use Kafka for the event bus.\n"
@@ -23,7 +24,6 @@ TURNS = [
     ("user", "Let's use Pulumi. Just kidding, we will not."),
     ("user", "Yes, go ahead."),
     ("user", "Let's use Rust for the parser."),
-    ("user", "We should keep the invoices in SGD."),
     ("user", "The staging server lives in the Frankfurt region."),
     ("user", "Decision: we will use Nomad for staging."),
 ]
@@ -35,6 +35,10 @@ def world(tmp_path_factory):
     inst = Path(fxlib.make(str(tmp / "fx")))
     cdir = tmp / "claude"
     fxlib.claude_session(cdir / (SID + ".jsonl"), SID, TURNS)
+    fxlib.claude_session(cdir / (SOLO + ".jsonl"), SOLO, [("user", "Decision: let's go with Postgres for the ledger.")],
+                         start_minute=10)
+    fxlib.claude_session(cdir / (SOLO2 + ".jsonl"), SOLO2, [("user", "We should keep the invoices in SGD.")],
+                         start_minute=12)
     r = fxlib.sync_dir(inst, cdir)
     assert r.returncode == 0, r.stdout + r.stderr
     fxlib.claude_session(cdir / (SID + ".jsonl"), SID,
@@ -82,12 +86,18 @@ def test_late_take_back_moves_the_promoted_decision_to_proposed(world):
     assert any(h["status"] == "proposed" for h in world["second"]["held"])
 
 
+def _register_of(inst, words):
+    """Where a decision is filed: its record's folder, or the target of its held candidate (V12)."""
+    for p, t in _records(inst).items():
+        if words in t:
+            return p.parent.relative_to(inst).as_posix()
+    return [c["target"] for c in _review(inst) if words in c["quote"]][0]
+
+
 def test_register_uses_the_message_not_the_session(world):
     inst = world["inst"]
-    rust = [p for p, t in _records(inst).items() if "Rust for the parser" in t]
-    acme = [p for p, t in _records(inst).items() if "monthly plan for Acme" in t]
-    assert rust and rust[0].parent == inst / "brain/decisions"
-    assert acme and "clients/acme" in acme[0].as_posix()
+    assert _register_of(inst, "Rust for the parser") == "brain/decisions"
+    assert "clients/acme" in _register_of(inst, "monthly plan for Acme")
 
 
 def test_invented_statement_with_a_real_quote_is_never_accepted(world):

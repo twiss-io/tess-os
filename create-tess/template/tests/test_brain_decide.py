@@ -35,15 +35,24 @@ def decide(inst, *args):
 
 
 def test_decide_syncs_first_and_records_a_resolving_quote(inst):
+    # "Tuesdays" is switched away from two messages later ("Change of plan: ... Thursdays"), so it is
+    # held for review (V12); the later choice is the one accepted.
     rc, out = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter on Tuesdays")
+    assert rc == 0 and out["status"] == "review" and out["reasons"][0].startswith("V12"), out
+    rc, out = decide(inst, "--quote", "we will publish the newsletter on Thursdays", "--title", "Newsletter on Thursdays")
     assert rc == 0 and out["status"] == "accepted", out
     rec = (inst / out["record"]).read_text()
-    assert 'source_ref: "brain/journal/2026/09/24/1400-claude-dec00001.md#L1"' in rec
+    assert 'source_ref: "brain/journal/2026/09/24/1400-claude-dec00001.md#L3"' in rec
     assert fxlib.cli(inst, "lint", env=ENV).returncode == 0
 
 
 def test_supersede_keeps_history_and_indexes_only_the_active_one(inst):
-    _, first = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter on Tuesdays")
+    _, held = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter on Tuesdays")
+    assert held["status"] == "review"
+    r = fxlib.cli(inst, "--json", "promote", held["candidate"], "--quote",
+                  "We will publish the newsletter on Tuesdays", env=ENV)  # the operator approves it in review
+    first = json.loads(r.stdout)
+    assert r.returncode == 0 and first["status"] == "accepted", first
     old_id = Path(first["record"]).stem
     rc, out = decide(inst, "--quote", "we will publish the newsletter on Thursdays", "--supersedes", old_id,
                      "--title", "Newsletter on Thursdays")

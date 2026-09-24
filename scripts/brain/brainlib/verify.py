@@ -6,14 +6,15 @@ V3 approvals: assistant proposal + principal yes V4 numbers/URLs/emails sourced
 V5 duplicates -> noop; supersedes target valid   V6 external context -> review
 V7 redaction scan clean                          V8 no hypotheticals/questions
 V9 target register inside the speaker's scope
-V10 statement fidelity and V11 context (guards.py) send to review, never accept.
+V10 statement fidelity and V11 context (guards.py) and V12 later switches
+(switch.py) send to review, never accept.
 """
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
 
-from . import cues, frontmatter, guards, lookup, records, redact
+from . import cues, frontmatter, guards, lookup, records, redact, switch
 from .config import Config
 from .textutil import contains, glob_match, normalize, sentences, statement_hash
 
@@ -221,5 +222,8 @@ def _guard(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     why = guards.fidelity(cand, source)
     if why or kind not in JUDGED:
         return why
-    return guards.context(kind, cand.get("quote") or "", line.text, _following(cfg, line),
-                          approval=bool(cand.get("approves_quote")))
+    why = guards.context(kind, cand.get("quote") or "", line.text, _following(cfg, line),
+                         approval=bool(cand.get("approves_quote")))
+    if why or kind != "decision" or cand.get("tier") == "material":
+        return why  # a material decision is never auto-accepted anyway (proposed)
+    return switch.check(cfg, line, cand.get("quote") or "")

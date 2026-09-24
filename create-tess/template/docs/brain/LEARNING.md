@@ -140,7 +140,7 @@ that a sentence is put in the wrong category, never that words are invented.
   turns it adds: `[brain] 10 turns since last distill: run brain-distill after
   answering.`
 
-## Verifier (V1-V11)
+## Verifier (V1-V12)
 
 Every candidate goes through the verifier, whoever proposed it: the cue pass,
 `brain-distill`, `decide`, `remember`, onboarding or the operator. A candidate
@@ -160,8 +160,9 @@ that fails any rule is rejected and kept, with its reasons, in
 | V9 | The target register, relative to `brain/`, matches one of the speaker's `scope` globs |
 | V10 | **Statement fidelity.** Every content word of the title and statement appears in the quote or the cited line, and every negation in the quote (`not`, `never`, `stop`, `drop` ...) survives into the statement. A real quote paired with an invented or paraphrased statement goes to **review**; it is never accepted until the operator approves the wording |
 | V11 | **Context.** Goes to review instead of auto-accepting when the sentence is reported speech (`Sam said: ...`, `they decided`, a quoted utterance of 3+ words), the message is a pasted block (more than 3 lines, a `>` quote, or `here are the ... notes/email/transcript`), the statement is taken back later in the same message or in the next principal message, or a decision is content-free (`Yes, go ahead.`). A take-back is a later sentence that negates, cancels or forgets a word of the statement (`not Heroku after all`, `forget Heroku`), a take-back marker that names it (`changed my mind`, `on second thought`, `hold off`, `that's not a decision`, `ignore my last message` ...), or a bare take-back (`Actually no.`, `Wait, no.`, `Cancel that.`) directly after it or at the start of the next message; a later sentence with its own substance (`No, that's wrong: the timezone is SGT`) corrects something else and leaves it alone. Also held: a conditional decision (`if`, `unless`, `or not`, `depending on`, `assuming`, `maybe` ...) and a content-free preference or correction (`No, don't do that.`). A take-back that arrives after the earlier message was already promoted moves that unconfirmed record back to `proposed` |
+| V12 | **Later switch.** A routine decision goes to review instead of auto-accepting when anything later in the same session could replace it, even without naming it: another decision by the same principal (`let's use Postgres` ... `let's go with SQLite`), a switch marker outside a question (`actually go with SQLite`, `scrap that, we'll do SQLite`, `change of plan`, `on second thought`, `instead`, `switch to`, `go back to`, from any principal), a `No, ...` opener naming a new choice (`No, SQLite.`), or a question offering an alternative followed by an approval (`What about SQLite instead?` ... `Yes, do that.`). The verifier cannot tell topics apart, so two unrelated decisions in one session leave the earlier one in review: fewer auto-accepted decisions, never a wrong one. A switch that arrives after the decision was already promoted moves that unconfirmed record back to `proposed`. `lint` fails when one session holds two accepted decisions on the same topic (a shared subject word, or one quote reads as a switch from the other) |
 
-V1-V9 reject. V10 and V11 hold: the candidate waits in `brain-review` and
+V1-V9 reject. V10, V11 and V12 hold: the candidate waits in `brain-review` and
 nothing reaches START HERE, `profile.md` or the registers as accepted until
 the operator approves it in their own words.
 

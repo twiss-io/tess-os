@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import cues, entities, guards, inbox, index, journal, lookup, promote, records
+from . import cues, entities, guards, inbox, index, journal, lookup, promote, records, switch
 from .config import Config, iso, log_error, read_json, write_json
 from .parsers import claude, codex, gemini
 
@@ -199,7 +199,8 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
             taken_back += [e.ref for e in new if e.kind == "msg" and e.principal]
     summary["candidates"] = len(cands)
     summary["outcomes"] = inbox.process_all(cfg)
-    summary["held"] = held_by_takeback(cfg, taken_back)
+    touched = {r.partition("#")[0] for r in taken_back}
+    summary["held"] = held_by_takeback(cfg, taken_back) + switch.held(cfg, touched)
     summary["rechecked"] = _onboarding_records(cfg) + promote.recheck_pending(cfg)
     summary["onboarding_unverified"] = verify_onboarding(cfg)
     rc, msgs = index.regenerate(cfg)

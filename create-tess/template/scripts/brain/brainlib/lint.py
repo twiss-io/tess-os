@@ -2,7 +2,8 @@
 
 Checks: accepted records carry source_quote/source_at and a source_ref that
 resolves to a line containing the quote; accepted bodies match body_sha256;
-records are reachable from START HERE; people files carry no deny-listed key
+records are reachable from START HERE; one session holds at most one accepted
+decision per topic (V12: the earlier one was probably switched away from); people files carry no deny-listed key
 and no NRIC/FIN value; AGENTS chain <= 24 KiB (warn 20); entity AGENTS.md
 <= 6 KiB / 100 lines with START HERE in the first 80 lines.
 """
@@ -12,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import caps, entities, frontmatter, gitutil, lookup, reach, records
+from . import caps, entities, frontmatter, gitutil, lookup, reach, records, switch
 from .config import Config
 from .textutil import contains
 
@@ -53,6 +54,38 @@ def _record_issues(cfg: Config, rec: records.Record) -> List[str]:
     elif want and not meta_want:
         out.append("%s: record has body_sha256 but no meta_sha256 (front matter edited by hand)" % rel)
     return out
+
+
+def _session_key(rec: records.Record) -> str:
+    ref = str(rec.meta.get("source_ref") or "")
+    return str(rec.meta.get("source_session") or "") or ("" if ref.startswith("turns:") else ref.partition("#")[0])
+
+
+def _same_session_issues(cfg: Config, checked: List[records.Record], recs: List[records.Record]) -> List[str]:
+    """Two accepted decisions from one session on the same topic: the earlier one was probably
+    switched away from ("let's use Postgres" ... "actually, go with SQLite"). Same topic = a shared
+    subject word, or (while either is unconfirmed) one quote reads as a switch from the other by
+    the V12 rules. The verifier never auto-accepts such a pair: it was hand-written or pre-V12."""
+    out = []
+    acc = [r for r in recs if r.kind == "decision" and r.status == "accepted" and _session_key(r)]
+    ids = {r.id for r in checked}
+    for i, a in enumerate(acc):
+        for b in acc[i + 1:]:
+            if _session_key(a) != _session_key(b) or not ({a.id, b.id} & ids):
+                continue
+            qa, qb = str(a.meta.get("source_quote") or ""), str(b.meta.get("source_quote") or "")
+            shared = switch.topic(_topic_text(a)) & switch.topic(_topic_text(b))
+            unconfirmed = a.meta.get("confirmed") is not True or b.meta.get("confirmed") is not True
+            switched = unconfirmed and bool(switch.switch_in(qa, [qb]) or switch.switch_in(qb, [qa]))
+            if shared or switched:
+                out.append("%s and %s: two accepted decisions on the same topic from one session (%s); the "
+                           "earlier one was probably switched away from: review, supersede or retract one"
+                           % (a.rel(cfg), b.rel(cfg), ", ".join(sorted(shared)) or "one reads as a switch"))
+    return out
+
+
+def _topic_text(rec: records.Record) -> str:
+    return " ".join(str(rec.meta.get(k) or "") for k in ("title", "source_quote"))
 
 
 def _stub_ok(cfg: Config, ref: str) -> bool:
@@ -107,6 +140,7 @@ def run(cfg: Config, staged: bool = False) -> Dict[str, List[str]]:
         if only is not None and rec.rel(cfg) not in only:
             continue
         errors += _record_issues(cfg, rec)
+    errors += _same_session_issues(cfg, [r for r in recs if only is None or r.rel(cfg) in only], recs)
     seen = reach.reachable(cfg)
     for rec in recs:
         if (only is None or rec.rel(cfg) in only) and rec.path not in seen and not reach.exempt(cfg, rec.path):
