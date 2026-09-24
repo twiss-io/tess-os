@@ -204,9 +204,16 @@ def test_agent_tool_parser_catches_every_frontmatter_form():
 
 def test_single_dispatcher_policy_is_enforced_by_agent_tool_lists():
     """The doctrine now says the single dispatcher is enforced by leaving
-    Agent/Task out of every Tess agent definition's `tools` list. Pin it."""
+    Agent/Task out of every Tess agent definition's `tools` list. Pin it.
+
+    v0.2 ten-role roster (integration seam): the 144-persona roster this
+    threshold was written against is gone -- personas are now lenses
+    (conductor/lenses/**), and agents-dispatch/.claude/agents hold only the
+    nine dispatchable roles (roster.md). 9 core role files + 9 compiled
+    .claude/agents/ copies = 18. The substantive check below (no def grants
+    Agent/Task) is unchanged and still runs over every one of them."""
     defs = sorted((CORE / "agents-dispatch").glob("*.md")) + sorted((REPO_ROOT / ".claude" / "agents").glob("*.md"))
-    assert len(defs) >= 150, f"expected the full roster, found {len(defs)} agent definitions"
+    assert len(defs) >= 18, f"expected the ten-role roster (9 core + 9 compiled), found {len(defs)} agent definitions"
     problems = []
     for f in defs:
         granted = _grants_agent_tool(f.read_text(encoding="utf-8"))
