@@ -65,15 +65,16 @@ _COMMANDS = {
 }
 
 
-def _real_gemini_tpl() -> str:
-    return (REPO_ROOT / _GEMINI_TPL_KEY).read_text(encoding="utf-8")
+# A fixture header in the real template's shape (the real template is
+# checked separately against the real repo below).
+_GEMINI_TPL = "# GEMINI.md Fixture\n\nHeader line.\n\n@./AGENTS.md\n"
 
 
 def _seed(project, commands=None):
     commands = _COMMANDS if commands is None else commands
     project.add(None, _AGENTS_TPL, core_key=_AGENTS_TPL_KEY, render_live=False)
     project.add(None, "HARD FLOOR FIXTURE\n", core_key=_HARD_FLOOR_KEY, render_live=False)
-    project.add(None, _real_gemini_tpl(), core_key=_GEMINI_TPL_KEY, render_live=False)
+    project.add(None, _GEMINI_TPL, core_key=_GEMINI_TPL_KEY, render_live=False)
     for name, body in commands.items():
         project.add(
             f".claude/commands/{name}.md", body,
@@ -90,6 +91,20 @@ def _set_enabled(project, names):
 
 def _toml(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _target(engine, name="gemini"):
+    assert name in engine.RENDER_TARGETS, f"render target {name!r} is not registered"
+    return engine.RENDER_TARGETS[name]
+
+
+def _render_ok(project, run_cli, *args):
+    """Run `tessctl render [args]` and assert the gemini outputs now exist."""
+    r = run_cli(project.root, "render", *args)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (project.root / "GEMINI.md").is_file(), r.stdout + r.stderr
+    assert (project.root / ".gemini/commands/tess/wake.toml").is_file(), r.stdout
+    return r
 
 
 # Port of Gemini CLI 0.61.0's memory-import scanner (memoryImportProcessor.ts
@@ -125,7 +140,7 @@ def _gemini_import_tokens(text: str) -> list:
 # ---------------------------------------------------------------------------
 
 def test_gemini_is_a_registered_worker_target(engine):
-    target = engine.RENDER_TARGETS["gemini"]
+    target = _target(engine)
     assert isinstance(target, engine.RenderTarget)
     assert target.name == "gemini"
     assert target.doctrine_profile == "worker"
@@ -136,7 +151,7 @@ def test_gemini_is_a_registered_worker_target(engine):
 def test_live_globs_are_inside_the_real_manifest_owned_globs(engine):
     manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
     owned = manifest["owned_globs"]
-    for live_glob in engine.RENDER_TARGETS["gemini"].live_globs():
+    for live_glob in _target(engine).live_globs():
         assert engine.path_matches_globs(live_glob, owned), live_glob
     # The namespace keeps an operator's own commands and settings out of reach.
     for foreign in (".gemini/settings.json", ".gemini/commands/mine.toml",
@@ -179,8 +194,7 @@ def test_cli_render_gemini_is_idempotent_and_doctor_clean(project, run_cli):
     _seed(project)
     project.write()
     _set_enabled(project, ["gemini"])
-    r1 = run_cli(project.root, "render")
-    assert r1.returncode == 0, r1.stdout + r1.stderr
+    _render_ok(project, run_cli)
     snap = {p: p.read_bytes() for p in (project.root / ".gemini").rglob("*") if p.is_file()}
     snap[project.root / "GEMINI.md"] = (project.root / "GEMINI.md").read_bytes()
     r2 = run_cli(project.root, "render")
@@ -198,7 +212,7 @@ def test_verify_and_lock_check_flag_a_stale_gemini_command(project, run_cli):
     _seed(project)
     project.write()
     _set_enabled(project, ["gemini"])
-    assert run_cli(project.root, "render").returncode == 0
+    _render_ok(project, run_cli)
     (project.root / ".gemini/commands/tess/wake.toml").write_text(
         'description = "x"\nprompt = "HAND EDITED"\n', encoding="utf-8"
     )
@@ -215,7 +229,7 @@ def test_doctor_flags_a_deleted_gemini_md(project, run_cli):
     _seed(project)
     project.write()
     _set_enabled(project, ["gemini"])
-    assert run_cli(project.root, "render").returncode == 0
+    _render_ok(project, run_cli)
     (project.root / "GEMINI.md").unlink()
     d = run_cli(project.root, "doctor")
     assert d.returncode == 1, d.stdout
@@ -230,7 +244,7 @@ def test_doctor_flags_a_deleted_gemini_md(project, run_cli):
 def test_rendered_toml_parses_and_round_trips_the_body(engine, project):
     _seed(project)
     project.write()
-    data = engine.render_gemini_command_toml(project.root, "add-mission")
+    data = _target(engine).expected_live_bytes(project.root, ".gemini/commands/tess/add-mission.toml")
     parsed = tomllib.loads(data.decode("utf-8"))
     assert set(parsed) == {"description", "prompt"}
     assert parsed["description"] == "Start a mission — intake first"
@@ -258,7 +272,7 @@ def test_hostile_bodies_stay_valid_toml_without_injection_triggers(engine, proje
     body = _HOSTILE[case]
     _seed(project, {"hostile": f'---\ndescription: "Desc with \\"quotes\\" and \\\\ slash"\n---\n\n{body}\n'})
     project.write()
-    data = engine.render_gemini_command_toml(project.root, "hostile")
+    data = _target(engine).expected_live_bytes(project.root, ".gemini/commands/tess/hostile.toml")
     parsed = tomllib.loads(data.decode("utf-8"))
     assert parsed["description"] == 'Desc with "quotes" and \\ slash'
     prompt = parsed["prompt"]
@@ -270,7 +284,7 @@ def test_hostile_bodies_stay_valid_toml_without_injection_triggers(engine, proje
 def test_missing_description_gets_a_non_empty_fallback(engine, project):
     _seed(project, {"bare": "# /bare\n\nNo frontmatter here.\n"})
     project.write()
-    text = engine.render_gemini_command_toml(project.root, "bare").decode("utf-8")
+    text = _target(engine).expected_live_bytes(project.root, ".gemini/commands/tess/bare.toml").decode("utf-8")
     assert 'description = "Tess /bare command"' in text
     assert "No frontmatter here." in text
 
@@ -279,7 +293,7 @@ def test_expected_live_bytes_match_what_render_writes(engine, project):
     _seed(project)
     project.write()
     _set_enabled(project, ["gemini"])
-    target = engine.RENDER_TARGETS["gemini"]
+    target = _target(engine)
     target.render(project.root, verbose=False)
     paths = target.render_generated_paths(project.root)
     assert paths == {"AGENTS.md", "GEMINI.md",
@@ -296,8 +310,8 @@ def test_agents_md_is_shared_byte_for_byte_with_codex(engine, project):
     _seed(project)
     project.write()
     assert (
-        engine.RENDER_TARGETS["gemini"].expected_live_bytes(project.root, "AGENTS.md")
-        == engine.RENDER_TARGETS["codex"].expected_live_bytes(project.root, "AGENTS.md")
+        _target(engine).expected_live_bytes(project.root, "AGENTS.md")
+        == _target(engine, "codex").expected_live_bytes(project.root, "AGENTS.md")
     )
 
 
@@ -313,7 +327,7 @@ def test_agents_md_outside_owned_globs_is_a_gate_error(engine, project):
     manifest["owned_globs"] = [g for g in manifest["owned_globs"] if g != "AGENTS.md"]
     mf_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(engine.GateError):
-        engine.RENDER_TARGETS["gemini"].render(project.root, verbose=False)
+        _target(engine).render(project.root, verbose=False)
     assert not (project.root / "AGENTS.md").exists()
 
 
@@ -350,7 +364,7 @@ def test_hand_edit_to_a_gemini_command_survives_render_and_doctor_fix(project, r
     _seed(project)
     project.write()
     _set_enabled(project, ["gemini"])
-    assert run_cli(project.root, "render").returncode == 0
+    _render_ok(project, run_cli)
     wake = project.root / ".gemini/commands/tess/wake.toml"
     edited = 'description = "mine"\nprompt = "my own wake"\n'
     wake.write_text(edited, encoding="utf-8")
@@ -373,7 +387,7 @@ def test_render_never_writes_through_a_symlinked_commands_dir(engine, project, t
     outside.mkdir()
     (project.root / ".gemini" / "commands").mkdir(parents=True)
     os.symlink(outside, project.root / ".gemini" / "commands" / "tess")
-    engine.RENDER_TARGETS["gemini"].render(project.root, verbose=False)
+    _target(engine).render(project.root, verbose=False)
     assert list(outside.iterdir()) == []
 
 
@@ -382,7 +396,7 @@ def test_render_never_writes_through_a_symlinked_commands_dir(engine, project, t
 # ---------------------------------------------------------------------------
 
 def test_real_repo_gemini_outputs_are_freshly_rendered(engine):
-    target = engine.RENDER_TARGETS["gemini"]
+    target = _target(engine)
     paths = target.render_generated_paths(REPO_ROOT)
     commands = sorted(p for p in paths if p.startswith(".gemini/commands/tess/"))
     assert len(commands) == 26
@@ -398,7 +412,9 @@ def test_real_repo_gemini_outputs_are_freshly_rendered(engine):
 
 @needs_tomllib
 def test_real_repo_commands_parse_with_description_and_prompt(engine):
-    for path in sorted((REPO_ROOT / ".gemini" / "commands" / "tess").glob("*.toml")):
+    paths = sorted((REPO_ROOT / ".gemini" / "commands" / "tess").glob("*.toml"))
+    assert len(paths) == 26
+    for path in paths:
         parsed = _toml(path)
         assert set(parsed) == {"description", "prompt"}, path.name
         assert parsed["description"].strip(), path.name
@@ -407,7 +423,7 @@ def test_real_repo_commands_parse_with_description_and_prompt(engine):
 
 
 def test_real_gemini_md_has_exactly_one_import_and_agents_md_has_none(engine):
-    gemini_md = engine.render_gemini_md(REPO_ROOT)
+    gemini_md = _target(engine).expected_live_bytes(REPO_ROOT, "GEMINI.md").decode("utf-8")
     assert _gemini_import_tokens(gemini_md) == ["./AGENTS.md"]
     agents_md = engine.render_agents_md(REPO_ROOT)
     assert _gemini_import_tokens(agents_md) == [], (
@@ -424,5 +440,6 @@ def test_import_scanner_port_matches_gemini_rules():
 
 
 def test_real_worker_denylist_is_clean_for_gemini(engine):
+    assert "gemini" in {t.name for t in engine._worker_profile_targets()}
     hits = [v for v in engine._check_worker_profile_denylist(REPO_ROOT) if v["target"] == "gemini"]
     assert hits == []
