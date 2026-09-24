@@ -1946,12 +1946,41 @@ def _lock_status_consistency_findings(lock: dict) -> list:
     return findings
 
 
+def _print_not_owned_render_globs(root: Path) -> dict:
+    """Doctor/update note (must_fix #2): for each ENABLED target, the outputs
+    it would render that tess.manifest.json does not own. ONE line per missing
+    glob; render skips those outputs, and tessctl never edits the manifest.
+    Informational — returns {target: {glob: count}}."""
+    try:
+        owned = load_manifest(root).get("owned_globs", []) or []
+    except SystemExit:
+        return {}
+    notes: dict = {}
+    for name, target in sorted(enabled_render_targets(root).items()):
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:  # noqa: BLE001 — a note must never break doctor
+            continue
+        for rel in paths:
+            if not path_matches_globs(rel, owned):
+                g = _missing_owned_glob_for(target, rel, owned)
+                notes.setdefault(name, {}).setdefault(g, 0)
+                notes[name][g] += 1
+    for name, globs in notes.items():
+        for g, n in sorted(globs.items()):
+            print(f"  NOTE  {name}: {n} output(s) outside owned_globs are not rendered. "
+                  f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them.")
+    return notes
+
+
 def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
                           path_filter=None) -> int:
     """cmd_doctor's single v0.2 eng-b hook. Mixed statuses on one live_path
     are an integrity FAILURE. --json: appended to `results` as error rows and
     counted. Human mode: printed, then doctor exits 1 (a lock whose entries
     disagree must be fixed before any drift report can be trusted)."""
+    if not as_json:
+        _print_not_owned_render_globs(root)
     findings = [f for f in _lock_status_consistency_findings(lock)
                 if not path_filter or f["live_path"] == path_filter]
     if not findings:
