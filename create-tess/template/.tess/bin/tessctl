@@ -5836,6 +5836,7 @@ def _approve_require_human_presence(live_rel: str) -> None:
             "  Run `tessctl approve <path> --rationale \"...\"` yourself, in a terminal."
         )
     print(f"tessctl approve: human confirmation required for {live_rel}")
+    print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
     print(f"  Type the path exactly as shown to approve it: {live_rel}")
     try:
         typed = input("  path> ")
