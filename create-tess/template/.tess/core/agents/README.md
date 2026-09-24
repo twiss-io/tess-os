@@ -1,36 +1,12 @@
-# Tess — Agent Roster
+# Tess OS — Persona Source Library
 
-This is the canonical index for the Tess intelligence system. As of 2026-06-27, **all 150 agents are dispatch-capable** — every agent in this index has a compiled definition at `.tess/core/agents-dispatch/<name>.md`. The two-class distinction (DISPATCHABLE vs PERSONA) no longer applies.
+> **v0.2: these are no longer registered agents.** The roster is ten roles (conductor + nine dispatchable roles), identical for every use case: see [conductor/roster.md](../conductor/roster.md). The personas in this directory are the long-form **source** for the lens library at [conductor/lenses/](../conductor/lenses/README.md). The conductor loads a lens into a role's brief when a task needs that expertise; nothing here is dispatched directly. Where the text below says "agent", "dispatch-capable", "activated by Eva" or names an orchestrator, read it as "lens".
 
-> **"Dispatch-capable" is not the same as "installed."** A dispatch-capable agent has a definition ready to render; an **installed** agent is actually present as a file at `.claude/agents/<name>.md` for a given instance. Only a curated subset is installed at any one time — `tessctl roster apply <path>` seeds a starter squad (as few as 7 agents), and `tessctl recruit <name>` / `tessctl bench <name>` move agents between staged (benched) and installed. Counts below (144 persona specs, 150 total including the 6 orchestrators) describe what's **in the roster**, not what's live in any one `.claude/agents/` tree — check `tessctl roster list` for that.
-
----
-
-## Roster at a Glance
-
-| Tier | Count | Purpose |
-|---|---|---|
-| **Core** | 16 | Always-on. Activated on every mission. Never leave this out. |
-| **Guild Packs** | 134 | Domain specialists. Activated by Eva based on mission requirements. |
-| **Total Dispatch-Capable** | **150** | 144 persona specs (`agents/<name>/`) + 6 outcome orchestrators — all have `.tess/core/agents-dispatch/<name>.md` definitions ready to install. |
-
-Counted directly from the tree (`find agents -mindepth 1 -maxdepth 1 -type d \| wc -l` → 144 persona directories; the 6 orchestrators live at `conductor/outcome-orchestrators/` and are not persona directories). Re-run that command to reverify after any roster change — these numbers are hand-verified, not generated, because no counting mechanism ships yet (tracked as a follow-up).
+The nine role personas that remain agents (Ada, Morwenna, Leah, Reid, Quinn, Cyra, Clio, Vega, Iris) are defined by permissions in `.tess/core/agents-dispatch/`; their directories here keep their domain background.
 
 ---
 
-## Model Tier (roster metadata)
-
-Every core coding-squad agent's README carries a `model_tier` frontmatter field — a **recommendation**, not an enforced setting (the harness-level model alias in `.claude/agents/<name>.md`'s `model:` field is what Claude Code actually reads; see [agent-lifecycle.md §10](../conductor/agent-lifecycle.md) for how that alias is chosen). `model_tier` is the coarser, role-based signal that recommendation should follow:
-
-| Role in the mission | `model_tier` | Rationale |
-|---|---|---|
-| **Conduct** — orchestration, crew design, research framing (judgment cascades downstream) | `strong` | Mistakes here propagate to every agent dispatched after |
-| **Execute** — implementation against a clear brief | `cheap` | Bounded, verifiable work; the gate + mandatory verifier catch what a cheaper model misses |
-| **Verify** — independent review, security, QA (the mandatory-verification scope) | `strong` | Verification is the error-detection layer; cheapening it defeats the point |
-
-Applied so far to the core coding squad: the conductor (`conductor/identity.md`) and Leah/Eva (`strong` — conduct), Reid/Cyra/Quinn (`strong` — verify), and Ada/Iris/Vega (`cheap` — execute). This is metadata only — no adapter or dispatch driver reads `model_tier` yet; wiring it into `tessctl recruit`'s render (so it actually sets the harness model alias) is deferred to a follow-up, mechanism-level change.
-
----
+## Legacy reference (pre-v0.2 roster notes)
 
 ## Resolved Overlaps (2026-06-27 review)
 
@@ -152,7 +128,7 @@ Guild pack activation: Eva selects the minimum agents required for the mission. 
 
 **Note:** The 7 cross-cutting coding specialists (Ada, Iris, Cyra, Reid, Quinn, Vega, Elena) are in Core. These 6 handle architecture, infrastructure platforms, AI systems, and programme delivery.
 
-> **Coding-agent adopters:** the full 144-persona business-consulting roster is more than a coding-focused install needs. `tessctl roster apply coding-squad` installs a tight coding-only squad instead — Leah + Eva (universal base) plus Ada, Iris, Reid, Cyra, Quinn, and Vega — with everything else staged/benched. See [roster-paths.json](../.tess/core/roster-paths.json) and this repo's root [README.md](../README.md#the-specialist-roster).
+> **Coding-agent adopters:** the full 144-persona business-consulting roster is more than a coding-focused install needs. `tessctl roster apply coding-squad` (v0.2) installs the same nine roles as every other path and only suggests engineering lenses (Freya, Petra, Selene, Nova, Camille); nothing is staged. See [roster-paths.json](../.tess/core/roster-paths.json) and this repo's root [README.md](../README.md#the-roster-ten-roles-and-a-lens-library).
 
 | Agent | Role | Layer |
 |---|---|---|

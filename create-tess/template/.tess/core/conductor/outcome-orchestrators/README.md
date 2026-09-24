@@ -1,5 +1,7 @@
 # Outcome Orchestrator Layer
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Outcome orchestrators are no longer agents. Each one is an **outcome lens** at `conductor/lenses/<name>-orchestrator.md` that the conductor applies while planning: "route through the Revenue Orchestrator" now means "the conductor plans with the Revenue lens, then dispatches roles". Where this layer says it returns a crew-plan of guild agents, read: roles from the roster, each with the lenses the task needs. The routing, overlap and precedence rules below still decide which outcome lens applies.
+
 **Position in System:** Above guilds. Below Tess.  
 **Purpose:** Coordinate guilds around business outcomes, not around domains.
 

@@ -1,10 +1,10 @@
 ---
-description: List all currently active agents and their responsibilities — name, role, mandate, participation role on this mission, and status.
+description: List the ten roles (conductor plus nine dispatchable roles) and the lenses loaded on the active mission.
 ---
 
 # /list-agents
 
-List the active crew. Read from [agents/README.md](../../agents/README.md) and the managed-subagent set in `.claude/agents/`.
+List the roster: the ten roles in [conductor/roster.md](../../conductor/roster.md), which of the nine role files are installed in `.claude/agents/` (`tessctl roster list`), and the lenses ([conductor/lenses/README.md](../../conductor/lenses/README.md)) loaded on the active mission.
 
 For each agent report:
 - **Name**
@@ -13,4 +13,4 @@ For each agent report:
 - **Participation role** on the active mission (if any)
 - **Lifecycle status** — active / standby / retired ([conductor/agent-lifecycle.md](../../conductor/agent-lifecycle.md))
 
-Read-only. For roster changes use `/add-agent` or `/remove-agent` (via Eva).
+Read-only. For expertise gaps use `/add-agent` (it adds a lens, not an agent); to bench a role use `/remove-agent`.

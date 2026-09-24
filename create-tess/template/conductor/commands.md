@@ -203,16 +203,16 @@ Returns: each agent's name, role, mandate, participation role on this mission, a
 ---
 
 ### `/add-agent [Name]`
-**Request Eva to recruit a new specialist agent.**
+**Cover a capability gap with a lens, not a new agent.**
 
-Eva reviews the mission, assesses the capability gap, and recruits or designs the role. Returns a full agent brief before activation.
+The roster is fixed at ten roles (roster.md). The conductor applies the `eva` lens to the gap, reuses an existing lens or drafts a new one in `conductor/lenses/`, and never creates a new agent file.
 
 ---
 
 ### `/remove-agent [Name]`
-**Request Eva to assess and remove an agent.**
+**Retire a lens, or bench one of the nine roles for a stated reason.**
 
-Eva evaluates whether the agent is still earning their seat. If not, removes and reassigns or closes the workstream.
+A lens that no longer earns its place is retired from the index. `tessctl bench <role>` stages a role; benching Reid, Quinn or Cyra removes a mandatory verifier and needs the operator's reason.
 
 ---
 

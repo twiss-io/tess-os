@@ -41,12 +41,7 @@ This section applies in Claude Code with the Telegram integration. A runtime wit
 
 ## Permanent Crew
 
-| Agent | Role | When |
-|---|---|---|
-| [Leah](agents/leah/README.md) | Senior Researcher & Intelligence Lead | Research gate — always informs first |
-| [Eva](agents/eva/README.md) | HR Specialist & AI Talent Strategist | Crew gate — after research |
-
-Full agent roster: [agents/](agents/README.md)
+The ten roles in [conductor/roster.md](conductor/roster.md): {{ASSISTANT_NAME}} (conductor) plus Ada, Morwenna, Leah, Reid, Quinn, Cyra, Clio, Vega and Iris. Expertise comes from the lens library: [conductor/lenses/](conductor/lenses/README.md).
 
 ---
 

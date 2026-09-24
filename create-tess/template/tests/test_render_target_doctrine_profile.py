@@ -97,7 +97,7 @@ def test_orchestrator_profile_claude_md_still_has_full_doctrine(engine):
         "RULE ZERO",
         "ALWAYS DISPATCH",
         "NEVER EXECUTE SOLO",
-        "Outcome Orchestrator Layer",
+        "Roster — Ten Roles",
         "System Laws",
     ):
         assert marker in rendered, (

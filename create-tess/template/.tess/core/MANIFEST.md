@@ -8,6 +8,8 @@
 - Total core files: **959** (+5 Phase 1 — `contracts/` wired into the managed set)
 - Security-tier files: **6** (`conductor/guardrails.md`, `conductor/verification-routing.md`, `conductor/channel-guardrails.md`, `conductor/dispatch-brief.md`, `contracts/brief.schema.json`, `contracts/verdict.schema.json`) — the last two are new in Phase 1: the machine-checkable form of `dispatch-brief.md` and `verification-routing.md` respectively, promoted to the same tier so weakening the schema is treated as seriously as editing the prose doctrine.
 
+> **v0.2 ten-role roster.** `agents-dispatch/` now holds exactly **9** role files (ada, morwenna, leah, reid, quinn, cyra, clio, vega, iris); the other 141 former dispatch definitions became the lens library at `conductor/lenses/` (141 lenses + `README.md` index) and `conductor/roster.md` was added. Counts further down that describe 150 dispatch definitions are historical. The codex render target also compiles each installed role to `.codex/agents/<name>.toml` (untracked-render-generated).
+
 ## Live-path mapping (by core subtree)
 
 | Core subtree | Live destination |

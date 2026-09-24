@@ -1,5 +1,7 @@
 # Revenue Orchestrator — Full Doctrine
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Layer:** Outcome Orchestrator — above guilds, below Tess  
 **Status:** Core  
 **Operates under:** Cross-Guild Coordination Protocol · Master Mission Output Framework · Agent Lifecycle & Governance Framework · Founder's Office Operating Doctrine · Founder's Office Orchestrator Doctrine

@@ -1,5 +1,7 @@
 # Playbook — L99 Merge Discipline
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Product and Delivery / Operational Reliability
 **Mode:** standing authority (no per-merge sign-off required)
 **Authority:** Standing authority — the operator has delegated /L99 merge decisions, conditioned on no conflicts with existing PRs or other agents' work (nothing that would undo previous work by merging out of order).
@@ -59,7 +61,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 The standing authority removes the per-PR *sign-off*, **not** the verification gates. Every merge still runs:
 
 - **CI gate** — green required, no exceptions ([verification-routing.md](../verification-routing.md)).
-- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra) reads primary artifacts, never Tess's summary.
+- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra; research, evidence or creative review is Reid with the `verity`, `maialen` or `lysandra` lens) reads primary artifacts, never Tess's summary.
 - **Post-merge smoke after every merge** — backend `/health` (per-endpoint smoke, not just 200), dashboard page-load, mobile build status. Per-endpoint smokes matter: a green `/health` does not prove no 500s elsewhere.
 - **Specialist-direct-to-main is a flag** — if a specialist pushed to `main` without a PR, audit the diff retroactively (this pattern has produced serious access-control regressions before).
 

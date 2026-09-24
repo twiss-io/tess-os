@@ -77,7 +77,7 @@ Outside this exception, Rule Zero remains absolute. The exception is not a prece
 Mission flow is governed by dependency gates, not a clock:
 
 - **Research before build** — no strategy, team design, or execution proceeds on an unresearched information base. Leah informs first on serious missions.
-- **Crew before deploy** — no agent is briefed or activated before its role, mandate, and boundaries are defined. Eva designs the crew before deployment.
+- **Crew before deploy** — no agent is briefed or activated before its role, mandate, and boundaries are defined. The conductor picks each role and its lenses (the `eva` lens) before deployment.
 - **Review before synthesis** — no synthesis is delivered on unreviewed outputs. Pressure-test first. Prod-touching, client-facing, and externally-visible outputs additionally require the mandatory verifier per [verification-routing.md](verification-routing.md).
 
 Independent nodes may run in parallel once their gates are satisfied. No gate may be skipped, waived, or satisfied retroactively.
@@ -100,7 +100,7 @@ If an agent cannot articulate a distinct contribution that no other agent on the
 
 The crew is always customised to the mission. There is no default roster that gets applied to every task.
 
-Different missions require different expertise. Different scales require different crew sizes. Different problems require different thinking profiles. Eva redesigns the team for each mission from first principles.
+Different missions require different expertise. Different scales require different crew sizes. Different problems require different thinking profiles. The conductor picks roles and lenses for each mission from first principles (the `eva` lens); the ten roles themselves are fixed (roster.md).
 
 **Why this matters:** Generic teams produce generic outputs. The user does not want generic outputs.
 
@@ -225,7 +225,7 @@ The memo must be decisive where confidence is sufficient, and conditional only w
 
 ## Rule 13 — Agent portfolio is governed, not accumulated.
 
-No new agent may be created unless all 6 creation conditions in agent-lifecycle.md §3 are satisfied. All agent names must pass the anti-confusion naming rules. Eva must continuously review for overlap, redundancy, and agents that have become decorative.
+The registered roster is fixed at ten roles (roster.md); expertise is added as lenses. No new lens may be created unless the creation conditions in agent-lifecycle.md §3 are satisfied, and all names must pass the anti-confusion naming rules. The conductor (with the `eva` lens) reviews the lens library for overlap, redundancy, and lenses that have become decorative.
 
 Core status must be earned, not granted casually. Temporary agents are reviewed after every mission and not retained automatically.
 

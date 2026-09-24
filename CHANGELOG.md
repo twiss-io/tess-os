@@ -5,6 +5,22 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- **Roster: ten roles + lens library (v0.2).** The roster is now the same for
+  every use case: the conductor (Tess, renameable) plus nine dispatchable roles
+  defined by permissions, model tier and isolation: Ada (builder), Morwenna
+  (explorer, cheaper model, read-only), Leah (researcher, read-only + web),
+  Reid (code reviewer), Quinn (QA), Cyra (security + verdict signer), Clio
+  (scribe, brain paths only, every claim sourced), Vega (release/devops, only
+  behind the gate) and Iris (designer). The other 141 former dispatch personas
+  (including the six outcome orchestrators, Eva, Verity, Maialen and Lysandra)
+  are lenses in `conductor/lenses/` (index: `docs/LENSES.md`), loaded into a
+  role's brief on demand; they are no longer registered agents. Every starter
+  path installs the same nine roles and only suggests different default
+  lenses. Verification routing maps to Reid, Quinn and Cyra (with lenses for
+  research, evidence and creative review). The codex render target now also
+  emits `.codex/agents/<name>.toml` for each installed role.
+
 ### Fixed
 - **`create-tess` — bundled the scaffold template into the npm package, fixing
   the DEFAULT `npm create tess` flow (100% broken through 0.1.3), P0 G-01.**

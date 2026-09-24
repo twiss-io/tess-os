@@ -1,5 +1,7 @@
 # Playbook — Revenue Diagnosis
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Revenue  
 **Mode:** `/revenue-mode`  
 **Output:** Primary bottleneck identified, commercial intervention recommended, immediate next moves assigned  

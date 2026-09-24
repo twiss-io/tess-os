@@ -5,23 +5,16 @@
 
 // agent-key → { name, role }. Falls back to a capitalised key if missing.
 export const AGENT_DISPLAY = {
-  // founders
-  athena: { name: 'Athena', role: 'Chief Strategy Officer' },
-  apolline: { name: 'Apolline', role: 'Chief Sales Strategist' },
-  zelie: { name: 'Zélie', role: 'Presentation & Deck Design' },
-  // builders
-  elena: { name: 'Elena', role: 'Product Engineer' },
-  ada: { name: 'Ada', role: 'Lead Backend Engineer' },
-  iris: { name: 'Iris', role: 'Lead Frontend Engineer' },
-  quinn: { name: 'Quinn', role: 'QA & Reliability Architect' },
-  reid: { name: 'Reid', role: 'Code Quality & Standards' },
-  // operators
-  adrienne: { name: 'Adrienne', role: 'Chief of Staff & Executive Operations' },
-  evangeline: { name: 'Evangeline', role: 'Chief Customer Experience Strategist' },
-  clio: { name: 'Clio', role: 'Session Scribe' },
-  // universal base
-  leah: { name: 'Leah', role: 'Researcher — research gate, informs every mission' },
-  eva: { name: 'Eva', role: 'Talent & Recruiting — pulls agents off the bench' },
+  // v0.2: the nine dispatchable roles — the same on every path.
+  ada: { name: 'Ada', role: 'Builder — code and files' },
+  morwenna: { name: 'Morwenna', role: 'Explorer — read-only search and mapping' },
+  leah: { name: 'Leah', role: 'Researcher — read-only plus web, cites sources' },
+  reid: { name: 'Reid', role: 'Code reviewer — read-only' },
+  quinn: { name: 'Quinn', role: 'QA — runs tests, no push or merge' },
+  cyra: { name: 'Cyra', role: 'Security + approval signer' },
+  clio: { name: 'Clio', role: 'Scribe — brain records, every claim sourced' },
+  vega: { name: 'Vega', role: 'Release and devops — behind the gate' },
+  iris: { name: 'Iris', role: 'Designer — frontend and design skills' },
 };
 
 export const ORCH_DISPLAY = {
@@ -41,44 +34,44 @@ export function displayOrch(key) {
   return ORCH_DISPLAY[key] || key;
 }
 
-// Per-vibe framing for the STARTER_PATH select. label/hint shown in the menu;
-// `intro` is the vibe-flavoured one-liner above the reveal. Eva's three copy
-// fixes (founders investor-narrative, builders intentional-5, operators scribe)
-// live in PATH_NOTES below and are surfaced honestly at the reveal.
+// Per-vibe framing for the STARTER_PATH select. v0.2: every path installs the
+// same ten roles; the path only changes the suggested default lenses
+// (roster-paths.json `default_lenses`), surfaced honestly in PATH_NOTES.
 export const PATH_FRAMING = {
   rpg: {
-    founders: { label: "FOUNDER'S SQUAD", hint: 'Strategic · Commercial · High-stakes' },
-    builders: { label: "BUILDER'S SQUAD", hint: 'Technical · Product · Ship-first' },
-    operators: { label: "OPERATOR'S SQUAD", hint: 'Execution · CX · Reliability' },
+    founders: { label: "FOUNDER'S PATH", hint: 'Same ten roles · strategy and commercial lenses first' },
+    builders: { label: "BUILDER'S PATH", hint: 'Same ten roles · product and engineering lenses first' },
+    operators: { label: "OPERATOR'S PATH", hint: 'Same ten roles · operations and CX lenses first' },
   },
   command: {
-    founders: { label: 'ALPHA   — Founder\'s Office', hint: 'Strategic · Commercial' },
-    builders: { label: 'BRAVO   — Builder\'s Core', hint: 'Technical · Product' },
-    operators: { label: 'CHARLIE — Operator\'s Base', hint: 'Execution · CX' },
+    founders: { label: 'ALPHA   — Founder\'s Office', hint: 'Ten roles · strategy lenses' },
+    builders: { label: 'BRAVO   — Builder\'s Core', hint: 'Ten roles · engineering lenses' },
+    operators: { label: 'CHARLIE — Operator\'s Base', hint: 'Ten roles · operations lenses' },
   },
   studio: {
-    founders: { label: "The Founder's Studio", hint: 'Strategy, revenue, the founder\'s office.' },
-    builders: { label: "The Builder's Studio", hint: 'Product, engineering, QA.' },
-    operators: { label: "The Operator's Studio", hint: 'Operations, client experience, reliability.' },
+    founders: { label: "The Founder's Studio", hint: 'Ten roles; strategy, revenue and founder lenses suggested.' },
+    builders: { label: "The Builder's Studio", hint: 'Ten roles; product, engineering and QA lenses suggested.' },
+    operators: { label: "The Operator's Studio", hint: 'Ten roles; operations, client and reliability lenses suggested.' },
   },
 };
 
-// Eva's three copy fixes (task requirement), folded into the wizard copy as an
-// honest expectation-setting note shown at the squad reveal for each path.
+
+// Expectation-setting note shown at the reveal for each path.
 export const PATH_NOTES = {
   founders: [
-    'Zélie designs your decks — but no narrative writer ships with this squad.',
-    'So "frame your investor pitch" is your natural FIRST RECRUIT, not a day-one promise.',
+    'Every path installs the same ten roles. This one suggests strategy and commercial lenses first',
+    '(Founder\'s Office, Revenue, Athena, Apolline, Naomi, Sienna, Zélie) — loaded into a role\'s brief on demand.',
   ],
   builders: [
-    'Five agents, not three — and that is intentional. You need the full stack from day one:',
-    'product, backend, frontend, QA and code-quality all in the room before you ship.',
+    'Every path installs the same ten roles. This one suggests product and engineering lenses first',
+    '(Product and Delivery, Elena, Freya, Petra, Selene, Joséphine) — loaded into a role\'s brief on demand.',
   ],
   operators: [
-    'Your scribe (Clio) is on staff — she makes sure nothing\'s lost between sessions.',
-    'That\'s week-2 institutional-memory infrastructure, not day-one output. Set up to compound.',
+    'Every path installs the same ten roles. This one suggests operations and client lenses first',
+    '(Operational Reliability, Client Experience, Adrienne, Evangeline, Joséphine, Corinne).',
   ],
 };
+
 
 // The PATHWAY (persona) menu — labels + one-line descriptions (design doc §3).
 export const PATHWAY_OPTIONS = [

@@ -1,5 +1,7 @@
 # The Orchestra Model — Conductor, Crew-Plans, and the Single Dispatcher
 
+> **v0.2 ten-role roster ([roster.md](roster.md)).** The roster is now ten roles (the conductor plus nine dispatchable roles) and a lens library; the 150-agent counts below are historical. The single-dispatcher model is unchanged and stricter: only the conductor dispatches, every role executes directly and never re-delegates or spawns agents, and a crew-plan names roles plus lenses.
+
 > System doctrine. Defines how the 150-agent roster (144 persona specs + 6 outcome orchestrators — see [agents/README.md](../agents/README.md)) coordinates under one dispatcher. Resolves the orchestrator dispatch-contradiction: a Tess subagent holds no Agent/Task tool (Tess policy; see §1), so an outcome orchestrator cannot "activate crew" — it returns a **crew-plan** that Tess (the main loop) or a **Workflow** dispatches. Composes with [dispatch-brief.md](dispatch-brief.md), [doctrine.md](doctrine.md) gates, and [verification-routing.md](verification-routing.md). Authored 2026-06-27 from an internal review of the starter (not shipped with Tess OS). Roster-count correction (Goal #11, 2026-07): the original count in this doctrine ("~165 agents"; "165 persona specs; 42 dispatchable today") conflated the 165 top-level filesystem entries under `agents/` (144 persona directories + 21 guild/doctrine docs) with persona specs, and predates the 2026-06-27 fix that made every persona dispatch-capable (see §6 below).
 
 ---
@@ -26,9 +28,9 @@ Both are **sole dispatchers** in their run. An orchestrator is never either of t
 | Role | Who | Holds Agent/Task tool? | Job |
 |---|---|---|---|
 | **Conductor** | Tess, or a Workflow | **Yes (only it)** | Dispatches every agent, enforces gates, runs verification + retries, holds mission state, talks to the operator through the runtime's native channel (Telegram in Claude Code with the Telegram integration) |
-| **Routing brain** | The 6 outcome orchestrators | No | Owns an outcome; **returns a crew-plan** (who, order, briefs, gates, verifier); later synthesises returned artifacts |
-| **Player** | The 144 persona specialists (all dispatch-capable; see §6) | No | Executes one brief from genuine expertise; returns primary artifacts |
-| **Verifier** | Reid / Quinn / Cyra / Verity / Maialen / Lysandra | No | Reads **primary artifacts** (never Tess's summary) and returns a verdict per [review-output-standards.md](review-output-standards.md) |
+| **Routing brain** | The 6 outcome lenses (formerly outcome orchestrators), applied by the conductor | No | Owns an outcome; **returns a crew-plan** (who, order, briefs, gates, verifier); later synthesises returned artifacts |
+| **Player** | The nine dispatchable roles (roster.md), each briefed with the lenses the task needs | No | Executes one brief directly (never re-delegates); returns primary artifacts |
+| **Verifier** | Reid / Quinn / Cyra (with the `verity`, `maialen` or `lysandra` lens where the domain needs it) | No | Reads **primary artifacts** (never Tess's summary) and returns a verdict per [review-output-standards.md](review-output-standards.md) |
 
 "Synchronous orchestra" means: the conductor brings players in on cue (gate-satisfied), runs independent players **together** (one parallel batch), waits for the section to land, then brings in the next. Nobody plays out of turn; nobody plays themselves.
 
@@ -53,7 +55,7 @@ crew_plan:
       parallel: true|false             # may all tasks in this stage run in one dispatch batch?
       tasks:
         - id: <slug>                   # unique within the plan
-          agent: <dispatchable agent name>      # e.g. leah, ada, athena
+          agent: <role name>                    # one of the nine roles, e.g. leah, ada, reid; lenses go in the brief as `Lens: conductor/lenses/<name>.md`
           role: Owner|Core Contributor|Reviewer|Control|Standby
           depends_on: [<task id>, ...] # intra-mission edges; [] if none
           brief:                       # the six-field Dispatch Brief Contract — VERBATIM REQUIRED
@@ -64,7 +66,7 @@ crew_plan:
             milestones: <deliverable + named acceptance-evidence artifact + owner>   # required if >15min or prod-touching
             escalation_trigger: <condition that stops the agent and surfaces to the conductor>
           verifier:                    # null only if internal-only AND not irreversible
-            agent: Reid|Quinn|Cyra|Verity|Maialen|Lysandra
+            agent: Reid|Quinn|Cyra               # schema also accepts the pre-v0.2 names for old plans
             required: true|false       # true for prod-touching / client-facing / externally-visible / irreversible-informing
             primary_artifacts: [<path/url the verifier must read itself>]
 
@@ -80,7 +82,7 @@ crew_plan:
 ### 3.2 Rules the plan must satisfy (the conductor rejects a plan that violates these)
 
 1. **Every task carries a full six-field [dispatch brief](dispatch-brief.md).** No "dispatch a general-purpose agent" without the six fields. Missing fields = the same warn-mode signal the brief validator raises.
-2. **Every `agent` is a real, dispatchable definition** (`.claude/agents/*`). If the needed specialist does not exist, the plan names a **general-purpose agent** with a complete brief **and** a `flag_for_tess: source <capability>` so the gap is logged (this is how the current analytics / M&A / legal / finance gaps are handled honestly).
+2. **Every `agent` is one of the nine roles** (`.claude/agents/*`, roster.md); expertise goes in the brief as a `Lens:` line, never in a new agent name. If no lens covers the needed expertise, the plan uses the closest role with a complete brief **and** a `flag_for_tess: <capability>` so the gap is logged and a lens can be written.
 3. **`gate_in` references a real gate** from [doctrine.md](doctrine.md): intake-before-anything, research-before-build, crew-before-deploy, review-before-synthesis, verification-before-externally-visible. No stage may start before its gate clears.
 4. **`verifier.required: true`** for any task that is prod-touching, client-facing, externally-visible, or informs an irreversible decision ([verification-routing.md](verification-routing.md)). The verifier's `primary_artifacts` are the real outputs, never a summary.
 5. **≤ 4 guilds** per orchestrator mission (the anti-sprawl cap). More than 4 → the plan's `escalations` must carry "exceeds 4-guild cap → escalate to Tess."
@@ -101,7 +103,7 @@ crew_plan:
       parallel: true
       tasks:
         - id: pipeline-data
-          agent: general-purpose            # NOTE: no dispatchable Analytics specialist
+          agent: leah                       # brief loads the noemi (data quality) lens
           role: Core Contributor
           depends_on: []
           brief:
@@ -114,10 +116,11 @@ crew_plan:
                 acceptance_evidence: source rows quoted from the CRM export
                 owner: pipeline-data
             escalation_trigger: Export missing or stages unmappable → stop, surface to conductor.
-          verifier: { agent: Verity, required: true, primary_artifacts: [<crm export path>] }
-          flag_for_tess: source a dedicated Analytics specialist
+          verifier: { agent: Reid, required: true,   # brief loads the verity lens
+                       primary_artifacts: [<crm export path>] }
+          flag_for_tess: extend the noemi lens for funnel analytics
         - id: offer-read
-          agent: apolline
+          agent: leah                       # brief loads the apolline lens
           role: Owner
           depends_on: []
           brief: { objective: ..., output_contract: ..., tools_sources_constraints: ..., not_responsible_for: ..., milestones: ..., escalation_trigger: ... }

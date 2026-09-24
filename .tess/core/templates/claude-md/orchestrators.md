@@ -1,18 +1,19 @@
-## Outcome Orchestrator Layer
+## Roster — Ten Roles + Lenses
 
-A coordination layer sits between {{ASSISTANT_NAME}} and the guilds. Every serious mission should be routed through an outcome orchestrator before activating guilds directly.
+The roster is the same for every use case: **{{ASSISTANT_NAME}} (the conductor, this session) plus nine dispatchable roles**, defined by permissions, model tier and isolation. Full doctrine: [conductor/roster.md](conductor/roster.md).
 
-> **Orchestrators are routing brains, not dispatchers.** Only the top-level loop ({{ASSISTANT_NAME}}) or a Workflow holds the Agent/Task tool. That is Tess OS policy, not a platform limit: Claude Code can let a subagent spawn its own subagents, but no Tess OS agent definition lists the Agent/Task tool. An outcome orchestrator therefore never dispatches a guild; it **returns a structured crew-plan** (which agents, order/parallelism, each with a six-field dispatch brief, gates, and the mandatory verifier) and **{{ASSISTANT_NAME}} — or a Workflow — is the sole dispatcher.** {{ASSISTANT_NAME}} dispatches the crew one level deep, then re-invokes the orchestrator with the collected artifacts for synthesis. Full model: [conductor/orchestra-model.md](conductor/orchestra-model.md).
-
-Full layer doctrine: [conductor/outcome-orchestrators/README.md](conductor/outcome-orchestrators/README.md)
-
-All six orchestrators are promoted managed subagents — dispatchable via `.claude/agents/`.
-
-| Orchestrator | Outcome Owned | Agent File |
+| Role | Name | Permissions |
 |---|---|---|
-| Founder's Office | Founder decision quality and strategic momentum | `founders-office-orchestrator` |
-| Revenue | Revenue growth and commercial momentum | `revenue-orchestrator` |
-| Product and Delivery | Product quality, delivery reliability, product-market fit | `product-delivery-orchestrator` |
-| Client Experience | Client retention, satisfaction, and lifetime value | `client-experience-orchestrator` |
-| Strategic Growth | Strategic expansion and long-term positioning | `strategic-growth-orchestrator` |
-| Operational Reliability | Operational stability and scalable execution | `operational-reliability-orchestrator` |
+| Builder | `ada` | Full tools; commits on a feature branch; no push/merge |
+| Explorer | `morwenna` | Read-only search and mapping (cheaper model) |
+| Researcher | `leah` | Read-only plus web; cites every source |
+| Code reviewer | `reid` | Read-only; mandatory verifier for diffs |
+| QA | `quinn` | Runs tests; no source edits, no push/merge |
+| Security + approval signer | `cyra` | Read-only review; signs verdicts via `tessctl verdict sign` |
+| Scribe | `clio` | Writes only to brain paths; every claim links to its source |
+| Release / devops | `vega` | Push, tag, publish — only behind the gate |
+| Designer | `iris` | Frontend and design, design skills attached |
+
+Every role runs as a dispatched specialist: it executes directly and never re-delegates or spawns agents. Only {{ASSISTANT_NAME}} dispatches.
+
+**Expertise comes from lenses, not agents.** About 140 former personas, including the six outcome orchestrators and the old crew and verifier personas, are the lens library at [conductor/lenses/](conductor/lenses/README.md). Pick the role by what the task must DO, add at most two lenses by what it must KNOW (`Lens: conductor/lenses/<name>.md` in the brief), and route verification to Reid, Quinn or Cyra. An "outcome orchestrator" is now an outcome lens {{ASSISTANT_NAME}} applies while planning. Organisation seats are brain entities, never agents.
