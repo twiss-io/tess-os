@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T05:25:57.367799Z'
+  last_updated: '2026-09-24T06:17:57.522707Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5761,7 +5761,7 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e1431d1f29557bb8aed4d9152b094273911f3bf819ecc760aea1a0723af543a8
+    base_sha: sha256:97cd73b02bc0af794bf904ca2533af71e5173e2d3d4a827bad3af18723addbe3
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6089,7 +6089,7 @@ render_outputs:
   AGENTS.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:7c24805a51d69d626f43e49561569fd268104d0dc593884eb7d9f349dfd95b5c
+    rendered_sha: sha256:7f8897ca364056eaa1bfe94d85b035c092e839d49e65206d2a0c409a75b37da7
   .codex/config.toml:
     target: codex
     status: rendered

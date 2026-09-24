@@ -109,10 +109,20 @@ candidate. Key custody is a designated human ceremony owned by Xavier. See
 | Codex | **Preview** | Tess OS can render Codex project files and has a driver, but the driver is not live-tested against native event samples and has no native-parity certification. |
 | Generic `AGENTS.md` tools | **Preview** | Tess OS can emit instructions and plain prompts. This does not prove native orchestration, tool control, or feature parity in every host. |
 | Perplexity | **Unsupported** | There is no repository adapter or driver. A future bounded, read-only research-worker role is under consideration; it is not a coding-harness integration. |
-| Gemini and other platforms | **Unsupported** | A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
+| Grok Build, Kimi Code, Qwen Code, DeepSeek Harness | **Preview** (runtime level Advisory) | No adapter or driver. They load a Tess install through files Tess already renders: Grok Build and DeepSeek Harness read the Claude-compatible files, Kimi Code and Qwen Code read `AGENTS.md`, and all four list the Tess commands as skills. No Tess gate runs in any of them. Checked offline on 2026-09-24 with [`tools/runtime-smoke`](tools/runtime-smoke/README.md). |
+| Gemini CLI | **Unsupported** as a render target on this branch | Runs only with a Gemini API key or Vertex AI: Google ended consumer "Login with Google" for Gemini CLI on 2026-06-18. It lists the Tess commands from `.agents/skills/` in a trusted folder, and reads `AGENTS.md` only if `context.fileName` names it. |
+| Antigravity CLI and other platforms | **Unsupported** | Antigravity's terms treat use with products not provided by Google as abuse. A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
 | Agent Execution Contract governance defaults | **Planned** | The C/T assurance, local-data, zero-spend, credential, retention, Cloud, Memory, and Vault defaults are accepted as a non-enforcing contract; runtime grading and enforcement are not implemented. See [AEC governance defaults](docs/AEC_GOVERNANCE_DEFAULTS.md). |
 | Tess Cloud | **Planned** | A separate, optional cloud-sync product; it does not exist in this repository and will depend on stable Tess OS contracts. |
 | Tess Vault | **Planned** | A separate agent-era secret-capability product; it is not a required Tess OS service and must not expose secrets to agents, evidence, or memory. |
+
+Where a Tess install runs today: natively on Claude Code and Codex; through the
+Claude-compatible files on Grok Build and DeepSeek Harness; through `AGENTS.md`
+on Kimi Code and other `AGENTS.md` tools; and on Gemini CLI with a Gemini API
+key. Only Claude Code runs Tess's gates as designed. Each runtime is used
+through the vendor's own CLI and sign-in; Tess never handles a login token. See
+[runtime conformance](adapters/CONFORMANCE.md) for levels, subscription paths
+and gaps.
 
 ## How the gate is meant to work
 

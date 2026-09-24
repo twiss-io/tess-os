@@ -55,7 +55,11 @@ runtimes change quickly, so re-check before relying on a row.
 | Google Jules | none (reads `AGENTS.md`) | Advisory | `AGENTS.md` at the repository root. | Cloud agent with no documented hooks, commands or custom agents. | [docs](https://jules.google/docs/) |
 | Aider | none (needs one config line) | Advisory | Never reads `AGENTS.md` automatically. Add `read: [AGENTS.md]` to `.aider.conf.yml`, or run `aider --read AGENTS.md`. | No hooks, custom agents or user commands. | [conventions](https://aider.chat/docs/usage/conventions.html) |
 | Kiro | none (reads `AGENTS.md`) | Advisory | `AGENTS.md` is always included, at the root and in subdirectories. | Its own JSON hooks and agents; Tess renders neither. Checked through a summarising fetch, medium confidence. | [steering](https://kiro.dev/docs/steering/), [hooks](https://kiro.dev/docs/hooks/) |
-| Qwen Code | none (reads `AGENTS.md`) | Advisory | Reads `AGENTS.md` alongside `QWEN.md`. | Claude-style `settings.json` hooks exist, but Tess renders no Qwen settings and the similarity is untested. | [Qwen Code docs](https://github.com/QwenLM/qwen-code/tree/main/docs) (features: memory, hooks) |
+| Qwen Code | none (reads `AGENTS.md`) | Advisory | Reads `AGENTS.md` alongside `QWEN.md`; never `CLAUDE.md`. In the runtime smoke it also listed the 26 `.agents/skills/tess-*` skills as project skills, although its docs name only `.qwen/skills/`. | Hooks live in `.qwen/settings.json`, which Tess does not render and which an untrusted folder ignores, so no Tess gate runs. | [memory: features › memory.md](https://github.com/QwenLM/qwen-code/tree/main/docs), [skills: features › skills.md](https://github.com/QwenLM/qwen-code/tree/main/docs), [hooks: features › hooks.md](https://github.com/QwenLM/qwen-code/tree/main/docs), [trusted folders: configuration › trusted-folders.md](https://github.com/QwenLM/qwen-code/tree/main/docs) |
+| Grok Build (xAI) | none (reads `claude-code` and `codex` output) | Advisory | In a trusted folder: `CLAUDE.md` **and** `AGENTS.md`, `.claude/rules/`, `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, `.agents/skills/`, the hooks and permission rules in `.claude/settings.json`, and a project `.mcp.json`. In an untrusted folder, none of the instructions, skills or hooks load. | The Claude hooks fire, but with Grok's own tool names (`spawn_subagent`, `run_terminal_command`, `search_replace`), so `vault-dispatch-scan.py`, the one shipped hook that blocks, never matches: the runtime smoke saw a secret-shaped subagent prompt reach the subagent. Hook crashes and timeouts fail open. It loads the conductor profile (`CLAUDE.md`) and the worker profile (`AGENTS.md`) together. | [project rules](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md), [hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md), [skills](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md), [permissions](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md) |
+| Kimi Code (Moonshot) | none (reads `codex` output) | Advisory | `AGENTS.md` (plus `.kimi-code/AGENTS.md`) from the git root down to cwd, never `CLAUDE.md`; the 26 `.agents/skills/tess-*` skills. | Hooks are user-level only (`~/.kimi-code/config.toml`) and fail open, so a project cannot ship one. `kimi -p` runs in auto mode and never asks for approval; only static deny rules apply. Subagents come from `.kimi-code/agents/` or `.agents/agents/`, which Tess does not render. | [instruction files](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md), [skills](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/skills.md), [hooks](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/hooks.md), [`kimi` command](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md) |
+| DeepSeek Harness (developer preview) | none (reads `claude-code` and `codex` output) | Advisory | `AGENTS.md` and `CLAUDE.md` (plus `.local.md` overlays) from the project root down, within a 65,536-byte baseline budget; skills from `.agents/skills/`. | Its Claude Code hook bridge is an opt-in plugin that neither default bundle mounts, so no Tess hook runs by default. Developer preview: its README warns of breaking changes. | [instructions](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/context/agent-instructions/README.md), [hook bridge](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/hooks/hooks-claude-code/README.md), [skills](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/skill/skill-filesystem/README.md), [CLI](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md) |
+| Antigravity CLI (Google) | none (reads `AGENTS.md`) | Advisory | Documented: `GEMINI.md` and `AGENTS.md` in the workspace, skills from `.agents/skills/`, hooks from `.agents/hooks.json`, MCP from `.agents/mcp_config.json`. Tess renders none of the `.agents/` configs except the skills. | An open bug reports that nothing under a workspace `.agents/` loads under `agy -p` ([antigravity-cli#1052](https://github.com/google-antigravity/antigravity-cli/issues/1052)). Not smoke-tested here, and never run live: see the subscription table below. | [migrating from Gemini CLI](https://antigravity.google/docs/cli/gcli-migration/), [headless](https://antigravity.google/docs/cli/headless) |
 | Google Gemini CLI | none on this branch | not rendered | Reads `GEMINI.md` by default and ignores `AGENTS.md` unless `context.fileName` names it. Hand-apply `.gemini/settings.json`: `{"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}}`. Skills load from `.agents/skills`. | No Tess render target in this build. Different hook event names and output keys; the project policy tier is documented as non-functional ([gemini-cli#18186](https://github.com/google-gemini/gemini-cli/issues/18186)). | [GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/gemini-md.md), [hooks](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md), [trusted folders](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/trusted-folders.md) |
 | Cline | none | unverified | Its docs say it detects `AGENTS.md`; hooks defer to SDK plugin docs. | Not verified for this release; treat as AGENTS.md-only. | [rules](https://docs.cline.bot/features/cline-rules) |
 | Roo Code | none | unverified | Its docs say it reads `AGENTS.md` when `useAgentRules` is on (default). | Not verified for this release; treat as AGENTS.md-only. | [custom instructions](https://roocodeinc.github.io/Roo-Code/features/custom-instructions) |
@@ -84,6 +88,23 @@ and `generic`). Runtimes resolve the pair differently:
   [Amp](https://ampcode.com/docs/markdown/customize/agents-md)).
 - **Gemini CLI** reads `GEMINI.md` unless `context.fileName` is set
   ([GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/gemini-md.md)).
+- **Grok Build** loads every recognised file in each directory, so it reads
+  `CLAUDE.md` and `AGENTS.md` together: the conductor profile and the worker
+  profile at once. Only in a trusted folder; no size cap
+  ([project rules](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md)).
+- **Kimi Code** reads `AGENTS.md` (and `.kimi-code/AGENTS.md`) from the git
+  root down, plus `~/.kimi-code/AGENTS.md` and `~/.agents/AGENTS.md`, and never
+  `CLAUDE.md`. Above 32 KiB in total it only warns
+  ([instruction files](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md),
+  [loader](https://github.com/MoonshotAI/kimi-code/blob/main/packages/agent-core-v2/src/agent/profile/context.ts)).
+- **Qwen Code** reads `QWEN.md` and `AGENTS.md`, not `CLAUDE.md`
+  ([memory: features › memory.md](https://github.com/QwenLM/qwen-code/tree/main/docs)).
+- **DeepSeek Harness** reads `AGENTS.md` and `CLAUDE.md` from the project root
+  down; a `CLAUDE.md` identical to its `AGENTS.md` renders once. The base
+  profile caps the rendered pair at 65,536 bytes, dropping broader files first
+  ([agent instructions](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/context/agent-instructions/README.md)).
+- **Antigravity CLI** reads the workspace `GEMINI.md` and `AGENTS.md`
+  ([migration guide](https://antigravity.google/docs/cli/gcli-migration/)).
 - **Aider** reads nothing automatically; add `read: [AGENTS.md]` to
   `.aider.conf.yml` ([conventions](https://aider.chat/docs/usage/conventions.html)).
 
@@ -91,17 +112,74 @@ and `generic`). Runtimes resolve the pair differently:
 
 The `codex` target renders the 26 commands as `.agents/skills/tess-<command>/`
 (see [`codex/README.md`](codex/README.md)). Codex, Gemini CLI, Cursor, the
-Copilot CLI, OpenCode and Amp all read `.agents/skills/`
+Copilot CLI, OpenCode, Amp, Grok Build, Kimi Code and DeepSeek Harness all read
+`.agents/skills/`
 ([Codex](https://learn.chatgpt.com/docs/build-skills.md),
 [Gemini](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/skills.md),
 [Cursor](https://cursor.com/docs/skills.md),
 [OpenCode](https://opencode.ai/docs/skills/),
-[Amp](https://ampcode.com/docs/markdown/customize/skills)). Claude Code does
-not; it uses `.claude/commands/`. Cursor and the Copilot CLI read both
+[Amp](https://ampcode.com/docs/markdown/customize/skills),
+[Grok Build](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md),
+[Kimi Code](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/skills.md),
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/skill/skill-filesystem/README.md)); Qwen Code
+listed them too in the runtime smoke, although its docs name only
+`.qwen/skills/`. Antigravity CLI documents `.agents/skills/`, but see
+[antigravity-cli#1052](https://github.com/google-antigravity/antigravity-cli/issues/1052).
+Claude Code does not; it uses `.claude/commands/`.
+
+Each runtime has its own way to run a skill by name, and the rendered
+`AGENTS.md` names them: Codex `$tess-<name>`, Kimi Code `/skill:tess-<name>`
+([skills](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/skills.md)), Grok Build and Qwen Code
+`/tess-<name>` ([Grok](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md), [Qwen: features › skills.md](https://github.com/QwenLM/qwen-code/tree/main/docs)). Cursor and the Copilot CLI read both
 `.claude/commands/` and `.agents/skills/`, so a codex-enabled install shows
-each command twice there. The `agents/openai.yaml` explicit-only policy is a
+each command twice there; so does Grok Build (`/add-mission` and
+`/tess-add-mission`). The `agents/openai.yaml` explicit-only policy is a
 Codex setting; other runtimes may still pick a skill implicitly from its
 description.
+
+### Subscriptions, headless use and known gaps
+
+Tess OS never reads, stores or passes on a vendor login token. It works with a
+subscription only by running the vendor's own, unmodified CLI, signed in
+through the vendor's own flow. Where the vendor offers no such path, the only
+route is an API key. "Allowed" below means the vendor documents or invites
+this use. Plan limits and terms still apply, and they change: re-check before
+relying on a row. The level column repeats the table above.
+
+| Runtime | Level | Subscription path | Headless command | Loads from a Tess install | Known gaps |
+|---|---|---|---|---|---|
+| Claude Code | Enforced ([hooks](https://code.claude.com/docs/en/hooks)) | **Allowed, with conditions**: the unmodified `claude` binary, the user's own sign-in, and "ordinary, individual usage". `--bare` never reads the subscription login ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [headless](https://code.claude.com/docs/en/headless)) | `claude -p "<task>"` ([headless](https://code.claude.com/docs/en/headless)) | `CLAUDE.md`, `.claude/` commands, agents, skills and hooks ([memory](https://code.claude.com/docs/en/memory.md)) | A `PreToolUse` command hook that times out does not block ([hooks](https://code.claude.com/docs/en/hooks)) |
+| OpenAI Codex CLI | Partial ([hooks](https://learn.chatgpt.com/docs/hooks.md)) | **Allowed**: `codex exec` reuses a saved ChatGPT sign-in (Plus or above), on trusted private runners, one `auth.json` per runner ([non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode), [CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)) | `codex exec "<task>"` ([non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)) | `AGENTS.md`, `.agents/skills/tess-*`, `.codex/config.toml` ([AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md)) | Hooks an admin does not manage are skipped until trusted ([hooks](https://learn.chatgpt.com/docs/hooks.md)) |
+| Grok Build | Advisory ([hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)) | **Allowed**: included with SuperGrok and X Premium+; xAI presents `-p` as "for scripts and automations" ([launch post](https://x.ai/news/grok-build-cli)). xAI still recommends an API key for CI ([authentication](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)) | `grok -p "<task>" --trust` (the grant is recorded under `~/.grok`); `GROK_FOLDER_TRUST=0` lifts the trust gate without recording one. ACP: `grok agent stdio` ([headless](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md), [hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)) | `CLAUDE.md` + `AGENTS.md`; the 26 `tess-*` skills plus `.claude/commands` and `.claude/skills`; `.claude/agents`; `.claude/settings.json` hooks and permissions ([project rules](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md), [skills](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md)) | The conductor and worker profiles load together. The vault gate does not block ([runtime smoke](#runtime-smoke-2026-09-24)). An allowing `UserPromptSubmit` hook's output is discarded, so the time-context hook adds nothing ([hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)). An untrusted folder loads none of this |
+| Kimi Code | Advisory ([hooks](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/hooks.md)) | **Allowed**: a Kimi membership signed in with `kimi login` (device code); product or team use belongs on the Kimi Open Platform ([membership guide](https://www.kimi.com/en/help/kimi-code/membership-guide), [`kimi login`](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md)) | `kimi -p "<task>"`: always auto mode, and cannot be combined with `--plan`, `--yolo` or `--auto`. ACP: `kimi acp` ([`kimi` command](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md), [ACP](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-acp.md)) | `AGENTS.md` and the 26 `tess-*` skills; no `CLAUDE.md`, subagents, hooks or MCP ([instruction files](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md), [skills](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/skills.md)) | Never asks for approval under `-p`, so run it in a scratch worktree or give it no write task ([`kimi` command](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/kimi-command.md)). The worker profile names the conductor only as the Claude Code session, so asked who it is, Kimi does not answer with the conductor's name ([runtime smoke](#runtime-smoke-2026-09-24)) |
+| Qwen Code | Advisory ([hooks: features › hooks.md](https://github.com/QwenLM/qwen-code/tree/main/docs)) | **Allowed with Alibaba Cloud Coding Plan**: a fixed monthly plan with an `sk-sp-` key. The Qwen OAuth free tier ended on 2026-04-15 ([authentication: configuration › auth.md](https://github.com/QwenLM/qwen-code/tree/main/docs)) | `qwen "<task>"` (`-p` is deprecated) with `--approval-mode`; ACP: `qwen --acp` ([headless: features › headless.md](https://github.com/QwenLM/qwen-code/tree/main/docs)) | `AGENTS.md` and, observed, the 26 `tess-*` skills ([memory: features › memory.md](https://github.com/QwenLM/qwen-code/tree/main/docs), [runtime smoke](#runtime-smoke-2026-09-24)) | Hooks and MCP come only from `.qwen/settings.json`, which an untrusted folder ignores and Tess does not render ([trusted folders: configuration › trusted-folders.md](https://github.com/QwenLM/qwen-code/tree/main/docs)) |
+| DeepSeek Harness | Advisory ([hook bridge](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/hooks/hooks-claude-code/README.md)) | **Not available**: API key only. Providers that sign in with OAuth are not supported, and no DeepSeek consumer subscription was found ([providers](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)) | `dsh --profile headless "<task>"`; ACP: `dsh --profile acp` ([CLI](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)) | `AGENTS.md` + `CLAUDE.md` and the 26 `tess-*` skills ([instructions](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/context/agent-instructions/README.md), [skills](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/skill/skill-filesystem/README.md)) | Developer preview with announced breaking changes ([README](https://github.com/deepseek-ai/deepseek-harness)). The Claude hook bridge is opt-in and reads one config per process ([hook bridge](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/hooks/hooks-claude-code/README.md)) |
+| Antigravity CLI | Advisory ([migration guide](https://antigravity.google/docs/cli/gcli-migration/)) | **Not available to Tess**: `agy` runs on its cached Google sign-in, but its terms treat use "in connection with products not provided by us" as abuse, and Google has not answered whether a single-user wrapper is allowed ([terms](https://antigravity.google/terms), [forum question](https://discuss.ai.google.dev/t/question-about-personal-wrapper-around-official-antigravity-cli-headless-mode/178472)). A Gemini API key is documented for headless use ([install](https://antigravity.google/docs/cli/install/)); whether the terms clause also covers an API-key run is unverified | `agy -p "<task>"`; tools that need approval are soft-denied ([headless](https://antigravity.google/docs/cli/headless)) | `GEMINI.md` and `AGENTS.md`, documented, not smoke-tested ([migration guide](https://antigravity.google/docs/cli/gcli-migration/)) | Workspace `.agents/` content reportedly never loads under `agy -p` ([antigravity-cli#1052](https://github.com/google-antigravity/antigravity-cli/issues/1052)) |
+| Gemini CLI | As in the Gemini CLI row above ([GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/gemini-md.md)) | **Gemini API key or Vertex AI only.** Google ended consumer "Login with Google" for Gemini CLI on 2026-06-18 ([Gemini Code Assist FAQ](https://developers.google.com/gemini-code-assist/resources/faqs), updated 2026-09-02). The CLI's own [authentication page](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx) still describes Pro/Ultra sign-in; the FAQ is the later statement | `gemini -p "<task>"`; an untrusted folder exits with `FatalUntrustedWorkspaceError` unless `--skip-trust` is passed ([trusted folders](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/trusted-folders.md)) | The 26 `tess-*` skills in a trusted folder ([skills](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/skills.md), [runtime smoke](#runtime-smoke-2026-09-24)); `AGENTS.md` only through `context.fileName` or a `GEMINI.md` import ([GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/gemini-md.md)) | Different hook events and output contract; the project policy tier does not work ([gemini-cli#18186](https://github.com/google-gemini/gemini-cli/issues/18186)) |
+
+So the accurate one-line claim is: **native on Claude Code and Codex; loads
+through Claude-compatible files on Grok Build and DeepSeek Harness; through
+`AGENTS.md` on Kimi Code and other `AGENTS.md` tools; Gemini CLI with a Gemini
+API key.** It is not a claim about every frontier model, and "loads" is not
+"enforces": only Claude Code runs Tess's gates as designed.
+
+### Runtime smoke (2026-09-24)
+
+[`tools/runtime-smoke/`](../tools/runtime-smoke/README.md) scaffolds a fresh
+install with a random conductor name and checks each CLI without logging in.
+It points the CLI at a local mock model endpoint (or its own `inspect`/`skills
+list` command) and reads what the CLI would have sent to the model. A live run
+happens only with `--live`, only with a CLI already on the operator's PATH, and
+only if that CLI is already signed in.
+
+| Runtime | Version | What reached the model, offline | Gate probe | Live |
+|---|---|---|---|---|
+| Grok Build | 1.0.41 | Trusted folder: `AGENTS.md` + `CLAUDE.md`, the conductor name, 26 `tess-*` skills, Claude hooks and agents. Untrusted: none of it | The mock returned a `spawn_subagent` call with a secret-shaped prompt; the prompt reached the subagent unblocked | Not run: not signed in on the test machine |
+| Kimi Code | 2.1.0 (npm), 0.38.0 (native) | `AGENTS.md` only, the conductor name, 26 `tess-*` skills | No project hooks exist | 0.38.0, signed in: it answered as Kimi Code working in a Tess OS project and listed all 26 skills, but did not give the conductor's name. With the previous `AGENTS.md` it offered Codex's `$tess-<name>` syntax; with this release's it offers `/skill:tess-<name>` |
+| Qwen Code | 0.24.4 | `AGENTS.md` only, the conductor name, 26 `tess-*` skills | No project hooks rendered | Not run: not installed for the operator |
+| DeepSeek Harness | 0.1.5-rc.3 | `AGENTS.md` + `CLAUDE.md`, the conductor name, 26 `tess-*` skills | Bridge not mounted | Not run: no API key |
+| Gemini CLI | 0.61.0 | `skills list`, trusted folder: 26 `tess-*` skills; no `GEMINI.md` on this branch | No hook translated | Not run: no Gemini API key |
+| Antigravity CLI | not installed | UNVERIFIED | UNVERIFIED | Never run by the smoke (terms) |
 
 ### What does not translate
 
@@ -120,7 +198,13 @@ this release renders them for another runtime.
    Copilot fails open on timeouts
    ([Copilot](https://docs.github.com/en/copilot/reference/hooks-reference)).
    OpenCode and Amp need JS/TS plugins; Devin Desktop has its own `pre_*`
-   events.
+   events. Grok Build runs Tess's `.claude/settings.json` hooks with its own
+   tool names, so the `Task|Agent` gate sees `spawn_subagent` and lets it
+   through, and failures fail open ([Grok hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)). Kimi Code
+   reads hooks only from the user's config and fails open
+   ([Kimi hooks](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/hooks.md)); Qwen Code reads them from
+   `.qwen/settings.json`; DeepSeek Harness runs Claude hooks only through an
+   opt-in bridge ([bridge](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/hooks/hooks-claude-code/README.md)).
 2. **The Telegram channel.** It is a Claude Code plugin, and the hooks match
    its tool names (`mcp__plugin_telegram_telegram__*`), which match nothing
    elsewhere. Worker runtimes report through their own channel (see the
@@ -137,8 +221,10 @@ this release renders them for another runtime.
    Claude, `allow_implicit_invocation` in Codex).
 5. **Size and loading.** Codex caps the whole `AGENTS.md` chain at 32 KiB,
    shared with the user's global file; Devin Desktop limits a workspace rule to
-   12,000 characters. The lean worker `AGENTS.md` is kept at or under 12,000
-   bytes for that reason.
+   12,000 characters. Kimi Code warns above 32 KiB of `AGENTS.md` in total;
+   DeepSeek Harness truncates its `AGENTS.md` + `CLAUDE.md` baseline at
+   65,536 bytes; Grok Build has no cap but loads `CLAUDE.md` as well. The lean
+   worker `AGENTS.md` is kept at or under 12,000 bytes for that reason.
 6. **Model- and harness-specific features.** Subagent `effort`,
    `isolation: worktree`, `memory`, forked context and `${CLAUDE_*}`
    substitutions are Claude Code only

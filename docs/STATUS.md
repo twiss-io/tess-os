@@ -26,7 +26,9 @@ repository today from pilot work and product plans.
 | `tessctl run` conductor | **Available** | Validates plans, gates, artifacts, retries, and escalation in a sequential execution model. Parallel execution and synthesis remain future work. |
 | MCP server | **Available** | Provider-neutral stdio JSON-RPC with limited read/check tools. MCP connects tools and context; it is not a review or trust-enforcement mechanism. |
 | Perplexity adapter/driver | **C0 — not supported** | Tess OS has no Perplexity repository adapter. A future read-only research-worker role is only a proposal. |
-| Gemini adapter/driver | **C0 — not supported** | No registered render target or dispatch driver exists. |
+| Gemini adapter/driver | **C0 — not supported** | No registered render target or dispatch driver exists on this branch. Gemini CLI runs only with a Gemini API key or Vertex AI: Google ended consumer "Login with Google" for it on 2026-06-18. |
+| Grok Build, Kimi Code, Qwen Code, DeepSeek Harness | **Preview** | No adapter manifest or driver. Each loads a Tess install through the existing `claude-code` or `codex` output at runtime level Advisory (no Tess gate runs there), checked offline on 2026-09-24 with `tools/runtime-smoke/`. Use a subscription only through the vendor's own CLI and sign-in; DeepSeek Harness takes an API key only. See [runtime conformance](../adapters/CONFORMANCE.md). |
+| Antigravity CLI | **Unsupported** | Its terms treat use with products not provided by Google as abuse; not smoke-tested. |
 | All frontier models | **Unsupported as a blanket claim** | A model name, OpenAI-compatible API, or MCP support is not adapter conformance. |
 | AEC governance defaults and advisory template | **Available** | The accepted, non-enforcing contract and offline validator are in `docs/AEC_GOVERNANCE_DEFAULTS.md` and `adapters/support-policy/`. This does not grade a real execution. |
 | AEC runtime assurance grading and enforcement | **Planned** | AEC-C0-AEC-C4 completeness and T0-T3 source-trust defaults are accepted, but no runtime assigns or enforces those levels today. Adapter C0-C4 capability labels are separate and cannot satisfy AEC assurance. |
