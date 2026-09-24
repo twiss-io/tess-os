@@ -475,6 +475,28 @@ AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
 COMMANDS_CORE_DIR = ".tess/core/commands"
 
+# v0.2.0 (ws-rt) — Codex commands as Agent Skills. Codex never loads a
+# project-scoped `.codex/prompts/` (openai/codex#9848, closed NOT_PLANNED);
+# it DOES scan `.agents/skills/<name>/SKILL.md` from the working directory up
+# to the repo root (https://learn.chatgpt.com/docs/build-skills.md). So the
+# `codex` target renders each `.tess/core/commands/<name>.md` as
+# `.agents/skills/tess-<name>/SKILL.md` (Agent Skills frontmatter: name +
+# description) plus `agents/openai.yaml` (Codex invocation policy: explicit
+# `$tess-<name>` only, mirroring a Claude Code slash command, which the user
+# invokes by name). The `tess-` prefix keeps these inside ONE owned glob,
+# AGENT_SKILL_OWNED_GLOB, which beats the manifest's `.agents/**` never_touch
+# (owned_globs > never_touch), so user-authored skills under `.agents/skills/`
+# stay unreachable to the write gate. `.codex/prompts/<name>.md` is RETIRED:
+# no longer rendered, reported by `tessctl render`, never deleted.
+AGENT_SKILLS_DIR = ".agents/skills"
+AGENT_SKILL_PREFIX = "tess-"
+AGENT_SKILL_OWNED_GLOB = ".agents/skills/tess-*/**"
+AGENT_SKILL_OPENAI_YAML = "agents/openai.yaml"
+RETIRED_CODEX_PROMPTS_DIR = ".codex/prompts"
+# Where the command bodies were AUTHORED to live (their relative links are
+# written against this directory) — used to rebase links into a skill dir.
+COMMAND_AUTHORED_DIR = ".claude/commands"
+
 OPERATOR_TOKEN_MAP = {
     "{{OPERATOR_IDENTITY}}":    "operator/identity-stub.md",
     "{{OPERATOR_PROFILE}}":     "operator/user-profile.md",
@@ -1391,6 +1413,157 @@ def render_codex_config_toml(root: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Agent Skills rendering (v0.2.0 — the `codex` target's command surface; see
+# AGENT_SKILLS_DIR above for why skills replace `.codex/prompts/`).
+# Pure byte renderers: same core + operator state -> same bytes.
+# ---------------------------------------------------------------------------
+
+_MD_LINK_TARGET_RE = re.compile(r"(\]\()([^)\s]+)(\))")
+_AGENT_SKILL_DESCRIPTION_MAX = 1024  # Agent Skills spec limit (agentskills.io)
+
+
+def agent_skill_name(command_name: str) -> str:
+    """`wake` -> `tess-wake` (the skill's frontmatter `name` AND its
+    directory name — the Agent Skills spec requires the two to match)."""
+    return f"{AGENT_SKILL_PREFIX}{command_name}"
+
+
+def agent_skill_dir(command_name: str) -> str:
+    return f"{AGENT_SKILLS_DIR}/{agent_skill_name(command_name)}"
+
+
+def _split_command_frontmatter(text: str) -> tuple:
+    """(frontmatter dict, body) for a `.tess/core/commands/*.md` file. A
+    missing or unparseable frontmatter block yields ({}, text)."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            try:
+                meta = yaml.safe_load(text[4:end]) or {}
+            except yaml.YAMLError:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            return meta, text[end + len("\n---\n"):]
+    return {}, text
+
+
+def _rebase_command_links(body: str, name: str, command_names: set) -> str:
+    """Rewrite relative Markdown link targets in a command body (authored to
+    live at COMMAND_AUTHORED_DIR) so they still resolve from the skill's own
+    directory. A link to a sibling command (`add-mission.md`) points at that
+    command's rendered skill. Absolute URLs, anchors, root-absolute paths and
+    targets that would escape the repo are left untouched."""
+    import posixpath
+
+    skill_dir = agent_skill_dir(name)
+
+    def _sub(m):
+        target = m.group(2)
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target) or target.startswith(("#", "/")):
+            return m.group(0)
+        path, sep, frag = target.partition("#")
+        if not path:
+            return m.group(0)
+        repo_rel = posixpath.normpath(posixpath.join(COMMAND_AUTHORED_DIR, path))
+        if repo_rel == ".." or repo_rel.startswith("../"):
+            return m.group(0)
+        parent, base = posixpath.split(repo_rel)
+        if parent == COMMAND_AUTHORED_DIR and base.endswith(".md") and base[:-3] in command_names:
+            repo_rel = f"{agent_skill_dir(base[:-3])}/SKILL.md"
+        return m.group(1) + posixpath.relpath(repo_rel, skill_dir) + sep + frag + m.group(3)
+
+    return _MD_LINK_TARGET_RE.sub(_sub, body)
+
+
+def render_agent_skill_md(root: Path, name: str) -> bytes | None:
+    """
+    The bytes of `.agents/skills/tess-<name>/SKILL.md` for command `name`, or
+    None if `.tess/core/commands/<name>.md` does not exist.
+
+    Frontmatter carries ONLY the two fields the Agent Skills spec requires
+    (`name`, `description`), so every runtime that reads `.agents/skills/`
+    (Codex, Gemini CLI, Cursor, Copilot CLI, OpenCode, Amp) can parse it. The
+    description is emitted as a JSON string, which is also a valid YAML
+    double-quoted scalar, so colons, quotes or em-dashes never break the YAML.
+    The command body follows verbatim (through apply_token_sub, like every
+    other rendered artifact) with its relative links rebased onto the skill
+    directory. Like _render_command_prompt_bytes, it never calls
+    render_core_to_live() (that would recurse into this target).
+    """
+    core_path = root / COMMANDS_CORE_DIR / f"{name}.md"
+    if not core_path.exists():
+        return None
+    text = apply_token_sub(core_path.read_text(encoding="utf-8"), root)
+    meta, body = _split_command_frontmatter(text)
+    description = " ".join(str(meta.get("description") or "").split())
+    if not description:
+        description = f"Tess OS command /{name}."
+    if len(description) > _AGENT_SKILL_DESCRIPTION_MAX:
+        description = description[: _AGENT_SKILL_DESCRIPTION_MAX - 3].rstrip() + "..."
+    raw_hint = meta.get("argument-hint") or ""
+    if isinstance(raw_hint, list):  # `argument-hint: [brief]` parses as a YAML list
+        raw_hint = "[" + ", ".join(str(x) for x in raw_hint) + "]"
+    hint = " ".join(str(raw_hint).split())
+    skill = agent_skill_name(name)
+    header = [
+        "---",
+        f"name: {skill}",
+        f"description: {json.dumps(description, ensure_ascii=False)}",
+        "---",
+        "",
+        f"<!-- Rendered by `tessctl render --target codex` from "
+        f"{COMMANDS_CORE_DIR}/{name}.md. Regenerate; do not hand-edit. -->",
+        "",
+        f"Tess OS command `/{name}`, packaged as an Agent Skill. Run it only "
+        f"when the user asks for it by name (`${skill}` in Codex).",
+    ]
+    if "$ARGUMENTS" in body:
+        expected = f" (expected: `{hint}`)" if hint else ""
+        header += [
+            "",
+            f"`$ARGUMENTS` below stands for the text the user supplied with "
+            f"the request{expected}.",
+        ]
+    rebased = _rebase_command_links(body.lstrip("\n"), name, set(_command_names(root)))
+    if not rebased.endswith("\n"):
+        rebased += "\n"
+    return ("\n".join(header) + "\n\n" + rebased).encode("utf-8")
+
+
+_AGENT_SKILL_OPENAI_YAML_BYTES = (
+    "# Rendered by `tessctl render --target codex`. Regenerate; do not hand-edit.\n"
+    "# Codex invocation policy (https://learn.chatgpt.com/docs/build-skills.md):\n"
+    "# a Tess command runs only when the user names it (`$tess-<command>`),\n"
+    "# the same way a Claude Code slash command does; Codex never picks it\n"
+    "# implicitly from the task description.\n"
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+).encode("utf-8")
+
+
+def render_agent_skill_openai_yaml(root: Path, name: str) -> bytes | None:
+    """The bytes of `.agents/skills/tess-<name>/agents/openai.yaml`, or None
+    if the command does not exist in core."""
+    if not (root / COMMANDS_CORE_DIR / f"{name}.md").exists():
+        return None
+    return _AGENT_SKILL_OPENAI_YAML_BYTES
+
+
+def _agent_skill_command_for(live_rel: str) -> tuple:
+    """(command name, file within the skill dir) for a path under
+    `.agents/skills/tess-*/`, else (None, None)."""
+    prefix = f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}"
+    if not live_rel.startswith(prefix):
+        return None, None
+    skill_dir, _, inner = live_rel[len(AGENT_SKILLS_DIR) + 1:].partition("/")
+    name = skill_dir[len(AGENT_SKILL_PREFIX):]
+    if not name or not inner:
+        return None, None
+    return name, inner
+
+
+# ---------------------------------------------------------------------------
 # Manifest glob matching
 #
 # M2 FIX (Fable Phase-2 adversarial review): the previous implementation
@@ -2256,6 +2429,61 @@ def _do_render(root: Path, verbose: bool = False) -> None:
 #                    implementation returns an empty set.
 # ---------------------------------------------------------------------------
 
+def _render_target_write(root: Path, live_rel: str, data: bytes, target: str) -> str:
+    """
+    The ONE write path for a RenderTarget's own copy/compile phase (codex,
+    generic; claude-code writes through _do_render). Returns 'written',
+    'unchanged' or 'skipped:<reason>'.
+
+    Pre-ckpt/eng-b-1 fallback: refuse to write THROUGH a symlink at the
+    final path component (lstat — the gate only checks directory
+    components), skip a byte-identical file, otherwise guarded_write (the
+    manifest write gate raises GateError on a path outside owned_globs).
+    """
+    live_path = root / live_rel
+    if os.path.islink(live_path):
+        raise GateError(
+            f"tessctl render: WRITE REFUSED — {live_rel!r} is a symlink "
+            f"(target {target!r} never writes through a symlink)."
+        )
+    if live_path.is_file() and live_path.read_bytes() == data:
+        return "unchanged"
+    guarded_write(root, live_rel, data, op="render")
+    return "written"
+
+
+def _report_render_statuses(target: str, statuses: dict, groups: list, verbose: bool) -> None:
+    """Print one summary line per artifact group. `statuses` maps live_rel ->
+    write status; `groups` is [(label, owned_glob_hint or None,
+    predicate(rel) -> bool)] in display order. A group whose writes were
+    skipped is ALWAYS reported (a skip is something the operator must act
+    on), aggregated by reason so 26 skills never print 52 lines; a
+    'not-owned' skip names the owned_globs entry to add."""
+    for label, glob_hint, pred in groups:
+        rels = sorted(r for r in statuses if pred(r))
+        if not rels:
+            continue
+        skipped: dict = {}
+        for r in rels:
+            st = statuses[r]
+            if st.startswith("skipped:"):
+                skipped.setdefault(st[len("skipped:"):], []).append(r)
+        done = len(rels) - sum(len(v) for v in skipped.values())
+        if verbose and done:
+            print(f"  rendered  {label}")
+        for reason in sorted(skipped):
+            n = len(skipped[reason])
+            line = f"  skipped   {label} — {n} file(s) {reason} (target {target!r})"
+            if reason == "not-owned" and glob_hint:
+                line += (
+                    f"; add \"{glob_hint}\" to tess.manifest.json owned_globs, "
+                    f"then re-run `tessctl render`"
+                )
+            elif n <= 3:
+                line += ": " + ", ".join(skipped[reason])
+            print(line)
+
+
 class RenderTarget:
     """Base adapter seam. Subclass per harness (claude-code, codex, gemini, generic)."""
 
@@ -2301,6 +2529,14 @@ class RenderTarget:
     def render_generated_paths(self, root: Path) -> set:
         """HIGH-1/MED-3: this target's compiled/generated live paths. Base:
         empty set (a copy-only target need not override this)."""
+        return set()
+
+    def retired_paths(self, root: Path) -> set:
+        """v0.2.0: live paths this target USED to render and no longer does
+        (e.g. codex's `.codex/prompts/<name>.md`). `tessctl render` reports
+        any that still exist on disk and NEVER deletes them — they may carry
+        an operator's own edits, and removing files is the operator's call.
+        Never overlaps render_generated_paths(). Base: empty set."""
         return set()
 
     def doctrine_digest_paths(self, root: Path) -> set:
@@ -2396,33 +2632,31 @@ class ClaudeCodeRenderTarget(RenderTarget):
 
 class CodexRenderTarget(RenderTarget):
     """
-    Tier B target (Phase 2 — docs/ULTIMATE_FRAMEWORK_PLAN.md Part B §B.2;
+    Tier B target (Phase 2; commands re-targeted to Agent Skills in v0.2.0 —
     full artifact map in adapters/codex/README.md). Compiles:
 
       * `AGENTS.md` — render_agents_md(root). SHARED with `generic` (see
         that function's docstring) — byte-identical regardless of which of
         the two targets is enabled.
-      * `.codex/prompts/*.md` — one per `.tess/core/commands/*.md` command
-        body, mirrored into Codex's native custom-prompt convention. This is
-        this target's OWN copy-phase (adapters/README.md "Adding Phase 2/3
-        targets" step 6) — `_do_restore` is Claude-Code-shaped and does not
-        reach `.codex/**`, so Codex needs its own render()-driven copy, not
-        a reuse of restore's generic loop.
+      * `.agents/skills/tess-<name>/SKILL.md` + `agents/openai.yaml` — one
+        Agent Skill per `.tess/core/commands/*.md` command body
+        (render_agent_skill_md / render_agent_skill_openai_yaml). Codex scans
+        `.agents/skills` from cwd up to the repo root; it never loads a
+        project-scoped `.codex/prompts/` (openai/codex#9848, NOT_PLANNED), so
+        the pre-0.2 prompt mirrors are now RETIRED (retired_paths(): reported
+        by render, never deleted). This is the target's OWN copy-phase —
+        `_do_restore` is Claude-Code-shaped and does not reach these paths.
       * `.codex/config.toml` — render_codex_config_toml(root); a project-
         scoped `approval_policy`/`sandbox_mode` default Codex only honors
         for a project the operator has marked trusted.
 
-    `.codex/prompts/*.md` are intentionally NOT individually tess.lock-
-    tracked: the underlying `.tess/core/commands/*.md` source is ALREADY
-    base_sha-pinned by the claude-code target's own (pre-existing)
-    `.claude/commands/**` lock entries, and the lock schema has no way to
-    give a SECOND live destination to an already-tracked core_key without
-    either duplicating the core bytes under a new path (a real drift risk —
-    two sources of truth for one doctrine file) or widening `live_path` to a
-    list across every lock consumer in this file (a much larger, riskier
-    change for this phase). Instead, doctor/verify/`lock --check` drift-check
-    these paths via the untracked-render-generated pass — see
-    `_check_untracked_render_generated()` below `render_generated_live_paths()`.
+    The skills are intentionally NOT individually tess.lock-tracked: the
+    underlying `.tess/core/commands/*.md` source is ALREADY base_sha-pinned
+    by the claude-code surface's own `.claude/commands/**` lock entries (the
+    lock schema gives one core_key exactly one live_path). doctor/verify/
+    `lock --check` drift-check them via `_check_untracked_render_generated()`.
+    Does NOT render `.codex/agents/` (no worker-profile agent set exists) or
+    `.codex/hooks.json` (hook translation is v0.2.1+; adapters/CONFORMANCE.md).
     """
 
     name = "codex"
@@ -2430,26 +2664,41 @@ class CodexRenderTarget(RenderTarget):
                                  # "always dispatch" would be false here.
 
     def live_globs(self) -> list:
-        return ["AGENTS.md", ".codex/prompts/**", ".codex/config.toml"]
+        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml"]
 
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
 
+    def _outputs(self, root: Path) -> list:
+        """[(live_rel, bytes)] in write order — the single source for
+        render(), expected_live_bytes() and render_generated_paths()."""
+        out = [("AGENTS.md", render_agents_md(root).encode("utf-8"))]
+        for name in _command_names(root):
+            skill = render_agent_skill_md(root, name)
+            if skill is None:
+                continue
+            out.append((f"{agent_skill_dir(name)}/SKILL.md", skill))
+            out.append((
+                f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}",
+                render_agent_skill_openai_yaml(root, name),
+            ))
+        out.append((".codex/config.toml", render_codex_config_toml(root).encode("utf-8")))
+        return out
+
     def render(self, root: Path, verbose: bool = False) -> dict:
-        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
-        names = _command_names(root)
-        for name in names:
-            body = _render_command_prompt_bytes(root, name)
-            if body is not None:
-                guarded_write(root, f".codex/prompts/{name}.md", body, op="render")
-        guarded_write(
-            root, ".codex/config.toml",
-            render_codex_config_toml(root).encode("utf-8"), op="render",
-        )
-        if verbose:
-            print(f"  rendered  AGENTS.md")
-            print(f"  rendered  .codex/prompts/** ({len(names)} prompts)")
-            print(f"  rendered  .codex/config.toml")
+        statuses = {
+            rel: _render_target_write(root, rel, data, self.name)
+            for rel, data in self._outputs(root)
+        }
+        n_skills = sum(1 for r in statuses if r.endswith("/SKILL.md"))
+        _report_render_statuses(self.name, statuses, [
+            ("AGENTS.md", None, lambda r: r == "AGENTS.md"),
+            (f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}*/ ({n_skills} skills)",
+             AGENT_SKILL_OWNED_GLOB,
+             lambda r: r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}")),
+            (".codex/config.toml", None, lambda r: r == ".codex/config.toml"),
+        ], verbose)
+        _report_retired_paths(root, self)
         return {"target": self.name, "status": "rendered"}
 
     def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
@@ -2457,24 +2706,33 @@ class CodexRenderTarget(RenderTarget):
             return render_agents_md(root).encode("utf-8")
         if live_rel == ".codex/config.toml":
             return render_codex_config_toml(root).encode("utf-8")
-        if live_rel.startswith(".codex/prompts/") and live_rel.endswith(".md"):
-            name = live_rel[len(".codex/prompts/"):-len(".md")]
-            return _render_command_prompt_bytes(root, name)
+        name, inner = _agent_skill_command_for(live_rel)
+        if name is not None:
+            if inner == "SKILL.md":
+                return render_agent_skill_md(root, name)
+            if inner == AGENT_SKILL_OPENAI_YAML:
+                return render_agent_skill_openai_yaml(root, name)
         return None
 
     def render_generated_paths(self, root: Path) -> set:
         paths = {"AGENTS.md", ".codex/config.toml"}
-        paths.update(f".codex/prompts/{name}.md" for name in _command_names(root))
+        for name in _command_names(root):
+            paths.add(f"{agent_skill_dir(name)}/SKILL.md")
+            paths.add(f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}")
         return paths
+
+    def retired_paths(self, root: Path) -> set:
+        return {f"{RETIRED_CODEX_PROMPTS_DIR}/{name}.md" for name in _command_names(root)}
 
 
 class GenericRenderTarget(RenderTarget):
     """
     Tier C target (Phase 2 — adapters/generic/README.md): the "plug-and-play
     for any AGENTS.md-reading agent" target — no harness-specific dispatch
-    mechanics assumed (rules-file-only assistants: Cursor, Copilot-class;
-    see adapters/README.md "Capability tiers"). Compiles the SAME AGENTS.md
-    as `codex` (render_agents_md — see its docstring on why AGENTS.md is
+    mechanics assumed (see adapters/CONFORMANCE.md for which runtimes read
+    AGENTS.md natively and which need a pointer, e.g. Aider's
+    `read: [AGENTS.md]`). Compiles the SAME AGENTS.md as `codex`
+    (render_agents_md — see its docstring on why AGENTS.md is
     harness-neutral) plus `prompts/*.md`, a plain, tool-agnostic mirror of
     `.tess/core/commands/**` with no frontmatter conventions assumed of the
     reading tool.
@@ -2489,16 +2747,25 @@ class GenericRenderTarget(RenderTarget):
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
 
-    def render(self, root: Path, verbose: bool = False) -> dict:
-        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
-        names = _command_names(root)
-        for name in names:
+    def _outputs(self, root: Path) -> list:
+        out = [("AGENTS.md", render_agents_md(root).encode("utf-8"))]
+        for name in _command_names(root):
             body = _render_command_prompt_bytes(root, name)
             if body is not None:
-                guarded_write(root, f"prompts/{name}.md", body, op="render")
-        if verbose:
-            print(f"  rendered  AGENTS.md")
-            print(f"  rendered  prompts/** ({len(names)} prompts)")
+                out.append((f"prompts/{name}.md", body))
+        return out
+
+    def render(self, root: Path, verbose: bool = False) -> dict:
+        statuses = {
+            rel: _render_target_write(root, rel, data, self.name)
+            for rel, data in self._outputs(root)
+        }
+        n_prompts = sum(1 for r in statuses if r.startswith("prompts/"))
+        _report_render_statuses(self.name, statuses, [
+            ("AGENTS.md", None, lambda r: r == "AGENTS.md"),
+            (f"prompts/** ({n_prompts} prompts)", "prompts/**",
+             lambda r: r.startswith("prompts/")),
+        ], verbose)
         return {"target": self.name, "status": "rendered"}
 
     def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
@@ -2591,6 +2858,39 @@ def render_generated_live_paths(root: Path) -> frozenset:
     for target in enabled_render_targets(root).values():
         paths |= target.render_generated_paths(root)
     return frozenset(paths)
+
+
+def retired_render_paths(root: Path) -> frozenset:
+    """
+    v0.2.0: the union of every ENABLED target's retired_paths(root), minus
+    anything an enabled target still generates (a path another target still
+    renders is not retired). Declared paths — existence is not checked here;
+    callers that report filter to what is on disk. Nothing in tessctl
+    deletes these.
+    """
+    retired: set = set()
+    for target in enabled_render_targets(root).values():
+        retired |= target.retired_paths(root)
+    return frozenset(retired - set(render_generated_live_paths(root)))
+
+
+def _report_retired_paths(root: Path, target) -> list:
+    """Print ONE line if any of `target`'s retired outputs still exist on
+    disk (never deletes them). Returns the sorted list of present paths."""
+    present = sorted(
+        rel for rel in target.retired_paths(root)
+        if os.path.lexists(root / rel)
+    )
+    if present:
+        dirs = sorted({rel.rsplit("/", 1)[0] + "/" for rel in present})
+        print(
+            f"  retired   {', '.join(dirs)} — {len(present)} file(s) left in place, "
+            f"no longer rendered by target {target.name!r}"
+            + (" (Codex never loads project-scoped prompts, openai/codex#9848; "
+               "use the $tess-<command> skills instead)" if target.name == "codex" else "")
+            + ". Delete them yourself when ready."
+        )
+    return present
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,10 @@
-This project's commands (`.tess/core/commands/**`) are mirrored 1:1 as
-native custom-prompt files: `.codex/prompts/<name>.md` for Codex CLI
-(rendered by the `codex` target — project-scoped prompt discovery isn't
-shipped upstream yet, tracked `openai/codex#9848`; symlink `.codex/prompts/`
-into `~/.codex/prompts/` to use them natively today) and `prompts/<name>.md`
-for any other AGENTS.md-reading agent (Cursor, Copilot, Gemini CLI, Zed,
-Devin — rendered by the `generic` target, no harness-specific frontmatter
-assumed).
+This project's commands (`.tess/core/commands/**`) are rendered as Agent
+Skills at `.agents/skills/tess-<name>/SKILL.md` by the `codex` target —
+Codex, Gemini CLI, Cursor, Copilot CLI, OpenCode and Amp all read
+`.agents/skills/`. In Codex, run one with `$tess-<name>` or `/skills`; they
+are explicit-only (never picked implicitly). The `generic` target mirrors
+the same bodies as plain `prompts/<name>.md` for any other AGENTS.md-reading
+agent.
 
 These are optional — read one only if invoked by name; this digest does not
 reproduce their contents (see the banner above for why it stays lean).
