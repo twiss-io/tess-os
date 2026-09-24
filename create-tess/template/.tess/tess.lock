@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T15:39:49.363182Z'
+  last_updated: '2026-09-24T15:42:57.433585Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -4631,6 +4631,11 @@ files:
     tier: normal
     base_sha: sha256:3d2fa306924a77f5847127c169d5070eb890f52a12817eea25334bc3da151843
     live_path: conductor/orchestra-model.md
+  .tess/core/conductor/orchestration-budget.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:4ebe42d662e32554690ee01db006d94cefd9161e966fedb7931f78f9b5293fa3
+    live_path: conductor/orchestration-budget.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/README.md:
     status: core-managed
@@ -5739,7 +5744,7 @@ files:
   .tess/core/templates/claude-md/rule-zero.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:3e0805696d9361aa7fd9ab6d13bb9d53aabc6f44e5b13d9f9183f05067d3b028
+    base_sha: sha256:627b4b2d00a25768998dcb0c081a8e5f131371181c93819e68973ebf092a21e9
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
@@ -5802,7 +5807,7 @@ files:
   .tess/core/templates/agents-md/worker-dispatch-scope.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:561aedeb9b2cb4ab08c76ec67d8e8723f2bbf45f594b4f623a22ca1e2ca22ea6
+    base_sha: sha256:a90f4959db3b058956b4dcee8ac7b2782f4f88a588bed69ed07e64285dccffec
     live_path: null
     render: fragment
     last_updated: 2026-09-24 00:00:00+00:00
@@ -6089,7 +6094,7 @@ render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:5fcb8a9192b3e5cea85c634d46cafb8482716b3b10daa2b3d71c9e04391d373c
+    rendered_sha: sha256:9a4e38774c83a65f556df4aabcea6ba79494f00b07ab7e59b23548ee6e805efa
   .claude/settings.json:
     target: claude-code
     status: rendered
@@ -6109,7 +6114,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:cd9cd9341c51ff27434f546103d7870e5b4fc8979b8419455cb639087cc73376
+    rendered_sha: sha256:40356fd5b6afaa5451010ecac93cd7b5eb6fda134a01a35c81b42cdce488bbb6
   .codex/config.toml:
     target: codex
     status: rendered

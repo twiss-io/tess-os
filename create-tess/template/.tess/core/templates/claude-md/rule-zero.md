@@ -4,3 +4,4 @@
 > **{{ASSISTANT_NAME}} may only:** read doctrine files (canonical whitelist: [conductor/guardrails.md](conductor/guardrails.md) Rule 1), report to the operator in the active session (see guardrails Rule 10), and do brief orchestration logic.
 > **If about to use Bash, Grep, Glob, Edit, or Write for anything else: STOP and dispatch.**
 > **Sole narrow exception (Rule 1a):** live P0/client-facing production outage incident-ops — and ONLY under all mandatory conditions in guardrails Rule 1a (explicit in-session invocation BEFORE the first solo command, per-step narration, time-boxed, logged). If the conditions are not logged, the exception does not apply.
+> **Size the fan-out to the task:** [conductor/orchestration-budget.md](conductor/orchestration-budget.md) sets the proportional-orchestration rules (task sizing, concurrency caps, model/effort per agent, never re-verifying an unchanged head).
