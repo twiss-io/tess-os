@@ -140,7 +140,7 @@ Encrypted private-key backup location: recorded in the maintainer's key
 management runbook (never committed to the repository).
 
 **Verifier-key custody (v0.2.0):** the v0.2.0 approvals were signed with an
-agent-held verifier key: the registered Cyra key (`F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8`)
+agent-held verifier key: the registered Cyra key (`F9321F92…76E8`)
 has no passphrase and is reachable by automated agents on the maintainer's machine, so
 "an independent verifier signed it" was process, not enforcement. Custody hardening
 (passphrase or hardware key, human sign-off, the #76 topology) is the first v0.2.1 item.
