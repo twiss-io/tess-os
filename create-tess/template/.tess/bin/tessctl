@@ -1722,6 +1722,8 @@ def render_output_status(lock: dict, rel: str) -> str:
             candidates.append(rst)
     if _entries_for_live_path(lock, rel):
         candidates.append(effective_live_status(lock, rel))
+    # v0.2 (Cyra fix round 3): publish/override never keep security-tier text.
+    candidates = [s for s in candidates if not security_status_unkept(lock, rel, s)]
     protective = [s for s in candidates if s in _RENDER_SKIP_REASON]
     if not protective:
         return "rendered"
@@ -2814,6 +2816,47 @@ _CORE_UNTRACKED_IGNORED_NAMES = frozenset({".DS_Store", ".gitkeep"})
 _CORE_UNTRACKED_IGNORED_DIRS = frozenset({"__pycache__"})
 
 
+# v0.2 (Cyra fix round 3): statuses that NEVER keep a security-tier live file.
+# `publish` and `override` have no approval step, so a user-published or
+# patch-override status on a live path that carries security-tier text (a
+# `tier: security` entry, e.g. CLAUDE.md's hard-floor fragment) is treated as
+# core-managed by render, restore, init, doctor and verify: the security text
+# stays authoritative and any divergence is SECURITY drift. The one way to
+# keep a security edit is capture -> quarantine -> approve (locally-modified
+# with approved_at), which is untouched here.
+SECURITY_UNKEPT_STATUSES = ("user-published", "patch-override")
+
+
+def security_status_unkept(lock: dict, rel, status) -> bool:
+    """True when `status` must not protect live path `rel`: it is one of
+    SECURITY_UNKEPT_STATUSES and some tess.lock entry sharing `rel` is
+    security-tier."""
+    return (bool(rel) and status in SECURITY_UNKEPT_STATUSES
+            and bool(_entries_for_live_path(lock, rel))
+            and _live_path_is_security(lock, rel))
+
+
+def _exit_on_kept_security_render_drift(root: Path, names=None) -> None:
+    """v0.2 (Cyra fix round 3): render keeps a hand-edited render output, but
+    one that carries security-tier text (CLAUDE.md's hard floor) is SECURITY
+    drift, so `tessctl render` must not report success over it: exit non-zero
+    naming each path and its remedies. A quarantined output was re-pinned by
+    the render and an approved (locally-modified) one is protected, so
+    neither is listed; user-published / patch-override never protect it."""
+    lock = load_lock(root)
+    kept = sorted({rel for rels in _render_output_drift(root, lock, names).values()
+                   for rel in rels if _live_path_is_security(lock, rel)})
+    if not kept:
+        return
+    for rel in kept:
+        print(f"  SECURITY DRIFT  {rel}  — hand-edited render output carrying security-tier "
+              f"text; render kept it")
+    sys.exit("tessctl render: INCOMPLETE — security-tier render output(s) differ from core: "
+             + ", ".join(kept) + ". Discard: `tessctl reset <path>` (pre-image kept in a "
+             "snapshot). Keep: `tessctl capture <path>` (quarantines it), then `tessctl "
+             "approve <path> --rationale ...`.")
+
+
 def _untracked_core_files(root: Path, lock: dict) -> list:
     """
     Bug 10: every file under .tess/core with NO tess.lock entry. Such a file
@@ -3076,7 +3119,7 @@ def doctor_check_file(core_key: str, attrs: dict, root: Path) -> dict:
                 result["issues"].append("UNCAPTURED DRIFT — live file has been edited without capture")
             elif file_status == "locally-modified":
                 result["issues"].append("captured drift (expected — file was modified and captured)")
-            elif file_status == "user-published":
+            elif file_status == "user-published" and not is_sec:
                 result["issues"].append("drift hint — file diverges from upstream core (expected for published files)")
             elif file_status == "held":
                 pass  # held files drift silently
@@ -3087,12 +3130,14 @@ def doctor_check_file(core_key: str, attrs: dict, root: Path) -> dict:
                 result["issues"].append(
                     "SECURITY-TIER ALERT — security doctrine edited without quarantine/approval"
                 )
-            elif is_sec and file_status == "patch-override":
-                # v0.2 (Cyra fix round 2): `override` has no tier check; a
-                # security-tier override is an error, never 'doctor: OK'.
+            elif is_sec and file_status in SECURITY_UNKEPT_STATUSES:
+                # v0.2 (Cyra fix rounds 2 + 3): `override` and `publish` have
+                # no approval step; a security-tier file they would keep is
+                # an error, never 'doctor: OK' or a 'drift hint'.
                 result["issues"].append(
-                    "SECURITY-TIER ALERT — security doctrine kept by a patch-override; "
-                    "overrides never cover security-tier files (capture + approve)"
+                    f"SECURITY-TIER ALERT — security doctrine diverges from core under "
+                    f"status {file_status}; publish/override never keep a security-tier "
+                    f"edit. Discard: `tessctl reset {live_rel}`; keep: capture + approve"
                 )
 
     return result
@@ -3307,9 +3352,13 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         # shares this live_path (most protective wins). A published CLAUDE.md
         # is no longer overwritten through its still-core-managed fragments.
         status = effective_live_status(lock, live_rel)
+        # v0.2 (Cyra fix round 3): user-published / patch-override never keep
+        # a security-tier live file; it goes through the drift gate below.
+        unkept_security = security_status_unkept(lock, live_rel, status)
 
         # Skip user-owned and staged (benched) statuses
-        if status in ("user-published", "held", "user-created", "staged"):
+        if (status in ("user-published", "held", "user-created", "staged")
+                and not unkept_security):
             counts["skipped_status"] += 1
             if verbose:
                 print(f"  skip [{status}]  {live_rel}")
@@ -3373,8 +3422,7 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         # capture -> quarantine -> approve: a security-tier override falls
         # through to the drift gate below (WOULD CLOBBER, or REFUSED under
         # --force), exit non-zero.
-        if (status == "patch-override"
-                and not (live_rel in security_live and live_rel not in render_generated)):
+        if status == "patch-override" and not unkept_security:
             counts["skipped_locally_modified"] += 1
             if live_rel not in _restore_warned:
                 _restore_warned.add(live_rel)
@@ -3397,9 +3445,9 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
             if is_sec or not force:
                 drift_seen.add(live_rel)
                 counts["drift_paths"].append(live_rel)
-                if is_sec and status == "patch-override":
-                    print(f"  NOTE  {live_rel} [SECURITY] has a patch-override in tess.lock; "
-                          f"an override never keeps a security-tier edit (use `tessctl "
+                if unkept_security:
+                    print(f"  NOTE  {live_rel} [SECURITY] is {status} in tess.lock; "
+                          f"publish/override never keep a security-tier edit (use `tessctl "
                           f"capture` then `tessctl approve` to accept it)")
                 if is_sec and force:
                     counts["refused_security"] += 1
@@ -4427,6 +4475,7 @@ def cmd_render(args, root: Path) -> None:
         for tname in requested:
             RENDER_TARGETS[tname].render(root, verbose=True)
         _finish_snapshot(root, snap_id)
+        _exit_on_kept_security_render_drift(root, requested)
         print("render: complete.")
         return
 
@@ -4444,6 +4493,7 @@ def cmd_render(args, root: Path) -> None:
     snap_id = snapshot_paths(root, _operation_snapshot_rels(root), "render")
     _render_enabled_targets(root, verbose=True)
     _finish_snapshot(root, snap_id)
+    _exit_on_kept_security_render_drift(root)
     print("render: complete.")
 
 
@@ -4836,7 +4886,7 @@ def cmd_doctor(args, root: Path) -> None:
             print(f"  ok          {live_rel}{sec_badge}")
         elif r.get("drift") and lock_status == "locally-modified":
             print(f"  captured    {live_rel}{sec_badge}  (locally-modified)")
-        elif r.get("drift") and lock_status == "user-published":
+        elif r.get("drift") and lock_status == "user-published" and not r.get("is_security"):
             print(f"  hint        {live_rel}{sec_badge}  (user-published, diverges from upstream)")
         elif r.get("drift") and lock_status == "core-managed":
             # R2: render-generated files drift when an operator stub or template is
@@ -4899,12 +4949,13 @@ def cmd_doctor(args, root: Path) -> None:
                  and _render_output_drift_kind(root, lock, r["live_path"]) == "stale")
     }
     security_drift = len(_sec_drift_live_set)
-    # v0.2 (Cyra fix round 2): a security-tier file kept by a patch-override
-    # is a security alert and a failure (override has no tier check).
+    # v0.2 (Cyra fix rounds 2 + 3): a security-tier file kept by a
+    # patch-override or a publish is a security alert and a failure
+    # (neither command has an approval step).
     _sec_override_live_set = {
         r["live_path"] for r in results
         if r.get("is_security") and r.get("drift")
-        and r.get("lock_status") == "patch-override" and r.get("live_path")
+        and r.get("lock_status") in SECURITY_UNKEPT_STATUSES and r.get("live_path")
     }
     security_drift += len(_sec_override_live_set)
 
@@ -5055,8 +5106,8 @@ def cmd_doctor(args, root: Path) -> None:
         sys.exit(1)
     if _sec_override_live_set:
         print(f"\ndoctor: FAIL — {len(_sec_override_live_set)} security-tier file(s) kept by a "
-              f"patch-override: " + ", ".join(sorted(_sec_override_live_set)) + ". An override "
-              f"never covers security doctrine: `tessctl reset <path>` to discard, or "
+              f"patch-override or publish: " + ", ".join(sorted(_sec_override_live_set)) + ". "
+              f"Neither covers security doctrine: `tessctl reset <path>` to discard, or "
               f"`tessctl capture <path>` then `tessctl approve` to accept.")
         sys.exit(1)
     if integrity_count > 0:
@@ -6874,6 +6925,19 @@ def _publish_render_output(root: Path, lock: dict, rel: str, manifest: dict,
           f"`tessctl render` will no longer write it)")
 
 
+def _refuse_security_publish(live_paths, by_tag: bool) -> None:
+    """v0.2 eng-a (Cyra fix round 3): exit non-zero, naming the refused
+    security-tier live paths and the only ways to keep or discard an edit."""
+    for _lp in live_paths:
+        print(f"  REFUSED  {_lp}  [SECURITY]")
+    extra = (" Publish the group's other files by path; nothing was written."
+             if by_tag else " Nothing was written.")
+    sys.exit("tessctl publish: refusing to publish a security-tier file (a `tier: security` "
+             "tess.lock entry covers it; publish has no approval step). To keep a security "
+             "edit: `tessctl capture <path>` (quarantines it), then `tessctl approve <path> "
+             "--rationale ...`. To discard it: `tessctl reset <path>`." + extra)
+
+
 def cmd_publish(args, root: Path) -> None:
     """
     Copy core→live, flip status to user-published, stamp @published-from.
@@ -6910,6 +6974,8 @@ def cmd_publish(args, root: Path) -> None:
                 targets.append(k)
                 break
         if not targets:
+            if _live_path_is_security(lock, target_path):   # v0.2 eng-a (Cyra round 3)
+                _refuse_security_publish([target_path], False)
             # v0.2 eng-b: runtime-enforcement config with no tess.lock entry
             # (.codex/config.toml, AGENTS.md) has no core file to re-seed
             # from, so publishing it would freeze a hand edit — refused.
@@ -6955,6 +7021,17 @@ def cmd_publish(args, root: Path) -> None:
         sys.exit("tessctl publish: refusing to publish a quarantined security-tier file. "
                  "Use `tessctl approve <path> --rationale ...` to accept the quarantined edit, "
                  "or `tessctl reset <path>` to discard it.")
+
+    # v0.2 eng-a (Cyra fix round 3): publish has no approval step, so it never
+    # takes a live path whose lock entries include a security-tier entry
+    # (CLAUDE.md carries the hard-floor fragment): not by path, not by --tag,
+    # not with --force. Refused before anything is written.
+    _security_live_targets = sorted({
+        lock["files"][k]["live_path"] for k in targets
+        if lock["files"].get(k, {}).get("live_path")
+        and _live_path_is_security(lock, lock["files"][k]["live_path"])})
+    if _security_live_targets:
+        _refuse_security_publish(_security_live_targets, bool(tag_sel))
 
     _live_outcome: dict = {}   # live_rel -> "written" | "skipped"
     _render_outputs_now = render_generated_live_paths(root)
@@ -7571,8 +7648,11 @@ def cmd_verify(args, root: Path) -> None:
                     ok_count += 1
                 continue
 
-        # Check C: security-tier drift (live modified without quarantine)
-        if sec and file_status == "core-managed":
+        # Check C: security-tier drift (live modified without quarantine).
+        # v0.2 (Cyra fix round 3): user-published / patch-override never keep
+        # security-tier text, so they are checked exactly like core-managed.
+        _sec_unkept = sec and file_status in SECURITY_UNKEPT_STATUSES
+        if sec and (file_status == "core-managed" or _sec_unkept):
             live_path = root / live_rel
             if core_path.exists() and live_path.exists():
                 # MED-1: pass attrs so the shadow-append skip uses the real lock tier.
@@ -7582,7 +7662,12 @@ def cmd_verify(args, root: Path) -> None:
                                  _render_output_drift_kind(root, lock, live_rel) == "stale")
                 if sha256_bytes(expected_bytes) != live_sha and not _stale_render:
                     security_drifts.append(live_rel)
-                    if live_rel in render_generated:
+                    if _sec_unkept:
+                        print(f"  SECURITY DRIFT  {live_rel}  — security-tier text diverges from core "
+                              f"under status {file_status} (publish/override never keep a "
+                              f"security-tier edit); discard with `tessctl reset {live_rel}`, "
+                              f"keep with capture + approve")
+                    elif live_rel in render_generated:
                         # v0.2: CLAUDE.md carries the security-tier hard-floor fragment.
                         # Remedy is a re-render (restores the authoritative text), never
                         # capture, which would launder a stale render (R2).
@@ -7605,6 +7690,14 @@ def cmd_verify(args, root: Path) -> None:
                 expected_bytes = render_core_to_live(core_path, live_path, root, attrs=attrs)
                 live_sha = sha256_file(live_path)
                 if sha256_bytes(expected_bytes) != live_sha:
+                    # v0.2 (Cyra fix round 3): a patch-override on a live path with
+                    # a security-tier entry is reported ONCE, as SECURITY DRIFT with
+                    # the `tessctl reset` remedy, by that entry's Check C — never
+                    # here with a `tessctl render` hint (render does not fix it).
+                    if (security_status_unkept(lock, live_rel, file_status)
+                            and not (live_rel in render_generated and
+                                     _render_output_drift_kind(root, lock, live_rel) == "stale")):
+                        continue
                     # LOW-2: multiple core keys can map to the same live_rel (e.g. the 6
                     # CLAUDE.md fragment entries).  Only append + print once per live file.
                     if live_rel not in _normal_drift_seen:
@@ -7994,7 +8087,10 @@ def cmd_reset(args, root: Path) -> None:
 
     # v0.2 (Cyra fix round 2): patch-override is a captured edit too, and
     # reset is the discard restore's security-tier refusal points at.
-    if status not in ("locally-modified", "core-managed", "patch-override"):
+    # v0.2 (Cyra fix round 3): so is a user-published security-tier file
+    # (publish never keeps security-tier text; verify names this remedy).
+    if (status not in ("locally-modified", "core-managed", "patch-override")
+            and not security_status_unkept(lock, live_rel, status)):
         sys.exit(
             f"tessctl reset: {live_rel} has status {status!r} — reset only applies to\n"
             f"  locally-modified / patch-override files (or core-managed files).\n"

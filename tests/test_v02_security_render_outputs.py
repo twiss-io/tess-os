@@ -127,9 +127,14 @@ def test_security_render_output_tamper_is_security_drift_and_never_published(
     assert drift and "SECURITY" in drift[0] and "capture CLAUDE.md" in drift[0], drift
     assert "publish CLAUDE.md" not in drift[0], drift
 
-    _rc(engine.cmd_publish, ns(path="CLAUDE.md", tag=None, force=False), root)
-    render(engine, root)
-    engine.cmd_restore(ns(dry_run=False), root)
+    # eng-a (Cyra fix round 3): publish refuses a security-tier live path, and
+    # render / restore exit non-zero while the tamper is kept; restore --force
+    # re-renders the authoritative text.
+    assert _rc(engine.cmd_publish, ns(path="CLAUDE.md", tag=None, force=False), root) != 0
+    assert "user-published" not in _claude_statuses(engine, root)
+    assert _rc(engine.cmd_render, ns(target=None, list_targets=False), root) != 0
+    assert _rc(engine.cmd_restore, ns(dry_run=False), root) != 0
+    _rc(engine.cmd_restore, ns(dry_run=False, force=True), root)
     assert "never dispatch" not in project.read_live("CLAUDE.md"), \
         "publish kept a security-tier tamper as the published CLAUDE.md"
 
