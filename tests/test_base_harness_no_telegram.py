@@ -90,9 +90,12 @@ ALLOWLIST = {
 
 # Not part of the base harness: the wizard's own test suite is never copied
 # into a scaffold (it may assert that the removed flag is rejected), and
-# reviews/ holds per-PR review records (verdicts), stripped at integration
-# and never scaffolded; a verdict on this change will name the channel.
-NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/", "create-tess/template/reviews/")
+# reviews/verdicts/ holds per-PR review records (verdicts), stripped at
+# integration and never scaffolded; a verdict on this change will name the
+# channel. Narrowed from the whole reviews/ tree (Cyra, notg PR #197 low
+# finding, decisions item 13): only the verdicts subtree is exempt, so any
+# OTHER file under reviews/ still counts as base harness surface.
+NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/verdicts/", "create-tess/template/reviews/verdicts/")
 
 # Files that must be in scope, so the scan can never go vacuous.
 MUST_SCAN_PRODUCT = (
