@@ -69,10 +69,13 @@ def _sentence_ctx(text: str, quote: str):
 def _v3(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     proposal = cand.get("approves_quote") or ""
     session = lookup.lines_for(cfg, line.path) if line.kind != "turn" else []
-    replies = [l for l in session if l.kind == "reply" and contains(l.text, proposal) and l.index < line.index]
+    replies = sorted((l for l in session if l.kind == "reply" and contains(l.text, proposal)
+                      and l.order < line.order), key=lambda l: l.order)
     if not replies:
         return "V3: approves_quote is not verbatim in an earlier assistant reply of this session"
-    after = [l for l in session if l.index > replies[-1].index and l.kind == "msg" and l.principal][:2]
+    later = sorted((l for l in session if l.kind == "msg" and l.principal and l.order > replies[-1].order),
+                   key=lambda l: l.order)
+    after = later[:2]
     if line.label not in [l.label for l in after]:
         return "V3: the approval is not within the next 2 principal turns after the proposal"
     return None
@@ -88,66 +91,90 @@ def _external(cfg: Config, line: lookup.JLine) -> bool:
     return False
 
 
-def _duplicate(cfg: Config, cand: Dict) -> Optional[str]:
+def _duplicate(cfg: Config, cand: Dict, ref: str = "") -> Optional[str]:
+    """Same statement, same quote, or an overlapping quote from the same source line."""
     h = statement_hash(cand.get("statement") or "")
+    q = normalize(cand.get("quote") or "")
     for r in records.all_records(cfg):
         if r.kind != cand.get("kind") or r.status not in records.ACTIVE:
             continue
         other = r.meta.get("title") if r.kind == "decision" else r.meta.get("statement")
-        if statement_hash(str(r.meta.get("statement") or other or "")) == h or \
-                normalize(str(r.meta.get("source_quote") or "")) == normalize(cand.get("quote") or ""):
+        rq = normalize(str(r.meta.get("source_quote") or ""))
+        same_line = bool(ref) and str(r.meta.get("source_ref") or "") == ref and bool(q) and (q in rq or rq in q)
+        if statement_hash(str(r.meta.get("statement") or other or "")) == h or rq == q or same_line:
             return r.id
     return None
 
 
+def _v2(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
+    speaker = line.speaker if line.principal else None
+    p = cfg.principal(speaker) if speaker else None
+    if not p or not p.get("decides", True):
+        return "V2: source speaker %r is not a deciding principal" % (line.speaker,)
+    if cand.get("speaker") and cand["speaker"] != speaker:
+        return "V2: candidate speaker %r does not match the source line (%r)" % (cand["speaker"], speaker)
+    return None
+
+
+def _also_quoted(cfg: Config, cand: Dict) -> Optional[str]:
+    for q in cand.get("also_quoted") or []:
+        if not [h for h in lookup.search(cfg, q) if h.principal]:
+            return "V1: also_quoted %r is not a principal's words in the journal or current turn" % q
+    return None
+
+
+def _v8(cand: Dict, line: lookup.JLine) -> Optional[str]:
+    quote = cand.get("quote") or ""
+    sentence, following = _sentence_ctx(line.text, quote)
+    if cues.is_hypothetical(sentence, following) or quote.strip().endswith("?"):
+        return "V8: hypothetical"
+    return None
+
+
+def _rules(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
+    """V1 length, V2, V3, V4, V8, V9 and supersedes (V5) in order; the first failure wins."""
+    kind, quote = cand.get("kind") or "", cand.get("quote") or ""
+    if len(normalize(quote)) < 12 and not cand.get("approves_quote"):
+        return "V1: quote shorter than 12 characters"
+    err = _v2(cfg, cand, line) if kind in JUDGED else None
+    err = err or _also_quoted(cfg, cand)
+    err = err or (_v3(cfg, cand, line) if cand.get("approves_quote") else None)
+    if err:
+        return err
+    source = " ".join([line.text, quote, cand.get("approves_quote") or ""] + list(cand.get("also_quoted") or []))
+    missing = _v4(cand, source)
+    if missing:
+        return "V4: not in the source: %s" % ", ".join(missing)
+    err = _v8(cand, line) if kind in ("decision", "preference") else None
+    err = err or (_v9(cfg, line.speaker, cand.get("target") or "") if kind in JUDGED else None)
+    sup = cand.get("supersedes") or ""
+    if not err and sup:
+        old = records.find(cfg, sup)
+        if old is None or old.meta.get("superseded_by"):
+            err = "V5: supersedes target %s missing or already superseded" % sup
+    return err
+
+
 def check(cfg: Config, cand: Dict) -> Result:
     res = Result()
-    kind = cand.get("kind") or ""
-    quote = cand.get("quote") or ""
     blob = " ".join(str(cand.get(k) or "") for k in ("quote", "statement", "title", "approves_quote"))
-    found = redact.scan(blob)
+    found = redact.scan(blob + " " + " ".join(cand.get("also_quoted") or []))
     if found:
         return res.fail("V7: secret-shaped content (%s)" % ", ".join(found))
     line = _locate(cfg, cand, res)
     if line is None:
         return res.fail("V1: quote not found verbatim in any journal line or current turn")
     res.line = line
-    if len(normalize(quote)) < 12 and not cand.get("approves_quote"):
-        return res.fail("V1: quote shorter than 12 characters")
-    speaker = line.speaker if line.principal else None
-    if kind in JUDGED:
-        p = cfg.principal(speaker) if speaker else None
-        if not p or not p.get("decides", True):
-            return res.fail("V2: source speaker %r is not a deciding principal" % (line.speaker,))
-        if cand.get("speaker") and cand["speaker"] != speaker:
-            return res.fail("V2: candidate speaker %r does not match the source line (%r)" % (cand["speaker"], speaker))
-    if cand.get("approves_quote"):
-        err = _v3(cfg, cand, line)
-        if err:
-            return res.fail(err)
-    source_text = " ".join([line.text, quote, cand.get("approves_quote") or ""] + list(cand.get("also_quoted") or []))
-    missing = _v4(cand, source_text)
-    if missing:
-        return res.fail("V4: not in the source: %s" % ", ".join(missing))
-    if kind in ("decision", "preference"):
-        sentence, following = _sentence_ctx(line.text, quote)
-        if cues.is_hypothetical(sentence, following) or quote.strip().endswith("?"):
-            return res.fail("V8: hypothetical")
-    if kind in JUDGED:
-        err = _v9(cfg, speaker, cand.get("target") or "")
-        if err:
-            return res.fail(err)
-    sup = cand.get("supersedes") or ""
-    if sup:
-        old = records.find(cfg, sup)
-        if old is None or old.meta.get("superseded_by"):
-            return res.fail("V5: supersedes target %s missing or already superseded" % sup)
-    dup = _duplicate(cfg, cand)
-    if dup and not sup:
+    err = _rules(cfg, cand, line)
+    if err:
+        return res.fail(err)
+    dup = _duplicate(cfg, cand, line.ref if line.kind != "turn" else "")
+    if dup and not cand.get("supersedes"):
         res.status = "noop"
         res.reasons.append("V5: duplicate of %s" % dup)
         return res
-    if res.status == "pass" and (cand.get("external_context") or _external(cfg, line)):
+    if res.status == "pass" and not cand.get("operator_approved") and (cand.get("external_context")
+                                                                       or _external(cfg, line)):
         res.status = "review"
         res.reasons.append("V6: session used external context; never auto-promoted")
     return res

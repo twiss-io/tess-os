@@ -90,6 +90,10 @@ def run(cfg: Config, message: str, dry_run: bool = False) -> Dict:
     if not gitutil.is_repo(cfg.root):
         out["error"] = "not a git repository"
         return out
+    if not dry_run:  # generated blocks first, so new entities and records are linked from START HERE
+        from . import index
+        rc, msgs = index.regenerate(cfg)
+        out["notes"] += msgs
     changed = _changed(cfg)
     orphans = reach.unreachable(cfg, [cfg.root / p for p in changed if p.startswith("brain/")])
     if orphans:
@@ -106,7 +110,8 @@ def run(cfg: Config, message: str, dry_run: bool = False) -> Dict:
     if dry_run:
         out.update(ok=True, notes=["would commit %d file(s)" % len(changed)])
         return out
-    rc, _, err = gitutil.run(cfg.root, ["add", "--"] + _paths(cfg))
+    paths = [p for p in _paths(cfg) if any(c == p or c.startswith(p + "/") for c in changed)]
+    rc, _, err = gitutil.run(cfg.root, ["add", "--"] + paths)
     if rc != 0:
         out["error"] = "git add failed: %s" % err.strip()
         return out
@@ -114,7 +119,7 @@ def run(cfg: Config, message: str, dry_run: bool = False) -> Dict:
     if g:
         out["error"] = g
         return out
-    rc, so, se = gitutil.run(cfg.root, ["commit", "-m", message or "brain: save", "--only", "--"] + _paths(cfg), timeout=300)
+    rc, so, se = gitutil.run(cfg.root, ["commit", "-m", message or "brain: save", "--only", "--"] + paths, timeout=300)
     if rc != 0:
         out["error"] = "git commit refused (the repository's hooks ran): %s" % (so + se).strip()[-1500:]
         return out

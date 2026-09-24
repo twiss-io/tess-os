@@ -54,6 +54,10 @@ def cli(root, *args, stdin=None, env=None, timeout=120):
     """Run tessbrain.py against an instance root; returns CompletedProcess."""
     e = dict(os.environ)
     e.setdefault("TESS_BRAIN_NO_BACKFILL", "1")
+    none = os.path.join(str(root), ".no-such-home")  # hermetic: never sweep the real ~/.codex or ~/.gemini
+    e.setdefault("CODEX_HOME", none)
+    e.setdefault("GEMINI_CLI_HOME", none)
+    e.setdefault("CLAUDE_CONFIG_DIR", none)
     e.update(env or {})
     return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + [str(a) for a in args],
                           input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
@@ -66,3 +70,43 @@ def sync_fixture(root, *extra):
 def commit_all(root, msg="probe"):
     run(root, "add", "-A")
     return run(root, *GIT_ID, "commit", "-q", "--allow-empty", "-m", msg)
+
+
+def claude_session(path, sid, turns, start_minute=0, cwd="/work/fx"):
+    """Write a synthetic Claude transcript. turns: [(role, text)] with role in
+    user | assistant | tg:<user_id> (a Telegram channel turn). One minute apart,
+    starting 2026-09-24T06:<start_minute>Z (14:<start_minute> SGT)."""
+    import json as _json
+    recs = []
+    for i, (role, text) in enumerate(turns):
+        ts = "2026-09-24T06:%02d:00.000Z" % (start_minute + i)
+        base = {"sessionId": sid, "timestamp": ts, "cwd": cwd, "version": "2.1.281", "gitBranch": "main",
+                "uuid": "u-%s-%d" % (sid[:4], i), "isSidechain": False}
+        if role == "assistant":
+            base.update(type="assistant", message={"role": "assistant", "content": [{"type": "text", "text": text}]})
+        elif role.startswith("tg:"):
+            uid = role[3:]
+            body = ('<channel source="plugin:telegram:telegram" chat_id="-1" message_id="%d" user="u%s" '
+                    'user_id="%s" ts="%s">%s</channel>' % (i, uid, uid, ts, text))
+            base.update(type="user", isMeta=True, promptSource="system", message={"role": "user", "content": body})
+        else:
+            base.update(type="user", promptSource="typed", message={"role": "user", "content": text})
+        recs.append(base)
+    os.makedirs(os.path.dirname(str(path)), exist_ok=True)
+    with open(str(path), "a", encoding="utf-8") as fh:
+        for r in recs:
+            fh.write(_json.dumps(r) + "\n")
+    return path
+
+
+def sync_dir(root, claude_dir, *extra, env=None):
+    """sync against one Claude transcript dir, with no Codex/Gemini sweep."""
+    none = os.path.join(str(root), ".no-such-home")
+    return cli(root, "sync", "--claude-dir", str(claude_dir), "--codex-home", none, "--gemini-home", none,
+               *extra, env=env)
+
+
+def journal_of(root, sid):
+    import glob
+    hits = glob.glob(os.path.join(str(root), "brain", "journal", "*", "*", "*", "*-%s.md" % sid[:8]))
+    return hits[0] if hits else None

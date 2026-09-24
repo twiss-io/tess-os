@@ -97,11 +97,12 @@ def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
         sup = cand.get("supersedes")
         body["corrects_line"] = (" Supersedes %s." % sup) if sup else ""
     elif kind == "fact":
+        kind_src = "principal" if cand.get("_source_principal", True) else "assistant"
         meta = dict(common, type="fact", entity=cand.get("entity") or "", status=status, statement=statement,
-                    source_kind="principal", verified=not pending, confidence=cand.get("confidence") or "stated",
+                    source_kind=kind_src, verified=not pending, confidence=cand.get("confidence") or "stated",
                     valid_from=at[:10], valid_until="", last_verified=now[:10],
                     verify_via=cand.get("verify_via") or "", confirmed=False)
-        body.update(source_kind="principal", verify_via=meta["verify_via"] or "the source line")
+        body.update(source_kind=kind_src, verify_via=meta["verify_via"] or "the source line")
     else:
         meta = dict(common, type="loop", entity=cand.get("entity") or "", statement=statement, status=status,
                     owner=cand.get("owner") or speaker, due=cand.get("due") or "", confirmed_by="",
@@ -111,6 +112,24 @@ def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
     if cand.get("supersedes"):
         _supersede(cfg, cand["supersedes"], rec.id)
     return rec
+
+
+def profile_cap_error(cfg: Config, cand: Dict) -> str:
+    """Would promoting this preference/correction push brain/profile.md over its cap?"""
+    if cand.get("kind") not in ("preference", "correction"):
+        return ""
+    from . import caps, index
+    recs = records.all_records(cfg)
+    rid = records.new_id(cfg, cand["kind"], cand.get("source_at") or iso(cfg.now()), cand.get("quote") or "x",
+                         {r.id for r in recs})
+    fake = records.Record(cfg.brain / "profile" / ("%s.md" % rid),
+                          {"id": rid, "status": "active", "statement": cand.get("statement") or cand.get("quote"),
+                           "confirmed": False, "verified_at": iso(cfg.now())}, "")
+    sup = cand.get("supersedes") or ""
+    kept = [r for r in recs if r.id != sup]
+    err = caps.profile(cfg, index.profile_text(cfg, kept + [fake]))
+    return ("brain/profile.md would be over its cap (%s); not promoted. consolidate: brain-review --consolidate"
+            % err) if err else ""
 
 
 def _status(kind: str, cand: Dict, pending: bool) -> str:

@@ -23,8 +23,10 @@ def cmd_sync(cfg: Config, a) -> Out:
     why = _need(cfg)
     if why:
         return (0 if cfg.is_source_repo() else 1), {"skipped": why}
-    res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.also_cwd, a.transcript, a.days, wait=not a.no_wait)
-    return (res.get("index", {}).get("rc", 0) if isinstance(res, dict) else 0), res
+    res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.also_cwd, a.transcript, a.days, wait=not a.no_wait,
+                   gemini_home=a.gemini_home)
+    over = any(o.get("status") == inbox.OVER_CAP for o in res.get("outcomes", [])) if isinstance(res, dict) else False
+    return (3 if over else (res.get("index", {}).get("rc", 0) if isinstance(res, dict) else 0)), res
 
 
 def cmd_journal_note(cfg: Config, a) -> Out:
@@ -68,9 +70,14 @@ def _candidate(cfg: Config, a, kind: str, detected: str) -> Dict:
 
 def _run_candidate(cfg: Config, cand: Dict, dry: bool) -> Out:
     outcome = inbox.process(cfg, cand, dry_run=dry)
+    rc = 0
     if not dry:
-        index.regenerate(cfg)
-    return (1 if outcome["status"] == "fail" else 0), outcome
+        rc, msgs = index.regenerate(cfg)
+        if msgs:
+            outcome["index"] = msgs
+    if outcome["status"] == inbox.OVER_CAP:
+        return 3, outcome
+    return (1 if outcome["status"] == "fail" else rc), outcome
 
 
 def cmd_decide(cfg: Config, a) -> Out:
@@ -117,12 +124,15 @@ def cmd_promote(cfg: Config, a) -> Out:
     hits = [h for h in lookup.search(cfg, a.quote) if h.principal]
     if not hits:
         return 1, {"error": "V1/V2: approval quote is not a principal's words in the journal or current turn"}
-    cand = dict(cands[a.id], external_context=False)
+    cand = dict(cands[a.id], operator_approved=True)
     cand["verification"] = {"status": "pending", "reasons": [], "checked_at": ""}
     code, out = _run_candidate(cfg, cand, False)
-    rec = records.find(cfg, str(out.get("record", "")).rsplit("/", 1)[-1][:-3]) if out.get("record") else None
-    if rec is not None:
-        records.update_fields(rec, {"confirmed": True})
+    rid = str(out.get("record", "")).rsplit("/", 1)[-1][:-3] if out.get("record") else ""
+    if rid and rid.startswith(("D-", "P-", "C-", "F-", "L-")):
+        res = promote.change_status(cfg, rid, "confirm", a.quote)  # the operator's approval confirms it
+        out["status"] = res.get("status", out.get("status"))
+        out["confirmed"] = bool(res.get("confirmed"))
+        index.regenerate(cfg)
     return code, out
 
 
@@ -131,10 +141,10 @@ def cmd_status_change(cfg: Config, a) -> Out:
     if why:
         return 1, {"error": why}
     sync.run(cfg, "all", days=2)  # the operator's reply must be on disk to verify it
-    if a.id.startswith("C-"):
-        cands = {c["id"]: c for c in inbox.pending(cfg)}
-        if a.id not in cands or a.action != "reject":
-            return 1, {"error": "no inbox candidate %s (only reject applies to candidates)" % a.id}
+    cands = {c["id"]: c for c in inbox.pending(cfg)}
+    if a.id in cands:  # an inbox candidate (C-YYYYMMDD-HHMM-NN), not a C- correction record
+        if a.action != "reject":
+            return 1, {"error": "%s is an inbox candidate: reject it, or promote it with the operator's words" % a.id}
         c = cands[a.id]
         c["verification"] = {"status": "fail", "reasons": ["rejected by operator: %s" % a.quote], "checked_at": iso(cfg.now())}
         inbox.save(cfg, c, "rejected")

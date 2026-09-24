@@ -21,7 +21,7 @@ def _terms(query: str) -> List[str]:
 def search(cfg: Config, query: str, entity: Optional[str] = None, kind: Optional[str] = None,
            limit: int = 20, private: bool = False) -> List[Dict]:
     terms = _terms(query)
-    if not terms:
+    if not terms and not kind:
         return []
     roots = [cfg.brain / entity] if entity else [cfg.brain, cfg.root / cfg.state_cards]
     results = []
@@ -37,6 +37,11 @@ def search(cfg: Config, query: str, entity: Optional[str] = None, kind: Optional
             if kind and str(meta.get("type") or "") != kind:
                 continue
             head = " ".join(str(meta.get(k) or "") for k in ("title", "name", "statement", "tags", "id")).lower()
+            if not terms:  # --type alone lists every file of that type
+                results.append({"path": p.relative_to(cfg.root).as_posix(), "line": 1,
+                                "text": str(meta.get("statement") or meta.get("title") or p.stem)[:240],
+                                "score": 0, "mtime": p.stat().st_mtime})
+                continue
             head_hits = sum(1 for t in terms if t in head)
             lines = text.splitlines()
             hit_lines = [(n, l) for n, l in enumerate(lines, 1) if any(t in l.lower() for t in terms)]

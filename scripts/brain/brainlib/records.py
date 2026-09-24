@@ -20,7 +20,7 @@ PREFIX = {"decision": "D", "preference": "P", "correction": "C", "fact": "F", "o
 TYPE_OF = {v: k for k, v in PREFIX.items()}
 ID_RX = re.compile(r"^([DPCFL])-(\d{8})-(\d{4})-([a-z0-9-]+?)(?:-(\d+))?$")
 FILE_GLOB = "[DPCFL]-[0-9]*.md"
-TEMPLATES = Path(__file__).resolve().parent.parent / "templates" / "records"
+TEMPLATES = Path(__file__).resolve().parent.parent / "templates" / "record-bodies"
 
 ORDER = {
     "decision": ["schema", "id", "type", "kind", "title", "status", "tier", "authority", "decided_by", "decider_seat",

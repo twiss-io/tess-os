@@ -12,11 +12,12 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import promote, receipts, verify
+from . import promote, receipts, redact, verify
 from .config import Config, iso, log_error, write_json
 
 KINDS = ("decision", "preference", "correction", "fact", "open_loop", "skill")
 DETECTORS = ("cue", "distill", "decide", "onboarding", "operator")
+OVER_CAP = "over-cap"
 
 
 def inbox_dir(cfg: Config) -> Path:
@@ -57,9 +58,23 @@ def _next_id(cfg: Config) -> str:
     return cid
 
 
+def redacted(cand: Dict) -> Dict:
+    """A copy safe to write or print: every text field redacted (spec 10.3: before ANY write)."""
+    out = {}
+    for k, v in cand.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, str):
+            v = redact.redact(v)[0]
+        elif isinstance(v, list):
+            v = [redact.redact(x)[0] if isinstance(x, str) else x for x in v]
+        out[k] = v
+    return out
+
+
 def save(cfg: Config, cand: Dict, sub: str = "") -> Path:
     path = inbox_dir(cfg) / sub / ("%s.json" % cand["id"]) if sub else inbox_dir(cfg) / ("%s.json" % cand["id"])
-    write_json(path, {k: v for k, v in cand.items() if not k.startswith("_")})
+    write_json(path, redacted(cand))
     return path
 
 
@@ -87,7 +102,7 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
     if res.line is not None:
         promote.fill_source(cfg, cand, res.line)
     outcome = {"candidate": cand["id"], "kind": cand["kind"], "status": res.status, "reasons": res.reasons,
-               "record": "", "statement": cand.get("statement", "")}
+               "record": "", "statement": redact.redact(cand.get("statement", ""))[0]}
     if dry_run:
         return outcome
     receipts.append(cfg, cand.get("speaker") or "unknown", "verify", cand["id"], res.status, res.reasons)
@@ -96,8 +111,8 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
         save(cfg, cand, "rejected")
     elif res.status == "noop":
         _drop(cfg, cand)
-    elif res.status == "review" or (cand["kind"] == "fact" and not promote.principal_fact(cfg, cand)) \
-            or cand["kind"] == "skill":
+    elif res.status == "review" or cand["kind"] == "skill" or (
+            cand["kind"] == "fact" and not promote.principal_fact(cfg, cand) and not cand.get("operator_approved")):
         if cand["kind"] == "skill":
             outcome["record"] = promote.skill_draft(cfg, cand)
             _drop(cfg, cand)
@@ -105,6 +120,11 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
             outcome["status"] = "review"
             cand["verification"]["status"] = "review"
             save(cfg, cand)
+    elif res.status != "pending" and promote.profile_cap_error(cfg, cand):
+        outcome["status"] = OVER_CAP
+        outcome["reasons"] = [promote.profile_cap_error(cfg, cand)]
+        cand["verification"].update(status="review", reasons=outcome["reasons"])
+        save(cfg, cand)
     else:
         rec = promote.promote(cfg, cand, pending=(res.status == "pending"))
         outcome["record"] = rec.rel(cfg)

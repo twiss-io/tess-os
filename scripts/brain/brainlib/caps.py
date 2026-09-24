@@ -38,6 +38,16 @@ def profile(cfg: Config, text: str) -> Optional[str]:
     return over(text, None, cfg.budgets["profile_kib"] * 1024)
 
 
+def for_generated(cfg: Config, path: Path, text: str) -> Optional[str]:
+    """profile.md: 12 KiB. Registers an agent reads first (INDEX.md, open-loops.md): 150 lines / 12 KiB.
+    learned.md is capped by entries (archive), ALL.md and index pages by paging."""
+    if path.name == "profile.md" and path.parent == cfg.brain:
+        return profile(cfg, text)
+    if path.name in ("INDEX.md", "open-loops.md") and "journal" not in path.parts:
+        return index_file(cfg, text)
+    return None
+
+
 def entity_agents(cfg: Config, text: str) -> Optional[str]:
     b = cfg.budgets
     return over(text, b["entity_agents_lines"], b["entity_agents_kib"] * 1024)

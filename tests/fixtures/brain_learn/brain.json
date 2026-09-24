@@ -19,7 +19,7 @@
     "started_at": "2026-09-24T09:00:00+08:00", "completed_at": "2026-09-24T09:10:00+08:00", "remind_after": null
   },
   "runtimes": ["claude-code", "codex", "gemini"],
-  "capture": {"journal": "commit-redacted", "since": "2026-09-01T00:00:00+08:00"},
+  "capture": {"journal": "commit-redacted", "since": "2026-09-01T00:00:00+08:00", "also_cwd": ["/tmp/tess-brain-fx"]},
   "save": {"autopush": false},
   "remote": {"name": "origin", "url": null, "visibility": "unknown", "verified_via": null},
   "framework_remote_patterns": ["github.com[:/]twiss-io/tess-os"],

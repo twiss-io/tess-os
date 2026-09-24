@@ -25,6 +25,16 @@ description: "Show the operator what the brain learned or holds for confirmation
    (`--kind correction --supersedes <id>`).
 5. Finish with `python3 scripts/brain/tessbrain.py status`.
 
+## Consolidate (when a tool says "consolidate: brain-review --consolidate")
+
+`brain/profile.md` or a register is at its size cap, so the tool refused to
+add more (nothing was truncated). Show the operator the active preferences
+and corrections (`python3 scripts/brain/tessbrain.py recall "" --type preference`
+or `brain/profile/INDEX.md`), ask which ones to drop or merge, and apply
+their words: `retract <id> --quote "..."` for each one to drop, then record a
+merged preference with skill `brain-remember` quoting their new wording.
+Then run `python3 scripts/brain/tessbrain.py sync`.
+
 ## Weekly review (when asked, or 7 days after the last one)
 
 Inbox to zero; projects without a next action; waiting-fors older than 14

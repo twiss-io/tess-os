@@ -56,16 +56,15 @@ def base_relpath(cfg: Config, sess: Session) -> str:
 def build_entries(cfg: Config, sess: Session) -> Tuple[List[Entry], Dict[str, int]]:
     counts: Dict[str, int] = {}
     entries: List[Entry] = []
-    nl = nr = 0
+    nl = 0
     for m in sess.msgs:
         text, c = redact.redact(m.text)
         for k, v in c.items():
             counts[k] = counts.get(k, 0) + v
-        if m.role == "assistant":
-            nr += 1
+        if m.role == "assistant":  # R<k> is the final reply after message L<k> (R0: before any message)
             if len(text) > REPLY_CHARS:
                 text = text[:REPLY_CHARS].rstrip() + " [... see transcript]"
-            entries.append(Entry(label="R%d" % nr, hhmm=_hhmm(cfg, m.at), speaker="assistant", channel="reply",
+            entries.append(Entry(label="R%d" % nl, hhmm=_hhmm(cfg, m.at), speaker="assistant", channel="reply",
                                  text=text, principal=False, at=m.at, ordinal=m.ordinal, kind="reply"))
             continue
         nl += 1

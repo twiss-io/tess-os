@@ -24,6 +24,9 @@ def _decode(raw: str) -> Any:
             return json.loads(s)
         except ValueError:
             pass
+    if s[0] == "[" and s.endswith("]"):  # YAML flow sequence of plain scalars: [a, b]
+        inner = s[1:-1].strip()
+        return [_decode(x) for x in inner.split(",")] if inner else []
     if s[0] == "'" and s.endswith("'") and len(s) >= 2:
         return s[1:-1].replace("''", "'")
     if s in ("true", "false"):

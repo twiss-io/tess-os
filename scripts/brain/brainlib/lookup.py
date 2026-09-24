@@ -21,6 +21,14 @@ _SESSION_FILE = re.compile(r"^\d{4}-[a-z0-9]+-[A-Za-z0-9]+(?:-\d+)?\.md$")
 class JLine:
     __slots__ = ("ref", "label", "speaker", "channel", "text", "principal", "kind", "path", "index", "hhmm")
 
+    @property
+    def order(self):
+        """Conversation order: L<k> < R<k> (the reply to L<k>) < L<k+1>."""
+        try:
+            return (int(str(self.label)[1:]), 1 if str(self.label).startswith("R") else 0)
+        except ValueError:
+            return (self.index or 0, 0)
+
     def __init__(self, **kw):
         for k in self.__slots__:
             setattr(self, k, kw.get(k))

@@ -80,7 +80,7 @@ def _simple_indexes(cfg: Config, recs, writes: Dict[Path, str]) -> None:
         writes[d / "INDEX.md"] = gen.page("Profile records (all)", lines)
 
 
-def _profile(cfg: Config, recs) -> str:
+def profile_text(cfg: Config, recs) -> str:
     body: List[str] = []
     for kind, title in (("preference", "Preferences"), ("correction", "Corrections")):
         act = [r for r in _newest(recs) if r.kind == kind and r.status == "active"]
@@ -125,7 +125,7 @@ def regenerate(cfg: Config) -> Tuple[int, List[str]]:
     writes: Dict[Path, str] = {}
     _decision_pages(cfg, recs, writes)
     _simple_indexes(cfg, recs, writes)
-    writes[cfg.brain / "profile.md"] = _profile(cfg, recs)
+    writes[cfg.brain / "profile.md"] = profile_text(cfg, recs)
     learned, extra = _learned(cfg, recs)
     writes[cfg.brain / "learned.md"] = learned
     writes.update(extra)
@@ -139,7 +139,7 @@ def regenerate(cfg: Config) -> Tuple[int, List[str]]:
     msgs: List[str] = []
     rc = 0
     for path, text in sorted(writes.items()):
-        err = caps.profile(cfg, text) if path.name == "profile.md" else caps.index_file(cfg, text)
+        err = caps.for_generated(cfg, path, text)
         if err:
             msgs.append("over cap, not written: %s (%s); consolidate: brain-review --consolidate" % (cfg.rel(path), err))
             rc = caps.EXIT_OVER_CAP

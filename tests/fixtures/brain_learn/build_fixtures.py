@@ -109,6 +109,27 @@ def codex(sid, cwd, user_text, extra_unknown):
     return recs
 
 
+def gemini(sid):
+    """Gemini CLI 0.61.0 chat shape (observed 2026-09-24 in a scratch HOME): header line, a $set with
+    the injected <session_context>, then user/gemini records and $set updates."""
+    ts = "2026-09-24T09:%02d:00.000Z"
+    return [
+        {"sessionId": sid, "projectHash": "0" * 64, "startTime": ts % 20, "lastUpdated": ts % 20, "kind": "main"},
+        {"$set": {"messages": [{"id": "ctx1", "timestamp": ts % 20, "type": "user",
+                                "content": [{"text": "<session_context>\nThis is the Gemini CLI.\n</session_context>"}]}]}},
+        {"id": "g-u1", "timestamp": ts % 21, "type": "user",
+         "content": [{"text": "Decision: let's go with SQLite for the prototype. From now on, answer tersely."}]},
+        {"$set": {"lastUpdated": ts % 21}},
+        {"id": "g-a1", "timestamp": ts % 22, "type": "gemini", "content": "OK", "thoughts": [],
+         "tokens": {"input": 1, "output": 1}, "model": "gemini-x"},
+        {"type": "future_record_kind", "shape": "unknown"},
+        {"id": "g-u2", "timestamp": ts % 23, "type": "user", "content": [{"text": "Remind me to back up the prototype."}]},
+        {"id": "g-a2", "timestamp": ts % 24, "type": "gemini", "content": "",
+         "toolCalls": [{"name": "google_web_search", "args": {"query": "backup"}}]},
+        {"id": "g-a3", "timestamp": ts % 25, "type": "gemini", "content": "Noted."},
+    ]
+
+
 def write(path, recs):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
@@ -126,6 +147,8 @@ if __name__ == "__main__":
     write(os.path.join(day, "rollout-2026-09-24T15-25-00-01a0d238-0000-7000-a000-000000000002.jsonl"),
           codex("01a0d238-0000-7000-a000-000000000002", "/work/other-project",
                 "Decision: let's go with Oracle for everything.", False))
+    write(os.path.join(HERE, "gemini", "session-2026-09-24T09-20-gem00001.jsonl"),
+          gemini("gem00001-aaaa-4bbb-8ccc-000000000001"))
     stdin = os.path.join(HERE, "stdin")
     os.makedirs(stdin, exist_ok=True)
     for name, data in (

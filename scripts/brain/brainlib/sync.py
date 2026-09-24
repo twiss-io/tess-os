@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from . import cues, entities, inbox, index, journal, lookup, promote, records
 from .config import Config, iso, log_error, read_json, write_json
-from .parsers import claude, codex
+from .parsers import claude, codex, gemini
 
 try:
     import fcntl
@@ -39,8 +39,10 @@ def _known(cfg: Config, runtime: str) -> List[str]:
 
 
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
-            also_cwd: List[str], days: Optional[int], deadline: Optional[float] = None):
+            also_cwd: List[str], days: Optional[int], deadline: Optional[float] = None,
+            gemini_home: Optional[str] = None):
     out = []
+    also_cwd = list(also_cwd) + cfg.also_cwd
     cutoff = time.time() - days * 86400 if days else None
     if runtime in ("all", "claude"):
         for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, _known(cfg, "claude")):
@@ -52,6 +54,10 @@ def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Op
             if k and Path(k).is_file() and Path(k) not in paths:
                 paths.append(Path(k))
         out.extend((p, codex.parse) for p in paths)
+    if runtime in ("all", "gemini"):
+        for p in gemini.discover(cfg.root, gemini_home, also_cwd):
+            if cutoff is None or p.stat().st_mtime >= cutoff:
+                out.append((p, gemini.parse))
     return out
 
 
@@ -153,7 +159,7 @@ class Lock:
 
 def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
         also_cwd: Optional[List[str]] = None, transcript: Optional[str] = None, days: Optional[int] = None,
-        wait: bool = True) -> Dict:
+        wait: bool = True, gemini_home: Optional[str] = None) -> Dict:
     if not cfg.active():
         return {"skipped": "source repo" if cfg.is_source_repo() else "no brain/brain.json"}
     with Lock(cfg, "sync") as lock:
@@ -168,16 +174,16 @@ def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, cod
                     break
                 except OSError:
                     continue
-        return _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd or [], transcript, days)
+        return _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd or [], transcript, days, gemini_home)
 
 
-def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days) -> Dict:
+def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days, gemini_home=None) -> Dict:
     ents = entities.names(cfg)
     if transcript:
-        parser = codex.parse if runtime == "codex" else claude.parse
+        parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
         srcs = [(Path(transcript), parser)]
     else:
-        srcs = sources(cfg, runtime, claude_dir, codex_home, also_cwd, days)
+        srcs = sources(cfg, runtime, claude_dir, codex_home, also_cwd, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
     cands: List[Dict] = []
     for path, parser in srcs:

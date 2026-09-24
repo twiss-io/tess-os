@@ -120,6 +120,11 @@ class Config:
         return out
 
     @property
+    def also_cwd(self) -> List[str]:
+        """capture.also_cwd (optional): earlier paths of this repo whose Codex/Gemini sessions belong here."""
+        return [str(x) for x in ((self.data.get("capture") or {}).get("also_cwd") or []) if x]
+
+    @property
     def entity_roots(self) -> List[str]:
         return [str(x) for x in (self.data.get("entity_roots") or [])]
 
