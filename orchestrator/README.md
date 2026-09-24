@@ -209,7 +209,7 @@ human was physically at the keyboard, does not survive a compromised OS
 account (same trust model as an SSH key), and supports exactly one
 identity per OS account — not a genuinely multi-human production
 deployment. **This is an open design question for the maintainers**, not a gap
-papered over: a production adapter (Telegram button bound to a known
+papered over: a production adapter (a chat-app button bound to a known
 chat/user id, a web session token, SSO/WebAuthn) needs a real,
 per-human IdP, and is a drop-in `ApprovalGate` implementation once one
 is decided on. See `spec_engine.gate_identity`'s module docstring for the
@@ -231,7 +231,7 @@ one — see that function's own docstring for exactly what changed and
 what stayed the same for existing callers.
 
 **Still genuinely open, deliberately not built here:** a
-production-grade `ApprovalGate` adapter (Telegram/web/SSO) — see the
+production-grade `ApprovalGate` adapter (chat-app/web/SSO) — see the
 "Honest limitation" section above — and DURABLE (cross-process) nonce
 anti-replay tracking for spent approvals (today's tracker is
 in-process/in-memory only — see `spec_engine.gate_approval`'s module
@@ -405,9 +405,9 @@ themselves):
 - `CLAUDE.md`, `conductor/*.md`, `.claude/commands/**`,
   `.github/workflows/**`, `core/policy/**`, `core/contracts/**`,
   `.tess/bin/tessctl` — all keystone/policy-owned or gate-critical paths.
-- A Telegram-button, web, or CLI-with-real-auth `ApprovalGate` — the
+- A chat-app-button, web, or CLI-with-real-auth `ApprovalGate` — the
   interface is documented and ready for one; none is built here (design
-  constraint: "GENERALIZED/pluggable — do NOT hardcode Telegram").
+  constraint: generalized and pluggable, never hardcoded to one chat service).
 - Hardening `spec_engine.approval.record_approval()` itself against a
   caller that bypasses this orchestrator — see "Honest limitation" above.
 - Provisioning a real, persistent database or a deploy target for

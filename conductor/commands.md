@@ -81,7 +81,7 @@ Returns: next moves in sequence, owner of each, and any dependencies between the
 ### `/wake`
 **Session start checklist — orient, check mission state, surface blockers.**
 
-Tess orients at the beginning of a session: loads doctrine context, checks for active missions, surfaces any pending decisions or blockers, and notifies the operator that a session is live through the active runtime's native channel (Telegram in Claude Code with the Telegram integration; the in-app progress stream in any runtime without it, such as Codex or Gemini CLI).
+Tess orients at the beginning of a session: loads doctrine context, checks for active missions, surfaces any pending decisions or blockers, and reports in the active session that it is live.
 
 *Use when:* Starting a new session or resuming after a break.  
 *Output:* Active mission state, pending decisions, blockers, and session readiness confirmation.

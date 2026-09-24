@@ -17,4 +17,4 @@ Run the intake-before-anything gate from [conductor/doctrine.md](../../conductor
 
 **Output:** mission brief, outcome type, assigned orchestrator, proposed guild set, state set to FRAMING ([conductor/mission-states.md](../../conductor/mission-states.md)).
 
-Notify the operator on dispatch through the active runtime's native channel (Telegram in Claude Code with the Telegram integration; the in-app progress stream in any runtime without it, such as Codex or Gemini CLI) per [conductor/daily-operating-behavior.md](../../conductor/daily-operating-behavior.md) and [conductor/guardrails.md](../../conductor/guardrails.md) Rule 10. Remember Rule Zero: orchestrate and dispatch — never execute specialist work solo.
+Report each dispatch to the operator in the active session per [conductor/guardrails.md](../../conductor/guardrails.md) Rule 10. Remember Rule Zero: orchestrate and dispatch — never execute specialist work solo.

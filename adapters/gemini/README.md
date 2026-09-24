@@ -150,7 +150,6 @@ which this target does not own.
 |---|---|---|---|
 | `utc-local-context.sh` (UserPromptSubmit) | `BeforeAgent` ([reference.md L145-L161](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/hooks/reference.md#L145-L161)) | No | The script prints plain text. Gemini would show it to the user instead of adding it to the model's context; only `hookSpecificOutput.additionalContext` JSON is added. |
 | `dispatch-guard.sh` (PreToolUse Bash/Edit/Write) | `BeforeTool` | No | Different tool names (`run_shell_command`, `write_file`, `replace`) and output contract; the Rule Zero guard does not apply to a worker-profile runtime. |
-| `telegram-format-guard.sh`, `anti-fabrication-guard.sh` (PreToolUse on Telegram MCP tools) | `BeforeTool` | No | Gemini names MCP tools `mcp_<server>_<tool>` ([reference.md L79-L90](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/hooks/reference.md#L79-L90)); stdin/stdout contract differs. |
 | `task-lock-set.sh`, `task-lock-clear.sh`, `vault-dispatch-scan.py` (Task/Agent) | none | No | Tess renders no Gemini subagents to dispatch. |
 
 No `.gemini/policies/**` is rendered either: the workspace policy tier does

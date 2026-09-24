@@ -473,8 +473,8 @@ CLAUDE_TOKEN_MAP = {
 #     (v0.2.0, ws-doc worker fragments): three scope facts a worker needs
 #     so the orchestrator-only rules in CLAUDE.md are not misapplied to it —
 #     the dispatch rule binds only the conductor session (a worker executes
-#     directly), Telegram is a Claude Code conductor channel (a worker
-#     reports through its own runtime), and where new files go. Each is
+#     directly), a worker reports through its own runtime (the base
+#     harness has no external chat channel), and where new files go. Each is
 #     phrased without any WORKER_DOCTRINE_DENYLIST phrase: they tell a
 #     worker what does NOT apply to it, never how to dispatch.
 AGENTS_TOKEN_MAP = {
