@@ -95,10 +95,11 @@ def _seed_identity_instance(project):
     root = project.root
 
     # 1. Real persona blocks — inputs to the {{PATHWAY}} render.
-    dst = root / ".tess" / "core" / "personas"
-    dst.mkdir(parents=True, exist_ok=True)
+    # v0.2 eng-a (bug 10): lock-tracked (live_path null, as in the real lock), else doctor FAILs
+    # on untracked .tess/core files.
     for key in PERSONA_KEYS:
-        shutil.copy2(_REAL_PERSONAS / f"{key}.md", dst / f"{key}.md")
+        project.add(None, (_REAL_PERSONAS / f"{key}.md").read_bytes(),
+                    core_key=f".tess/core/personas/{key}.md", render_live=False)
 
     # 2. Real operator identity stub (carries {{ASSISTANT_NAME}}).
     (root / "operator").mkdir(parents=True, exist_ok=True)
@@ -239,6 +240,10 @@ def _seed_identity_instance_with_codex(project):
     project.add(None, _AGENTS_TPL_ID, core_key=_AGENTS_TPL_KEY, render_live=False)
     project.add(None, _AGENTS_HARD_FLOOR_ID, core_key=_AGENTS_HARD_FLOOR_KEY, render_live=False)
     project.add(None, _CODEX_CONFIG_TOML_ID, core_key=_CODEX_CONFIG_TOML_KEY, render_live=False)
+    # v0.2 eng-a (bug 10): re-flush so these core inputs are lock-tracked (an
+    # untracked .tess/core file FAILs doctor/verify); write() resets the
+    # manifest, so codex is enabled after it.
+    project.write()
     _enable_codex(project)
     project.mod.RENDER_TARGETS["codex"].render(project.root, verbose=False)
     return project

@@ -85,9 +85,10 @@ def _live(name: str) -> str:
 
 
 def _write_roster_config(project, roster=ROSTER) -> None:
-    rp = project.root / ".tess" / "core" / "roster-paths.json"
-    rp.parent.mkdir(parents=True, exist_ok=True)
-    rp.write_text(json.dumps(roster, indent=2), encoding="utf-8")
+    # v0.2 eng-a (bug 10): every .tess/core file needs a tess.lock entry (the real lock has one for
+    # roster-paths.json), else doctor/verify FAIL on an untracked core file — register, don't just write.
+    project.add(None, json.dumps(roster, indent=2), core_key=".tess/core/roster-paths.json",
+                render_live=False)
 
 
 def _build_squad_project(project, *, with_config=True):

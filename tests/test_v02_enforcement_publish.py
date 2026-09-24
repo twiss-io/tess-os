@@ -47,7 +47,8 @@ def _publish(engine, root, path):
 
 def _render_restore_fix(engine, root):
     render(engine, root)
-    engine.cmd_restore(ns(dry_run=False), root)
+    # eng-a drift gate: restore exits non-zero while uncaptured drift remains.
+    _rc(engine.cmd_restore, ns(dry_run=False), root)
     _rc(engine.cmd_doctor, ns(fix=True, json_out=False, path=None), root)
 
 

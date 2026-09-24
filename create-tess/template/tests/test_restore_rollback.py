@@ -21,9 +21,12 @@ def test_restore_resyncs_modified_live(project):
     project.add("conductor/r.md", "core content\n", status="core-managed")
     project.write()
     project.write_live("conductor/r.md", "drifted away\n")
-    counts = project.mod._do_restore(project.root, verbose=False)
+    # v0.2 (bug e): overwriting uncaptured drift now needs force=True (the
+    # default skips it; see tests/test_v02_integrity.py for that contract).
+    counts = project.mod._do_restore(project.root, verbose=False, force=True)
     assert project.read_live("conductor/r.md") == "core content\n"
     assert counts["updated"] >= 1
+    assert counts["forced_paths"] == ["conductor/r.md"]
 
 
 def test_restore_skips_locally_modified_without_discarding(project, capsys):
@@ -50,7 +53,8 @@ def test_restore_skip_not_abort_on_symlinked_path(project):
     # conductor/ already exists (created above); plant the symlink component.
     (project.root / "conductor" / "linked").symlink_to(project.root / "kb")
 
-    counts = project.mod._do_restore(project.root, verbose=False)
+    # v0.2 (bug e): normal.md carries uncaptured drift, so force=True is needed to restore it.
+    counts = project.mod._do_restore(project.root, verbose=False, force=True)
     # Skipped, not aborted: the normal file still got restored.
     assert counts["skipped_gate"] == 1
     assert project.read_live("conductor/normal.md") == "norm core\n"

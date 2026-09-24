@@ -175,7 +175,15 @@ def test_uncaptured_strip_is_repinned(project, engine, how, capsys):
     if how == "render":
         render(engine, root)
     elif how == "restore":
-        engine.cmd_restore(ns(dry_run=False), root)
+        # v0.2 integration (eng-a x eng-b seam): eng-a's drift gate (bug e)
+        # now blocks `restore` on ANY uncaptured render-output edit, CLAUDE.md
+        # included, and exits non-zero (as it does on the sibling
+        # test_hand_edited_claude_md_survives_render_and_restore, adjusted by
+        # eng-a itself for the same reason). settings.json is still re-pinned
+        # first, before the blocking render_drift check is reached; the
+        # hand-edit-preserved assertion below is unchanged.
+        with pytest.raises(SystemExit):
+            engine.cmd_restore(ns(dry_run=False), root)
     else:
         _doctor_rc(engine, root, fix=True)
     out = capsys.readouterr().out
