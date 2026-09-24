@@ -3252,8 +3252,8 @@ def _exit_blocked_by_drift(op: str, blocked: list) -> None:
         f"were NOT overwritten (nothing was lost):\n{lines}\n"
         f"  Resolve each one, then re-run `tessctl {op}`:\n"
         f"    keep a hand edit    → `tessctl capture <path>` (security-tier: quarantine, then "
-        f"`tessctl approve`), or move it into <file>.local.md\n"
-        f"    stale render only   → `tessctl render`\n"
+        f"`tessctl approve`); for a render output (CLAUDE.md, AGENTS.md, .codex/**) move the "
+        f"edit into <file>.local.md / an operator stub, or `tessctl publish <path>`\n"
         f"    discard the edit    → `tessctl {op} --force` (pre-images stay in the snapshot; "
         f"security-tier copy files are never force-overwritten)"
     )
