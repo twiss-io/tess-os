@@ -7,7 +7,7 @@ a formality collapsed into a single function signature.
 
     plan = run_intake_and_plan(input_text, source_type)
     # ... a human reviews plan.summary_for_approval and decides ...
-    spec = finalize_spec(plan, approved_by="Xavier", approved=True)
+    spec = finalize_spec(plan, approved_by="Alex", approved=True)
 
 ## `finalize_spec()` vs. `finalize_spec_with_approval()`
 

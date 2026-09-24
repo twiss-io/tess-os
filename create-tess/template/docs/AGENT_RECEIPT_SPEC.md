@@ -427,8 +427,8 @@ python3 tools/receipt-verify/receipt_verify.py verify path/to/receipt.json \
 # SECRET local approval-identity key that produced the signature; treat it
 # like any other credential, never publish it:
 python3 tools/receipt-verify/receipt_verify.py verify path/to/receipt.json \
-  --trust "local:xavier#0123456789abcdef" 0123456789abcdef \
-  ~/.tess-os/approval-identity/xavier.key
+  --trust "local:alex#0123456789abcdef" 0123456789abcdef \
+  ~/.tess-os/approval-identity/alex.key
 ```
 
 The caller supplies their own trusted identity/fingerprint/key mapping

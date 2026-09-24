@@ -20,11 +20,12 @@ trail under `.tess/state/` that you can read yourself, no proprietary memory
 store to trust blindly. And when a change needs a "prove it," Tess OS can
 hand you a real [Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed,
 chain-linked, and designed to be checked by a standalone verifier that
-doesn't take Tess OS's own word for it. That verifier runs today; the current
-policy registers Cyra's public verifier key, while private-key custody and
-covering approval remain external to the repository and the sign-off registry
-is still empty. See [Important limits today](#important-limits-today) before
-treating a receipt as a production trust guarantee.
+doesn't take Tess OS's own word for it. That verifier runs today. This
+repository's policy registers one verifier key (Cyra). For v0.2.0 that key
+was held by an agent on the build machine, not by a human custodian, and the
+sign-off registry is still empty. See
+[Important limits today](#important-limits-today) before treating a receipt
+as a production trust guarantee.
 
 None of that makes the underlying model smarter. Tess OS is a local
 governance and review harness for work produced by coding agents. It records
@@ -43,8 +44,12 @@ enforce.
 - A signed-review gate that blocks a governed change when it lacks a valid,
   covering approval artifact.
 - A reference Claude Code render target and driver.
-- An opt-in Codex render target that produces `AGENTS.md`, `.codex/config.toml`,
-  and prompt files; a Codex driver also exists.
+- A Codex render target (enabled by default) that produces `AGENTS.md`,
+  `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*`
+  skills (invoked as `$tess-<command>`); a Codex driver also exists.
+- A Gemini CLI render target (enabled in new installs) that produces a
+  `GEMINI.md` importing `AGENTS.md`, and the Tess commands as
+  `/tess:<command>` custom commands.
 - An opt-in generic target that produces `AGENTS.md` and plain prompt files.
 - A local, sequential `tessctl run` conductor loop with mission gates, return
   artifact validation, bounded retries, and escalation.
@@ -52,64 +57,89 @@ enforce.
   operator-run OpenTelemetry JSON export.
 
 These are current repository capabilities, not equivalent provider support
-claims. Read the [support and status guide](docs/STATUS.md) before deciding
-whether an integration fits a particular workflow.
+claims. Each runtime gets a different enforcement level; see
+[Runtimes and enforcement](#runtimes-and-enforcement) and the
+[support and status guide](docs/STATUS.md) before deciding whether an
+integration fits a particular workflow.
 
 ## See it
 
 ![Tess OS -- create-tess wizard and Agent Receipt demo](docs/demo/tess-demo.svg)
 
-A real, unedited terminal recording, not a mockup. It runs `npm create
-tess`'s five-axis wizard end to end — vibe, operator name, starter squad,
-conductor name, pathway — through the actual post-bake `tessctl
-doctor`/`tessctl verify` checks and the conductor's in-voice arrival
+A real, unedited terminal recording of `create-tess` 0.1.x, not a mockup.
+It runs `npm create tess`'s five-axis wizard end to end — vibe, operator
+name, starter squad, conductor name, pathway — through the actual post-bake
+`tessctl doctor`/`tessctl verify` checks and the conductor's in-voice arrival
 greeting, then the Agent Receipt "show me the receipt" demo (propose →
 approve → sign → journal → verify, plus a tamper rejection). How it was
 recorded, and how to reproduce it, is in [docs/demo/](docs/demo/README.md).
 
 ## Important limits today
 
-Tess OS is deliberately fail-closed when no covering approval exists. The
-current policy registers Cyra's public verifier key; `signoff_keys` remains
-empty. A message such as **"no covering APPROVE verdict found"** is an
-expected block, not an invitation to create a key, sign the candidate's own
-work, or work around the gate.
+Tess OS is deliberately fail-closed when no covering approval exists. This
+repository's policy registers one verifier key (Cyra); `signoff_keys` remains
+empty. A fresh `npm create tess` scaffold starts with both registries empty. A
+message such as **"no covering APPROVE verdict found"** is an expected block,
+not an invitation to create a key, sign the candidate's own work, or work
+around the gate.
 
-The live GitHub `main` ruleset now requires the App-bound `tessctl gate ci`
-check and the repository's CI checks with strict up-to-date-branch enforcement
-(verified 2026-08-22). That external rule is an active control, not a remaining
-setup step.
+Facts for v0.2.0, re-verified on 2026-09-24:
 
-Production limitations remain:
+1. **The v0.2.0 approvals were signed with an agent-held key.** The Cyra
+   verifier key has no passphrase and sits on the build machine. An agent
+   that did not build the change reviewed each protected change and signed
+   the verdict with that key. No key was rotated for this release. Moving
+   the key to human custody is planned for v0.2.1.
+2. **"Only reviewed changes merge" is a process rule, not a GitHub
+   guarantee.** The `main` ruleset requires six status checks, including the
+   App-bound `tessctl gate ci`, with strict up-to-date branches and no bypass
+   actors. It requires 0 approving reviews, and the GitHub token the build
+   agents use has admin rights on the repository.
+3. **The gate is a non-authoritative preview.** The P0 type-swap bypass
+   (the #71 hardening) and the A14 multi-push policy-reduction case are
+   still open, and the merge-admission topology (#76) is undecided.
+4. **The human sign-off registry is empty**, so Rule-18 hard-floor actions
+   remain unavailable through repository evidence alone.
 
-1. The registered verifier's private-key custody and every covering approval
-   must remain independent of candidate repository content; a producer still
-   cannot clear its own work.
-2. The human sign-off registry is empty, so Rule-18 hard-floor actions remain
-   unavailable through repository evidence alone.
-3. Multi-push policy reduction remains a disclosed, untested adversarial case.
-
-Until both are complete, a passing local command or GitHub Action is useful
-engineering evidence, but not a production admission control. The committed
-`gate-arena` scorecard on `main` reports **12/12 attacks blocked**.
-Multi-push policy reduction is a disclosed but untested case, and is not
-included in that score. The score is disclosed evidence, not a
-production-readiness certificate.
+Until those are resolved, a passing local command or GitHub Action is useful
+engineering evidence, not a production admission control. The committed
+`gate-arena` scorecard on `main` reports **12/12 attacks blocked**. A14 is a
+disclosed but untested case and is not included in that score. The score is
+disclosed evidence, not a production-readiness certificate. Full detail:
+[Support and status](docs/STATUS.md).
 
 Do **not** generate, register, or sign an additional verifier or sign-off key
 to clear a gate, and never use the registered verifier to approve its own
-candidate. Key custody is a designated human ceremony owned by Xavier. See
+candidate. Key custody belongs to a designated human custodian. See
 [Gate operation and custody](docs/GATE_QUICKSTART.md).
 
-## Supported surfaces
+## Runtimes and enforcement
+
+Tess OS runs natively on Claude Code, Codex and Gemini CLI, plus any
+AGENTS.md-compatible tool. How much of Tess each runtime can actually enforce
+differs, and this table is the claim. It is not a parity claim. **Enforced**
+means the full Tess session hook set runs inside the runtime. **Partial**
+means the runtime loads the Tess doctrine and commands natively but runs few
+or none of the Tess session hooks. **Advisory** means it reads the doctrine
+text only. In every case the repository's git hooks (once installed) and
+the CI gate still apply. The levels match
+[adapter conformance](adapters/CONFORMANCE.md), which records the evidence
+for each.
+
+| Runtime | Enforcement | How Tess OS reaches it | Main limits |
+|---|---|---|---|
+| Claude Code | **Enforced** | Reference `claude-code` target: `CLAUDE.md`, `.claude/agents`, `.claude/commands`, and the Tess hooks in `.claude/settings.json`. | The session hooks run natively; the merge gate is still a preview (see [Important limits today](#important-limits-today)). |
+| Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills. | No Tess session hook runs inside Codex in 0.2.0; the gate runs at git pre-push and in CI. Codex reads `.codex/config.toml` only in a trusted project, and caps the `AGENTS.md` chain at 32 KiB. |
+| Gemini CLI | **Partial** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, and the Tess commands as `/tess:<command>`. | No Tess session hook runs inside Gemini CLI in 0.2.0; the gate runs at git pre-push and in CI. Gemini loads these files only in a trusted folder. No live model run was part of the v0.2.0 checks. |
+| GitHub Copilot CLI, Cursor | **Partial** (through the Claude-compatible files) | No dedicated target. Both read `CLAUDE.md`, `AGENTS.md`, `.claude/agents`, and the Claude hooks. | Not tested by Tess OS. Copilot hook timeouts fail open; Cursor fails open on hook crashes and timeouts. Both load the doctrine twice. |
+| Other `AGENTS.md` tools (for example OpenCode, Amp, Jules, Kiro) | **Advisory** | The `AGENTS.md` doctrine text only. | No Tess commands or session hooks in the tool. The git hooks and CI gate still apply to the repository. |
+| Any runtime not listed here | **unverified** | — | Not assessed. Using a frontier model, MCP, or an OpenAI-compatible API does not make a runtime supported. |
+
+## Other surfaces
 
 | Surface | Status | What that means |
 |---|---|---|
-| Claude Code | **Preview** | Tess OS has a reference render target and driver. This is not yet a production-certified protected workflow. |
-| Codex | **Preview** | Tess OS can render Codex project files and has a driver, but the driver is not live-tested against native event samples and has no native-parity certification. |
-| Generic `AGENTS.md` tools | **Preview** | Tess OS can emit instructions and plain prompts. This does not prove native orchestration, tool control, or feature parity in every host. |
 | Perplexity | **Unsupported** | There is no repository adapter or driver. A future bounded, read-only research-worker role is under consideration; it is not a coding-harness integration. |
-| Gemini and other platforms | **Unsupported** | A platform is not supported merely because it uses MCP, an OpenAI-compatible API, or a frontier model. |
 | Agent Execution Contract governance defaults | **Planned** | The C/T assurance, local-data, zero-spend, credential, retention, Cloud, Memory, and Vault defaults are accepted as a non-enforcing contract; runtime grading and enforcement are not implemented. See [AEC governance defaults](docs/AEC_GOVERNANCE_DEFAULTS.md). |
 | Tess Cloud | **Planned** | A separate, optional cloud-sync product; it does not exist in this repository and will depend on stable Tess OS contracts. |
 | Tess Vault | **Planned** | A separate agent-era secret-capability product; it is not a required Tess OS service and must not expose secrets to agents, evidence, or memory. |
@@ -173,10 +203,9 @@ npm create tess@latest my-os -- --yes \
   --conductor="Atlas" --pathway=co-founder
 ```
 
-**Verified 2026-07-23:** the P0 zero-flag `git clone` bug (present through
-`0.1.3`) is fixed and published as `0.1.4` — see
-[npm and source status](#npm-and-source-status) for the full incident
-writeup.
+The default flow copies a template bundled inside the npm package; it does
+not clone anything. See [npm and source status](#npm-and-source-status) for
+which version npm serves.
 
 ### Option B — clone the source
 
@@ -189,14 +218,16 @@ python -m pip install -r requirements-dev.txt
 ./tessctl init
 ```
 
-`tessctl init` restores the managed tree from `.tess/core`, renders
-`CLAUDE.md`/`AGENTS.md`/`.codex/` from templates, and creates the working
+`tessctl init` restores the managed tree from `.tess/core`, renders the
+enabled targets (for example `CLAUDE.md`, `AGENTS.md` and `.codex/`) from
+templates, and creates the working
 `.tess/state/` directories — same command documented in full, with the test
 suite, in [docs/LOCAL_DEV_QUICKSTART.md](docs/LOCAL_DEV_QUICKSTART.md).
 
 ### Everyday `tessctl` commands
 
-Real output, from a fresh clone:
+Example output from a fresh clone. File and agent counts change between
+versions:
 
 ```console
 $ ./tessctl doctor
@@ -322,35 +353,60 @@ removes its live dispatch file. Either way, the underlying spec under
 
 ## npm and source status
 
-The public `create-tess` package is published at **0.1.4** (2026-07-21),
-matching this repository's `create-tess/package.json`.
+This README describes Tess OS **v0.2.0**. On 2026-09-24, when this section
+was last checked, npm served `create-tess` **0.1.4**. `create-tess` 0.2.0 is
+published only after the release checks pass: a real over-the-wire upgrade
+from the signed `v0.2.0` tag, a fresh install from that tag, and
+`git verify-tag`. Run `npm view create-tess version` to see what npm serves
+now.
 
-**Fixed and verified (2026-07-23), P0 G-01:** every published version
-through `0.1.3` had the default (zero-flag) `npm create tess` flow depend on
-a runtime `git clone --branch <create-tess-vX.Y.Z>` against a tag that was
-never actually cut — it failed for every user who didn't pass
-`--template-ref` explicitly. `0.1.4` bundles the scaffold template inside the
-`create-tess` package itself; the default flow now copies that local,
-offline bundle and never invokes `git clone`. Confirmed by running both
-`npx create-tess@latest` and `npm create tess@latest` fresh against the live
-npm registry — no flags, no workaround needed. `--template-source
-<git-url>` remains available as an explicit opt-in for a live git fetch. See
-`create-tess/src/scaffold.js`'s header comment for the full incident
-writeup.
+Since `0.1.4`, `create-tess` bundles the scaffold template inside the npm
+package, and the default flow copies that bundle instead of running
+`git clone`. `--template-source <git-url>` remains an explicit opt-in for a
+live git fetch. `create-tess/template/` is a mirror of this repository's
+tree, rebuilt before every `npm pack`/`npm publish`. For an exact state, use a
+reviewed, signed GitHub tag or the source-checkout path above.
 
-`create-tess/template/` — what actually gets copied into a scaffolded
-project — is a full mirror of this repository's tree, rebuilt automatically
-before every `npm pack`/`npm publish`. It can still move a little ahead of
-whatever the last publish captured (as of this writing, two commits have
-touched the bundled template since the `0.1.4` publish, both mirroring
-unrelated orchestrator/receipt-hardening work, not the wizard itself). For
-the exact current state, use a reviewed GitHub tag or commit, or the
-source-checkout path above.
+## Upgrading
 
-This publish is documented here because its specific, previously-broken
-behavior was independently re-verified against the live registry, not
-asserted from the changelog alone. Future releases will be documented the
-same way.
+Upgrades come from a signed git tag. `tessctl` checks the tag against the
+release key pinned in `.tess/tess.lock`
+(`framework.trusted_key_fingerprint`), inside an isolated keyring.
+
+1. Import the release public key once. `tessctl` reads the pinned key from
+   your keyring:
+
+   ```sh
+   gpg --import .tess/keys/twiss-release-key.asc
+   ```
+
+2. Update the engine first, then the framework, then check the result:
+
+   ```sh
+   ./tessctl self-update --ref v0.2.0
+   ./tessctl update --ref v0.2.0
+   ./tessctl doctor
+   ./tessctl verify
+   ```
+
+`update` writes only paths that your `tess.manifest.json` owns. An install
+made with `create-tess` 0.1.4 lists `.agents/**` under `never_touch`, so
+`update` skips the new Codex skills as `skipped:not-owned` and prints the glob
+to add. To opt in, add these lines to `owned_globs` in `tess.manifest.json`:
+
+```text
+".agents/skills/tess-*/**",
+".gemini/commands/tess/**",
+"GEMINI.md"
+```
+
+The first line is for the Codex skills. The other two are for the Gemini CLI
+target, which also needs `"gemini"` in `render_targets.enabled`. Then run
+`./tessctl render`. A render output you edited by hand is not overwritten;
+`tessctl` reports it as skipped and names the reason.
+
+Adopting an existing Tess instance that was not installed by `create-tess`
+is not supported in 0.2.0. Start from a fresh install.
 
 ## Where to start
 

@@ -124,7 +124,7 @@ authenticated `ApprovalGate` sat in front of `finalize_spec()`, but
 `spec_engine.spec_builder.build_spec()` itself — the actual codegen
 boundary, reachable by ANY caller of `spec_engine`, not only ones going
 through this package — still accepted a bare, unsigned `spec_engine.
-approval.record_approval(approved_by="Xavier")` call with zero
+approval.record_approval(approved_by="Alex")` call with zero
 verification. A follow-up hardening epic closed this:
 
 - `spec_engine.spec_builder.build_spec()` now REQUIRES an approval that
@@ -208,7 +208,7 @@ and a live terminal confirmation happened." It does **not** prove which
 human was physically at the keyboard, does not survive a compromised OS
 account (same trust model as an SSH key), and supports exactly one
 identity per OS account — not a genuinely multi-human production
-deployment. **This is an open design question for Xavier**, not a gap
+deployment. **This is an open design question for the maintainers**, not a gap
 papered over: a production adapter (Telegram button bound to a known
 chat/user id, a web session token, SSO/WebAuthn) needs a real,
 per-human IdP, and is a drop-in `ApprovalGate` implementation once one
@@ -236,7 +236,7 @@ production-grade `ApprovalGate` adapter (Telegram/web/SSO) — see the
 anti-replay tracking for spent approvals (today's tracker is
 in-process/in-memory only — see `spec_engine.gate_approval`'s module
 docstring's "Replay" section). Both are flagged as open questions for
-Xavier in the hardening PR that introduced this section.
+the maintainers in the hardening PR that introduced this section.
 
 ## Telemetry (opt-in, off by default)
 

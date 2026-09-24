@@ -1,5 +1,5 @@
 """Turn an `IntakeHarvest` into a `Plan` — the artifact presented at the
-approval gate. Deliverable (3): "Plan -> Xavier/user approval gate ->
+approval gate. Deliverable (3): "Plan -> operator approval gate ->
 complete spec generation." This module builds the FIRST half (the plan);
 approval.py + spec_builder.py handle the gate and the second half.
 

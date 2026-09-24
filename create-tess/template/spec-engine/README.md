@@ -140,7 +140,7 @@ happened first.
 
 ### The codegen boundary is hardened, not just gated on a matching id
 
-A bare `approval.record_approval(plan, approved_by="Xavier")` call — no
+A bare `approval.record_approval(plan, approved_by="Alex")` call — no
 signature, no `ApprovalGate` involvement at all — is REJECTED by
 `build_spec()`. Before this hardening, it was not: `plan_id` match +
 `approved=True` was the entire check, so any in-process caller could
@@ -366,7 +366,7 @@ HTTP against a LOCAL mock provider server (never `api.anthropic.com` /
 connectors, asserting the real auth header/version pin/body shape each
 one sent — not just that the route answers `200`.
 
-**Out of scope for v1** (Xavier's calls, not built here — see the design
+**Out of scope for v1** (maintainer decisions, not built here — see the design
 doc §11): the hosted/paid marketplace, third-party connector submission,
 and `T3` ("audited") trust-tier activation — `core/policy/policy.yaml`'s
 `verifier_keys` ship empty by standing repo rule, and no agent may

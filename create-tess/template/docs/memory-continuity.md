@@ -96,8 +96,8 @@ instance-agnostic:
   `~/.tess-os/memory-heartbeat/`, override via `TESS_MEMORY_STATE_DIR`).
 - **Timezone** — the "is today's recompile due" check was hardcoded to one
   operator's local timezone; now `timezone` (IANA name, default `"UTC"`).
-- **Stall-reason enum naming** — `awaiting-xavier` renamed to the
-  operator-neutral `awaiting-decision`.
+- **Stall-reason enum naming** — a stall reason named after one
+  operator was renamed to the operator-neutral `awaiting-decision`.
 - **A second, independent off-switch** — `heartbeat.config.json`'s
   `activated` field (default `false`). The reference implementation relied
   solely on "the scheduler isn't installed" for its off-by-default posture;

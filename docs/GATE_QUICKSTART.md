@@ -6,7 +6,7 @@
 
 This page explains how to read the gate safely. It intentionally does **not**
 explain how to generate a verifier key, add a key to policy, or sign an
-approval. Those actions are a human-owned Xavier key-custody ceremony, not an
+approval. Those actions belong to a human-owned key-custody ceremony, not an
 operator setup step.
 
 ## What the gate checks
@@ -81,8 +81,9 @@ change.
 1. Stop before treating the change as approved or ready for production.
 2. Record the exact gate output, changed paths, base/head references, and CI
    run URL.
-3. Ask the designated human custodian, Xavier, whether this is an authorized
-   custody or policy decision.
+3. Ask the designated human custodian (the person who holds your verifier
+   and sign-off keys) whether this is an authorized custody or policy
+   decision.
 4. If the issue is a code or evidence defect rather than custody, fix that
    defect in a normal pull request and re-run the diagnostics.
 
@@ -92,8 +93,12 @@ and required GitHub enforcement are in place.
 
 ## Current status
 
-- `verifier_keys` and `signoff_keys` are intentionally empty in the shipped
-  policy.
+- A fresh `npm create tess` scaffold ships empty `verifier_keys` and
+  `signoff_keys`. This source repository separately registers one verifier
+  key (Cyra); its `signoff_keys` registry is empty.
+- For v0.2.0, that verifier key was agent-held: an agent on the build
+  machine held it with no passphrase. Custody hardening is tracked for
+  v0.2.1 in [Support and status](STATUS.md).
 - The committed gate-arena scorecard on `main` is 12/12; A14, the multi-push
   policy-reduction case, remains open.
 - The key bootstrap and GitHub admission-control gaps mean Tess OS must not

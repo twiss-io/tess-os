@@ -6035,12 +6035,12 @@ files:
   .tess/core/contracts/task.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:ae02e2d09888c643dd9cc63bff60ec9738012211752c11f504c24dcf7d6cee00
+    base_sha: sha256:01d45d7bcbd58d617c54ee1f418d85af44f5f500da07fa15f051ce471f2f2098
     live_path: core/contracts/task.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'
   .tess/core/contracts/ledger-event.schema.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:95cf5c5b3d45121e153f3495c8c0439c1c904db2b8d905c93069ed6f4c5d7baf
+    base_sha: sha256:fae4b57dd23d02a5344e94e5b0fc8a3d82aece2588508a270203cd0be13eefc8
     live_path: core/contracts/ledger-event.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'

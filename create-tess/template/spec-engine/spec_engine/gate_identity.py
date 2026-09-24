@@ -10,7 +10,7 @@ not orchestrator" below).
 
 `spec_engine.approval.record_approval()` accepts `approved_by` as a bare,
 caller-supplied string. Any code path in the process can call
-`record_approval(plan, approved_by="Xavier", approved=True)` and get back
+`record_approval(plan, approved_by="Alex", approved=True)` and get back
 a structurally-valid `Approval` — with zero verification that a caller is
 who they say they are. Before the codegen-boundary hardening this module
 is part of, `spec_engine.spec_builder.build_spec()` (the actual gateway
@@ -74,7 +74,7 @@ behalf." It does **not**:
 
 A production-grade adapter (Telegram, web, CLI-with-real-auth)
 implementing `orchestrator.approval_gate.ApprovalGate` is the natural
-next step and is flagged as an open design question for Xavier — not
+next step and is flagged as an open design question for the maintainers — not
 built here. See the PR body / README for the full statement.
 """
 

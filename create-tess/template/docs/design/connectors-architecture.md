@@ -2,7 +2,7 @@
 
 > **Status: DESIGN.** Nothing in this document is built. No connector code,
 > no schema file, no registry directory, and no codegen change exists yet —
-> this is the blueprint for the build epic, written for Xavier's direction
+> this is the blueprint for the build epic, written for the maintainer's direction
 > first. Where this document sketches an interface or a directory layout,
 > that is a **proposal**, not a description of the repository. In
 > `docs/STATUS.md` claim-label vocabulary, everything below is **Planned**
@@ -50,7 +50,7 @@ This document designs:
    one day justify the word "marketplace",
 5. the honest gap between the vision's marketplace language and what v1
    actually ships, and
-6. a phased rollout with Xavier's decisions called out explicitly.
+6. a phased rollout with the maintainer's decisions called out explicitly.
 
 ---
 
@@ -307,7 +307,7 @@ that arrived through a connector.
 
 ### 5.1 Why these three
 
-Recommended (not decreed — Xavier can override, §11): they are the E3/E8
+Recommended (not decreed — the maintainer can override, §11): they are the E3/E8
 overlap — E8 deliverable (2) lists "OpenAI, Anthropic, Google Gemini
 (from E3)" as the first boilerplate connectors, and E3 names the same
 three as the direct provider adapters. Practically:
@@ -547,7 +547,7 @@ consistency in CI.
 render split), which also means: nothing in the registry can ever be
 mistaken for a gate, policy, or approval input. Distribution beyond
 in-repo — a hosted index, fetch-with-lockfile installs, third-party
-submissions — is Phase C3, and mostly Xavier's call (§11).
+submissions — is Phase C3, and mostly the maintainer's call (§11).
 
 ### 7.2 Trust tiers T0–T3
 
@@ -620,7 +620,7 @@ supply** + (possibly) commerce. v1 ships the first two only, in-repo.
 There is no submission flow, no hosted index, no billing, no third-party
 anything in v1 — and no design in this document depends on them existing.
 The MCP-compatible mount tier (§8) is the honest v1 answer to breadth.
-Everything beyond that is C3 phase and majority-Xavier-decision (§11).
+Everything beyond that is C3 phase and mostly a maintainer decision (§11).
 
 ---
 
@@ -655,7 +655,7 @@ machinery: normalized `usage` in every generate output (the ledger's
 substrate), the `spend` side-effect class (the cap's trigger), and
 manifest-declared provider pins (the router's provider table). The
 aggregator adapter E3 mentions (e.g. OpenRouter-style breadth) is an
-**external paid dependency and therefore a Xavier decision** — nothing
+**external paid dependency and therefore a maintainer decision** — nothing
 here assumes it.
 
 ---
@@ -669,7 +669,7 @@ Stated plainly, because this section is the one most likely to be quoted:
 | "Thousands of integrations" | The MCP ecosystem, mountable by an operator — *compatible*, not built, not vetted | **3 connectors** (Anthropic, OpenAI, Gemini), in-repo |
 | "Enterprise-audited" / "audited marketplace" | A **trust process** (T3 pipeline, §7.3) requiring registered verifier keys, per-connector audit labor, re-audits per version, published summaries | **0 audited connectors.** T3 is designed but unreachable until the operator registers real verifier keys — deliberately not a switch anyone can flip, least of all an agent |
 | "Connector marketplace" | Registry + trust + distribution + third-party supply + commerce | **Registry skeleton only**, in-repo; no distribution, no submissions, no commerce |
-| "Boilerplate connectors v1" (E3/E8) | Model providers + ~20 business apps | Model providers only; business apps are the C2 phase and a Xavier prioritization call |
+| "Boilerplate connectors v1" (E3/E8) | Model providers + ~20 business apps | Model providers only; business apps are the C2 phase and a maintainer prioritization call |
 | "Model router, spend caps, hundreds of models" | E3's own service epic | **None of it** — this design only lays the substrate (§9) |
 
 What "enterprise-audited" would actually require, spelled out once:
@@ -693,7 +693,7 @@ not yet exercised — audit tier."* Anything grander waits for the evidence.
 
 ---
 
-## 11. Phased rollout and the decisions that are Xavier's
+## 11. Phased rollout and the decisions that are the maintainer's
 
 ### Phase C1 — v1 (the build epic this document feeds)
 
@@ -706,9 +706,9 @@ in the spine, Node core in generated apps).
 
 ### Phase C2 — first expansion + first audits
 
-The first business-app connectors (category priority: **Xavier's call**,
+The first business-app connectors (category priority: **the maintainer's call**,
 § below); the T3 audit pipeline exercised end-to-end on the existing
-three (gated on verifier-key registration: **Xavier**); re-audit policy;
+three (gated on verifier-key registration: **the maintainer**); re-audit policy;
 spend-cap/ledger substrate handshake with the E3 router epic as it lands.
 
 ### Phase C3 — distribution and the marketplace question
@@ -717,7 +717,7 @@ MCP-bridge connector kind; any registry distribution beyond in-repo;
 third-party submission + review flow; commerce, if ever. Every item here
 is majority-decision, not engineering-default.
 
-### Decisions reserved for Xavier — none of these are made in this document
+### Decisions reserved for the maintainer — none of these are made in this document
 
 1. **v1 connector set confirmation** — Anthropic/OpenAI/Gemini is the
    recommendation (§5.1); he may swap or add.
