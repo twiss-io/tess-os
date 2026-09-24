@@ -5,7 +5,7 @@ Tess's agent realm must be governed as a portfolio, not allowed to grow by accum
 
 Every agent must justify her existence through outcome quality, role clarity, and system usefulness.
 
-> **Single-dispatcher rule (applies to every agent in the portfolio).** In Claude Code a subagent cannot spawn subagents — only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. No agent in this portfolio — **including the outcome orchestrators** — may dispatch, activate, or spawn another agent. An agent that needs other agents (an orchestrator, a guild lead) **returns a crew-plan** naming them with dispatch briefs; **Tess or a Workflow is the sole dispatcher.** "Activated" as an agent status (below) means *Tess has dispatched this agent on a live mission*, not that the agent dispatched itself. Full model: [orchestra-model.md](orchestra-model.md).
+> **Single-dispatcher rule (applies to every agent in the portfolio).** Only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. That is Tess policy, not a platform limit: Claude Code can let a subagent spawn its own subagents, but no Tess agent definition lists the Agent/Task tool. No agent in this portfolio — **including the outcome orchestrators** — may dispatch, activate, or spawn another agent. An agent that needs other agents (an orchestrator, a guild lead) **returns a crew-plan** naming them with dispatch briefs; **Tess or a Workflow is the sole dispatcher.** "Activated" as an agent status (below) means *Tess has dispatched this agent on a live mission*, not that the agent dispatched itself. Full model: [orchestra-model.md](orchestra-model.md).
 
 ---
 

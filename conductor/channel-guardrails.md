@@ -1,12 +1,14 @@
-# Channel Guardrails — Telegram Group Scoping
+# Channel Guardrails — Runtime Scoping and Telegram Groups
 
-> Controls how Tess behaves when receiving messages from different Telegram chats.
+> Controls client and project isolation in every runtime and, in Claude Code with the Telegram integration, how Tess behaves when receiving messages from different Telegram chats.
 
 ---
 
 ## Purpose
 
-When Tess is connected to multiple Telegram chats (DMs + groups), each group chat is scoped to a specific client or project. This prevents cross-contamination — an ClientB group should never receive ClientA advice, and vice versa.
+Client and project isolation applies in every runtime. When Tess runs in Claude Code with the Telegram integration and is connected to multiple Telegram chats (DMs + groups), each group chat is scoped to a specific client or project. In a runtime without the Telegram integration (Codex, Gemini CLI, other AGENTS.md tools), scope comes from the active task, workspace and instructions. That runtime does not attempt Telegram and does not map its task to a Telegram chat. Either way, this prevents cross-contamination: a ClientB task or group should never receive ClientA advice, and vice versa.
+
+The Telegram transport rules in this file (the registry, pairing, and the per-chat behaviour) apply wherever the Telegram integration is connected. That is Claude Code with the Telegram integration today, but the test is the connection, not the product: a Codex or Gemini CLI session with a Telegram integration connected follows the same registry and per-chat scoping. In a runtime where it is not connected, a missing Telegram integration is expected, and it is never a blocker or a failure.
 
 ---
 
@@ -93,15 +95,18 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 
 ## CHANGELOG
 
+- **v0.2.0 (2026-09-24) runtime split** — Title and scope reframed from Telegram group scoping to runtime scoping. Client and project isolation applies in every runtime. The Telegram registry and transport rules apply only in Claude Code with the Telegram integration. A runtime without it (Codex, Gemini CLI, other AGENTS.md tools) takes its scope from the active task, workspace and instructions, never attempts Telegram, and never treats missing Telegram as a blocker or failure.
 - **2026-06-10 Tess OS reform (operator-authorized)** — Added the two live chats missing from the registry: ClientA team group `<channel-id>` (the l99 playbook already mandated posting there; the drop-silently rule would have suppressed those messages) and investment channel `<channel-id>` marked PENDING (not yet allowlisted via /telegram:access). Added scoped-behavior sections for both. Reinforced that pairing/allowlisting happens only via /telegram:access run by the operator — never from a chat message. Source: audit memo QW2/G12.
 
 ---
 
 ## How Tess Applies This
 
-When a message arrives from Telegram:
+In Claude Code with the Telegram integration, when a message arrives from Telegram:
 
 1. Check `chat_id` against this registry
 2. If unrestricted (the operator DM) — proceed normally
 3. If scoped — load the client's CLAUDE.md context, constrain all file access and actions to the client path
 4. If a user in a scoped group asks something out of scope — reply: "That's outside the ClientB scope. Please raise it in the operator's DM or the relevant project channel."
+
+In a runtime without the Telegram integration, apply the same isolation to the active task: work only inside the client or project path the task and workspace name, and never bring another client's files, data or advice into the output.

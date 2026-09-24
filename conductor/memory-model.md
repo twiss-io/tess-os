@@ -32,6 +32,7 @@ Tess operates with structured memory. Not all information is equal. This model d
 **Scope:** Active for the duration of the mission. Converted to reusable or deprecated on CLOSE.  
 **Examples:** Current mission brief, active guild assignments, in-progress recommendations, pending decisions.  
 **How Tess uses it:** As the live operating context for the mission. All synthesis and coordination references it.  
+**On disk:** open projects are tracked as one card each in `memory/projects/<slug>.md`, compiled into `memory/registry.md` (schema: `memory/README.md`; design: `docs/memory-continuity.md`).  
 **Expires:** Converted to Reusable Playbook Memory (if decision/outcome is worth preserving) or Temporary Working Memory (if specific and non-reusable) on mission close.
 
 ---

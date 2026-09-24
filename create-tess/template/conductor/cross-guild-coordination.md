@@ -11,7 +11,7 @@ For every serious mission, Tess must first determine:
 - which guilds materially improve the decision or execution
 - which guilds should stay out
 
-> **Single-dispatcher rule.** Throughout this protocol "Tess coordinates / activates guilds" means **Tess dispatches** them — Tess is the top-level loop and holds the Agent/Task tool. A **Workflow** may also dispatch on Tess's behalf. An **outcome orchestrator** that owns a mission does **not** dispatch: a subagent cannot spawn subagents, so the orchestrator decides the crew and **returns a crew-plan** for Tess (or a Workflow) to dispatch. When the outcome owner is an orchestrator, read every "activate a guild" instruction below as "name the guild in the crew-plan the orchestrator returns." See [outcome-orchestrators/README.md](outcome-orchestrators/README.md) and [orchestra-model.md](orchestra-model.md).
+> **Single-dispatcher rule.** Throughout this protocol "Tess coordinates / activates guilds" means **Tess dispatches** them — Tess is the top-level loop and holds the Agent/Task tool. A **Workflow** may also dispatch on Tess's behalf. An **outcome orchestrator** that owns a mission does **not** dispatch: no Tess subagent holds the Agent/Task tool (Tess policy, not a Claude Code limit), so the orchestrator decides the crew and **returns a crew-plan** for Tess (or a Workflow) to dispatch. When the outcome owner is an orchestrator, read every "activate a guild" instruction below as "name the guild in the crew-plan the orchestrator returns." See [outcome-orchestrators/README.md](outcome-orchestrators/README.md) and [orchestra-model.md](orchestra-model.md).
 
 ---
 

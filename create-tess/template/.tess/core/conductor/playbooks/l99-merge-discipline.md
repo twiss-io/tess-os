@@ -30,7 +30,7 @@ All of these must be true:
 - The PR is part of a recognised audit fix wave (L99, godmode, security retro) or a trivial defensive fix.
 - CI is **green** (mandatory — never merge against red).
 - The PR is scoped to the audit finding it closes (no scope creep).
-- Base branch is correct ([backend deploys only from `main`](../../CLAUDE.md); dashboard prod rules apply — never merge `main` on dashboard).
+- Base branch is correct: each repository's documented deploy branch and branch rules apply (for example, a service that deploys only from `main`, or a repository whose production branch must never receive a direct merge of `main`).
 - No unresolved conflict with an earlier PR in the same wave (see sequencing).
 - The change is **not** in the Rule 18 hard-floor set (credentials, money movement, destructive prod data ops, client-external factual claims).
 
@@ -42,7 +42,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 
 1. **Same-file PRs merge in series, not parallel.** List all PRs touching the same path. After each merge, the next PR's branch needs `gh pr update-branch` (or rebase) before its CI is meaningful.
 2. **Backend deploy stagger.** Wait ≥5 minutes between back-to-back backend deploys (config:cache / scheduler boot race). Same-repo backend PRs queue with explicit `sleep 300` between merges.
-3. **Cross-repo PRs run parallel.** dashboard, backend, iOS, Android, workjoy have independent deploy pipelines and no shared state — merge concurrently.
+3. **Cross-repo PRs run parallel.** Repositories with independent deploy pipelines and no shared state (for example, a web frontend, a backend service and mobile apps) can merge concurrently.
 4. **Pre-merge conflict check.** Before merging a PR, check whether it touches files an already-merged PR in the same wave changed. If yes, `gh pr update-branch` (rebase) the later PR **before** merging it, so an earlier merge cannot be silently undone.
 5. **Branch-divergence audit.** Run `git diff HEAD...origin/main --stat` (and `git ls-remote` before any rebase + `--force-with-lease`) so a stale branch doesn't drop main's files.
 
@@ -73,12 +73,12 @@ If a merged PR introduces **any** regression within 30 minutes — new error ale
 
 ## Audit Trail (mandatory)
 
-Every autonomous merge posts a confirmation to the appropriate ops channel (ClientA group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)) with:
+Every autonomous merge posts a confirmation with the fields below. In Claude Code with the Telegram integration it goes to the appropriate ops channel (the client's group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)). In a runtime without the Telegram integration (Codex, Gemini CLI, other AGENTS.md tools) the confirmations are collected in the run's final answer instead; a missing Telegram connection is never a blocker there.
 - **PR number**
 - **Merge SHA**
 - **One-line description** of what it closed
 
-the operator gets a wave-level Telegram summary at the end (new reply, not an edit, so his device pings).
+The operator gets a wave-level summary at the end. In Claude Code with the Telegram integration that is a new Telegram reply, not an edit, so the operator's device pings. In any other runtime it is the final answer.
 
 ---
 
@@ -89,7 +89,7 @@ the operator gets a wave-level Telegram summary at the end (new reply, not an ed
 3. **Per PR:** confirm CI green → confirm no conflict with prior merges (rebase if needed) → run mandatory verifier if prod/client/external → merge → post-merge smoke → audit-trail post.
 4. **Stagger** backend merges ≥5 min; run cross-repo merges in parallel.
 5. **Watch** 30-min regression window after each deploy; auto-revert on any regression.
-6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk).
+6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk), through the active runtime's native channel.
 
 ---
 

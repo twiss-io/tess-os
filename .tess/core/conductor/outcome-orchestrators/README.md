@@ -7,7 +7,7 @@ Outcome orchestrators are not specialist guilds. They are outcome owners and cro
 
 Every serious mission should be considered for routing through an outcome orchestrator before routing directly to a single guild.
 
-> **Dispatcher rule (read first).** An outcome orchestrator is a **routing brain, not a dispatcher**. In Claude Code a subagent cannot spawn subagents — only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. So an orchestrator never activates, dispatches, or spawns a guild. It **returns a crew-plan** (the crew-plan contract: which agents, order/parallelism, each with a six-field [dispatch brief](../dispatch-brief.md), gates, and the mandatory verifier); **Tess or a Workflow is the sole dispatcher.** Throughout these files, "activate / assemble / brief a guild" means "name it in the crew-plan you return." Full model: [conductor/orchestra-model.md](../orchestra-model.md).
+> **Dispatcher rule (read first).** An outcome orchestrator is a **routing brain, not a dispatcher**. Only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. That is Tess policy, not a platform limit: Claude Code can let a subagent spawn its own subagents, but no Tess agent definition lists the Agent/Task tool. So an orchestrator never activates, dispatches, or spawns a guild. It **returns a crew-plan** (the crew-plan contract: which agents, order/parallelism, each with a six-field [dispatch brief](../dispatch-brief.md), gates, and the mandatory verifier); **Tess or a Workflow is the sole dispatcher.** Throughout these files, "activate / assemble / brief a guild" means "name it in the crew-plan you return." Full model: [conductor/orchestra-model.md](../orchestra-model.md).
 
 ---
 

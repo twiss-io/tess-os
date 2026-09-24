@@ -123,8 +123,8 @@ def test_untracked_core_file_fails_integrity_commands(project, run_cli, argv):
 # ---------------------------------------------------------------------------
 
 _REAL_TREE_PARTS = (
-    ".tess", ".claude", ".codex", "conductor", "agents", "core", "clients",
-    "prompts", "operator", "CLAUDE.md", "AGENTS.md", "tess.manifest.json",
+    ".tess", ".claude", ".codex", ".agents", ".gemini", "conductor", "agents", "core", "clients",
+    "prompts", "operator", "CLAUDE.md", "AGENTS.md", "GEMINI.md", "tess.manifest.json",
 )
 
 
@@ -181,9 +181,19 @@ _MARKERS = {
     "CLAUDE.md": "\nMARKER-CLAUDE\n",
     "conductor/guardrails.md": "\nMARKER-GUARDRAILS\n",
     "conductor/doctrine.md": "\nMARKER-DOCTRINE\n",
-    "AGENTS.md": "\nMARKER-AGENTS\n",
-    ".codex/prompts/wake.md": "\nMARKER-WAKE-PROMPT\n",
-    ".codex/config.toml": "\n[mcp_servers.demo]\ncommand = \"demo-mcp\"\n",
+    ".agents/skills/tess-wake/SKILL.md": "\nMARKER-WAKE-SKILL\n",
+    # v0.2 integration (eng-a x eng-b seam): AGENTS.md and .codex/config.toml
+    # are no-lock-entry ENFORCEMENT_RENDER_OUTPUTS (eng-b). Their contract is
+    # no longer "uncaptured drift blocks the command until --force": eng-b's
+    # render step RE-PINS a hand edit to either one unconditionally, on the
+    # very first non-forced init/restore/render, snapshot and all -- a
+    # weakened enforcement config must never survive even one command, the
+    # same "never survives even temporarily" rule applied to security-tier
+    # files elsewhere in this engine. That immediate, unconditional re-pin is
+    # exercised by tests/test_v02_enforcement_capture.py; this test is about
+    # the atomic uncaptured-drift gate + --force + rollback contract (bugs
+    # e/a), which no longer applies to these two paths, so they are not
+    # included here (they were, before eng-b's enforcement policy existed).
 }
 
 

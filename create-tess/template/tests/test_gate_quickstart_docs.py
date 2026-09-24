@@ -81,9 +81,9 @@ def test_managed_signing_guide_is_mirrored_and_custody_only():
         # — this guide must state that distinction explicitly, not conflate
         # "this repo has a registered verifier" with "scaffolds inherit it".
         "separately registers\nits own verifiers",
-        "Escalate to Xavier",
+        "Escalate to the operator, as the project's human custodian",
         "Security-governed policy, key-registry, and workflow surfaces remain outside",
-        "NO-MERGE proposal and Xavier custody",
+        "NO-MERGE proposal and the human custodian's decision",
     ):
         assert required_text in guide
 
