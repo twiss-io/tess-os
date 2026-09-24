@@ -132,20 +132,23 @@ test(
     // prepack summary is intentionally on stderr — see that script). Slicing
     // from the first '[' is a defensive belt-and-suspenders against any
     // OTHER stray banner line npm itself might ever add to stdout.
-    const jsonStart = packResult.stdout.indexOf('[');
-    assert.ok(
-      jsonStart !== -1,
-      `npm pack --json produced no JSON array on stdout\nSTDOUT:\n${packResult.stdout}`,
-    );
-    // Newer npm (11.x, which publish-npm.yml installs) can print more output
-    // after the JSON array, so parse the longest valid prefix ending in ']'.
+    // `npm pack --json` returns an array on npm <=11 and an object keyed by
+    // package name on npm 12+ (which publish-npm.yml installs). Newer npm can
+    // also print more output after the JSON, so parse the longest valid prefix
+    // and accept both shapes.
+    const firstBracket = packResult.stdout.indexOf('[');
+    const firstBrace = packResult.stdout.indexOf('{');
+    const jsonStart = [firstBracket, firstBrace].filter((i) => i !== -1).reduce((m, i) => Math.min(m, i), Infinity);
+    assert.ok(Number.isFinite(jsonStart), `npm pack --json produced no JSON on stdout\nSTDOUT:\n${packResult.stdout}`);
     const packText = packResult.stdout.slice(jsonStart);
+    const closer = packText[0] === '[' ? ']' : '}';
     let packJson;
-    for (let end = packText.lastIndexOf(']'); end !== -1; end = packText.lastIndexOf(']', end - 1)) {
+    for (let end = packText.lastIndexOf(closer); end !== -1; end = packText.lastIndexOf(closer, end - 1)) {
       try { packJson = JSON.parse(packText.slice(0, end + 1)); break; } catch { /* keep shrinking */ }
     }
-    assert.ok(Array.isArray(packJson), `npm pack --json produced no parseable JSON array\nSTDOUT:\n${packResult.stdout}`);
-    const packInfo = packJson[0];
+    assert.ok(packJson && typeof packJson === 'object', `npm pack --json produced no parseable JSON\nSTDOUT:\n${packResult.stdout}`);
+    const packInfo = Array.isArray(packJson) ? packJson[0] : Object.values(packJson)[0];
+    assert.ok(packInfo && typeof packInfo.filename === 'string', `npm pack --json has no filename\nSTDOUT:\n${packResult.stdout.slice(0, 2000)}`);
     const tarballPath = join(packDest, packInfo.filename);
     assert.ok(existsSync(tarballPath), `expected tarball at ${tarballPath}`);
 
