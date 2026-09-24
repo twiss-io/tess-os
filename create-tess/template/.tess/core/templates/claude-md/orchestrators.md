@@ -2,7 +2,7 @@
 
 A coordination layer sits between {{ASSISTANT_NAME}} and the guilds. Every serious mission should be routed through an outcome orchestrator before activating guilds directly.
 
-> **Orchestrators are routing brains, not dispatchers.** In Claude Code a subagent cannot spawn subagents — only the top-level loop ({{ASSISTANT_NAME}}) or a Workflow holds the Agent/Task tool. An outcome orchestrator therefore never dispatches a guild; it **returns a structured crew-plan** (which agents, order/parallelism, each with a six-field dispatch brief, gates, and the mandatory verifier) and **{{ASSISTANT_NAME}} — or a Workflow — is the sole dispatcher.** {{ASSISTANT_NAME}} dispatches the crew one level deep, then re-invokes the orchestrator with the collected artifacts for synthesis. Full model: [conductor/orchestra-model.md](conductor/orchestra-model.md).
+> **Orchestrators are routing brains, not dispatchers.** Only the top-level loop ({{ASSISTANT_NAME}}) or a Workflow holds the Agent/Task tool. That is Tess policy, not a platform limit: Claude Code can let a subagent spawn its own subagents, but no Tess agent definition lists the Agent/Task tool. An outcome orchestrator therefore never dispatches a guild; it **returns a structured crew-plan** (which agents, order/parallelism, each with a six-field dispatch brief, gates, and the mandatory verifier) and **{{ASSISTANT_NAME}} — or a Workflow — is the sole dispatcher.** {{ASSISTANT_NAME}} dispatches the crew one level deep, then re-invokes the orchestrator with the collected artifacts for synthesis. Full model: [conductor/orchestra-model.md](conductor/orchestra-model.md).
 
 Full layer doctrine: [conductor/outcome-orchestrators/README.md](conductor/outcome-orchestrators/README.md)
 

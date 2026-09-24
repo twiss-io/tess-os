@@ -1,6 +1,6 @@
 # Verification Routing Table
 
-> System doctrine. Mandatory verification layer for the outputs that can hurt: production, clients, and anything externally visible. Referenced from CLAUDE.md. Codified 2026-06-10 per the Tess OS reform (operator-authorized); source: kb/wiki/synthesis/2026-06-10-tess-system-audit-reform-proposal.md §B3, S3, G3.
+> System doctrine. Mandatory verification layer for the outputs that can hurt: production, clients, and anything externally visible. Referenced from CLAUDE.md. Codified 2026-06-10 per the Tess OS reform (operator-authorized); source: the 2026-06-10 system audit §B3, S3, G3 (an internal record, not shipped with Tess OS).
 
 ---
 
@@ -60,4 +60,5 @@ The verification-capable agents already exist and their prompts already describe
 
 ## CHANGELOG
 
+- **v0.2.0 (2026-09-24)** — Header no longer points at an internal audit file that Tess OS does not ship. Routing table and rules unchanged.
 - **2026-06-10 Tess OS reform (operator-authorized)** — File created. Codifies the mandatory verification routing table (Reid/Quinn/Cyra/Verity/Maialen/Lysandra), the mandatory scope (prod-touching, client-facing, externally-visible, irreversible-decision-informing; discretionary otherwise), the primary-artifacts-only verifier brief standard, verdict format per review-output-standards.md, and the failed-verification → retry-protocol wiring. Source: audit memo B3, S3, G3, Decisions 4(b)/8(b).

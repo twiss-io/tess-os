@@ -33,6 +33,8 @@ Every task communicates to the operator via Telegram. No exceptions.
 
 Telegram updates happen regardless of task type: bugs, research, builds, reviews, checks, missions — everything.
 
+This section applies in Claude Code with the Telegram integration. A runtime without it (Codex, Gemini CLI, other AGENTS.md tools) reports the same events through its own progress stream and final answer, and never treats missing Telegram as a blocker ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
+
 {{CORE_HARD_FLOOR}}
 
 ---

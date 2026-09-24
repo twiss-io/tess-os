@@ -1,6 +1,6 @@
 # Dispatch Brief Contract
 
-> System doctrine. Every dispatch via the Agent tool uses this contract. Referenced from CLAUDE.md (Rule Zero). Codified 2026-06-10 per the Tess OS reform (operator-authorized); source: kb/wiki/synthesis/2026-06-10-tess-system-audit-reform-proposal.md §B1–B2, S4, G5.
+> System doctrine. Every dispatch via the Agent tool uses this contract. Referenced from CLAUDE.md (Rule Zero). Codified 2026-06-10 per the Tess OS reform (operator-authorized); source: the 2026-06-10 system audit §B1–B2, S4, G5 (an internal record, not shipped with Tess OS).
 
 ---
 
@@ -19,7 +19,7 @@ Every dispatch brief contains all six. (A PreToolUse-on-Task validator may surfa
 
 1. **Objective** — one sentence describing what success looks like for *this specific agent*, not the mission overall.
 
-2. **Output schema (the output contract)** — file path, format, required sections. Not "a good analysis" but "a markdown file at [path] with sections [X, Y, Z]."
+2. **Output schema (the output contract)** — file path, format, required sections. Not "a good analysis" but "a markdown file at [path] with sections [X, Y, Z]." Look the path up in the **File Placement Contract** (CLAUDE.md, Directory Structure); never invent it. A brief that names no path, or a path outside the contract's table, is incomplete and must not be dispatched. The path is never the working directory by default and never the repo root. Interim or throwaway artifacts go to the session scratchpad the runtime supplies, never inside the repo.
 
 3. **Tools, sources, and constraints** — what the agent may use; which **primary artifacts** to read (file paths, URLs, log endpoints) — never transcribed data; and the constraints that bind the work (scope limits, conventions, branch targets, deploy windows, things the agent must not touch). This field carries the **evidence requirement**: every factual claim in the agent's return must be grounded in a primary artifact the agent itself read or a tool call it itself ran — inference must be labeled as inference.
 
@@ -51,7 +51,7 @@ Never one-shot a destructive operation. The mandatory pattern:
 
 ## Recommended Optional Field — Prior Incidents
 
-The strongest dispatch on record (2026-06-09 `ordered_at` deployment, 11/11 verified) cited its own incident-log memories inline. Where relevant `memory/feedback_*` lessons exist for the task's domain, pull them into the brief.
+The strongest dispatches on record cited their own incident-log memories inline. Where relevant `memory/feedback_*` lessons exist for the task's domain, pull them into the brief.
 
 ---
 
@@ -63,4 +63,5 @@ A PreToolUse-on-Task validator may check briefs for the six fields and emit a vi
 
 ## CHANGELOG
 
+- **v0.2.0 (2026-09-24)** — Field 2: the output path must come from the File Placement Contract in CLAUDE.md. A brief with no path, or a path outside the table, is incomplete and must not be dispatched; never the working directory by default, never the repo root; interim artifacts go to the session scratchpad. The prior-incidents example no longer cites an instance-specific deployment. Header no longer points at an internal audit file that Tess OS does not ship.
 - **2026-06-10 Tess OS reform (operator-authorized)** — File created. Codifies the dispatch-brief contract: six required fields (objective; output contract/schema; tools/sources/constraints with the evidence requirement; NOT-responsible-for boundary; milestones with acceptance evidence; escalation trigger), the >15-min/prod-touching decomposition rule, the mandatory 3-step destructive-ops dispatch, the optional prior-incidents field, and the warn-mode-only validator contract. Source: audit memo B1–B2, S4, G5.

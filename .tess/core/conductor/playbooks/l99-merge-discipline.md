@@ -73,12 +73,12 @@ If a merged PR introduces **any** regression within 30 minutes — new error ale
 
 ## Audit Trail (mandatory)
 
-Every autonomous merge posts a confirmation to the appropriate ops channel (ClientA group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)) with:
+Every autonomous merge posts a confirmation with the fields below. In Claude Code with the Telegram integration it goes to the appropriate ops channel (the client's group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)). In a runtime without the Telegram integration (Codex, Gemini CLI, other AGENTS.md tools) the confirmations are collected in the run's final answer instead; a missing Telegram connection is never a blocker there.
 - **PR number**
 - **Merge SHA**
 - **One-line description** of what it closed
 
-the operator gets a wave-level Telegram summary at the end (new reply, not an edit, so his device pings).
+The operator gets a wave-level summary at the end. In Claude Code with the Telegram integration that is a new Telegram reply, not an edit, so the operator's device pings. In any other runtime it is the final answer.
 
 ---
 
@@ -89,7 +89,7 @@ the operator gets a wave-level Telegram summary at the end (new reply, not an ed
 3. **Per PR:** confirm CI green → confirm no conflict with prior merges (rebase if needed) → run mandatory verifier if prod/client/external → merge → post-merge smoke → audit-trail post.
 4. **Stagger** backend merges ≥5 min; run cross-repo merges in parallel.
 5. **Watch** 30-min regression window after each deploy; auto-revert on any regression.
-6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk).
+6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk), through the active runtime's native channel.
 
 ---
 

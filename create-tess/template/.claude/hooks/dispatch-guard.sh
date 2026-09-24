@@ -13,7 +13,8 @@
 # is, by definition, the main conductor session executing solo — warn.
 #
 # Safe set = reconciliation of CLAUDE.md Rule Zero + guardrails.md Rule 1:
-# doctrine files (CLAUDE.md, conductor/*, agents/README.md, .claude/agents/*),
+# doctrine files (CLAUDE.md, the AGENTS.md / GEMINI.md runtime entry points,
+# conductor/*, agents/README.md, .claude/agents/*),
 # project memory files, and trivial orchestration commands.
 #
 # HEADLESS / no-subagent-available exception (Proving Ground finding,
@@ -74,6 +75,7 @@ case "$tool" in
     fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""' 2>/dev/null)" || fp=""
     case "$fp" in
       "$TESS_ROOT/CLAUDE.md") : ;;                       # entry-point doctrine
+      "$TESS_ROOT/AGENTS.md"|"$TESS_ROOT/GEMINI.md") : ;; # runtime entry points
       "$TESS_ROOT"/conductor/*) : ;;                     # doctrine files
       "$TESS_ROOT"/agents/README.md) : ;;                # roster overview
       */.claude/projects/*/memory/*) : ;;                # project memory
@@ -90,7 +92,7 @@ case "$tool" in
         # Read-only inspectors are safe only when aimed at doctrine/memory paths.
         case "$cmd" in
           *clients/*|*dev.nosync*) warn=1 ;;             # client work is never solo
-          *conductor/*|*CLAUDE.md*|*agents/README.md*|*/memory/*|*.claude/agents*) : ;;
+          *conductor/*|*CLAUDE.md*|*AGENTS.md*|*GEMINI.md*|*agents/README.md*|*/memory/*|*.claude/agents*) : ;;
           *) warn=1 ;;
         esac
         [ "$warn" -eq 1 ] && detail="Bash (read-only tool outside doctrine paths) -> $cmd"

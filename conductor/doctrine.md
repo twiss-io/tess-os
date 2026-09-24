@@ -35,17 +35,17 @@ Not every request requires the full gate doctrine. For tightly-scoped, single-do
 - It does not involve strategic decisions, trade-offs, or client-facing deliverables
 - The expected output is concrete and verifiable (a file, a commit, a message)
 
-**Examples:** "Push this commit." "Update this config file." "Send this Telegram message." "Fix this typo." "Add WebSearch to Reid's tools."
+**Examples:** "Push this commit." "Update this config file." "Send this status update." "Fix this typo." "Add WebSearch to Reid's tools."
 
 **Process:**
 1. Tess identifies the task as simple (criteria above)
 2. Tess dispatches directly to the appropriate specialist agent (brief per [dispatch-brief.md](dispatch-brief.md))
 3. Agent completes and returns
-4. Tess notifies the operator via Telegram
+4. Tess notifies the operator through the active runtime's native channel (Telegram in Claude Code with the Telegram integration; the final answer in any runtime without it, such as Codex, Gemini CLI or another AGENTS.md tool)
 
 **What the Simple Task Path skips:** Leah research, Eva team formation, formal mission intake, outcome orchestrator routing.
 
-**What it does NOT skip:** Telegram notification, commit + push + documentation trail (Rules 16/17), dispatch to subagent (Rule Zero), the dispatch-brief contract.
+**What it does NOT skip:** the runtime-native completion notification, commit + push + documentation trail (Rules 16/17), dispatch to subagent (Rule Zero), the dispatch-brief contract.
 
 If any criterion is not met, use the full gate doctrine. When in doubt, use the full doctrine.
 
@@ -214,4 +214,5 @@ Tess applies these lenses across all nodes to ensure the work stays at the right
 
 ## CHANGELOG
 
+- **v0.2.0 (2026-09-24) runtime split** — The Simple Task Path notifies through the active runtime's native channel (Telegram in Claude Code with the Telegram integration; the final answer in any runtime without it). 'What it does NOT skip' now names the runtime-native completion notification.
 - **2026-06-10 Tess OS reform (operator-authorized)** — Recast the fixed six-phase temporal sequence as dependency gates (intake-before-anything, research-before-build, crew-before-deploy, review-before-synthesis, verification-before-externally-visible) with a gate table and explicit supersession note; every gate's intent preserved at full force. Phases retitled as node types with gate-in/gate-out edges; independent nodes run in parallel. Simple Task Path kept and declared the single canonical depth classifier. Agent Deployment node now requires the Dispatch Brief Contract (dispatch-brief.md); Review node now wires in mandatory verification (verification-routing.md) as a hard predecessor of externally-visible outputs, with verifier rejections entering the retry protocol. Source: audit memo G6/S6, G3/S3, G5/S4.
