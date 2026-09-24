@@ -7,7 +7,7 @@ name: Publish create-tess to npm
 # for Tess OS itself. create-tess versions independently of the framework (it
 # is a thin wizard shipped alongside it), so it is keyed on its OWN tag
 # namespace (`create-tess-v*`), never the framework's `v*` tags — a
-# `create-tess-v0.1.1` tag can never collide with, or be mistaken for, a
+# `create-tess-v0.2.0` tag can never collide with, or be mistaken for, a
 # framework release tag.
 #
 # WIRED, NOT FIRED (2026-07 hardening — the secret-leak fix in #30 landed
@@ -25,7 +25,7 @@ name: Publish create-tess to npm
 #     secret exists or is read by this workflow
 #
 # Until npm's Trusted Publisher is configured for this exact repo + this exact
-# workflow file (npmjs.com package settings — Xavier's action, not code), the
+# workflow file (npmjs.com package settings — the maintainer's action, not code), the
 # final `npm publish` step will fail closed with an auth error if it is ever
 # actually triggered. That is the intended state until the npm-side setup is
 # done and a real run is authorized — this workflow is deliberately inert
@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_version:
-        description: 'Exact version to publish (must match create-tess/package.json), e.g. 0.1.1'
+        description: 'Exact version to publish (must match create-tess/package.json), e.g. 0.2.0'
         required: true
 
 # Publishes are serialized; never cancel an in-flight publish.

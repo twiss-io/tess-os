@@ -69,5 +69,6 @@ Full agent roster: [../agents/README.md](../agents/README.md)
 
 ## CHANGELOG
 
+- **2026-09-24 v0.2.0** — `release-process.md` rewritten for the PR-only flow (ruleset: no direct push to `main`), covering verdicts drafted by an independent verifier and signed with `GPG_TTY` set, SHA-bound merges, the tagger identity `legal@twiss.io`, the pre-publish gate before any `create-tess-v*` tag, the adopter order `self-update` then `update`, and the v0.2.0 disclosure that approvals were signed with an agent-held verifier key.
 - **2026-06-29 v0.1.1** — Added `release-process.md` documenting the signed-release channel, maintainer release steps, and adopter upgrade flow. Added File Index entry for release-process.md.
 - **2026-06-10 Tess OS reform (operator-authorized)** — Regenerated File Index: added the four files previously missing (channel-guardrails.md, review-output-standards.md, subagent-failure-protocol.md, hook-testing-protocol.md) plus the two new doctrine files (dispatch-brief.md, verification-routing.md); corrected the playbook count to 6; updated doctrine.md and mission-control.md descriptions to reflect the gate recast and supersession notes; replaced the fixed 6-step Operating Sequence summary with the dependency-gate summary. Source: audit memo QW10/G12, Appendix C.
