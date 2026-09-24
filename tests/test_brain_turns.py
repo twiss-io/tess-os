@@ -49,7 +49,8 @@ def test_empty_prompt_writes_nothing(tmp_path):
 
 def test_current_turn_quote_is_pending_then_accepted(tmp_path):
     """A decision quoted from the turn being answered verifies against turns.jsonl
-    (pending-verification), then becomes accepted once the journal has the line."""
+    (pending-verification), then is re-verified once the journal has the line: V12 still
+    applies there, so it is accepted only when the operator confirms it."""
     inst = Path(fxlib.make(str(tmp_path / "fx")))
     _prompt(inst, "Decision: let's go with Firebird for the widget ledger.")
     r = fxlib.cli(inst, "decide", "--no-sync", "--quote", "let's go with Firebird for the widget ledger",
@@ -59,6 +60,13 @@ def test_current_turn_quote_is_pending_then_accepted(tmp_path):
     rec = next((inst / "brain/decisions").glob("D-*firebird*.md")).read_text()
     assert 'source_ref: "turns:1"' in rec
     fxlib.sync_fixture(inst)
-    rec = next((inst / "brain/decisions").glob("D-*firebird*.md")).read_text()
-    assert 'status: "accepted"' in rec and "brain/journal/2026/09/24/1405-claude-11111111.md#L1" in rec
+    path = next((inst / "brain/decisions").glob("D-*firebird*.md"))
+    rec = path.read_text()
+    # verified against the journal now, but the same message floats "CouchDB instead?": V12 holds it for review
+    assert 'status: "proposed"' in rec and "brain/journal/2026/09/24/1405-claude-11111111.md#L1" in rec
+    assert "Firebird" not in (inst / "brain/decisions/INDEX.md").read_text().split("## Accepted")[1].split("##")[0]
+    r = fxlib.cli(inst, "confirm", path.stem, "--quote", "let's go with Firebird for the widget ledger")
+    assert r.returncode == 0, r.stdout + r.stderr  # the operator confirms it in review
+    rec = path.read_text()
+    assert 'status: "accepted"' in rec and "confirmed: true" in rec
     assert fxlib.cli(inst, "lint").returncode == 0

@@ -58,6 +58,15 @@ def _add(inst, *args):
 
 def test_principal_decision_accepted_with_resolving_source(world):
     inst = world["inst"]
+    # the same session later floats "MongoDB instead?": V12 holds the decision for review, never accepted
+    assert not list((inst / "brain").rglob("D-*-lets-use-postgres*.md"))
+    held = [c for c in (json.loads(p.read_text()) for p in (inst / "brain/inbox").glob("C-*.json"))
+            if "Postgres" in c["quote"]]
+    assert len(held) == 1 and held[0]["verification"]["reasons"][0].startswith("V12"), held
+    start = (inst / "brain/START-HERE.md").read_text()
+    assert "awaiting review (not accepted)" in start and "Postgres" not in start
+    r = fxlib.cli(inst, "--json", "promote", held[0]["id"], "--quote", "let's use Postgres for the ledger")
+    assert r.returncode == 0, r.stdout + r.stderr  # the operator approves it in review
     recs = list((inst / "brain").rglob("D-*-lets-use-postgres*.md"))  # session named Acme: clients/acme
     assert len(recs) == 1
     text = recs[0].read_text()
@@ -112,7 +121,8 @@ def test_external_context_fact_goes_to_review(world):
 
 
 def test_learned_gains_exactly_the_expected_lines(world):
-    lines = _learned(world["inst"])
+    assert world["learned0"] == []  # after sync: the one decision waits for review, nothing learned
+    lines = _learned(world["inst"])  # after the operator approved it (test above)
     assert len(lines) == 1, lines
     assert "let's use Postgres for the ledger" in lines[0] and "· cue" in lines[0]
     assert "MongoDB" not in (world["inst"] / "brain/learned.md").read_text()

@@ -69,10 +69,12 @@ def _start_here(cfg: Config, recs, ents, loops, pages: Dict[Path, str]) -> Tuple
     path = cfg.brain / "START-HERE.md"
     text = path.read_text(encoding="utf-8") if path.is_file() else SEED
     dec = [r for r in sorted(recs, key=lambda r: (records.sort_key(r), r.id), reverse=True)
-           if r.kind == "decision" and r.status in ("accepted", "proposed")][:5]
+           if r.kind == "decision" and r.status == "accepted"][:5]
     recent = "\n".join(Item(str(r.meta.get("title") or r.id), r.path, "%s " % records.sort_key(r)[:10],
                             " (%s)" % r.status).render(cfg.brain) for r in dec) or "(none yet)"
-    recent += "\n- All: [decisions/INDEX.md](decisions/INDEX.md)"
+    from .index import awaiting, awaiting_line
+    n = awaiting(cfg, recs)
+    recent += ("\n" + awaiting_line(n) if n else "") + "\n- All: [decisions/INDEX.md](decisions/INDEX.md)"
     lp = "\n".join(Item(clip(str(r.meta.get("statement") or ""), 100), r.path).render(cfg.brain) for r in loops[:10])
     lp = (lp or "(none)") + "\n- All: [open-loops.md](open-loops.md)"
     inbox_n = len(list((cfg.brain / "inbox").glob("C-*.json"))) if (cfg.brain / "inbox").is_dir() else 0
@@ -96,6 +98,9 @@ def _entity_blocks(cfg: Config, e, recs) -> Dict[str, str]:
     dec = [r for r in newest if r.kind == "decision" and r.status == "accepted"][:5]
     d = "\n".join(Item(str(r.meta.get("title") or r.id), r.path, "%s " % records.sort_key(r)[:10]).render(e.dir)
                   for r in dec) or "(none yet)"
+    from .index import awaiting, awaiting_line
+    n = awaiting(cfg, mine, e.dir)
+    d += ("\n" + awaiting_line(n)) if n else ""
     if (e.dir / "decisions" / "INDEX.md").is_file():
         d += "\n- All: [decisions/INDEX.md](decisions/INDEX.md)"
     lo = [r for r in newest if r.kind == "open_loop" and r.status in ("proposed", "active", "waiting")]

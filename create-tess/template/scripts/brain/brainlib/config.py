@@ -2,7 +2,8 @@
 
 ws-learn reads only the brain.json fields frozen in spec section 9.1:
 identity, principals, timezone, modes, entity_roots, onboarding.status,
-capture, save, remote, framework_remote_patterns, state_cards, budgets.
+capture, save, remote, framework_remote_patterns, state_cards, budgets, and the
+optional learn block (auto_accept, settle_minutes; see settle.py).
 The one write is onboarding answer re-verification (see sync.py).
 """
 from __future__ import annotations
@@ -136,6 +137,17 @@ class Config:
         out = dict(DEFAULT_BUDGETS)
         out.update({k: v for k, v in (self.data.get("budgets") or {}).items() if isinstance(v, int)})
         return out
+
+    @property
+    def auto_accept(self) -> bool:
+        """learn.auto_accept: "conservative" (default) or "off" (every decision waits for the operator)."""
+        return str((self.data.get("learn") or {}).get("auto_accept") or "conservative").lower() != "off"
+
+    @property
+    def settle_minutes(self) -> float:
+        """learn.settle_minutes: quiet time before a clean decision is auto-accepted (default 30)."""
+        v = (self.data.get("learn") or {}).get("settle_minutes")
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else 30.0
 
     @property
     def also_cwd(self) -> List[str]:

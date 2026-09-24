@@ -111,6 +111,8 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
         save(cfg, cand, "rejected")
     elif res.status == "noop":
         _drop(cfg, cand)
+    elif res.status == "waiting":  # V12: a clean decision in a session that has not settled; re-checked each sync
+        save(cfg, cand)
     elif res.status == "review" or cand["kind"] == "skill" or (
             cand["kind"] == "fact" and not promote.principal_fact(cfg, cand) and not cand.get("operator_approved")):
         if cand["kind"] == "skill":

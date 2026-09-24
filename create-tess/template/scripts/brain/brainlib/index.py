@@ -7,14 +7,17 @@ file that would go over its cap (exit 3, file left byte-identical).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import caps, entities, gen, journal_index, records
 from .config import Config, write_text_if_changed
 from .gen import Item
 from .textutil import clip
 
-ACTIVE_D = ("accepted", "proposed", "pending-verification")
+ACTIVE_D = ("accepted",)  # only accepted decisions are listed as decisions; candidates are counted
+AWAITING_D = ("proposed", "pending-verification")
+SHOWN = {"proposed": "awaiting review, not accepted", "pending-verification": "awaiting verification, not accepted",
+         "unverified": "unverified, not accepted"}
 OPEN_L = ("proposed", "active", "waiting")
 
 
@@ -36,7 +39,22 @@ def _newest(recs: List[records.Record]) -> List[records.Record]:
 
 def _ditem(r: records.Record) -> Item:
     return Item(str(r.meta.get("title") or r.id), r.path, "%s " % _date(r)[:10],
-                " (%s%s)" % (r.status, ", material" if r.meta.get("tier") == "material" else ""))
+                " (%s%s)" % (SHOWN.get(r.status, r.status), ", material" if r.meta.get("tier") == "material" else ""))
+
+
+def awaiting(cfg: Config, recs, under: Optional[Path] = None) -> int:
+    """Decision candidates awaiting the operator: records in review plus inbox candidates (never accepted)."""
+    from . import inbox
+    n = sum(1 for r in recs if r.kind == "decision" and r.status in AWAITING_D and r.meta.get("kind") != "question"
+            and (under is None or under in r.path.parents))
+    if under is None:
+        n += sum(1 for c in inbox.pending(cfg) if c.get("kind") == "decision")
+    return n
+
+
+def awaiting_line(n: int) -> str:
+    return ("- %d decision%s awaiting review (not accepted): skill `brain-review`" % (n, "" if n == 1 else "s")
+            if n else "")
 
 
 def _decision_pages(cfg: Config, recs, writes: Dict[Path, str]) -> None:
@@ -45,10 +63,11 @@ def _decision_pages(cfg: Config, recs, writes: Dict[Path, str]) -> None:
     for d, rs in dirs.items():
         rel_key = records.register_rel(cfg, d).replace("/", "-")
         active = [r for r in _newest(rs) if r.status in ACTIVE_D and r.meta.get("kind") != "question"]
-        questions = [r for r in _newest(rs) if r.meta.get("kind") == "question" and r.status in ACTIVE_D]
-        lines, pages = gen.listing(cfg.brain, d, [_ditem(r) for r in active], rel_key + "-active", "Active decisions")
+        questions = [r for r in _newest(rs) if r.meta.get("kind") == "question" and r.status in ACTIVE_D + AWAITING_D]
+        lines, pages = gen.listing(cfg.brain, d, [_ditem(r) for r in active], rel_key + "-active", "Accepted decisions")
         writes.update(pages)
-        body = ["## Active", ""] + (lines or ["(none yet)"])
+        n = awaiting(cfg, rs, d) + (awaiting(cfg, []) if d == cfg.brain / "decisions" else 0)
+        body = ["## Accepted", ""] + (lines or ["(none yet)"]) + (["", awaiting_line(n)] if n else [])
         if questions:
             body += ["", "## Open questions", ""] + [_ditem(q).render(d) for q in questions]
         if d == cfg.brain / "decisions":
@@ -103,7 +122,8 @@ def _learned(cfg: Config, recs) -> Tuple[str, Dict[Path, str]]:
         stmt = r.meta.get("title") if r.kind == "decision" else r.meta.get("statement")
         return "- %s · %s · \"%s\" · [%s](%s) · %s · %s%s" % (
             _date(r), r.kind.replace("_", " "), clip(str(stmt or ""), 140), r.id, gen.link(from_dir, r.path), slink,
-            r.meta.get("detected_by") or "", "" if r.status in ("accepted", "active", "proposed") else " (now %s)" % r.status)
+            r.meta.get("detected_by") or "", "" if r.status in ("accepted", "active") else (
+                " (awaiting review, not accepted)" if r.status == "proposed" else " (now %s)" % r.status))
     archive: Dict[Path, List[str]] = {}
     for r in shown[cap:]:
         archive.setdefault(cfg.brain / "archive" / ("learned-%s.md" % _date(r)[:4]), []).append(line(r, cfg.brain / "archive"))

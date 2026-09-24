@@ -1,26 +1,12 @@
-"""V12 switches: a later choice in the same session (fix round 3).
+"""V12 switch markers and topic words (fix round 3), kept for lint and settle.py.
 
-The most common way people change their mind is to name the new option and
-say nothing about the old one ("let's use Postgres" ... "actually, go with
-SQLite"). The old option is then not taken back in words (V11 sees nothing),
-yet recording it as ACCEPTED writes wrong knowledge into the brain.
+Fix round 4 moved the decision rule itself to settle.py: a decision is a
+candidate until its session settles with no doubt. The phrase lists below are
+now only signals inside that rule, never the whole rule.
 
-So a decision is held for review (never accepted) when anything later in the
-same session, from the same principal, could be a switch:
-
-1. another decision ("let's go with SQLite", "Decision: ..."), whatever it is
-   about: the verifier cannot tell topics apart, so it does not try;
-2. a switch marker ("actually", "instead", "rather", "scrap that", "change of
-   plan", "switch to", "on second thought", "go back to", ...) outside a
-   question, from any principal ("maybe SQLite instead" counts);
-3. a "No, ..." opener naming a new choice ("No, use SQLite.", "No, SQLite.");
-4. a question offering an alternative ("what about SQLite instead?") followed
-   by an approval ("Yes, do that.").
-
-This deliberately prefers false negatives: two unrelated decisions in one
-session leave the earlier one in review, and the operator confirms it.
-A record already accepted goes back to proposed when the switch arrives in a
-later sync (held()).
+switch_in() still names the first later sentence that reads as a switch
+("actually go with SQLite", "No, SQLite.", "What about SQLite instead?" then
+"Yes, do that."); lint uses it to pair accepted decisions with later ones.
 """
 from __future__ import annotations
 
@@ -29,7 +15,7 @@ from typing import Dict, List, Optional, Set
 
 from . import cues, lookup, records
 from .config import Config
-from .textutil import contains, sentences
+from .textutil import contains
 
 SWITCH = re.compile(
     r"(?i)\b(actually|instead|rather|scrap|scratch|strike that|change of plans?|changed? (?:my|our) minds?|"
@@ -79,58 +65,21 @@ def switch_in(target: str, later: List[str]) -> Optional[str]:
     return None
 
 
-def switch_from_others(later: List[str]) -> Optional[str]:
-    """Another principal's later sentence counts only with an explicit switch marker."""
-    for s in (x.strip() for x in later):
-        if s and not _question(s) and SWITCH.search(s):
-            return s
-    return None
-
-
 def _words(text: str) -> List[str]:
     return re.findall(r"[A-Za-z0-9][\w'-]*", text or "")
 
 
-def _sentence_index(text: str, quote: str) -> int:
-    for i, s in enumerate(sentences(text)):
-        if contains(s, quote) or contains(quote, s):
-            return i
-    return -1
-
-
-def after(cfg: Config, line: lookup.JLine, quote: str):
-    """(same speaker's later sentences, other principals' later sentences) in this session."""
-    sents = sentences(line.text)
-    i = _sentence_index(line.text, quote)
-    mine: List[str] = sents[i + 1:] if i >= 0 else []
-    others: List[str] = []
-    if line.kind == "turn":
-        return mine, others
-    later = sorted((l for l in lookup.lines_for(cfg, line.path) if l.kind == "msg" and l.principal
-                    and l.order > line.order), key=lambda l: l.order)
-    for l in later:
-        (mine if l.speaker == line.speaker else others).extend(sentences(l.text))
-    return mine, others
-
-
-def check(cfg: Config, line: lookup.JLine, quote: str) -> Optional[str]:
-    """V12 reason for a decision candidate at `line`, or None."""
-    mine, others = after(cfg, line, quote)
-    s = switch_in(quote, mine) or switch_from_others(others)
-    return REASON % s[:80] if s else None
-
-
 def held(cfg: Config, paths: Set[str]) -> List[Dict]:
-    """Re-check accepted, unconfirmed decisions of the sessions that got new principal lines."""
+    """Re-check accepted, unconfirmed decisions of the sessions that got new lines (settle.py rules)."""
+    from . import settle  # settle imports this module's markers
     out: List[Dict] = []
     for rec in records.all_records(cfg):
         ref = str(rec.meta.get("source_ref") or "")
-        if (rec.kind != "decision" or rec.status != "accepted" or rec.meta.get("confirmed") is not False
+        if (rec.kind != "decision" or rec.status != "accepted" or rec.meta.get("confirmed") is True
                 or ref.partition("#")[0] not in paths):
             continue
-        line = lookup.resolve(cfg, ref)
-        quote = str(rec.meta.get("source_quote") or "")
-        why = check(cfg, line, quote) if line is not None and quote else None
+        why = settle.any_doubt(cfg, lookup.resolve(cfg, ref), str(rec.meta.get("source_quote") or ""),
+                                 settle.strict_for(str(rec.meta.get("detected_by") or "")))
         if why:
             records.update_fields(rec, {"status": "proposed"})
             out.append({"record": rec.id, "status": "proposed", "reason": why})

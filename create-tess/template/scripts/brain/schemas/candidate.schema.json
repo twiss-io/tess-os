@@ -108,7 +108,8 @@
             "pass",
             "fail",
             "review",
-            "noop"
+            "noop",
+            "waiting"
           ]
         },
         "reasons": {

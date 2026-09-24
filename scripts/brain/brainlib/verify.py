@@ -6,15 +6,16 @@ V3 approvals: assistant proposal + principal yes V4 numbers/URLs/emails sourced
 V5 duplicates -> noop; supersedes target valid   V6 external context -> review
 V7 redaction scan clean                          V8 no hypotheticals/questions
 V9 target register inside the speaker's scope
-V10 statement fidelity and V11 context (guards.py) and V12 later switches
-(switch.py) send to review, never accept.
+V10 statement fidelity and V11 context (guards.py) send to review. V12
+(settle.py): a routine decision is a candidate until its session settles with
+no doubt, or the operator confirms it; it is never accepted from wording alone.
 """
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
 
-from . import cues, frontmatter, guards, lookup, records, redact, switch
+from . import cues, frontmatter, guards, lookup, records, redact, settle
 from .config import Config
 from .textutil import contains, glob_match, normalize, sentences, statement_hash
 
@@ -25,7 +26,7 @@ _TOKENS = re.compile(r"https?://\S+|[\w.+-]+@[\w-]+\.[\w.-]+|\d+(?:[.,:/-]\d+)*"
 
 class Result:
     def __init__(self):
-        self.status = "pass"  # pass | fail | pending | noop | review
+        self.status = "pass"  # pass | fail | pending | noop | review | waiting
         self.reasons: List[str] = []
         self.line: Optional[lookup.JLine] = None
 
@@ -191,7 +192,38 @@ def check(cfg: Config, cand: Dict) -> Result:
     if why:
         res.status = "review"
         res.reasons.append(why)
+    elif res.status == "pass":
+        _settle(cfg, cand, line, res)
     return res
+
+
+def settle_check(cfg: Config, cand: Dict, line: lookup.JLine) -> Result:
+    """V12 alone, for a record re-checked after its quote reached the journal (promote.recheck_pending)."""
+    res = Result()
+    res.line = line
+    _settle(cfg, cand, line, res)
+    return res
+
+
+def _settle(cfg: Config, cand: Dict, line: lookup.JLine, res: Result) -> None:
+    """V12: a routine decision is accepted only when confirmed, or settled with no doubt (settle.py)."""
+    if cand.get("kind") != "decision" or cand.get("operator_approved") or cand.get("tier") == "material":
+        return
+    strict = settle.strict_for(cand.get("detected_by") or "")
+    decision = " ".join(x for x in (cand.get("quote"), cand.get("approves_quote")) if x)
+    doubt, confirmed_ref, last_at = settle.assess(cfg, line, cand.get("quote") or "", strict, decision)
+    if doubt:
+        res.status = "review"
+        res.reasons.append(doubt)
+    elif confirmed_ref:
+        cand["confirmed_ref"] = confirmed_ref
+    elif strict and not cfg.auto_accept:
+        res.status = "review"
+        res.reasons.append("V12: learn.auto_accept is off; the operator confirms every decision in review")
+    elif strict and not settle.settled(cfg, last_at):
+        res.status = "waiting"
+        res.reasons.append("V12: waiting for the session to settle (%s min quiet after %s); then accepted only if "
+                           "no later turn raises doubt" % (int(cfg.settle_minutes), last_at or "the current turn"))
 
 
 def _v9(cfg: Config, speaker: Optional[str], target: str) -> Optional[str]:
@@ -224,6 +256,4 @@ def _guard(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
         return why
     why = guards.context(kind, cand.get("quote") or "", line.text, _following(cfg, line),
                          approval=bool(cand.get("approves_quote")))
-    if why or kind != "decision" or cand.get("tier") == "material":
-        return why  # a material decision is never auto-accepted anyway (proposed)
-    return switch.check(cfg, line, cand.get("quote") or "")
+    return why

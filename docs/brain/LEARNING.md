@@ -160,11 +160,70 @@ that fails any rule is rejected and kept, with its reasons, in
 | V9 | The target register, relative to `brain/`, matches one of the speaker's `scope` globs |
 | V10 | **Statement fidelity.** Every content word of the title and statement appears in the quote or the cited line, and every negation in the quote (`not`, `never`, `stop`, `drop` ...) survives into the statement. A real quote paired with an invented or paraphrased statement goes to **review**; it is never accepted until the operator approves the wording |
 | V11 | **Context.** Goes to review instead of auto-accepting when the sentence is reported speech (`Sam said: ...`, `they decided`, a quoted utterance of 3+ words), the message is a pasted block (more than 3 lines, a `>` quote, or `here are the ... notes/email/transcript`), the statement is taken back later in the same message or in the next principal message, or a decision is content-free (`Yes, go ahead.`). A take-back is a later sentence that negates, cancels or forgets a word of the statement (`not Heroku after all`, `forget Heroku`), a take-back marker that names it (`changed my mind`, `on second thought`, `hold off`, `that's not a decision`, `ignore my last message` ...), or a bare take-back (`Actually no.`, `Wait, no.`, `Cancel that.`) directly after it or at the start of the next message; a later sentence with its own substance (`No, that's wrong: the timezone is SGT`) corrects something else and leaves it alone. Also held: a conditional decision (`if`, `unless`, `or not`, `depending on`, `assuming`, `maybe` ...) and a content-free preference or correction (`No, don't do that.`). A take-back that arrives after the earlier message was already promoted moves that unconfirmed record back to `proposed` |
-| V12 | **Later switch.** A routine decision goes to review instead of auto-accepting when anything later in the same session could replace it, even without naming it: another decision by the same principal (`let's use Postgres` ... `let's go with SQLite`), a switch marker outside a question (`actually go with SQLite`, `scrap that, we'll do SQLite`, `change of plan`, `on second thought`, `instead`, `switch to`, `go back to`, from any principal), a `No, ...` opener naming a new choice (`No, SQLite.`), or a question offering an alternative followed by an approval (`What about SQLite instead?` ... `Yes, do that.`). The verifier cannot tell topics apart, so two unrelated decisions in one session leave the earlier one in review: fewer auto-accepted decisions, never a wrong one. A switch that arrives after the decision was already promoted moves that unconfirmed record back to `proposed`. `lint` fails when one session holds two accepted decisions on the same topic (a shared subject word, or one quote reads as a switch from the other) |
+| V12 | **Decisions are candidates.** See [The decision rule](#the-decision-rule) below. A routine decision is never accepted from conversation wording alone: it is accepted only when the operator confirms it, or when its whole session has settled with no later turn that could change it. Anything in doubt waits in review |
 
 V1-V9 reject. V10, V11 and V12 hold: the candidate waits in `brain-review` and
 nothing reaches START HERE, `profile.md` or the registers as accepted until
 the operator approves it in their own words.
+
+## The decision rule
+
+The rule: **the brain never writes wrong knowledge.** A decision it records as
+accepted must be the choice that stands, so a decision found in a conversation
+is a *candidate* until one of these is true:
+
+1. **The operator confirms it.** They approve it in `brain-review` (`promote
+   <C-id> --quote "..."`, `confirm <id> --quote "..."`), or the assistant asked
+   a question that restates exactly that decision ("Want me to set up Postgres
+   for the ledger?") and the operator's next turn is a plain yes ("Yes.",
+   "Yep, do it."). A confirmation turn sets `confirmed: true` and
+   `confirmed_ref` (the journal line of the yes).
+2. **Conservative auto-accept** (`learn.auto_accept`, on by default). The
+   session has been quiet for `learn.settle_minutes` (default 30), and nothing
+   after the decision raises doubt: not the rest of its own message, not a
+   later principal turn, not an assistant reply.
+
+Doubt is decided by structure, not by a phrase list. A later principal
+sentence is clear only when it is a plain acknowledgement ("Thanks.",
+"Great."), a restatement in the decision's own words, or a sentence with no
+choice signal at all. Any one of these raises doubt: negation or hesitation
+("no", "wait", "hmm", "never"), a switch or take-back marker, a choice verb
+("use", "go with", "make it"), a comparison ("overkill", "simpler", "should"),
+a question about an alternative, an option the decision did not name
+("SQLite", "MongoDB", "v2"), a subject word of the decision, a fragment of
+three words or fewer, or another decision or correction. An assistant reply
+that offers an alternative (it switches, compares, suggests a choice, names
+another option or the decision's subject) makes the operator's next turn doubt
+whatever it says: **an alternative the operator agrees to supersedes the
+earlier choice.**
+
+This deliberately prefers review to a wrong accept. Unrelated later work ("Now
+add tests for the parser.") leaves a decision alone, but many real sessions
+will send decisions to review, and the operator confirms them there.
+`learn.auto_accept: "off"` sends every unconfirmed decision to review.
+
+`decide` (skill `brain-decide`, the operator asking to record one exact
+decision) uses the same reading minus the signals that are not tied to that
+decision, so unrelated later work does not hold it; it does not wait for the
+session to settle. A later turn on the same subject, a switch or take-back, a
+comparison, an alternative question, a bare "no"/"wait" naming an option, or
+another choice naming another option still sends it to review.
+
+Configure it in `brain/brain.json`:
+
+```json
+"learn": { "auto_accept": "conservative", "settle_minutes": 30 }
+```
+
+A decision already accepted goes back to `proposed` when doubt arrives in a
+later sync. START HERE, the entity START HERE blocks and `decisions/INDEX.md`
+list only accepted decisions, followed by a count: "N decisions awaiting
+review (not accepted)". A candidate is never shown as accepted anywhere;
+`decisions/ALL.md` and `learned.md` label it "awaiting review, not accepted".
+`lint` fails when an accepted decision has a later candidate on the same topic
+in its session, when an unconfirmed accepted decision has a later turn that
+raises doubt, and when one session holds two accepted decisions on the same
+topic.
 
 **Pending verification.** When the quote is found only in `turns.jsonl` (the
 current turn, before the runtime's transcript is journaled), the record is
@@ -181,9 +240,9 @@ match sets `verified: true` and promotes the onboarding decision
 
 | Kind | When verified | Destination |
 |---|---|---|
-| decision, routine | `accepted`, `confirmed: false` | the entity's `decisions/` or `brain/decisions/` |
+| decision, routine | a candidate: `accepted` only when the operator confirms it (`confirmed: true`) or its session settles with no doubt (`confirmed: false`); otherwise it waits in review. See [The decision rule](#the-decision-rule) | the entity's `decisions/` or `brain/decisions/` |
 | decision, material (money, people, pricing, contracts) | `proposed` until the operator confirms | same |
-| approval of an assistant proposal | `accepted`, `authority: approval` | same |
+| approval of an assistant proposal | as a routine decision, with `authority: approval` | same |
 | preference, correction | `active`, `confirmed: false`; with `--supersedes` the old record becomes `superseded` | `brain/profile/`, summarised in `profile.md` |
 | fact in a principal's words | `active` | the entity's `facts/` or `brain/facts/` |
 | fact from an assistant, tool or external source | review only; `promote` with the operator's words | same |
@@ -285,10 +344,11 @@ A decision is detected in five ways:
 5. the onboarding answers.
 
 Generated registers:
-- `decisions/INDEX.md`: active decisions, per entity and globally, with an
-  open-questions section;
+- `decisions/INDEX.md`: accepted decisions only, per entity and globally, a
+  count of decisions awaiting review, and an open-questions section;
 - `decisions/ALL.md`: the full history;
-- the latest 5 decisions in each START HERE.
+- the latest 5 accepted decisions in each START HERE, plus the count of
+  decisions awaiting review.
 
 Delegated decisions carry `authority: delegated` and a `delegation_ref`.
 

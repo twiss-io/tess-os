@@ -87,7 +87,9 @@ def test_status_flags_misplaced_unsaved_and_learning(inst):
     fxlib.sync_fixture(inst)
     st = json.loads(fxlib.cli(inst, "status", "--json").stdout)
     assert "kb/research/2026-09-24-market.md" in st["misplaced"]
-    assert st["unsaved"] and st["inbox"] == 1 and st["records"] >= 5
+    # inbox: Stripe (V6 external context), Firebird (V12: "CouchDB instead?" in the same message) and
+    # Redis (V12: a later "never use ..." turn; the conservative rule prefers review to a wrong accept)
+    assert st["unsaved"] and st["inbox"] == 3 and st["records"] >= 4, st
     text = fxlib.cli(inst, "status").stdout
     assert "NOT SAVED" in text and "move to brain/" in text
 

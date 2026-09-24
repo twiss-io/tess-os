@@ -3,7 +3,9 @@
 Checks: accepted records carry source_quote/source_at and a source_ref that
 resolves to a line containing the quote; accepted bodies match body_sha256;
 records are reachable from START HERE; one session holds at most one accepted
-decision per topic (V12: the earlier one was probably switched away from); people files carry no deny-listed key
+decision per topic, no accepted decision has a later same-topic candidate in its
+session, and no unconfirmed accepted decision has a later turn that raises V12
+doubt (settle.py); people files carry no deny-listed key
 and no NRIC/FIN value; AGENTS chain <= 24 KiB (warn 20); entity AGENTS.md
 <= 6 KiB / 100 lines with START HERE in the first 80 lines.
 """
@@ -13,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import caps, entities, frontmatter, gitutil, lookup, reach, records, switch
+from . import caps, entities, frontmatter, gitutil, inbox, lookup, reach, records, settle, switch
 from .config import Config
 from .textutil import contains
 
@@ -84,6 +86,49 @@ def _same_session_issues(cfg: Config, checked: List[records.Record], recs: List[
     return out
 
 
+PENDING_D = ("proposed", "pending-verification", "unverified")
+
+
+def _later_candidates(cfg: Config, checked: List[records.Record], recs: List[records.Record]) -> List[str]:
+    """An accepted decision with a later same-topic candidate in its session (inbox or a record awaiting
+    review), or, while unconfirmed, a later turn that raises V12 doubt: it was probably switched away from."""
+    out = []
+    pend = [(str(c.get("source_ref") or ""), str(c.get("quote") or ""), "inbox %s" % c.get("id"))
+            for c in inbox.pending(cfg) if c.get("kind") == "decision"]
+    pend += [(str(r.meta.get("source_ref") or ""), str(r.meta.get("source_quote") or ""), r.rel(cfg))
+             for r in recs if r.kind == "decision" and r.status in PENDING_D]
+    for a in checked:
+        if a.kind != "decision" or a.status != "accepted":
+            continue
+        ref, quote = str(a.meta.get("source_ref") or ""), str(a.meta.get("source_quote") or "")
+        line = lookup.resolve(cfg, ref) if ref and not ref.startswith("turns:") else None
+        if line is None:
+            continue
+        for pref, pquote, where in pend:
+            other = lookup.resolve(cfg, pref) if pref.partition("#")[0] == line.path else None
+            if other is None or other.order <= line.order and pref != ref:
+                continue
+            shared = switch.topic(_topic_text(a)) & switch.topic(pquote)
+            if pref == ref and not _after_in_line(line.text, quote, pquote):
+                continue
+            if shared or switch.switch_in(quote, [pquote]):
+                out.append("%s: accepted, but a later candidate on the same topic in its session (%s: %r) awaits "
+                           "review; review, supersede or retract one" % (a.rel(cfg), where, pquote[:60]))
+                break
+        else:
+            why = (settle.any_doubt(cfg, line, quote, settle.strict_for(str(a.meta.get("detected_by") or "")))
+                   if a.meta.get("confirmed") is not True else None)
+            if why:
+                out.append("%s: accepted without confirmation, but %s" % (a.rel(cfg), why))
+    return out
+
+
+def _after_in_line(text: str, first: str, second: str) -> bool:
+    t = text.lower()
+    i, j = t.find(first.lower()), t.find(second.lower())
+    return i >= 0 and j > i
+
+
 def _topic_text(rec: records.Record) -> str:
     return " ".join(str(rec.meta.get(k) or "") for k in ("title", "source_quote"))
 
@@ -140,7 +185,9 @@ def run(cfg: Config, staged: bool = False) -> Dict[str, List[str]]:
         if only is not None and rec.rel(cfg) not in only:
             continue
         errors += _record_issues(cfg, rec)
-    errors += _same_session_issues(cfg, [r for r in recs if only is None or r.rel(cfg) in only], recs)
+    checked = [r for r in recs if only is None or r.rel(cfg) in only]
+    errors += _same_session_issues(cfg, checked, recs)
+    errors += _later_candidates(cfg, checked, recs)
     seen = reach.reachable(cfg)
     for rec in recs:
         if (only is None or rec.rel(cfg) in only) and rec.path not in seen and not reach.exempt(cfg, rec.path):

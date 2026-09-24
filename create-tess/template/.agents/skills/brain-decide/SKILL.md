@@ -6,9 +6,12 @@ description: "Record a decision in the Tess brain, in the principal's exact word
 # brain-decide
 
 A decision is recorded only with the decider's **verbatim** words. A script (the
-verifier, rules V1-V11) checks the quote against the journal, the speaker,
+verifier, rules V1-V12) checks the quote against the journal, the speaker,
 every number, scope, hypotheticals, and that the title and statement say only
-what the quote says, before anything is written.
+what the quote says, before anything is written. V12 holds the decision for
+review when a later turn in the session could change it (the same subject, a
+switch, a "no"/"wait", another option offered or agreed to): never report such
+a decision as recorded; tell the operator it awaits review.
 
 ## Steps
 

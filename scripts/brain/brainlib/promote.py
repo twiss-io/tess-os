@@ -1,6 +1,8 @@
 """Promotion policy (spec section 10.6) and record lifecycle operations.
 
-decision routine -> accepted, confirmed:false     decision material -> proposed
+decision routine -> accepted only once V12 (settle.py) passes: the operator
+confirmed it, or its session settled with no doubt; otherwise it waits in review
+decision material -> proposed
 preference/correction -> active, confirmed:false  fact (principal words) -> active
 fact (assistant/tool/external) -> review           open loop -> proposed, always
 skill -> brain/skills-drafts/ only                 quote only in turns -> pending-verification
@@ -86,7 +88,8 @@ def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
                     authority="approval" if cand.get("approves_quote") else "principal", decided_by=speaker,
                     decider_seat="", entity=cand.get("entity") or "", consulted=[], informed=[],
                     also_quoted=list(cand.get("also_quoted") or []), source_session=_session(cfg, common["source_ref"]),
-                    approves_quote=cand.get("approves_quote") or "", delegation_ref="", confirmed=False,
+                    approves_quote=cand.get("approves_quote") or "", delegation_ref="",
+                    confirmed=bool(cand.get("confirmed_ref")), confirmed_ref=cand.get("confirmed_ref") or "",
                     verified=not pending, supersedes=cand.get("supersedes") or "", superseded_by="", tags=[])
         body.update(title=meta["title"], context="", consequences="Not recorded yet.")
     elif kind in ("preference", "correction"):
@@ -172,12 +175,20 @@ def recheck_pending(cfg: Config) -> List[Dict]:
             kind = rec.kind
             cand = {"kind": kind, "quote": quote, "statement": rec.meta.get("statement") or rec.meta.get("title"),
                     "title": rec.meta.get("title") or "", "source_ref": line.ref, "tier": rec.meta.get("tier"),
-                    "target": records.register_rel(cfg, rec.path.parent), "speaker": line.speaker}
+                    "target": records.register_rel(cfg, rec.path.parent), "speaker": line.speaker,
+                    "detected_by": rec.meta.get("detected_by") or ""}
             res = verify.check(cfg, dict(cand, statement=cand["statement"] or quote))
+            if kind == "decision" and res.status in ("pass", "noop"):  # V12 even when the quote matches itself
+                res = verify.settle_check(cfg, cand, line)
+            if res.status == "waiting":
+                out.append({"record": rec.id, "status": rec.status, "reason": res.reasons[-1]})
+                continue
             if res.status in ("pass", "noop", "review"):
                 status = _status(kind, cand, False) if res.status != "review" else "proposed"
                 upd = {"status": status, "source_ref": line.ref, "verified": True, "verified_at": iso(cfg.now()),
                        "source_speaker": line.speaker, "source_session": _session(cfg, line.ref)}
+                if cand.get("confirmed_ref"):
+                    upd.update(confirmed=True, confirmed_ref=cand["confirmed_ref"])
                 if kind == "decision":
                     upd["decided_by"] = rec.meta.get("decided_by") or line.speaker
                 records.update_fields(rec, upd)
