@@ -214,7 +214,11 @@ def test_hand_edited_claude_md_survives_render_and_restore(project, engine, caps
     assert project.read_live("CLAUDE.md") == edited, "render destroyed a hand edit"
     assert "hand-edited render output" in capsys.readouterr().out
 
-    engine.cmd_restore(ns(dry_run=False), root)
+    # v0.2 eng-a (bug e): restore keeps the hand edit AND exits non-zero on
+    # the uncaptured drift it left in place (WOULD CLOBBER UNCAPTURED DRIFT).
+    with pytest.raises(SystemExit) as ei:
+        engine.cmd_restore(ns(dry_run=False), root)
+    assert ei.value.code not in (None, 0)
     assert project.read_live("CLAUDE.md") == edited, "restore destroyed a hand edit"
 
 
