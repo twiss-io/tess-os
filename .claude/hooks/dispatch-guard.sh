@@ -116,7 +116,7 @@ fi
 detail="$(printf '%s' "$detail" | tr '\n' ' ' | head -c 200)"
 
 jq -n --arg d "$detail" '{
-  systemMessage: ("RULE ZERO WARNING (dispatch-guard, warn-mode): no dispatched task is in flight and this session is directly executing [" + $d + "] outside the Rule-Zero safe set. Rule Zero: ALWAYS DISPATCH — NEVER EXECUTE SOLO. Tess may only read doctrine/memory files, send Telegram messages, and do brief orchestration logic; all other work goes to a subagent via the Agent tool. This call was ALLOWED (warn-mode never blocks) — if this is task work, stop and dispatch it.")
+  systemMessage: ("RULE ZERO WARNING (dispatch-guard, warn-mode): no dispatched task is in flight and this session is directly executing [" + $d + "] outside the Rule-Zero safe set. Rule Zero: ALWAYS DISPATCH — NEVER EXECUTE SOLO. Tess may only read doctrine/memory files, report to the operator in the session, and do brief orchestration logic; all other work goes to a subagent via the Agent tool. This call was ALLOWED (warn-mode never blocks) — if this is task work, stop and dispatch it.")
 }'
 
 exit 0

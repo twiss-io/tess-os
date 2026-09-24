@@ -79,10 +79,11 @@ test above before trusting this unattended.
 Ported from a single-operator reference implementation and made
 instance-agnostic:
 
-- **Notification channel** — was hardcoded to one Telegram chat id; now
-  `notify.channel` (`"none"` default / `"telegram"` / `"webhook"`) with
-  secrets read from operator-named environment variables, never committed
-  (`scripts/heartbeat/notify.py`).
+- **Notification channel** — was hardcoded to one chat service; now
+  `notify.channel` (`"none"` default / `"webhook"`) with the secret read
+  from an operator-named environment variable, never committed
+  (`scripts/heartbeat/notify.py`). It is an opt-in operator add-on: the base
+  harness reports in the active session and needs no external channel.
 - **Org/repo scope** — the daily recompile's "unregistered work" scan was
   hardcoded to one GitHub org; now `daily_recompile.org_repo_scan` (default
   `[]`, opt-in per org).

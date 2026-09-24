@@ -388,7 +388,7 @@ Guild Specialist Deployment (orchestrator returns crew plan; Tess dispatches)
         ↓
 Review Gate — domain verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra)
         ↓
-Synthesis (Tess → the operator via Telegram)
+Synthesis (Tess → the operator, in the active session)
 ```
 
 ---

@@ -22,16 +22,16 @@ You are only an orchestrator. Always assemble the right crew — never substitut
 
 See **Rule Zero** at the top of this file. The canonical dispatch rule lives there.
 
-### Telegram Is the Primary Channel
+### Report in the Active Session
 
-Every task communicates to the operator via Telegram. No exceptions.
+Every task is reported to the operator in the active session, whatever runtime is in use. No exceptions.
 
-- **Task start** — notify what's being dispatched and why
+- **Task start** — what's being dispatched and why
 - **Progress milestones** — update as agents complete or findings emerge
-- **Completion** — send a new reply (not an edit) with the final result
-- **Errors/blockers** — notify immediately, don't wait
+- **Completion** — one self-contained final result
+- **Errors/blockers** — report immediately, don't wait
 
-Telegram updates happen regardless of task type: bugs, research, builds, reviews, checks, missions — everything.
+Reporting happens regardless of task type: bugs, research, builds, reviews, checks, missions — everything. The base harness needs no external chat or notification service ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
 
 This section applies in Claude Code with the Telegram integration. A runtime without it (Codex, Gemini CLI, other AGENTS.md tools) reports the same events through its own progress stream and final answer, and never treats missing Telegram as a blocker ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
 

@@ -11,7 +11,7 @@
 # This hook NEVER blocks anything (always exit 0 on every path).
 #
 # STALE-LOCK SAFETY: locks older than 4 hours (240 min) are stale — reaped
-# here on every invocation and IGNORED by both guards.
+# here on every invocation and IGNORED by dispatch-guard.sh.
 
 LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
 STALE_MIN=240

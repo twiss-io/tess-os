@@ -102,7 +102,7 @@ npm create tess my-os -- --yes \
 ```
 
 Flags: `--operator`/`--name`, `--conductor`/`--assistant`, `--vibe`, `--path`,
-`--pathway`, `--telegram`, `--target`/`--dir` (or first positional),
+`--pathway`, `--target`/`--dir` (or first positional),
 `--template-source` (env `TESS_TEMPLATE_SOURCE`), `--template-ref` (env
 `TESS_TEMPLATE_REF`), `--force`, `--no-doctor`,
 `--no-verify`, `--no-git-init`, `--no-gate-hooks`, `--yes`. A flags-mode
@@ -173,7 +173,7 @@ node bin/create-tess.mjs ./out --yes --operator=Alex \
 ## Ordering note
 
 The wizard runs **vibe → operator → starter path → conductor → pathway →
-telegram → recap**. This reconciles the task brief with the authoritative design
+recap**. This reconciles the task brief with the authoritative design
 doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 
 - **Vibe first** (design doc §5.2) so it reskins every downstream step,
@@ -181,7 +181,10 @@ doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 - **Path before conductor** (task order) so the C3 name-collision check has the
   real install set and the squad reveal lands before the conductor is named.
 
-All seven journey beats from the brief are present; the only design-doc
+The journey beats from the brief are present, except the optional Telegram step,
+which v0.2.0 removed: the base harness reports in the active session of any
+runtime, and external notification channels are optional operator add-ons,
+outside the base harness. The only design-doc
 divergence is the path/conductor pairing, chosen because it makes the C3 check
 implementable at conductor-naming time.
 

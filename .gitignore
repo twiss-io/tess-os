@@ -33,7 +33,7 @@ operator/*.secret
 # operator/* below is a belt-and-suspenders superset of the two lines above —
 # it also blocks operator/profile.json, which the create-tess wizard
 # (writeProfile() in create-tess/src/keystone.js) unconditionally overwrites
-# with REAL identity (operator_name, telegram_channel, ...) during onboarding,
+# with REAL identity (operator_name, assistant_name, ...) during onboarding,
 # BEFORE any git commit happens in a freshly `git init`'d instance.
 #
 # Deliberate asymmetry, documented (PR data-leak-safety hardening):
@@ -48,7 +48,7 @@ operator/*.secret
 #   - The 4 static doc-template stubs below ARE re-included: no onboarding
 #     code path (create-tess/src/keystone.js bake()) ever writes to them —
 #     they ship with placeholder text ("<your build command>",
-#     "<your-dm-chat-id>") the operator hand-edits later, same shipped-
+#     "<operator-account-id>") the operator hand-edits later, same shipped-
 #     scaffold role as clients/_template/** below.
 operator/*
 !operator/build-facts-stub.md

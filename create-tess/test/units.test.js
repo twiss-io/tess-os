@@ -109,10 +109,16 @@ test('LOW: a value flag rejects a following flag as its value', () => {
     /requires a value/,
     'a following --flag must not be eaten as the operator value',
   );
-  // A single-dash value (a negative Telegram channel id) is still accepted.
-  assert.equal(parseArgs(['--telegram', '-1001234']).telegram, '-1001234');
+  // A single-dash value (e.g. a negative numeric id) is still accepted.
+  assert.equal(parseArgs(['--operator', '-1001234']).operator, '-1001234');
   // The '=' form is unaffected.
   assert.equal(parseArgs(['--operator=Alex']).operator, 'Alex');
+});
+
+// v0.2.0 (notg): the wizard no longer wires an external chat channel, so the
+// old channel flag is gone and is rejected like any other unknown flag.
+test('notg: the removed chat-channel flag is an unknown flag', () => {
+  assert.throws(() => parseArgs(['--telegram', '-1001234']), /unknown flag: --telegram/);
 });
 
 // HIGH-2(b) — names must start with an alphanumeric (no leading hyphen), so a

@@ -92,7 +92,6 @@ function resolveFromFlags(opts, roster) {
     conductor: cond.value,
     path,
     pathway,
-    telegram: opts.telegram || null,
     set,
   };
 }

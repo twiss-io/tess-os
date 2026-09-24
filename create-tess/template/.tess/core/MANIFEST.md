@@ -237,11 +237,9 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 
 | Core file | Live path | Tier |
 |---|---|---|
-| `hooks/anti-fabrication-guard.sh` | `.claude/hooks/anti-fabrication-guard.sh` | normal |
 | `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | normal |
 | `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | normal |
 | `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | normal |
-| `hooks/telegram-format-guard.sh` | `.claude/hooks/telegram-format-guard.sh` | normal |
 | `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | normal |
 
 ## skills/ — framework skills
