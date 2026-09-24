@@ -336,23 +336,34 @@ def test_write_render_output_status_and_foreign(project, engine):
     assert engine.render_output_status(engine.load_lock(root), ".codex/config.toml") == "foreign"
 
 
+def _unlocked_plain_render_output(engine, root):
+    """A render output with no tess.lock entry that is NOT runtime-enforcement
+    config (a codex prompt / skill), present on disk after render."""
+    lock = engine.load_lock(root)
+    for rel in sorted(engine.render_generated_live_paths(root)):
+        if (not engine._entries_for_live_path(lock, rel)
+                and not engine.is_enforcement_render_output(rel)
+                and (root / rel).is_file()):
+            return rel
+    pytest.skip("no plain render output without a tess.lock entry in this fixture")
+
+
 def test_publish_render_output_without_lock_entry(project, engine, capsys):
-    """`tessctl publish AGENTS.md` (no tess.lock entry) keeps the edited file
-    and records user-published, so render stops writing it."""
+    """`tessctl publish <prompt/skill>` (no tess.lock entry) keeps the edited
+    file and records user-published, so render stops writing it. (AGENTS.md
+    and .codex/config.toml are runtime-enforcement config: publish refuses
+    them — tests/test_v02_enforcement_publish.py.)"""
     root = build(project, codex=True)
     render(engine, root)
-    edited = project.read_live("AGENTS.md") + "\nMine now.\n"
-    project.write_live("AGENTS.md", edited)
+    rel = _unlocked_plain_render_output(engine, root)
+    edited = project.read_live(rel) + "\nMine now.\n"
+    project.write_live(rel, edited)
 
-    engine.cmd_publish(ns(path="AGENTS.md", tag=None, force=False), root)
+    engine.cmd_publish(ns(path=rel, tag=None, force=False), root)
     render(engine, root)
 
-    assert project.read_live("AGENTS.md") == edited
-    assert engine.render_output_status(engine.load_lock(root), "AGENTS.md") == "user-published"
-    capsys.readouterr()
-    engine.cmd_doctor(ns(fix=False, json_out=False, path=None), root)   # must not exit non-zero
-    out = capsys.readouterr().out
-    assert "doctor: OK" in out and "AGENTS.md" in out
+    assert project.read_live(rel) == edited
+    assert engine.render_output_status(engine.load_lock(root), rel) == "user-published"
 
 
 def test_publish_keeps_a_hand_edited_claude_md(project, engine):

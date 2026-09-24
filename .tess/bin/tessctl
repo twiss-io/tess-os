@@ -1642,6 +1642,38 @@ def _live_path_is_security(lock: dict, rel: str) -> bool:
     return is_security_tier(rel, {"live_path": rel})
 
 
+# Render outputs that configure a runtime's ENFORCEMENT: hooks, sandbox and
+# approval policy, and the context file the runtime loads as its rules. A hand
+# edit to one of these can switch enforcement off, so `tessctl publish` never
+# keeps its live bytes (it re-seeds from core, or refuses when the output has
+# no tess.lock entry) and doctor never reclassifies its drift as expected.
+# Local settings belong in the runtime's local override file (for Claude Code:
+# .claude/settings.local.json) or an operator stub.
+ENFORCEMENT_RENDER_OUTPUTS = frozenset({
+    ".claude/settings.json",
+    ".codex/config.toml",
+    "AGENTS.md",
+    "GEMINI.md",
+    ".gemini/settings.json",
+})
+
+
+def is_enforcement_render_output(rel: str) -> bool:
+    """True for a render output that carries runtime enforcement
+    (ENFORCEMENT_RENDER_OUTPUTS)."""
+    return str(rel).replace(os.sep, "/") in ENFORCEMENT_RENDER_OUTPUTS
+
+
+def _enforcement_edit_home(rel: str) -> str:
+    """Where a local change to an enforcement render output belongs."""
+    rel = str(rel).replace(os.sep, "/")
+    if rel == ".claude/settings.json":
+        return ".claude/settings.local.json"
+    if rel.endswith(".md"):
+        return f"{rel[:-3]}.local.md / an operator stub"
+    return "an operator stub"
+
+
 def _render_output_hand_edit_remedy(lock: dict, rel: str) -> str:
     """The one remedy line for a hand-edited render output. Security-tier:
     capture (it quarantines). A render output with no tess.lock entry
@@ -1651,6 +1683,9 @@ def _render_output_hand_edit_remedy(lock: dict, rel: str) -> str:
     if _live_path_is_security(lock, rel):
         return (f"SECURITY DRIFT — `tessctl capture {rel}` will quarantine it "
                 f"(security-tier; never publish a security edit)")
+    if is_enforcement_render_output(rel):
+        return (f"runtime-enforcement config — move the change to {_enforcement_edit_home(rel)} "
+                f"(`tessctl publish` re-seeds this file from core, it never keeps the edit)")
     if not _entries_for_live_path(lock, rel):
         return f"move the edit to {_render_output_edit_home(rel)}"
     return f"move the edit to {_render_output_edit_home(rel)}, or `tessctl publish {rel}`"
@@ -2055,11 +2090,13 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
     are an integrity FAILURE. --json: appended to `results` as error rows and
     counted. Human mode: printed, then doctor exits 1 (a lock whose entries
     disagree must be fixed before any drift report can be trusted).
-    --fix: re-pins a re-edited QUARANTINED render output first."""
+    --fix: re-pins a re-edited QUARANTINED render output first, then pulls
+    the render_outputs records render just saved into doctor's in-memory
+    `lock`, so doctor's own later save_lock cannot roll them back."""
     if not as_json:
         _print_not_owned_render_globs(root)
-        if fix:
-            _repin_quarantined_render_outputs(root, lock)
+        if fix and _repin_quarantined_render_outputs(root, lock):
+            _pull_render_outputs_from_disk(root, lock)
     # A render output with NO tess.lock entry that the operator protected
     # through render_outputs (`tessctl publish AGENTS.md`, held, foreign,
     # locally-modified) is expected to diverge from the render: reclassify
@@ -2071,8 +2108,8 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
                 and r.get("lock_status") == "core-managed"):
             continue
         st = render_output_status(lock, lp)
-        if st == "rendered":
-            continue
+        if st == "rendered" or is_enforcement_render_output(lp):
+            continue   # enforcement config drift always stays an error
         was_error = _doctor_result_is_error(r)
         r["lock_status"] = st
         r["issues"] = [f"render output is {st} (render_outputs) — divergence from the render is expected"]
@@ -2228,8 +2265,8 @@ def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> li
         for t in targets:
             try:
                 compiled = t.expected_live_bytes(root, rel) is not None
-            except SystemExit:
-                compiled = True   # a broken template is still a compiled output
+            except (SystemExit, Exception):  # noqa: BLE001 — fail closed
+                compiled = True   # a broken template/target is still a compiled output
             if compiled:
                 break
         if not compiled:
@@ -4189,8 +4226,10 @@ def cmd_doctor(args, root: Path) -> None:
         if set(_rg_hand) - set(_rg_sec):
             print(f"  {len(set(_rg_hand) - set(_rg_sec))} hand-edited render output(s) — render "
                   f"keeps them: move the edit to CLAUDE.md.local.md / an operator stub (or "
-                  f"`tessctl publish <path>` for a file with tess.lock entries); to discard, "
-                  f"delete the file and re-run `tessctl render`.")
+                  f"`tessctl publish <path>` for a file with tess.lock entries; settings "
+                  f"changes go in .claude/settings.local.json — publish never keeps an edit "
+                  f"to runtime-enforcement config); to discard, delete the file and re-run "
+                  f"`tessctl render`.")
         print("  Options: `tessctl render` (for stale render-generated files), "
               "`tessctl capture <path>` (for hand-edited files, quarantines security-tier), "
               "or `tessctl doctor --fix` (auto-resolves both, excludes security-tier).")
@@ -6051,9 +6090,16 @@ def cmd_publish(args, root: Path) -> None:
                 targets.append(k)
                 break
         if not targets:
-            # v0.2 eng-b: a render output with no tess.lock entry (AGENTS.md,
-            # .codex/config.toml, prompts) is published through its
-            # render_outputs record instead.
+            # v0.2 eng-b: runtime-enforcement config with no tess.lock entry
+            # (.codex/config.toml, AGENTS.md) has no core file to re-seed
+            # from, so publishing it would freeze a hand edit — refused.
+            if is_enforcement_render_output(target_path):
+                sys.exit(f"tessctl publish: {target_path} is runtime-enforcement config "
+                         f"rendered by Tess; it cannot be published. Put the change in "
+                         f"{_enforcement_edit_home(target_path)}; `tessctl render` rewrites "
+                         f"{target_path} once the hand edit is deleted.")
+            # A render output with no tess.lock entry (prompts, skills) is
+            # published through its render_outputs record instead.
             if (target_path in render_generated_live_paths(root)
                     or render_output_record(lock, target_path) is not None):
                 _publish_render_output(root, lock, target_path, manifest, track, version)
@@ -6118,8 +6164,13 @@ def cmd_publish(args, root: Path) -> None:
         # is publishing — keep the live bytes instead of re-seeding from core.
         # Never for a security-tier live path: a hand edit to security doctrine
         # is SECURITY DRIFT (capture quarantines it); publish re-seeds from core.
+        # Never for runtime-enforcement config (.claude/settings.json) either:
+        # keeping a hook-stripped settings file would switch enforcement off
+        # for good, so publish re-seeds it from core like a security path.
         _security_live = _live_path_is_security(lock, live_rel)
-        if (not force and not _security_live and live_rel in _render_outputs_now
+        _enforcement_live = is_enforcement_render_output(live_rel)
+        if (not force and not _security_live and not _enforcement_live
+                and live_rel in _render_outputs_now
                 and live_path.is_file()
                 and not live_path.is_symlink() and core_path.exists()
                 and live_path.read_bytes() != render_core_to_live(core_path, live_path, root)
@@ -6162,6 +6213,12 @@ def cmd_publish(args, root: Path) -> None:
         # divergence).  Single-target publish re-raises so main() calls sys.exit.
         if core_path.exists():
             rendered = render_core_to_live(core_path, live_path, root)
+            if (_enforcement_live and not _security_live and live_path.is_file()
+                    and not live_path.is_symlink() and live_path.read_bytes() != rendered):
+                snapshot_single_file(root, live_rel)
+                print(f"  NOTE  {live_rel} [ENFORCEMENT]: the live edit is NOT published — "
+                      f"re-seeded from core (the replaced bytes are in .tess/snapshots). "
+                      f"Put local changes in {_enforcement_edit_home(live_rel)}.")
             if (_security_live and live_rel in _render_outputs_now and live_path.is_file()
                     and not live_path.is_symlink() and live_path.read_bytes() != rendered):
                 snapshot_single_file(root, live_rel)
