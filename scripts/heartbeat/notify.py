@@ -13,7 +13,9 @@ selected by `notify.channel` in `heartbeat.config.json`:
 The base harness itself reports in the active session and needs no external
 channel; this heartbeat notification is an opt-in operator add-on. Any other
 `notify.channel` value (including a chat-service name from an older config)
-is a safe no-op.
+is a safe no-op that sends nothing; the first time it happens in a process
+it also prints one warning to stderr, so a config left over from an older
+release does not lose its alerts silently.
 
 A notification failure must never crash the caller — the daemon's per-card
 loop and daily recompile continue regardless; a failed send is logged in the
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -89,8 +92,23 @@ def send(message: str, dry_run: bool, cfg: Optional[config_mod.HeartbeatConfig] 
     if channel == "webhook":
         return _send_webhook(message, cfg.notify)
 
-    return NotifyResult(
-        sent=False, dry_run=False, channel=channel, message=message,
-        detail=(f"unknown notify.channel {channel!r} — no-op, nothing sent; supported values are "
-                "'none' and 'webhook' (set 'webhook' with your own endpoint to keep receiving alerts)"),
-    )
+    detail = (f"unknown notify.channel {channel!r} — no-op, nothing sent; supported values are "
+              "'none' and 'webhook' (set 'webhook' with your own endpoint to keep receiving alerts)")
+    _warn_unknown_channel_once(detail)
+    return NotifyResult(sent=False, dry_run=False, channel=channel, message=message, detail=detail)
+
+
+_warned_unknown_channel = False
+
+
+def _warn_unknown_channel_once(detail: str) -> None:
+    """Print one stderr warning per process for an unsupported channel.
+    Never raises: a notification problem must not crash the caller."""
+    global _warned_unknown_channel
+    if _warned_unknown_channel:
+        return
+    _warned_unknown_channel = True
+    try:
+        print(f"heartbeat notify: WARNING {detail}", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - stderr closed or broken; stay silent rather than crash
+        pass

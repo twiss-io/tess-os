@@ -66,6 +66,25 @@ def test_unknown_channel_is_a_safe_noop():
     assert "'webhook'" in result.detail, "the no-op detail must name the supported replacement"
 
 
+def test_unknown_channel_warns_once_on_stderr(monkeypatch, capsys):
+    """A config left over from an older release must not lose its alerts
+    quietly: the first unsupported channel in a process prints one warning."""
+    monkeypatch.setattr(notify, "_warned_unknown_channel", False)
+    cfg = config_mod.HeartbeatConfig(notify=config_mod.NotifyConfig(channel="carrier-pigeon"))
+    notify.send("one", dry_run=False, cfg=cfg)
+    notify.send("two", dry_run=False, cfg=cfg)
+    err = capsys.readouterr().err
+    assert err.count("unknown notify.channel 'carrier-pigeon'") == 1, err
+    assert "WARNING" in err
+
+
+def test_supported_channels_do_not_warn(monkeypatch, capsys):
+    monkeypatch.setattr(notify, "_warned_unknown_channel", False)
+    notify.send("hi", dry_run=False, cfg=config_mod.HeartbeatConfig(notify=config_mod.NotifyConfig(channel="none")))
+    notify.send("hi", dry_run=True, cfg=config_mod.HeartbeatConfig(notify=config_mod.NotifyConfig(channel="x")))
+    assert capsys.readouterr().err == ""
+
+
 def test_no_secret_value_ever_appears_in_repr(monkeypatch):
     """Even on a failure path with a real-looking secret URL set, the returned
     result's own message/detail must never echo the raw secret — only this

@@ -38,7 +38,11 @@ This guard reads the real files and fails on any case-insensitive
 
 Scope. In the Tess OS repository (create-tess/src exists) every tracked file
 is base harness except the wizard's own test suite (create-tess/test/, never
-scaffolded). That covers core, doctrine, templates, hooks, settings,
+scaffolded) and reviews/ (plus any create-tess/template/reviews/ copy): per-PR
+review records such as a reviewer's verdict on this very change. They are
+stripped at integration (integrate_step.sh removes reviews/verdicts/ from
+every merge) and are never scaffolded, and a verdict that names the removed
+channel must not turn its own PR red. That covers core, doctrine, templates, hooks, settings,
 commands, agents, skills, render outputs, the engine, create-tess/src and
 the bundled create-tess/template/. In a scaffolded instance only the
 framework core (.tess/core/ and the engine) is checked: everything else is
@@ -85,8 +89,10 @@ ALLOWLIST = {
 }
 
 # Not part of the base harness: the wizard's own test suite is never copied
-# into a scaffold (it may assert that the removed flag is rejected).
-NOT_BASE_PREFIXES = ("create-tess/test/",)
+# into a scaffold (it may assert that the removed flag is rejected), and
+# reviews/ holds per-PR review records (verdicts), stripped at integration
+# and never scaffolded; a verdict on this change will name the channel.
+NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/", "create-tess/template/reviews/")
 
 # Files that must be in scope, so the scan can never go vacuous.
 MUST_SCAN_PRODUCT = (
@@ -172,6 +178,18 @@ def test_scan_is_not_vacuous():
     must = MUST_SCAN_PRODUCT if PRODUCT_REPO else MUST_SCAN_INSTANCE
     missing = [rel for rel in must if rel not in scanned]
     assert not missing, f"the guard does not scan: {missing}"
+
+
+@pytest.mark.skipif(not PRODUCT_REPO, reason="product-repo scope rule")
+def test_only_review_records_and_wizard_tests_leave_scope():
+    """reviews/ and create-tess/test/ are the only exclusions; a look-alike
+    path elsewhere (e.g. docs/reviews/) stays in scope."""
+    assert not _in_scope("reviews/verdicts/2026-09-24-pr197-notg.cyra.verdict.md")
+    assert not _in_scope("create-tess/template/reviews/verdicts/x.md")
+    assert not _in_scope("create-tess/test/args.test.js")
+    for rel in ("docs/reviews/x.md", "conductor/reviews.md", ".tess/core/conductor/guardrails.md",
+                "create-tess/template/conductor/guardrails.md", "create-tess/src/args.js"):
+        assert _in_scope(rel), rel
 
 
 def test_base_harness_has_no_telegram():

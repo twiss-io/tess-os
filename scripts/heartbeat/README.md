@@ -94,7 +94,8 @@ full schema; summary:
 v0.2.0 supports only `"none"` and `"webhook"`. If your `heartbeat.config.json`
 names any other channel (for example a chat service that v0.1.x shipped a
 notifier for), heartbeat alerts stop: the notifier records
-`unknown notify.channel ... no-op` and sends nothing. Set `notify.channel` to
+`unknown notify.channel ... no-op`, prints that warning once per run to
+stderr, and sends nothing. Set `notify.channel` to
 `"webhook"` and point `notify.webhook_url_env` at your own endpoint to keep
 receiving alerts, or set it to `"none"`.
 
