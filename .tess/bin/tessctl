@@ -1582,7 +1582,9 @@ _UNKNOWN_LIVE_STATUS_RANK = 0.5   # unknown: above core-managed, below all known
 
 # Effective status -> write_render_output skip reason. Statuses absent from
 # this map (core-managed, staged, quarantined) let render write: quarantine
-# pins the authoritative core render, exactly as restore does.
+# pins the authoritative core render, exactly as restore does. A quarantined
+# entry also overrides every skip below and the hand-edit check
+# (_live_path_quarantined), so a re-tampered quarantined file is re-pinned.
 _RENDER_SKIP_REASON = {
     "user-published": "user-published",
     "locally-modified": "locally-modified",
@@ -1618,6 +1620,40 @@ def effective_live_status(lock: dict, rel: str) -> str:
         if best is None or _status_rank(st) > _status_rank(best):
             best = st
     return best or "core-managed"
+
+
+def _live_path_quarantined(lock: dict, rel: str) -> bool:
+    """True when ANY tess.lock entry sharing `rel` is quarantined. A
+    quarantined security edit stays pinned to the core render until
+    `tessctl approve`, whatever a sibling entry says."""
+    return any((a.get("status") or "") == "quarantined"
+               for _k, a in _entries_for_live_path(lock, rel))
+
+
+def _live_path_is_security(lock: dict, rel: str) -> bool:
+    """True when ANY tess.lock entry sharing `rel` is security-tier (e.g. a
+    `tier: security` CLAUDE.md fragment), or, with no entry, when `rel`
+    itself is a security-tier path. A hand edit to such a file is SECURITY
+    DRIFT: its remedy is capture (quarantine), never publish."""
+    rel = str(rel).replace(os.sep, "/")
+    entries = _entries_for_live_path(lock, rel)
+    if entries:
+        return any(is_security_tier(k, a) for k, a in entries)
+    return is_security_tier(rel, {"live_path": rel})
+
+
+def _render_output_hand_edit_remedy(lock: dict, rel: str) -> str:
+    """The one remedy line for a hand-edited render output. Security-tier:
+    capture (it quarantines). A render output with no tess.lock entry
+    (AGENTS.md, .codex/config.toml): move the edit — `publish` is not offered
+    because verify still reports the file as stale render output. Otherwise:
+    move the edit, or publish it."""
+    if _live_path_is_security(lock, rel):
+        return (f"SECURITY DRIFT — `tessctl capture {rel}` will quarantine it "
+                f"(security-tier; never publish a security edit)")
+    if not _entries_for_live_path(lock, rel):
+        return f"move the edit to {_render_output_edit_home(rel)}"
+    return f"move the edit to {_render_output_edit_home(rel)}, or `tessctl publish {rel}`"
 
 
 def _render_outputs_section(lock: dict) -> dict:
@@ -1713,6 +1749,10 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
     force=True overrides ONLY 'hand-edited'/'foreign-by-inference' — never an
     explicit status — and snapshots the pre-image first.
 
+    A live path with a QUARANTINED entry is always re-pinned to `data` (the
+    core render), even when hand-edited again; the pre-image is snapshotted
+    and the result is 'written'.
+
     `lock`: pass the caller's loaded lock to batch many writes (the caller
     then saves it); when None the lock is loaded and saved here if a record
     changed. Writes still go through the unchanged guarded_write().
@@ -1733,8 +1773,13 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
         lock = _load_lock_or_empty(root)
     can_record = bool(lock) and "files" in lock
 
+    # A QUARANTINED security edit stays pinned to the core render until
+    # `tessctl approve`: re-pin it even if the live file was edited again
+    # (the pre-image goes to .tess/snapshots). No status or hand-edit check
+    # may keep a tamper in a quarantined file.
+    quarantined = _live_path_quarantined(lock, rel)
     status = render_output_status(lock, rel)
-    if status in _RENDER_SKIP_REASON:
+    if status in _RENDER_SKIP_REASON and not quarantined:
         return f"skipped:{_RENDER_SKIP_REASON[status]}"
 
     new_sha = sha256_bytes(data)
@@ -1751,7 +1796,9 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
             return "unchanged"
         rec = render_output_record(lock, rel)
         stale_render = rec is not None and rec.get("rendered_sha") == sha256_bytes(current)
-        if not stale_render:
+        if quarantined:
+            snapshot_single_file(root, rel)
+        elif not stale_render:
             if not force:
                 if (rec is not None or _entries_for_live_path(lock, rel)
                         or _is_legacy_render_lock(lock)):
@@ -1828,6 +1875,13 @@ def report_render_output_results(root: Path, target: str, results: dict,
         if isinstance(res, str) and res.startswith("skipped:"):
             by_reason.setdefault(res.split(":", 1)[1], []).append(rel)
     _report_retired_render_outputs(root, target, RENDER_TARGETS.get(target))
+    written = sorted(rel for rel, res in results.items() if res == "written")
+    lock = _load_lock_or_empty(root) if (written or by_reason.get("hand-edited")) else {}
+    for rel in written:
+        if _live_path_quarantined(lock, rel):
+            print(f"  QUARANTINED  {rel}  — re-pinned to the core render (the replaced bytes "
+                  f"are in .tess/snapshots); `tessctl approve {rel} --rationale ...` to accept "
+                  f"the quarantined edit")
     if not by_reason:
         return by_reason
     if manifest is None:
@@ -1847,8 +1901,8 @@ def report_render_output_results(root: Path, target: str, results: dict,
                   f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them "
                   f"(tessctl never edits the manifest).")
     for rel in by_reason.get("hand-edited", []):
-        print(f"  KEEP  {rel}  — hand-edited render output: move the edit to "
-              f"{_render_output_edit_home(rel)}, or `tessctl publish {rel}`; to discard it, "
+        print(f"  KEEP  {rel}  — hand-edited render output: "
+              f"{_render_output_hand_edit_remedy(lock, rel)}; to discard it, "
               f"delete the file and re-run `tessctl render`")
     for rel in by_reason.get("foreign", []):
         print(f"  KEEP  {rel}  — foreign file (Tess has no record of writing it); "
@@ -1973,14 +2027,39 @@ def _print_not_owned_render_globs(root: Path) -> dict:
     return notes
 
 
+def _repin_quarantined_render_outputs(root: Path, lock: dict) -> list:
+    """doctor --fix: a QUARANTINED render output (e.g. CLAUDE.md with a
+    security-tier fragment) that was edited again is re-pinned to the core
+    render — the same thing render and restore now do through
+    write_render_output. Doctor still FAILs on the quarantine until
+    `tessctl approve`. Returns the live paths that needed it."""
+    stale = []
+    for lp in sorted(render_generated_live_paths(root)):
+        ents = _entries_for_live_path(lock, lp)
+        live = root / lp
+        if not ents or not _live_path_quarantined(lock, lp) or not live.is_file():
+            continue
+        core = root / ents[0][0]
+        if core.exists() and live.read_bytes() != render_core_to_live(core, live, root):
+            stale.append(lp)
+    if stale:
+        print("\n--fix: re-pinning quarantined render output(s) to the core render: "
+              + ", ".join(stale))
+        _render_enabled_targets(root, verbose=True)
+    return stale
+
+
 def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
-                          path_filter=None) -> int:
+                          path_filter=None, fix: bool = False) -> int:
     """cmd_doctor's single v0.2 eng-b hook. Mixed statuses on one live_path
     are an integrity FAILURE. --json: appended to `results` as error rows and
     counted. Human mode: printed, then doctor exits 1 (a lock whose entries
-    disagree must be fixed before any drift report can be trusted)."""
+    disagree must be fixed before any drift report can be trusted).
+    --fix: re-pins a re-edited QUARANTINED render output first."""
     if not as_json:
         _print_not_owned_render_globs(root)
+        if fix:
+            _repin_quarantined_render_outputs(root, lock)
     # A render output with NO tess.lock entry that the operator protected
     # through render_outputs (`tessctl publish AGENTS.md`, held, foreign,
     # locally-modified) is expected to diverge from the render: reclassify
@@ -2109,6 +2188,85 @@ def _pull_render_outputs_from_disk(root: Path, lock: dict) -> None:
     disk = load_lock(root)
     if RENDER_OUTPUTS_KEY in disk:
         lock[RENDER_OUTPUTS_KEY] = disk[RENDER_OUTPUTS_KEY]
+
+
+def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> list:
+    """Compiled render outputs (CLAUDE.md, .claude/settings.json: an enabled
+    target's expected_live_bytes() claims them) whose EFFECTIVE status is
+    locally-modified (captured) or patch-override, and whose sources change
+    in .tess/staging: a changed staged entry, or a new upstream entry with
+    that live_path. update cannot merge into such a file: its per-entry
+    merge / patch-apply renders 'theirs' from the CURRENT core (the target
+    compiles from root), and Step 7 skips the protected file — so the
+    upstream change would be dropped while update reports a clean merge.
+    Returns [(live_rel, status, [changed core keys])]."""
+    staging_dir = root / STAGING_DIR
+    if not staging_dir.is_dir():
+        return []
+    files = lock.get("files") or {}
+    new_by_live: dict = {}
+    up_path = staging_dir / "upstream-tess.lock"
+    if up_path.is_file():
+        try:
+            up = yaml.safe_load(up_path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 — A2 reports an unparsable lock itself
+            up = {}
+        for k, a in ((up.get("files") or {}) if isinstance(up, dict) else {}).items():
+            if isinstance(a, dict) and a.get("live_path") and k not in files:
+                new_by_live.setdefault(a["live_path"], []).append(k)
+    targets = list(enabled_render_targets(root).values())
+    out, seen = [], set()
+    for _ck, attrs in files.items():
+        rel = attrs.get("live_path") if isinstance(attrs, dict) else None
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        status = effective_live_status(lock, rel)
+        if status not in ("locally-modified", "patch-override"):
+            continue
+        compiled = False
+        for t in targets:
+            try:
+                compiled = t.expected_live_bytes(root, rel) is not None
+            except SystemExit:
+                compiled = True   # a broken template is still a compiled output
+            if compiled:
+                break
+        if not compiled:
+            continue
+        changed = []
+        for k, _a in _entries_for_live_path(lock, rel):
+            staged, current = staging_dir / k, root / k
+            if staged.is_file() and not staged.is_symlink() and (
+                    not current.is_file() or current.read_bytes() != staged.read_bytes()):
+                changed.append(k)
+        changed += new_by_live.get(rel, [])
+        if changed:
+            out.append((rel, status, changed))
+    return out
+
+
+def _update_gate_captured_render_outputs(root: Path, lock: dict, dry_run: bool = False) -> None:
+    """cmd_update's v0.2 eng-b gate between fetch (Step 4) and apply (Step 5):
+    fail closed when a captured / overridden compiled render output has
+    upstream changes (see _captured_render_outputs_with_upstream_changes).
+    Nothing has been written yet; the update lock is released by the
+    caller's finally. Dry-run: reported, not enforced."""
+    hits = _captured_render_outputs_with_upstream_changes(root, lock)
+    if not hits:
+        return
+    print(f"\n  {'WOULD BLOCK' if dry_run else 'BLOCKED'} — {len(hits)} captured/overridden "
+          f"render output(s) have upstream changes that update cannot merge:")
+    for rel, status, changed in hits:
+        print(f"    {rel}  ({status}) — upstream changes: " + ", ".join(changed))
+    for rel, status, _changed in hits:
+        redo = "capture" if status == "locally-modified" else "override"
+        print(f"  {rel} is compiled from several sources, so your edit and the upstream change "
+              f"cannot be merged here. Either move the edit to {_render_output_edit_home(rel)} "
+              f"and run `tessctl reset {rel}`, then retry update; or `tessctl reset {rel}`, "
+              f"update, re-apply the edit and `tessctl {redo} {rel}`.")
+    if not dry_run:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -2770,7 +2928,7 @@ def _do_render(root: Path, verbose: bool = False) -> None:
     try:
         for rel, produce in outputs.items():
             _st = render_output_status(lock, rel)
-            if _st in _RENDER_SKIP_REASON:
+            if _st in _RENDER_SKIP_REASON and not _live_path_quarantined(lock, rel):
                 results[rel] = f"skipped:{_RENDER_SKIP_REASON[_st]}"
                 continue
             try:
@@ -3837,7 +3995,7 @@ def cmd_doctor(args, root: Path) -> None:
         results.append(r)
         errors += 1
 
-    errors += _doctor_engb_findings(root, lock, results, as_json, path_filter)  # v0.2 eng-b
+    errors += _doctor_engb_findings(root, lock, results, as_json, path_filter, fix)  # v0.2 eng-b
     if as_json:
         print(json.dumps(results, indent=2, default=str))
         sys.exit(1 if errors else 0)
@@ -3883,10 +4041,16 @@ def cmd_doctor(args, root: Path) -> None:
                             f"  DRIFT       {live_rel}  ← run `tessctl render`"
                             f"  (re-sync from operator-state)"
                         )
+                    elif _live_path_is_security(lock, live_rel):
+                        print(
+                            f"  DRIFT       {live_rel} [SECURITY] *** SECURITY DRIFT ***  ← hand-edited "
+                            f"render output: run `tessctl capture {live_rel}` (it will QUARANTINE; "
+                            f"never publish a security edit)"
+                        )
                     else:
                         print(
-                            f"  DRIFT       {live_rel}  ← hand-edited render output: move the edit "
-                            f"to {_render_output_edit_home(live_rel)}, or `tessctl publish {live_rel}`"
+                            f"  DRIFT       {live_rel}  ← hand-edited render output: "
+                            f"{_render_output_hand_edit_remedy(lock, live_rel)}"
                             f"  (render keeps it; to discard it, delete the file and re-run "
                             f"`tessctl render`)"
                         )
@@ -4018,10 +4182,15 @@ def cmd_doctor(args, root: Path) -> None:
                     if _render_output_drift_kind(root, lock, lp) != "stale"}
         if _rg_drift - _rg_hand:
             print("  Render-generated file(s) are stale — run `tessctl render` to re-sync.")
-        if _rg_hand:
-            print(f"  {len(_rg_hand)} hand-edited render output(s) — render keeps them: move the "
-                  f"edit to CLAUDE.md.local.md / an operator stub, or `tessctl publish <path>`; "
-                  f"to discard, delete the file and re-run `tessctl render`.")
+        _rg_sec = sorted(lp for lp in _rg_hand if _live_path_is_security(lock, lp))
+        if _rg_sec:
+            print(f"  SECURITY DRIFT in {len(_rg_sec)} render output(s) ({', '.join(_rg_sec)}): "
+                  f"`tessctl capture <path>` will quarantine it; never publish a security edit.")
+        if set(_rg_hand) - set(_rg_sec):
+            print(f"  {len(set(_rg_hand) - set(_rg_sec))} hand-edited render output(s) — render "
+                  f"keeps them: move the edit to CLAUDE.md.local.md / an operator stub (or "
+                  f"`tessctl publish <path>` for a file with tess.lock entries); to discard, "
+                  f"delete the file and re-run `tessctl render`.")
         print("  Options: `tessctl render` (for stale render-generated files), "
               "`tessctl capture <path>` (for hand-edited files, quarantines security-tier), "
               "or `tessctl doctor --fix` (auto-resolves both, excludes security-tier).")
@@ -5267,8 +5436,7 @@ def cmd_update(args, root: Path) -> None:
         if hand_edited_outputs:
             print(f"  BLOCKED — {len(hand_edited_outputs)} hand-edited render output(s):")
             for lp in hand_edited_outputs:
-                print(f"    {lp}  — move the edit to {_render_output_edit_home(lp)}, "
-                      f"or `tessctl publish {lp}`")
+                print(f"    {lp}  — {_render_output_hand_edit_remedy(lock, lp)}")
             print("  To discard an edit instead: delete the file and run `tessctl render`, "
                   "then retry update.")
         if render_stale:
@@ -5353,6 +5521,7 @@ def cmd_update(args, root: Path) -> None:
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
 
+        _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
         # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
         print("\nStep 5-6: plan and apply …")
         _apply_per_file_resolution(root, lock, dry_run=dry_run)
@@ -5907,6 +6076,20 @@ def cmd_publish(args, root: Path) -> None:
             if _g not in _expanded:
                 _expanded.append(_g)
     targets = _expanded
+
+    # v0.2 eng-b: a QUARANTINED security edit is decided by `tessctl approve`
+    # (a TTY-confirmed, rationale-bearing security decision), never by publish.
+    # Refuse the whole run before anything is written.
+    _quarantined_live = sorted({
+        lock["files"][k].get("live_path") or k for k in targets
+        if (lock["files"].get(k, {}).get("status") or "") == "quarantined"})
+    if _quarantined_live:
+        for _lp in _quarantined_live:
+            print(f"  REFUSED  {_lp}  [SECURITY — quarantined]")
+        sys.exit("tessctl publish: refusing to publish a quarantined security-tier file. "
+                 "Use `tessctl approve <path> --rationale ...` to accept the quarantined edit, "
+                 "or `tessctl reset <path>` to discard it.")
+
     _live_outcome: dict = {}   # live_rel -> "written" | "skipped"
     _render_outputs_now = render_generated_live_paths(root)
 
@@ -5933,7 +6116,11 @@ def cmd_publish(args, root: Path) -> None:
 
         # v0.2 eng-b (bug 7): a hand-edited render output IS what the operator
         # is publishing — keep the live bytes instead of re-seeding from core.
-        if (not force and live_rel in _render_outputs_now and live_path.is_file()
+        # Never for a security-tier live path: a hand edit to security doctrine
+        # is SECURITY DRIFT (capture quarantines it); publish re-seeds from core.
+        _security_live = _live_path_is_security(lock, live_rel)
+        if (not force and not _security_live and live_rel in _render_outputs_now
+                and live_path.is_file()
                 and not live_path.is_symlink() and core_path.exists()
                 and live_path.read_bytes() != render_core_to_live(core_path, live_path, root)
                 and _render_output_drift_kind(root, lock, live_rel) == "hand-edited"):
@@ -5975,6 +6162,13 @@ def cmd_publish(args, root: Path) -> None:
         # divergence).  Single-target publish re-raises so main() calls sys.exit.
         if core_path.exists():
             rendered = render_core_to_live(core_path, live_path, root)
+            if (_security_live and live_rel in _render_outputs_now and live_path.is_file()
+                    and not live_path.is_symlink() and live_path.read_bytes() != rendered):
+                snapshot_single_file(root, live_rel)
+                print(f"  NOTE  {live_rel} [SECURITY]: the live edit is NOT published — "
+                      f"re-seeded from core (the replaced bytes are in .tess/snapshots). "
+                      f"`tessctl capture {live_rel}` quarantines a security edit for "
+                      f"`tessctl approve`.")
             if live_path.suffix in (".md", ".markdown"):
                 try:
                     _content = rendered.decode("utf-8")
