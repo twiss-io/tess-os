@@ -349,6 +349,10 @@ def test_publish_render_output_without_lock_entry(project, engine, capsys):
 
     assert project.read_live("AGENTS.md") == edited
     assert engine.render_output_status(engine.load_lock(root), "AGENTS.md") == "user-published"
+    capsys.readouterr()
+    engine.cmd_doctor(ns(fix=False, json_out=False, path=None), root)   # must not exit non-zero
+    out = capsys.readouterr().out
+    assert "doctor: OK" in out and "AGENTS.md" in out
 
 
 def test_publish_keeps_a_hand_edited_claude_md(project, engine):

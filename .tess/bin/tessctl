@@ -1981,10 +1981,28 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
     disagree must be fixed before any drift report can be trusted)."""
     if not as_json:
         _print_not_owned_render_globs(root)
+    # A render output with NO tess.lock entry that the operator protected
+    # through render_outputs (`tessctl publish AGENTS.md`, held, foreign,
+    # locally-modified) is expected to diverge from the render: reclassify
+    # its untracked-render drift row so it is reported, not failed.
+    adjust = 0
+    for r in results:
+        lp = r.get("live_path")
+        if not (lp and r.get("core_key") is None and r.get("drift")
+                and r.get("lock_status") == "core-managed"):
+            continue
+        st = render_output_status(lock, lp)
+        if st == "rendered":
+            continue
+        was_error = _doctor_result_is_error(r)
+        r["lock_status"] = st
+        r["issues"] = [f"render output is {st} (render_outputs) — divergence from the render is expected"]
+        if was_error and not _doctor_result_is_error(r):
+            adjust -= 1
     findings = [f for f in _lock_status_consistency_findings(lock)
                 if not path_filter or f["live_path"] == path_filter]
     if not findings:
-        return 0
+        return adjust
     if as_json:
         for f in findings:
             results.append({
@@ -1993,7 +2011,7 @@ def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
                 "issues": ["LOCK STATUS MIXED — entries sharing this live_path disagree: "
                            + ", ".join(f"{k}={v}" for k, v in f["statuses"].items())],
             })
-        return len(findings)
+        return len(findings) + adjust
     print("\ntessctl doctor — lock status consistency\n")
     for f in findings:
         print(f"  MIXED       {f['live_path']}  — entries disagree: "
