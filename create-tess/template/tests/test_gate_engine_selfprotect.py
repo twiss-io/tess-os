@@ -53,7 +53,11 @@ REAL_POLICY_PATH = REPO_ROOT / "core" / "policy" / "policy.yaml"
 HAS_GIT = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not HAS_GIT, reason="git required")
 
-_COPY_IGNORE = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycache__")
+# "reviews": a PR under test may carry a committed verdict covering the
+# engine; these fixtures assert the NO-verdict path, so it is not copied.
+_COPY_IGNORE = shutil.ignore_patterns(
+    ".git", "tests", "reviews", ".pytest_cache", "__pycache__",
+)
 
 # The engine's own ship-check entrypoint — patched to a hardcoded, always-
 # clean early return. This is the EXACT attack the audit disclosed: an

@@ -177,7 +177,11 @@ def signoffs_dir_repo(tmp_path):
     the actually-shipped policy.yaml (unconditional today: signoff_keys and
     verifier_keys both ship empty by design)."""
     dst = tmp_path / "os"
-    ignore = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycache__")
+    # "reviews": a PR under test may carry a committed verdict covering the
+    # engine; this fixture asserts the NO-verdict path, so it is not copied.
+    ignore = shutil.ignore_patterns(
+        ".git", "tests", "reviews", ".pytest_cache", "__pycache__",
+    )
     shutil.copytree(REPO_ROOT, dst, ignore=ignore)
     _init_repo(dst)
     _git(dst, "add", "-A")
