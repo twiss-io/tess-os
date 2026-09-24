@@ -122,12 +122,12 @@ Every successful emit prints (and, with `--json`, returns as
 string):
 
 > This receipt is genuinely GPG-signed and tamper/chain-evident, but is NOT
-> trust-anchored until the signer's key is registered in
-> `core/policy/policy.yaml` (`verifier_keys` / `signoff_keys` — currently
-> empty). Key-ceremony registration is Xavier-gated and is not performed by
-> this tool. A self-verify PASS proves the receipt is genuine and
-> unaltered; it does not mean a trusted party's approval is enforced by
-> policy.
+> trust-anchored: this tool does not check whether the signer's key is
+> registered in `core/policy/policy.yaml` (`verifier_keys` /
+> `signoff_keys`). Registering a key there is a separate, human-owned
+> key-custody decision that this tool never performs. A self-verify PASS
+> proves the receipt is genuine and unaltered; it does not mean a trusted
+> party's approval is enforced by policy.
 
 Do not read a `CHAIN INTACT` result — from this tool or from
 `tools/receipt-verify` — as "a trusted party approved this." It means "this

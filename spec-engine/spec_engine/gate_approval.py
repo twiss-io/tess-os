@@ -2,7 +2,7 @@
 two disclosed findings from the PR #81 security review (Cyra):
 
 **[MEDIUM-1] The boundary was forgeable.** Before this module existed,
-`record_approval(approved_by="Xavier") -> build_spec() -> generate_app()`
+`record_approval(approved_by="Alex") -> build_spec() -> generate_app()`
 produced a real, running app WITHOUT ever going through an
 `orchestrator.approval_gate.ApprovalGate`. `spec_builder.build_spec()`
 only checked that *an* `Approval` existed matching the plan's `plan_id`
@@ -75,7 +75,7 @@ replayed approval across two SEPARATE process runs. Approvals ARE
 persisted today (`spec_log.append_approval_note()` -> `specs/
 approvals.jsonl`), so a durable, cross-process nonce ledger (backed by
 that same log, or a dedicated one) is the natural next hardening step —
-flagged as an open question for Xavier in the PR body, not silently
+flagged as an open question for the maintainers in the PR body, not silently
 treated as fully closed here.
 """
 

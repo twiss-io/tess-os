@@ -5,7 +5,7 @@ role `intent_router.cli` plays for the front door.
 
     python -m spec_engine.cli plan "some freeform idea" --source fragment
     python -m spec_engine.cli finalize <plan.json path printed by `plan --json`> \\
-        --approved-by Xavier
+        --approved-by Alex
 """
 
 from __future__ import annotations

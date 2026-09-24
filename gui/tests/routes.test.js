@@ -667,7 +667,7 @@ test('saved missions: concurrent creates never clobber each other (serialized re
 test('a route handler throwing an error never leaks err.message/stack to the client', async () => {
   const deps = {
     aggregateSessions: async () => {
-      throw new Error('SECRET INTERNAL PATH: /Users/xavier/.ssh/id_ed25519');
+      throw new Error('SECRET INTERNAL PATH: /home/operator/.ssh/id_ed25519');
     },
   };
   const { port, token } = await startServer({ deps });

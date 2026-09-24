@@ -15,14 +15,14 @@ one model produces better code than another.
 
 | Capability | Tess OS today | Boundary |
 |---|---|---|
-| Review gate | Local policy/evidence gate with fail-closed behavior for governed paths. | Not production admission control yet: external first-key custody and GitHub required checks are unresolved. |
-| Coding-agent integration | Claude Code target/driver; opt-in Codex target/driver; generic `AGENTS.md` output. | Claude is an uncertified preview; Codex is pilot; generic output is not native feature parity. |
+| Review gate | Local policy/evidence gate with fail-closed behavior for governed paths. | Not production admission control yet: for v0.2.0 the verifier key is agent-held, merge admission is enforced by process rather than GitHub, and the type-swap bypass and A14 remain open. See [Support and status](STATUS.md). |
+| Coding-agent integration | Claude Code target/driver; Codex target/driver; Gemini CLI target; generic `AGENTS.md` output. | Enforcement differs by runtime: Claude Code Enforced; Codex Partial; Gemini CLI and other `AGENTS.md` tools Advisory. Claude is an uncertified preview; generic output is not native feature parity. |
 | Agent management | Crew-plan contracts, mission gates, validation, retry cap, escalation, and a sequential `tessctl run` loop. | Parallel execution and synthesis are not implemented. |
 | Observability | Local JSONL records for selected gate/validation actions and explicit local export. | No hosted telemetry service and no full `run` instrumentation. |
 | Memory | `kb/` conventions and a governance model. | No advanced retrieval, ACL, lifecycle, or shared-memory implementation. |
 | Cloud coordination | None. | Tess Cloud is planned as a separate optional product. |
 | Secret capabilities | A local-first embedded vault/risk-reduction pattern. | Tess Vault is planned as a separate product; no agent-era capability vault is shipped. |
-| Platform breadth | A deliberately narrow set of render targets and drivers. | No Perplexity or Gemini Tess-specific adapter; no universal-platform claim. |
+| Platform breadth | A deliberately narrow set of render targets and drivers. | No Perplexity adapter and no Gemini dispatch driver; no universal-platform claim. |
 
 ## Why the narrower claim matters
 

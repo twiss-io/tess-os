@@ -45,13 +45,14 @@ printed reasons — and `--chain` is guaranteed byte-for-byte unchanged (see
 
 ★ HONEST LABEL — printed on every successful emit (and included in `--json`
 output as `trust_status`): the emitted receipt is genuinely GPG-signed and
-tamper/chain-evident, but is NOT trust-anchored — `core/policy/policy.yaml`'s
-`verifier_keys` / `signoff_keys` registries ship empty by design
-(`docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md`), and registering a real
-signer's key there is a separate, Xavier-gated key-ceremony decision this
-tool does not perform. A self-verify PASS means "this receipt is genuine
-and unaltered" — it never means "a trusted party's approval is enforced by
-policy."
+tamper/chain-evident, but this tool reports it as NOT trust-anchored. It
+never checks whether the signer's key is registered in
+`core/policy/policy.yaml`'s `verifier_keys` / `signoff_keys` (a fresh
+scaffold ships both empty; a project may register its own verifiers), and
+registering a key there is a separate, human-owned key-custody decision
+this tool never performs (`docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md`). A
+self-verify PASS means "this receipt is genuine and unaltered" — it never
+means "a trusted party's approval is enforced by policy."
 
 ## Two deliberate, documented deviations from a literal CLI sketch
 
@@ -104,12 +105,12 @@ RECEIPT_VERIFY_CLI = _RECEIPT_VERIFY_DIR / "receipt_verify.py"
 
 HONEST_LABEL = (
     "This receipt is genuinely GPG-signed and tamper/chain-evident, but is "
-    "NOT trust-anchored until the signer's key is registered in "
-    "core/policy/policy.yaml (verifier_keys / signoff_keys — currently "
-    "empty). Key-ceremony registration is Xavier-gated and is not "
-    "performed by this tool. A self-verify PASS proves the receipt is "
-    "genuine and unaltered; it does not mean a trusted party's approval "
-    "is enforced by policy."
+    "NOT trust-anchored: this tool does not check whether the signer's key "
+    "is registered in core/policy/policy.yaml (verifier_keys / "
+    "signoff_keys). Registering a key there is a separate, human-owned "
+    "key-custody decision that this tool never performs. A self-verify "
+    "PASS proves the receipt is genuine and unaltered; it does not mean a "
+    "trusted party's approval is enforced by policy."
 )
 
 

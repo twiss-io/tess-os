@@ -152,7 +152,7 @@ class Plan:
 @dataclass
 class Approval:
     """The human-in-the-loop gate record. Deliverable (3): 'Plan ->
-    Xavier/user approval gate -> complete spec generation.' `approved_by`
+    operator approval gate -> complete spec generation.' `approved_by`
     is required even on a rejection — every decision on a plan must be
     attributable, never anonymous. This dataclass never decides anything
     itself; it only RECORDS a decision a human (or an explicitly-named

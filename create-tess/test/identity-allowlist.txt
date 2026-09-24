@@ -1,0 +1,30 @@
+# identity-allowlist.txt - paths under create-tess/template and create-tess/src that may still contain maintainer identity strings.
+# Read by test/no-operator-identity.test.js, and usable directly as a grep pattern file from the repository root.
+# Format: every non-comment line is one anchored path pattern. The comment line directly above it is its reason.
+# Pattern syntax is limited to literal path characters, an escaped dot, a dot-star, a leading caret and a trailing dollar.
+# Keep this file free of blank lines and of brackets or backslashes in comments, because grep -f reads every line as a pattern.
+# A line whose reason starts with PENDING marks a hit that another v0.2.0 change removes. PENDING lines must be deleted before the 0.2.0 version bump.
+# Permanent: fixture strings in the Python test suite. Renamed in v0.2.1 with a checklist.
+^create-tess/template/tests/
+# Permanent: fixture identities in the gate-arena attack harness, used as simulated sign-off keys. Renamed in v0.2.1 with a checklist.
+^create-tess/template/gate-arena/bypass/
+# Permanent: CHANGELOG history is a dated record of past releases and is not rewritten.
+^create-tess/template/CHANGELOG\.md$
+# Permanent: raw, unedited terminal recording of create-tess 0.1.x. Editing it would falsify the recording. Re-record in v0.2.1.
+^create-tess/template/docs/demo/tess-demo\.cast$
+# Permanent: the SVG rendering of the same raw recording.
+^create-tess/template/docs/demo/tess-demo\.svg$
+# PENDING v0.2.0: comments and one message string in the engine are de-identified by the engine write-gate PR.
+^create-tess/template/\.tess/bin/tessctl$
+# PENDING v0.2.0: the verdict-signing guide and its core mirror are de-identified by the doctrine PR.
+^create-tess/template/conductor/verdict-signing\.md$
+# PENDING v0.2.0: core mirror of the verdict-signing guide, de-identified by the doctrine PR.
+^create-tess/template/\.tess/core/conductor/verdict-signing\.md$
+# PENDING v0.2.0: stale policy comments are de-identified by the release PR. Comments only, no rule change.
+^create-tess/template/core/policy/policy\.yaml$
+# PENDING v0.2.0: core mirror of the policy file, de-identified by the release PR.
+^create-tess/template/\.tess/core/policy/policy\.yaml$
+# PENDING v0.2.0: wizard source strings are de-identified by the create-tess PR.
+^create-tess/src/index\.js$
+# PENDING v0.2.0: a template-source comment is de-identified by the create-tess PR.
+^create-tess/src/git-template-source\.js$

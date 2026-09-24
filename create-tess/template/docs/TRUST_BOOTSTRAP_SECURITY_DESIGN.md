@@ -47,7 +47,7 @@ command or an advisory GitHub Actions run is not enforcement.
 
 ## Deliberately undecided
 
-The following require a user-present key-custody design and Xavier's decision;
+The following require a user-present key-custody design and a human custodian's decision;
 they are not implemented by this change:
 
 - verifier identity proof and private-key storage;

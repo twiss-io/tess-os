@@ -54,9 +54,10 @@ Missing/empty `GEMINI_API_KEY` at call time → `ConnectorConfigError` →
 
 `T0` (declared — schema-valid manifest only). See
 [`docs/design/connectors-architecture.md` §7.2](../../../docs/design/connectors-architecture.md)
-for the T0–T3 scale; `T3` is unreachable until Xavier registers a real
-verifier key in `core/policy/policy.yaml` (currently empty by design —
-this entry does not and cannot change that).
+for the T0–T3 scale. `T3` needs a ship-gate review signed by a verifier
+whose key is registered in `core/policy/policy.yaml`, plus a published
+audit summary. This connector has neither, and this entry does not and
+cannot change that.
 
 ## Fixtures
 
