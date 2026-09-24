@@ -46,11 +46,16 @@ def message(root: Path) -> Optional[str]:
         who = ((brain or {}).get("identity") or {}).get("assistant_name") \
             or state.read_operator_profile(root).get("assistant_name") or "Tess"
         step = st.get("step") or 1
+        # This line IS the status: the model can ask straight away, with no tool
+        # call first (an untrusted `claude -p` workspace denies the Bash call).
         text = ("ONBOARDING PENDING (step %d/%d): greet the operator as %s and continue the "
-                "brain-onboard interview before anything else (skill brain-onboard; run "
-                "`python3 scripts/brain/onboard.py status --json` first)."
+                "brain-onboard interview before anything else (skill brain-onboard). This line is "
+                "the current onboarding status: your reply to the operator's message, even \"hi\", "
+                "ends with this step's question, asked now without running a tool first (if they "
+                "asked you something, answer it in a line or two before the question); record "
+                "their answer with `python3 scripts/brain/onboard.py answer`."
                 % (step, state.TOTAL_STEPS, who))
-        text += " Next question: " + answers.question_for(step, brain or {})
+        text += " Question for step %d: %s" % (step, answers.question_for(step, brain or {}))
         return text
     if status in ("complete", "skipped") and brain is not None and restore_needed(root, brain):
         return ("BRAIN RESTORE NEEDED: operator/profile.json is missing (fresh clone?). Run "

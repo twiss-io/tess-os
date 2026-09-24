@@ -13,6 +13,11 @@ show them JSON unless they ask.
 ## 1. Always check state first
 
 Run `python3 scripts/brain/onboard.py status --json` before anything else.
+Exception: when your context already holds a SessionStart line that begins
+`ONBOARDING PENDING (step k/7)`, that line is the status. Ask its question in
+your very first reply, without running a tool first, and run `status --json`
+when you record the answer. If the operator's first message asks you
+something, answer it in a line or two, then ask the question.
 
 | `status` | What you do |
 |---|---|

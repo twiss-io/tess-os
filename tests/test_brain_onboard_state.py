@@ -125,6 +125,9 @@ def test_hook_pending_json_shape_nonce_and_speed(tmp_path):
     assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
     assert ctx.startswith("ONBOARDING PENDING (step 1/7): greet the operator as Tess")
     assert "Who is this brain for?" in ctx and "OOBE-NONCE-T1" in ctx
+    # The line carries the status itself: an untrusted `claude -p` workspace
+    # denies Bash, so the first reply must not depend on a tool call.
+    assert "without running a tool first" in ctx and "Question for step 1:" in ctx
     assert len(done.stdout.encode()) <= 4096
 
 
