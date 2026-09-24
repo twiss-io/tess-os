@@ -29,8 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 TAG = "v9.8.7"
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None or shutil.which("bash") is None,
-                                reason="needs git and bash")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("git") is None or shutil.which("bash") is None,
+                       reason="needs git and bash"),
+    # release.yml is Tess OS's own release pipeline; create-tess excludes it from every
+    # scaffolded project (create-tess/src/ignore.js), where this file has nothing to test.
+    pytest.mark.skipif(not RELEASE_YML.exists(), reason="no .github/workflows/release.yml in this project"),
+]
 
 
 def _steps() -> list:
