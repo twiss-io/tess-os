@@ -251,7 +251,8 @@ for (const combo of COMBOS) {
 
     // A successful local scaffold must not be presented as production-ready.
     // It must disclose the expected fail-closed result and hand custody back
-    // to Xavier without suggesting a bypass or self-bootstrap path.
+    // to the project's key-custody owner without suggesting a bypass or
+    // self-bootstrap path.
     assert.match(
       run.stdout,
       /Local scaffold ready; protected production work remains blocked/,
@@ -262,7 +263,11 @@ for (const combo of COMBOS) {
       /no covering APPROVE verdict\s+found/,
       'success path must disclose the expected fail-closed result',
     );
-    assert.match(run.stdout, /escalate to Xavier/, 'must return custody to Xavier');
+    assert.match(
+      run.stdout,
+      /escalate to your project's\s+key-custody owner/,
+      "must return custody to the project's key-custody owner",
+    );
     for (const unsafeGuidance of ['git push --no-verify', 'onboard a real verifier', 'verdict keygen']) {
       assert.doesNotMatch(run.stdout, new RegExp(unsafeGuidance));
     }
@@ -557,7 +562,7 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
   // test's own fixture-injection step instead of failing loudly. Force both
   // copied policy.yaml files back to the FROZEN golden pristine shape (the
   // same fixture units.test.js's realisticMultiEntryPolicyText() reads)
-  // before injecting the synthetic Cyra+Reid/Xavier+Priya entries — this
+  // before injecting the synthetic Cyra+Reid/Maintainer+Priya entries — this
   // only overwrites the two policy.yaml copies; the rest of the copied tree
   // (roster, contracts, tess.lock, etc.) is still the real, live template.
   const PRISTINE_POLICY = readFileSync(
@@ -599,9 +604,9 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
     text = text.replace(
       /( {2})signoff_keys: \{\}/,
       '$1signoff_keys:\n' +
-        '$1  Xavier:\n' +
+        '$1  Maintainer:\n' +
         '$1    fingerprint: "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"\n' +
-        '$1    public_key_file: .tess/keys/signoffs/xavier.asc\n' +
+        '$1    public_key_file: .tess/keys/signoffs/maintainer.asc\n' +
         '\n' +
         '$1# Priya — registered 2026-07-20 via `tessctl gate signoff sign`\n' +
         '$1  Priya:\n' +
@@ -638,7 +643,7 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
     `wizard exited non-zero against a keys-present source\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`,
   );
 
-  // NOTE: the shipped policy.yaml legitimately mentions "Cyra"/"Xavier" in its
+  // NOTE: the shipped policy.yaml legitimately mentions "Cyra"/"Maintainer" in its
   // own commented-out walkthrough/example text (real names used as worked
   // examples) even in its pristine, nothing-registered state — so asserting
   // against the bare names would false-fail on the file's own documentation.
@@ -646,12 +651,12 @@ test('scaffold reset (end-to-end): a source with a registered verifier still sca
   // that can only be present if the real (fake, for this test) registered
   // entry survived the reset — a precise, unambiguous proof of leakage.
   const CYRA_FINGERPRINT = 'F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8';
-  const XAVIER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF';
+  const MAINTAINER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF';
   for (const rel of [join('core', 'policy', 'policy.yaml'), join('.tess', 'core', 'policy', 'policy.yaml')]) {
     const out = readFileSync(join(target, rel), 'utf8');
     assert.match(out, /verifier_keys: \{\}/, `${rel} must ship empty verifier_keys, not the source's Cyra`);
-    assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys, not the source's Xavier`);
-    for (const fp of [CYRA_FINGERPRINT, XAVIER_FINGERPRINT, REID_FINGERPRINT, PRIYA_FINGERPRINT]) {
+    assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys, not the source's Maintainer`);
+    for (const fp of [CYRA_FINGERPRINT, MAINTAINER_FINGERPRINT, REID_FINGERPRINT, PRIYA_FINGERPRINT]) {
       assert.doesNotMatch(
         out, new RegExp(fp), `${rel} must not carry the source repo's registered fingerprint ${fp}`,
       );

@@ -87,7 +87,7 @@ test('CRITICAL case-fold bypass: a case-variant spelling of every secret pattern
     // EXCLUDE_DIR_PREFIXES — the other three whole-subtree secret roots.
     ['.claude/channels/access.json', '.Claude/Channels/access.json'],
     ['.tess/keys/verifiers/cyra.asc', '.Tess/Keys/Verifiers/cyra.asc'],
-    ['.tess/keys/signoffs/xavier.asc', '.TESS/KEYS/SIGNOFFS/xavier.asc'],
+    ['.tess/keys/signoffs/maintainer.asc', '.TESS/KEYS/SIGNOFFS/maintainer.asc'],
     // EXCLUDE_NAMES — bare-name component match (any depth).
     ['.git/config', '.GIT/config'],
     ['.claude/vault/vault.age', '.CLAUDE/VAULT/VAULT.AGE'],

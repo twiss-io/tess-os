@@ -150,7 +150,7 @@ test('★ PR #170: the Hangul-filler noise-component vector is closed against ev
   const vectors = [
     ['.claude/ᅟ/tess-secrets/token.env', 'EXCLUDE_DIR_PREFIXES: .claude/tess-secrets'],
     ['.claude/ᅠ/channels/access.json', 'EXCLUDE_DIR_PREFIXES: .claude/channels'],
-    ['.tess/ㅤ/keys/signoffs/xavier.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs'],
+    ['.tess/ㅤ/keys/signoffs/maintainer.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs'],
     ['.tess/ᅟ/state/memory/real.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/memory'],
   ];
   for (const [p, label] of vectors) {
@@ -165,7 +165,7 @@ test('★ #146: the noise-component vector is closed against every EXCLUDE_DIR_P
   const vectors = [
     ['.claude/tess-secrets/​/token.env', 'EXCLUDE_DIR_PREFIXES: .claude/tess-secrets'],
     ['.claude/channels/­/access.json', 'EXCLUDE_DIR_PREFIXES: .claude/channels'],
-    ['.tess/keys/signoffs/​/xavier.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs'],
+    ['.tess/keys/signoffs/​/maintainer.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs'],
     ['.tess/state/memory/­/real.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/memory'],
     ['.tess/state/receipts/​/chain.jsonl', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/receipts'],
     ['.tess/snapshots/́/x.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/snapshots'],
@@ -209,7 +209,7 @@ test('sanity: canonical (noise-free) forms of every #146/PR-170 vector path are 
     '.tess/keys/verifiers/cyra.asc',
     '.claude/tess-secrets/token.env',
     '.claude/channels/access.json',
-    '.tess/keys/signoffs/xavier.asc',
+    '.tess/keys/signoffs/maintainer.asc',
     '.tess/state/memory/real.json',
     'secrets/api-key.txt',
   ]) {
@@ -277,7 +277,7 @@ test('★ PR #170 third re-review: the Zs/Cc noise-component vector is closed ag
   const vectors = [
     ['.claude/\u00A0/tess-secrets/token.env', 'EXCLUDE_DIR_PREFIXES: .claude/tess-secrets (NBSP)'],
     ['.claude/\u3000/channels/access.json', 'EXCLUDE_DIR_PREFIXES: .claude/channels (IDEOGRAPHIC SPACE)'],
-    ['.tess/\u0001/keys/signoffs/xavier.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs (Cc control)'],
+    ['.tess/\u0001/keys/signoffs/maintainer.asc', 'EXCLUDE_DIR_PREFIXES: .tess/keys/signoffs (Cc control)'],
     ['.tess/\u2028/state/memory/real.json', 'EXCLUDE_CONTENT_PREFIXES: .tess/state/memory (LINE SEPARATOR)'],
   ];
   for (const [p, label] of vectors) {

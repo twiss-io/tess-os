@@ -28,28 +28,18 @@ import { existsSync, statSync } from 'node:fs';
 // below still keys its pin decision off it.
 export const DEFAULT_TEMPLATE_SOURCE = 'https://github.com/twiss-io/tess-os.git';
 
-// Ref pin for an EXPLICIT git-URL opt-in against DEFAULT_TEMPLATE_SOURCE
-// (P0 G-01, npm scaffold key-leak audit, 2026-07 — carried forward, opt-in
-// scope only, from the mechanism described above). An unpinned `git clone`
-// would land on whatever commit happens to be the default branch's HEAD tip
-// at the exact moment the command runs — a moving target the operator has
-// no control over. A pinned, tagged ref would make a given create-tess
-// version's OPT-IN git fetch reproduce the exact same, already-CI-passed
-// tess-os commit every time, IF the tag existed.
+// Ref pin for an EXPLICIT git-URL opt-in against DEFAULT_TEMPLATE_SOURCE.
+// An unpinned `git clone` would land on whatever the default branch's HEAD is
+// at the moment the command runs. Pinning to the framework release tag makes
+// a given create-tess version's opt-in git fetch reproduce the same released
+// tess-os tree its bundled template was built from.
 //
-// STATUS (2026-07-21): this tag has never actually been cut — see
-// scaffold.js's header. Left unchanged (not bumped) rather than pointed at
-// yet another not-yet-cut tag name: bumping the string would misrepresent
-// progress on a problem this PR does not claim to fix. This is now a
-// documented, low-impact gap scoped to the explicit opt-in git path only —
-// it no longer affects the default `npm create tess` flow, which the BUNDLE
-// fix removes entirely from the git-clone dependency. Anyone hitting this
-// on the opt-in path today already has the documented workaround:
-// `--template-ref`/`TESS_TEMPLATE_REF` pins to any ref that DOES exist
-// (e.g. `main`, or a real commit SHA). Cutting the tag remains Xavier's
-// separate, credentialed release action (create-tess/README.md's "Release"
-// section) — not a side effect of a code PR.
-export const DEFAULT_TEMPLATE_REF = 'create-tess-v0.1.2';
+// The old value, `create-tess-v0.1.2`, named a tag that was never cut, so an
+// opt-in git fetch without --template-ref failed. v0.2.0 pins the framework's
+// own release tag, cut by the same release as this package.
+// `--template-ref`/`TESS_TEMPLATE_REF` still overrides it (for example `main`
+// or a commit SHA).
+export const DEFAULT_TEMPLATE_REF = 'v0.2.0';
 
 export function isLocalSource(source) {
   try {
