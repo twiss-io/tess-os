@@ -68,7 +68,7 @@ project — see the scaffold-reset regression test in
 1. Stop before treating the change as approved or production-ready.
 2. Record the exact gate output, changed paths, immutable base/head references,
    and CI run URL.
-3. Escalate to Xavier, the human custodian, for the external custody decision.
+3. Escalate to the operator, as the project's human custodian, for the external custody decision.
 4. If the problem is a code or evidence defect rather than custody, correct it
    in a normal pull request and re-run inspection.
 
@@ -83,5 +83,5 @@ unresolved first-key bootstrap or adversarial hardening gaps are fixed.
 
 Security-governed policy, key-registry, and workflow surfaces remain outside
 this operator guide. Changing those paths requires a separately reviewed
-NO-MERGE proposal and Xavier custody; it is not a bootstrap action for a
+NO-MERGE proposal and the human custodian's decision; it is not a bootstrap action for a
 candidate repository.

@@ -22,16 +22,16 @@ You are only an orchestrator. Always assemble the right crew — never substitut
 
 See **Rule Zero** at the top of this file. The canonical dispatch rule lives there.
 
-### Telegram Is the Primary Channel
+### Report in the Active Session
 
-Every task communicates to the operator via Telegram. No exceptions.
+Every task is reported to the operator in the active session, whatever runtime is in use. No exceptions.
 
-- **Task start** — notify what's being dispatched and why
+- **Task start** — what's being dispatched and why
 - **Progress milestones** — update as agents complete or findings emerge
-- **Completion** — send a new reply (not an edit) with the final result
-- **Errors/blockers** — notify immediately, don't wait
+- **Completion** — one self-contained final result
+- **Errors/blockers** — report immediately, don't wait
 
-Telegram updates happen regardless of task type: bugs, research, builds, reviews, checks, missions — everything.
+Reporting happens regardless of task type: bugs, research, builds, reviews, checks, missions — everything. The base harness needs no external chat or notification service ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
 
 {{CORE_HARD_FLOOR}}
 
@@ -39,12 +39,7 @@ Telegram updates happen regardless of task type: bugs, research, builds, reviews
 
 ## Permanent Crew
 
-| Agent | Role | When |
-|---|---|---|
-| [Leah](agents/leah/README.md) | Senior Researcher & Intelligence Lead | Research gate — always informs first |
-| [Eva](agents/eva/README.md) | HR Specialist & AI Talent Strategist | Crew gate — after research |
-
-Full agent roster: [agents/](agents/README.md)
+The ten roles in [conductor/roster.md](conductor/roster.md): {{ASSISTANT_NAME}} (conductor) plus Ada, Morwenna, Leah, Reid, Quinn, Cyra, Clio, Vega and Iris. Expertise comes from the lens library: [conductor/lenses/](conductor/lenses/README.md).
 
 ---
 

@@ -33,7 +33,7 @@ operator/*.secret
 # operator/* below is a belt-and-suspenders superset of the two lines above —
 # it also blocks operator/profile.json, which the create-tess wizard
 # (writeProfile() in create-tess/src/keystone.js) unconditionally overwrites
-# with REAL identity (operator_name, telegram_channel, ...) during onboarding,
+# with REAL identity (operator_name, assistant_name, ...) during onboarding,
 # BEFORE any git commit happens in a freshly `git init`'d instance.
 #
 # Deliberate asymmetry, documented (PR data-leak-safety hardening):
@@ -48,7 +48,7 @@ operator/*.secret
 #   - The 4 static doc-template stubs below ARE re-included: no onboarding
 #     code path (create-tess/src/keystone.js bake()) ever writes to them —
 #     they ship with placeholder text ("<your build command>",
-#     "<your-dm-chat-id>") the operator hand-edits later, same shipped-
+#     "<operator-account-id>") the operator hand-edits later, same shipped-
 #     scaffold role as clients/_template/** below.
 operator/*
 !operator/build-facts-stub.md
@@ -185,6 +185,10 @@ kb/raw/*
 !kb/raw/.gitkeep
 kb/lint/*
 !kb/lint/.gitkeep
+# research outputs (File Placement Contract row `<kb>/research/`) are
+# operator/client data exactly like raw/ and wiki/ content.
+kb/research/*
+!kb/research/.gitkeep
 # wiki: ignore ALL content, keep only the section-dir placeholders.
 #
 # DATA-LEAK-SAFETY (issue #92): kb/wiki/index.md and kb/wiki/log.md were
@@ -220,3 +224,23 @@ kb/wiki/synthesis/*
 # ─────────────────────────────────────────────────────────────
 clients/*
 !clients/_template/
+
+# >>> tess-brain (managed by scripts/brain/onboard.py; do not edit inside) >>>
+.private/
+**/.private/
+.tess/state/brain/
+brain/**/repos/
+brain/**/dev.nosync/
+brain/**/clients/*/admin/*
+!brain/**/clients/*/admin/README.md
+brain/life/areas/health/*
+brain/life/areas/money/*
+!brain/life/areas/health/AGENTS.md
+!brain/life/areas/health/CLAUDE.md
+!brain/life/areas/health/GEMINI.md
+!brain/life/areas/money/AGENTS.md
+!brain/life/areas/money/CLAUDE.md
+!brain/life/areas/money/GEMINI.md
+.obsidian/workspace.json
+.obsidian/workspaces.json
+# <<< tess-brain <<<

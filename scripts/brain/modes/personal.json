@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "mode": "personal",
+  "summary": "One person's second brain: areas, projects, resources, people and routines.",
+  "entity_roots": ["brain/life", "brain/life/areas/*", "brain/life/projects/*"],
+  "base": [
+    {"template": "modes/personal/life", "dest": "brain/life",
+     "entity": {"kind": "life", "id": "life", "name": "{{operator_name}}'s life"}}
+  ],
+  "kinds": {
+    "area": {"template": "modes/personal/area", "dest": "brain/life/areas/{slug}", "entity": true,
+             "private_slugs": ["health", "money"], "private_template": "modes/personal/area-private",
+             "privacy": "limited"},
+    "project": {"template": "modes/personal/project", "dest": "brain/life/projects/{slug}", "entity": true},
+    "person": {"template": "modes/personal/person.md", "dest": "brain/life/people/{slug}.md",
+               "index": "brain/life/AGENTS.md"}
+  },
+  "seed": [
+    {"field": "areas", "kind": "area", "max": 12},
+    {"field": "projects", "kind": "project", "max": 3}
+  ]
+}

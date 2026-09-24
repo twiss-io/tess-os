@@ -73,8 +73,8 @@ We are especially interested in reports concerning:
   quarantine bypass, or a doctor/verify gate that can be fooled into reporting
   clean on tampered core.
 
-- **Guard hooks and guardrails.** Ways the dispatch / anti-fabrication / channel
-  guards, or the clarification hard floor (credentials, money movement,
+- **Guard hooks and guardrails.** Ways the dispatch guard, the client-isolation
+  guardrails, or the clarification hard floor (credentials, money movement,
   destructive production operations, external factual claims), could be bypassed.
 
 - **Secret / client-data leakage.** Anything that causes the repository, an

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "preset": "solo-consultant",
+  "base_mode": "agency",
+  "summary": "A team of one: proposals folder, pipeline and a rate card.",
+  "templates": [
+    {"template": "presets/solo-consultant", "dest": "brain"}
+  ],
+  "seats": [],
+  "suggest_squad": "operators"
+}

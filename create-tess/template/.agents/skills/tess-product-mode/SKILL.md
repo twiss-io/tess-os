@@ -1,0 +1,18 @@
+---
+name: tess-product-mode
+description: "Activate the Product and Delivery outcome lens — optimise for shipped value, delivery integrity, and post-launch learning."
+---
+
+<!-- Rendered by `tessctl render --target codex` from .tess/core/commands/product-mode.md. Regenerate; do not hand-edit. -->
+
+Tess OS command `/product-mode`, packaged as an Agent Skill. Run it only when the user asks for it by name (`$tess-product-mode` in Codex).
+
+# /product-mode
+
+Plan the active (or next) mission with the **Product and Delivery** outcome lens ([conductor/lenses/product-delivery-orchestrator.md](../../../conductor/lenses/product-delivery-orchestrator.md)): the conductor applies the lens to frame the outcome and bottleneck, then dispatches roles from [conductor/roster.md](../../../conductor/roster.md). The orchestrator is a lens, not an agent. See [conductor/outcome-orchestrators/README.md](../../../conductor/outcome-orchestrators/README.md).
+
+**Optimise for:** shipped value, delivery integrity, post-launch learning. Ensure the problem is validated before build begins (research-before-build gate, [conductor/doctrine.md](../../../conductor/doctrine.md)). Any prod-touching/client-facing output must clear its mandatory verifier ([conductor/verification-routing.md](../../../conductor/verification-routing.md)).
+
+**Applies to:** discovery, product decisions, build sequencing, release readiness, post-launch review.
+
+Relevant playbook: [conductor/playbooks/product-build-mission.md](../../../conductor/playbooks/product-build-mission.md). For audit-driven multi-PR fix waves, see [conductor/playbooks/l99-merge-discipline.md](../../../conductor/playbooks/l99-merge-discipline.md).

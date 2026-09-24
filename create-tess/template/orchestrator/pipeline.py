@@ -130,7 +130,7 @@ def _identity_dir_hint(approval_gate: ApprovalGate) -> Optional[Path]:
     key material outside the default location).
 
     Returns `None` for any adapter that doesn't expose this (a future
-    non-local-HMAC mechanism — Telegram/web/SSO — has no such concept);
+    non-local-HMAC mechanism — chat-app/web/SSO — has no such concept);
     `build_spec()`'s own re-verification falls back to ITS OWN default in
     that case, exactly as it does for any direct `spec_engine` caller
     that doesn't pass `identity_dir` either. Not an `isinstance` check —

@@ -109,10 +109,16 @@ test('LOW: a value flag rejects a following flag as its value', () => {
     /requires a value/,
     'a following --flag must not be eaten as the operator value',
   );
-  // A single-dash value (a negative Telegram channel id) is still accepted.
-  assert.equal(parseArgs(['--telegram', '-1001234']).telegram, '-1001234');
+  // A single-dash value (e.g. a negative numeric id) is still accepted.
+  assert.equal(parseArgs(['--operator', '-1001234']).operator, '-1001234');
   // The '=' form is unaffected.
   assert.equal(parseArgs(['--operator=Alex']).operator, 'Alex');
+});
+
+// v0.2.0 (notg): the wizard no longer wires an external chat channel, so the
+// old channel flag is gone and is rejected like any other unknown flag.
+test('notg: the removed chat-channel flag is an unknown flag', () => {
+  assert.throws(() => parseArgs(['--telegram', '-1001234']), /unknown flag: --telegram/);
 });
 
 // HIGH-2(b) — names must start with an alphanumeric (no leading hyphen), so a
@@ -206,7 +212,7 @@ test('P0 G-01: verifier/signoff key material is excluded from scaffold; the rele
     '.tess/keys/verifiers/cyra.asc',
     '.tess/keys/verifiers/README.md',
     '.tess/keys/verifiers',
-    '.tess/keys/signoffs/xavier.asc',
+    '.tess/keys/signoffs/maintainer.asc',
     '.tess/keys/signoffs',
   ]) {
     assert.equal(isExcludedRel(p), true, `${p} must be excluded from the scaffold`);
@@ -498,7 +504,7 @@ test('policy-reset: resetKeyToEmptyInline throws when the key is entirely absent
 // test/fixtures/policy.pristine.yaml's own header for the full rationale.
 const CYRA_FINGERPRINT = 'F9321F92B4E2DF36304CB6BAA53B9C5A1F5876E8'; // real — PR #91
 const REID_FINGERPRINT = '1234ABCD1234ABCD1234ABCD1234ABCD1234ABCD'; // fixture-only
-const XAVIER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF'; // fixture-only
+const MAINTAINER_FINGERPRINT = 'DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF'; // fixture-only
 const PRIYA_FINGERPRINT = 'FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE'; // fixture-only
 
 function realisticMultiEntryPolicyText() {
@@ -523,9 +529,9 @@ function realisticMultiEntryPolicyText() {
   const skBefore = '  signoff_keys: {}\n';
   const skAfter =
     '  signoff_keys:\n' +
-    '    Xavier:\n' +
-    `      fingerprint: "${XAVIER_FINGERPRINT}"\n` +
-    '      public_key_file: .tess/keys/signoffs/xavier.asc\n' +
+    '    Maintainer:\n' +
+    `      fingerprint: "${MAINTAINER_FINGERPRINT}"\n` +
+    '      public_key_file: .tess/keys/signoffs/maintainer.asc\n' +
     '\n' +
     '  # Priya — registered 2026-07-20 via `tessctl gate signoff sign`\n' +
     '    Priya:\n' +
@@ -552,7 +558,7 @@ test('policy-reset: a REAL comment-heavy multi-entry block (interior annotation 
   assert.equal(changed, true);
   assert.match(out, /verifier_keys: \{\}/);
   assert.match(out, /signoff_keys: \{\}/);
-  for (const fp of [CYRA_FINGERPRINT, REID_FINGERPRINT, XAVIER_FINGERPRINT, PRIYA_FINGERPRINT]) {
+  for (const fp of [CYRA_FINGERPRINT, REID_FINGERPRINT, MAINTAINER_FINGERPRINT, PRIYA_FINGERPRINT]) {
     assert.doesNotMatch(out, new RegExp(fp), `registered fingerprint ${fp} must not survive the reset`);
   }
   assert.ok(out.endsWith('\n'), 'file must still end with a trailing newline (no dropped line ending)');
@@ -615,13 +621,13 @@ test('scaffold reset: a source with a REAL comment-heavy multi-entry registratio
       assert.match(out, /verifier_keys: \{\}/, `${rel} must ship empty verifier_keys`);
       assert.match(out, /signoff_keys: \{\}/, `${rel} must ship empty signoff_keys`);
       // NOTE: the shipped policy.yaml legitimately mentions "Cyra"/"Reid"/
-      // "Xavier" as bare names in its own commented-out walkthrough even in
+      // "Maintainer" as bare names in its own commented-out walkthrough even in
       // its pristine, nothing-registered state — asserting against the bare
       // names would false-fail on the file's own documentation. Assert
       // against the actual registered FINGERPRINTS instead: cryptographic
       // material that can only be present if a real registered entry
       // survived the reset — a precise, unambiguous proof of leakage.
-      for (const fp of [CYRA_FINGERPRINT, REID_FINGERPRINT, XAVIER_FINGERPRINT, PRIYA_FINGERPRINT]) {
+      for (const fp of [CYRA_FINGERPRINT, REID_FINGERPRINT, MAINTAINER_FINGERPRINT, PRIYA_FINGERPRINT]) {
         assert.doesNotMatch(out, new RegExp(fp), `${rel} must NOT carry the source repo's registered fingerprint ${fp}`);
       }
       // Every other line (the file's real header/rule documentation) must survive.
@@ -657,6 +663,10 @@ test('resolveTemplateRef: the default source pins to DEFAULT_TEMPLATE_REF when n
   );
 });
 
+test('DEFAULT_TEMPLATE_REF pins the opt-in git fetch to the v0.2.0 release tag, not the never-cut create-tess-v0.1.2', () => {
+  assert.equal(DEFAULT_TEMPLATE_REF, 'v0.2.0');
+});
+
 test('resolveTemplateRef: a custom --template-source is left unpinned (its own branch tip) unless a ref is explicitly given', () => {
   assert.equal(resolveTemplateRef('https://github.com/someone/fork.git', undefined), null);
   assert.equal(resolveTemplateRef('git@github.com:someone/fork.git', null), null);
@@ -664,8 +674,8 @@ test('resolveTemplateRef: a custom --template-source is left unpinned (its own b
 
 test('buildCloneArgs: pins with --branch when a ref is resolved, omits it when unpinned', () => {
   assert.deepEqual(
-    buildCloneArgs('https://example.com/x.git', '/tmp/stage', 'create-tess-v0.1.2'),
-    ['clone', '--depth', '1', '--branch', 'create-tess-v0.1.2', '--', 'https://example.com/x.git', '/tmp/stage'],
+    buildCloneArgs('https://example.com/x.git', '/tmp/stage', 'v0.2.0'),
+    ['clone', '--depth', '1', '--branch', 'v0.2.0', '--', 'https://example.com/x.git', '/tmp/stage'],
   );
   assert.deepEqual(
     buildCloneArgs('https://example.com/x.git', '/tmp/stage', null),

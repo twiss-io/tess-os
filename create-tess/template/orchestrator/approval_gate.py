@@ -1,5 +1,5 @@
 """`ApprovalGate` — the pluggable, authenticated-approval interface every
-adapter (the shipped local default; a future Telegram-button, web, or
+adapter (the shipped local default; a future chat-app-button, web, or
 CLI-with-real-auth adapter) implements.
 
 This is a PRODUCT-layer human-in-the-loop control, not the ship-gate
@@ -20,7 +20,7 @@ see `identity.py`'s module docstring for the full problem statement.
     class MyApprovalGate(ApprovalGate):
         def request_approval(self, plan: Plan) -> Approval:
             # Block until a REAL human decision is made. Authenticate that
-            # human through YOUR OWN mechanism (a Telegram button bound to
+            # human through YOUR OWN mechanism (a chat-app button bound to
             # a known chat/user id, a web session token, an SSO login,
             # a locally-signed key — whatever fits the adapter) BEFORE
             # constructing the Approval you return. Never forward an
@@ -56,10 +56,10 @@ one layer down, at the codegen boundary itself (`build_spec()`), which
 does not depend on any particular `ApprovalGate` adapter having run this
 check correctly first.
 
-A Telegram-button, web, or CLI-with-real-auth adapter is a drop-in
+A chat-app-button, web, or CLI-with-real-auth adapter is a drop-in
 `ApprovalGate` implementation satisfying this same contract — not built in
-this PR (out of scope by design: "GENERALIZED/pluggable — do NOT hardcode
-Telegram").
+this PR (out of scope by design: generalized and pluggable, never hardcoded
+to one chat service).
 """
 
 from __future__ import annotations

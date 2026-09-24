@@ -8,7 +8,7 @@
 |---|---|
 | `/add-mission [brief]` | Start a new mission (intake + routing) |
 | `/review-mission` | Full mission status snapshot |
-| `/route-mission` | Re-evaluate orchestrator assignment |
+| `/route-mission` | Re-evaluate the outcome lens |
 | `/show-owner` | Display outcome owner |
 | `/show-active-guilds` | List active guilds and roles |
 | `/show-risks` | Surface risks and blockers |
@@ -20,24 +20,24 @@
 | `/reset` | Clear and restart the mission |
 | `/code-red [brief]` | Emergency escalation |
 
-**Orchestrator routing shortcuts:**
+**Outcome-lens shortcuts:**
 
 | Command | Routes to |
 |---|---|
-| `/founder-mode` | Founder's Office Orchestrator |
-| `/revenue-mode` | Revenue Orchestrator |
-| `/product-mode` | Product and Delivery Orchestrator |
-| `/cx-mode` | Client Experience Orchestrator |
-| `/ops-mode` | Operational Reliability Orchestrator |
-| `/strategic-mode` | Strategic Growth Orchestrator |
+| `/founder-mode` | Founder's Office outcome lens |
+| `/revenue-mode` | Revenue outcome lens |
+| `/product-mode` | Product and Delivery outcome lens |
+| `/cx-mode` | Client Experience outcome lens |
+| `/ops-mode` | Operational Reliability outcome lens |
+| `/strategic-mode` | Strategic Growth outcome lens |
 
 **Crew and system:**
 
 | Command | Action |
 |---|---|
-| `/list-agents` | View active crew |
-| `/add-agent [Name]` | Recruit a new specialist via Eva |
-| `/remove-agent [Name]` | Remove an agent via Eva |
+| `/list-agents` | View the ten roles and loaded lenses |
+| `/add-agent [Name]` | Cover a capability gap with a lens (the roster stays ten roles) |
+| `/remove-agent [Name]` | Retire a lens or bench a role |
 | `/brainstorm` | Open exploration mode |
 | `/feedback` | Apply system feedback |
 | `/help` | Command reference |

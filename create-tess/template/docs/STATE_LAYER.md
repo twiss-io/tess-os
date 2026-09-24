@@ -149,8 +149,7 @@ Phase 0.1 — the fenced store:
 Phase 0.2 — the TASK STORE + ACCOUNTABILITY LEDGER (TASK LEDGER region,
 `.tess/bin/tessctl`, directly below the RUN region — a sibling of the
 MISSION LEDGER region), ported from Hermes' kanban design
-(`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md` §"their
-kanban"):
+(an internal 2026-07-19 codebase study, §"their kanban"):
 
 - **`tessctl tasks new|set|claim|release|pull|render`** — file-per-task JSON
   at `.tess/state/tasks/<id>.json` (`core/contracts/task.schema.json`,
@@ -264,7 +263,7 @@ Two precise scope notes (Cyra L1/L2, closing the #113 review gate):
   `verifier_keys`/`signoff_keys` ship empty by design, so "this receipt's
   signature verifies" never by itself means "a trusted party's approval is
   enforced by policy" until a real key-ceremony registration happens
-  (Xavier-gated, not performed by any automation in this repository) — see
+  (human-gated, not performed by any automation in this repository) — see
   `tools/receipt-emit/README.md`'s "Honest label" and
   `docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md`. A receipt-emit FAILURE (no
   matching private key in the ambient keyring — routinely true on an
@@ -546,7 +545,7 @@ Phase 0.5 — the STRUCTURED STUCK-PACKET (TASK LEDGER region, issue #129):
 a task, go do it"); `tasks block` captures a resumability packet AT THE
 POINT OF FAILURE ("I got stuck, here's everything you need to continue").
 Directly serves the TASK LEDGER region's own header comment — quoting
-Xavier's re-aimed vision — "task list, updates, accountability list, whoever
+the maintainer's re-aimed vision — "task list, updates, accountability list, whoever
 picked up a task and progress, cleared or **stuck, resumable by any
 agent**":
 
@@ -588,7 +587,7 @@ agent**":
 - **Resumability — visibility + an explicit clearing decision, never
   implicit.** `tessctl tasks pull --status blocked` (an EXISTING filter,
   no new flag needed) surfaces every stuck task — the accountability-list
-  visibility Xavier's vision calls for, so nothing stuck is silently
+  visibility the maintainer's vision calls for, so nothing stuck is silently
   stranded. `tessctl tasks claim` on a blocked task does NOT clear the
   packet (mirrors the pre-existing "claiming a blocked task does not
   silently un-block it — that is an explicit `tasks set --status`
@@ -614,13 +613,13 @@ agent**":
   memory on first touch (no separate migration command), and `tasks
   set|block` against such a record succeeds and heals + logs correctly —
   no state/ledger divergence.
-- **Explicit scope boundary (Xavier's own fence, unchanged from Phase 0.2's
+- **Explicit scope boundary (the maintainer's own fence, unchanged from Phase 0.2's
   original one — see "What's deliberately NOT built yet" below).** This
   phase builds the stuck-packet MECHANISM only: structured capture,
   ledger accountability, and `pull`-based visibility/resumability. It does
   NOT build an autonomous orphan-sweeper that would auto-resume a stuck
   task unattended — WHO/WHAT triggers a resume of visible stuck work stays
-  a separate, later, Xavier-gated trust-boundary decision, exactly as it
+  a separate, later, human-gated trust-boundary decision, exactly as it
   already was for claim-lease staleness.
 - `tests/test_task_stuck_packet.py` — `block` basics (packet fields,
   required flags, `--reason` enum, `--attempted` repeatable/optional,
@@ -777,7 +776,7 @@ human-reviewed reusable skill.
   builds ONLY the substrate such a sweeper would read (claim-lease +
   heartbeat fields, and `claim`/`heartbeat`/`reclaimed`/`crashed` ledger
   events) — never a process that acts on them autonomously. Whether/how an
-  autonomous sweeper is allowed to act is a separate Xavier trust-boundary
+  autonomous sweeper is allowed to act is a separate human trust-boundary
   decision, not a technical one this store's existence resolves. Phase 0.5
   (below) does not change this: `tessctl tasks pull --status blocked`
   makes stuck work VISIBLE and `tasks claim` makes it RESUMABLE by any

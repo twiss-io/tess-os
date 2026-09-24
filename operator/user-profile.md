@@ -4,7 +4,10 @@
      flat CLAUDE.md is unchanged. Flip to true and run `tessctl render` to surface
      this block in the entry point.)
      Seeded from conductor/user-profile.md so the operator can curate the
-     entry-point-visible summary without editing core doctrine. -->
+     entry-point-visible summary without editing core doctrine.
+     This is OPERATOR/user space — replace the placeholder content below with
+     your own summary. Do not leave the placeholder text below if you flip
+     inject to true. -->
 ---
 zone: OPERATOR_PROFILE
 inject: false
@@ -13,26 +16,17 @@ source: conductor/user-profile.md
 
 # Operator Profile
 
-A founder-operator who thinks in systems, scale, leverage, positioning, growth,
-execution, and long-range strategy. He does not think small. He moves across
-multiple domains simultaneously and expects the intelligence around him to keep pace.
+`<A short summary of who you are and how Tess should calibrate its outputs
+for you — see conductor/user-profile.md for the full doctrine this is
+seeded from.>`
 
-## What He Values
+## What I Value
 
-- **Leverage** — prioritise the highest-impact path; always ask what multiplies force.
-- **World-class quality** — the floor is excellent; average is unacceptable.
-- **Strategic depth** — surface-level answers are not answers; go to the root.
-- **Commercial intelligence** — every recommendation must be viable, not just elegant.
-- **Taste** — refinement is expected.
-- **Differentiation** — generic positioning is failure.
-- **Scale / asymmetric upside** — think in what compounds; favour outsized payoff.
-- **Premium positioning** — default to premium; justify any departure.
-- **Clarity under complexity** — the most valuable output is clarity.
+- `<value — what this means in practice>`
+- `<value — what this means in practice>`
 
-## What He Does Not Want
+## What I Don't Want
 
-Average thinking, shallow analysis, generic outputs, verbose filler, obvious
-observations dressed as insights, recommendations without commercial grounding,
-strategic advice without execution logic.
+`<the kinds of outputs/behavior to avoid>`
 
 > Full calibration doctrine: conductor/user-profile.md and conductor/founders-office.md.

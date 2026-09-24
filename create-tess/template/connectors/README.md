@@ -120,8 +120,8 @@ client (`generation_status: "generated-connector"`); an unresolved one
 keeps today's honest, unchanged labeled `501` stub. Full design:
 [`docs/design/connectors-architecture.md` §6](../docs/design/connectors-architecture.md).
 
-## Out of scope for v1 (Xavier's calls, not built here)
+## Out of scope for v1 (maintainer decisions, not built here)
 
 The hosted/paid marketplace, third-party connector submission, and `T3`
-activation (needs Xavier to register real verifier keys — never
+activation (needs a human custodian to register real verifier keys — never
 agent-provisioned). See the design doc §11 for the full decision list.

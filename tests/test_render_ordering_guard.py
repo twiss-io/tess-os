@@ -57,9 +57,13 @@ _DISABLED_RENDER_BLOCK = (
 )
 
 # Step 5-6 apply line — we splice a premature render right after it (pre-A1).
+# v0.2 fix (Cyra PR #199 medium 2): the call gained an exclude_keys kwarg so
+# entries A2 (Step 4.6, now BEFORE this line) just adopted this same run are
+# not immediately re-processed by the fast-forward rule below.
 _APPLY_LINE = (
     '        print("\\nStep 5-6: plan and apply …")\n'
-    '        _apply_per_file_resolution(root, lock, dry_run=dry_run)\n'
+    '        _apply_per_file_resolution(root, lock, dry_run=dry_run,\n'
+    '                                   exclude_keys=frozenset(a2_adopted))\n'
 )
 _APPLY_LINE_PLUS_PREMATURE = (
     _APPLY_LINE

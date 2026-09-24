@@ -55,7 +55,7 @@ just this receipt's own signatures):
 ```bash
 python3 receipt_verify.py verify path/to/receipt-2.json \
   --prev path/to/receipt-1.json \
-  --trust Xavier <FINGERPRINT> path/to/xavier.asc
+  --trust Alex <FINGERPRINT> path/to/alex.asc
 ```
 
 Verify an entire chain file in one pass (one JSON receipt per line, in
@@ -64,7 +64,7 @@ sequence order) and get a single **CHAIN INTACT** / **CHAIN BROKEN** verdict:
 ```bash
 python3 receipt_verify.py verify-chain path/to/chain.jsonl \
   --trust Reid <FINGERPRINT> path/to/reid.asc \
-  --trust Xavier <FINGERPRINT> path/to/xavier.asc
+  --trust Alex <FINGERPRINT> path/to/alex.asc
 ```
 
 `--trust NAME FINGERPRINT KEYFILE` is repeatable — one per identity you are

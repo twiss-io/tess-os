@@ -23,8 +23,7 @@ STEPS = [
     (b'excellent', b'\r'),       # S3 starter path select -> first option (founders)
     (b'keep Tess', b'\r'),       # S4 conductor name -> default "Tess"
     (b'in the room', b'\r'),     # S5 pathway select -> first option (chief-of-staff)
-    (b'Telegram now', b'n\r'),   # S6 telegram confirm -> skip
-    (b'the gates', b'\r'),       # S7 recap confirm -> proceed
+    (b'the gates', b'\r'),       # S6 recap confirm -> proceed
 ]
 
 

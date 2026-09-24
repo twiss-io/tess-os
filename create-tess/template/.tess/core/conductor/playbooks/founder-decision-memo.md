@@ -1,5 +1,7 @@
 # Playbook — Founder Decision Memo
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Founder's Office  
 **Mode:** `/founder-mode`  
 **Output:** 10-section executive decision memo  
@@ -33,7 +35,7 @@ Before activating any guild, Tess must answer:
 
 | Role | Guild | Mandate |
 |---|---|---|
-| Core Contributor | Strategy (Athena or Clara) | Frame the decision, structure the options, apply decision criteria |
+| Core Contributor | Leah + `athena` or `clara` lens | Frame the decision, structure the options, apply decision criteria |
 | Core Contributor | Research (Leah) | Validate the assumptions and evidence base behind each option |
 | Reviewer | Finance (Octavia or Beatrice) | Stress-test the financial logic and downside of each path |
 | Control | Legal (Victoria) — *if legal exposure exists* | Identify legal or structural risks in the recommended path |

@@ -12,7 +12,7 @@ unless it is handed an `Approval` that is BOTH:
      `gate_approval.verify_gate_approval()` against `plan`'s CURRENT
      content, using the same HMAC mechanism `orchestrator.adapters.
      local_identity.LocalIdentityApprovalGate` signs with. A bare
-     `approval.record_approval(approved_by="Xavier")` call (no signature,
+     `approval.record_approval(approved_by="Alex")` call (no signature,
      no gate involvement at all) fails step 2 and is rejected here —
      closing [Cyra MEDIUM-1]: before this hardening,
      `record_approval(...) -> build_spec(...) -> generate_app(...)`

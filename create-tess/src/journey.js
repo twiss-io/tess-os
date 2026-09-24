@@ -2,7 +2,7 @@
 //
 // Step order (reconciled — see README "Ordering note"):
 //   S0 cold open → S1 VIBE → S2 OPERATOR → S3 STARTER_PATH → S4 CONDUCTOR
-//   → S5 PATHWAY → S6 TELEGRAM(opt) → S7 RECAP. Vibe is first so it reskins
+//   → S5 PATHWAY → S6 RECAP. Vibe is first so it reskins
 //   every downstream step; path precedes conductor so the C3 name-collision
 //   check has the real install set, and the squad reveal lands before naming.
 import * as p from '@clack/prompts';
@@ -64,7 +64,6 @@ function recap(vibe, c) {
     `World      ${vibe.label}`,
     `${vibe.squadNoun.padEnd(10)} ${PATH_FRAMING[vibe.key][c.path].label}`,
     `Conductor  ${c.conductor}  (${c.pathway})`,
-    c.telegram ? `Telegram   ${c.telegram}` : 'Telegram   skipped',
   ].join('\n');
 }
 
@@ -158,22 +157,8 @@ export async function runJourney(roster) {
   );
   p.log.success(PATHWAY_SET_LINE[pathway](conductor));
 
-  // S6 — TELEGRAM (optional; default skip).
-  let telegram = null;
-  const wantTg = bail(
-    await p.confirm({ message: vibe.telegramPrompt, initialValue: false }),
-  );
-  if (wantTg) {
-    const ch = bail(
-      await p.text({ message: 'Telegram channel id', placeholder: '-100...' }),
-    );
-    telegram = ch && ch.trim() ? ch.trim() : null;
-  } else {
-    p.log.info(vibe.telegramSkip);
-  }
-
-  // S7 — RECAP + the single write gate. Nothing has touched the target yet.
-  const choices = { vibe: vibe.key, operator: operatorName, path, conductor, pathway, telegram, set };
+  // S6 — RECAP + the single write gate. Nothing has touched the target yet.
+  const choices = { vibe: vibe.key, operator: operatorName, path, conductor, pathway, set };
   p.note(recap(vibe, choices), "Here's the world you've built");
   const go = bail(
     await p.confirm({ message: vibe.recapVerb, active: 'Yes', inactive: 'Change something', initialValue: true }),

@@ -1,7 +1,8 @@
 # Adapters — the render-target seam
 
-> Current status: Tess OS ships the `claude-code`, `codex`, and `generic`
-> render targets. Claude is the reference integration; Codex is a pilot; and
+> Current status: Tess OS ships the `claude-code`, `codex`, `generic` and
+> `gemini` render targets. Claude is the reference integration; Codex is a
+> pilot; Gemini CLI gets doctrine and commands but no in-session gates; and
 > generic output is an interoperability baseline, not universal host support.
 > See [Support and status](../docs/STATUS.md) before treating a target as a
 > protected workflow.
@@ -17,8 +18,12 @@ write gate.
 
 ## Advisory adapter manifests
 
-[`CONFORMANCE.md`](CONFORMANCE.md) defines the C0–C4 vocabulary and links the
-versioned local records in [`manifests/`](manifests/). Those JSON files are an
+[`CONFORMANCE.md`](CONFORMANCE.md) has two parts. Its runtime table gives
+each coding-agent runtime an enforcement level (Enforced / Partial /
+Advisory, or `unverified`) with the documentation behind it, and lists what
+does not translate between runtimes. Its second part defines the C0–C4
+vocabulary and links the versioned local records in
+[`manifests/`](manifests/). Those JSON files are an
 honest status/evidence index, not a new adapter runtime: they are outside
 `core/contracts/`, are not accepted by `tessctl validate`, and cannot grant
 authority, access, approval, signing, key custody, verifier registration, or
@@ -31,7 +36,7 @@ For a checkout-local, read-only advisory check, run:
 python3 -m tools.validate_adapter_manifests --root . --json
 ```
 
-The command reads only the four canonical records, their advisory schema,
+The command reads only the five canonical records, their advisory schema,
 their in-tree evidence pointers, and literal engine registry dictionaries as
 Python AST. Its JSON always contains `"advisory": true`; a zero exit status
 says those local descriptions are structurally consistent, not that a provider
@@ -123,7 +128,26 @@ class RenderTarget:
         `tessctl capture`" remedy-routing set. Base implementation returns
         an empty set."""
         return set()
+
+    def retired_paths(self, root: Path) -> set[str]:
+        """v0.2.0: paths this target USED to render and no longer does
+        (codex: `.codex/prompts/<name>.md`). `tessctl render` reports any
+        that still exist and never deletes them. Base: empty set."""
+        return set()
 ```
+
+Since v0.2.0 every target writes through `write_render_output()` (batch
+form `write_render_outputs()`), which returns `written`, `unchanged` or
+`skipped:<reason>` and records what it wrote in `tess.lock`'s
+`render_outputs` section. Reasons include `not-owned` (outside
+`owned_globs`: render prints the one glob to add, the manifest is never
+rewritten), `symlink` (never written through), `hand-edited` (kept and
+reported) and the protective statuses (`user-published`,
+`locally-modified`, `held`, `foreign`). A target's required doctrine
+output (AGENTS.md for codex/generic) that is not owned still raises
+`GateError`: that manifest is corrupted, not old. After a render, the codex
+target reports its retired outputs and drops their `render_outputs`
+records (Tess no longer manages those files).
 
 **A note on "byte-identical, any machine" (LOW-2):** this holds today
 because none of the artifacts any shipped target renders bake an absolute,
@@ -159,14 +183,21 @@ are enabled for this install — without rendering.
   `conductor/identity.md`, `conductor/personality.md`,
   `clients/_template/CLAUDE.md`. See `adapters/claude-code/README.md` for the
   full artifact map and the documented render/restore scope boundary.
-- **Codex** (Tier B, Phase 2) — `CodexRenderTarget` (`name = "codex"`)
-  renders `AGENTS.md`, `.codex/prompts/*.md` (mirroring the 26 command
-  bodies), and a `.codex/config.toml` fragment. See
-  `adapters/codex/README.md`.
+- **Codex** (Tier B, Phase 2; skills since v0.2.0) — `CodexRenderTarget`
+  (`name = "codex"`) renders `AGENTS.md`, the 26 command bodies as Agent
+  Skills at `.agents/skills/tess-<name>/SKILL.md` (plus an explicit-only
+  `agents/openai.yaml`), and a `.codex/config.toml` fragment. The pre-0.2
+  `.codex/prompts/*.md` mirrors are retired: Codex never loads them for a
+  project (openai/codex#9848). See `adapters/codex/README.md`.
 - **Generic** (Tier C, Phase 2) — `GenericRenderTarget` (`name = "generic"`)
   renders the SAME `AGENTS.md` (see "AGENTS.md ownership" in
   `adapters/codex/README.md`) plus a plain `prompts/*.md` mirror, for any
   other AGENTS.md-reading agent. See `adapters/generic/README.md`.
+- **Gemini CLI** (v0.2.0, Advisory) — `GeminiRenderTarget`
+  (`name = "gemini"`) renders the SAME `AGENTS.md`, a `GEMINI.md` that imports
+  it (Gemini CLI does not read `AGENTS.md` by itself), and the 26 commands as
+  `.gemini/commands/tess/<name>.toml` (`/tess:<name>`). No hooks, settings or
+  policies. Enabled for new installs. See `adapters/gemini/README.md`.
 
 `codex` is now in this repo's own `tess.manifest.json`
 `render_targets.enabled` list (`["claude-code", "codex"]` — issue #118, a
@@ -233,8 +264,8 @@ via `render_targets.enabled`.
 6. Its own copy-phase, if it needs one — a target is not required to (and, per
    the documented scope note in `ClaudeCodeRenderTarget`, does not have to)
    reuse `_do_restore`, which is Claude-Code-shaped. `CodexRenderTarget` /
-   `GenericRenderTarget` both implement their own (mirroring
-   `.tess/core/commands/*.md` into `.codex/prompts/**` / `prompts/**`).
+   `GenericRenderTarget` both implement their own (rendering
+   `.tess/core/commands/*.md` into `.agents/skills/tess-*/**` / `prompts/**`).
 7. If any of the target's compiled artifacts fall into point 3's "shares an
    already-tracked core file's destination" shape, they need
    `_check_untracked_render_generated()` — a Phase 2 addition to
@@ -262,7 +293,9 @@ into `AGENTS.md`).
 
 These tiers describe design intent, not a support promise. Claude Code is the
 reference target; Codex is a pilot with a process-driver model; generic only
-emits `AGENTS.md` and plain prompts. Gemini and other platforms are not Tess OS
-targets today. The `RenderTarget` interface itself is tier-agnostic: it renders
+emits `AGENTS.md` and plain prompts; Gemini CLI gets doctrine and commands
+natively but no in-session gates. Runtimes without a target of their own
+are listed, with their enforcement level, in [`CONFORMANCE.md`](CONFORMANCE.md).
+The `RenderTarget` interface itself is tier-agnostic: it renders
 artifacts, while lifecycle/dispatch capability remains a separately verified
 adapter concern.

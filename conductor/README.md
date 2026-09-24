@@ -25,9 +25,11 @@ Tess interprets the mission, assembles the right crew, coordinates the work, and
 | [output-framework.md](output-framework.md) | Master Mission Output Framework — executive decision memo format for all serious mission syntheses (canonical) |
 | [agent-lifecycle.md](agent-lifecycle.md) | Agent Lifecycle and Governance Framework — portfolio doctrine, status types, creation rules, naming discipline, review cadence |
 | [founders-office.md](founders-office.md) | Founder's Office Operating Doctrine — the operator profile, support modes, challenge principle, output style, zoom logic |
-| [channel-guardrails.md](channel-guardrails.md) | Telegram channel registry and group scoping — client isolation, cross-chat contamination prevention |
+| [channel-guardrails.md](channel-guardrails.md) | Session reporting and client/project isolation — cross-client contamination prevention |
 | [review-output-standards.md](review-output-standards.md) | Severity tiers, closing verdicts, summary lines for all review-mode agents |
 | [dispatch-brief.md](dispatch-brief.md) | Dispatch Brief Contract — 6 required fields for every Agent-tool dispatch, decomposition rule, destructive-ops 3-step pattern |
+| [roster.md](roster.md) | Roster — ten roles defined by permissions, the lens library, and conductor + lens routing (v0.2) |
+| [lenses/README.md](lenses/README.md) | Lens library index — about 140 expertise lenses loaded into a role's brief on demand |
 | [verification-routing.md](verification-routing.md) | Verification Routing Table — mandatory verifier per output domain for prod-touching/client-facing/externally-visible outputs |
 | [subagent-failure-protocol.md](subagent-failure-protocol.md) | Typed retry loop — failure states, cause classification, changed-brief requirement, 3-attempt cap, escalation |
 | [hook-testing-protocol.md](hook-testing-protocol.md) | Mandatory safety tests before deploying or changing any hook (incl. subagent safety test) |
@@ -45,7 +47,7 @@ Mission flow is governed by **dependency gates**, not a fixed clock (see [doctri
 ```
 Intake before anything        → frame the problem; produce the task graph
 Research before build         → Leah informs before strategy or execution
-Crew before deploy            → Eva designs roles before agents are briefed
+Crew before deploy            → conductor picks roles + lenses (`eva` lens) before any role is briefed
 Review before synthesis       → pressure-test outputs before integrating
 Verification before anything
 externally visible            → mandatory verifier reads primary artifacts
@@ -69,5 +71,6 @@ Full agent roster: [../agents/README.md](../agents/README.md)
 
 ## CHANGELOG
 
+- **2026-09-24 v0.2.0** — `release-process.md` rewritten for the PR-only flow (ruleset: no direct push to `main`), covering verdicts drafted by an independent verifier and signed with `GPG_TTY` set, SHA-bound merges, the tagger identity `legal@twiss.io`, the pre-publish gate before any `create-tess-v*` tag, the adopter order `self-update` then `update`, and the v0.2.0 disclosure that approvals were signed with an agent-held verifier key.
 - **2026-06-29 v0.1.1** — Added `release-process.md` documenting the signed-release channel, maintainer release steps, and adopter upgrade flow. Added File Index entry for release-process.md.
 - **2026-06-10 Tess OS reform (operator-authorized)** — Regenerated File Index: added the four files previously missing (channel-guardrails.md, review-output-standards.md, subagent-failure-protocol.md, hook-testing-protocol.md) plus the two new doctrine files (dispatch-brief.md, verification-routing.md); corrected the playbook count to 6; updated doctrine.md and mission-control.md descriptions to reflect the gate recast and supersession notes; replaced the fixed 6-step Operating Sequence summary with the dependency-gate summary. Source: audit memo QW10/G12, Appendix C.

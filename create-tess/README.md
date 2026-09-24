@@ -8,8 +8,8 @@ npm create tess
 npx create-tess
 ```
 
-You name yourself, choose a world (a narrative skin), pick a starter squad of
-real agents, name your conductor, choose how that conductor talks to you — and
+You name yourself, choose a world (a narrative skin), pick a starter path (every path
+installs the same ten roles; the path picks the suggested expertise lenses), name your conductor, choose how that conductor talks to you — and
 land inside a locally scaffolded Tess OS instance with a first mission open.
 
 `npm create tess` → keystone render → live agent OS.
@@ -35,7 +35,7 @@ land inside a locally scaffolded Tess OS instance with a first mission open.
    and the template's own `.git`), writes `operator/profile.json`, then drives
    the keystone:
    ```
-   tessctl roster apply <path>     # install the starter squad + universal base
+   tessctl roster apply <path>     # install the nine dispatchable roles (same on every path)
    tessctl set-operator <name>     # who the conductor addresses
    tessctl rename <conductor>      # only if conductor != Tess
    tessctl pathway <key>           # the conductor's persona
@@ -61,8 +61,9 @@ verdict found"**. That is a correct fail-closed result, not a wizard error.
 
 Do not generate, register, or self-sign a key or verdict to make the gate pass.
 Do not use a bypass to present a protected change as approved. The initial
-trust anchor is a human-owned Xavier custody ceremony, and GitHub required-check
-enforcement remains a separate production prerequisite.
+trust anchor is a custody ceremony owned by your project's key-custody owner,
+and GitHub required-check enforcement remains a separate production
+prerequisite.
 
 For experimentation, keep the scaffold in an isolated, non-production
 repository. For any governed or production-bound change, stop and follow the
@@ -101,7 +102,7 @@ npm create tess my-os -- --yes \
 ```
 
 Flags: `--operator`/`--name`, `--conductor`/`--assistant`, `--vibe`, `--path`,
-`--pathway`, `--telegram`, `--target`/`--dir` (or first positional),
+`--pathway`, `--target`/`--dir` (or first positional),
 `--template-source` (env `TESS_TEMPLATE_SOURCE`), `--template-ref` (env
 `TESS_TEMPLATE_REF`), `--force`, `--no-doctor`,
 `--no-verify`, `--no-git-init`, `--no-gate-hooks`, `--yes`. A flags-mode
@@ -114,11 +115,33 @@ auto-enables non-interactive mode.
 a hard error, never a silent default. With `--yes`, any unset axis falls back to
 its default (`Operator` / `Tess` / `rpg` / `founders` / `chief-of-staff`).
 
-**`--force` clean-replaces managed dirs.** Forcing a re-scaffold over an existing
-install does not merge — it first clears the framework-managed paths
-(`.claude/agents`, `.claude/commands`, `conductor/`, `.tess/core`, `CLAUDE.md`)
-so stale files (a renamed agent, a removed doctrine file) cannot survive. Your
-operator space (`operator/**`) and other non-managed files are preserved.
+**Existing directories.** Without `--force`, the wizard refuses any non-empty
+target. A directory holding `.tess/tess.lock`, `tess.manifest.json` or
+`operator/profile.json` is reported as an existing Tess OS install, with
+`tessctl doctor` / `tessctl update` as the next steps. Adopting an existing
+directory or instance into Tess OS is not supported in 0.2.0.
+
+**`--force` plans first, backs up, and verifies.** Before writing anything,
+`--force` makes a read-only plan against the staged template and refuses
+(exit 1, nothing written) when:
+
+- a path the scaffold writes is a symlink, or has the wrong type (a file where
+  the template needs a directory, or the reverse), or
+- a framework-managed path (`.claude/agents`, `.claude/commands`, `conductor/`,
+  `.tess/core`, `CLAUDE.md`) already holds content and the directory is not a
+  complete Tess OS install (`.tess/tess.lock` plus `tess.manifest.json`).
+
+When it proceeds, it moves the managed paths and copies every file it will
+overwrite into `<target>/.create-tess-backup-<timestamp>/` (with a
+`manifest.json`; git ignores the directory). A forced re-scaffold of an install
+therefore still clean-replaces the managed paths, so a renamed agent or a
+removed doctrine file cannot survive, and files the template does not ship are
+left alone. If the scaffold fails, the wizard restores the backup, deletes
+everything the run added, and walks the tree again: it prints "left clean"
+only when that walk matches the pre-run snapshot, and otherwise lists the
+differences and keeps the backup. After a successful run the backup is kept;
+delete it once doctor and verify pass and you have checked nothing in it is
+still needed.
 
 **`--template-source` safety.** A source that begins with `-` is rejected unless
 it is a real local directory, and the git clone uses a `--` end-of-options guard
@@ -133,12 +156,10 @@ same published version always scaffolds from the exact same, already-CI-
 passed bytes, with no clone, no tag, and no dependency on GitHub being
 reachable. Pass `--template-source <git-url>` / set `TESS_TEMPLATE_SOURCE` to
 explicitly opt into a live git fetch instead (your own fork, a mirror, a
-specific upstream commit); that clone is pinned to `DEFAULT_TEMPLATE_REF`
-(`src/scaffold.js`, in create-tess's own `create-tess-v*` tag namespace)
-unless you pass `--template-ref`/`TESS_TEMPLATE_REF` yourself — note that tag
-has historically not always been cut at release time (see `scaffold.js`'s
-header comment), so an opt-in git fetch without an explicit `--template-ref`
-can fail; the bundled default is unaffected either way.
+specific upstream commit); a clone of the upstream repository is pinned to
+`DEFAULT_TEMPLATE_REF` (`src/git-template-source.js`), the framework release
+tag `v0.2.0`, unless you pass `--template-ref`/`TESS_TEMPLATE_REF` yourself.
+Earlier versions pinned `create-tess-v0.1.2`, a tag that was never cut.
 
 Point `--template-source` at a local path to test a git-style fetch, or to
 scaffold from a different tree entirely:
@@ -152,7 +173,7 @@ node bin/create-tess.mjs ./out --yes --operator=Alex \
 ## Ordering note
 
 The wizard runs **vibe → operator → starter path → conductor → pathway →
-telegram → recap**. This reconciles the task brief with the authoritative design
+recap**. This reconciles the task brief with the authoritative design
 doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 
 - **Vibe first** (design doc §5.2) so it reskins every downstream step,
@@ -160,11 +181,14 @@ doc (`kb/wiki/synthesis/2026-06-27-tess-os-onboarding-experience.md`):
 - **Path before conductor** (task order) so the C3 name-collision check has the
   real install set and the squad reveal lands before the conductor is named.
 
-All seven journey beats from the brief are present; the only design-doc
+The journey beats from the brief are present, except the optional Telegram step,
+which v0.2.0 removed: the base harness reports in the active session of any
+runtime, and external notification channels are optional operator add-ons,
+outside the base harness. The only design-doc
 divergence is the path/conductor pairing, chosen because it makes the C3 check
 implementable at conductor-naming time.
 
-## Release (maintainers — Xavier-owned; never automated)
+## Release (maintainers only; never automated)
 
 1. Bump `create-tess/package.json`'s `version` (and re-run `npm install` in
    `create-tess/` so `package-lock.json` picks it up). Confirm `npm test` is
@@ -189,11 +213,11 @@ implementable at conductor-naming time.
    **Do this step even if you expect to fall back to (3) below** — every
    published version through 0.1.3 was actually shipped via the manual
    fallback ALONE, silently skipping this tag cut each time; that gap is
-   exactly what left `DEFAULT_TEMPLATE_REF` (the old git-clone pin, still
-   used by the explicit `--template-source` git opt-in) pointing at a tag
-   that was never cut, across three release cycles (P0 G-01). The 0.1.4
-   BUNDLE fix (`create-tess/src/scaffold.js`) removes this dependency from
-   the DEFAULT flow entirely, but the opt-in git path still relies on it.
+   exactly what left `DEFAULT_TEMPLATE_REF` (the git-clone pin used by the
+   explicit `--template-source` git opt-in) pointing at a tag that was never
+   cut, across three release cycles (P0 G-01). From 0.2.0 it pins the
+   framework release tag (`v0.2.0`), which the framework release cuts; the
+   bundled default flow does not depend on either tag.
 3. **Manual fallback** (if Trusted Publishing isn't live yet): from
    `create-tess/`, checked out at the tag, run `npm publish --access public`
    as an npm-authenticated maintainer. `prepack` still regenerates

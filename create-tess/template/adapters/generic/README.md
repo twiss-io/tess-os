@@ -22,7 +22,8 @@ intentionally stops at doctrine + a plain prompt mirror.
 
 `GenericRenderTarget.expected_live_bytes()` / `render_generated_paths()`
 implement the same drift-checking hooks `codex` does; `prompts/*.md` is
-drift-checked the same way `.codex/prompts/*.md` is — via
+drift-checked the same way the codex target's `.agents/skills/tess-*/`
+skills are — via
 `_check_untracked_render_generated()` (no individual `tess.lock` entry; see
 that function's docstring in `.tess/bin/tessctl`).
 

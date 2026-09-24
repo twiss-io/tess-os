@@ -1,5 +1,7 @@
 # Playbook — L99 Merge Discipline
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Product and Delivery / Operational Reliability
 **Mode:** standing authority (no per-merge sign-off required)
 **Authority:** Standing authority — the operator has delegated /L99 merge decisions, conditioned on no conflicts with existing PRs or other agents' work (nothing that would undo previous work by merging out of order).
@@ -30,7 +32,7 @@ All of these must be true:
 - The PR is part of a recognised audit fix wave (L99, godmode, security retro) or a trivial defensive fix.
 - CI is **green** (mandatory — never merge against red).
 - The PR is scoped to the audit finding it closes (no scope creep).
-- Base branch is correct ([backend deploys only from `main`](../../CLAUDE.md); dashboard prod rules apply — never merge `main` on dashboard).
+- Base branch is correct: each repository's documented deploy branch and branch rules apply (for example, a service that deploys only from `main`, or a repository whose production branch must never receive a direct merge of `main`).
 - No unresolved conflict with an earlier PR in the same wave (see sequencing).
 - The change is **not** in the Rule 18 hard-floor set (credentials, money movement, destructive prod data ops, client-external factual claims).
 
@@ -42,7 +44,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 
 1. **Same-file PRs merge in series, not parallel.** List all PRs touching the same path. After each merge, the next PR's branch needs `gh pr update-branch` (or rebase) before its CI is meaningful.
 2. **Backend deploy stagger.** Wait ≥5 minutes between back-to-back backend deploys (config:cache / scheduler boot race). Same-repo backend PRs queue with explicit `sleep 300` between merges.
-3. **Cross-repo PRs run parallel.** dashboard, backend, iOS, Android, workjoy have independent deploy pipelines and no shared state — merge concurrently.
+3. **Cross-repo PRs run parallel.** Repositories with independent deploy pipelines and no shared state (for example, a web frontend, a backend service and mobile apps) can merge concurrently.
 4. **Pre-merge conflict check.** Before merging a PR, check whether it touches files an already-merged PR in the same wave changed. If yes, `gh pr update-branch` (rebase) the later PR **before** merging it, so an earlier merge cannot be silently undone.
 5. **Branch-divergence audit.** Run `git diff HEAD...origin/main --stat` (and `git ls-remote` before any rebase + `--force-with-lease`) so a stale branch doesn't drop main's files.
 
@@ -59,7 +61,7 @@ If any condition fails → **halt and escalate to the operator** with the specif
 The standing authority removes the per-PR *sign-off*, **not** the verification gates. Every merge still runs:
 
 - **CI gate** — green required, no exceptions ([verification-routing.md](../verification-routing.md)).
-- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra) reads primary artifacts, never Tess's summary.
+- **Mandatory domain verifier** for any prod-touching / client-facing / externally-visible change — the verifier (Reid / Quinn / Cyra; research, evidence or creative review is Reid with the `verity`, `maialen` or `lysandra` lens) reads primary artifacts, never Tess's summary.
 - **Post-merge smoke after every merge** — backend `/health` (per-endpoint smoke, not just 200), dashboard page-load, mobile build status. Per-endpoint smokes matter: a green `/health` does not prove no 500s elsewhere.
 - **Specialist-direct-to-main is a flag** — if a specialist pushed to `main` without a PR, audit the diff retroactively (this pattern has produced serious access-control regressions before).
 
@@ -73,12 +75,12 @@ If a merged PR introduces **any** regression within 30 minutes — new error ale
 
 ## Audit Trail (mandatory)
 
-Every autonomous merge posts a confirmation to the appropriate ops channel (ClientA group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)) with:
+Every autonomous merge records a confirmation with the fields below in the session report and the mission record, scoped to the relevant client per [channel-guardrails.md](../channel-guardrails.md).
 - **PR number**
 - **Merge SHA**
 - **One-line description** of what it closed
 
-the operator gets a wave-level Telegram summary at the end (new reply, not an edit, so his device pings).
+The operator gets a wave-level summary at the end, in the active session.
 
 ---
 
@@ -89,7 +91,7 @@ the operator gets a wave-level Telegram summary at the end (new reply, not an ed
 3. **Per PR:** confirm CI green → confirm no conflict with prior merges (rebase if needed) → run mandatory verifier if prod/client/external → merge → post-merge smoke → audit-trail post.
 4. **Stagger** backend merges ≥5 min; run cross-repo merges in parallel.
 5. **Watch** 30-min regression window after each deploy; auto-revert on any regression.
-6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk).
+6. **Wave summary** to the operator when the wave completes (PRs merged, SHAs, any reverts, residual risk), through the active runtime's native channel.
 
 ---
 

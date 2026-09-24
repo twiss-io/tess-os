@@ -25,12 +25,14 @@
 // commit) instead of the bundled copy — see fetchTemplate() below; that path
 // is unchanged. create-tess/ and .git are always excluded from what gets
 // scaffolded, on both paths.
-import { existsSync, cpSync, readdirSync, chmodSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, cpSync, readdirSync, chmodSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isExcludedRel, makeCopyFilter } from './ignore.js';
 import { resetPolicyFile } from './policy-reset.js';
+import { detectInstall } from './force-plan.js';
+import { CREATE_TESS_VERSION } from './version.js';
 import {
   isLocalSource,
   buildCloneArgs,
@@ -97,21 +99,38 @@ export function ensurePython3() {
 }
 
 // Clobber-protection (design doc §5.1). Returns a reason string if the target
-// must be refused, or null if it's safe to proceed.
+// must be refused, or null if it's safe to proceed. With --force the decision
+// moves to force-plan.js planForce(), which needs the staged template to know
+// exactly what would be replaced; only a non-directory target is refused here.
+//
+// Every `tessctl <verb>` named below must exist in `tessctl --help`
+// (test/force-safety.test.js checks this against the bundled engine).
 export function clobberReason(targetDir, force) {
+  if (existsSync(targetDir) && !statSync(targetDir).isDirectory()) {
+    return `${targetDir} exists and is not a directory.`;
+  }
   if (force) return null;
-  if (existsSync(join(targetDir, 'operator', 'profile.json')) ||
-      existsSync(join(targetDir, 'tess.lock'))) {
+  const { markers } = detectInstall(targetDir);
+  if (markers.length > 0) {
     return (
-      'This directory is already a Tess OS install. To change your setup, run ' +
-      '`tessctl reconfigure` (or edit operator/profile.json and re-render). ' +
-      'To start fresh elsewhere, pass a new directory or --force.'
+      `${targetDir} is already a Tess OS install (found ${markers.join(', ')}). ` +
+      'Check it with `python3 .tess/bin/tessctl doctor`, or update the framework ' +
+      'with `python3 .tess/bin/tessctl update`. To start fresh, pass a new ' +
+      'directory. --force re-scaffolds this install and backs up every file it ' +
+      'replaces first.'
     );
   }
   if (existsSync(targetDir)) {
     const entries = readdirSync(targetDir).filter((e) => e !== '.DS_Store');
     if (entries.length > 0) {
-      return `Target directory ${targetDir} is not empty. Pass --force to scaffold into it anyway.`;
+      return (
+        `Target directory ${targetDir} is not empty and is not a Tess OS install. ` +
+        'Adopting an existing directory or instance is not supported in create-tess ' +
+        `${CREATE_TESS_VERSION}: pass a new or empty directory. --force scaffolds into it only when ` +
+        'none of the framework-managed paths (CLAUDE.md, conductor/, .claude/agents/, ' +
+        '.claude/commands/, .tess/core/) exist there, and backs up every file it ' +
+        'replaces first.'
+      );
     }
   }
   return null;
@@ -214,28 +233,4 @@ export function resetScaffoldedPolicyKeys(targetDir) {
     if (changed) files.push(rel);
   }
   return { changed: files.length > 0, files };
-}
-
-// M2 — framework-managed paths that a `--force` re-scaffold over an EXISTING
-// install must clean-replace rather than merge into. Without this, cpSync layers
-// the new template over the old one and stale managed files (a renamed agent, a
-// removed doctrine file) survive. Operator space (operator/**) and any other user
-// data are deliberately NOT listed — they are preserved across a forced re-run.
-export const MANAGED_PATHS = [
-  join('.claude', 'agents'),
-  join('.claude', 'commands'),
-  'conductor',
-  join('.tess', 'core'),
-  'CLAUDE.md',
-];
-
-// Clear the managed dirs/files in `targetDir` so the subsequent promote() lays
-// down a clean copy. Best-effort + idempotent (missing paths are skipped).
-export function clearManagedDirs(targetDir) {
-  for (const rel of MANAGED_PATHS) {
-    const p = join(targetDir, rel);
-    if (existsSync(p)) {
-      try { rmSync(p, { recursive: true, force: true }); } catch { /* best effort */ }
-    }
-  }
 }

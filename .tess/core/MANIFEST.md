@@ -8,6 +8,8 @@
 - Total core files: **959** (+5 Phase 1 — `contracts/` wired into the managed set)
 - Security-tier files: **6** (`conductor/guardrails.md`, `conductor/verification-routing.md`, `conductor/channel-guardrails.md`, `conductor/dispatch-brief.md`, `contracts/brief.schema.json`, `contracts/verdict.schema.json`) — the last two are new in Phase 1: the machine-checkable form of `dispatch-brief.md` and `verification-routing.md` respectively, promoted to the same tier so weakening the schema is treated as seriously as editing the prose doctrine.
 
+> **v0.2 ten-role roster.** `agents-dispatch/` now holds exactly **9** role files (ada, morwenna, leah, reid, quinn, cyra, clio, vega, iris); the other 141 former dispatch definitions became the lens library at `conductor/lenses/` (141 lenses + `README.md` index) and `conductor/roster.md` was added. Counts further down that describe 150 dispatch definitions are historical. The codex render target also compiles each installed role to `.codex/agents/<name>.toml` (untracked-render-generated).
+
 ## Live-path mapping (by core subtree)
 
 | Core subtree | Live destination |
@@ -23,7 +25,7 @@
 | `.tess/core/templates/client/_template/**` | `clients/_template/**` |
 | `.tess/core/templates/agents-md/AGENTS.md.tpl` + `harness-note.md` | `AGENTS.md` (Phase 2 — core-internal, `live_path: null`; see below) |
 | `.tess/core/templates/agents-md/codex-config.toml.tpl` | `.codex/config.toml` (Phase 2 — core-internal, `live_path: null`; see below) |
-| `.tess/core/commands/*.md` | `.claude/commands/*.md` (tracked) **and** `.codex/prompts/*.md` + `prompts/*.md` (Phase 2 — untracked-render-generated, see below) |
+| `.tess/core/commands/*.md` | `.claude/commands/*.md` (tracked) **and** `.agents/skills/tess-*/SKILL.md` (v0.2.0 codex target; replaces the retired `.codex/prompts/*.md`) + `prompts/*.md` (untracked-render-generated, see below) |
 | `.tess/core/contracts/**` | `core/contracts/**` (Phase 1) |
 | `.tess/core/MANIFEST.md` | — (core index, not a live doctrine path) |
 
@@ -235,11 +237,9 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 
 | Core file | Live path | Tier |
 |---|---|---|
-| `hooks/anti-fabrication-guard.sh` | `.claude/hooks/anti-fabrication-guard.sh` | normal |
 | `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | normal |
 | `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | normal |
 | `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | normal |
-| `hooks/telegram-format-guard.sh` | `.claude/hooks/telegram-format-guard.sh` | normal |
 | `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | normal |
 
 ## skills/ — framework skills
@@ -288,8 +288,8 @@ source, `core/contracts/**` is the resolved live output.
 
 ## templates/agents-md/ — Phase 2: Codex + generic render-target templates
 
-`AGENTS.md`, `.codex/prompts/**`, `.codex/config.toml`, and `prompts/**` are
-rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
+`AGENTS.md`, `.agents/skills/tess-*/**` (v0.2.0; `.codex/prompts/**` is
+retired), `.codex/config.toml`, and `prompts/**` are rendered by the `codex` / `generic` targets (`.tess/bin/tessctl` — see
 `adapters/codex/README.md` + `adapters/generic/README.md`). `codex` is now
 enabled by default (issue #118 — `tess.manifest.json`'s `render_targets.enabled`
 is `["claude-code", "codex"]`; see that key's own `_doc`); `generic` remains
@@ -322,6 +322,9 @@ used for its own exit code.
 |---|---|---|
 | `templates/agents-md/AGENTS.md.tpl` | `null` (core-internal) | normal |
 | `templates/agents-md/worker-hard-floor.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-dispatch-scope.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-channel.md` | `null` (core-internal) | normal |
+| `templates/agents-md/worker-file-placement.md` | `null` (core-internal) | normal |
 | `templates/agents-md/gate-compliance.md` | `null` (core-internal) | normal |
 | `templates/agents-md/harness-note.md` | `null` (core-internal) | normal |
 | `templates/agents-md/session-memory.md` | `null` (core-internal) | normal |

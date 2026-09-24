@@ -4,11 +4,11 @@ status: PLAN ONLY — design document, nothing here is implemented by this docum
 date: 2026-07-07
 author: Fable 5 systems-architecture pass (dispatched by Tess)
 sources_studied:
-  - /Users/twiss-cloud-sync/Documents/tess/conductor/ (full doctrine: dispatch-brief, verification-routing, guardrails, doctrine, subagent-failure-protocol, orchestra-model, agent-lifecycle, cross-guild-coordination, outcome-orchestrators/, review-output-standards)
-  - /Users/twiss-cloud-sync/Documents/tess/CLAUDE.md (Rule Zero + system laws)
+  - the private reference Tess instance's conductor/ doctrine (dispatch-brief, verification-routing, guardrails, doctrine, subagent-failure-protocol, orchestra-model, agent-lifecycle, cross-guild-coordination, outcome-orchestrators/, review-output-standards)
+  - the private reference Tess instance's CLAUDE.md (Rule Zero + system laws)
   - twiss-io/tess-os PUBLIC repo @ v0.1.1 (cloned, read: tessctl verbs, tess.lock, tess.manifest.json, .claude/{agents,commands,hooks}, create-tess wizard, README)
-  - projects.nosync/tess-os (this repo — the April 2026 TessOS SaaS dashboard)
-  - kb/wiki/synthesis/2026-06-27-tess-os-public-library-design.md, 2026-07-02-tess-os-gui-design.md, 2026-06-29-tess-os-knowledge-graph-second-brain.md
+  - a separate TessOS SaaS dashboard repository (April 2026), where this plan was first written
+  - the private instance's internal design notes on the public library (2026-06-27), the GUI (2026-07-02) and the knowledge graph (2026-06-29)
 confidence: high on Tess-OS/doctrine facts (verified against primary artifacts); high on Codex/Gemini mechanics marked "(verified)" (checked against openai/codex and google-gemini/gemini-cli official docs via Context7, 2026-07-07); medium on Cursor/Copilot rows (re-verify at build time — these products version fast)
 ---
 
@@ -74,9 +74,9 @@ confidence: high on Tess-OS/doctrine facts (verified against primary artifacts);
 > a trusted engine** (Part D7, Part C8). That is the one claim this repo
 > now markets.
 
-> **Xavier's goal (verbatim):** "ensure this is the ultimate plug and play framework for Claude Code, Codex and frontier models AI assistant" — robust to agent quality, "especially agents that are of lower quality compared to Fable."
+> **The maintainer's goal (verbatim):** "ensure this is the ultimate plug and play framework for Claude Code, Codex and frontier models AI assistant" — robust to agent quality, "especially agents that are of lower quality compared to Fable." (A goal, not a delivered claim: see [Support and status](STATUS.md) for what each runtime actually enforces today.)
 
-> **Scope note — two artifacts named "tess-os."** (1) *This* repo (`projects.nosync/tess-os`) is the April-2026 **TessOS SaaS dashboard** (Next.js 16 + Supabase; agent runs, conversations, cost tracking — see `business-plan-v1.md`). (2) **`twiss-io/tess-os`** (public, live, v0.1.1, `npm create tess`) is the **framework product** this plan is about: doctrine + roster + keystone upgrade engine + vault + wizard. This plan designs the evolution of (2); (1) becomes the optional Mission-Control surface in Phase 4. The plan lives here because this is where Xavier asked for it.
+> **Scope note — two artifacts named "tess-os."** (1) The repository where this plan was first written (a separate, private repository) is the April-2026 **TessOS SaaS dashboard** (Next.js 16 + Supabase; agent runs, conversations, cost tracking — see `business-plan-v1.md`). (2) **`twiss-io/tess-os`** (public, live, v0.1.1, `npm create tess`) is the **framework product** this plan is about: doctrine + roster + keystone upgrade engine + vault + wizard. This plan designs the evolution of (2); (1) becomes the optional Mission-Control surface in Phase 4. The plan lived there because that is where the maintainer asked for it; it was later copied into `twiss-io/tess-os` as a historical record.
 
 ---
 
@@ -87,7 +87,7 @@ claim — that system structure raises model output quality — was tested
 2026-07-07 and disproven; see the supersession notice above and
 `proving-ground/reports/`.) The Tess doctrine has already shown this much in
 production: a 165-persona multi-agent operation runs real client work
-(SuperCane prod deploys, payment audits, live incident ops) on a mix of model
+(client production deploys, payment audits, live incident ops) on a mix of model
 tiers, and its post-mortems show that every serious failure was a *structure*
 failure, not a *model* failure — and no recurrence of that failure class has
 been observed since each corresponding structural fix (bounded to the
@@ -103,7 +103,7 @@ untested by proving-ground, not vindicated by it.)
 | 2026-05-31 fabricated-UUID void targeted the wrong live payment | Agent inherited the orchestrator's *transcription* of data | Dispatch briefs must point at **primary artifacts, never transcribed data** (`dispatch-brief.md` field 3) |
 | 2026-05-12 production delete completed seconds before "scratch that" | One-shot destructive dispatch | Mandatory 3-step verify → go/no-go → execute (`dispatch-brief.md`) |
 | 2026-05-10 Tess-Deploy shipped 5 critical/high security gaps incl. a cross-tenant leak | Review was discretionary and skipped | **Mandatory** verification-before-anything-visible (`verification-routing.md`) |
-| 2026-06-01 false client status sent | Completion claimed before reading results | anti-fabrication-guard hook: completion-claim messages **denied** while a dispatch is in flight |
+| 2026-06-01 false client status sent | Completion claimed before reading results | Read-before-report doctrine (`guardrails.md` Rule 10); the chat-channel hook that enforced it was removed in v0.2.0 |
 | Repeated same-mistake retries burning budget | Untyped retry | Typed retry: classify cause → **changed brief** → cap at 3 → escalate with per-attempt log (`subagent-failure-protocol.md`) |
 
 **[SUPERSEDED — see notice above.]** The proving ground tested the
@@ -122,10 +122,10 @@ C8 / Part D7) — bad output can't ship — not output enhancement.
 4. **Adapters are capability-tiered, not feature-identical.** Tier A (native subagents: Claude Code with hooks; Gemini CLI's `.gemini/agents/`) runs the full orchestra in-session. Tier B (headless CLI, no subagent tool: Codex CLI) runs the same conductor loop via **process fan-out** (`codex exec` child processes as the dispatch primitive — which also serves every harness as the cross-model driver). Tier C (rules-file-only assistants: Cursor, Copilot) gets doctrine + the deterministic gate spine, no orchestra. Degradation is explicit and documented, never silent.
 5. **Model-tier routing is a first-class module**: strong model conducts and verifies; cheap models execute. Cross-model verification (Codex verifies Claude's diff, or vice versa) becomes an adapter feature — the strongest form of independent review.
 6. **Verification is the moat, so verification produces an artifact.** A signed verdict file at a contracted path is the *thing* the gate checks before anything ships — the same way `tess.lock` already makes framework integrity a checkable artifact.
-7. **Install UX stays `npm create tess` + keystone updates** — already built and proven over-the-wire (v0.1.0→v0.1.1 signed-tag upgrade verified 2026-06-29). The wizard gains a "which assistants?" axis and installs the right adapters.
+7. **Install UX stays `npm create tess` + keystone updates** — already built. (Correction: this plan originally said the upgrade was "proven over-the-wire". That claim is withdrawn: per the `[0.1.0]` Known limitations in `CHANGELOG.md`, a real two-tag upgrade had not been exercised end-to-end over the wire.) The wizard gains a "which assistants?" axis and installs the right adapters.
 8. **Prove it or don't claim it:** the Proving Ground (Phase 3) runs seeded task suites with deliberately weak execution models, with/without the framework, and publishes verified-pass-rate deltas. This is both the QA harness and the marketing.
 
-**Roadmap:** Phase 0 *Contracts-as-code* (~2 wks) → Phase 1 *Portable core + render targets* (~2-3 wks) → Phase 2 *Codex adapter + gate spine end-to-end* (~3 wks) → Phase 3 *Gemini/generic adapter + cross-model verification + Proving Ground* (~3-4 wks) → Phase 4 *Mission Control GUI + Navigator router* (scoped separately). Estimates carry Xavier's 1.5–3× padding rule.
+**Roadmap:** Phase 0 *Contracts-as-code* (~2 wks) → Phase 1 *Portable core + render targets* (~2-3 wks) → Phase 2 *Codex adapter + gate spine end-to-end* (~3 wks) → Phase 3 *Gemini/generic adapter + cross-model verification + Proving Ground* (~3-4 wks) → Phase 4 *Mission Control GUI + Navigator router* (scoped separately). Estimates carry the maintainer's 1.5–3× padding rule.
 
 ---
 
@@ -215,7 +215,7 @@ The "weak agent problem" decomposes into six specific failure modes. Each doctri
 
 ### A.7 Guardrails + hard floors + deterministic guards → caps the worst case (F6)
 
-**Mechanism** (`conductor/guardrails.md`): Rule Zero (conductor never executes solo — enforced by the block-mode `dispatch-guard.sh` PreToolUse hook with a canonical file whitelist and a 4h stale-lock safety); Rule 1a (single narrow incident-ops exception, conditions-or-it-doesn't-apply); Rule 18's **hard floor that survives all autonomy grants** — credentials, money movement, destructive prod data, client-external factual claims ALWAYS gate on the human; the anti-fabrication guard (completion-claim Telegram sends denied while a dispatch is in flight — forcing read-before-report); the clarification threshold (assume-and-state below 30-min/reversible, one question above).
+**Mechanism** (`conductor/guardrails.md`): Rule Zero (conductor never executes solo — enforced by the block-mode `dispatch-guard.sh` PreToolUse hook with a canonical file whitelist and a 4h stale-lock safety); Rule 1a (single narrow incident-ops exception, conditions-or-it-doesn't-apply); Rule 18's **hard floor that survives all autonomy grants** — credentials, money movement, destructive prod data, client-external factual claims ALWAYS gate on the human; read-before-report (no completion claim is reported while a dispatch is still in flight; the chat-channel guard that once checked this was removed with the channel in v0.2.0); the clarification threshold (assume-and-state below 30-min/reversible, one question above).
 
 **How it catches a weak agent:** the hard floor is the recognition that **some decisions must never depend on model judgment at all** — not weak, not strong. A weak agent inside the framework cannot rotate a credential, refund money, or truncate a prod table *by any path*, because those actions gate on a human regardless of what the model believes. The block-mode hooks demonstrate the deeper principle this plan generalizes in §C8: *when a rule is mechanically checkable, check it mechanically.* The dispatch guard doesn't ask the model to remember Rule Zero; it denies the tool call. Note the honest lesson already in memory: an earlier hardening attempt was reverted because block-mode was bypassable via first-token parsing and over-blocked legitimate work — deterministic guards must be engineered and adversarially tested (Cyra), not sprinkled.
 
@@ -452,7 +452,7 @@ are the product.
 
 **Sequencing rationale:** contracts before adapters (adapters render contracts; building adapters first would triple rework), Codex before Gemini (second harness forces the abstraction; third validates it), Proving Ground before any marketing claim (the repo's own evidence rule), GUI last (the 2026-07-02 design doc itself says the GUI is "a thin front end over primitives that already exist" — so the primitives come first).
 
-### E.3 Open decisions for Xavier
+### E.3 Open decisions for the maintainer
 
 1. **Ship-gate default posture** — advisory (warn) or enforcing (block) for new public installs? (Private instance history: block-mode was reverted once for over-blocking; recommend: enforcing at pre-push/CI where false positives are rare, advisory at pre-commit.)
 2. **Cross-model verification default** — on for the mandatory scope (2 vendors' API costs) or opt-in flag? Recommend opt-in until Proving Ground quantifies the catch-rate delta.

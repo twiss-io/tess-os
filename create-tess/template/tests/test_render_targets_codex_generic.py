@@ -11,7 +11,8 @@ claude-code coverage) for the two new targets:
     `generic` (render_agents_md() takes no harness argument; see its
     docstring in .tess/bin/tessctl).
   * expected_live_bytes() for every compiled artifact (AGENTS.md,
-    .codex/config.toml, .codex/prompts/*.md, prompts/*.md) matches the
+    .codex/config.toml, .agents/skills/tess-*/SKILL.md + agents/openai.yaml,
+    prompts/*.md) matches the
     direct render function it wraps — proving render_core_to_live() (and
     therefore doctor/verify) will compare against the SAME bytes the target
     actually writes.
@@ -19,7 +20,7 @@ claude-code coverage) for the two new targets:
   * The manifest write gate is honored (a target cannot bypass it).
   * The untracked-render-generated pass (_check_untracked_render_generated) —
     the mechanism doctor/verify/`lock --check` use to drift-check
-    `.codex/prompts/*.md` / `prompts/*.md`, which have NO individual
+    `.agents/skills/tess-*/**` / `prompts/*.md`, which have NO individual
     tess.lock entry of their own (the underlying `.tess/core/commands/*.md`
     core file is already lock-tracked under a DIFFERENT live_path,
     `.claude/commands/*.md` — see that function's docstring).
@@ -83,8 +84,8 @@ def _seed_agents(project, commands=None):
     core-internal via live_path=None — see .tess/tess.lock's real entries
     for agents-md/**), plus a couple of command bodies REGISTERED UNDER
     THEIR CLAUDE-CODE LIVE PATH (.claude/commands/<name>.md) — reproducing
-    the real "already tracked elsewhere" situation .codex/prompts and
-    prompts mirror into."""
+    the real "already tracked elsewhere" situation .agents/skills/tess-* and
+    skills/prompts mirror into."""
     commands = _COMMANDS_V1 if commands is None else commands
     project.add(None, _AGENTS_TPL, core_key=_AGENTS_TPL_KEY, render_live=False)
     for core_key, content in _AGENTS_FRAGMENTS.items():
@@ -133,7 +134,7 @@ def test_codex_enabled_generic_not_enabled_by_default(engine):
     manifest edit, never a registry side effect."""
     manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
     enabled = manifest["render_targets"]["enabled"]
-    assert enabled == ["claude-code", "codex"]
+    assert enabled == ["claude-code", "codex", "gemini"]  # v0.2.0: gemini enabled for new installs
     assert "generic" not in enabled
 
 
@@ -186,7 +187,7 @@ def test_render_agents_md_has_no_command_table(engine, project):
     """G3: the 26-row command table is DELIBERATELY DROPPED from AGENTS.md's
     own digest (Fable's 2026-07-07 reckoning §2.3 — "the 26-command table"
     is explicitly on the drop list). The underlying command bodies still get
-    mirrored verbatim into `.codex/prompts/*.md` / `prompts/*.md` (see
+    mirrored into `.agents/skills/tess-*/SKILL.md` / `prompts/*.md` (see
     test_codex_expected_live_bytes_matches_render_functions /
     test_generic_expected_live_bytes_matches_render_functions below) — only
     AGENTS.md's own always-mounted digest no longer reproduces them."""
@@ -210,9 +211,13 @@ def test_codex_expected_live_bytes_matches_render_functions(engine, project):
         engine.render_agents_md(project.root).encode("utf-8")
     assert codex.expected_live_bytes(project.root, ".codex/config.toml") == \
         engine.render_codex_config_toml(project.root).encode("utf-8")
-    assert codex.expected_live_bytes(project.root, ".codex/prompts/wake.md") == \
-        engine._render_command_prompt_bytes(project.root, "wake")
-    assert b"Do the wake thing." in codex.expected_live_bytes(project.root, ".codex/prompts/wake.md")
+    assert codex.expected_live_bytes(project.root, ".agents/skills/tess-wake/SKILL.md") == \
+        engine.render_agent_skill_md(project.root, "wake")
+    assert b"Do the wake thing." in codex.expected_live_bytes(project.root, ".agents/skills/tess-wake/SKILL.md")
+    assert codex.expected_live_bytes(project.root, ".agents/skills/tess-wake/agents/openai.yaml") == \
+        engine.render_agent_skill_openai_yaml(project.root, "wake")
+    # v0.2.0: the retired .codex/prompts mirrors are no longer compiled.
+    assert codex.expected_live_bytes(project.root, ".codex/prompts/wake.md") is None
 
 
 def test_generic_expected_live_bytes_matches_render_functions(engine, project):
@@ -235,6 +240,8 @@ def test_expected_live_bytes_none_for_paths_outside_scope(engine, project):
     assert codex.expected_live_bytes(project.root, "prompts/wake.md") is None  # that's generic's path
     assert generic.expected_live_bytes(project.root, ".codex/config.toml") is None  # codex-only
     assert generic.expected_live_bytes(project.root, ".codex/prompts/wake.md") is None
+    assert generic.expected_live_bytes(project.root, ".agents/skills/tess-wake/SKILL.md") is None
+    assert codex.expected_live_bytes(project.root, ".agents/skills/other/SKILL.md") is None
 
 
 def test_render_generated_paths_includes_every_command(engine, project):
@@ -245,7 +252,11 @@ def test_render_generated_paths_includes_every_command(engine, project):
     codex_paths = codex.render_generated_paths(project.root)
     generic_paths = generic.render_generated_paths(project.root)
     assert codex_paths == {"AGENTS.md", ".codex/config.toml",
-                           ".codex/prompts/wake.md", ".codex/prompts/close.md"}
+                           ".agents/skills/tess-wake/SKILL.md",
+                           ".agents/skills/tess-wake/agents/openai.yaml",
+                           ".agents/skills/tess-close/SKILL.md",
+                           ".agents/skills/tess-close/agents/openai.yaml"}
+    assert codex.retired_paths(project.root) == {".codex/prompts/wake.md", ".codex/prompts/close.md"}
     assert generic_paths == {"AGENTS.md", "prompts/wake.md", "prompts/close.md"}
 
 
@@ -272,7 +283,7 @@ def test_cli_list_targets_shows_three_targets(project, run_cli):
     assert not (project.root / "AGENTS.md").exists()
 
 
-def test_cli_render_target_codex_emits_agents_prompts_and_config(project, run_cli):
+def test_cli_render_target_codex_emits_agents_skills_and_config(project, run_cli):
     _seed_agents(project)
     project.write()
     r = run_cli(project.root, "render", "--target", "codex")
@@ -285,10 +296,13 @@ def test_cli_render_target_codex_emits_agents_prompts_and_config(project, run_cl
     config_toml = project.read_live(".codex/config.toml")
     assert 'approval_policy = "on-request"' in config_toml
 
-    wake_prompt = project.read_live(".codex/prompts/wake.md")
-    assert "Do the wake thing." in wake_prompt
-    close_prompt = project.read_live(".codex/prompts/close.md")
-    assert "Do the close thing." in close_prompt
+    wake_skill = project.read_live(".agents/skills/tess-wake/SKILL.md")
+    assert wake_skill.startswith("---\nname: tess-wake\n")
+    assert "Do the wake thing." in wake_skill
+    close_skill = project.read_live(".agents/skills/tess-close/SKILL.md")
+    assert "Do the close thing." in close_skill
+    assert not (project.root / ".codex" / "prompts").exists(), "v0.2.0: .codex/prompts is retired"
+    assert "rendered  .agents/skills/tess-*/ (2 skills)" in r.stdout
 
 
 def test_cli_render_target_generic_emits_agents_and_plain_prompts(project, run_cli):
@@ -324,7 +338,7 @@ def test_determinism_across_independent_projects(tmp_path, engine):
     target.render(proj_b.root, verbose=False)
 
     assert proj_a.read_live("AGENTS.md") == proj_b.read_live("AGENTS.md")
-    assert proj_a.read_live(".codex/prompts/wake.md") == proj_b.read_live(".codex/prompts/wake.md")
+    assert proj_a.read_live(".agents/skills/tess-wake/SKILL.md") == proj_b.read_live(".agents/skills/tess-wake/SKILL.md")
 
 
 def test_idempotent_repeat_render_no_drift(project, run_cli):
@@ -350,21 +364,29 @@ def test_idempotent_repeat_render_no_drift(project, run_cli):
 # ---------------------------------------------------------------------------
 
 def test_codex_render_honors_manifest_write_gate(project, engine):
+    """AGENTS.md is the codex target's REQUIRED doctrine output: when the
+    manifest does not own it, render refuses (GateError) rather than
+    silently skipping — a manifest missing it is corrupted. Optional outputs
+    outside owned_globs are skipped and reported instead (see
+    tests/test_v02_codex_skills.py). The gate itself is never widened."""
     _seed_agents(project)
     project.write()
     manifest_path = project.root / "tess.manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["owned_globs"] = [g for g in manifest["owned_globs"] if g != "AGENTS.md"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_bytes = manifest_path.read_bytes()
 
     target = engine.RENDER_TARGETS["codex"]
     with pytest.raises(engine.GateError):
         target.render(project.root, verbose=False)
+    assert not (project.root / "AGENTS.md").exists()
+    assert manifest_path.read_bytes() == manifest_bytes
 
 
 # ---------------------------------------------------------------------------
 # Untracked-render-generated pass — doctor/verify/lock --check tracking for
-# `.codex/prompts/*.md` / `prompts/*.md` (no individual tess.lock entry).
+# `.agents/skills/tess-*/**` / `prompts/*.md` (no individual tess.lock entry).
 # ---------------------------------------------------------------------------
 
 def test_untracked_check_clean_immediately_after_render(project, engine):
@@ -379,21 +401,21 @@ def test_untracked_check_clean_immediately_after_render(project, engine):
     assert all(r["pristine"] is True for r in results), results
 
 
-def test_doctor_flags_hand_edit_of_codex_prompt_as_uncaptured_drift(project, engine, run_cli, capsys):
+def test_doctor_flags_hand_edit_of_codex_skill_as_uncaptured_drift(project, engine, run_cli, capsys):
     _seed_agents(project)
     project.write()
     _set_enabled(project, ["codex"])
     engine.RENDER_TARGETS["codex"].render(project.root, verbose=False)
 
-    (project.root / ".codex" / "prompts" / "wake.md").write_text(
+    (project.root / ".agents" / "skills" / "tess-wake" / "SKILL.md").write_text(
         "SOMEONE HAND-EDITED THIS\n", encoding="utf-8"
     )
 
     r = run_cli(project.root, "doctor")
     assert r.returncode == 1, r.stdout
-    assert ".codex/prompts/wake.md" in r.stdout
+    assert ".agents/skills/tess-wake/SKILL.md" in r.stdout
     assert "tessctl render" in r.stdout
-    assert "tessctl capture .codex/prompts/wake.md" not in r.stdout
+    assert "tessctl capture .agents/skills/tess-wake/SKILL.md" not in r.stdout
 
 
 def test_doctor_clean_when_codex_enabled_but_not_yet_rendered(project, run_cli):
@@ -523,8 +545,8 @@ def test_doctrine_edit_repropagates_into_agents_md_via_update(project, gpg_key, 
 # ---------------------------------------------------------------------------
 
 def test_check_untracked_flags_deleted_prompt_as_drift(project, engine):
-    """Unit-level: deleting one already-rendered `.codex/prompts/*.md`
-    mirror must be reported as drift by _check_untracked_render_generated
+    """Unit-level: deleting one already-rendered `.agents/skills/tess-*/SKILL.md`
+    must be reported as drift by _check_untracked_render_generated
     itself, with every other (still-present) artifact of the same target
     unaffected."""
     _seed_agents(project)
@@ -532,45 +554,47 @@ def test_check_untracked_flags_deleted_prompt_as_drift(project, engine):
     _set_enabled(project, ["codex"])
     engine.RENDER_TARGETS["codex"].render(project.root, verbose=False)
 
-    (project.root / ".codex" / "prompts" / "close.md").unlink()
+    (project.root / ".agents" / "skills" / "tess-close" / "SKILL.md").unlink()
 
     results = engine._check_untracked_render_generated(project.root, covered=set())
     by_path = {r["live_path"]: r for r in results}
 
-    assert ".codex/prompts/close.md" in by_path, (
+    assert ".agents/skills/tess-close/SKILL.md" in by_path, (
         "the deleted artifact was not even reported — pre-fix code silently "
         "`continue`s on any missing render-generated path"
     )
-    deleted = by_path[".codex/prompts/close.md"]
+    deleted = by_path[".agents/skills/tess-close/SKILL.md"]
     assert deleted["drift"] is True and deleted["pristine"] is False, deleted
 
     # Untouched siblings of the SAME target must remain pristine, not
     # collaterally flagged.
     assert by_path["AGENTS.md"]["pristine"] is True
     assert by_path[".codex/config.toml"]["pristine"] is True
-    assert by_path[".codex/prompts/wake.md"]["pristine"] is True
+    assert by_path[".agents/skills/tess-wake/SKILL.md"]["pristine"] is True
+    assert by_path[".agents/skills/tess-close/agents/openai.yaml"]["pristine"] is True
 
 
-def test_doctor_flags_deleted_codex_prompt(project, run_cli):
+def test_doctor_flags_deleted_codex_skill(project, run_cli):
     _seed_agents(project)
     project.write()
     _set_enabled(project, ["codex"])
     r0 = run_cli(project.root, "render", "--target", "codex")
     assert r0.returncode == 0, r0.stderr
 
-    (project.root / ".codex" / "prompts" / "close.md").unlink()
+    (project.root / ".agents" / "skills" / "tess-close" / "SKILL.md").unlink()
 
     r = run_cli(project.root, "doctor")
     assert r.returncode == 1, (
         "doctor exited 0 after a rendered artifact was DELETED — the "
         f"doctrine-bearing file can vanish undetected (Fable MEDIUM):\n{r.stdout}\n{r.stderr}"
     )
-    assert ".codex/prompts/close.md" in r.stdout
+    assert ".agents/skills/tess-close/SKILL.md" in r.stdout
 
 
 def test_doctor_verify_lock_check_flag_deleted_agents_md_and_prompts_dir(project, run_cli):
-    """Reproduces the finding's second scenario verbatim: AGENTS.md itself,
-    plus the entire .codex/prompts/ directory, deleted after a real render.
+    """Reproduces the finding's second scenario: AGENTS.md itself, plus the
+    entire rendered skills directory (the v0.2.0 successor of
+    .codex/prompts/), deleted after a real render.
     All three surfaces the finding named (doctor, verify, lock --check) must
     now catch it instead of exiting 0."""
     _seed_agents(project)
@@ -580,7 +604,7 @@ def test_doctor_verify_lock_check_flag_deleted_agents_md_and_prompts_dir(project
     assert r0.returncode == 0, r0.stderr
 
     (project.root / "AGENTS.md").unlink()
-    shutil.rmtree(project.root / ".codex" / "prompts")
+    shutil.rmtree(project.root / ".agents" / "skills")
 
     d = run_cli(project.root, "doctor")
     assert d.returncode == 1, f"doctor should FAIL when AGENTS.md is deleted:\n{d.stdout}\n{d.stderr}"
@@ -618,7 +642,7 @@ def test_never_rendered_target_not_falsely_flagged_via_shared_agents_md(project,
     byte-identically by BOTH `codex` and `generic` (see CodexRenderTarget /
     GenericRenderTarget docstrings). With both enabled but only `generic`
     actually rendered, codex's OWN never-rendered artifacts
-    (.codex/config.toml, .codex/prompts/*.md) must NOT be flagged as
+    (.codex/config.toml, .agents/skills/tess-*/**) must NOT be flagged as
     "deleted" merely because the SHARED AGENTS.md already exists on disk —
     that would be a false positive the fix must not introduce."""
     _seed_agents(project)

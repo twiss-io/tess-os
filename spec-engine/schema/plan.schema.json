@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://tess-os.dev/spec-engine/contracts/plan.schema.json",
   "title": "Spec Engine — Plan Contract",
-  "description": "Machine-checkable form of the pre-approval draft (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2, deliverable (3): 'Plan -> Xavier/user approval gate -> complete spec generation'). This is the exact shape `spec_engine.types.Plan.to_log_record()` emits — what gets shown/logged at the approval gate before a SpecDocument exists. Shares the same content dataclass shapes as spec.schema.json (what_it_does/how_it_looks/how_it_works/data_model/open_questions) since approval promotes this content verbatim into the SpecDocument.",
+  "description": "Machine-checkable form of the pre-approval draft (TESS-VISION-AND-BUILD-SPEC.html Phase 1 Epic E2, deliverable (3): 'Plan -> operator approval gate -> complete spec generation'). This is the exact shape `spec_engine.types.Plan.to_log_record()` emits — what gets shown/logged at the approval gate before a SpecDocument exists. Shares the same content dataclass shapes as spec.schema.json (what_it_does/how_it_looks/how_it_works/data_model/open_questions) since approval promotes this content verbatim into the SpecDocument.",
   "type": "object",
   "properties": {
     "plan_id": { "type": "string", "minLength": 1 },

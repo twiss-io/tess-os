@@ -1,5 +1,7 @@
 # Playbook — Investor and Fundraising Prep
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Founder's Office  
 **Mode:** `/founder-mode`  
 **Output:** Investor narrative, pitch structure, financial framing, and preparation brief  
@@ -35,7 +37,7 @@ Before activating any guild, Tess must answer:
 | Role | Guild | Mandate |
 |---|---|---|
 | Owner | Finance (Alessia — Fundraising / Juliette — Narrative) | Capital strategy, raise structure, valuation logic, investor narrative architecture |
-| Core Contributor | Strategy (Athena) | Strategic framing, competitive positioning, business logic |
+| Core Contributor | Leah + `athena` lens | Strategic framing, competitive positioning, business logic |
 | Core Contributor | Messaging (Isadora) | Founder voice, pitch narrative, executive communication quality |
 | Reviewer | Research (Leah) | Market sizing, comparable raises, investor landscape intelligence |
 | Control | Legal (Victoria) — *if deal terms or structure are in scope* | Deal structure, term sheet logic, legal risk |

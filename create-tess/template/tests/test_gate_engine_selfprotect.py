@@ -53,7 +53,11 @@ REAL_POLICY_PATH = REPO_ROOT / "core" / "policy" / "policy.yaml"
 HAS_GIT = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not HAS_GIT, reason="git required")
 
-_COPY_IGNORE = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycache__")
+# "reviews": a PR under test may carry a committed verdict covering the
+# engine; these fixtures assert the NO-verdict path, so it is not copied.
+_COPY_IGNORE = shutil.ignore_patterns(
+    ".git", "tests", "reviews", ".pytest_cache", "__pycache__",
+)
 
 # The engine's own ship-check entrypoint — patched to a hardcoded, always-
 # clean early return. This is the EXACT attack the audit disclosed: an
@@ -91,6 +95,11 @@ def real_engine_root(tmp_path):
     .tess/bin/), one initial commit — the pristine, untampered baseline."""
     dst = tmp_path / "os"
     shutil.copytree(REPO_ROOT, dst, ignore=_COPY_IGNORE)
+    # The scenarios here are "no covering verdict". The maintainers' own committed
+    # verdicts (reviews/verdicts/) cover the engine at its current content, so a copy
+    # carrying them turns the expected COVERING_APPROVAL_MISSING into
+    # VERDICT_CONTENT_STALE. Drop them, as create-tess drops them from scaffolds.
+    shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     assert (dst / WORKFLOW_REL).exists()
     assert (dst / ".tess" / "bin" / "tessctl").exists()
     _git(dst, "init", "-q")

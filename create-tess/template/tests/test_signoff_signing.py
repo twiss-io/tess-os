@@ -177,8 +177,16 @@ def signoffs_dir_repo(tmp_path):
     the actually-shipped policy.yaml (unconditional today: signoff_keys and
     verifier_keys both ship empty by design)."""
     dst = tmp_path / "os"
-    ignore = shutil.ignore_patterns(".git", "tests", ".pytest_cache", "__pycache__")
+    # "reviews": a PR under test may carry a committed verdict covering the
+    # engine; this fixture asserts the NO-verdict path, so it is not copied.
+    ignore = shutil.ignore_patterns(
+        ".git", "tests", "reviews", ".pytest_cache", "__pycache__",
+    )
     shutil.copytree(REPO_ROOT, dst, ignore=ignore)
+    # "No covering verdict" scenarios: drop the maintainers' committed verdicts
+    # (reviews/verdicts/), which would otherwise cover the engine and turn
+    # COVERING_APPROVAL_MISSING into VERDICT_CONTENT_STALE.
+    shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     _init_repo(dst)
     _git(dst, "add", "-A")
     _git(dst, "commit", "-q", "-m", "initial (real shipped tree)")

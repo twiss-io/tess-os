@@ -7,7 +7,7 @@ file: commands
 
 These are **first-class wired slash commands.** Each `/token` below is backed by a real `.claude/commands/<name>.md` file that the host registers and expands. Invoking the command and stating its intent in natural language are equivalent — both map to the same doctrine flow — so saying "/finalize" or "deliver the final synthesis memo" reaches the same place. Use them to direct the mission at any stage.
 
-> **Phase 2 (2026-06-27):** all commands documented here are now wired — `.claude/commands/` holds one `<name>.md` file per command (frontmatter description + an instruction body that maps the command to its doctrine flow). This supersedes the Phase-0 "conventions, not wired" caveat. The command file is the executable entry point; this reference is the canonical catalogue. See `kb/wiki/synthesis/2026-06-26-tess-starter-review.md` §3 for the original gap.
+> **Phase 2 (2026-06-27):** all commands documented here are now wired — `.claude/commands/` holds one `<name>.md` file per command (frontmatter description + an instruction body that maps the command to its doctrine flow). This supersedes the Phase-0 "conventions, not wired" caveat. The command file is the executable entry point; this reference is the canonical catalogue. Other runtimes get the same commands in their own native format when their render target is enabled (`tessctl render --list-targets` lists the targets and the paths each one writes).
 
 ---
 
@@ -81,7 +81,7 @@ Returns: next moves in sequence, owner of each, and any dependencies between the
 ### `/wake`
 **Session start checklist — orient, check mission state, surface blockers.**
 
-Tess orients at the beginning of a session: loads doctrine context, checks for active missions, surfaces any pending decisions or blockers, and notifies the operator via Telegram that a session is live.
+Tess orients at the beginning of a session: loads doctrine context, checks for active missions, surfaces any pending decisions or blockers, and reports in the active session that it is live.
 
 *Use when:* Starting a new session or resuming after a break.  
 *Output:* Active mission state, pending decisions, blockers, and session readiness confirmation.
@@ -203,16 +203,16 @@ Returns: each agent's name, role, mandate, participation role on this mission, a
 ---
 
 ### `/add-agent [Name]`
-**Request Eva to recruit a new specialist agent.**
+**Cover a capability gap with a lens, not a new agent.**
 
-Eva reviews the mission, assesses the capability gap, and recruits or designs the role. Returns a full agent brief before activation.
+The roster is fixed at ten roles (roster.md). The conductor applies the `eva` lens to the gap, reuses an existing lens or drafts a new one in `conductor/lenses/`, and never creates a new agent file.
 
 ---
 
 ### `/remove-agent [Name]`
-**Request Eva to assess and remove an agent.**
+**Retire a lens, or bench one of the nine roles for a stated reason.**
 
-Eva evaluates whether the agent is still earning their seat. If not, removes and reassigns or closes the workstream.
+A lens that no longer earns its place is retired from the index. `tessctl bench <role>` stages a role; benching Reid, Quinn or Cyra removes a mandatory verifier and needs the operator's reason.
 
 ---
 
