@@ -172,6 +172,12 @@ def test_pre_v02_manifest_skips_skills_as_not_owned_and_names_the_glob(project, 
     assert '".agents/skills/tess-*/**"' in skip_lines[0]
     assert "4 output(s) not written" in skip_lines[0], skip_lines[0]  # 2 skills x 2 files
 
+    # doctor must not fail an upgraded install for outputs its manifest
+    # does not let Tess write (render already named the glob to add).
+    d = run_cli(project.root, "doctor")
+    assert d.returncode == 0, d.stdout + d.stderr
+    assert ".agents/skills/tess-wake/SKILL.md" not in d.stdout
+
     manifest["owned_globs"].append(".agents/skills/tess-*/**")
     mf_path.write_text(json.dumps(manifest), encoding="utf-8")
     r2 = run_cli(project.root, "render", "--target", "codex")

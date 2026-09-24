@@ -3572,8 +3572,21 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     """
     results = []
     enabled = enabled_render_targets(root)
+    # v0.2.0: a declared output outside this install's owned_globs can never
+    # be written by render (write_render_output skips it as 'not-owned' and
+    # render prints the glob to add), so it is not expected to exist and is
+    # not this check's to flag — e.g. `.agents/skills/tess-*` on an install
+    # whose manifest predates v0.2.0. Read path: fail OPEN to "owned" on a
+    # missing/unreadable manifest, like _enabled_target_names().
+    try:
+        _owned = json.loads((root / MANIFEST_FILE).read_text(encoding="utf-8")).get("owned_globs")
+    except (OSError, ValueError, AttributeError):
+        _owned = None
     for name, target in enabled.items():
-        target_rels = sorted(target.render_generated_paths(root))
+        target_rels = sorted(
+            r for r in target.render_generated_paths(root)
+            if _owned is None or path_matches_globs(r, _owned)
+        )
 
         # Paths also owned by another currently-enabled target (AGENTS.md
         # today) prove nothing about whether THIS target specifically has
