@@ -464,8 +464,19 @@ CLAUDE_TOKEN_MAP = {
 # CodexRenderTarget/GenericRenderTarget.render()); only AGENTS.md's own
 # always-mounted digest is re-scoped. Auditing the mirrored command bodies
 # themselves is future work (2026-07-07 reckoning §2.5), not part of this fix.
+#   - {{WORKER_DISPATCH_SCOPE}} / {{WORKER_CHANNEL}} / {{WORKER_FILE_PLACEMENT}}
+#     (v0.2.0, ws-doc worker fragments): three scope facts a worker needs
+#     so the orchestrator-only rules in CLAUDE.md are not misapplied to it —
+#     the dispatch rule binds only the conductor session (a worker executes
+#     directly), Telegram is a Claude Code conductor channel (a worker
+#     reports through its own runtime), and where new files go. Each is
+#     phrased without any WORKER_DOCTRINE_DENYLIST phrase: they tell a
+#     worker what does NOT apply to it, never how to dispatch.
 AGENTS_TOKEN_MAP = {
     "{{WORKER_HARD_FLOOR}}":       ".tess/core/templates/agents-md/worker-hard-floor.md",
+    "{{WORKER_DISPATCH_SCOPE}}":   ".tess/core/templates/agents-md/worker-dispatch-scope.md",
+    "{{WORKER_CHANNEL}}":          ".tess/core/templates/agents-md/worker-channel.md",
+    "{{WORKER_FILE_PLACEMENT}}":   ".tess/core/templates/agents-md/worker-file-placement.md",
     "{{WORKER_GATE_COMPLIANCE}}":  ".tess/core/templates/agents-md/gate-compliance.md",
     "{{HARNESS_NOTE}}":            ".tess/core/templates/agents-md/harness-note.md",
     "{{WORKER_SESSION_MEMORY}}":   ".tess/core/templates/agents-md/session-memory.md",
