@@ -8,23 +8,33 @@ All notable changes to Tess OS are documented here. This project adheres to
 ## [0.2.0] — 2026-09-24
 
 <!-- release-notes:start -->
-**Tess OS v0.2.0: a safer engine, three native runtimes, and an honest account of what is enforced.**
+**Tess OS v0.2.0: a safer engine, native targets for Claude Code, Codex and Gemini CLI, and an honest account of what is enforced.**
 
 **Runtimes (per-runtime levels, see `adapters/CONFORMANCE.md`; this is not a parity claim):**
 - **Claude Code: Enforced** (reference). Hooks and the ship-gate enforce Tess gates.
 - **Codex: Partial.** Tess commands render as `.agents/skills/tess-*` skills plus AGENTS.md; Codex does not run Tess hooks.
-- **Gemini CLI: Partial.** New render target: project context via AGENTS.md, commands as `.gemini/commands/tess/*.toml` (`/tess:<cmd>`), hooks only where Gemini's documented events match. Verified against the Gemini CLI docs and a no-auth CLI smoke test, not an authenticated model run.
+- **Gemini CLI: Advisory.** New `gemini` render target, enabled in new installs: `GEMINI.md` imports `AGENTS.md`, and the commands render as `.gemini/commands/tess/*.toml` (`/tess:<cmd>`). Both load only in a trusted folder. Tess renders no Gemini hook, setting or policy, so nothing Tess ships can block a tool call there. Checked against the Gemini CLI docs and a CLI smoke test that needs no sign-in; no Gemini model session was run.
+- **GitHub Copilot CLI and Cursor: Partial, untested.** No dedicated target; they read the Claude Code output and hooks, and their hook timeouts fail open.
 - **Any other AGENTS.md-compatible tool: Advisory.** Doctrine is text the model may follow; nothing is enforced.
 
-**Engine:** snapshots before every write-back plus `tessctl rollback`; init/restore/render refuse to overwrite drifted files; render outputs are tracked in `tess.lock` (`render_outputs`), so a hand-edited AGENTS.md or skill is preserved and reported as `skipped:<reason>`; a symlink write gate; `tessctl approve` needs an interactive terminal.
+**Engine:** snapshots before every write-back plus `tessctl rollback`; init/restore/render refuse to overwrite drifted files; render outputs are tracked in `tess.lock` (`render_outputs`), so a hand-edited AGENTS.md or skill is preserved and reported as `skipped:<reason>`; a symlink write gate; `tessctl approve` needs an interactive terminal; `tessctl update` now also installs new core-only upstream files (templates), so an upgraded install renders the same doctrine as a fresh one.
 
 **Contract changes for adopters:**
 - `init`, `restore` and `render` now refuse on drift instead of overwriting; `approve` fails without a TTY.
+- `tessctl update` refuses while a render output such as AGENTS.md carries a hand edit, and names the remedy: move the edit to a `.local.md` file or an operator stub, or run `tessctl publish <path>`. After that the update runs and the edit is kept.
 - `.codex/prompts/*` are retired (reported, never deleted). An upgraded 0.1.x install keeps `.agents/**` in `never_touch`, so Codex skills are `skipped:not-owned` until you add `.agents/skills/tess-*/**` to `owned_globs`; render and doctor print that exact glob. New installs ship it.
 - `tess.lock` may carry an optional `render_outputs` section; absent is valid.
 - Upgrade order: `gpg --import .tess/keys/twiss-release-key.asc`, `tessctl self-update --ref v0.2.0`, then `tessctl update --ref v0.2.0` (conductor/release-process.md).
 
-**Also:** de-identified product text and a generic in-repo operator profile (`tessctl update` no longer installs the maintainer's own profile); 20 Dependabot alerts closed; `create-tess --force` preflight and backup; a release workflow that can pass (annotated-tag restore, gitleaks scoped to the tag's history, notes from this summary).
+**Second brain (new):** `scripts/brain/onboard.py` sets up a new install as a personal, agency or organisation brain (a START HERE map, entity folders and decision records) and is wired into the Claude Code session hooks; `scripts/brain/probe.py --static` checks that a fresh clone can find its way.
+
+**Telegram removed from the base harness:** external notification channels are optional operator add-ons, and the conductor reports inside the active session.
+
+**Orchestration budget:** proportional fan-out, a scoped Rule Zero (only the top-level conductor dispatches; dispatched specialists execute directly), no messaging workflow agents, and one writer per worktree (`conductor/orchestration-budget.md`).
+
+**Ten-role roster (new):** the 144-persona roster is replaced by nine dispatchable roles (`ada`, `morwenna`, `leah`, `reid`, `quinn`, `cyra`, `clio`, `vega`, `iris`) plus the conductor, defined by permissions, model tier and isolation (`conductor/roster.md`); the former personas, including the six outcome orchestrators, are now a ~140-entry lens library (`conductor/lenses/`) a role is briefed with by name, not dispatched as. Codex also renders one custom-agent file per installed role (`.codex/agents/<name>.toml`).
+
+**Also:** unused since v0.2.0, removed in v0.2.1: the two Telegram-channel placeholder lines in `.env.example` (`TELEGRAM_BOT_TOKEN` / `TELEGRAM_DM_CHAT_ID`) are a credentials hard-floor path, so deleting them needs a signed operator sign-off and `signoff_keys` ships empty; de-identified product text and a generic in-repo operator profile (`tessctl update` no longer installs the maintainer's own profile); 20 Dependabot alerts closed; `create-tess --force` preflight and backup; a release workflow that can pass (annotated-tag restore, gitleaks scoped to the tag's history, notes from this summary).
 
 **How this release was approved (read this):**
 - v0.2.0 approvals were signed with an **agent-held verifier key**: the registered Cyra key (F9321F92…76E8) has no passphrase and is reachable by the AI agents that built, reviewed and merged this release under the maintainer's direction. Custody hardening (passphrase or hardware key, human sign-off, the #76 topology) is the first v0.2.1 item.
