@@ -1877,6 +1877,146 @@ def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
     return counts
 
 
+def _first_entry_status(lock: dict, rel: str) -> str:
+    """Status of the FIRST lock entry whose live_path is `rel` (core-managed
+    when none). Interim stand-in until eng-b's effective_live_status lands."""
+    for attrs in (lock.get("files") or {}).values():
+        if (attrs or {}).get("live_path") == rel:
+            return attrs.get("status", "core-managed")
+    return "core-managed"
+
+
+def _gate_live_status(lock: dict, rel: str) -> str:
+    """The status the drift gate uses for a live path."""
+    return _first_entry_status(lock, rel)
+
+
+def _security_live_paths(lock: dict) -> set:
+    """Live paths backed by at least one security-tier lock entry."""
+    return {
+        attrs.get("live_path")
+        for core_key, attrs in (lock.get("files") or {}).items()
+        if attrs and attrs.get("live_path") and is_security_tier(core_key, attrs)
+    }
+
+
+def _expected_render_output(root: Path, lock: dict, target, rel: str) -> bytes | None:
+    """What `target` would write at `rel`: its bespoke compile when it has
+    one, else the lock-entry render (the claude-code name-bearing files)."""
+    expected = target.expected_live_bytes(root, rel)
+    if expected is not None:
+        return expected
+    for core_key, attrs in (lock.get("files") or {}).items():
+        if attrs and attrs.get("live_path") == rel and (root / core_key).exists():
+            return render_core_to_live(root / core_key, root / rel, root, attrs=attrs)
+    return None
+
+
+def _render_output_drift(root: Path, lock: dict, names=None) -> dict:
+    """
+    Bug e (render half): {target name: [rel, ...]} for every ENABLED target
+    (or the named ones) whose EXISTING outputs differ from what it would write
+    now, on a path whose status is core-managed. A render() call writes all
+    of a target's outputs at once, so init/restore skip such a target whole
+    rather than clobber a hand edit (the 5c2d698 repro: an AGENTS.md edit, a
+    .codex/prompts edit and an [mcp_servers] block in .codex/config.toml were
+    all lost with no pre-image).
+    """
+    targets = (enabled_render_targets(root) if names is None
+               else {n: RENDER_TARGETS[n] for n in names if n in RENDER_TARGETS})
+    result: dict = {}
+    for name, target in sorted(targets.items()):
+        drifted = []
+        for rel in sorted(target.render_generated_paths(root)):
+            live = root / rel
+            if not os.path.lexists(live):
+                continue
+            if _gate_live_status(lock, rel) != "core-managed":
+                continue
+            expected = _expected_render_output(root, lock, target, rel)
+            if expected is None:
+                continue
+            try:
+                current = live.read_bytes()
+            except OSError:
+                current = None  # dangling symlink / unreadable: not what render writes
+            if current != expected:
+                drifted.append(rel)
+        if drifted:
+            result[name] = drifted
+    return result
+
+
+def _record_forced_overwrites(root: Path, rels, op: str, snapshot_id: str | None) -> None:
+    """Record every `--force` overwrite of uncaptured drift in modified.json,
+    with the snapshot that holds its pre-image, so `tessctl doctor` WARNs
+    about it until `tessctl doctor --ack-overwrites`."""
+    rels = [r for r in dict.fromkeys(rels) if r]
+    if not rels:
+        return
+    events = load_modified(root)
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    for rel in rels:
+        events.append({
+            "evt_id": f"evt_{len(events) + 1:04d}",
+            "path": rel,
+            "core_key": None,
+            "source": op,
+            "agent": f"tessctl-{op}",
+            "ts": now,
+            "kind": "forced-overwrite",
+            "pre_image": snapshot_id,
+            "acked": False,
+            "diff": "",
+            "rationale": (f"`tessctl {op} --force` overwrote uncaptured drift; "
+                          f"pre-image in .tess/snapshots/{snapshot_id}"),
+        })
+    save_modified(root, events)
+
+
+def _forced_overwrite_warnings(root: Path) -> list:
+    """Unacknowledged forced overwrites (see _record_forced_overwrites)."""
+    out = []
+    for evt in load_modified(root):
+        if not isinstance(evt, dict) or evt.get("kind") != "forced-overwrite":
+            continue
+        if evt.get("acked"):
+            continue
+        out.append(evt)
+    return out
+
+
+# Filesystem noise that is never a framework file (Finder metadata, empty-dir
+# placeholders, bytecode caches) and so never needs a tess.lock entry.
+_CORE_UNTRACKED_IGNORED_NAMES = frozenset({".DS_Store", ".gitkeep"})
+_CORE_UNTRACKED_IGNORED_DIRS = frozenset({"__pycache__"})
+
+
+def _untracked_core_files(root: Path, lock: dict) -> list:
+    """
+    Bug 10: every file under .tess/core with NO tess.lock entry. Such a file
+    has no base_sha, so tampering with it passes every integrity check —
+    5c2d698 shipped two (templates/claude-md/hard-floor.md, which feeds the
+    {{CORE_HARD_FLOOR}} hard floor into CLAUDE.md, and roster-paths.json):
+    editing hard-floor.md and re-rendering left doctor, verify and
+    `lock --check` all OK. doctor, verify and `lock --check` FAIL on any.
+    """
+    core = root / CORE_DIR
+    if not core.is_dir():
+        return []
+    keys = set((lock.get("files") or {}).keys())
+    out = []
+    for dirpath, dirnames, filenames in os.walk(core):
+        dirnames[:] = sorted(d for d in dirnames if d not in _CORE_UNTRACKED_IGNORED_DIRS)
+        for fname in sorted(filenames):
+            if fname in _CORE_UNTRACKED_IGNORED_NAMES:
+                continue
+            rel = Path(dirpath, fname).relative_to(root).as_posix()
+            if rel not in keys:
+                out.append(rel)
+    return out
+
+
 def _unknown_render_target_findings(root: Path) -> list:
     """
     Bug 14: names in tess.manifest.json render_targets.enabled that are not
@@ -2068,8 +2208,15 @@ def doctor_check_file(core_key: str, attrs: dict, root: Path) -> dict:
 
     # For staged: intentionally benched. Absent from live was already handled above.
     # If the live file IS somehow present (e.g. bench was not run after a manual install),
-    # treat like 'held' — drift silently, no error raised.
+    # no error is raised — but v0.2 (bug 11) no longer stays silent: nothing checks
+    # that file (no drift check, update skips it as "not in live tree"), so doctor
+    # prints a non-failing STAGED-WARN naming the remedy.
     if file_status == "staged":
+        result["staged_warn"].append(
+            f"present-but-unmanaged: {live_rel} exists but its lock status is 'staged' "
+            f"(benched), so no integrity check covers it — `tessctl recruit <name>` to "
+            f"manage it, or delete the file"
+        )
         result["pristine"] = True
         return result
 
@@ -2135,13 +2282,20 @@ def cmd_init(args, root: Path) -> None:
     — a fresh init on a codex-enabled manifest must produce a pristine
     AGENTS.md/.codex/** too, not leave them missing until a separate
     `tessctl render` is run by hand).
-    With --from <upstream>: TODO (network).
+    With --from <upstream>: not implemented; exits non-zero (bug 13 — it
+    used to print a TODO and exit 0, which read as success).
+
+    v0.2 (bugs a/e/12): ONE consolidated snapshot of everything init can
+    write is taken first, and init no longer overwrites uncaptured drift —
+    see _lifecycle_sync (shared with `tessctl restore`).
     """
-    if args.from_upstream:
+    if getattr(args, "from_upstream", None):
         # TODO Phase 5: git clone upstream into .tess/core, generate tess.lock
-        print(f"[TODO] --from <upstream> not yet implemented. Clone {args.from_upstream} to {root}/.tess/core manually.")
-        print("Once .tess/core is in place, run `tessctl init` without --from to complete setup.")
-        return
+        sys.exit(
+            f"tessctl init: --from <upstream> is not implemented yet (TODO). Nothing was changed.\n"
+            f"  Clone {args.from_upstream} into {root}/.tess/core manually, then run "
+            f"`tessctl init` without --from to complete setup."
+        )
 
     core_path = root / CORE_DIR
     if not core_path.exists():
@@ -2167,12 +2321,12 @@ def cmd_init(args, root: Path) -> None:
     print(f"tessctl init: using committed core at {core_path}")
     print(f"tessctl init: tess.lock version = {_lock_version(root)}")
 
-    # Restore live tree
-    _do_restore(root, verbose=True)
-
-    # Render every enabled target's compiled artifacts (issue #118 — was
-    # claude-code-only _do_render(); see this function's docstring).
-    _render_enabled_targets(root, verbose=True)
+    # Restore the live tree, then render every enabled target's compiled
+    # artifacts (issue #118 — was claude-code-only _do_render()), both behind
+    # one snapshot and the uncaptured-drift gate.
+    blocked = _lifecycle_sync(root, op="init", force=bool(getattr(args, "force", False)))
+    if blocked:
+        _exit_blocked_by_drift("init", blocked)
 
     print("\ntessctl init: complete.")
     print("  Run `tessctl doctor` to verify integrity.")
@@ -2246,10 +2400,29 @@ def _lock_version(root: Path) -> str:
 # Command: restore
 # ---------------------------------------------------------------------------
 
-def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dict:
+def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
+                force: bool = False, snapshot_id: str | None = None,
+                op: str = "restore") -> dict:
     """
     Core restore logic. Returns counts dict.
     Copies .tess/core/<file> → live_path for all framework-owned files.
+
+    v0.2 drift gate (bug e): an EXISTING live file whose bytes differ from what
+    core renders, on a core-managed path, is uncaptured drift — a hand edit,
+    or a stale render. It is never overwritten silently any more:
+      - default: skipped, `WOULD CLOBBER UNCAPTURED DRIFT <path>` printed,
+        and the path listed in counts["drift_paths"] (the caller exits
+        non-zero);
+      - force=True: overwritten (listed in counts["forced_paths"] so the
+        caller records it in modified.json with the snapshot id), EXCEPT a
+        security-tier copy file, which is refused even with force (it must go
+        through capture → quarantine → approve). A render-generated path such
+        as CLAUDE.md is re-rendered from core under force: that restores the
+        authoritative text, including the security-tier hard floor.
+    v0.2 snapshots (bugs a/12): pre-images go into ONE consolidated snapshot
+    (`snapshot_id`, taken by the caller), not per-second `-pre` directories.
+    A direct caller that passes no snapshot_id gets one taken lazily, before
+    the first overwrite of an existing file.
 
     Defect #5 (manifest write gate): every write is checked against
     owned_globs + never_touch BEFORE touching the filesystem.
@@ -2280,8 +2453,18 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
         "skipped_locally_modified": 0,
         "missing_core": 0,
         "skipped_gate": 0,
+        "skipped_drift": 0,
+        "refused_security": 0,
+        "forced": 0,
+        "drift_paths": [],
+        "forced_paths": [],
+        "snapshot": snapshot_id,
     }
     gate_skipped: list[str] = []
+    own_snapshot = False
+    drift_seen: set = set()
+    security_live = _security_live_paths(lock)
+    render_generated = render_generated_live_paths(root)
 
     files = lock.get("files", {})
     for core_key, attrs in files.items():
@@ -2334,10 +2517,39 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
                 print(f"  ok    {live_rel}")
             continue
 
+        # v0.2 drift gate (bug e): an existing live file that differs from
+        # core is uncaptured drift — never overwritten silently.
+        if os.path.lexists(live_path):
+            if live_rel in drift_seen:
+                continue  # several lock entries share this live path (CLAUDE.md)
+            is_sec = live_rel in security_live and live_rel not in render_generated
+            if is_sec or not force:
+                drift_seen.add(live_rel)
+                counts["drift_paths"].append(live_rel)
+                if is_sec and force:
+                    counts["refused_security"] += 1
+                    print(
+                        f"  REFUSED  {live_rel} [SECURITY]  — uncaptured security-tier "
+                        f"drift is never force-overwritten; run `tessctl capture {live_rel}` "
+                        f"(quarantine) then `tessctl approve`"
+                    )
+                else:
+                    counts["skipped_drift"] += 1
+                    badge = " [SECURITY]" if is_sec else ""
+                    print(f"  WOULD CLOBBER UNCAPTURED DRIFT {live_rel}{badge}  — skipped")
+                continue
+            if not dry_run:
+                drift_seen.add(live_rel)
+                counts["forced"] += 1
+                counts["forced_paths"].append(live_rel)
+
         if not dry_run:
-            # Defect #6: snapshot existing live file before overwriting
-            if live_path.exists():
-                snapshot_single_file(root, live_rel)
+            # v0.2 (bugs a/12): the pre-image lives in ONE consolidated
+            # snapshot for the whole operation. Taken lazily for a direct
+            # caller that did not pass one, before the first overwrite.
+            if not counts["snapshot"]:
+                counts["snapshot"] = snapshot_live_tree(root, lock, label=op)
+                own_snapshot = True
 
             # H2/M3: manifest-gated atomic write (guarded_write calls gate internally).
             # BULK-SKIP (BLOCKER-1): catch GateError per-file; skip with WARN, do NOT abort.
@@ -2347,6 +2559,9 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
             except GateError as e:
                 counts["skipped_gate"] += 1
                 gate_skipped.append(live_rel)
+                if live_rel in counts["forced_paths"]:
+                    counts["forced_paths"].remove(live_rel)
+                    counts["forced"] -= 1
                 print(f"  WARN  skipped {live_rel!r}: {e}")
                 continue
         else:
@@ -2360,8 +2575,11 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
                 continue
 
         counts["updated"] += 1
-        verb = "would update" if dry_run else "updated"
-        if verbose:
+        if live_rel in counts["forced_paths"]:
+            print(f"  FORCED  overwrote uncaptured drift in {live_rel}  "
+                  f"(pre-image in snapshot {counts['snapshot']})")
+        elif verbose:
+            verb = "would update" if dry_run else "updated"
             print(f"  {verb}  {live_rel}")
 
     if gate_skipped:
@@ -2370,6 +2588,11 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
             f"(symlink-parent or never_touch violation — local version wins):\n"
             + "\n".join(f"    {p}" for p in gate_skipped)
         )
+
+    if own_snapshot:
+        if counts["forced_paths"]:
+            _record_forced_overwrites(root, counts["forced_paths"], op, counts["snapshot"])
+        _finish_snapshot(root, counts["snapshot"], verbose=verbose)
 
     return counts
 
@@ -2387,25 +2610,103 @@ def cmd_restore(args, root: Path) -> None:
     compile step must still refresh AGENTS.md/.codex/** when codex/generic
     are enabled, or `tessctl restore` (e.g. after `rename` on a fresh clone,
     or CI) leaves them stale relative to the just-restored core/profile.
+
+    v0.2 (bugs a/e/12): one consolidated snapshot first; uncaptured drift is
+    skipped (non-zero exit) unless --force; security-tier drift is refused
+    even with --force. See _lifecycle_sync.
     """
     dry_run = getattr(args, "dry_run", False)
+    force = bool(getattr(args, "force", False))
     if dry_run:
         print("tessctl restore --dry-run: showing what would change")
-    else:
-        print("tessctl restore: syncing live tree from .tess/core …")
+        counts = _do_restore(root, verbose=True, dry_run=True, force=force)
+        blocked = list(counts["drift_paths"])
+        for name, rels in sorted(_render_output_drift(root, load_lock(root)).items()):
+            for rel in rels:
+                if rel not in blocked:
+                    blocked.append(rel)
+                    print(f"  WOULD CLOBBER UNCAPTURED DRIFT {rel}  (render target {name})")
+        print(f"\nrestore: {counts['updated']} would be updated, "
+              f"{counts['skipped_status']} skipped (user-owned), "
+              f"{counts['skipped_gate']} skipped (write-gate / symlink), "
+              f"{counts['missing_core']} missing core, "
+              f"{len(blocked)} uncaptured drift(s) that restore would "
+              f"{'overwrite' if force else 'refuse to overwrite'}")
+        return
 
-    counts = _do_restore(root, verbose=True, dry_run=dry_run)
+    print("tessctl restore: syncing live tree from .tess/core …")
+    blocked = _lifecycle_sync(root, op="restore", force=force)
+    if blocked:
+        _exit_blocked_by_drift("restore", blocked)
+    print("restore: complete.")
 
-    print(f"\nrestore: {counts['updated']} {'would be ' if dry_run else ''}updated, "
+
+def _lifecycle_sync(root: Path, op: str, force: bool = False) -> list:
+    """
+    Shared body of `tessctl init` and `tessctl restore` (v0.2 bugs a/e/12):
+
+      1. ONE consolidated snapshot of everything the operation can write
+         (every lock live_path, every enabled target's outputs, tess.lock);
+      2. the drift-gated core -> live copy loop (_do_restore);
+      3. render every ENABLED target, except a target with uncaptured drift in
+         one of its outputs (AGENTS.md, .codex/**, CLAUDE.md, ...) — that
+         target is skipped whole, because a target's render() writes all of
+         its outputs at once. With force the target renders (and overwrites);
+      4. forced overwrites are recorded in modified.json with the snapshot id,
+         so `tessctl doctor` WARNs until acknowledged;
+      5. the snapshot is kept when anything changed, discarded otherwise.
+
+    Returns the live paths left untouched because of uncaptured drift (empty
+    list = the operation completed).
+    """
+    lock = load_lock(root)
+    snap_id = snapshot_live_tree(root, lock, label=op)
+    print(f"  snapshot → {SNAPSHOTS_DIR}/{snap_id}")
+    counts = _do_restore(root, verbose=True, force=force, snapshot_id=snap_id, op=op)
+    blocked = list(counts["drift_paths"])
+    forced = list(counts["forced_paths"])
+
+    print(f"\n{op}: {counts['updated']} updated, "
           f"{counts['skipped_status']} skipped (user-owned), "
           f"{counts['skipped_gate']} skipped (write-gate / symlink), "
-          f"{counts['missing_core']} missing core")
+          f"{counts['missing_core']} missing core, "
+          f"{counts['skipped_drift'] + counts['refused_security']} uncaptured drift(s) not overwritten, "
+          f"{counts['forced']} forced")
 
-    if not dry_run:
-        # Also render every enabled target's compiled artifacts (issue #118
-        # — was claude-code-only _do_render(); see this function's docstring).
-        _render_enabled_targets(root, verbose=True)
-        print("restore: complete.")
+    skip_targets = set()
+    for name, rels in sorted(_render_output_drift(root, load_lock(root)).items()):
+        if force:
+            forced.extend(r for r in rels if r not in forced)
+            continue
+        skip_targets.add(name)
+        for rel in rels:
+            if rel not in blocked:
+                blocked.append(rel)
+                print(f"  WOULD CLOBBER UNCAPTURED DRIFT {rel}  — skipped")
+        print(f"  skip render target {name!r} — uncaptured drift in: {', '.join(rels)}")
+
+    # Render every enabled target's compiled artifacts (issue #118).
+    _render_enabled_targets(root, verbose=True, skip=skip_targets)
+
+    if forced:
+        _record_forced_overwrites(root, forced, op, snap_id)
+    _finish_snapshot(root, snap_id)
+    return blocked
+
+
+def _exit_blocked_by_drift(op: str, blocked: list) -> None:
+    """Non-zero exit for init/restore when uncaptured drift was left in place."""
+    lines = "\n".join(f"    {p}" for p in blocked)
+    sys.exit(
+        f"\ntessctl {op}: INCOMPLETE — {len(blocked)} path(s) with uncaptured drift "
+        f"were NOT overwritten (nothing was lost):\n{lines}\n"
+        f"  Resolve each one, then re-run `tessctl {op}`:\n"
+        f"    keep a hand edit    → `tessctl capture <path>` (security-tier: quarantine, then "
+        f"`tessctl approve`), or move it into <file>.local.md\n"
+        f"    stale render only   → `tessctl render`\n"
+        f"    discard the edit    → `tessctl {op} --force` (pre-images stay in the snapshot; "
+        f"security-tier copy files are never force-overwritten)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3122,7 +3423,7 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     return results
 
 
-def _render_enabled_targets(root: Path, verbose: bool = False) -> list:
+def _render_enabled_targets(root: Path, verbose: bool = False, skip=()) -> list:
     """
     HIGH-1: render every ENABLED render target for this install (MED-3).
     Shared by `tessctl render` (no flags) and cmd_update's Step 7, so an
@@ -3130,9 +3431,12 @@ def _render_enabled_targets(root: Path, verbose: bool = False) -> list:
     actual Decision #1 promise ("one core, rendered per harness"), not just
     Claude Code's two files. Returns the sorted list of target names
     rendered (empty if no targets are enabled for this install).
+
+    `skip` (v0.2, bug e): target names NOT to render this time — init/restore
+    pass the targets whose outputs carry uncaptured drift.
     """
     targets = enabled_render_targets(root)
-    names = sorted(targets)
+    names = sorted(n for n in targets if n not in set(skip))
     for name in names:
         targets[name].render(root, verbose=verbose)
     return names
@@ -3189,8 +3493,12 @@ def cmd_render(args, root: Path) -> None:
                     f"anyway because --target was explicit."
                 )
         print(f"tessctl render — target(s): {', '.join(requested)} …")
+        # v0.2 (bug a): one consolidated pre-image snapshot per render,
+        # covering the explicitly requested targets' outputs too.
+        snap_id = snapshot_paths(root, _operation_snapshot_rels(root, extra_targets=requested), "render")
         for tname in requested:
             RENDER_TARGETS[tname].render(root, verbose=True)
+        _finish_snapshot(root, snap_id)
         print("render: complete.")
         return
 
@@ -3203,7 +3511,11 @@ def cmd_render(args, root: Path) -> None:
         )
         return
     print(f"tessctl render — target(s): {', '.join(sorted(enabled))} …")
+    # v0.2 (bug a): render used to overwrite AGENTS.md, .codex/** and CLAUDE.md
+    # with no pre-image at all; one consolidated snapshot is taken first.
+    snap_id = snapshot_paths(root, _operation_snapshot_rels(root), "render")
     _render_enabled_targets(root, verbose=True)
+    _finish_snapshot(root, snap_id)
     print("render: complete.")
 
 
@@ -3452,6 +3764,22 @@ def cmd_doctor(args, root: Path) -> None:
     fix = getattr(args, "fix", False)
     path_filter = getattr(args, "path", None)
 
+    # v0.2 (bug e): `--ack-overwrites` clears the forced-overwrite WARNs that
+    # `init/restore --force` record in modified.json, then doctor runs as usual.
+    if getattr(args, "ack_overwrites", False):
+        _events = load_modified(root)
+        _acked = 0
+        for _evt in _events:
+            if isinstance(_evt, dict) and _evt.get("kind") == "forced-overwrite" and not _evt.get("acked"):
+                _evt["acked"] = True
+                _evt["acked_at"] = datetime.datetime.now(datetime.timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%f") + "Z"
+                _acked += 1
+        if _acked:
+            save_modified(root, _events)
+        if not as_json:
+            print(f"tessctl doctor --ack-overwrites: acknowledged {_acked} forced overwrite(s)")
+
     files = lock.get("files", {})
     results = []
     errors = 0
@@ -3523,6 +3851,32 @@ def cmd_doctor(args, root: Path) -> None:
         }
         results.append(r)
         errors += 1
+
+    # v0.2 eng-a (bugs 10 + 14): a .tess/core file with no tess.lock entry has
+    # no base_sha, so tampering with it passed every check; an unknown name in
+    # render_targets.enabled was silently ignored, so a harness could get no
+    # doctrine at all. Both are integrity FAILURES. Whole-tree checks: skipped
+    # when doctor is scoped to one path.
+    if not path_filter:
+        for _rel in _untracked_core_files(root, lock):
+            results.append({
+                "core_key": f"<untracked-core:{_rel}>", "live_path": _rel,
+                "lock_status": "integrity", "drift": False, "core_tamper": False,
+                "issues": [
+                    f"UNTRACKED CORE FILE — {_rel} has no tess.lock entry, so no base_sha "
+                    f"protects it; add a lock entry for it, then `tessctl lock --regen "
+                    f"--only {_rel} --yes` (or delete it if it does not belong in core)"
+                ],
+            })
+            errors += 1
+        for _msg in _unknown_render_target_findings(root):
+            results.append({
+                "core_key": "<render_targets.enabled>", "live_path": MANIFEST_FILE,
+                "lock_status": "integrity", "drift": False, "core_tamper": False,
+                "issues": [_msg],
+            })
+            errors += 1
+    integrity_count = sum(1 for r in results if r.get("lock_status") == "integrity")
 
     if as_json:
         print(json.dumps(results, indent=2, default=str))
@@ -3604,6 +3958,17 @@ def cmd_doctor(args, root: Path) -> None:
         f"security alerts: {security_drift}"
     )
 
+    # v0.2 (bug e): every `init/restore --force` overwrite of uncaptured drift
+    # stays visible (non-failing WARN) until acknowledged, with the snapshot
+    # that holds its pre-image.
+    for _evt in _forced_overwrite_warnings(root):
+        _sid = _evt.get("pre_image") or "?"
+        _kept = bool(_evt.get("pre_image")) and (root / SNAPSHOTS_DIR / _sid).is_dir()
+        _where = (f"pre-image in snapshot {_sid} (`tessctl rollback --to {_sid}`)" if _kept
+                  else f"pre-image snapshot {_sid} is no longer on disk")
+        print(f"  WARN        {_evt.get('path')}  — overwritten by `tessctl {_evt.get('source')} --force` "
+              f"at {_evt.get('ts')}; {_where}; clear with `tessctl doctor --ack-overwrites`")
+
     # Phase 0.3 — memory-link check (informational only; see
     # _print_memory_link_report's own header banner for why this never
     # touches errors/warnings/the exit code).
@@ -3615,6 +3980,10 @@ def cmd_doctor(args, root: Path) -> None:
     # otherwise call _capture_file N times for the same live file.
     if fix and drift_count > 0:
         print("\n--fix: resolving uncaptured drift (security-tier EXCLUDED) …")
+        # v0.2 (bug a): --fix re-renders and captures; it used to do so with no
+        # pre-image. One consolidated snapshot first.
+        _fix_snap = snapshot_live_tree(root, lock, label="doctor-fix")
+        print(f"  snapshot → {SNAPSHOTS_DIR}/{_fix_snap}")
         fixed_count = 0
         render_needed = False
         _fix_seen: set[str] = set()   # dedupe by live_path
@@ -3624,6 +3993,14 @@ def cmd_doctor(args, root: Path) -> None:
                 _lp = r.get("live_path", "")
                 if _lp in _fix_seen:
                     continue  # already handled this live file
+                # v0.2: a render-generated path is re-rendered whatever the tier
+                # of the entry that reported it (CLAUDE.md carries a security-tier
+                # hard-floor fragment): re-rendering restores the authoritative
+                # text, it never launders an edit the way capture would.
+                if _lp in render_generated:
+                    render_needed = True
+                    _fix_seen.add(_lp)
+                    continue
                 if r.get("is_security"):
                     if _lp not in _fix_sec_skipped:
                         _fix_sec_skipped.add(_lp)
@@ -3633,11 +4010,8 @@ def cmd_doctor(args, root: Path) -> None:
                             f"then `tessctl approve` with the operator rationale"
                         )
                     continue
-                # R2: render-generated files must be re-rendered, never captured.
-                if _lp in render_generated:
-                    render_needed = True
-                    _fix_seen.add(_lp)
-                    continue
+                # R2: render-generated files must be re-rendered, never captured
+                # (handled first, above).
                 _capture_file(
                     r["core_key"], r["live_path"], root, lock,
                     source="doctor --fix",
@@ -3651,6 +4025,7 @@ def cmd_doctor(args, root: Path) -> None:
             # HIGH-1: re-render every ENABLED target, not just Claude Code —
             # the stale file(s) triggering render_needed may belong to any of them.
             _render_enabled_targets(root, verbose=True)
+        _finish_snapshot(root, _fix_snap)
         print(f"doctor --fix: {fixed_count} file(s) captured; render-generated files re-rendered. Re-run `tessctl doctor` to verify.")
 
     # A managed core/live file that is MISSING is an integrity FAILURE, not OK.
@@ -3675,7 +4050,7 @@ def cmd_doctor(args, root: Path) -> None:
 
     blocking = (drift_count > 0 or quarantined_count > 0
                 or core_tamper_count > 0 or missing_count > 0
-                or doctrine_leak_count > 0)
+                or doctrine_leak_count > 0 or integrity_count > 0)
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
@@ -3706,6 +4081,10 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"\ndoctor: FAIL — {doctrine_leak_count} worker-profile doctrine leak(s) detected. "
               f"Orchestration doctrine (\"always dispatch\", RULE ZERO, etc.) must never reach "
               f"a single-agent harness's doctrine digest — fix the template/fragment and re-render.")
+        sys.exit(1)
+    if integrity_count > 0:
+        print(f"\ndoctor: FAIL — {integrity_count} integrity issue(s): untracked .tess/core "
+              f"file(s) or unknown render target name(s) (see ISSUE lines above).")
         sys.exit(1)
     print("\ndoctor: OK")
 
@@ -5977,7 +6356,15 @@ def cmd_verify(args, root: Path) -> None:
                 live_sha = sha256_file(live_path)
                 if sha256_bytes(expected_bytes) != live_sha:
                     security_drifts.append(live_rel)
-                    print(f"  SECURITY DRIFT  {live_rel}  — edited without quarantine; run `tessctl capture {live_rel}`")
+                    if live_rel in render_generated:
+                        # v0.2: CLAUDE.md carries the security-tier hard-floor fragment.
+                        # Remedy is a re-render (restores the authoritative text), never
+                        # capture, which would launder a stale render (R2).
+                        print(f"  SECURITY DRIFT  {live_rel}  — render-generated file carrying "
+                              f"security-tier text differs from core; run `tessctl render` to "
+                              f"restore the authoritative text")
+                    else:
+                        print(f"  SECURITY DRIFT  {live_rel}  — edited without quarantine; run `tessctl capture {live_rel}`")
                     continue
 
         # Check D (A4): NORMAL-tier live-vs-core drift — honest verify catches broken upgrades.
@@ -6045,17 +6432,28 @@ def cmd_verify(args, root: Path) -> None:
             f"(orchestration doctrine must not reach a single-agent harness)"
         )
 
+    # v0.2 eng-a (bugs 10 + 14): an untracked .tess/core file has no base_sha
+    # (5c2d698: tampering templates/claude-md/hard-floor.md and re-rendering
+    # left verify OK); an unknown render target name silently renders nothing.
+    untracked_core = _untracked_core_files(root, lock)
+    for rel in untracked_core:
+        print(f"  UNTRACKED CORE  {rel}  — no tess.lock entry, so no base_sha protects it")
+    unknown_targets = _unknown_render_target_findings(root)
+    for msg in unknown_targets:
+        print(f"  RENDER TARGETS  {msg}")
+
     print(f"\n{'='*60}")
     print(
         f"ok: {ok_count}  |  staged warns: {len(staged_warns)}  |  "
         f"core tampers: {len(core_tampers)}  |  "
         f"security drifts: {len(security_drifts)}  |  live drifts: {len(normal_drifts)}  |  "
         f"missing live files: {len(missing_live_files)}  |  "
-        f"quarantined: {len(quarantined_files)}  |  doctrine leaks: {len(doctrine_leaks)}"
+        f"quarantined: {len(quarantined_files)}  |  doctrine leaks: {len(doctrine_leaks)}  |  "
+        f"untracked core: {len(untracked_core)}  |  render-target errors: {len(unknown_targets)}"
     )
 
     if (core_tampers or security_drifts or normal_drifts or missing_live_files
-            or quarantined_files or doctrine_leaks):
+            or quarantined_files or doctrine_leaks or untracked_core or unknown_targets):
         print("\nverify: FAIL")
         if core_tampers:
             print(f"  {len(core_tampers)} core tamper(s) — restore .tess/core from git or `tessctl rollback`")
@@ -6079,6 +6477,11 @@ def cmd_verify(args, root: Path) -> None:
             print(f"  {len(quarantined_files)} quarantined file(s) — run `tessctl approve <path> --rationale ...`")
         if doctrine_leaks:
             print(f"  {len(doctrine_leaks)} worker-profile doctrine leak(s) — fix the template/fragment and re-render")
+        if untracked_core:
+            print(f"  {len(untracked_core)} untracked .tess/core file(s) — add a tess.lock entry "
+                  f"(then `tessctl lock --regen --only <path> --yes`) or remove the file")
+        if unknown_targets:
+            print(f"  {len(unknown_targets)} render-target error(s) in {MANIFEST_FILE} — fix render_targets.enabled")
         sys.exit(1)
     else:
         warn_note = f"; {len(staged_warns)} staged warn(s) — un-recruitable entries" if staged_warns else ""
@@ -6373,14 +6776,15 @@ def cmd_reset(args, root: Path) -> None:
     rendered = render_core_to_live(core_path, live_path, root)
 
     # Snapshot the current live file before discarding (always recoverable).
-    # LOW fix: snapshot_single_file now returns the ts (directory name), not the
-    # full file path — rollback --to wants the directory name, not the file path.
-    if live_path.exists():
-        snap_ts = snapshot_single_file(root, live_rel)
+    # v0.2: a labelled snapshot with a manifest (snapshot_paths) that also
+    # holds tess.lock, so `rollback --to <id>` restores the edit AND the lock
+    # status this reset is about to re-pin.
+    if os.path.lexists(live_path):
+        snap_ts = snapshot_paths(root, [live_rel, LOCK_FILE], "reset")
         snap_file = root / SNAPSHOTS_DIR / snap_ts / live_rel
         print(f"  snapshot of current edit saved to: {snap_file}")
         print(f"  To undo this reset: tessctl rollback --to {snap_ts}")
-        print(f"  Then run: tessctl capture   (re-records the drift so doctor stays clean)")
+        _ACTIVE_SNAPSHOTS.discard(snap_ts)
 
     # Restore from core — manifest-gated + atomic (H2/M3)
     guarded_write(root, live_rel, rendered, op="reset", manifest=manifest)
@@ -6714,6 +7118,13 @@ def cmd_lock(args, root: Path) -> None:
     # into a worker-profile render the same way `doctor`/`verify` do.
     for dv in _check_worker_profile_denylist(root):
         issues.append(("DOCTRINE-LEAK", f"{dv['live_path']} ({dv['target']}: {dv['phrase']!r})"))
+
+    # v0.2 eng-a (bugs 10 + 14): same whole-tree integrity checks as
+    # doctor/verify — untracked .tess/core files, unknown render targets.
+    for rel in _untracked_core_files(root, lock):
+        issues.append(("UNTRACKED", f"{rel} (.tess/core file with no tess.lock entry)"))
+    for msg in _unknown_render_target_findings(root):
+        issues.append(("RENDER-TARGET", msg))
 
     if issues:
         print(f"tessctl lock --check: FAIL — {len(issues)} issue(s)")
@@ -7147,13 +7558,18 @@ def _roster_list(args, root: Path) -> None:
 
     installed: list[str] = []
     staged_list: list[str] = []
+    unmanaged: list[str] = []   # v0.2 (bug 11): staged in the lock, present on disk
 
     for agent_name in sorted(by_name.keys()):
         core_key = by_name[agent_name]
         attrs = lock["files"][core_key]
         status = attrs.get("status", "core-managed")
         if status == "staged":
-            staged_list.append(agent_name)
+            live_rel = attrs.get("live_path")
+            if live_rel and os.path.lexists(root / live_rel):
+                unmanaged.append(agent_name)
+            else:
+                staged_list.append(agent_name)
         else:
             installed.append(agent_name)
 
@@ -7178,6 +7594,14 @@ def _roster_list(args, root: Path) -> None:
             print(f"    ... and {len(staged_list) - 30} more")
     else:
         print("    (none)")
+
+    if unmanaged:
+        # v0.2 (bug 11): these used to be counted as benched although the file
+        # exists — and nothing (doctor, update) checks it while it is 'staged'.
+        print(f"\n  present-but-unmanaged ({len(unmanaged)}):  "
+              f"staged in tess.lock but the live file exists — `tessctl recruit <name>` to manage")
+        for i in range(0, len(unmanaged), 5):
+            print("    " + "  ".join(unmanaged[i:i+5]))
 
 
 # ---------------------------------------------------------------------------
@@ -20548,11 +20972,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     # init
     p_init = sub.add_parser("init", help="scaffold project from framework; run restore + render")
-    p_init.add_argument("--from", dest="from_upstream", metavar="UPSTREAM", help="git upstream URL (TODO: network)")
+    p_init.add_argument("--from", dest="from_upstream", metavar="UPSTREAM",
+                        help="git upstream URL (not implemented: exits non-zero)")
+    p_init.add_argument("--force", action="store_true",
+                        help="overwrite uncaptured drift (pre-images kept in the snapshot; "
+                             "security-tier copy files are still refused)")
 
     # restore
     p_restore = sub.add_parser("restore", help="re-sync live tree from .tess/core (no network, idempotent)")
     p_restore.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_restore.add_argument("--force", action="store_true",
+                           help="overwrite uncaptured drift (pre-images kept in the snapshot; "
+                                "security-tier copy files are still refused)")
 
     # doctor
     p_doctor = sub.add_parser("doctor", help="SHA-integrity check; flag security-tier drift")
@@ -20575,6 +21006,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--publish-clean-all", action="store_true", dest="publish_clean_all",
         help="with --publish-clean, audit the FULL git-tracked set (git ls-files) "
              "instead of just staged changes — a repo-hygiene audit, not the hook default",
+    )
+    p_doctor.add_argument(
+        "--ack-overwrites", action="store_true", dest="ack_overwrites",
+        help="acknowledge the forced-overwrite WARNs (init/restore --force) recorded in "
+             ".tess/modified.json; the snapshots themselves are left alone",
     )
     p_doctor.add_argument("path", nargs="?", help="check a specific file")
 
@@ -20617,7 +21053,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # rollback
     p_rollback = sub.add_parser("rollback", help="restore from snapshot + rewrite tess.lock")
-    p_rollback.add_argument("--to", metavar="TS", help="snapshot timestamp (default: most recent)")
+    p_rollback.add_argument("--to", metavar="ID",
+                            help="snapshot id, i.e. its directory name under .tess/snapshots/ "
+                                 "(default: the most recent full snapshot)")
 
     # diff
     p_diff = sub.add_parser("diff", help="show core (rendered) vs live")

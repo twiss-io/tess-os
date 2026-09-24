@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-23T21:18:06.158651Z'
+  last_updated: '2026-09-24T05:26:31.395261Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5646,6 +5646,12 @@ files:
     base_sha: sha256:0e7b4ede1ab13bb5085b9cfcfa17f2195de64c1be077a20b53161c324778fa6e
     live_path: .claude/hooks/utc-local-context.sh
     last_updated: 2026-06-27 10:00:00+00:00
+  .tess/core/roster-paths.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:42bf9719ad5ea6f133238eb5fecfbd477e2f36f0dce99412c78c02c798742616
+    live_path: null
+    last_updated: 2026-09-24 00:00:00+00:00
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal
@@ -5716,6 +5722,13 @@ files:
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
+  .tess/core/templates/claude-md/hard-floor.md:
+    status: core-managed
+    tier: security
+    base_sha: sha256:e82fe9c01cbcf8a6294df422fa56969e6d5c564fb8a035fa36efd11e17c74b55
+    live_path: CLAUDE.md
+    render: fragment
+    last_updated: 2026-09-24 00:00:00+00:00
   .tess/core/templates/claude-md/orchestrators.md:
     status: core-managed
     tier: normal
