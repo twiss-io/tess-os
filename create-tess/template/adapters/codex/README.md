@@ -37,8 +37,9 @@ was closed as not planned
 ([openai/codex#9848](https://github.com/openai/codex/issues/9848)) — so those
 files did nothing. They are no longer rendered or owned. `CodexRenderTarget.
 retired_paths()` lists them, and `tessctl render` prints one `retired` line
-while any still exist. Nothing deletes them: remove them yourself once the
-skills work for you.
+while any still exist and drops their `tess.lock` `render_outputs` records.
+Nothing deletes the files: remove them yourself once the skills work for
+you.
 
 ## AGENTS.md ownership
 
@@ -77,7 +78,9 @@ actually differ.
 An older `tess.manifest.json` fences off `.agents/**` (never_touch) and owns
 `.codex/prompts/**` instead. `tessctl render` then skips the skills
 (`skipped ... not-owned`) and prints the one line to add. Add this entry to
-`owned_globs` yourself — `tessctl` never rewrites your manifest:
+`owned_globs` yourself — `tessctl` never rewrites your manifest (the line
+`render` prints reads `NOTE  codex: 52 output(s) not written — outside
+owned_globs. Add ".agents/skills/tess-*/**" ...`):
 
 ```json
 ".agents/skills/tess-*/**"

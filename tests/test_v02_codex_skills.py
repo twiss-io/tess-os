@@ -167,9 +167,10 @@ def test_pre_v02_manifest_skips_skills_as_not_owned_and_names_the_glob(project, 
     assert not (project.root / ".codex" / "prompts").exists()
     assert (project.root / "AGENTS.md").exists()
     assert mf_path.read_bytes() == before
-    skip_lines = [ln for ln in r.stdout.splitlines() if "not-owned" in ln]
+    skip_lines = [ln for ln in r.stdout.splitlines() if "outside owned_globs" in ln]
     assert len(skip_lines) == 1, r.stdout
     assert '".agents/skills/tess-*/**"' in skip_lines[0]
+    assert "4 output(s) not written" in skip_lines[0], skip_lines[0]  # 2 skills x 2 files
 
     manifest["owned_globs"].append(".agents/skills/tess-*/**")
     mf_path.write_text(json.dumps(manifest), encoding="utf-8")

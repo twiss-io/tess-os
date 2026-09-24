@@ -363,10 +363,12 @@ def test_idempotent_repeat_render_no_drift(project, run_cli):
 # The manifest write gate is honored — a target cannot bypass it
 # ---------------------------------------------------------------------------
 
-def test_codex_render_honors_manifest_write_gate(project, engine, capsys):
-    """v0.2.0 (must_fix #2): a render output outside owned_globs is SKIPPED
-    and reported ('not-owned'), never written — the write gate itself is
-    unchanged and the manifest is never rewritten to make room."""
+def test_codex_render_honors_manifest_write_gate(project, engine):
+    """AGENTS.md is the codex target's REQUIRED doctrine output: when the
+    manifest does not own it, render refuses (GateError) rather than
+    silently skipping — a manifest missing it is corrupted. Optional outputs
+    outside owned_globs are skipped and reported instead (see
+    tests/test_v02_codex_skills.py). The gate itself is never widened."""
     _seed_agents(project)
     project.write()
     manifest_path = project.root / "tess.manifest.json"
@@ -376,16 +378,10 @@ def test_codex_render_honors_manifest_write_gate(project, engine, capsys):
     manifest_bytes = manifest_path.read_bytes()
 
     target = engine.RENDER_TARGETS["codex"]
-    target.render(project.root, verbose=True)
-    out = capsys.readouterr().out
-    assert not (project.root / "AGENTS.md").exists()
-    assert "skipped   AGENTS.md" in out and "not-owned" in out, out
-    assert manifest_path.read_bytes() == manifest_bytes
-    # The owned siblings still render.
-    assert (project.root / ".codex" / "config.toml").exists()
-    # And the gate itself still refuses a direct, unowned write.
     with pytest.raises(engine.GateError):
-        engine.guarded_write(project.root, "AGENTS.md", b"x", op="render")
+        target.render(project.root, verbose=False)
+    assert not (project.root / "AGENTS.md").exists()
+    assert manifest_path.read_bytes() == manifest_bytes
 
 
 # ---------------------------------------------------------------------------

@@ -135,13 +135,18 @@ class RenderTarget:
         return set()
 ```
 
-Since v0.2.0 the codex and generic targets write through one helper,
-`_render_target_write()`, which returns `written`, `unchanged` or
-`skipped:<reason>` instead of raising for the two cases an upgraded install
-can hit: a path outside `owned_globs` (`skipped:not-owned`; render prints
-the glob to add, the manifest is never rewritten) and a symlink at the
-final path component (`skipped:symlink`; never written through). Every
-other write-gate denial still raises.
+Since v0.2.0 every target writes through `write_render_output()` (batch
+form `write_render_outputs()`), which returns `written`, `unchanged` or
+`skipped:<reason>` and records what it wrote in `tess.lock`'s
+`render_outputs` section. Reasons include `not-owned` (outside
+`owned_globs`: render prints the one glob to add, the manifest is never
+rewritten), `symlink` (never written through), `hand-edited` (kept and
+reported) and the protective statuses (`user-published`,
+`locally-modified`, `held`, `foreign`). A target's required doctrine
+output (AGENTS.md for codex/generic) that is not owned still raises
+`GateError`: that manifest is corrupted, not old. After a render, the codex
+target reports its retired outputs and drops their `render_outputs`
+records (Tess no longer manages those files).
 
 **A note on "byte-identical, any machine" (LOW-2):** this holds today
 because none of the artifacts any shipped target renders bake an absolute,
