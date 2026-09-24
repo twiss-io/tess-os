@@ -9,10 +9,10 @@
 schema: 1
 framework:
   track: v2
-  version: 0.1.1
+  version: 0.2.0
   channel: stable
   upstream: https://github.com/twiss-io/tess-os.git
-  upstream_ref: v0.1.1
+  upstream_ref: v0.2.0
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89

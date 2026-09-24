@@ -10,17 +10,3 @@
 ^create-tess/template/gate-arena/bypass/
 # Permanent: CHANGELOG history is a dated record of past releases and is not rewritten.
 ^create-tess/template/CHANGELOG\.md$
-# PENDING v0.2.0: comments and one message string in the engine are de-identified by the engine write-gate PR.
-^create-tess/template/\.tess/bin/tessctl$
-# PENDING v0.2.0: the verdict-signing guide and its core mirror are de-identified by the doctrine PR.
-^create-tess/template/conductor/verdict-signing\.md$
-# PENDING v0.2.0: core mirror of the verdict-signing guide, de-identified by the doctrine PR.
-^create-tess/template/\.tess/core/conductor/verdict-signing\.md$
-# PENDING v0.2.0: stale policy comments are de-identified by the release PR. Comments only, no rule change.
-^create-tess/template/core/policy/policy\.yaml$
-# PENDING v0.2.0: core mirror of the policy file, de-identified by the release PR.
-^create-tess/template/\.tess/core/policy/policy\.yaml$
-# PENDING v0.2.0: wizard source strings are de-identified by the create-tess PR.
-^create-tess/src/index\.js$
-# PENDING v0.2.0: a template-source comment is de-identified by the create-tess PR.
-^create-tess/src/git-template-source\.js$

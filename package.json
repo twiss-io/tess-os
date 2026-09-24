@@ -1,6 +1,6 @@
 {
   "name": "tess-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local, fail-closed governance and review harness for observable coding-agent work across supported hosts.",
   "license": "Apache-2.0",
   "private": false,
