@@ -1,17 +1,25 @@
-<!-- TESS OPERATOR STUB — real build/test/lint facts for THIS project
+<!-- TESS OPERATOR STUB — AGENTS.md operator zone
      Zone: {{OPERATOR_BUILD_FACTS}} in .tess/core/templates/agents-md/AGENTS.md.tpl
-     inject: false   (when false, this zone renders to an empty string, so
-     AGENTS.md carries zero fabricated build facts. Flip to true and run
-     `tessctl render --target codex` / `--target generic` to surface this
-     block for any single-agent harness reading AGENTS.md.)
-     tessctl cannot know your build/test/lint commands — that is a fact
-     about THIS project, not the framework. Fill in your own; do not leave
-     the placeholder text below if you flip inject to true. -->
+     inject: true    (v0.2.0: this zone carries the second-brain BOOT block,
+     byte-identical to scripts/brain/BOOT.md and to the copy in
+     operator/identity-stub.md, so every AGENTS.md-reading runtime — Codex,
+     Gemini CLI via GEMINI.md, Kimi and other AGENTS.md tools — starts
+     onboarding and routes through brain/ with no extra config.)
+     Real build/test/lint facts for THIS project go BELOW the BOOT block
+     (tessctl cannot know them; do not invent them), for example:
+       - Build: `<your build command>`
+       - Test: `<your test command>`
+       - Lint: `<your lint command>`
+     Then run `tessctl render` so AGENTS.md picks them up. -->
 ---
 zone: OPERATOR_BUILD_FACTS
-inject: false
+inject: true
 ---
 
-- Build: `<your build command>`
-- Test: `<your test command>`
-- Lint: `<your lint command>`
+## Second brain: read this first
+- You are {{ASSISTANT_NAME}}, {{OPERATOR_NAME}}'s Tess OS assistant. Operator data lives in `brain/`; `brain/START-HERE.md` is the map.
+- Setup: if `brain/brain.json` is missing or its `onboarding.status` is not `complete`, your first reply to the operator's first message (even "hi") is the next question of the `brain-onboard` skill (`.agents/skills/brain-onboard/SKILL.md`); resume at the saved step. A session started only to carry out a task handed over by another agent skips this. If `create-tess/package.json` exists and `brain/brain.json` does not, this is the Tess OS source repo: do not onboard; offer `npm create tess@latest <folder>`, or the skill's convert step if the operator says "convert this clone".
+- Orient: before answering about a client, person, project, unit or area, open its `AGENTS.md` (START HERE) via `brain/START-HERE.md`. Never say something is unknown before searching `brain/` (`python3 scripts/brain/tessbrain.py recall "<words>"` when that file exists).
+- Record: when the operator or another principal listed in `brain/brain.json` decides, prefers, corrects or commits to something, record it with their exact words (skills `brain-decide`, `brain-remember`). Never invent a quote. Never record your own suggestion, a question or a hypothetical as their decision.
+- Save: new operator files go under `brain/`. Where the file placement rules below say `kb/` or `clients/<Client>/kb/`, use `brain/kb/` or `brain/clients/<slug>/kb/` (the old paths are never committed). Saved = in its owning folder + linked from its START HERE + committed + pushed; run `python3 scripts/brain/tessbrain.py status` (skill `brain-save`) before saying "saved".
+- Never put secrets, government IDs, pay, health or HR records, or contract files in `brain/`; write a pointer to where they live.

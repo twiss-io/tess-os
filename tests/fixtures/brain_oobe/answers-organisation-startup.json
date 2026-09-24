@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "runtime": "fixture",
+  "session": "fixture-org-0001",
+  "answers": [
+    {"step": 1, "field": "mode", "value": "organisation", "quote": "(c), an organisation: we're a seven-person startup.", "at": "2026-09-24T18:30:00+10:00"},
+    {"step": 2, "field": "preset", "value": "startup", "quote": "Yes, the startup preset.", "at": "2026-09-24T18:31:00+10:00"},
+    {"step": 3, "field": "operator_name", "value": "Sam Ilunga", "quote": "Sam Ilunga, Sam. Keep Tess. Melbourne.", "at": "2026-09-24T18:32:00+10:00"},
+    {"step": 3, "field": "address_as", "value": "Sam", "quote": "Sam Ilunga, Sam. Keep Tess. Melbourne.", "at": "2026-09-24T18:32:00+10:00"},
+    {"step": 3, "field": "assistant_name", "value": "Tess", "quote": "Sam Ilunga, Sam. Keep Tess. Melbourne.", "at": "2026-09-24T18:32:00+10:00"},
+    {"step": 3, "field": "timezone", "value": "Australia/Melbourne", "quote": "Sam Ilunga, Sam. Keep Tess. Melbourne.", "at": "2026-09-24T18:32:00+10:00"},
+    {"step": 4, "field": "principals", "value": [{"name": "Lee Moreau", "scope": "**", "role": "co-founder"}], "quote": "Lee Moreau, my co-founder, decides on everything.", "at": "2026-09-24T18:33:00+10:00"},
+    {"step": 5, "field": "org_name", "value": "Kitefield", "quote": "Kitefield. I'm founder-ceo. Units: platform and go-to-market. We do serve outside clients.", "at": "2026-09-24T18:34:00+10:00"},
+    {"step": 5, "field": "operator_seat", "value": "founder-ceo", "quote": "Kitefield. I'm founder-ceo. Units: platform and go-to-market. We do serve outside clients.", "at": "2026-09-24T18:34:00+10:00"},
+    {"step": 5, "field": "seats", "value": [], "quote": "Kitefield. I'm founder-ceo. Units: platform and go-to-market. We do serve outside clients.", "at": "2026-09-24T18:34:00+10:00"},
+    {"step": 5, "field": "units", "value": ["Platform", "Go-to-market"], "quote": "Kitefield. I'm founder-ceo. Units: platform and go-to-market. We do serve outside clients.", "at": "2026-09-24T18:34:00+10:00"},
+    {"step": 5, "field": "serves_clients", "value": "yes", "quote": "Kitefield. I'm founder-ceo. Units: platform and go-to-market. We do serve outside clients.", "at": "2026-09-24T18:34:00+10:00"},
+    {"step": 6, "field": "journal", "value": "stub-only", "quote": "Stub-only, bodies stay local.", "at": "2026-09-24T18:35:00+10:00"},
+    {"step": 7, "field": "remote_url", "value": "later", "quote": "Remote later; no autopush; claude and gemini.", "at": "2026-09-24T18:36:00+10:00"},
+    {"step": 7, "field": "autopush", "value": "no", "quote": "Remote later; no autopush; claude and gemini.", "at": "2026-09-24T18:36:00+10:00"},
+    {"step": 7, "field": "runtimes", "value": ["claude-code", "gemini"], "quote": "Remote later; no autopush; claude and gemini.", "at": "2026-09-24T18:36:00+10:00"}
+  ]
+}
