@@ -6784,51 +6784,146 @@ def cmd_update(args, root: Path) -> None:
                 advanced += 1
             print(f"  advanced {advanced} core file(s) from staging")
 
-        # Step 6.6 / A2: ADOPT NEW FILES — detect files present in staging but absent
-        # from the instance lock; write to live + copy to core + add lock entry.
-        if not dry_run:
-            print("\nStep 6.6 (A2): adopt new upstream files …")
-            staging_upstream_lock_path = root / STAGING_DIR / "upstream-tess.lock"
-            adopted = 0
-            if staging_upstream_lock_path.exists():
+        # Step 6.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
+        # instance lock lacks.  The staged core file is copied into .tess/core and a
+        # lock entry is added at the upstream base_sha.  By live_path:
+        #   * null (a core-only render input: template fragments, GEMINI.md.tpl,
+        #     roster-paths.json) → core file + lock entry.  Before v0.2.0 these were
+        #     skipped, so an upgraded install silently lacked every new core-only file
+        #     and a core file an older scaffold shipped untracked stayed untracked.
+        #   * already tracked by other entries (a composed output such as CLAUDE.md)
+        #     → no live write: Step 7 renders that path, or skips it when published.
+        #     The new entry inherits the path's status, so a published CLAUDE.md
+        #     stays published and its entries keep agreeing.
+        #   * not tracked yet → the live file is written too, unless a different file
+        #     already sits there: that file is kept and doctor reports it as drift.
+        # A core file that already exists with different bytes is never overwritten
+        # (it may be a local edit; doctor keeps flagging it as untracked).  The core
+        # write honours manifest never_touch and the write gate's containment and hard
+        # guards.  --dry-run/--check print the plan from the staged upstream lock.
+        print("\nStep 6.6 (A2): adopt new upstream files …")
+        if dry_run:
+            print("  (dry-run: planned from the upstream tess.lock already in "
+                  ".tess/staging/; nothing is written)")
+        staging_upstream_lock_path = root / STAGING_DIR / "upstream-tess.lock"
+        upstream_lock_data = None
+        if staging_upstream_lock_path.exists():
+            try:
+                upstream_lock_data = yaml.safe_load(
+                    staging_upstream_lock_path.read_text(encoding="utf-8")
+                )
+            except Exception as _e:
+                print(f"  WARN  A2: could not parse upstream tess.lock: {_e}")
+        elif dry_run:
+            print("  A2: no upstream tess.lock in .tess/staging/ (dry-run does not fetch)")
+        a2_adopted: list[str] = []
+        a2_core_only = 0
+        a2_kept: list[str] = []
+        a2_skipped: list[str] = []
+        if isinstance(upstream_lock_data, dict):
+            upstream_files = upstream_lock_data.get("files") or {}
+            instance_files = lock.get("files") or {}
+            manifest_adopt = load_manifest(root)
+            a2_never = list(manifest_adopt.get("never_touch") or [])
+            a2_core_gate = {"owned_globs": [CORE_DIR + "/**"], "never_touch": []}
+            a2_live_statuses: dict[str, set] = {}
+            for _a in instance_files.values():
+                if isinstance(_a, dict) and _a.get("live_path"):
+                    a2_live_statuses.setdefault(_a["live_path"], set()).add(
+                        _a.get("status", "core-managed"))
+            a2_verb = "would adopt" if dry_run else "adopted"
+
+            def _a2_skip(key, why):
+                a2_skipped.append(key)
+                print(f"  WARN  A2: not adopted {key}: {why}")
+
+            for upstream_key, upstream_attrs in upstream_files.items():
+                if upstream_key in instance_files or not isinstance(upstream_attrs, dict):
+                    continue
+                live_path_rel = upstream_attrs.get("live_path") or None
+                # The core copy is gated like a live write: under .tess/core only,
+                # never_touch honoured, containment + symlinked-parent + hard guards.
+                if not str(upstream_key).startswith(CORE_DIR + "/"):
+                    _a2_skip(upstream_key, f"the key is not under {CORE_DIR}/")
+                    continue
+                if path_matches_globs(upstream_key, a2_never):
+                    _a2_skip(upstream_key, "it matches manifest never_touch")
+                    continue
                 try:
-                    upstream_lock_data = yaml.safe_load(
-                        staging_upstream_lock_path.read_text(encoding="utf-8")
-                    )
-                except Exception as _e:
-                    print(f"  WARN  A2: could not parse upstream tess.lock: {_e}")
-                    upstream_lock_data = None
-
-                if upstream_lock_data:
-                    upstream_files = upstream_lock_data.get("files", {})
-                    instance_file_keys = set(lock.get("files", {}).keys())
-                    manifest_adopt = load_manifest(root)
-
-                    for upstream_key, upstream_attrs in upstream_files.items():
-                        if upstream_key in instance_file_keys:
-                            continue
-                        live_path_rel = upstream_attrs.get("live_path")
-                        if not live_path_rel:
-                            continue
-                        staging_src = root / STAGING_DIR / upstream_key
-                        if not staging_src.exists():
-                            print(f"  WARN  A2: new file {upstream_key!r} not in staging, skip")
-                            continue
-                        if staging_src.is_symlink():
-                            print(f"  WARN  A2: skip symlink {upstream_key!r}")
-                            continue
-                        staging_bytes = staging_src.read_bytes()
-                        core_path_new = root / upstream_key
-                        live_path_new = root / live_path_rel
-                        rendered_new = render_core_to_live(staging_src, live_path_new, root)
+                    check_manifest_write_gate(root, a2_core_gate, upstream_key,
+                                              op="update-adopt")
+                except GateError as _ge:
+                    _a2_skip(upstream_key, f"write gate: {_ge}")
+                    continue
+                staging_src = root / STAGING_DIR / upstream_key
+                if staging_src.is_symlink() or not staging_src.is_file():
+                    _a2_skip(upstream_key, "no regular file for it in .tess/staging/")
+                    continue
+                staging_bytes = staging_src.read_bytes()
+                new_sha = sha256_bytes(staging_bytes)
+                up_sha = upstream_attrs.get("base_sha")
+                if up_sha and up_sha != new_sha:
+                    _a2_skip(upstream_key, "the staged bytes do not match the upstream "
+                                           "tess.lock base_sha")
+                    continue
+                core_path_new = root / upstream_key
+                core_present = core_path_new.exists() or core_path_new.is_symlink()
+                if core_present and (core_path_new.is_symlink() or not core_path_new.is_file()
+                                     or sha256_file(core_path_new) != new_sha):
+                    _a2_skip(upstream_key, "a different file already exists there (kept; "
+                                           "delete it and re-run `tessctl update` to take "
+                                           "upstream's copy)")
+                    continue
+                status = "core-managed"
+                live_bytes = None   # bytes to write at live_path_rel, if any
+                if live_path_rel and live_path_rel in a2_live_statuses:
+                    shared = a2_live_statuses[live_path_rel]
+                    if len(shared) != 1 or "quarantined" in shared:
+                        _a2_skip(upstream_key, f"the tess.lock entries of {live_path_rel} "
+                                               f"disagree or are quarantined "
+                                               f"({', '.join(sorted(shared))}); settle "
+                                               f"them, then re-run `tessctl update`")
+                        continue
+                    status = next(iter(shared))
+                elif live_path_rel:
+                    try:
+                        check_manifest_write_gate(root, manifest_adopt, live_path_rel,
+                                                  op="update-adopt")
+                    except GateError as _ge:
+                        _a2_skip(upstream_key, f"live write gate: {_ge}")
+                        continue
+                    live_path_new = root / live_path_rel
+                    rendered_new = render_core_to_live(staging_src, live_path_new, root)
+                    if live_path_new.is_symlink() or (
+                            live_path_new.exists()
+                            and (not live_path_new.is_file()
+                                 or live_path_new.read_bytes() != rendered_new)):
+                        a2_kept.append(live_path_rel)
+                        print(f"  KEEP  {live_path_rel}  — a different file already "
+                              f"exists; not overwritten (doctor reports it as drift)")
+                    elif not live_path_new.exists():
+                        live_bytes = rendered_new
+                label = live_path_rel or upstream_key
+                if live_path_rel is None:
+                    note = ("new core file; already present, lock entry only" if core_present
+                            else "new core file")
+                    a2_core_only += 1
+                elif live_path_rel in a2_live_statuses:
+                    note = f"new input of {live_path_rel}; status {status}"
+                    label = upstream_key
+                elif live_path_rel in a2_kept:
+                    note = "new upstream file; the different live file there is kept"
+                else:
+                    note = "new upstream file"
+                if not dry_run:
+                    if live_bytes is not None:
                         try:
-                            guarded_write(
-                                root, live_path_rel, rendered_new,
-                                op="update-adopt", manifest=manifest_adopt
-                            )
+                            guarded_write(root, live_path_rel, live_bytes,
+                                          op="update-adopt", manifest=manifest_adopt)
                         except GateError as _ge:
-                            print(f"  WARN  adopt: skip {live_path_rel!r} (gate): {_ge}")
+                            _a2_skip(upstream_key, f"live write gate: {_ge}")
                             continue
+                    if not core_present:
                         core_path_new.parent.mkdir(parents=True, exist_ok=True)
                         tmp_fd_new, tmp_path_new = tempfile.mkstemp(
                             dir=str(core_path_new.parent), prefix=".tessctl_core_adopt_"
@@ -6843,22 +6938,33 @@ def cmd_update(args, root: Path) -> None:
                             except OSError:
                                 pass
                             raise
-                        new_sha = sha256_file(core_path_new)
-                        lock["files"][upstream_key] = {
-                            "status": "core-managed",
-                            "tier": upstream_attrs.get("tier", "normal"),
-                            "base_sha": new_sha,
-                            "live_path": live_path_rel,
-                            "last_updated": datetime.datetime.now(
-                                datetime.timezone.utc
-                            ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
-                        }
-                        print(f"  adopted: {live_path_rel}  (new upstream file)")
-                        adopted += 1
-            if adopted:
-                print(f"  A2: adopted {adopted} new file(s) from upstream")
-            else:
-                print(f"  A2: no new files to adopt")
+                    entry = {
+                        "status": status,
+                        "tier": upstream_attrs.get("tier", "normal"),
+                        "base_sha": new_sha,
+                        "live_path": live_path_rel,
+                        "last_updated": datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
+                    }
+                    if upstream_attrs.get("render"):
+                        entry["render"] = upstream_attrs["render"]
+                    lock.setdefault("files", {})[upstream_key] = entry
+                if live_path_rel:
+                    a2_live_statuses.setdefault(live_path_rel, {status})
+                a2_adopted.append(upstream_key)
+                print(f"  {a2_verb}: {label}  ({note})")
+        if a2_adopted:
+            print(f"  A2: {'would adopt' if dry_run else 'adopted'} {len(a2_adopted)} new "
+                  f"file(s) from upstream ({a2_core_only} core-only)")
+        else:
+            print(f"  A2: no new files to adopt")
+        if a2_kept:
+            print(f"  A2: kept {len(a2_kept)} existing live file(s) that differ from the "
+                  f"new upstream file: {', '.join(a2_kept)}")
+        if a2_skipped:
+            print(f"  A2: {len(a2_skipped)} new upstream file(s) NOT adopted (see WARN "
+                  f"above); `tessctl doctor` reports what is left untracked")
 
         # Step 7: RENDER — runs AFTER A1 (core advance) and A2 (new files adopted) so
         # that CLAUDE.md.tpl, claude-md/ fragments, and settings-core.json are read from
