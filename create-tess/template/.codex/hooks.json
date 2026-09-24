@@ -1,0 +1,27 @@
+{
+  "description": "Tess OS second brain (scripts/brain/tessbrain.py). Codex runs project hooks only after the project is trusted and these hooks are approved in /hooks; approval is hash-pinned, so these lines never change.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {"type": "command", "command": "sh -c 'exec python3 \"$(git rev-parse --show-toplevel)/scripts/brain/tessbrain.py\" hook session-start --runtime codex'", "timeout": 5}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "sh -c 'exec python3 \"$(git rev-parse --show-toplevel)/scripts/brain/tessbrain.py\" hook prompt --runtime codex'", "timeout": 3}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "sh -c 'exec python3 \"$(git rev-parse --show-toplevel)/scripts/brain/tessbrain.py\" hook stop --runtime codex'", "timeout": 30}
+        ]
+      }
+    ]
+  }
+}
