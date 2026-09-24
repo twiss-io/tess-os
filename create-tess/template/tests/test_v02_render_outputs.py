@@ -351,6 +351,21 @@ def test_publish_render_output_without_lock_entry(project, engine, capsys):
     assert engine.render_output_status(engine.load_lock(root), "AGENTS.md") == "user-published"
 
 
+def test_publish_keeps_a_hand_edited_claude_md(project, engine):
+    """The doctor remedy for a hand-edited render output is `tessctl publish
+    <path>`: it must adopt the edit, not re-seed CLAUDE.md from core over it."""
+    root = build(project)
+    render(engine, root)
+    edited = project.read_live("CLAUDE.md") + "\nOPERATOR SECTION\n"
+    project.write_live("CLAUDE.md", edited)
+
+    engine.cmd_publish(ns(path="CLAUDE.md", tag=None, force=False), root)
+    render(engine, root)
+
+    assert project.read_live("CLAUDE.md") == edited, "publish/render discarded the hand edit"
+    assert engine.effective_live_status(engine.load_lock(root), "CLAUDE.md") == "user-published"
+
+
 def test_render_is_idempotent_on_the_lock(project, engine):
     root = build(project, codex=True)
     render(engine, root)

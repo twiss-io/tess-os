@@ -5888,7 +5888,8 @@ def cmd_publish(args, root: Path) -> None:
         # is publishing — keep the live bytes instead of re-seeding from core.
         if (not force and live_rel in _render_outputs_now and live_path.is_file()
                 and not live_path.is_symlink() and core_path.exists()
-                and live_path.read_bytes() != render_core_to_live(core_path, live_path, root)):
+                and live_path.read_bytes() != render_core_to_live(core_path, live_path, root)
+                and _render_output_drift_kind(root, lock, live_rel) == "hand-edited"):
             _live_outcome[live_rel] = "written"
             _mark_published(lock, core_key, track, version)
             print(f"  published  {live_rel}  (status → user-published; your edited live "
