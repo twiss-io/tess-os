@@ -128,6 +128,32 @@ def probe_seed(plan: scaffold.Plan, brain: Dict[str, Any], rid: Optional[str]) -
     plan.create("brain/probe.json", json.dumps(probe, indent=2, ensure_ascii=False) + "\n")
 
 
+def probe_refresh(plan: scaffold.Plan, brain: Dict[str, Any]) -> None:
+    """Keep probe.json's `mode` and `entities` expectations in step with the brain.
+
+    Called by add, add-mode and apply, so normal growth never turns the
+    fresh-clone probe red. Only those two expectations move; the operator,
+    first-decision and research answers are fixed at onboarding.
+    """
+    path = plan.root / "brain" / "probe.json"
+    if plan.dry or not path.is_file():
+        return
+    try:
+        probe = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        state.log_error(plan.root, "probe.json unreadable, not refreshed: %s" % exc, "probe")
+        return
+    want = {"mode": list(brain.get("modes") or []), "entities": sorted(entity_ids(plan.root, brain))}
+    changed = False
+    for q in probe.get("questions", []):
+        if q.get("id") in want and q.get("expect") != want[q["id"]]:
+            q["expect"] = want[q["id"]]
+            changed = True
+    if changed:
+        state.atomic_write(path, json.dumps(probe, indent=2, ensure_ascii=False) + "\n")
+        plan.actions.append(("updated", "brain/probe.json"))
+
+
 def entity_ids(root: Path, brain: Dict[str, Any]) -> List[str]:
     """Entity ids (paths under brain/) for every entity root that has an AGENTS.md."""
     out: List[str] = []

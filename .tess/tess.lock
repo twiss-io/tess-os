@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T07:03:01.281185Z'
+  last_updated: '2026-09-24T11:06:08.880158Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5649,7 +5649,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:097494c4ceed83efb1e086764b2a1747519407ec81d8bd43d93d09a20183c2a9
+    base_sha: sha256:d750f8d1364b2e45c2763c4705fd0ce854dd8ed563bad75a8ee5a8ce066c2c00
     live_path: .claude/settings.json
     render: rendered
     last_updated: 2026-06-27 10:00:00+00:00
@@ -6076,11 +6076,11 @@ render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:c989251b9e60d01cae361817ad1695a3cf7ea65bb714c1b5fd54c75c8b3f276f
+    rendered_sha: sha256:b3bebe7cfc5edba3c4a1615fa77c45ff436f561d41ecd54ec051b2cff0713a5e
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:097494c4ceed83efb1e086764b2a1747519407ec81d8bd43d93d09a20183c2a9
+    rendered_sha: sha256:d750f8d1364b2e45c2763c4705fd0ce854dd8ed563bad75a8ee5a8ce066c2c00
   conductor/identity.md:
     target: claude-code
     status: rendered
@@ -6096,7 +6096,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:3571207391c536604fd1967429e9fe9d8dab027729a740aec696c0490edca46e
+    rendered_sha: sha256:0975045edb321c1b44cb4fd3f0fc3f0851e72a01ea2c30c1749bf11ed783f2a6
   .codex/config.toml:
     target: codex
     status: rendered

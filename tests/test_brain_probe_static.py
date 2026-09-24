@@ -107,3 +107,21 @@ def test_private_dir_is_not_scanned(tmp_path):
 def test_static_flag_is_required(tmp_path):
     done = subprocess.run([sys.executable, str(h.BRAIN_TOOLS / "probe.py")], capture_output=True, text=True)
     assert done.returncode == 2 and "--static" in done.stderr
+
+
+def test_probe_stays_green_as_the_brain_grows(tmp_path):
+    """add / add-mode keep probe.json's expectations in step: no false red after normal use."""
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "personal").returncode == 0
+    steps = [("add", "project", "Garden Redesign"),
+             ("add-mode", "agency", "--quote", "Add my consultancy as well."),
+             ("add", "client", "Acme"),
+             ("add", "project", "Pricing Revamp", "--in", "acme")]
+    for step in steps:
+        done = h.onboard(root, *step)
+        assert done.returncode == 0, (step, done.stderr)
+        out = json.loads(probe(root, "--json").stdout)
+        assert (out["result"], out["score"], out["total"]) == ("pass", 5, 5), (step, out["answers"])
+    ents = next(q for q in json.loads((root / "brain" / "probe.json").read_text())["questions"]
+                if q["id"] == "entities")["expect"]
+    assert {"agency", "clients/acme", "life/projects/garden-redesign"} <= set(ents)
