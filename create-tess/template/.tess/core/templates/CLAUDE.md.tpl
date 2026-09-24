@@ -33,8 +33,6 @@ Every task is reported to the operator in the active session, whatever runtime i
 
 Reporting happens regardless of task type: bugs, research, builds, reviews, checks, missions — everything. The base harness needs no external chat or notification service ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
 
-This section applies in Claude Code with the Telegram integration. A runtime without it (Codex, Gemini CLI, other AGENTS.md tools) reports the same events through its own progress stream and final answer, and never treats missing Telegram as a blocker ([conductor/guardrails.md](conductor/guardrails.md) Rule 10).
-
 {{CORE_HARD_FLOOR}}
 
 ---

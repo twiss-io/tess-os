@@ -42,7 +42,7 @@ Attempt N dispatched
      Transient | Context-Gap | Wrong-Approach | Wrong-Task
        [Transient: same-brief retry with backoff permitted]
        [All others: changed brief required, addressing the classified cause]
-  -> Notify the operator (one line, runtime-native channel): "Attempt N failed, class [X], action [Y]"
+  -> Tell the operator (one line, in the active session): "Attempt N failed, class [X], action [Y]"
   -> Append the per-attempt error analysis to the mission record
   -> Attempt N+1 dispatched (changed brief if non-transient)
   -> If N = 3 (the cap):
@@ -56,7 +56,7 @@ Per-attempt rules:
 1. **Classify first.** No retry is dispatched before the failure state and cause class are identified.
 2. **Transient** → same-brief retry with backoff permitted.
 3. **All other classes** → the retry brief MUST change in a way that specifically addresses the classified cause.
-4. **No silent retries.** One line of narration per attempt, through the active runtime's native channel: Telegram in Claude Code with the Telegram integration, the in-app progress stream in any runtime without it (Codex, Gemini CLI, other AGENTS.md tools). The operator should know when agents fail. A missing Telegram connection in a runtime without the integration is not logged, not retried and not treated as a failure.
+4. **No silent retries.** One line of narration per attempt, in the active session. The operator should know when agents fail.
 5. **Every attempt's error analysis is appended to the mission record** (per the Rule 16 documentation trail) — failure state, cause class, what the brief changed, result.
 
 ---
@@ -91,5 +91,5 @@ If multiple agents fail in the same session: this is likely a system-level issue
 
 ## CHANGELOG
 
-- **v0.2.0 (2026-09-24) runtime split** — Per-attempt narration and escalation go through the active runtime's native channel (Claude Code with the Telegram integration: Telegram; any runtime without it: the in-app progress stream and final answer). A missing Telegram connection there is never logged, retried or treated as a failure.
-- **2026-06-10 Tess OS reform (operator-authorized)** — Rewritten as a typed retry loop: kept the existing 5-state failure table; added mandatory cause-level classification (Transient / Context-Gap / Wrong-Approach / Wrong-Task); same-brief retries now permitted only for transient causes (with backoff), all other causes require a changed brief addressing the classified cause; attempt cap raised 2 → 3 (the operator's number — explicit supersession note above); escalation at the cap now requires the full per-attempt analysis log; per-attempt one-line Telegram narration and mission-record error analyses made mandatory; failed verification (verification-routing.md) wired in as an entry point. Source: audit memo G4/S5/B4, Decision 3 resolved to 3.
+- **v0.2.0 (2026-09-24) runtime-neutral reporting** — Per-attempt narration and escalation are reported in the active session of whichever runtime is in use; the base harness has no external chat channel.
+- **2026-06-10 Tess OS reform (operator-authorized)** — Rewritten as a typed retry loop: kept the existing 5-state failure table; added mandatory cause-level classification (Transient / Context-Gap / Wrong-Approach / Wrong-Task); same-brief retries now permitted only for transient causes (with backoff), all other causes require a changed brief addressing the classified cause; attempt cap raised 2 → 3 (the operator's number — explicit supersession note above); escalation at the cap now requires the full per-attempt analysis log; per-attempt one-line operator narration (in the active session since v0.2.0) and mission-record error analyses made mandatory; failed verification (verification-routing.md) wired in as an entry point. Source: audit memo G4/S5/B4, Decision 3 resolved to 3.

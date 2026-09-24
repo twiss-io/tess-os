@@ -45,7 +45,9 @@ GUARDRAILS = (
     REPO_ROOT / "conductor" / "guardrails.md",
     REPO_ROOT / ".tess" / "core" / "conductor" / "guardrails.md",
 )
-RULE_ZERO_GUARDS = ("dispatch-guard.sh", "anti-fabrication-guard.sh")
+# v0.2.0 (notg): the chat-channel companion guard (anti-fabrication-guard.sh)
+# was removed with the channel, so dispatch-guard.sh is the one Rule Zero guard.
+RULE_ZERO_GUARDS = ("dispatch-guard.sh",)
 
 _BLOCK_PHRASES = (
     r"\bblock[- ]mode\b",

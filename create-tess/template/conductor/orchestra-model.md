@@ -27,7 +27,7 @@ Both are **sole dispatchers** in their run. An orchestrator is never either of t
 
 | Role | Who | Holds Agent/Task tool? | Job |
 |---|---|---|---|
-| **Conductor** | Tess, or a Workflow | **Yes (only it)** | Dispatches every agent, enforces gates, runs verification + retries, holds mission state, talks to the operator through the runtime's native channel (Telegram in Claude Code with the Telegram integration) |
+| **Conductor** | Tess, or a Workflow | **Yes (only it)** | Dispatches every agent, enforces gates, runs verification + retries, holds mission state, reports to the operator in the active session |
 | **Routing brain** | The 6 outcome lenses (formerly outcome orchestrators), applied by the conductor | No | Owns an outcome; **returns a crew-plan** (who, order, briefs, gates, verifier); later synthesises returned artifacts |
 | **Player** | The nine dispatchable roles (roster.md), each briefed with the lenses the task needs | No | Executes one brief directly (never re-delegates); returns primary artifacts |
 | **Verifier** | Reid / Quinn / Cyra (with the `verity`, `maialen` or `lysandra` lens where the domain needs it) | No | Reads **primary artifacts** (never Tess's summary) and returns a verdict per [review-output-standards.md](review-output-standards.md) |
@@ -158,8 +158,7 @@ This is what Tess (or a Workflow) executes. It is the only place dispatch happen
 5. SYNTHESIS (dispatch ×1)  re-invoke the orchestrator in SYNTHESIS mode WITH the collected,
                             verified artifacts attached. It returns the 10-section memo.
                             (Or Tess synthesises directly for lighter missions.)
-6. DELIVER (Tess)           send the result on the runtime's native channel (Telegram in
-                            Claude Code with Telegram); append verdicts to the mission record;
+6. DELIVER (Tess)           report the result in the active session; append verdicts to the mission record;
                             update mission-states.
 ```
 
@@ -207,7 +206,7 @@ The roster is large: 144 persona specs across guilds + 6 outcome orchestrators =
 | **[Retry protocol](subagent-failure-protocol.md)** | Plan-validation failures, task failures, and verifier rejections all enter the typed retry loop: classify → changed brief → max 3 → escalate. |
 | **[Mission states](mission-states.md)** | `mission_id` ties the plan to the FSM record; the conductor advances state as stages clear. |
 | **[Simple Task Path](doctrine.md)** | Tightly-scoped single-domain execution skips the orchestrator entirely — Tess dispatches one player directly. No crew-plan needed; the orchestra model is for serious missions. |
-| **Operator channel** (Telegram in Claude Code with the Telegram integration; the native progress and final-answer channel elsewhere) | Only the conductor (Tess) talks to the operator — start, milestones, completion, blockers. Players and orchestrators return artifacts to the conductor; they do not message the operator. |
+| **Reporting** | Only the conductor (Tess) reports to the operator, in the active session — start, milestones, completion, blockers. Players and orchestrators return artifacts to the conductor; they do not message the operator. |
 
 ---
 

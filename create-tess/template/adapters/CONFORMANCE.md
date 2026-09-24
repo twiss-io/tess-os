@@ -44,7 +44,7 @@ runtimes change quickly, so re-check before relying on a row.
 
 | Runtime | Tess target | Level | How it reads Tess | Why this level (limits) | Docs |
 |---|---|---|---|---|---|
-| Claude Code | `claude-code` | Enforced | `CLAUDE.md` (plus cwd ancestors, `.claude/rules/`), `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, and the hooks in `.claude/settings.json`. | Reference runtime. All shipped hooks run natively (PreToolUse on the Telegram reply/edit tools, on `Task\|Agent`, on `Bash\|Edit\|Write`; PostToolUse, SessionEnd, UserPromptSubmit); exit 2 or `permissionDecision: "deny"` blocks. `dispatch-guard.sh` only warns by design. It reads `AGENTS.md` only when no `CLAUDE.md` exists, so in a Tess install it ignores `AGENTS.md`. It does not read `.agents/skills/`. | [memory](https://code.claude.com/docs/en/memory.md), [hooks](https://code.claude.com/docs/en/hooks.md), [skills](https://code.claude.com/docs/en/skills.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md) |
+| Claude Code | `claude-code` | Enforced | `CLAUDE.md` (plus cwd ancestors, `.claude/rules/`), `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, and the hooks in `.claude/settings.json`. | Reference runtime. All shipped hooks run natively (PreToolUse on `Task\|Agent` and on `Bash\|Edit\|Write`; PostToolUse, SessionEnd, UserPromptSubmit); exit 2 or `permissionDecision: "deny"` blocks. `dispatch-guard.sh` only warns by design. It reads `AGENTS.md` only when no `CLAUDE.md` exists, so in a Tess install it ignores `AGENTS.md`. It does not read `.agents/skills/`. | [memory](https://code.claude.com/docs/en/memory.md), [hooks](https://code.claude.com/docs/en/hooks.md), [skills](https://code.claude.com/docs/en/skills.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md) |
 | OpenAI Codex CLI | `codex` | Partial | `AGENTS.md` (root to cwd, one file per directory, 32 KiB cap), the 26 commands as `.agents/skills/tess-*/SKILL.md` (explicit-only via `agents/openai.yaml`, run with `$tess-<command>`), and `.codex/config.toml` (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`). | Doctrine loads natively. Enforcement is Codex's own sandbox and approval policy from the rendered `.codex/config.toml`, which Codex loads only for a trusted project. Tess renders no `.codex/hooks.json` in this release, so no Tess hook runs. Codex hooks exist but require hash-based trust review, fail open for unsupported outputs, and the docs call them "a useful guardrail, not a complete enforcement boundary". A project-scoped `.codex/prompts/` is never loaded, which is why the commands are skills. | [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md), [skills](https://learn.chatgpt.com/docs/build-skills.md), [hooks](https://learn.chatgpt.com/docs/hooks.md), [config](https://learn.chatgpt.com/docs/config-file/config-reference.md), [openai/codex#9848](https://github.com/openai/codex/issues/9848) |
 | Any AGENTS.md reader (generic) | `generic` | Advisory | `AGENTS.md` plus a plain `prompts/<command>.md` mirror with no harness-specific frontmatter. | Text only: nothing in the generic output can block a tool call. Use it for runtimes with no Tess target. | [agents.md](https://agents.md/) |
 | GitHub Copilot CLI | none (reads `claude-code` output) | Partial | Loads `CLAUDE.md`, `AGENTS.md`, `.github/instructions`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.agents/skills` and the hooks in `.claude/settings.json`. | Tess's Claude hooks run. Command `preToolUse` hooks fail closed on a crash or non-zero exit, but timeouts always fail open. The Copilot cloud agent reads only `.github/hooks/*.json`, which Tess does not render. It merges `CLAUDE.md` and `AGENTS.md`, so doctrine loads twice. | [custom instructions](https://docs.github.com/en/copilot/reference/custom-instructions-support), [hooks](https://docs.github.com/en/copilot/reference/hooks-reference), [CLI config](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference) |
@@ -123,11 +123,16 @@ this release renders them for another runtime.
    Copilot fails open on timeouts
    ([Copilot](https://docs.github.com/en/copilot/reference/hooks-reference)).
    OpenCode and Amp need JS/TS plugins; Devin Desktop has its own `pre_*`
-   events.
-2. **The Telegram channel.** It is a Claude Code plugin, and the hooks match
-   its tool names (`mcp__plugin_telegram_telegram__*`), which match nothing
-   elsewhere. Worker runtimes report through their own channel (see the
-   Communication Channel section of `AGENTS.md`).
+   events. Grok Build runs Tess's `.claude/settings.json` hooks with its own
+   tool names, so the `Task|Agent` gate sees `spawn_subagent` and lets it
+   through, and failures fail open ([Grok hooks](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)). Kimi Code
+   reads hooks only from the user's config and fails open
+   ([Kimi hooks](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/hooks.md)); Qwen Code reads them from
+   `.qwen/settings.json`; DeepSeek Harness runs Claude hooks only through an
+   opt-in bridge ([bridge](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/hooks/hooks-claude-code/README.md)).
+2. **External notification channels.** The base harness has none: every
+   runtime reports in its own session (see the Communication Channel section
+   of `AGENTS.md`). A channel an operator adds is outside these levels.
 3. **Permissions.** Every runtime has its own format: Claude allow/deny rules,
    Codex sandbox and approval settings, Cursor `cli.json`, Copilot CLI flags,
    OpenCode `permission`, Amp `mcpPermissions`. Gemini's project policy tier
