@@ -137,7 +137,15 @@ test(
       jsonStart !== -1,
       `npm pack --json produced no JSON array on stdout\nSTDOUT:\n${packResult.stdout}`,
     );
-    const packInfo = JSON.parse(packResult.stdout.slice(jsonStart))[0];
+    // Newer npm (11.x, which publish-npm.yml installs) can print more output
+    // after the JSON array, so parse the longest valid prefix ending in ']'.
+    const packText = packResult.stdout.slice(jsonStart);
+    let packJson;
+    for (let end = packText.lastIndexOf(']'); end !== -1; end = packText.lastIndexOf(']', end - 1)) {
+      try { packJson = JSON.parse(packText.slice(0, end + 1)); break; } catch { /* keep shrinking */ }
+    }
+    assert.ok(Array.isArray(packJson), `npm pack --json produced no parseable JSON array\nSTDOUT:\n${packResult.stdout}`);
+    const packInfo = packJson[0];
     const tarballPath = join(packDest, packInfo.filename);
     assert.ok(existsSync(tarballPath), `expected tarball at ${tarballPath}`);
 
