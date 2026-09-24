@@ -47,7 +47,7 @@ def test_second_run_is_byte_identical(inst):
 def test_messages_verbatim_redacted_and_injected_channels_skipped(inst):
     _synced(inst)
     text = (inst / JOURNAL).read_text()
-    assert "[L1 14:05 probe cli] Decision: let's go with Postgres for the ledger." in text
+    assert "[L1 14:05 probe cli] Decision: let's go with Firebird for the widget ledger." in text
     assert "blue logo" not in text and "let's ship it tonight" not in text  # plugin-injected: not journaled
     assert "<REDACTED:nric>" in text and "<REDACTED:card>" in text
     assert not re.search(r"[STFGM]\d{7}[A-Z]", text)
@@ -122,9 +122,9 @@ def test_stub_only_keeps_body_local(tmp_path):
     inst = Path(fxlib.make(str(tmp_path / "fx"), brain_json=str(p)))
     _synced(inst)
     stub = (inst / JOURNAL).read_text()
-    assert "stub: true" in stub and "Postgres" not in stub and "## Messages" not in stub
+    assert "stub: true" in stub and "Firebird" not in stub and "## Messages" not in stub
     local = (inst / ".tess/state/brain" / JOURNAL[len("brain/"):]).read_text()
-    assert "Postgres for the ledger" in local
+    assert "Firebird for the widget ledger" in local
     assert (inst / ".tess/state/brain/.gitignore").read_text() == "*\n"
     assert fxlib.cli(inst, "lint").returncode == 0
 

@@ -4,6 +4,7 @@ the SessionStart snapshot (hooks.py).
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -67,13 +68,11 @@ def _review(recs) -> Dict[str, int]:
 
 
 def _budgets(cfg: Config) -> List[str]:
-    out = []
-    for name, fn in (("START-HERE.md", caps.start_here), ("profile.md", caps.profile)):
-        p = cfg.brain / name
-        if p.is_file():
-            err = fn(cfg, p.read_text(encoding="utf-8", errors="replace"))
-            if err:
-                out.append("brain/%s over budget (%s)" % (name, err))
+    out = _near_caps(cfg)
+    held = _held_over_cap(cfg)
+    if held:
+        out.append("%d candidate(s) held because brain/profile.md is at its cap; consolidate: brain-review "
+                   "--consolidate" % held)
     settings = cfg.root / ".claude" / "settings.json"
     if settings.is_file() and "tessbrain.py" not in settings.read_text(encoding="utf-8", errors="replace"):
         out.append("brain hooks missing from .claude/settings.json (capture is not mechanical)")
@@ -82,6 +81,35 @@ def _budgets(cfg: Config) -> List[str]:
         out.append("Claude MEMORY.md is %d B; the runtime cuts it at load (brain/ is the source of truth)"
                    % mem.stat().st_size)
     return out
+
+
+def _near_caps(cfg: Config) -> List[str]:
+    """Over a cap, or at 90% of it (so the operator consolidates before learning stops)."""
+    b, out = cfg.budgets, []
+    for name, fn, cap in (("START-HERE.md", caps.start_here, b["start_here_kib"] * 1024),
+                          ("profile.md", caps.profile, b["profile_kib"] * 1024)):
+        p = cfg.brain / name
+        if not p.is_file():
+            continue
+        err = fn(cfg, p.read_text(encoding="utf-8", errors="replace"))
+        size = p.stat().st_size
+        if err:
+            out.append("brain/%s over budget (%s)" % (name, err))
+        elif size >= 0.9 * cap:
+            out.append("brain/%s at %d%% of its %d B cap; consolidate soon: brain-review --consolidate"
+                       % (name, size * 100 // cap, cap))
+    return out
+
+
+def _held_over_cap(cfg: Config) -> int:
+    n = 0
+    for p in sorted((cfg.brain / "inbox").glob("C-*.json")):
+        try:
+            reasons = json.loads(p.read_text(encoding="utf-8")).get("verification", {}).get("reasons") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        n += any("over its cap" in str(r) for r in reasons)
+    return n
 
 
 def learned_since(cfg: Config, recs, since: str) -> List[records.Record]:

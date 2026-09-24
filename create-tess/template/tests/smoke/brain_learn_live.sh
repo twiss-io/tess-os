@@ -150,7 +150,7 @@ run_codex_hooks() {  # L6: trusted project + hook bypass flag; capture with no m
 
 ask() {  # $1 runtime, $2 clone, $3 question, $4 output file
   case $1 in
-    claude) (cd "$2" && clean claude -p --no-session-persistence --setting-sources project,local "$3" </dev/null >"$4" 2>"$4.err") ;;
+    claude) (cd "$2" && clean CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude -p --no-session-persistence --setting-sources project,local "$3" </dev/null >"$4" 2>"$4.err") ;;
     codex) (cd "$2" && clean codex exec --ephemeral --ignore-user-config -m gpt-5.5 -s read-only "$3" </dev/null >"$4" 2>"$4.err") ;;
   esac
 }
@@ -189,6 +189,8 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
   # on the structured first word and on the absence of a decision record path instead.
   check "(L11) negative control: pre-conversation clone cannot answer Q1" sh -c \
     "sed -n '/[A-Za-z]/{p;q;}' '$S/l11-neg-q1.out' | grep -qiE '^[^A-Za-z]*none' && ! grep -q 'brain/decisions/D-' '$S/l11-neg-q1.out'"
+  # Remove only the global Claude state these two scratch clones created.
+  rm -rf "$HOME/.claude/projects/$(slug "$S/zc")" "$HOME/.claude/projects/$(slug "$S/zc0")"
 }
 
 case $RT in

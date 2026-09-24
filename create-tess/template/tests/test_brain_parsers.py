@@ -19,7 +19,7 @@ def test_claude_keeps_humans_and_final_replies_only():
     s = claude.parse(Path(fxlib.CLAUDE_DIR) / "11111111-aaaa-4bbb-8ccc-000000000001.jsonl")
     humans = [m for m in s.msgs if m.role == "human"]
     assert [m.raw_speaker for m in humans] == ["operator", "operator"]  # plugin-injected channel turns skipped
-    assert humans[0].text.startswith("Decision: let's go with Postgres")
+    assert humans[0].text.startswith("Decision: let's go with Firebird")
     assert humans[1].text == "/wake"
     replies = [m.text for m in s.msgs if m.role == "assistant"]
     assert replies == ["Noted for Acme."]  # only the final reply before the next typed message

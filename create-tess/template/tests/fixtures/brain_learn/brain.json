@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "tess-brain",
   "created_at": "2026-09-24T09:00:00+08:00",
-  "timezone": "Asia/Singapore",
+  "timezone": "Etc/GMT-8",
   "identity": {"operator_name": "Probe", "operator_slug": "probe", "assistant_name": "Tess"},
   "principals": [
     {"slug": "probe", "role": "owner", "decides": true, "scope": ["**"], "aliases": [], "git_emails": ["probe@example.invalid"], "journal_consent": "shared"},

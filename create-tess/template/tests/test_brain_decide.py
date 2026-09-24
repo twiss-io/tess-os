@@ -19,6 +19,7 @@ def inst(tmp_path):
     slug = re.sub(r"[^A-Za-z0-9]", "-", str(inst))
     fxlib.claude_session(home / "projects" / slug / (SID + ".jsonl"), SID, [
         ("user", "We will publish the newsletter on Tuesdays."),
+        ("user", "Our readers seem happy with the current format."),  # a later change is a supersede
         ("user", "Change of plan: we will publish the newsletter on Thursdays."),
         ("user", "For Acme we keep the invoices monthly, and only in SGD."),
         ("user", "Should the retainer be 2 hours a week?"),

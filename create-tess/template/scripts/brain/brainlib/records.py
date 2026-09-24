@@ -8,6 +8,7 @@ journal), body_sha256 at acceptance, confirmed_by/at.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,16 +27,16 @@ ORDER = {
     "decision": ["schema", "id", "type", "kind", "title", "status", "tier", "authority", "decided_by", "decider_seat",
                  "entity", "consulted", "informed", "source_quote", "also_quoted", "source_speaker", "source_at",
                  "source_ref", "source_session", "approves_quote", "delegation_ref", "detected_by", "confirmed",
-                 "verified", "verified_at", "supersedes", "superseded_by", "body_sha256", "tags"],
+                 "verified", "verified_at", "supersedes", "superseded_by", "body_sha256", "meta_sha256", "tags"],
     "preference": ["schema", "id", "type", "status", "statement", "scope", "principal", "corrects", "source_quote",
                    "source_speaker", "source_at", "source_ref", "source_session", "detected_by", "verified",
-                   "verified_at", "confirmed", "supersedes", "superseded_by", "body_sha256"],
+                   "verified_at", "confirmed", "supersedes", "superseded_by", "body_sha256", "meta_sha256"],
     "fact": ["schema", "id", "type", "entity", "status", "statement", "source_kind", "source_quote", "source_speaker",
              "source_at", "source_ref", "detected_by", "verified", "verified_at", "confidence", "valid_from",
-             "valid_until", "last_verified", "verify_via", "confirmed", "body_sha256"],
+             "valid_until", "last_verified", "verify_via", "confirmed", "body_sha256", "meta_sha256"],
     "open_loop": ["schema", "id", "type", "entity", "statement", "status", "owner", "due", "source_quote",
                   "source_speaker", "source_at", "source_ref", "detected_by", "verified_at", "confirmed_by",
-                  "confirmed_at", "body_sha256"],
+                  "confirmed_at", "body_sha256", "meta_sha256"],
 }
 ORDER["correction"] = ORDER["preference"]
 ACTIVE = {"accepted", "active", "proposed", "pending-verification", "waiting"}
@@ -63,6 +64,27 @@ class Record:
 
 def body_hash(body: str) -> str:
     return sha256_text(body)
+
+
+# Front-matter fields only this tool may change (fix round 2): a hand edit of any
+# of them (a tampered title, a status flipped to accepted) fails lint.
+META_HASHED = ("id", "type", "title", "statement", "status", "tier", "authority", "decided_by", "entity", "scope",
+               "principal", "corrects", "source_quote", "also_quoted", "source_speaker", "source_at", "source_ref",
+               "approves_quote", "delegation_ref", "confirmed", "supersedes", "superseded_by", "owner", "due")
+
+
+def _norm(v):
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (list, tuple)):
+        return [_norm(x) for x in v]
+    return str(v)
+
+
+def meta_hash(meta: Dict) -> str:
+    return sha256_text(json.dumps([[k, _norm(meta.get(k))] for k in META_HASHED]))
 
 
 def load(path: Path) -> Record:
@@ -125,6 +147,7 @@ def write(cfg: Config, kind: str, directory: Path, meta: Dict, body_fields: Dict
     meta.setdefault("schema", 1)
     if meta.get("status") in ("accepted", "active") or kind in ("fact", "open_loop"):
         meta["body_sha256"] = body_hash(body)
+    meta["meta_sha256"] = meta_hash(meta)
     path = Path(directory) / ("%s.md" % meta["id"])
     if path.exists():
         raise FileExistsError("record exists: %s" % path)
@@ -139,6 +162,7 @@ def update_fields(rec: Record, updates: Dict) -> Record:
     meta.update(updates)
     if meta.get("status") in ("accepted", "active") and not meta.get("body_sha256"):
         meta["body_sha256"] = body_hash(rec.body)
+    meta["meta_sha256"] = meta_hash(meta)
     rec.path.write_text(frontmatter.dump(meta, rec.body, ORDER.get(rec.kind)), encoding="utf-8")
     return load(rec.path)
 

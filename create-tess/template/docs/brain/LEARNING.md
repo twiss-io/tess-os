@@ -105,11 +105,16 @@ env and config style credentials: any key containing `password`, `passwd`,
 `GITHUB_TOKEN=`, `client_secret:`, `aws_secret_access_key =`), followed by
 `:` or `=` and a value of at least 6 characters; the password in a URL
 (`postgres://user:<password>@host`); `Bearer <token>`; Hugging Face `hf_` tokens;
-Singapore NRIC/FIN numbers; Luhn-valid card numbers of 13 to 19 digits; and
-labelled IBAN and bank account numbers.
+Singapore NRIC/FIN numbers (any case); Slack webhook URLs; npm `npm_`,
+SendGrid `SG.` and Twilio `SK` keys; Azure `AccountKey=` and GCP
+`"private_key_id"` values; plain-language credentials ("my password is ...",
+"the aws secret is ...", when the value has a digit or symbol or is 16+
+characters); Luhn-valid card numbers of 13 to 19 digits; and labelled IBAN and
+bank account numbers.
 
 `save` scans the files again before it commits, and also runs
-`gitleaks protect --staged` when gitleaks is installed.
+`gitleaks protect --staged` when gitleaks is installed. When either refuses,
+the paths it staged are unstaged again, so nothing refused is left in the index.
 
 ## Cue pass (the mechanical half of "smarter every exchange")
 
@@ -154,7 +159,7 @@ that fails any rule is rejected and kept, with its reasons, in
 | V8 | A decision or preference whose sentence ends with `?`, or has `if / would / could / might / maybe / perhaps / what if / suppose / hypothetically / let's say / in theory / thinking out loud` before its verb, is rejected as `hypothetical`. The same happens when the next sentence says "just thinking out loud" |
 | V9 | The target register, relative to `brain/`, matches one of the speaker's `scope` globs |
 | V10 | **Statement fidelity.** Every content word of the title and statement appears in the quote or the cited line, and every negation in the quote (`not`, `never`, `stop`, `drop` ...) survives into the statement. A real quote paired with an invented or paraphrased statement goes to **review**; it is never accepted until the operator approves the wording |
-| V11 | **Context.** Goes to review instead of auto-accepting when the sentence is reported speech (`Sam said: ...`, `they decided`, a quoted utterance of 3+ words), the message is a pasted block (more than 3 lines, a `>` quote, or `here are the ... notes/email/transcript`), the statement is taken back later in the same message or in the next principal message (`just kidding`, `scratch that`, `never mind`, `not decided` ...), or a decision is content-free (`Yes, go ahead.`). A take-back that arrives after the earlier message was already promoted moves that unconfirmed record back to `proposed` |
+| V11 | **Context.** Goes to review instead of auto-accepting when the sentence is reported speech (`Sam said: ...`, `they decided`, a quoted utterance of 3+ words), the message is a pasted block (more than 3 lines, a `>` quote, or `here are the ... notes/email/transcript`), the statement is taken back later in the same message or in the next principal message, or a decision is content-free (`Yes, go ahead.`). A take-back is a later sentence that negates, cancels or forgets a word of the statement (`not Heroku after all`, `forget Heroku`), a take-back marker that names it (`changed my mind`, `on second thought`, `hold off`, `that's not a decision`, `ignore my last message` ...), or a bare take-back (`Actually no.`, `Wait, no.`, `Cancel that.`) directly after it or at the start of the next message; a later sentence with its own substance (`No, that's wrong: the timezone is SGT`) corrects something else and leaves it alone. Also held: a conditional decision (`if`, `unless`, `or not`, `depending on`, `assuming`, `maybe` ...) and a content-free preference or correction (`No, don't do that.`). A take-back that arrives after the earlier message was already promoted moves that unconfirmed record back to `proposed` |
 
 V1-V9 reject. V10 and V11 hold: the candidate waits in `brain-review` and
 nothing reaches START HERE, `profile.md` or the registers as accepted until
@@ -202,12 +207,15 @@ front matter is flat YAML. The schemas are in `scripts/brain/schemas/`.
 - `source_session` (`runtime:id`);
 - `tier`, `authority`, `detected_by`, `confirmed`, `verified`;
 - `supersedes` and `superseded_by`;
-- `body_sha256`.
+- `body_sha256` and `meta_sha256`.
 
 The body has `## Context`, `## Decision` and `## Consequences`.
 
 **Immutable.** The body is hashed at acceptance, and `lint` fails on any
-later change. The tool edits front matter only: status, `superseded_by`,
+later change. The front matter the tool owns (title, statement, status, tier,
+decided_by, entity, quotes, source, confirmed, supersede links) is hashed into
+`meta_sha256` on every tool write, so a hand edit (a tampered title, a status
+flipped to accepted) also fails `lint`. The tool edits front matter only: status, `superseded_by`,
 confirmation and verification fields. To change a decision, supersede it.
 
 ## Caps (errors, never truncation)
@@ -240,7 +248,9 @@ any unreachable file and names the link to add, (3) stages only `brain/` and
 the state-card folder, (4) scans for secrets and runs gitleaks when installed,
 (5) commits, with the repository's own hooks always running (the tools never
 bypass them), and (6) pushes only when `save.autopush` is on and the remote is
-neither the public framework repository nor reported public by `gh`.
+neither the public framework repository nor reported public by `gh`. It
+checks every URL `git push` would write to (`git remote get-url --push --all`,
+so a `pushurl` or `pushInsteadOf` cannot route around the check).
 
 If the ship-gate refuses a new instance's first push, the tool points to the
 one-time operator seed push in the onboarding guide.

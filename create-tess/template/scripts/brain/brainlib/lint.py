@@ -46,6 +46,12 @@ def _record_issues(cfg: Config, rec: records.Record) -> List[str]:
         out.append("%s: body changed after acceptance (body_sha256 mismatch); supersede, never edit" % rel)
     if rec.status in ("accepted",) and rec.kind == "decision" and not want:
         out.append("%s: accepted decision has no body_sha256" % rel)
+    meta_want = rec.meta.get("meta_sha256")
+    if meta_want and records.meta_hash(rec.meta) != meta_want:
+        out.append("%s: front matter (title, statement, status, quote, ...) was edited by hand (meta_sha256 "
+                   "mismatch); supersede or use tessbrain.py review/retract, never edit" % rel)
+    elif want and not meta_want:
+        out.append("%s: record has body_sha256 but no meta_sha256 (front matter edited by hand)" % rel)
     return out
 
 
