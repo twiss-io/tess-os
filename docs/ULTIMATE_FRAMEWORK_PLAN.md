@@ -103,7 +103,7 @@ untested by proving-ground, not vindicated by it.)
 | 2026-05-31 fabricated-UUID void targeted the wrong live payment | Agent inherited the orchestrator's *transcription* of data | Dispatch briefs must point at **primary artifacts, never transcribed data** (`dispatch-brief.md` field 3) |
 | 2026-05-12 production delete completed seconds before "scratch that" | One-shot destructive dispatch | Mandatory 3-step verify → go/no-go → execute (`dispatch-brief.md`) |
 | 2026-05-10 Tess-Deploy shipped 5 critical/high security gaps incl. a cross-tenant leak | Review was discretionary and skipped | **Mandatory** verification-before-anything-visible (`verification-routing.md`) |
-| 2026-06-01 false client status sent | Completion claimed before reading results | anti-fabrication-guard hook: completion-claim messages **denied** while a dispatch is in flight |
+| 2026-06-01 false client status sent | Completion claimed before reading results | Read-before-report doctrine (`guardrails.md` Rule 10); the chat-channel hook that enforced it was removed in v0.2.0 |
 | Repeated same-mistake retries burning budget | Untyped retry | Typed retry: classify cause → **changed brief** → cap at 3 → escalate with per-attempt log (`subagent-failure-protocol.md`) |
 
 **[SUPERSEDED — see notice above.]** The proving ground tested the

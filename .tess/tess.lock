@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T10:11:29.906771Z'
+  last_updated: '2026-09-24T11:19:02.982115Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5397,7 +5397,7 @@ files:
   .tess/core/conductor/channel-guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:03f8a0fe96d47cb9a98893a6a4663c345d1b6205452bcad6a26d8be4fd51d374
+    base_sha: sha256:bf060da402faea8d055eb6e99e9074bb449dc090ecd78710c34903c5dea9449c
     live_path: conductor/channel-guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/commands.md:

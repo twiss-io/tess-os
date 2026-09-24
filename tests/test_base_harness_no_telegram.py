@@ -32,7 +32,9 @@ This guard reads the real files and fails on any case-insensitive
     a change to it in v0.2.0. Nothing in the base reads its two chat-channel
     placeholders any more. test_env_example_carries_no_chat_channel_secrets
     is a strict xfail that flips red the day the placeholders are removed,
-    so this entry cannot outlive the fix.
+    so this entry cannot outlive the fix. It runs only in the Tess OS
+    repository; in a scaffold it is skipped, because an instance's
+    .env.example is operator space.
 
 Scope. In the Tess OS repository (create-tess/src exists) every tracked file
 is base harness except the wizard's own test suite (create-tess/test/, never
@@ -222,6 +224,11 @@ def test_base_settings_wire_no_external_channel_tool():
     assert not problems, "base settings wire an external channel:\n  " + "\n  ".join(problems)
 
 
+@pytest.mark.skipif(
+    not PRODUCT_REPO,
+    reason="instance .env.example is operator space: an operator may delete the unused "
+    "placeholders (or add a channel of their own) without turning this suite red",
+)
 @pytest.mark.xfail(
     strict=True,
     reason="v0.2.0: .env.example is a credentials hard-floor path; removing its two unused "

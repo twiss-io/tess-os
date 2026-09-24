@@ -63,6 +63,7 @@ def test_unknown_channel_is_a_safe_noop():
     result = notify.send("hello", dry_run=False, cfg=cfg)
     assert result.sent is False
     assert "unknown notify.channel" in result.detail
+    assert "'webhook'" in result.detail, "the no-op detail must name the supported replacement"
 
 
 def test_no_secret_value_ever_appears_in_repr(monkeypatch):

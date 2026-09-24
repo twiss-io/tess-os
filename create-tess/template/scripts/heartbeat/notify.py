@@ -91,5 +91,6 @@ def send(message: str, dry_run: bool, cfg: Optional[config_mod.HeartbeatConfig] 
 
     return NotifyResult(
         sent=False, dry_run=False, channel=channel, message=message,
-        detail=f"unknown notify.channel {channel!r} — no-op",
+        detail=(f"unknown notify.channel {channel!r} — no-op, nothing sent; supported values are "
+                "'none' and 'webhook' (set 'webhook' with your own endpoint to keep receiving alerts)"),
     )

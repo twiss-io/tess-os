@@ -83,11 +83,20 @@ full schema; summary:
 | `model` | `"sonnet"` | Model passed to Tier-2's `claude -p --model`. |
 | `state_dir` | `null` (→ `~/.tess-os/memory-heartbeat/`) | Where the lockfile/state.json/logs live — outside the git repo. Override with `TESS_MEMORY_STATE_DIR`. |
 | `timezone` | `"UTC"` | IANA timezone the "is today's daily recompile due" check runs in. |
-| `notify.channel` | `"none"` | `"none"` \| `"webhook"`. Any other value is a safe no-op. See `notify.py`. |
+| `notify.channel` | `"none"` | `"none"` \| `"webhook"`. Any other value is a safe no-op that sends nothing (see the upgrade note below). See `notify.py`. |
 | `notify.webhook_url_env` | env var *name* | Generic HTTPS POST of `{"text": ...}` — compatible with Slack incoming webhooks and most chat-ops webhooks. |
 | `daily_recompile.org_repo_scan` | `[]` | List of GitHub orgs to scan for unregistered work via `gh repo list`. Empty = skipped. |
 | `daily_recompile.memory_project_glob` | `null` | Optional glob for cross-session project-note files (any convention an operator uses). `null` = skipped. |
 | `daily_recompile.wiki_log_path` | `"kb/wiki/log.md"` | Optional repo-relative path to tail for the recompile's fuzzy scan. `null` = skipped. |
+
+### Upgrade note (v0.2.0)
+
+v0.2.0 supports only `"none"` and `"webhook"`. If your `heartbeat.config.json`
+names any other channel (for example a chat service that v0.1.x shipped a
+notifier for), heartbeat alerts stop: the notifier records
+`unknown notify.channel ... no-op` and sends nothing. Set `notify.channel` to
+`"webhook"` and point `notify.webhook_url_env` at your own endpoint to keep
+receiving alerts, or set it to `"none"`.
 
 ## Activation
 
