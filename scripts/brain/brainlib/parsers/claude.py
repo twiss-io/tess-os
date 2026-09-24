@@ -1,10 +1,15 @@
 """Claude Code transcript parser (~/.claude/projects/<slug>/<session>.jsonl).
 
-Kept: operator prompts (typed, -p/sdk, queued), Telegram channel turns
-(attributed to telegram:<user_id>), and the final assistant text per turn.
-Skipped: tool_result records, isMeta injections, system reminders, local
-command output, task notifications, compaction summaries and injected
-AGENTS.md / CLAUDE.md text.
+Kept: what the operator typed in the session (typed, -p/sdk, queued) and the
+final assistant text per turn. Skipped: tool_result records, isMeta
+injections, system reminders, local command output, task notifications,
+compaction summaries and injected AGENTS.md / CLAUDE.md text. A channel
+plugin's message (a runtime-injected record whose whole text is ONE
+`<channel source=... user_id=...>` wrapper, e.g. Telegram) is attributed to
+`<channel>:<user_id>`, which brain.json maps to a principal via `aliases`;
+a nested or partial wrapper is never attributed.
+Hand-written notes (`tessbrain.py journal note`) carry their speaker in
+`tessSpeaker`.
 """
 from __future__ import annotations
 
@@ -15,7 +20,8 @@ from typing import Dict, List, Optional
 
 from . import EXTERNAL_TOOLS, FILE_TOOLS, Msg, Session, iter_text_blocks, read_lines
 
-_CHANNEL = re.compile(r"<channel\s+([^>]*)>(.*?)</channel>", re.S)
+_INJECTED_CHANNEL = re.compile(r"<channel\s[^>]*>", re.S)
+_CHANNEL = re.compile(r"<channel\s+([^>]*)>(.*)</channel>", re.S)
 _ATTR = re.compile(r'([A-Za-z_]+)="([^"]*)"')
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _COMMAND = re.compile(r"<command-name>(.*?)</command-name>.*?(?:<command-args>(.*?)</command-args>)?", re.S)
@@ -41,17 +47,6 @@ def default_dirs(root: Path) -> List[Path]:
     return seen
 
 
-def _channel_msgs(text: str, ordinal: int, at: str) -> List[Msg]:
-    out = []
-    for attrs, body in _CHANNEL.findall(text):
-        a = dict(_ATTR.findall(attrs))
-        source = a.get("source", "channel")
-        channel = source.split(":")[-1] if ":" in source else source
-        who = a.get("user_id") or a.get("user") or "unknown"
-        out.append(Msg(ordinal, a.get("ts") or at, "human", "%s:%s" % (channel, who), channel, body.strip()))
-    return out
-
-
 def _human_text(rec: Dict) -> Optional[str]:
     content = (rec.get("message") or {}).get("content")
     if isinstance(content, list) and any(isinstance(i, dict) and i.get("type") == "tool_result" for i in content):
@@ -73,19 +68,33 @@ def _clean_human(text: str) -> Optional[str]:
     return text
 
 
+def _channel_msg(text: str, ordinal: int, at: str) -> Optional[Msg]:
+    """A channel plugin's message -> '<channel>:<user_id>'. Exactly one wrapper around the whole text,
+    or it is not attributed (a forged or nested wrapper never borrows a principal's alias)."""
+    t = text.strip()
+    m = _CHANNEL.fullmatch(t)
+    if not m or len(_INJECTED_CHANNEL.findall(t)) != 1:
+        return Msg(ordinal, at, "human", "channel:unattributed", "channel", t) if "<channel" in t else None
+    attrs = dict(_ATTR.findall(m.group(1)))
+    source = attrs.get("source", "channel")
+    channel = source.split(":")[-1] if ":" in source else source
+    who = attrs.get("user_id") or "unknown"
+    return Msg(ordinal, attrs.get("ts") or at, "human", "%s:%s" % (channel, who), channel, m.group(2).strip())
+
+
 def _user(rec: Dict, ordinal: int, sess: Session) -> List[Msg]:
     text = _human_text(rec)
     if text is None:
         return []
     at = rec.get("timestamp") or ""
-    if "<channel" in text:
-        return _channel_msgs(text, ordinal, at)
-    if rec.get("isMeta") or rec.get("promptSource") == "system":
-        return []
+    if rec.get("isMeta") or rec.get("promptSource") == "system":  # injected by the runtime or a plugin
+        msg = _channel_msg(text, ordinal, at) if "<channel" in text else None
+        return [msg] if msg is not None else []
     cleaned = _clean_human(text)
     if cleaned is None:
         return []
-    return [Msg(ordinal, at, "human", "operator", "cli", cleaned)]
+    speaker = str(rec.get("tessSpeaker") or "")
+    return [Msg(ordinal, at, "human", speaker or "operator", "note" if speaker else "cli", cleaned)]
 
 
 def _assistant(rec: Dict, ordinal: int, sess: Session) -> Optional[Msg]:

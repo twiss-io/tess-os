@@ -17,6 +17,7 @@ from .config import Config
 from .textutil import contains, glob_match, normalize, sentences, statement_hash
 
 JUDGED = ("decision", "preference", "correction")
+EXTERNAL = "V6: session used external context; never auto-promoted"
 _TOKENS = re.compile(r"https?://\S+|[\w.+-]+@[\w-]+\.[\w.-]+|\d+(?:[.,:/-]\d+)*")
 
 
@@ -81,14 +82,19 @@ def _v3(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     return None
 
 
-def _external(cfg: Config, line: lookup.JLine) -> bool:
+def _external(cfg: Config, line: lookup.JLine) -> str:
+    """V6 reason or '': the session used web/MCP/search, or it is a hand-written note."""
     if line.kind == "turn":
-        return False
+        return ""
     rel = line.path[len("brain/"):] if line.path.startswith("brain/") else line.path
     for p in (cfg.brain / rel, cfg.state / rel):
         if p.is_file():
-            return bool(frontmatter.read(p)[0].get("external_context"))
-    return False
+            meta = frontmatter.read(p)[0]
+            if meta.get("external_context"):
+                return EXTERNAL
+            if meta.get("runtime") == "note":
+                return "V6: hand-written journal note, not a runtime transcript; the operator confirms it in review"
+    return ""
 
 
 def _duplicate(cfg: Config, cand: Dict, ref: str = "") -> Optional[str]:
@@ -173,10 +179,11 @@ def check(cfg: Config, cand: Dict) -> Result:
         res.status = "noop"
         res.reasons.append("V5: duplicate of %s" % dup)
         return res
-    if res.status == "pass" and not cand.get("operator_approved") and (cand.get("external_context")
-                                                                       or _external(cfg, line)):
+    why = "" if res.status != "pass" or cand.get("operator_approved") else (
+        EXTERNAL if cand.get("external_context") else _external(cfg, line))
+    if why:
         res.status = "review"
-        res.reasons.append("V6: session used external context; never auto-promoted")
+        res.reasons.append(why)
     return res
 
 

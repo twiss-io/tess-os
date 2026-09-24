@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tess-os:brain:journal-session:1",
+  "title": "Tess brain journal session file front matter (brain/journal/YYYY/MM/DD/HHMM-<runtime>-<sid8>.md, spec 9.4)",
+  "type": "object",
+  "required": [
+    "schema",
+    "type",
+    "runtime",
+    "session_id",
+    "started_at",
+    "turns"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "type": {
+      "const": "journal-session"
+    },
+    "runtime": {
+      "enum": [
+        "claude",
+        "codex",
+        "gemini",
+        "note"
+      ]
+    },
+    "runtime_version": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "part": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_path": {
+      "type": "string",
+      "description": "~-relative transcript path"
+    },
+    "source_sha256": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "git_branch": {
+      "type": "string"
+    },
+    "git_head": {
+      "type": "string"
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "external_context": {
+      "type": "boolean"
+    },
+    "redactions": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "speakers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "turns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stub": {
+      "type": "boolean",
+      "description": "capture.journal=stub-only: body kept in .tess/state/brain/"
+    }
+  }
+}

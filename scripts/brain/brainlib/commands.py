@@ -37,8 +37,14 @@ def cmd_journal_note(cfg: Config, a) -> Out:
     cfg.ensure_state()
     path = cfg.state / "notes" / ("%s.jsonl" % now.strftime("%Y%m%d"))
     path.parent.mkdir(parents=True, exist_ok=True)
+    speaker = a.speaker or "operator"
+    slug = cfg.resolve_speaker(speaker)
+    from . import redact
+    text = redact.redact(a.text)[0] if slug and cfg.consents(slug) else "[omitted: no consent]"
     rec = {"type": "user", "sessionId": "note%s" % now.strftime("%Y%m%d"), "timestamp": iso(now),
-           "message": {"role": "user", "content": a.text}, "cwd": str(cfg.root)}
+           "message": {"role": "user", "content": text}, "cwd": str(cfg.root)}
+    if a.speaker:
+        rec["tessSpeaker"] = a.speaker
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     from . import journal, entities

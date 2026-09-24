@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     j = sub.add_parser("journal", help="journal tools").add_subparsers(dest="journal_cmd", required=True)
     n = j.add_parser("note", help="note a conversation turn by hand (runtimes without capture hooks)")
     n.add_argument("--text", required=True)
+    n.add_argument("--speaker", default="", help="principal slug or alias (default: this machine's user)")
     n.set_defaults(fn=C.cmd_journal_note)
     _record_parsers(sub)
     _inbox_parsers(sub)

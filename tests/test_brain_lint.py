@@ -82,3 +82,43 @@ def test_agents_chain_and_entity_budgets(inst):
     acme.write_text(acme.read_text().lstrip("\n") + ("z" * 99 + "\n") * 20)
     rc, out = lint(inst)
     assert rc == 1 and "entity AGENTS.md over budget" in out
+
+
+def _validate(obj, schema):
+    """Tiny validator for the subset the brain schemas use (required, const, enum, pattern, types)."""
+    import re as _re
+    errs = [k for k in schema.get("required", []) if k not in obj]
+    for k, rule in schema.get("properties", {}).items():
+        if k not in obj:
+            continue
+        v = obj[k]
+        if "const" in rule and v != rule["const"]:
+            errs.append("%s const" % k)
+        if "enum" in rule and v not in rule["enum"]:
+            errs.append("%s=%r not in enum" % (k, v))
+        if "pattern" in rule and isinstance(v, str) and not _re.search(rule["pattern"], v):
+            errs.append("%s pattern" % k)
+        if rule.get("type") == "boolean" and not isinstance(v, bool):
+            errs.append("%s type" % k)
+    return errs
+
+
+def test_records_journal_and_candidates_match_the_schemas(inst):
+    import json as _json
+    from brainlib import frontmatter
+    sdir = Path(fxlib.REPO) / "scripts/brain/schemas"
+    load = lambda n: _json.loads((sdir / n).read_text())
+    dec, rec, jour, cand = (load("decision.schema.json"), load("record.schema.json"),
+                            load("journal-session.schema.json"), load("candidate.schema.json"))
+    seen = 0
+    for p in (inst / "brain").rglob("[DPCFL]-2*.md"):
+        meta = frontmatter.read(p)[0]
+        assert _validate(meta, dec if p.name.startswith("D-") else rec) == [], p.name
+        seen += 1
+    for p in (inst / "brain/journal").glob("*/*/*/*.md"):
+        assert _validate(frontmatter.read(p)[0], jour) == [], p.name
+        seen += 1
+    for p in (inst / "brain/inbox").rglob("C-*.json"):
+        assert _validate(_json.loads(p.read_text()), cand) == [], p.name
+        seen += 1
+    assert seen >= 10

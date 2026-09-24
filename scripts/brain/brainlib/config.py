@@ -20,6 +20,7 @@ DEFAULT_BUDGETS = {
     "learned_entries": 100, "agents_chain_kib": 24, "session_start_kib": 4,
 }
 STATE_REL = ".tess/state/brain"
+CONSENT_YES = ("shared", "yes", "true", "granted", "local")
 
 
 def _truthy_env(name: str) -> bool:
@@ -93,10 +94,26 @@ class Config:
                 return p
         return None
 
+    def local_speaker(self) -> Optional[str]:
+        """Who types in this machine's runtime sessions.
+
+        The principal whose `git_emails` holds this clone's `git config user.email`.
+        When no principal lists any git email (a fresh install), the operator.
+        When emails are listed but this clone's matches none, nobody (None): the
+        words are omitted rather than credited to the wrong person; status says so.
+        """
+        if not hasattr(self, "_local_speaker"):
+            email = _git_email(self.root)
+            listed = [p for p in self.principals if p.get("git_emails")]
+            hit = [p for p in listed if email and email.lower() in [str(e).lower() for e in p["git_emails"]]]
+            self._local_speaker = (str(hit[0]["slug"]) if hit else None) if listed else self.operator_slug
+            self.git_email = email
+        return self._local_speaker
+
     def resolve_speaker(self, raw: str) -> Optional[str]:
-        """Map a raw speaker id ('operator', 'telegram:123') to a principal slug."""
+        """Map a raw speaker id ('operator' = this machine's user, a slug or an alias) to a principal slug."""
         if raw in ("operator", "", None):
-            return self.operator_slug
+            return self.local_speaker()
         if self.principal(raw):
             return raw
         for p in self.principals:
@@ -105,8 +122,9 @@ class Config:
         return None
 
     def consents(self, slug: str) -> bool:
+        """Only an explicit yes journals a principal's words ('unknown' is not consent)."""
         p = self.principal(slug)
-        return bool(p) and str(p.get("journal_consent", "shared")) not in ("none", "no", "off")
+        return bool(p) and str(p.get("journal_consent", "shared")).lower() in CONSENT_YES
 
     # -- policy knobs --------------------------------------------------
     @property
@@ -174,6 +192,15 @@ class Config:
 
     def rel(self, path: Path) -> str:
         return Path(path).resolve().relative_to(self.root).as_posix()
+
+
+def _git_email(root: Path) -> str:
+    import subprocess
+    try:
+        p = subprocess.run(["git", "-C", str(root), "config", "user.email"], capture_output=True, text=True, timeout=5)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def parse_iso(value: str) -> _dt.datetime:

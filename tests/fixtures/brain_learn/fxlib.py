@@ -21,6 +21,8 @@ def make(dest, git=True, brain_json=None):
     os.makedirs(os.path.join(dest, "memory", "projects"), exist_ok=True)
     if git:
         run(dest, "init", "-q", "-b", "main")
+        run(dest, "config", "user.email", "probe@example.invalid")  # the typing speaker is 'probe' (git_emails)
+        run(dest, "config", "user.name", "probe")
         run(dest, "add", "-A")
         run(dest, *GIT_ID, "commit", "-q", "-m", "fixture seed")
     return dest

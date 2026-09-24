@@ -103,3 +103,21 @@ def test_pending_then_unverified_after_two_failed_syncs(inst, tmp_path):
         fxlib.sync_dir(inst, tmp_path / "empty")
     assert 'status: "unverified"' in rec.read_text()
     assert "sign off as T" not in (inst / "brain/profile.md").read_text()
+
+
+def test_hand_written_note_is_never_auto_promoted(inst):
+    r = fxlib.cli(inst, "--json", "journal", "note", "--text", "Decision: let's go with weekly standups.")
+    out = json.loads(r.stdout)
+    assert out["journaled"] and [o["status"] for o in out["outcomes"]] == ["review"]
+    assert "hand-written journal note" in out["outcomes"][0]["reasons"][0]
+
+
+def test_unknown_git_user_is_not_credited_to_a_principal(tmp_path):
+    inst = Path(fxlib.make(str(tmp_path / "fx")))
+    fxlib.run(str(inst), "config", "user.email", "someone-else@example.invalid")
+    fxlib.sync_fixture(inst)
+    text = (inst / "brain/journal/2026/09/24/1405-claude-11111111.md").read_text()
+    assert "[non-principal operator omitted: no consent]" in text and "Postgres" not in text
+    assert "[L2 14:10 sam telegram] Decision: we'll use the blue logo for Acme." in text  # channel alias still maps
+    st = fxlib.cli(inst, "status").stdout
+    assert "matches no principal's git_emails" in st

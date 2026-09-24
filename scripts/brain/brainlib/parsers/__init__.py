@@ -26,8 +26,8 @@ class Msg:
         self.ordinal = ordinal
         self.at = at
         self.role = role  # "human" | "assistant"
-        self.raw_speaker = raw_speaker  # "operator" | "telegram:<id>" | "assistant"
-        self.channel = channel  # "cli" | "telegram" | ...
+        self.raw_speaker = raw_speaker  # "operator" | "telegram:<id>" | a slug/alias (journal note) | "assistant"
+        self.channel = channel  # "cli" | "telegram" | "note" | "reply"
         self.text = text
 
 

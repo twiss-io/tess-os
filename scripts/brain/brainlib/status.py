@@ -116,7 +116,7 @@ def collect(cfg: Config, fast: bool = False) -> Dict:
         "learned_since_last_session": [r.id for r in learned_since(cfg, recs, last.get("at") or "")],
         "onboarding_unverified": sorted(k for k, a in answers.items() if isinstance(a, dict) and a.get("quote")
                                         and not a.get("verified")),
-        "records": len(recs),
+        "records": len(recs), "speaker": cfg.local_speaker(),
     }
 
 
@@ -141,6 +141,9 @@ def render(cfg: Config, s: Dict, recs=None) -> str:
     if s["unjournaled"]:
         lines.append("- %d session(s) not journaled yet (a background sync is running)." % s["unjournaled"])
     lines += ["- Budget: %s" % b for b in s["budgets"]]
+    if s.get("speaker") is None:
+        lines.append("- This clone's git user.email matches no principal's git_emails in brain/brain.json, so your"
+                     " words in this machine's sessions are omitted from the journal until it is added.")
     if s["onboarding_unverified"] and s["onboarded"] == "complete":
         lines.append("- Onboarding answers not yet matched to your own words: %s" % ", ".join(s["onboarding_unverified"]))
     if s["errors"]:

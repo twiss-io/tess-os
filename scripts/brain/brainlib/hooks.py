@@ -21,7 +21,7 @@ from .config import Config, log_error, quiet_env, read_json, write_json
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tessbrain.py")
 DISTILL_EVERY = 10
-_CHANNEL_USER = __import__("re").compile(r'<channel\s+[^>]*?user_id="([^"]+)"[^>]*>(.*?)</channel>', __import__("re").S)
+_INJECTED = __import__("re").compile(r"<channel\s[^>]*>")
 
 
 def read_stdin(cfg: Config) -> Dict:
@@ -81,18 +81,11 @@ def session_start(cfg: Config, runtime: str, data: Dict) -> None:
         spawn(["--root", str(cfg.root), "sync", "--days", "7", "--no-wait", "--quiet"])
 
 
-def _speaker_and_text(prompt: str):
-    m = _CHANNEL_USER.search(prompt or "")
-    if m:
-        return "telegram:%s" % m.group(1), m.group(2).strip()
-    return "operator", prompt or ""
-
-
 def prompt(cfg: Config, runtime: str, data: Dict) -> None:
-    raw_speaker, text = _speaker_and_text(str(data.get("prompt") or ""))
-    if not text.strip():
+    text = str(data.get("prompt") or "")
+    if not text.strip() or _INJECTED.search(text):  # plugin-injected text is not the operator typing
         return
-    rec = turns.append(cfg, runtime, str(data.get("session_id") or ""), text, raw_speaker)
+    rec = turns.append(cfg, runtime, str(data.get("session_id") or ""), text, "operator")
     from . import sync
     sync.remember_session(cfg, runtime, str(data.get("session_id") or ""), str(data.get("transcript_path") or ""),
                           str(data.get("cwd") or ""))
@@ -113,9 +106,9 @@ def prompt(cfg: Config, runtime: str, data: Dict) -> None:
 
 
 def stop(cfg: Config, runtime: str, data: Dict) -> None:
-    from . import sync
+    """Hand journaling to a detached sync FIRST: `claude -p` ends the session (and may kill an async
+    hook) right after Stop fires, so nothing slow may run before the child is spawned."""
     transcript = str(data.get("transcript_path") or "")
-    sync.remember_session(cfg, runtime, str(data.get("session_id") or ""), transcript, str(data.get("cwd") or ""))
     args = ["--root", str(cfg.root), "sync", "--runtime", runtime, "--quiet"]
     if transcript:
         args += ["--transcript", transcript]
@@ -125,7 +118,9 @@ def stop(cfg: Config, runtime: str, data: Dict) -> None:
     else:
         spawn(args)
     if runtime == "codex":
-        print("{}")  # Codex requires JSON (or nothing) from Stop hooks
+        print("{}", flush=True)  # Codex requires JSON (or nothing) from Stop hooks
+    from . import sync
+    sync.remember_session(cfg, runtime, str(data.get("session_id") or ""), transcript, str(data.get("cwd") or ""))
 
 
 def dispatch(root, event: str, runtime: str) -> int:
