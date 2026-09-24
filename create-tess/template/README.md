@@ -117,23 +117,31 @@ candidate. Key custody belongs to a designated human custodian. See
 
 Tess OS runs natively on Claude Code, Codex and Gemini CLI, plus any
 AGENTS.md-compatible tool. How much of Tess each runtime can actually enforce
-differs, and this table is the claim. It is not a parity claim. **Enforced**
-means the full Tess session hook set runs inside the runtime. **Partial**
-means the runtime loads the Tess doctrine and commands natively but runs few
-or none of the Tess session hooks. **Advisory** means it reads the doctrine
-text only. In every case the repository's git hooks (once installed) and
-the CI gate still apply. The levels match
+differs, and this table is the claim. It is not a parity claim.
+
+- **Enforced:** the runtime loads the Tess doctrine natively and runs Tess's
+  shipped hooks, so a blocking hook stops the tool call.
+- **Partial:** the doctrine loads natively and some enforcement exists (the
+  runtime's own sandbox or approval settings rendered by Tess, or Tess's
+  Claude hooks read by a compatible runtime), with documented gaps or
+  fail-open cases.
+- **Advisory:** the runtime can read the doctrine as text. Nothing Tess
+  ships can block a tool call there.
+
+A level covers in-session enforcement only. The ship gate runs in git (the
+pre-push hook, once installed) and in CI, outside every runtime, so it
+applies whichever tool made the change. The levels match
 [adapter conformance](adapters/CONFORMANCE.md), which records the evidence
-for each.
+and documentation links for each runtime.
 
 | Runtime | Enforcement | How Tess OS reaches it | Main limits |
 |---|---|---|---|
-| Claude Code | **Enforced** | Reference `claude-code` target: `CLAUDE.md`, `.claude/agents`, `.claude/commands`, and the Tess hooks in `.claude/settings.json`. | The session hooks run natively; the merge gate is still a preview (see [Important limits today](#important-limits-today)). |
-| Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills. | No Tess session hook runs inside Codex in 0.2.0; the gate runs at git pre-push and in CI. Codex reads `.codex/config.toml` only in a trusted project, and caps the `AGENTS.md` chain at 32 KiB. |
-| Gemini CLI | **Partial** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, and the Tess commands as `/tess:<command>`. | No Tess session hook runs inside Gemini CLI in 0.2.0; the gate runs at git pre-push and in CI. Gemini loads these files only in a trusted folder. No live model run was part of the v0.2.0 checks. |
+| Claude Code | **Enforced** | Reference `claude-code` target: `CLAUDE.md`, `.claude/agents`, `.claude/commands`, and the Tess hooks in `.claude/settings.json`. | The shipped hooks run natively (`dispatch-guard` only warns, by design). The merge gate is still a preview (see [Important limits today](#important-limits-today)). |
+| Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (`$tess-<command>`). | Enforcement is Codex's own sandbox and approval settings from the rendered `.codex/config.toml`, which Codex loads only for a trusted project. No Tess hook runs inside Codex in 0.2.0. The `AGENTS.md` chain is capped at 32 KiB. |
+| Gemini CLI | **Partial** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, and the Tess commands as `/tess:<command>`. | Gemini loads these files only in a trusted folder. No Tess hook, setting or policy is rendered for Gemini in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
 | GitHub Copilot CLI, Cursor | **Partial** (through the Claude-compatible files) | No dedicated target. Both read `CLAUDE.md`, `AGENTS.md`, `.claude/agents`, and the Claude hooks. | Not tested by Tess OS. Copilot hook timeouts fail open; Cursor fails open on hook crashes and timeouts. Both load the doctrine twice. |
-| Other `AGENTS.md` tools (for example OpenCode, Amp, Jules, Kiro) | **Advisory** | The `AGENTS.md` doctrine text only. | No Tess commands or session hooks in the tool. The git hooks and CI gate still apply to the repository. |
-| Any runtime not listed here | **unverified** | — | Not assessed. Using a frontier model, MCP, or an OpenAI-compatible API does not make a runtime supported. |
+| Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro) | **Advisory** | The `AGENTS.md` doctrine text (Aider needs `read: [AGENTS.md]` in its config). | Nothing Tess ships can block a tool call there. |
+| Cline, Roo Code, and any runtime not listed here | **unverified** | — | Not verified for this release. Using a frontier model, MCP, or an OpenAI-compatible API does not make a runtime supported. |
 
 ## Other surfaces
 
