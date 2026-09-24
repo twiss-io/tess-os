@@ -22,10 +22,6 @@ This guard reads the real files and fails on any case-insensitive
   * this test file itself;
   * the one docs note (create-tess/README.md): external notification
     channels are optional operator add-ons, outside the base harness;
-  * the raw, unedited demo recording of create-tess 0.1.x
-    (docs/demo/tess-demo.cast and .svg). Editing it would falsify the
-    recording; docs/demo/driver.py already matches the current wizard, so
-    the next re-recording drops the prompt;
   * .env.example, a credentials hard-floor path (policy hard_floor_rules
     `credentials`, glob `**/*.env.*`). Any change to it needs a signed
     operator sign-off, and signoff_keys ships empty, so the gate cannot pass
@@ -38,8 +34,8 @@ This guard reads the real files and fails on any case-insensitive
 
 Scope. In the Tess OS repository (create-tess/src exists) every tracked file
 is base harness except the wizard's own test suite (create-tess/test/, never
-scaffolded) and reviews/ (plus any create-tess/template/reviews/ copy): per-PR
-review records such as a reviewer's verdict on this very change. They are
+scaffolded) and reviews/verdicts/ (plus any create-tess/template/reviews/verdicts/
+copy): per-PR review records such as a reviewer's verdict on this very change. They are
 stripped at integration (integrate_step.sh removes reviews/verdicts/ from
 every merge) and are never scaffolded, and a verdict that names the removed
 channel must not turn its own PR red. That covers core, doctrine, templates, hooks, settings,
@@ -65,10 +61,6 @@ PRODUCT_REPO = (REPO_ROOT / "create-tess" / "src").is_dir()
 NEEDLE = re.compile(r"telegram", re.IGNORECASE)
 
 _THIS = "tests/test_base_harness_no_telegram.py"
-_RECORDING_REASON = (
-    "raw, unedited terminal recording of create-tess 0.1.x; editing it would "
-    "falsify it; driver.py matches the current wizard, re-record in v0.2.1"
-)
 _HARD_FLOOR_REASON = (
     "credentials hard-floor path: a change needs a signed operator sign-off and "
     "signoff_keys ships empty; placeholders are unused; tracked by the strict xfail below"
@@ -80,19 +72,18 @@ ALLOWLIST = {
     "create-tess/template/" + _THIS: "this guard (bundled template copy)",
     "create-tess/README.md": "the one docs note: external notification channels "
     "are optional operator add-ons, outside the base harness",
-    "docs/demo/tess-demo.cast": _RECORDING_REASON,
-    "docs/demo/tess-demo.svg": _RECORDING_REASON,
-    "create-tess/template/docs/demo/tess-demo.cast": _RECORDING_REASON,
-    "create-tess/template/docs/demo/tess-demo.svg": _RECORDING_REASON,
     ".env.example": _HARD_FLOOR_REASON,
     "create-tess/template/.env.example": _HARD_FLOOR_REASON,
 }
 
 # Not part of the base harness: the wizard's own test suite is never copied
 # into a scaffold (it may assert that the removed flag is rejected), and
-# reviews/ holds per-PR review records (verdicts), stripped at integration
-# and never scaffolded; a verdict on this change will name the channel.
-NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/", "create-tess/template/reviews/")
+# reviews/verdicts/ holds per-PR review records (verdicts), stripped at
+# integration and never scaffolded; a verdict on this change will name the
+# channel. Narrowed from the whole reviews/ tree (Cyra, notg PR #197 low
+# finding, decisions item 13): only the verdicts subtree is exempt, so any
+# OTHER file under reviews/ still counts as base harness surface.
+NOT_BASE_PREFIXES = ("create-tess/test/", "reviews/verdicts/", "create-tess/template/reviews/verdicts/")
 
 # Files that must be in scope, so the scan can never go vacuous.
 MUST_SCAN_PRODUCT = (
@@ -203,9 +194,9 @@ def test_base_harness_has_no_telegram():
 
 
 def test_allowlist_stays_small_and_explicit():
-    # Exactly the five reasons named in the module docstring, plus their
+    # Exactly the four reasons named in the module docstring, plus their
     # bundled-template copies. Growing it needs a reason in the docstring.
-    assert len(ALLOWLIST) == 11
+    assert len(ALLOWLIST) == 7
     for rel, reason in ALLOWLIST.items():
         assert reason.strip(), rel
         assert "*" not in rel and "?" not in rel, f"allowlist entries are exact paths: {rel}"

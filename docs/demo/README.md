@@ -44,11 +44,14 @@ in the wizard.
 
 ## Reproduce it
 
-The committed recording predates v0.2.0: it still shows the wizard's former
-optional chat-channel prompt, which v0.2.0 removed (the base harness reports in
-the active session and needs no external channel). `driver.py` already matches
-the current wizard, so re-running `record-demo.sh` produces a recording without
-that prompt. The recording itself is left unedited, as described above.
+The committed recording was made with the v0.2.0 wizard, which has no
+chat-channel prompt (the base harness reports in the active session). The
+wizard runs `tessctl` with the `python3` on `PATH`, and `tessctl` needs
+`pyyaml`. If asciinema runs from an isolated environment (for example
+`uvx --from 'asciinema<3' asciinema`), that environment's `python3` is the one
+on `PATH`, so add `pyyaml` to it (`uvx --from 'asciinema<3' --with pyyaml
+asciinema`) or the bake step fails and rolls back. Point `ASCIINEMA_BIN` at
+the wrapper.
 
 ```bash
 pip install asciinema           # or: pipx install asciinema

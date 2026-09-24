@@ -66,7 +66,7 @@ integration fits a particular workflow.
 
 ![Tess OS -- create-tess wizard and Agent Receipt demo](docs/demo/tess-demo.svg)
 
-A real, unedited terminal recording of `create-tess` 0.1.x, not a mockup.
+A real, unedited terminal recording of the `create-tess` v0.2.0 wizard, not a mockup.
 It runs `npm create tess`'s five-axis wizard end to end — vibe, operator
 name, starter squad, conductor name, pathway — through the actual post-bake
 `tessctl doctor`/`tessctl verify` checks and the conductor's in-voice arrival
