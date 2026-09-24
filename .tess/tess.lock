@@ -5719,7 +5719,7 @@ files:
   .tess/core/templates/claude-md/orchestrators.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:35a06931f8a1709a9f18705addfa406fd9fe6ee4c1119c223ab9e0a8cf1f498d
+    base_sha: sha256:44690da48f76d8199767b94da1fdda64033816d0385e50cc67a069450717067a
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
