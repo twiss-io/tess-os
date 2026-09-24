@@ -33,6 +33,7 @@ brain/org/priorities/.gitkeep
 brain/org/priorities/2026-Q3.md
 brain/org/processes/.gitkeep
 brain/org/seats/.gitkeep
+brain/org/seats/CHART.md
 brain/org/seats/founder-ceo.md
 brain/org/seats/growth.md
 brain/org/seats/operations.md

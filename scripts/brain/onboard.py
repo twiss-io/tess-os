@@ -24,7 +24,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # never leave __pycache__/ in a brain repo's working tree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from oobe import answers, apply, convert, entities, hook, records, restore, scaffold, state  # noqa: E402
+from oobe import answers, apply, chart, convert, entities, hook, records, restore, scaffold, state  # noqa: E402
 
 TOTAL = state.TOTAL_STEPS
 
@@ -126,6 +126,8 @@ def cmd_add(root: Path, a) -> int:
     ctx = apply.build_ctx(brain)
     extra = {"holder": "unfilled"} if a.kind == "seat" else {}
     dest = entities.add(plan, brain, ctx, a.kind, a.name, parent=a.parent, mode=a.mode, extra=extra)
+    if a.kind == "seat":
+        chart.write(plan)
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
     print("%s %s -> %s (not committed yet: save with the brain-save skill or git)" % (a.kind, a.name, dest))
@@ -143,6 +145,7 @@ def cmd_add_mode(root: Path, a) -> int:
     plan = scaffold.Plan(root, a.dry_run)
     ctx = apply.build_ctx(brain)
     entities.add_base(plan, scaffold.load_manifest("modes", mode), ctx)
+    chart.write(plan)
     entry = {"quote": a.quote, "at": state.now_iso(brain.get("timezone")), "runtime": a.runtime or "cli",
              "session": ""}
     rid = records.mode_decision(plan, brain, ctx, slug="add-mode-%s" % mode,

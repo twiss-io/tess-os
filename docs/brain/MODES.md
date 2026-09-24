@@ -42,7 +42,7 @@ personal operator layer (profile, decisions, loops, journal) is always on.
 | Kind | Items | Base | When |
 |---|---|---|---|
 | Preset | researcher (citation and provenance lint), creator (voice and publishing pipeline) | personal | v0.2.1 |
-| Pack | codebase; health; money; sales, support and product desks; telegram; per-client repositories | any | v0.2.1+ |
+| Pack | codebase; health; money; sales, support and product desks; chat channels; per-client repositories | any | v0.2.1+ |
 | Backlog | household, nonprofit, student, investor | | on demand |
 | Non-goal | companion or therapy use | | never: measured demand is small and assistant sycophancy is highest in those domains |
 
@@ -104,6 +104,7 @@ Organisation (example: startup preset, two units):
 ```
 brain/org/{AGENTS.md,CLAUDE.md,GEMINI.md,direction.md}
 brain/org/seats/<seat>.md                      one holder per seat
+brain/org/seats/CHART.md                       (generated from the seat cards)
 brain/org/units/<unit>/{AGENTS.md,CLAUDE.md,GEMINI.md}
 brain/org/{people,clients,vendors,processes,policies,meetings,onboarding,kb}/
 brain/org/metrics/scorecard.md  brain/org/priorities/<YYYY-Qn>.md  brain/org/cadence/README.md

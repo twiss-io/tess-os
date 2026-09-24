@@ -126,8 +126,8 @@ Conversation capture, decision capture and verification are covered in
 - **RULE ZERO notice.** When the conductor runs a brain tool in the main Claude
   Code session, the dispatch guard prints a notice to the operator. The model
   never sees it and it never blocks.
-- **Personal mode** still carries the crew doctrine and the Telegram text in
-  `CLAUDE.md` until the mode-aware render lands (v0.2.1).
+- **Personal mode** still carries the crew doctrine in `CLAUDE.md` until the
+  mode-aware render lands (v0.2.1).
 - **Do not run `tessctl update`** until the v0.2.0 lock pin is released: an
   older pin can downgrade `settings-core.json` and drop the brain hook lines.
   The brain data is safe either way.

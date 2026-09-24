@@ -116,7 +116,10 @@ smoke_gemini() {
   command -v "$gem" >/dev/null || { fail "gemini CLI not found (set GEM=)"; return; }
   echo "gemini --version: $("$gem" --version 2>/dev/null)"
   scaffold "$fresh" || return
-  (cd "$fresh" && head -12 GEMINI.md | grep -q '@./AGENTS.md' && grep -q '## Second brain: read this first' AGENTS.md \
+  # GEMINI.md (rendered by the gemini target) ends with the import line; it sits
+  # at line 17 of 17 in v0.2.0, so the check reads the whole file, not a head.
+  echo "GEMINI.md import line: $(grep -n '^@./AGENTS.md$' "$fresh/GEMINI.md" | cut -d: -f1) of $(wc -l < "$fresh/GEMINI.md" | tr -d ' ')"
+  (cd "$fresh" && grep -qx '@./AGENTS.md' GEMINI.md && grep -q '## Second brain: read this first' AGENTS.md \
     && python3 - .agents/skills/brain-onboard/SKILL.md <<'PY'
 import sys
 text = open(sys.argv[1]).read()

@@ -5,5 +5,5 @@ onboarding works even where tessctl's PyYAML preflight fails. Entry point:
 scripts/brain/onboard.py. Contract: docs/brain/ONBOARDING.md.
 """
 
-__all__ = ["state", "answers", "apply", "scaffold", "entities", "slug",
+__all__ = ["state", "answers", "apply", "chart", "scaffold", "entities", "slug",
            "gitignore", "restore", "convert", "hook"]

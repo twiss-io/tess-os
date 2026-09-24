@@ -22,7 +22,7 @@ verify_via: operator
 | What | Where |
 |---|---|
 | Direction (why, where, what) | [direction.md](direction.md) |
-| Seat chart | [seats/](seats/) |
+| Seat chart (generated from the seat cards) | [seats/CHART.md](seats/CHART.md) |
 | Units | [units/](units/) |
 | People directory | [people/](people/) |
 | Clients | [clients/](clients/) |

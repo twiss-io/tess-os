@@ -85,9 +85,28 @@ def test_org_seats_have_exactly_one_holder_and_quarter_file():
     from pathlib import Path
     root = h.mini_instance(Path(tempfile.mkdtemp()))
     assert h.onboard_fixture(root, "organisation-startup").returncode == 0
-    seats = sorted((root / "brain" / "org" / "seats").glob("*.md"))
+    seats = sorted(p for p in (root / "brain" / "org" / "seats").glob("*.md") if p.name != "CHART.md")
     assert [s.stem for s in seats] == ["founder-ceo", "growth", "operations", "product"]
     assert 'holder: "Sam Ilunga"' in (root / "brain/org/seats/founder-ceo.md").read_text()
     score = (root / "brain/org/metrics/scorecard.md").read_text()
     assert score.count("\n| ") == 6, "startup preset scorecard: header + 5 rows"
     assert (root / "brain/org/priorities/2026-Q3.md").exists()
+
+
+def test_seat_chart_is_generated_from_the_cards_and_follows_add_seat(tmp_path):
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "organisation-startup").returncode == 0
+    chart = root / "brain" / "org" / "seats" / "CHART.md"
+    text = chart.read_text()
+    assert "generated: true" in text
+    assert "| [founder-ceo](founder-ceo.md) | Sam Ilunga | - |" in text
+    assert text.count("| unfilled |") == 3
+    assert "(seats/CHART.md)" in (root / "brain" / "org" / "AGENTS.md").read_text()
+    added = h.onboard(root, "add", "seat", "Head of Finance")
+    assert added.returncode == 0, added.stderr
+    assert "| [Head of Finance](head-of-finance.md) | unfilled | - |" in chart.read_text()
+    before = chart.read_bytes()
+    h.git(root, "add", "-A")
+    h.git(root, "commit", "-qm", "seat")
+    assert h.onboard(root, "apply").returncode == 0
+    assert chart.read_bytes() == before and h.git(root, "status", "--porcelain").stdout == ""

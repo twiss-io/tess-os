@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import answers, entities, gitignore, records, scaffold, state
+from . import answers, chart, entities, gitignore, records, scaffold, state
 from .slug import one_line, slugify
 
 SEED_PUSH = ("First push of a new instance (run it yourself, once, after reading `git log`): "
@@ -214,6 +214,7 @@ def run(root: Path, dry: bool = False, final_status: str = "complete") -> Dict[s
     gi_changed = gitignore.ensure_block(root, dry)
     scaffold.core_seeds(plan, ctx)
     scaffold_modes(plan, brain, ctx, brain["modes"])
+    chart.write(plan)
     rid = records.mode_decision(plan, brain, ctx)
     records.probe_seed(plan, brain, rid)
     onb = brain["onboarding"]
