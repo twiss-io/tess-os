@@ -22,6 +22,7 @@ MANIFEST_DIR = REPO_ROOT / "adapters" / "manifests"
 MANIFEST_NAMES = (
     "claude-code.adapter-manifest.json",
     "codex.adapter-manifest.json",
+    "gemini.adapter-manifest.json",
     "generic.adapter-manifest.json",
     "perplexity.adapter-manifest.json",
 )
@@ -39,6 +40,13 @@ EXPECTED_CLAIMS = {
         "capabilities": {"instruction-rendering", "prompt-artifacts", "config-fragment", "local-process-driver"},
         "render_target": "codex",
         "driver": "codex",
+    },
+    "gemini": {
+        "support_level": "C2",
+        "status": "preview",
+        "capabilities": {"instruction-rendering", "prompt-artifacts"},
+        "render_target": "gemini",
+        "driver": None,
     },
     "generic": {
         "support_level": "C2",

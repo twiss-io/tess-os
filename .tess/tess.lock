@@ -5786,6 +5786,13 @@ files:
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
+  .tess/core/templates/gemini/GEMINI.md.tpl:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:333dd4bf348b5e14f42bf713bea208762f3cdf6d848d263fdcaeb862dd394b47
+    live_path: null
+    render: template
+    last_updated: 2026-09-24 00:00:00+00:00
   .tess/core/templates/client/_template/CLAUDE.md:
     status: core-managed
     tier: normal

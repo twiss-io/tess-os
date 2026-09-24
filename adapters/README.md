@@ -1,7 +1,7 @@
 # Adapters — the render-target seam
 
-> Current status: Tess OS ships the `claude-code`, `codex`, and `generic`
-> render targets. Claude is the reference integration; Codex is a pilot; and
+> Current status: Tess OS ships the `claude-code`, `codex`, `generic` and
+> `gemini` render targets. Claude is the reference integration; Codex is a pilot; and
 > generic output is an interoperability baseline, not universal host support.
 > See [Support and status](../docs/STATUS.md) before treating a target as a
 > protected workflow.
@@ -31,7 +31,7 @@ For a checkout-local, read-only advisory check, run:
 python3 -m tools.validate_adapter_manifests --root . --json
 ```
 
-The command reads only the four canonical records, their advisory schema,
+The command reads only the five canonical records, their advisory schema,
 their in-tree evidence pointers, and literal engine registry dictionaries as
 Python AST. Its JSON always contains `"advisory": true`; a zero exit status
 says those local descriptions are structurally consistent, not that a provider
@@ -167,6 +167,12 @@ are enabled for this install — without rendering.
   renders the SAME `AGENTS.md` (see "AGENTS.md ownership" in
   `adapters/codex/README.md`) plus a plain `prompts/*.md` mirror, for any
   other AGENTS.md-reading agent. See `adapters/generic/README.md`.
+- **Gemini CLI** (v0.2.0, level Partial) — `GeminiRenderTarget`
+  (`name = "gemini"`) renders the SAME `AGENTS.md`, a `GEMINI.md` that imports
+  it (Gemini CLI does not read `AGENTS.md` by itself), and 26
+  `.gemini/commands/tess/*.toml` custom commands (`/tess:<name>`). No hooks,
+  settings or policies. Enabled for new installs. See
+  `adapters/gemini/README.md`.
 
 `codex` is now in this repo's own `tess.manifest.json`
 `render_targets.enabled` list (`["claude-code", "codex"]` — issue #118, a
@@ -262,7 +268,8 @@ into `AGENTS.md`).
 
 These tiers describe design intent, not a support promise. Claude Code is the
 reference target; Codex is a pilot with a process-driver model; generic only
-emits `AGENTS.md` and plain prompts. Gemini and other platforms are not Tess OS
+emits `AGENTS.md` and plain prompts. Gemini CLI gets doctrine and commands
+natively but no in-session gates (Partial). Other platforms are not Tess OS
 targets today. The `RenderTarget` interface itself is tier-agnostic: it renders
 artifacts, while lifecycle/dispatch capability remains a separately verified
 adapter concern.

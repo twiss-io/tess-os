@@ -34,6 +34,7 @@ def _fixture_repository(tmp_path: Path) -> Path:
     for relative in (
         Path("adapters/claude-code/README.md"),
         Path("adapters/codex/README.md"),
+        Path("adapters/gemini/README.md"),
         Path("adapters/generic/README.md"),
         Path("docs/STATUS.md"),
     ):
@@ -64,6 +65,7 @@ def test_real_checkout_is_valid_and_the_validator_is_advisory_only():
     assert set(validator.MANIFEST_NAMES) == {
         "claude-code.adapter-manifest.json",
         "codex.adapter-manifest.json",
+        "gemini.adapter-manifest.json",
         "generic.adapter-manifest.json",
         "perplexity.adapter-manifest.json",
     }

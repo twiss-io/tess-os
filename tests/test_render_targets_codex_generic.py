@@ -133,7 +133,7 @@ def test_codex_enabled_generic_not_enabled_by_default(engine):
     manifest edit, never a registry side effect."""
     manifest = json.loads(MANIFEST_SRC.read_text(encoding="utf-8"))
     enabled = manifest["render_targets"]["enabled"]
-    assert enabled == ["claude-code", "codex"]
+    assert enabled == ["claude-code", "codex", "gemini"]  # v0.2.0: gemini enabled for new installs
     assert "generic" not in enabled
 
 

@@ -2515,6 +2515,307 @@ class GenericRenderTarget(RenderTarget):
         return paths
 
 
+# ---------------------------------------------------------------------------
+# GEMINI TARGET (v0.2.0) — Gemini CLI render target, conformance level
+# Partial. Artifact map, doc citations (URL + line for every format claim)
+# and the list of gates that are NOT translated: adapters/gemini/README.md.
+# Formats were checked against the Gemini CLI docs at tag v0.61.0 (identical
+# to main on 2026-09-24) and against the v0.61.0 npm bundle's own loaders.
+#
+#   * Context: GEMINI.md = a short header plus `@./AGENTS.md` (Gemini's
+#     memory-import syntax). Gemini CLI does not read AGENTS.md by itself
+#     (its default context file name is GEMINI.md; AGENTS.md is read only if
+#     settings `context.fileName` names it). The other route, rendering
+#     `.gemini/settings.json`, would take ownership of a user-edited file that
+#     also carries the operator's hooks and MCP servers, so it is not used.
+#     Rendering both would load the doctrine twice. AGENTS.md itself is the
+#     same render_agents_md() bytes the codex/generic targets write.
+#   * Commands: `.gemini/commands/tess/<name>.toml`, one per
+#     `.tess/core/commands/*.md`, invoked as `/tess:<name>` (a subdirectory is
+#     a command namespace). The `tess/` namespace keeps the owned glob off an
+#     operator's own `.gemini/commands/**`. Keys: `description` (frontmatter)
+#     and `prompt` (body). `$ARGUMENTS` becomes Gemini's `{{args}}`. Gemini
+#     EXECUTES a `!{...}` block in a command prompt as a shell command and
+#     inlines a file for `@{...}`, so either trigger in a body is broken with
+#     a space: a rendered Tess command never runs a shell command or pulls in
+#     a file.
+#   * Hooks: none. Gemini hooks must print JSON only on stdout; the Tess hooks
+#     print plain text or speak Claude Code's contract, so none works
+#     unchanged. `.gemini/settings.json` and `.gemini/policies/**` are never
+#     rendered.
+# ---------------------------------------------------------------------------
+
+GEMINI_MD_TPL = ".tess/core/templates/gemini/GEMINI.md.tpl"
+GEMINI_CONTEXT_FILE = "GEMINI.md"
+GEMINI_COMMANDS_DIR = ".gemini/commands/tess"
+GEMINI_ARGS_PLACEHOLDER = "{{args}}"
+# Gemini CLI prompt-processor triggers: `!{` runs a shell command, `@{`
+# injects a file. Never emitted into a rendered command prompt.
+GEMINI_INJECTION_TRIGGERS = ("!{", "@{")
+# Command names that map 1:1 onto a Gemini command-file segment (Gemini
+# rewrites any other character to "_", which would silently rename it).
+_GEMINI_COMMAND_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def render_gemini_md(root: Path) -> str:
+    """GEMINI.md for the gemini target: the static header template (token
+    substitution only). The doctrine itself arrives through the template's
+    `@./AGENTS.md` import line, so it is never duplicated on disk."""
+    src = root / GEMINI_MD_TPL
+    if not src.exists():
+        sys.exit(f"tessctl render: template not found at {src}")
+    rendered = apply_token_sub(src.read_text(encoding="utf-8"), root)
+    if "{{" in rendered:
+        sys.exit(
+            f"tessctl render: {GEMINI_MD_TPL} has an unresolved "
+            f"{{{{TOKEN}}}} after substitution"
+        )
+    return rendered
+
+
+def _gemini_command_names(root: Path) -> list:
+    return [n for n in _command_names(root) if _GEMINI_COMMAND_NAME_RE.match(n)]
+
+
+def _gemini_toml_basic_string(value: str) -> str:
+    """A single-line TOML basic string (valid TOML 0.5 and 1.0)."""
+    out = ['"']
+    for ch in value:
+        code = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\r":
+            out.append("\\r")
+        elif code < 0x20 or code == 0x7F:
+            out.append("\\u%04X" % code)
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _gemini_toml_multiline(value: str) -> str:
+    """A multi-line TOML string that round-trips `value` exactly.
+
+    Prefers the literal form (''' ... ''': no escape processing, so the body
+    is byte-for-byte what the core command says). Falls back to the basic
+    form (\"\"\" ... \"\"\", every backslash, double quote and control
+    character escaped) when the literal form cannot hold the value: it
+    contains ''' , ends in a single quote (which would merge into the closing
+    delimiter), or carries a control character other than tab/newline. Both
+    forms trim the one newline right after the opening delimiter, which the
+    caller's leading newline supplies."""
+    bad_ctrl = any(
+        (ord(c) < 0x20 and c not in "\t\n") or ord(c) == 0x7F for c in value
+    )
+    if "'''" not in value and not value.endswith("'") and not bad_ctrl:
+        return "'''\n" + value + "'''"
+    out = []
+    for ch in value:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch in "\n\t":
+            out.append(ch)
+        elif code < 0x20 or code == 0x7F:
+            out.append("\\u%04X" % code)
+        else:
+            out.append(ch)
+    return '"""\n' + "".join(out) + '"""'
+
+
+def _gemini_command_parts(root: Path, name: str):
+    """(description, body) for core command `name`, or None if it no longer
+    exists in core. Token substitution runs first, exactly as for the other
+    targets' command mirrors."""
+    core_path = root / COMMANDS_CORE_DIR / f"{name}.md"
+    if not core_path.exists():
+        return None
+    text = apply_token_sub(core_path.read_text(encoding="utf-8"), root)
+    description = None
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            try:
+                fm = yaml.safe_load(text[3:end])
+            except yaml.YAMLError:
+                fm = None
+            if isinstance(fm, dict):
+                desc = fm.get("description")
+                if isinstance(desc, str) and desc.strip():
+                    description = " ".join(desc.split())
+                nl = text.find("\n", end + 4)
+                body = text[nl + 1:] if nl != -1 else ""
+    return description, body.lstrip("\n")
+
+
+def render_gemini_command_toml(root: Path, name: str) -> bytes | None:
+    """The `.gemini/commands/tess/<name>.toml` bytes for core command
+    `name`, or None if the command is gone from core (or its name cannot be
+    a Gemini command-file segment)."""
+    if not _GEMINI_COMMAND_NAME_RE.match(name):
+        return None
+    parts = _gemini_command_parts(root, name)
+    if parts is None:
+        return None
+    description, body = parts
+    prompt = body.replace("$ARGUMENTS", GEMINI_ARGS_PLACEHOLDER)
+    for trigger in GEMINI_INJECTION_TRIGGERS:
+        prompt = prompt.replace(trigger, trigger[0] + " " + trigger[1:])
+    # Command bodies link doctrine relative to `.claude/commands/`
+    # (`../../conductor/x.md`). A Gemini prompt is plain text read from the
+    # project root, so make those links root-relative.
+    prompt = prompt.replace("](../../", "](")
+    if not prompt.strip():
+        prompt = f"Run the Tess /{name} command."
+    if not prompt.endswith("\n"):
+        prompt += "\n"
+    if not description:
+        description = f"Tess /{name} command"
+    out = (
+        f"# Generated by `tessctl render --target gemini` from "
+        f"{COMMANDS_CORE_DIR}/{name}.md.\n"
+        f"# Gemini CLI command /tess:{name}.\n"
+        f"description = {_gemini_toml_basic_string(description)}\n"
+        f"prompt = {_gemini_toml_multiline(prompt)}\n"
+    )
+    return out.encode("utf-8")
+
+
+def _gemini_symlink_on_path(root: Path, live_rel: str) -> bool:
+    """True if `live_rel` or any directory between it and `root` is a
+    symlink. A render never writes through a link it did not create."""
+    cur = root
+    for part in Path(live_rel).parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
+
+
+def _gemini_write(root: Path, live_rel: str, data: bytes) -> str:
+    """Write one gemini render output. Returns 'written', 'unchanged' or
+    'skipped:symlink'. Every real write goes through guarded_write (the
+    manifest write gate)."""
+    if _gemini_symlink_on_path(root, live_rel):
+        print(
+            f"  skipped   {live_rel} (symlink on path; tessctl does not write "
+            f"through a symlink)",
+            file=sys.stderr,
+        )
+        return "skipped:symlink"
+    live = root / live_rel
+    if live.is_file() and live.read_bytes() == data:
+        return "unchanged"
+    guarded_write(root, live_rel, data, op="render")
+    return "written"
+
+
+class GeminiRenderTarget(RenderTarget):
+    """
+    Gemini CLI target (v0.2.0, conformance level Partial — see
+    adapters/gemini/README.md and adapters/CONFORMANCE.md). Compiles:
+
+      * `AGENTS.md` — render_agents_md(root), shared byte-for-byte with the
+        codex and generic targets.
+      * `GEMINI.md` — render_gemini_md(root): a short header plus the
+        `@./AGENTS.md` import, the one context file Gemini CLI loads by
+        default.
+      * `.gemini/commands/tess/<name>.toml` — one custom command per
+        `.tess/core/commands/*.md`, invoked as `/tess:<name>`.
+
+    No hooks, no `.gemini/settings.json`, no `.gemini/policies/**`. Like the
+    codex prompts, the command files have no tess.lock entry of their own:
+    their core source is already pinned by the `.claude/commands/**` entries,
+    and doctor/verify drift-check them through
+    _check_untracked_render_generated().
+    """
+
+    name = "gemini"
+    doctrine_profile = "worker"  # G3: this target renders no Tess crew for
+                                 # Gemini CLI (no .gemini/agents/**), so
+                                 # "always dispatch" would be false here.
+
+    def live_globs(self) -> list:
+        return ["AGENTS.md", GEMINI_CONTEXT_FILE, f"{GEMINI_COMMANDS_DIR}/**"]
+
+    def doctrine_digest_paths(self, root: Path) -> set:
+        return {"AGENTS.md", GEMINI_CONTEXT_FILE}
+
+    def render(self, root: Path, verbose: bool = False) -> dict:
+        outcomes: dict = {}
+        outcomes["AGENTS.md"] = _gemini_write(
+            root, "AGENTS.md", render_agents_md(root).encode("utf-8")
+        )
+        outcomes[GEMINI_CONTEXT_FILE] = _gemini_write(
+            root, GEMINI_CONTEXT_FILE, render_gemini_md(root).encode("utf-8")
+        )
+        skipped_names = [
+            n for n in _command_names(root) if not _GEMINI_COMMAND_NAME_RE.match(n)
+        ]
+        for name in skipped_names:
+            print(
+                f"  skipped   command {name!r}: not a valid Gemini command "
+                f"file name ([A-Za-z0-9_.-])",
+                file=sys.stderr,
+            )
+        cmd_outcomes: dict = {}
+        for name in _gemini_command_names(root):
+            data = render_gemini_command_toml(root, name)
+            if data is None:
+                continue
+            rel = f"{GEMINI_COMMANDS_DIR}/{name}.toml"
+            cmd_outcomes[rel] = _gemini_write(root, rel, data)
+        outcomes.update(cmd_outcomes)
+        if verbose:
+            for rel in ("AGENTS.md", GEMINI_CONTEXT_FILE):
+                print(f"  {outcomes[rel]:<9} {rel}")
+            counts: dict = {}
+            for status in cmd_outcomes.values():
+                counts[status] = counts.get(status, 0) + 1
+            summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "none"
+            print(
+                f"  rendered  {GEMINI_COMMANDS_DIR}/** "
+                f"({len(cmd_outcomes)} commands: {summary})"
+            )
+        return {"target": self.name, "status": "rendered"}
+
+    def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:
+        if live_rel == "AGENTS.md":
+            return render_agents_md(root).encode("utf-8")
+        if live_rel == GEMINI_CONTEXT_FILE:
+            if not (root / GEMINI_MD_TPL).exists():
+                return None  # read path: the lock's Check A reports the missing template
+            return render_gemini_md(root).encode("utf-8")
+        prefix = f"{GEMINI_COMMANDS_DIR}/"
+        if live_rel.startswith(prefix) and live_rel.endswith(".toml"):
+            name = live_rel[len(prefix):-len(".toml")]
+            if "/" in name:
+                return None
+            return render_gemini_command_toml(root, name)
+        return None
+
+    def render_generated_paths(self, root: Path) -> set:
+        paths = {"AGENTS.md", GEMINI_CONTEXT_FILE}
+        paths.update(
+            f"{GEMINI_COMMANDS_DIR}/{name}.toml" for name in _gemini_command_names(root)
+        )
+        return paths
+
+    def retired_paths(self, root: Path) -> set:
+        """Paths this target used to render and no longer does: none yet."""
+        return set()
+
+
 # Registry — Phase 2 adds "codex" and "generic" here (and nowhere else: no
 # change to core loading, the lock schema, or the manifest write gate is
 # required to register a new target — see adapters/README.md "Adding Phase
@@ -2530,6 +2831,7 @@ RENDER_TARGETS: dict = {
     "claude-code": ClaudeCodeRenderTarget(),
     "codex": CodexRenderTarget(),
     "generic": GenericRenderTarget(),
+    "gemini": GeminiRenderTarget(),
 }
 
 
