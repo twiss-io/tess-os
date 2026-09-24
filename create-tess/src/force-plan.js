@@ -186,9 +186,12 @@ function uniqueBackupName(targetDir) {
 }
 
 // Copy every overwritten file, then move every managed path, into the backup.
-// Any failure puts the moved paths back and removes the backup before
-// rethrowing, so the caller's verification sees the original tree.
+// Returns null when the plan replaces nothing. Any failure puts the moved
+// paths back and removes the backup before rethrowing, so the caller's
+// verification sees the original tree; if a moved path cannot be put back,
+// the backup is KEPT (it holds the only copy) and the error names it.
 export function createBackup(targetDir, plan, before) {
+  if (plan.overwrite.length === 0 && plan.move.length === 0) return null;
   const name = uniqueBackupName(targetDir);
   const dir = join(targetDir, name);
   const filesRoot = join(dir, 'files');
@@ -227,14 +230,16 @@ export function createBackup(targetDir, plan, before) {
     };
     writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   } catch (err) {
+    const stuck = [];
     for (const rel of [...moved].reverse()) {
       try {
         renameSync(absOf(filesRoot, rel), absOf(targetDir, rel));
       } catch {
-        /* reported by the caller's verification walk */
+        stuck.push(rel);
       }
     }
-    rmSync(dir, { recursive: true, force: true });
+    if (stuck.length === 0) rmSync(dir, { recursive: true, force: true });
+    else err.message += ` (could not put back ${stuck.join(', ')}; the originals are in ${name}/files)`;
     throw err;
   }
   return { name, dir, moved, overwritten: overwritten.map((o) => o.path) };
@@ -247,10 +252,12 @@ export function verifyAgainst(targetDir, before, skipName = null) {
   return { clean: diffs.length === 0, diffs, entries: before.size };
 }
 
-// Undo a failed forced run. Returns { clean, diffs, errors, entries, backupKept }.
+// Undo a failed forced run. `backup` is null when the plan replaced nothing
+// (the run only added paths). Returns { clean, diffs, errors, entries, backupKept }.
 export function restoreFromBackup(targetDir, backup, before) {
   const errors = [];
-  const filesRoot = join(backup.dir, 'files');
+  const skipName = backup ? backup.name : null;
+  const filesRoot = backup ? join(backup.dir, 'files') : null;
   const attempt = (rel, fn) => {
     try {
       fn();
@@ -258,14 +265,14 @@ export function restoreFromBackup(targetDir, backup, before) {
       errors.push(`${rel}: ${err.message}`);
     }
   };
-  for (const rel of backup.moved) {
+  for (const rel of backup ? backup.moved : []) {
     attempt(rel, () => {
       rmSync(absOf(targetDir, rel), { recursive: true, force: true });
       mkdirSync(dirname(absOf(targetDir, rel)), { recursive: true });
       renameSync(absOf(filesRoot, rel), absOf(targetDir, rel));
     });
   }
-  for (const rel of backup.overwritten) {
+  for (const rel of backup ? backup.overwritten : []) {
     attempt(rel, () => {
       rmSync(absOf(targetDir, rel), { recursive: true, force: true });
       copyFileSync(absOf(filesRoot, rel), absOf(targetDir, rel));
@@ -273,7 +280,7 @@ export function restoreFromBackup(targetDir, backup, before) {
   }
   // Delete everything the run added (shallowest first; a removed directory
   // takes its subtree with it).
-  const now = snapshotTree(targetDir, { skipTop: (n) => n === backup.name });
+  const now = snapshotTree(targetDir, { skipTop: (n) => n === skipName });
   const removed = [];
   for (const rel of now.keys()) {
     if (before.has(rel)) continue;
@@ -281,9 +288,9 @@ export function restoreFromBackup(targetDir, backup, before) {
     attempt(rel, () => rmSync(absOf(targetDir, rel), { recursive: true, force: true }));
     removed.push(rel);
   }
-  let result = verifyAgainst(targetDir, before, backup.name);
-  let backupKept = true;
-  if (result.clean && errors.length === 0) {
+  let result = verifyAgainst(targetDir, before, skipName);
+  let backupKept = Boolean(backup);
+  if (backup && result.clean && errors.length === 0) {
     rmSync(backup.dir, { recursive: true, force: true });
     result = verifyAgainst(targetDir, before);
     backupKept = existsSync(backup.dir);

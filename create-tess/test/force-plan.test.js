@@ -126,3 +126,16 @@ test('detectInstall: markers alone are not a real install; lock + manifest are',
   writeFileSync(join(t, 'tess.manifest.json'), '{"schema": 1}\n');
   assert.equal(detectInstall(t).real, true);
 });
+
+test('an empty plan creates no backup, and rollback still deletes what the run added', () => {
+  const t = fixtureTarget();
+  const before = snapshotTree(t);
+  const backup = createBackup(t, { overwrite: [], move: [] }, before);
+  assert.equal(backup, null);
+  mkdirSync(join(t, 'added'));
+  writeFileSync(join(t, 'added', 'x.md'), 'new\n');
+  writeFileSync(join(t, 'top.md'), 'new\n');
+  const r = rollback(t, { before, backup });
+  assert.equal(r.clean, true, r.stdout);
+  assert.deepEqual(diffSnapshots(before, snapshotTree(t)), []);
+});

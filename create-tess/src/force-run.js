@@ -45,9 +45,9 @@ export function preflightForce(stagingDir, targetDir) {
 }
 
 // Just before the first write: re-plan (the target may have changed during an
-// interactive journey), snapshot, and back up. Returns
-// { refusal } or { before, backup }. createBackup() throws on failure after
-// undoing its own moves; the caller then verifies against `before`.
+// interactive journey), snapshot, and back up (state.backup stays null when
+// the plan replaces nothing). Returns { refusal }. createBackup() throws on
+// failure after undoing its own moves; the caller then calls verifyOnly().
 export function beginForcedWrite(stagingDir, targetDir, state) {
   state.before = snapshotTree(targetDir);
   const plan = planForce(stagingDir, targetDir);
@@ -72,9 +72,7 @@ export function rollback(targetDir, state) {
       ? { clean: false, stdout: `  ! Rollback incomplete: ${targetDir} could not be removed.\n` }
       : { clean: true, stdout: '  Rolled back: the target is left clean and re-runnable.\n' };
   }
-  const r = state.backup
-    ? restoreFromBackup(targetDir, state.backup, state.before)
-    : { ...verifyAgainst(targetDir, state.before), errors: [], backupKept: false };
+  const r = restoreFromBackup(targetDir, state.backup, state.before);
   if (r.clean) {
     return {
       clean: true,
@@ -88,6 +86,14 @@ export function rollback(targetDir, state) {
     out += `  Your original files are in ${state.backup.name}/files (manifest.json lists them).\n`;
   }
   return { clean: false, stdout: out };
+}
+
+// Nothing was scaffolded (the backup step itself failed): only verify.
+export function verifyOnly(targetDir, before) {
+  const v = verifyAgainst(targetDir, before);
+  return v.clean
+    ? `  Nothing was scaffolded: the target is left clean (verified: ${v.entries} paths unchanged).\n`
+    : `  ! The target is NOT clean: ${v.diffs.length} paths differ from the pre-run snapshot:\n${listDiffs(v.diffs)}\n`;
 }
 
 // Printed after a successful forced run. The backup is never deleted
