@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T05:26:31.395261Z'
+  last_updated: '2026-09-24T15:13:39.102860Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5809,7 +5809,7 @@ files:
   .tess/core/templates/agents-md/worker-file-placement.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2774dea936a495e96adbeef55db93539a097f5b7f24d29273065739d75b67a7c
+    base_sha: sha256:326a3392b4ea074e4c1551be373c14564992ff00820fbbb1dddbb191b6036604
     live_path: null
     render: fragment
     last_updated: 2026-09-24 00:00:00+00:00
@@ -6089,7 +6089,7 @@ render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:78fd1f69e854bcd8ba25101c8ce96654c0cf137de003ed3484e6bff747d6f68a
+    rendered_sha: sha256:08409d60a46800cfdd497e89321aaec5296e0c976cfd54b11ec2d72ed89f2007
   .claude/settings.json:
     target: claude-code
     status: rendered
@@ -6109,7 +6109,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:7c24805a51d69d626f43e49561569fd268104d0dc593884eb7d9f349dfd95b5c
+    rendered_sha: sha256:2459dc54dbe3bc9f895336d4fe61aba3c524154060a972ccaf728ccd79f5950a
   .codex/config.toml:
     target: codex
     status: rendered
@@ -6125,7 +6125,7 @@ render_outputs:
   .agents/skills/tess-add-mission/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:cadd5b01098d6807431a74f6aea699df2d494f77117578dddfe6294b93667fd7
+    rendered_sha: sha256:044adc6749ed388dcdfd81cb37fb6c03a0fb78d3c02c486af52f9bbc27eb59a8
   .agents/skills/tess-add-mission/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6141,7 +6141,7 @@ render_outputs:
   .agents/skills/tess-close/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:521daf8477887a6cd73429b3a4e6c17acd1bb93c51a182dceb81b24b190e107d
+    rendered_sha: sha256:7fdd5119d68941d0beb4ddd6efe233cbb3e6943cf472f4b71aae232364df1366
   .agents/skills/tess-close/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6149,7 +6149,7 @@ render_outputs:
   .agents/skills/tess-code-red/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:f3bb168c43d9013bb2f77e71103e4d93e212e6d316899a2d4f912709e993fa92
+    rendered_sha: sha256:1c53a9df08d89e57b48956fddaf80bf2c58f4780251a6d49eed963a0b3fbe398
   .agents/skills/tess-code-red/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6173,7 +6173,7 @@ render_outputs:
   .agents/skills/tess-finalize/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:09730b095f88e4b67a95e546b35ba62648a6e3bdbb5dbe733236f351dbd2c680
+    rendered_sha: sha256:d86562125e8195f6e74c35b1daaf8074a09339610bf61a1b99221e2444df4295
   .agents/skills/tess-finalize/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6189,7 +6189,7 @@ render_outputs:
   .agents/skills/tess-help/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:ec11ae0196907ed4ae996c69c074c51fc6f107c0a99f8cad44e50f87f8a1a93a
+    rendered_sha: sha256:78004d68645b0f7dee865266502b388d397dc2f60d8e4b15e5139870f8e56911
   .agents/skills/tess-help/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6317,7 +6317,7 @@ render_outputs:
   .agents/skills/tess-wake/SKILL.md:
     target: codex
     status: rendered
-    rendered_sha: sha256:15ef6d2c129f7678e4e6a690d21f641830713af6eee391e13f0fcb1345895545
+    rendered_sha: sha256:9b005543070870e580d4f3348cb7a00eac17b9c67de83029fa3720ce94fc28b5
   .agents/skills/tess-wake/agents/openai.yaml:
     target: codex
     status: rendered
@@ -6333,7 +6333,7 @@ render_outputs:
   .gemini/commands/tess/add-mission.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:b36b7679a7c4dbde740bddcbb1d361647ff5c0316dae7357c47c6d150dde5140
+    rendered_sha: sha256:464a231fb5cf30c4cc9175c5585b6f108e7660a63522ab4a740cd4de8ea2aed4
   .gemini/commands/tess/brainstorm.toml:
     target: gemini
     status: rendered
@@ -6341,11 +6341,11 @@ render_outputs:
   .gemini/commands/tess/close.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:b8891877256f65b5cdb20adbd343e5bf998032261bc16adba41fec8b7b8ef684
+    rendered_sha: sha256:1be05ad4a08d12cc93d1b9984e8b29b86c146849d330ece0ece801bd2a0e5ea8
   .gemini/commands/tess/code-red.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:05a7f30f8af6d1828f426a90707e1b0dcb5f09ed0375f7b2731faf497cc63fd9
+    rendered_sha: sha256:807ff86b2af544cf84ce3386c5211f96245ed4653811dd7f28d1f73d14d28b76
   .gemini/commands/tess/cx-mode.toml:
     target: gemini
     status: rendered
@@ -6357,7 +6357,7 @@ render_outputs:
   .gemini/commands/tess/finalize.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:d348f9de1282545ee7b21e6d3e8feb6e783cae720e389bb5a2df5a98e41dcddd
+    rendered_sha: sha256:c7e25c2855a5bbcc8c63077f971a9130d24926c455cb8d19e5ad99af85d27cb8
   .gemini/commands/tess/founder-mode.toml:
     target: gemini
     status: rendered
@@ -6365,7 +6365,7 @@ render_outputs:
   .gemini/commands/tess/help.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:01b3f1ff3e4b802c34da62a8d1190064d07ef5f54c8fac10c816859b18ba62d7
+    rendered_sha: sha256:dafa0a4b8d68025e7c177743cacbd4d070ffae6616febd61706855141c2d8889
   .gemini/commands/tess/initiate.toml:
     target: gemini
     status: rendered
@@ -6429,4 +6429,4 @@ render_outputs:
   .gemini/commands/tess/wake.toml:
     target: gemini
     status: rendered
-    rendered_sha: sha256:0b1b78ab79153965337f077c727a5efcce9a084664a86c73e322d9a0f4e806f2
+    rendered_sha: sha256:cbcb3e180473ca067448cc41d079ebf48d65371372902d5df510f5d5d21520f9

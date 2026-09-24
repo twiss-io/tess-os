@@ -21,4 +21,4 @@ Present the commands grouped as:
 
 **System:** `/initiate` (legacy → `/add-mission`), `/brainstorm`, `/feedback`, `/help`
 
-Orientation reminders: Rule Zero (always dispatch, never execute solo), Telegram is the primary channel for every task, and mission flow is governed by dependency gates (intake → research → crew → review → verification). Full doctrine: [conductor/README.md](../../../conductor/README.md).
+Orientation reminders: Rule Zero (always dispatch, never execute solo), every task is reported through the active runtime's native channel (Telegram in Claude Code with the Telegram integration), and mission flow is governed by dependency gates (intake → research → crew → review → verification). Full doctrine: [conductor/README.md](../../../conductor/README.md).
