@@ -32,7 +32,7 @@ def test_apply_seed_commit_decision_probe_and_private_dir(tmp_path):
     assert jon["slug"] == "jon-park" and jon["scope"] == ["clients/northwind-studio/**"]
     assert brain["capture"]["journal"] == "commit-redacted" and brain["presets"] == ["solo-consultant"]
     dec = (root / "brain" / "decisions" / "D-20260924-1015-brain-mode.md").read_text()
-    assert "status: pending-verification" in dec and "detected_by: onboarding" in dec
+    assert 'status: "pending-verification"' in dec and 'detected_by: "onboarding"' in dec
     assert 'source_quote: "An agency: I run a small consultancy serving outside clients."' in dec
     probe = json.loads((root / "brain" / "probe.json").read_text())
     ids = {q["id"]: q["expect"] for q in probe["questions"]}
@@ -156,3 +156,70 @@ def test_learn_tool_runs_as_subprocess_when_present(tmp_path):
     done = h.onboard(root, "apply", extra_env={"TESS_BRAIN_NO_LEARN": ""})
     assert done.returncode == 0, done.stderr
     assert marker.read_text().splitlines() == ["index --quiet", "githooks install"]
+
+
+# The one record format is ws-learn's (brainlib/records.py). Onboarding ships no record template
+# of its own: it writes ws-learn's shape, and uses ws-learn's body template whenever it exists.
+DECISION_KEYS = ["schema", "id", "type", "kind", "title", "status", "tier", "authority", "decided_by",
+                 "decider_seat", "entity", "consulted", "informed", "source_quote", "also_quoted",
+                 "source_speaker", "source_at", "source_ref", "source_session", "approves_quote",
+                 "delegation_ref", "detected_by", "confirmed", "verified", "verified_at", "supersedes",
+                 "superseded_by", "tags"]
+
+
+def _front_matter(text: str):
+    assert text.startswith("---\n")
+    block, body = text[4:].split("\n---\n", 1)
+    pairs = [line.split(": ", 1) for line in block.splitlines()]
+    return [k for k, _ in pairs], {k: json.loads(v) for k, v in pairs}, body
+
+
+def test_decision_uses_the_single_learn_record_format(tmp_path):
+    assert not (h.BRAIN_TOOLS / "templates" / "records").exists(), "records/** belongs to ws-learn"
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    keys, meta, body = _front_matter(
+        (root / "brain" / "decisions" / "D-20260924-1015-brain-mode.md").read_text())
+    assert keys == DECISION_KEYS  # every value is JSON-encoded, keys in ws-learn's order
+    assert meta["status"] == "pending-verification" and meta["detected_by"] == "onboarding"
+    assert meta["confirmed"] is False and meta["verified"] is False and meta["tags"] == ["onboarding"]
+    assert meta["source_quote"] == "An agency: I run a small consultancy serving outside clients."
+    assert body.startswith("\n# Brain mode: agency\n\n## Context\n")
+    assert "> An agency: I run a small consultancy serving outside clients.\n" in body
+    assert "\n## Decision\n\nWe will run this brain as: agency (primary: agency)." in body
+    assert "\n## Consequences\n\n- Entity roots: brain/agency, brain/clients/*." in body
+
+
+def test_decision_body_comes_from_the_learn_template_when_present(tmp_path):
+    root = h.mini_instance(tmp_path)
+    tpl = root / "scripts" / "brain" / "templates" / "record-bodies" / "decision.md"
+    tpl.parent.mkdir(parents=True, exist_ok=True)
+    tpl.write_text("\n# {title}\n\nLEARN-TEMPLATE {quote}\n")
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    text = (root / "brain" / "decisions" / "D-20260924-1015-brain-mode.md").read_text()
+    assert text.endswith("\n---\n\n# Brain mode: agency\n\nLEARN-TEMPLATE "
+                         "An agency: I run a small consultancy serving outside clients.\n")
+
+
+def test_decision_round_trips_through_learn_frontmatter_when_installed(tmp_path):
+    """After integration (ws-learn merged), its own parser + writer reproduce the file byte for byte."""
+    import sys
+    lib = h.BRAIN_TOOLS / "brainlib" / "frontmatter.py"
+    if not lib.exists():
+        import pytest
+        pytest.skip("ws-learn (scripts/brain/brainlib) is not in this tree")
+    sys.path.insert(0, str(h.BRAIN_TOOLS))
+    try:
+        from brainlib import frontmatter, records  # type: ignore
+    finally:
+        sys.path.pop(0)
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    path = root / "brain" / "decisions" / "D-20260924-1015-brain-mode.md"
+    text = path.read_text()
+    _, meta, body = _front_matter(text)
+    assert frontmatter.dump(meta, body, records.ORDER["decision"]) == text  # ws-learn's writer, same bytes
+    rec = records.load(path)  # ws-learn's reader sees what its sync re-verification needs
+    assert (rec.id, rec.status, rec.kind) == ("D-20260924-1015-brain-mode", "pending-verification", "decision")
+    assert rec.meta["detected_by"] == "onboarding"
+    assert rec.meta["source_quote"] == "An agency: I run a small consultancy serving outside clients."
