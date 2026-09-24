@@ -285,9 +285,13 @@ def test_every_kb_destination_in_the_contract_is_gitignored(tmp_path):
     # This repository's own .gitignore ...
     exposed = [p for p in paths if not _ignored(REPO_ROOT, p)]
     # ... and a fresh instance, which starts from the template's .gitignore.
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    shutil.copyfile(REPO_ROOT / "create-tess" / "template" / ".gitignore", tmp_path / ".gitignore")
-    exposed += [f"(fresh instance) {p}" for p in paths if not _ignored(tmp_path, p)]
+    # (Inside a scaffolded instance there is no create-tess/ tree: the root
+    # .gitignore checked above already is the template's copy.)
+    template_gitignore = REPO_ROOT / "create-tess" / "template" / ".gitignore"
+    if template_gitignore.is_file():
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        shutil.copyfile(template_gitignore, tmp_path / ".gitignore")
+        exposed += [f"(fresh instance) {p}" for p in paths if not _ignored(tmp_path, p)]
     assert not exposed, "contract sends private overlay data to paths git would stage:\n  " + "\n  ".join(exposed)
 
 
