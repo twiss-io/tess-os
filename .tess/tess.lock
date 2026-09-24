@@ -6089,7 +6089,7 @@ render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:08409d60a46800cfdd497e89321aaec5296e0c976cfd54b11ec2d72ed89f2007
+    rendered_sha: sha256:4685a02a901f544cd7fa4632c353186275ac61381b2ae8edf8b257302ae2adbb
   .claude/settings.json:
     target: claude-code
     status: rendered
@@ -6109,7 +6109,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:2459dc54dbe3bc9f895336d4fe61aba3c524154060a972ccaf728ccd79f5950a
+    rendered_sha: sha256:bb1be358c4599ab07eab6b7c0cae87ff3faedf40601259d7c02206019eadb3be
   .codex/config.toml:
     target: codex
     status: rendered
