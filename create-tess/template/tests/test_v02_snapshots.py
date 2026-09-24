@@ -167,7 +167,10 @@ def test_prune_with_old_gitkeep_and_five_snapshots_does_not_crash(project):
     os.utime(keep, (1, 1))
 
     for _ in range(3):
-        project.mod.snapshot_live_tree(project.root, lock)
+        try:
+            project.mod.snapshot_live_tree(project.root, lock)
+        except OSError as e:  # 5c2d698: NotADirectoryError from rmtree(.gitkeep)
+            pytest.fail(f"snapshot prune crashed on .tess/snapshots/.gitkeep: {e!r}")
 
     assert keep.is_file()
     assert len(_full_dirs(project)) <= project.mod.MAX_SNAPSHOTS

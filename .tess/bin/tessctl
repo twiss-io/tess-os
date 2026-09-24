@@ -2914,9 +2914,9 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
       - force=True: overwritten (listed in counts["forced_paths"] so the
         caller records it in modified.json with the snapshot id), EXCEPT a
         security-tier copy file, which is refused even with force (it must go
-        through capture → quarantine → approve). A render-generated path such
-        as CLAUDE.md is re-rendered from core under force: that restores the
-        authoritative text, including the security-tier hard floor.
+        through capture → quarantine → approve). Render outputs (CLAUDE.md,
+        AGENTS.md, ...) are deferred to the render step; _lifecycle_sync gates
+        those.
     v0.2 snapshots (bugs a/12): pre-images go into ONE consolidated snapshot
     (`snapshot_id`, taken by the caller), not per-second `-pre` directories.
     A direct caller that passes no snapshot_id gets one taken lazily, before
