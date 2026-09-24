@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "runtime": "fixture",
+  "session": "fixture-personal-0001",
+  "answers": [
+    {"step": 1, "field": "mode", "value": "personal", "quote": "Just me: it's a personal brain for my own life and work.", "at": "2026-09-24T09:05:00+01:00"},
+    {"step": 2, "field": "preset", "value": "none", "quote": "No preset, thanks.", "at": "2026-09-24T09:06:00+01:00"},
+    {"step": 3, "field": "operator_name", "value": "Rowan Vale", "quote": "I'm Rowan Vale, call me Rowan. Keep Tess. Lisbon time is right.", "at": "2026-09-24T09:07:00+01:00"},
+    {"step": 3, "field": "address_as", "value": "Rowan", "quote": "I'm Rowan Vale, call me Rowan. Keep Tess. Lisbon time is right.", "at": "2026-09-24T09:07:00+01:00"},
+    {"step": 3, "field": "assistant_name", "value": "Tess", "quote": "I'm Rowan Vale, call me Rowan. Keep Tess. Lisbon time is right.", "at": "2026-09-24T09:07:00+01:00"},
+    {"step": 3, "field": "timezone", "value": "Europe/Lisbon", "quote": "I'm Rowan Vale, call me Rowan. Keep Tess. Lisbon time is right.", "at": "2026-09-24T09:07:00+01:00"},
+    {"step": 4, "field": "principals", "value": "none", "quote": "Only my words count.", "at": "2026-09-24T09:08:00+01:00"},
+    {"step": 5, "field": "areas", "value": ["work", "home", "learning", "health", "money"], "quote": "Areas: work, home, learning, health and money.", "at": "2026-09-24T09:09:00+01:00"},
+    {"step": 5, "field": "projects", "value": ["Kitchen renovation", "Marathon training"], "quote": "Projects right now: the kitchen renovation and marathon training.", "at": "2026-09-24T09:09:30+01:00"},
+    {"step": 6, "field": "journal", "value": "commit-redacted", "quote": "Default journal is fine.", "at": "2026-09-24T09:10:00+01:00"},
+    {"step": 7, "field": "remote_url", "value": "later", "quote": "Remote later, no autopush, I use claude and codex.", "at": "2026-09-24T09:11:00+01:00"},
+    {"step": 7, "field": "autopush", "value": "no", "quote": "Remote later, no autopush, I use claude and codex.", "at": "2026-09-24T09:11:00+01:00"},
+    {"step": 7, "field": "runtimes", "value": ["claude-code", "codex"], "quote": "Remote later, no autopush, I use claude and codex.", "at": "2026-09-24T09:11:00+01:00"}
+  ]
+}

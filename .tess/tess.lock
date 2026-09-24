@@ -5655,7 +5655,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:07e8e83b4128ab0d33476c92ce7773e5b1e0fa29f92209f7fdc5567cdd98f590
+    base_sha: sha256:66bfc7db34b1729e4a1fffd4ea428ac5c730d160a978c6cce0b27c5edf6321f6
     live_path: .claude/settings.json
     render: rendered
     last_updated: 2026-06-27 10:00:00+00:00
@@ -6093,7 +6093,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:07e8e83b4128ab0d33476c92ce7773e5b1e0fa29f92209f7fdc5567cdd98f590
+    rendered_sha: sha256:66bfc7db34b1729e4a1fffd4ea428ac5c730d160a978c6cce0b27c5edf6321f6
   conductor/identity.md:
     target: claude-code
     status: rendered

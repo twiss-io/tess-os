@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "runtime": "fixture",
+  "session": "fixture-agency-0001",
+  "answers": [
+    {"step": 1, "field": "mode", "value": "agency", "quote": "An agency: I run a small consultancy serving outside clients.", "at": "2026-09-24T10:15:00-04:00"},
+    {"step": 2, "field": "preset", "value": "solo-consultant", "quote": "Solo consultant, it's just me.", "at": "2026-09-24T10:16:00-04:00"},
+    {"step": 3, "field": "operator_name", "value": "Mira Okafor", "quote": "Mira Okafor. Mira is fine. Tess works. Toronto.", "at": "2026-09-24T10:17:00-04:00"},
+    {"step": 3, "field": "address_as", "value": "Mira", "quote": "Mira Okafor. Mira is fine. Tess works. Toronto.", "at": "2026-09-24T10:17:00-04:00"},
+    {"step": 3, "field": "assistant_name", "value": "Tess", "quote": "Mira Okafor. Mira is fine. Tess works. Toronto.", "at": "2026-09-24T10:17:00-04:00"},
+    {"step": 3, "field": "timezone", "value": "America/Toronto", "quote": "Mira Okafor. Mira is fine. Tess works. Toronto.", "at": "2026-09-24T10:17:00-04:00"},
+    {"step": 4, "field": "principals", "value": [{"name": "Jon Park", "scope": "clients/northwind-studio/**"}], "quote": "Jon Park decides for Northwind Studio, nothing else.", "at": "2026-09-24T10:18:00-04:00"},
+    {"step": 5, "field": "agency_name", "value": "Okafor Advisory", "quote": "Okafor Advisory. I sell pricing and packaging strategy to B2B software firms. Clients: Northwind Studio and Bluefin Labs.", "at": "2026-09-24T10:19:00-04:00"},
+    {"step": 5, "field": "agency_offer", "value": "Pricing and packaging strategy for B2B software firms.", "quote": "Okafor Advisory. I sell pricing and packaging strategy to B2B software firms. Clients: Northwind Studio and Bluefin Labs.", "at": "2026-09-24T10:19:00-04:00"},
+    {"step": 5, "field": "clients", "value": ["Northwind Studio", "Bluefin Labs"], "quote": "Okafor Advisory. I sell pricing and packaging strategy to B2B software firms. Clients: Northwind Studio and Bluefin Labs.", "at": "2026-09-24T10:19:00-04:00"},
+    {"step": 6, "field": "journal", "value": "commit-redacted", "quote": "Commit-redacted is fine.", "at": "2026-09-24T10:20:00-04:00"},
+    {"step": 7, "field": "remote_url", "value": "later", "quote": "Later on the remote. No autopush. Claude, Codex and Gemini.", "at": "2026-09-24T10:21:00-04:00"},
+    {"step": 7, "field": "autopush", "value": "no", "quote": "Later on the remote. No autopush. Claude, Codex and Gemini.", "at": "2026-09-24T10:21:00-04:00"},
+    {"step": 7, "field": "runtimes", "value": ["claude-code", "codex", "gemini"], "quote": "Later on the remote. No autopush. Claude, Codex and Gemini.", "at": "2026-09-24T10:21:00-04:00"}
+  ]
+}

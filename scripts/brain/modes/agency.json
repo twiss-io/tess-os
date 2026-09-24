@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "mode": "agency",
+  "summary": "A firm serving outside clients: the agency itself plus one isolated folder per client.",
+  "entity_roots": ["brain/agency", "brain/clients/*"],
+  "base": [
+    {"template": "modes/agency/agency", "dest": "brain/agency",
+     "entity": {"kind": "agency", "id": "agency", "name": "{{agency_name}}"}}
+  ],
+  "kinds": {
+    "client": {"template": "modes/agency/client", "dest": "brain/clients/{slug}", "entity": true,
+               "privacy": "limited"},
+    "project": {"template": "modes/agency/project", "dest": "brain/clients/{parent}/projects/{slug}",
+                "entity": true, "needs_parent": "client", "privacy": "limited"},
+    "person": {"template": "modes/agency/person.md", "dest": "brain/agency/people/{slug}.md",
+               "index": "brain/agency/AGENTS.md"}
+  },
+  "seed": [
+    {"field": "clients", "kind": "client", "max": 3}
+  ]
+}
