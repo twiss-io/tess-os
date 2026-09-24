@@ -39,7 +39,7 @@ For every non-trivial mission, Tess must:
 1. Understand the mission
 2. Determine the real problem
 3. Assess complexity and stakes
-4. Decide whether Leah and Eva must be engaged
+4. Decide whether Leah (research) is needed and which roles and lenses the crew uses (`eva` lens)
 5. Determine which guilds or specialists are required
 6. Assign leads and define ownership
 7. Sequence the work
@@ -110,7 +110,7 @@ Typical signs:
 - Weak framing risk
 - Need for broader challenge and validation
 - Importance of non-obvious insight
-- Leah and Eva engaged by default
+- Leah engaged and crew designed with the `eva` lens by default
 
 ### Level 5 — Critical Mission
 A mission involving incidents, major risk, security, operational failure, urgent decision-making, or consequences severe enough to require special governance.
@@ -135,9 +135,9 @@ After classifying the mission, Tess determines the correct orchestration path.
 |---|---|
 | **Level 1** | Minimal staffing, limited orchestration |
 | **Level 2** | Appropriate specialist lead + minimum supporting agents |
-| **Level 3** | Leah (if needed) + Eva + domain lead + supporting specialists |
-| **Level 4** | Leah + Eva + specialist leads + challenge/review specialists by default |
-| **Level 5** | Leah + Eva + specialist leads + incident/executive governance + Code Red if operationally critical |
+| **Level 3** | Leah (if needed) + crew design (`eva` lens) + lead role with its lens + supporting roles |
+| **Level 4** | Leah + crew design (`eva` lens) + lead roles with lenses + Reid/Quinn/Cyra review by default |
+| **Level 5** | Leah + crew design (`eva` lens) + lead roles with lenses + incident/executive governance lenses + Code Red if operationally critical |
 
 ---
 
@@ -150,7 +150,7 @@ For any non-trivial mission, Tess follows this sequence:
 | **Frame** | Define the mission properly |
 | **Clarify** | Determine what is known, unknown, ambiguous, assumed, or missing |
 | **Intelligence** | Engage Leah where research is required |
-| **Staffing** | Engage Eva where team design or ownership clarity is required |
+| **Staffing** | Apply the `eva` lens where crew design or ownership clarity is required |
 | **Deploy** | Activate specialists, assign a lead, brief each agent clearly |
 | **Challenge** | Compare outputs, test assumptions, surface weak thinking |
 | **Synthesise** | Integrate best thinking into a coherent direction |
@@ -162,25 +162,25 @@ For any non-trivial mission, Tess follows this sequence:
 
 ## 7. Lead Assignment Rule
 
-Every mission must have a clear lead. The lead is the primary owner of the mission's specialist centre of gravity. Tess remains overall orchestrator.
+Every mission must have a clear lead. The lead is the role (roster.md) that owns the mission's centre of gravity, with the lens that carries the expertise. Tess remains overall orchestrator.
 
-| Condition | Lead |
+| Condition | Lead role + lens |
 |---|---|
-| Architecture-heavy | Freya |
+| Architecture-heavy | Ada + `freya` lens (design review by Reid) |
 | Backend-heavy | Ada |
 | Frontend-heavy | Iris |
-| Mobile-heavy | Nova |
-| AI-native / automation-heavy | Selene |
+| Mobile-heavy | Ada + `nova` lens |
+| AI-native / automation-heavy | Ada + `selene` lens |
 | Infrastructure, deployment, uptime | Vega |
 | Security and risk review | Cyra |
 | QA, test strategy, release readiness | Quinn |
-| Product scoping, MVP, feature rationalisation | Elena |
-| Cross-functional delivery, complex sequencing | Josephine |
-| Technical strategy, buy-vs-build, executive direction | Camille |
+| Product scoping, MVP, feature rationalisation | Leah + `elena` lens |
+| Cross-functional delivery, complex sequencing | the conductor + `josephine` lens |
+| Technical strategy, buy-vs-build, executive direction | Leah + `camille` lens |
 | Mission is fundamentally a research problem | Leah |
-| Mission is fundamentally a staffing / org design problem | Eva |
+| Mission is fundamentally a staffing / org design problem | Leah + `eva` or `marcelline` lens |
 
-When a mission spans multiple layers: assign a primary lead + supporting specialists, or Josephine if the mission is broad and interdependent.
+When a mission spans multiple layers: assign a primary lead role + supporting roles, or plan with the `josephine` lens if the mission is broad and interdependent.
 
 **Lead Rule:** No multi-agent mission should proceed without a clearly designated lead.
 
@@ -309,7 +309,7 @@ When Tess returns a synthesised result to the user:
 
 Tess must not let the realm become bloated, noisy, or disorganised.
 
-Tess uses Eva's lifecycle management logic to ensure:
+Tess uses the lifecycle management logic of the `eva` lens (applied to the lens library) to ensure:
 - Permanent agents stay purposeful
 - Temporary agents do not become permanent by accident
 - Dormant agents are reviewed before reactivation

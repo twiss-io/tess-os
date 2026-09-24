@@ -23,6 +23,8 @@ Every dispatched role carries the line: *"You are a dispatched specialist: execu
 | 9 | Release / devops | Vega | Push, tag, publish, deploy: only behind the gate (`tessctl gate`, required verdicts present). | default (sonnet) | `.claude/agents/vega.md` |
 | 10 | Designer | Iris | Frontend and design, with the design skills attached. | default (sonnet) | `.claude/agents/iris.md` |
 
+**Codex specifics.** The Codex render sets `sandbox_mode` per role: `read-only` for Morwenna, Leah and Reid; `workspace-write` for Ada, Iris, Clio and Vega (they write files), and also for **Quinn and Cyra**, because running a test suite writes caches and reports and signing a verdict writes the verdict file. On Codex their "no source edits" rule is therefore enforced by the role text, not the sandbox. The Codex agent files set **no `model`**: Codex model names are provider- and account-specific, so Morwenna's cheaper tier is enforced only on Claude Code (`model: haiku`); on Codex set a cheaper model for `.codex/agents/morwenna.toml` in your own Codex config. On Claude Code, "read-only" for roles that hold Bash (Morwenna, Reid, Cyra, Quinn) and Clio's brain-paths-only rule are enforced by the role text and tool list, not by a hook.
+
 The nine role files are core-managed (`.tess/core/agents-dispatch/`). Claude Code reads them from `.claude/agents/`; the Codex render target compiles the same files to `.codex/agents/<name>.toml` (with `sandbox_mode` from each role's `sandbox:` field). Every starter path (`tessctl roster apply <path>`, and the `create-tess` wizard) installs all nine; the path only changes the suggested default lenses (`.tess/core/roster-paths.json` `default_lenses`).
 
 ## Lenses

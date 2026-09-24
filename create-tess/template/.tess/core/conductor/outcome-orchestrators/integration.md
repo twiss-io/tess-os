@@ -1,5 +1,7 @@
 # Outcome Orchestrator Integration Doctrine
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Purpose:** Cross-orchestrator routing discipline, ownership clarity, and structural integrity  
 **Applies to:** All 6 Outcome Orchestrators and Tess's mission routing logic  
 **Authority:** System-level — overrides any individual orchestrator's self-claimed scope where conflict exists

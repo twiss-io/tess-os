@@ -58,7 +58,7 @@ No agent should become permanent by accident.
 
 ## 3. Agent Creation Rule
 
-Eva may only create a new agent when all of the following are true:
+The conductor (applying the `eva` lens) may only create a new lens when all of the following are true:
 
 - an important capability gap exists
 - no current agent can credibly cover the role
@@ -93,7 +93,7 @@ Poor naming creates silent orchestration errors.
 
 ## 5. Overlap and Redundancy Rule
 
-Eva must continuously assess:
+The conductor (applying the `eva` lens) must continuously assess the lens library:
 - whether agents overlap too heavily
 - whether two agents should be merged
 - whether one agent has become too broad and should be split
@@ -175,33 +175,11 @@ Core status must be earned, not granted casually.
 
 ---
 
-## 10. Managed Subagent Promotion Governance
+## 10. Registered Roles (v0.2 — replaces managed-subagent promotion)
 
-Not all agents need to be managed subagents. Doctrine agents are the default.
+There is no promotion path in v0.2. The registered agents are exactly the nine roles in [roster.md](roster.md), each with a `.claude/agents/<name>.md` file defined by permissions (least-privilege tool set), model-tier alias (`haiku` / `sonnet` / `opus`, never a pinned dated id) and isolation. Expertise that once justified promoting a persona is now a lens in `conductor/lenses/`, loaded into a role's brief. Nobody (conductor or lens) creates a new agent file; a gap that needs a permission the roles lack goes to the operator.
 
-### Who Decides
-**Eva owns all promotion and demotion decisions.** Tess does not promote agents unilaterally.
-
-### Promotion Criteria (all three required)
-1. **Tool dependency** — the agent's work materially improves with direct tool access
-2. **Execution mandate** — the agent produces outputs, not just perspectives
-3. **Mission evidence** — real missions have demonstrated the gap
-
-### What Promotion Means
-A promoted agent gets a `.claude/agents/<name>.md` file with:
-- Defined tool set (principle of least privilege — only tools the role actually uses)
-- Self-contained system prompt condensed from doctrine files
-- Model assignment — a model-tier **alias** (`haiku` / `sonnet` / `opus`) matched to the role's stakes, never a pinned dated model id. Omit the field to inherit the session/orchestrator model. Default tier: `sonnet`. (Pinning a specific dated id such as a `claude-*-N-N` string is prohibited — it rots and drifts from the actual agent files, which already use bare aliases.)
-
-  **Distinct from `model_tier` (roster metadata, Goal #11):** the `model:` alias above is the harness-concrete setting Claude Code actually reads at dispatch time. `model_tier` is a coarser, role-based recommendation (`strong` / `cheap`) carried in a persona's `agents/<name>/README.md` frontmatter — see [agents/README.md § Model Tier](../agents/README.md) — that this promotion step should consult when picking the concrete alias. `model_tier` is metadata only today; no adapter or dispatch driver reads it yet (deferred, mechanism-level follow-up).
-
-### Demotion
-Eva may revert any managed subagent to doctrine-only if tool access goes unused or overhead is unjustified.
-
-### Portfolio Rule
-The number of managed subagents should remain small and mission-justified. More managed subagents is not better. Clarity and utility are the metrics.
-
----
+**Distinct from `model_tier` (roster metadata):** the `model:` alias is the harness-concrete setting Claude Code reads at dispatch time; `model_tier` in `agents/README.md` is the coarser role-based recommendation it follows.
 
 ## 11. Agent Portfolio Principle
 

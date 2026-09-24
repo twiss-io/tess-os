@@ -158,7 +158,8 @@ OPTIONS
   --operator, --name <text>      operator name (default: Operator)
   --conductor, --assistant <t>   conductor name (default: Tess)
   --vibe <rpg|command|studio>    narrative skin (default: rpg)
-  --path <founders|builders|operators>   starter squad (default: founders)
+  --path <founders|builders|operators>   starter path: same ten roles on every path,
+                                 only the suggested lenses differ (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)
                                  chief-of-staff|co-founder|strategist|guide|operator
   --telegram <channel-id>        optional Telegram channel to wire (default: skipped)

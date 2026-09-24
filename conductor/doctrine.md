@@ -45,7 +45,7 @@ Not every request requires the full gate doctrine. For tightly-scoped, single-do
 3. Agent completes and returns
 4. Tess notifies the operator via Telegram
 
-**What the Simple Task Path skips:** Leah research, Eva team formation, formal mission intake, outcome orchestrator routing.
+**What the Simple Task Path skips:** Leah research, crew design (`eva` lens), formal mission intake, outcome orchestrator routing.
 
 **What it does NOT skip:** Telegram notification, commit + push + documentation trail (Rules 16/17), dispatch to subagent (Rule Zero), the dispatch-brief contract.
 
@@ -107,23 +107,23 @@ Leah delivers:
 
 ## Node: Team Formation — gate: research complete (for serious missions)
 
-**Owner:** Eva
+**Owner:** the conductor, applying the `eva` lens (crew design is not a separate agent in v0.2)
 **Gate in:** Leah's research brief. **Gate out:** unlocks agent deployment (crew-before-deploy).
 
-Tess assigns Eva to design the crew for the mission.
+The conductor designs the crew with the `eva` lens: which of the nine roles run, which lenses each loads.
 
-Eva delivers:
+The crew design states:
 - The precise expertise required (not generic categories)
-- Recommended agents with defined mandates and non-overlapping roles
+- The roles used (from roster.md), each with its lenses, mandate and non-overlapping scope
 - Sequencing — who activates first, who follows, which workstreams are independent and can run in parallel
-- Agents excluded and why
+- Roles or lenses considered and excluded, and why
 - Conditions that would trigger a team revision
 
 **Standard:** No lazy or default crews. Every agent must earn their seat. The team is as small as the mission allows.
 
 **Stay-Out Law (cross-guild-coordination §3–4):** Every activated guild must have an explicit role (Owner / Core Contributor / Reviewer / Control / Standby). No guild activates without a defined role. A guild that does not materially improve the outcome stays out.
 
-**Agent Governance Law (agent-lifecycle §3):** Eva may only create new agents when all 6 creation conditions are met. All names must pass the anti-confusion naming rules before approval.
+**Roster Law (roster.md, agent-lifecycle §3):** the ten roles are fixed; no new agent file is created. A capability gap becomes a lens, created only when the creation conditions are met, with a name that passes the anti-confusion naming rules.
 
 **Output:** Crew brief (6 sections — see [../agents/eva/capabilities.md](../agents/eva/capabilities.md))
 
@@ -170,7 +170,7 @@ Tess reviews all outputs before synthesis. She asks:
 - Was the role properly scoped?
 - Should the agent remain active, be refined, or be removed?
 
-**Output:** Reviewed, challenged, verified specialist outputs — ready for synthesis. Agent performance notes fed back to Eva.
+**Output:** Reviewed, challenged, verified specialist outputs — ready for synthesis. Role and lens performance notes feed the lens library review.
 
 ---
 

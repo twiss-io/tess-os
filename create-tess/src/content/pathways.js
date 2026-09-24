@@ -95,4 +95,4 @@ STATUS:  0 missions. Awaiting first.
 
 // Shown once after the first mission — the progression hook (design doc §6.3).
 export const RECRUIT_TIP =
-  'Tip: your squad grows when you\'re ready.  /list-agents · /add-agent (Eva runs intake).';
+  'Tip: your ten roles are all installed; add expertise with lenses.  /list-agents · /add-agent (adds a lens).';

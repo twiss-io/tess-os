@@ -47,7 +47,7 @@ Mission flow is governed by **dependency gates**, not a fixed clock (see [doctri
 ```
 Intake before anything        → frame the problem; produce the task graph
 Research before build         → Leah informs before strategy or execution
-Crew before deploy            → Eva designs roles before agents are briefed
+Crew before deploy            → conductor picks roles + lenses (`eva` lens) before any role is briefed
 Review before synthesis       → pressure-test outputs before integrating
 Verification before anything
 externally visible            → mandatory verifier reads primary artifacts

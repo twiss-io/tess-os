@@ -161,3 +161,132 @@ def test_real_repo_codex_agents_are_current(engine):
     for role in ROLES:
         rel = f".codex/agents/{role}.toml"
         assert (REPO_ROOT / rel).read_bytes() == target.expected_live_bytes(REPO_ROOT, rel), rel
+
+
+# --- codex role mirror lifecycle (QA fix round 1) -----------------------------
+
+def _codex_project(project):
+    """A synthetic install with two real-shaped roles and codex ENABLED."""
+    for name in ("alpha", "beta"):
+        project.add(
+            f".claude/agents/{name}.md",
+            f"---\nname: {name}\ndescription: {name}\nmodel: sonnet\ntools: Read\n"
+            f"sandbox: read-only\n---\n\nBody {name}.\n",
+            core_key=f".tess/core/agents-dispatch/{name}.md",
+            status="core-managed",
+        )
+    project.write()
+    (project.root / ".tess" / "core" / "roster-paths.json").write_text(
+        json.dumps({"universal_base": ["alpha", "beta"], "paths": {}}), encoding="utf-8")
+    mpath = project.root / "tess.manifest.json"
+    m = json.loads(mpath.read_text(encoding="utf-8"))
+    m["render_targets"]["enabled"] = ["claude-code", "codex"]
+    mpath.write_text(json.dumps(m), encoding="utf-8")
+    return project
+
+
+def test_codex_sync_never_deletes_user_authored_agents(engine, project, capsys):
+    p = _codex_project(project)
+    agents = p.root / ".codex" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    mine = agents / "mine.toml"
+    mine.write_text('name = "mine"\ndescription = "my own agent"\n', encoding="utf-8")
+    stale = agents / "gamma.toml"
+    stale.write_text(engine.CODEX_AGENT_HEADER_PREFIX + " from x. Do not edit.\nname = \"gamma\"\n",
+                     encoding="utf-8")
+    roles = engine._sync_codex_role_agents(p.root)
+    assert roles == ["alpha", "beta"]
+    assert mine.read_text(encoding="utf-8").startswith('name = "mine"'), "user file must survive"
+    assert not stale.exists(), "a generated file for an uninstalled role is removed"
+    assert (agents / "alpha.toml").is_file() and (agents / "beta.toml").is_file()
+    out = capsys.readouterr().out
+    assert "removed   .codex/agents/gamma.toml" in out
+    assert "mine.toml" not in out
+
+
+def test_bench_and_recruit_keep_codex_mirror_in_step(engine, project):
+    p = _codex_project(project)
+    engine._sync_codex_role_agents(p.root)
+    beta = p.root / ".codex" / "agents" / "beta.toml"
+    assert beta.is_file()
+    from conftest import ns
+    engine.cmd_bench(ns(names=["beta"]), p.root)
+    assert not beta.exists(), "benching a role removes its codex agent file"
+    assert not (p.root / ".claude" / "agents" / "beta.md").exists()
+    engine.cmd_recruit(ns(names=["beta"]), p.root)
+    assert beta.is_file(), "recruiting a role restores its codex agent file"
+    assert beta.read_bytes() == engine._render_codex_agent_bytes(p.root, "beta")
+
+
+def test_lenses_plus_roles_equal_the_pre_v02_persona_set():
+    """Every pre-v0.2 persona (agents/<name>/ spec dirs + the six outcome
+    orchestrators) is either one of the nine roles or exactly one lens."""
+    persona_dirs = {p.name for p in (CORE / "agents").iterdir() if p.is_dir()}
+    orchestrators = {p.stem for p in (CORE / "conductor" / "outcome-orchestrators").glob("*-orchestrator.md")}
+    assert len(orchestrators) == 6
+    before = persona_dirs | orchestrators
+    lenses = {p.stem for p in LENS_DIR.glob("*.md") if p.name != "README.md"}
+    assert len(before) == 150
+    assert lenses | set(ROLES) == before
+    assert not lenses & set(ROLES)
+    assert len(lenses) == 141
+
+
+# --- doctrine never dispatches a lens as an agent (QA fix round 1) ------------
+
+def _fold(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+def _doctrine_lines(path):
+    """Lines of a doctrine file up to its CHANGELOG (history records what
+    WAS true and is allowed to name the pre-v0.2 roster)."""
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.strip().upper() == "## CHANGELOG":
+            return
+        yield i, line
+
+
+def _doctrine_files():
+    roots = [CORE / "conductor", CORE / "commands", CORE / "templates"]
+    for r in roots:
+        for p in sorted(r.rglob("*")):
+            if p.is_file() and p.suffix in (".md", ".tpl") and "lenses" not in p.parts:
+                yield p
+
+
+def test_doctrine_never_dispatches_a_lens_as_an_agent():
+    lens_names = sorted(p.stem for p in LENS_DIR.glob("*.md") if p.name != "README.md")
+    people = [n for n in lens_names if not n.endswith("-orchestrator")]
+    name_alt = "|".join(re.escape(n) for n in people)
+    orch_alt = "|".join(re.escape(n) for n in lens_names if n.endswith("-orchestrator"))
+    verbs = (r"dispatch(?:es|ed|ing)?|invoke[sd]?|engage[sd]?|assign(?:s|ed)?|recruit(?:s|ed)?"
+             r"|delegate[sd]? to|route[sd]? to|request")
+    patterns = [
+        # "dispatch Tamsin", "assigns Eva", "Request Eva" — a lens as a dispatch target
+        re.compile(rf"\b(?:{verbs})\s+(?:\*\*)?(?:the\s+)?(?:{name_alt})\b(?!\s+lens)(?!`)", re.I),
+        # an orchestrator named as something dispatched ("dispatch revenue-orchestrator")
+        re.compile(rf"\b(?:{verbs})\s+(?:\*\*|`)?(?:{orch_alt})\b(?!\.md)", re.I),
+        # a lens persona as the actor of crew design/recruiting
+        re.compile(rf"\b(?:{name_alt})\s+(?:designs|recruits|redesigns|runs intake|owns all promotion)\b", re.I),
+        re.compile(r"\bvia Eva\b|\bOwner:\*\*\s*Eva\b", re.I),
+    ]
+    hits = []
+    for path in _doctrine_files():
+        for i, line in _doctrine_lines(path):
+            folded = _fold(line)
+            for pat in patterns:
+                m = pat.search(folded)
+                if m:
+                    hits.append(f"{path.relative_to(REPO_ROOT)}:{i}: {m.group(0)!r}")
+    assert not hits, "doctrine dispatches a lens as an agent:\n" + "\n".join(hits)
+
+
+def test_doctrine_verifier_lists_name_only_the_three_verifier_roles():
+    bad = re.compile(r"\((?:Reid|Quinn|Cyra)(?:\s*/\s*\w+)*\s*/\s*(?:Verity|Maialen|Lysandra)\b")
+    hits = [f"{p.relative_to(REPO_ROOT)}:{i}"
+            for p in _doctrine_files()
+            for i, line in _doctrine_lines(p)
+            if bad.search(line)]
+    assert not hits, hits

@@ -1,5 +1,7 @@
 # Playbook — Product and Build Mission
 
+> **v0.2 ten-role roster ([roster.md](../roster.md)).** Persona names in this file (in crew tables, "Guild (Name)" cells and crew-plans) are **lenses**, not agents: read "Sales (Apolline)" as "the matching role with the `apolline` lens" — research and analysis → Leah, build → Ada, design → Iris, review → Reid, testing → Quinn, security → Cyra, records → Clio, release → Vega. Only the conductor dispatches, and it dispatches roles. Verification goes to Reid, Quinn or Cyra (verification-routing.md).
+
 **Orchestrator:** Product and Delivery  
 **Mode:** `/product-mode`  
 **Output:** Validated product direction, scoped specification, sequenced build plan, release readiness assessment  
@@ -42,13 +44,13 @@ Before activating any guild, Tess must answer:
 | Role | Guild | Mandate |
 |---|---|---|
 | Owner | Product (Elodie / Valina) | Requirements, acceptance criteria, definition of done |
-| Core Contributor | Coding (Freya / Ada) | Feasibility, architecture, technical constraint assessment |
+| Core Contributor | Ada + `freya` lens | Feasibility, architecture, technical constraint assessment |
 | Core Contributor | Design/UX | Interface and experience design |
 
 **Build Phase:**
 | Role | Guild | Mandate |
 |---|---|---|
-| Owner | Coding (Ada / Iris / Nova — by layer) | Engineering execution |
+| Owner | Ada (backend, `nova` lens for mobile) / Iris (frontend) — by layer | Engineering execution |
 | Core Contributor | Product | Specification oversight, decision on ambiguities |
 | Control | QA (Quinn) | Testing strategy, quality gates |
 

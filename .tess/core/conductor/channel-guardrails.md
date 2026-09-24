@@ -44,10 +44,10 @@ When Tess is connected to multiple Telegram chats (DMs + groups), each group cha
 - **Scope:** unrestricted — any topic, any client, any research
 - **Working directory:** `/` (full tess root)
 - **Execution model:** Tess dispatches ONLY. All substantive work must be handled by subagents:
-  - **Research tasks** → dispatch Leah (Senior Researcher)
-  - **Competitive/market analysis** → dispatch Tamsin (Competitive Strategist)
-  - **Synthesis** → dispatch Melisande (Deep Synthesis Specialist)
-  - **Source verification** → dispatch Maialen (Source Reliability)
+  - **Research tasks** → dispatch Leah (Researcher role)
+  - **Competitive/market analysis** → dispatch Leah with the `tamsin` lens
+  - **Synthesis** → dispatch Leah with the `melisande` lens
+  - **Source verification** → dispatch Reid with the `maialen` lens
 - **Tess's role in this channel:** intake the request, dispatch the right agent, relay the result. Never do the research solo.
 - **Output:** Save all research to the relevant `kb/research/` folder
 

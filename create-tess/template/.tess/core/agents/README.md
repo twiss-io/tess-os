@@ -128,7 +128,7 @@ Guild pack activation: Eva selects the minimum agents required for the mission. 
 
 **Note:** The 7 cross-cutting coding specialists (Ada, Iris, Cyra, Reid, Quinn, Vega, Elena) are in Core. These 6 handle architecture, infrastructure platforms, AI systems, and programme delivery.
 
-> **Coding-agent adopters:** the full 144-persona business-consulting roster is more than a coding-focused install needs. `tessctl roster apply coding-squad` installs a tight coding-only squad instead — Leah + Eva (universal base) plus Ada, Iris, Reid, Cyra, Quinn, and Vega — with everything else staged/benched. See [roster-paths.json](../.tess/core/roster-paths.json) and this repo's root [README.md](../README.md#the-roster-ten-roles-and-a-lens-library).
+> **Coding-agent adopters:** the full 144-persona business-consulting roster is more than a coding-focused install needs. `tessctl roster apply coding-squad` (v0.2) installs the same nine roles as every other path and only suggests engineering lenses (Freya, Petra, Selene, Nova, Camille); nothing is staged. See [roster-paths.json](../.tess/core/roster-paths.json) and this repo's root [README.md](../README.md#the-roster-ten-roles-and-a-lens-library).
 
 | Agent | Role | Layer |
 |---|---|---|
