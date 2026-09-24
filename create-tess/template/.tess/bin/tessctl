@@ -606,8 +606,12 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
 
     Security model — ALLOWLIST (C1):
       1. Pre-validation: absolute paths, '../' traversal, out-of-tree resolve,
-         and symlink directory components are all hard-rejected.
-      2. norm_rel is computed from the resolved, contained target path.
+         symlink directory components (dangling ones included), and a
+         symlink FINAL component are all hard-rejected (v0.2 bug 9: a write
+         to `AGENTS.md -> CLAUDE.md` used to land in CLAUDE.md).
+      2. norm_rel is computed from the UNRESOLVED, lexically normalised path,
+         never from the resolved target — so the allowlist is always checked
+         against the path the caller named, not wherever a link points.
       3. Hard guards (.git/**, vault blobs, *.local.md) deny regardless of
          owned_globs AND regardless of manifest contents (hardcoded tier).
       4. ALLOWLIST: norm_rel must match owned_globs — paths in neither list DENY.
@@ -654,22 +658,48 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
             f"(path traversal via symlink or resolve — C1 containment)."
         )
 
-    # Reject symlink directory components (TOCTOU defense-in-depth)
+    # ---- Step 2: Normalize (v0.2 bug 9: lexical, never the resolved target) ----
+    # '..' is already refused above, so normpath only folds '.', '//' and a
+    # trailing '/'. The resolved `target` is used for the containment check
+    # above and nothing else: deriving norm_rel from it let a symlinked final
+    # component (AGENTS.md -> CLAUDE.md) re-point the write, and the allowlist
+    # check, at the link's target.
+    norm_rel = os.path.normpath(live_rel).replace(os.sep, "/")
+    if norm_rel in ("", "."):
+        raise GateError(
+            f"tessctl {op}: WRITE REFUSED — {live_rel!r} names the Tess root itself, "
+            f"not a file (C1 containment)."
+        )
+    _norm_parts = Path(norm_rel).parts
+
+    # Reject symlink directory components (TOCTOU defense-in-depth). lstat-based
+    # (is_symlink), so a DANGLING directory symlink is rejected too — the old
+    # `exists() and is_symlink()` let a dangling link through.
     _check = root_resolved
-    for _part in Path(live_rel).parts[:-1]:
+    for _part in _norm_parts[:-1]:
         _check = _check / _part
-        if _check.exists() and _check.is_symlink():
+        if _check.is_symlink():
             raise GateError(
                 f"tessctl {op}: WRITE REFUSED — {live_rel!r} traverses symlink "
                 f"directory '{_part}' (symlink attack mitigation — C1 containment)."
             )
 
-    # ---- Step 2: Normalize ----
+    # v0.2 bug 9: reject a symlink FINAL component. lstat() the entry itself;
+    # a link (live or dangling) is never written through, whatever it points at.
     try:
-        norm_rel = str(target.relative_to(root_resolved)).replace(os.sep, "/")
-    except ValueError:
+        _final_is_link = stat.S_ISLNK(os.lstat(str(root_resolved / norm_rel)).st_mode)
+    except FileNotFoundError:
+        _final_is_link = False
+    except OSError as e:
         raise GateError(
-            f"tessctl {op}: WRITE REFUSED — cannot normalize {live_rel!r} relative to root."
+            f"tessctl {op}: WRITE REFUSED — cannot lstat {norm_rel!r}: {e}"
+        )
+    if _final_is_link:
+        raise GateError(
+            f"tessctl {op}: WRITE REFUSED — {norm_rel!r} is a symlink. tessctl never "
+            f"writes through a symlink: the write would land in the link's target, not "
+            f"in {norm_rel!r}. Replace the link with a regular file (or remove it) and "
+            f"re-run (symlink attack mitigation — C1 containment)."
         )
 
     # ---- Step 3: Hard guards (RCE sinks — override any owned_globs entry) ----
@@ -789,6 +819,17 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
     return norm_rel
 
 
+def _refuse_symlink_write_target(live_path: Path, norm_rel: str, op: str) -> None:
+    """v0.2 bug 9: raise GateError if the write target is a symlink (live or
+    dangling). Used by guarded_write after the gate and again immediately
+    before the atomic replace."""
+    if os.path.islink(str(live_path)):
+        raise GateError(
+            f"tessctl {op}: WRITE REFUSED — {norm_rel!r} is a symlink; tessctl never "
+            f"writes at a symlink (symlink attack mitigation — C1 containment)."
+        )
+
+
 def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
                   manifest: dict = None) -> None:
     """
@@ -814,6 +855,9 @@ def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
     # so the actual path is always canonical regardless of the raw live_rel.
     norm_rel = check_manifest_write_gate(root, manifest, live_rel, op=op)
     live_path = root / norm_rel
+    # v0.2 bug 9: never write at a symlink. The gate already refused one; this
+    # re-check narrows the window between the gate and the replace below.
+    _refuse_symlink_write_target(live_path, norm_rel, op)
 
     # Capture existing mode before write (preserve it on update)
     existing_mode: int | None = None
@@ -831,6 +875,7 @@ def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
     try:
         with os.fdopen(tmp_fd, "wb") as fh:
             fh.write(data)
+        _refuse_symlink_write_target(live_path, norm_rel, op)
         os.replace(tmp_path_str, str(live_path))
     except Exception:
         try:
@@ -7071,6 +7116,62 @@ def cmd_verify(args, root: Path) -> None:
 # Command: approve (defect #1)
 # ---------------------------------------------------------------------------
 
+def _approve_require_human_presence(live_rel: str) -> None:
+    """
+    v0.2: approving a quarantined or security-tier file needs a human at an
+    interactive terminal. stdin AND stdout must both be a TTY, and the
+    operator must type the live path back. A headless agent run (pipes, CI,
+    a tool call) exits non-zero here before anything is written, so the file
+    stays quarantined.
+
+    There is deliberately NO environment variable or flag that skips this
+    check. It is a presence check, not a cryptographic boundary: a process
+    that allocates its own pseudo-terminal can still satisfy it. The
+    --rationale requirement and the modified.json audit record still apply.
+    """
+    def _isatty(stream) -> bool:
+        try:
+            return bool(stream is not None and stream.isatty())
+        except (AttributeError, ValueError, OSError):
+            return False
+
+    stdin_tty = _isatty(sys.stdin)
+    stdout_tty = _isatty(sys.stdout)
+    if not (stdin_tty and stdout_tty):
+        sys.exit(
+            "tessctl approve: REFUSED — approving a quarantined or security-tier file "
+            "needs a human at an interactive terminal.\n"
+            f"  stdin is {'a TTY' if stdin_tty else 'not a TTY'}; "
+            f"stdout is {'a TTY' if stdout_tty else 'not a TTY'}. Both must be a TTY.\n"
+            f"  Nothing was changed: {live_rel} stays quarantined.\n"
+            "  Run `tessctl approve <path> --rationale \"...\"` yourself, in a terminal."
+        )
+    print(f"tessctl approve: human confirmation required for {live_rel}")
+    print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
+    print(f"  Type the path exactly as shown to approve it: {live_rel}")
+    try:
+        typed = input("  path> ")
+    except EOFError:
+        typed = None
+    if typed is None or typed.strip() != live_rel:
+        sys.exit(
+            f"tessctl approve: REFUSED — the typed path did not match {live_rel!r}.\n"
+            f"  Nothing was changed: {live_rel} stays quarantined."
+        )
+
+
+def _approve_entry_keys(lock: dict, core_key: str, live_rel: str) -> list:
+    """v0.2 bug 8 (approve part): the core keys approve acts on — EVERY lock
+    entry whose live_path is live_rel (CLAUDE.md is backed by several), the
+    matched entry first. An entry with no live_path of its own stands alone."""
+    files = lock.get("files", {})
+    if files.get(core_key, {}).get("live_path") != live_rel:
+        return [core_key]
+    return [core_key] + [
+        k for k, _a in _entries_for_live_path(lock, live_rel) if k != core_key
+    ]
+
+
 def cmd_approve(args, root: Path) -> None:
     """
     Accept a quarantined security-tier edit.
@@ -7081,10 +7182,14 @@ def cmd_approve(args, root: Path) -> None:
 
     Flow:
       1. Validate rationale is present and non-empty.
-      2. Read the quarantined file from .tess/quarantine/<live_rel>.
-      3. Copy it to live_path.
-      4. Flip status → locally-modified (now a normal merge candidate).
-      5. Record approval event in modified.json.
+      2. Find EVERY lock entry that shares the target's live_path (a live
+         file can be backed by several entries, e.g. CLAUDE.md).
+      3. Require a human at an interactive terminal (v0.2; see
+         _approve_require_human_presence). Nothing is written before this.
+      4. Copy .tess/quarantine/<live_rel> to live_path.
+      5. Flip EVERY entry for that live_path → locally-modified (now a normal
+         merge candidate).
+      6. Record the approval event in modified.json.
     """
     target_path = getattr(args, "path", None)
     rationale = (getattr(args, "rationale", "") or "").strip()
@@ -7096,7 +7201,7 @@ def cmd_approve(args, root: Path) -> None:
     if not rationale:
         sys.exit(
             "tessctl approve: --rationale is REQUIRED and must be non-empty.\n"
-            "  This is the the operator-authorization gate for security-tier edits.\n"
+            "  This is the operator-authorization gate for security-tier edits.\n"
             "  Provide a specific reason why this change to security doctrine is acceptable."
         )
 
@@ -7115,8 +7220,12 @@ def cmd_approve(args, root: Path) -> None:
     if not core_key:
         sys.exit(f"tessctl approve: path not found in tess.lock: {target_path}")
 
+    # All entries backing this live path (first match alone when the entry
+    # has no live_path of its own).
+    entry_keys = _approve_entry_keys(lock, core_key, live_rel)
+
     attrs = files[core_key]
-    if attrs.get("status") != "quarantined":
+    if not any(files[k].get("status") == "quarantined" for k in entry_keys):
         print(f"tessctl approve: {live_rel} is not quarantined (status: {attrs.get('status')})")
         print("  Only quarantined files require approval.")
         sys.exit(1)
@@ -7130,17 +7239,26 @@ def cmd_approve(args, root: Path) -> None:
             f"  The quarantine directory may have been deleted.  Cannot approve without it."
         )
 
+    # v0.2: human presence — before ANY write or lock change.
+    if any(
+        files[k].get("status") == "quarantined" or is_security_tier(k, files[k])
+        for k in entry_keys
+    ):
+        _approve_require_human_presence(live_rel)
+
     # Apply the quarantined edit to live (H2/M3: manifest-gated + atomic)
     guarded_write(root, live_rel, q_path.read_bytes(), op="approve")
 
     # Flip status to locally-modified (normal merge candidate going forward)
-    lock["files"][core_key]["status"] = "locally-modified"
-    lock["files"][core_key]["approved_at"] = datetime.datetime.now(
+    approved_at = datetime.datetime.now(
         datetime.timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-    lock["files"][core_key]["approved_rationale"] = rationale
-    lock["files"][core_key].pop("quarantined_at", None)
-    lock["files"][core_key].pop("quarantined_by", None)
+    for k in entry_keys:
+        lock["files"][k]["status"] = "locally-modified"
+        lock["files"][k]["approved_at"] = approved_at
+        lock["files"][k]["approved_rationale"] = rationale
+        lock["files"][k].pop("quarantined_at", None)
+        lock["files"][k].pop("quarantined_by", None)
 
     # Record approval in modified.json
     diff_text = ""
@@ -7170,7 +7288,10 @@ def cmd_approve(args, root: Path) -> None:
 
     print(f"tessctl approve: {live_rel} approved.")
     print(f"  rationale: {rationale}")
-    print(f"  status: quarantined → locally-modified")
+    if len(entry_keys) > 1:
+        print(f"  status: quarantined → locally-modified ({len(entry_keys)} lock entries)")
+    else:
+        print(f"  status: quarantined → locally-modified")
     print(f"  quarantined file retained at {QUARANTINE_DIR}/{live_rel} for audit trail.")
     print(f"  Run `tessctl doctor` to confirm clean state.")
 
@@ -10954,7 +11075,7 @@ TRUST_BOOTSTRAP_REQUIRED = (
     "  Tess OS never provides a self-service path that generates a verifier "
     "private key, registers a trust anchor, or re-pins policy/lock state.\n"
     "  This invocation made no key, policy, or lock changes. A user-present "
-    "bootstrap and recovery ceremony is undecided and Xavier-owned; see "
+    "bootstrap and recovery ceremony is undecided and owned by the project's key-custody holder; see "
     "docs/TRUST_BOOTSTRAP_SECURITY_DESIGN.md."
 )
 
@@ -16770,7 +16891,7 @@ def cmd_run(args, root: Path) -> None:
 # typed-retry ledger track a MISSION's five dependency gates + per-task retry
 # attempts; this region tracks the much more granular "task list, updates,
 # accountability list, whoever picked up a task and progress, cleared or
-# stuck, resumable by any agent" cross-harness trail Xavier's re-aimed vision
+# stuck, resumable by any agent" cross-harness trail the maintainer's re-aimed vision
 # calls for. Reuses the SAME discipline the mission ledger already proved out
 # (contracts-as-code dogfood-validate on every write, atomic temp-then-
 # replace, a MissionError-style typed refusal per region) rather than
@@ -16804,11 +16925,11 @@ def cmd_run(args, root: Path) -> None:
 #     lock`), held only for a brief metadata upsert on append, never for a
 #     whole append's critical section.
 #
-# What this region deliberately does NOT build (Xavier's own scope fence —
+# What this region deliberately does NOT build (the maintainer's own scope fence —
 # separate, later PRs; see the dispatch brief for this build):
 #   - memory-adopt — .tess/state/memory/** is untouched by this region.
 #   - the orphan-sweeper that would scan the ledger/claim-leases for dead-PID
-#     claims and auto-resume/re-dispatch — a separate Xavier trust-boundary
+#     claims and auto-resume/re-dispatch — a separate maintainer trust-boundary
 #     decision. This region builds ONLY the substrate a future sweeper would
 #     read: claim-lease + heartbeat fields on the task record, and
 #     claim/heartbeat/release/completed/crashed/reclaimed ledger events —
@@ -18589,10 +18710,10 @@ def cmd_log(args, root: Path) -> None:
 # record convention `tessctl mission new` already uses for mission.md +
 # mission.json.
 #
-# HONESTY IS THE POINT (Xavier's own framing for this build): this pack is
+# HONESTY IS THE POINT (the maintainer's own framing for this build): this pack is
 # TAMPER-EVIDENT (the ledger's hash chain, re-walked from the pack's own
 # bytes) but NOT cryptographically NON-REPUDIABLE — that requires the
-# Xavier-gated key ceremony (verifier_keys/signoff_keys registration,
+# maintainer-gated key ceremony (verifier_keys/signoff_keys registration,
 # conductor/verdict-signing.md), which has not happened. Every export embeds
 # a `trust_boundary` block stating this plainly, in the machine-checkable
 # manifest itself, not just in prose docs a reader might skip. See
@@ -19388,7 +19509,7 @@ def cmd_audit(args, root: Path) -> None:
 # produces a THIN scaffold that explicitly FLAGS what a human must fill in
 # (`reusable_instructions.gap_flags`), never fabricated procedural prose.
 #
-# SCOPE FENCE (Xavier's own dispatch brief for this build):
+# SCOPE FENCE (the maintainer's own dispatch brief for this build):
 #   - generates a DRAFT scaffold from a real demo ONLY.
 #   - writes to `.tess/state/skills/drafts/<slug>/` — a FIFTH `.tess/state/**`
 #     subsystem, fenced the SAME four-layer way as memory/tasks/ledger/locks
@@ -19968,7 +20089,7 @@ def cmd_skill(args, root: Path) -> None:
 # repo's own version of a bind-mount: an "actual dir" -> "symlink into the
 # canonical store" swap), not "migrate" or "replace".
 #
-# Design constraints (Xavier's own brief for this build):
+# Design constraints (the maintainer's own brief for this build):
 #   - dry-run by default; `--yes` required to mutate anything.
 #   - refuse (no mutation) if the canonical store already has real content
 #     and `--merge` was not given.
@@ -19985,7 +20106,7 @@ def cmd_skill(args, root: Path) -> None:
 #     if that fails, automatically roll the whole adopt back (via the exact
 #     same revert path) rather than leave a half-adopted, unverified state.
 #
-# Running the actual adopt against Xavier's own live `~/.claude/...` memory
+# Running the actual adopt against the operator's own live `~/.claude/...` memory
 # directory is explicitly OUT OF SCOPE for this PR (a separate, later,
 # opt-in instance operation) — this region only builds and tests the
 # mechanism itself, entirely inside disposable tmp_path fixtures.
@@ -20074,7 +20195,7 @@ def _default_harness_memory_dir(harness: str, root: Path) -> Path:
 
 
 def _memory_adopt_roundtrip_check(from_dir: Path, to_dir: Path) -> None:
-    """Post-adopt safety check (Xavier's own brief: "verify round-trip
+    """Post-adopt safety check (the maintainer's own brief: "verify round-trip
     read/write after"): proves the harness's native read/write path — via
     the symlink just created at `from_dir` — genuinely lands in the
     canonical store (`to_dir`), not just that the symlink object exists.
