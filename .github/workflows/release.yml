@@ -28,6 +28,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # actions/checkout re-points refs/tags/<tag> at the tagged COMMIT
+      # (it fetches +<sha>:refs/tags/<tag>), so an annotated tag arrives as a
+      # lightweight one and Gate 1 would always see a 'commit'. Re-fetch the
+      # real tag object first. The tag name only ever reaches the shell
+      # through the TAG environment variable, never through an inline
+      # expression, so a crafted tag name cannot inject shell.
+      - name: Restore the annotated tag object
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          echo "refs/tags/${TAG} is now a '$(git cat-file -t "refs/tags/${TAG}")'"
+
       # ----------------------------------------------------------------------
       # Gate 1 — the tag MUST be a signed, annotated tag verified by the
       # provisioned signer public key.  TESS_SIGNING_PUBKEY is MANDATORY:
@@ -91,8 +105,13 @@ jobs:
             | sudo tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
-      - name: Gate 3 — secret scan (gitleaks, full history)
-        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1
+      # Scans the full history reachable from the tag. Without --log-opts,
+      # gitleaks runs `git log --all`, which also scans every other fetched
+      # branch, so an unrelated branch could fail (or pass) the release.
+      - name: Gate 3 — secret scan (gitleaks, full history of the tag)
+        env:
+          TAG: ${{ github.ref_name }}
+        run: gitleaks git . --config .gitleaks.toml --log-opts="$TAG" --redact --no-banner --exit-code 1
 
       # ----------------------------------------------------------------------
       # Gate 4 — secret-scrub assertion: no vault/secret PATHS may be tracked.
@@ -159,10 +178,40 @@ jobs:
           print(f'OK: vault.registry.json passes --strict schema check.')
           "
 
+      # The release notes are the curated summary of this version's CHANGELOG
+      # section: the text between the release-notes markers inside
+      # '## [<version>]'. Without markers, the whole section is used (capped
+      # below GitHub's body limit). GitHub's generated PR list is appended.
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+          NOTES: ${{ runner.temp }}/release-notes.md
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          python3 - "$VERSION" "$NOTES" <<'PY'
+          import re, sys
+          version, out = sys.argv[1], sys.argv[2]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
+          if not m:
+              body = f"See CHANGELOG.md (no '## [{version}]' section found)."
+              print(f"::warning::no CHANGELOG section for {version}")
+          else:
+              section = m.group(1)
+              c = re.search(r"<!-- release-notes:start -->\n(.*?)<!-- release-notes:end -->", section, re.S)
+              body = (c.group(1) if c else section).strip()
+              if len(body) > 100000:
+                  body = body[:100000] + "\n\n(truncated; full text in CHANGELOG.md)"
+          open(out, "w", encoding="utf-8").write(body + "\n")
+          print(f"release notes: {len(body)} chars")
+          PY
+
       # All gates passed — publish the release. This step only runs because
       # every preceding gate succeeded (steps fail fast), so the release is gated.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: false
