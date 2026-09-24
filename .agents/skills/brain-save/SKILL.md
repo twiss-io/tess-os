@@ -10,9 +10,11 @@ pushed. Only the tool's output proves it.
 
 ## Steps
 
-1. If your runtime has no capture hooks (anything other than Claude Code with
-   project hooks, or Codex after `/hooks` approval), note the conversation first:
+1. If your runtime has no capture hooks and no transcript sweep (anything
+   other than Claude Code, Codex or Gemini CLI), note the conversation first:
    `python3 scripts/brain/tessbrain.py journal note --text "<the operator's words this session, verbatim>"`
+   (add `--speaker <slug>` for another principal). A hand-written note is
+   held for the operator's review; it is never auto-promoted.
 2. `python3 scripts/brain/tessbrain.py status`
 3. Fix what it reports:
    - "unreachable": add a link to the file in its entity `AGENTS.md`

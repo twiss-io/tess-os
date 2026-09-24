@@ -93,12 +93,7 @@ def _inbox_parsers(sub):
     ib.add_parser("verify", help="dry-run the verifier over the inbox").set_defaults(fn=C.cmd_inbox_verify)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="tessbrain.py", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", default=None, help="instance root (default: the repo holding this script)")
-    ap.add_argument("--json", action="store_true", help="machine-readable output")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+def _sync_parser(sub):
     s = sub.add_parser("sync", help="journal + cue pass + verify + promote + index")
     s.add_argument("--runtime", choices=["all", "claude", "codex", "gemini"], default="all")
     s.add_argument("--claude-dir", default=None, help="directory of Claude transcripts (default: this project's)")
@@ -110,6 +105,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-wait", action="store_true", help="skip if another sync holds the lock")
     s.add_argument("--quiet", action="store_true")
     s.set_defaults(fn=C.cmd_sync)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="tessbrain.py", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--root", default=None, help="instance root (default: the repo holding this script)")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    _sync_parser(sub)
     j = sub.add_parser("journal", help="journal tools").add_subparsers(dest="journal_cmd", required=True)
     n = j.add_parser("note", help="note a conversation turn by hand (runtimes without capture hooks)")
     n.add_argument("--text", required=True)

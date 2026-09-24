@@ -15,7 +15,9 @@
 # themselves never do. Exit status = number of failed checks.
 set -u
 RT=${1:?runtime}; S=${2:?scratch dir}
-FW=$(cd "${3:-$(dirname "$0")/../..}" && pwd)
+HERE=$(cd "$(dirname "$0")/../.." && pwd)
+FW=$(cd "${3:-$HERE}" && pwd)
+CT="$HERE/create-tess/bin/create-tess.mjs"  # this checkout's wizard (needs `npm ci` in create-tess/)
 PY=${PY39:-/usr/bin/python3}
 GEM=${GEM:-gemini}
 TOKEN=ghp_$(printf 'Q%.0s' $(seq 1 36))
@@ -48,10 +50,10 @@ EOF
 }
 
 scaffold() {  # $1 = instance dir
-  node "$FW/create-tess/bin/create-tess.mjs" "$1" --yes --operator=Probe --template-source "$FW" \
+  node "$CT" "$1" --yes --operator=Probe --template-source "$FW" \
     </dev/null >"$1.scaffold.log" 2>&1 || { no "scaffold $1 (see $1.scaffold.log)"; return 1; }
   mkdir -p "$1/brain" "$1/memory/projects"
-  cp "$FW/tests/fixtures/brain_learn/brain.json" "$1/brain/brain.json"
+  cp "$HERE/tests/fixtures/brain_learn/brain.json" "$1/brain/brain.json"
   if grep -q 'tessbrain.py' "$1/.claude/settings.json" 2>/dev/null; then echo "wiring: .claude/settings.json (ws-oobe)"
   else settings_local "$1"; echo "wiring: .claude/settings.local.json (spec 9.6 lines)"; fi
   git -C "$1" config user.email probe@example.invalid  # the fixture operator's git_emails: 'probe' is typing
@@ -148,8 +150,8 @@ run_codex_hooks() {  # L6: trusted project + hook bypass flag; capture with no m
 
 ask() {  # $1 runtime, $2 clone, $3 question, $4 output file
   case $1 in
-    claude) (cd "$2" && clean claude -p --no-session-persistence --setting-sources project,local "$3" </dev/null >"$4" 2>&1) ;;
-    codex) (cd "$2" && clean codex exec --ephemeral --ignore-user-config -m gpt-5.5 -s read-only "$3" </dev/null >"$4" 2>&1) ;;
+    claude) (cd "$2" && clean claude -p --no-session-persistence --setting-sources project,local "$3" </dev/null >"$4" 2>"$4.err") ;;
+    codex) (cd "$2" && clean codex exec --ephemeral --ignore-user-config -m gpt-5.5 -s read-only "$3" </dev/null >"$4" 2>"$4.err") ;;
   esac
 }
 
@@ -157,7 +159,9 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
   local D="$S/claude-fx"
   [ -d "$D/brain/journal" ] || { no "(L11) run the claude smoke first"; return; }
   git -C "$D" add brain memory/projects
-  git -C "$D" -c user.name=p -c user.email=p@example.invalid commit -q -m probe || no "(L11) gate refused the probe commit"
+  if ! git -C "$D" diff --cached --quiet; then  # gate hooks run on this commit
+    git -C "$D" -c user.name=p -c user.email=p@example.invalid commit -q -m probe || no "(L11) gate refused the probe commit"
+  fi
   rm -rf "$S/p.git" "$S/zc" "$S/zc0"; git init -q --bare "$S/p.git"
   git -C "$D" push -q --no-verify "$S/p.git" HEAD:main
   git clone -q "$S/p.git" "$S/zc"; git clone -q "$S/p.git" "$S/zc0" && git -C "$S/zc0" checkout -q HEAD~1
@@ -175,7 +179,7 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
     local n=0 q3=0
     grep -qi postgres "$S/l11-$rt-q1.out" && grep -q 'brain/decisions/' "$S/l11-$rt-q1.out" && n=$((n + 1))
     grep -qi bullet "$S/l11-$rt-q2.out" && n=$((n + 1))
-    sed -n '/[A-Za-z]/{p;q;}' "$S/l11-$rt-q3.out" | grep -qiE '^[^A-Za-z]*no\b' && { n=$((n + 1)); q3=1; }
+    sed -n '/[A-Za-z]/{p;q;}' "$S/l11-$rt-q3.out" | grep -qiE '^[^A-Za-z]*no([^A-Za-z]|$)' && { n=$((n + 1)); q3=1; }
     grep -qi 'pricing note' "$S/l11-$rt-q4.out" && n=$((n + 1))
     grep -q 'brain/journal/' "$S/l11-$rt-q5.out" && n=$((n + 1))
     echo "L11 $rt: $n/5 correct (Q3 mandatory: $q3)"
