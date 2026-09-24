@@ -196,3 +196,22 @@ def test_skip_records_personal_layer_and_is_final(tmp_path):
     again = h.onboard(root, "answer", "mode", "--value", "agency", "--quote", "agency")
     assert again.returncode == 3
 
+
+
+def test_answer_refuses_a_later_step_and_names_the_current_fields(tmp_path):
+    root = h.mini_instance(tmp_path)
+    early = h.onboard(root, "answer", "--field", "serves_clients", "--value", "true", "--quote", "x")
+    assert early.returncode == 2 and "interview is at step 1; answer mode first" in early.stderr
+    assert "answer --step 1 --field mode --value agency --quote" in early.stderr, "every error shows an example"
+    assert not (root / "brain" / "brain.json").exists()
+    twice = h.onboard(root, "answer", "answer", "--field", "mode", "--value", "agency", "--quote", "x y")
+    assert twice.returncode == 2 and "two different fields" in twice.stderr
+    assert h.onboard(root, "answer", "--field", "mode", "--value", "agency", "--quote", "my firm").returncode == 0
+    other = h.onboard(root, "answer", "--field", "clients", "--value", "Acme", "--quote", "x")
+    assert other.returncode == 2 and "belongs to step 5, but the interview is at step 2" in other.stderr
+    foreign = h.onboard(root, "answer", "--field", "serves_clients", "--value", "true", "--quote", "x")
+    assert foreign.returncode == 2 and "not asked for mode(s) agency" in foreign.stderr
+    assert h.onboard(root, "answer", "--field", "preset", "--value", "none", "--quote", "none").returncode == 0
+    back = h.onboard(root, "answer", "--field", "mode", "--value", "personal", "--quote", "just me after all")
+    assert back.returncode == 0, "re-answering an earlier step is allowed"
+    assert status(root)["step"] == 3

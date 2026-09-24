@@ -75,6 +75,26 @@ Rules the skill follows: never invent or paraphrase an answer; never fill a
 field the operator did not answer; never record a suggestion, a question or a
 hypothetical as an answer. Re-answering a field overwrites it.
 
+What the CLI enforces, and what it cannot:
+
+- **Enforced (M).** A missing `--quote` is refused. A field from a step the
+  interview has not reached yet is refused (exit 2) with the fields the
+  current step still needs; so is a step-5 field for a mode that was not
+  chosen, and two different field names in one call. Every `answer` error
+  prints a worked example. Re-answering an earlier step is always allowed.
+- **Instruction-dependent (I).** Whether the model asks one question per
+  turn, copies the operator's words verbatim into `--quote`, and tells the
+  operator the truth about what was recorded. In live probes, stronger models
+  (a Claude Sonnet-class model, Codex with gpt-5.5) recorded verbatim answers
+  in order; a small model (Claude Haiku) made malformed calls and once said
+  "recorded" for an answer the CLI had stored under the wrong field. That
+  call is now refused, but a small model can still paraphrase: check
+  `status --json` (or `brain/brain.json`) if in doubt.
+- **Codex, task-first.** When the first message in Codex is a task rather
+  than "hi", asking the onboarding question depends on the model following
+  BOOT (I): in the release smoke it asked in 2 of 3 runs. Say "set up my
+  brain" (or run `scripts/tess codex`) if it does not ask.
+
 `status --json` reports `pending`, `in_progress` (with the step), `complete`,
 `deferred`, `skipped` or `source-repo`, plus `next_question` and the fields
 still `missing`.

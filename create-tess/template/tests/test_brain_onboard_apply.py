@@ -147,6 +147,30 @@ def test_convert_clone_renames_framework_origin(tmp_path):
     assert again.returncode == 3, "only a source-repo clone converts"
 
 
+def test_convert_clone_keeps_a_private_origin_without_a_remote_add_hint(tmp_path):
+    root = h.mini_instance(tmp_path, source_repo=True)
+    h.git(root, "remote", "add", "origin", "git@example.invalid:someone/my-private-brain.git")
+    done = h.onboard(root, "convert-clone", "--yes")
+    assert done.returncode == 0, done.stderr
+    assert h.git(root, "remote").stdout.split() == ["origin"]
+    assert "keep origin (already set to git@example.invalid:someone/my-private-brain.git)" in done.stdout
+    assert "git remote add origin" not in done.stdout
+
+
+def test_add_warns_when_start_here_goes_over_budget(tmp_path):
+    root = h.mini_instance(tmp_path)
+    assert h.onboard_fixture(root, "agency-solo").returncode == 0
+    quiet = h.onboard(root, "add", "client", "Northwind")
+    assert quiet.returncode == 0 and "over its budget" not in quiet.stderr
+    bj = root / "brain" / "brain.json"
+    brain = json.loads(bj.read_text())
+    brain["budgets"]["start_here_lines"] = 10
+    bj.write_text(json.dumps(brain, indent=2) + "\n")
+    loud = h.onboard(root, "add", "client", "Globex")
+    assert loud.returncode == 0, loud.stderr
+    assert "brain/START-HERE.md is" in loud.stderr and "over its budget (10 lines" in loud.stderr
+
+
 def test_learn_tool_runs_as_subprocess_when_present(tmp_path):
     root = h.mini_instance(tmp_path)
     marker = root / "learn-calls.txt"

@@ -44,7 +44,10 @@ def plan(root: Path) -> List[str]:
                                    "yourself, then re-run convert-clone", 3)
         steps.append("rename remote origin -> upstream (%s)" % origin)
     steps.append("write brain/brain.json with onboarding status pending")
-    steps.append("then: create a PRIVATE repository and run `git remote add origin <url>`")
+    if origin and not is_framework(origin, state.FRAMEWORK_REMOTE_PATTERNS):
+        steps.append("keep origin (already set to %s); make sure that repository is PRIVATE" % origin)
+    else:
+        steps.append("then: create a PRIVATE repository and run `git remote add origin <url>`")
     return steps
 
 

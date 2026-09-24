@@ -54,6 +54,7 @@ Rules for answers:
 - Never invent or paraphrase an answer. Never fill a field the operator did not answer: ask again, or offer the default and record it only after they accept (their acceptance is the quote).
 - Never record your own suggestion, a question, or a hypothetical ("maybe", "what if") as their answer.
 - Re-answering a field overwrites it; that is how the operator corrects an answer.
+- Only say "recorded" when the command printed `recorded FIELD = ...`. If it exits non-zero, read its message (it names the fields the current step needs and shows an example), fix the call, and do not tell the operator it was saved.
 
 ## 3. Apply
 

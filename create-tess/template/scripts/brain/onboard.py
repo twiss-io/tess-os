@@ -52,7 +52,19 @@ def cmd_status(root: Path, a) -> int:
     return 0
 
 
+ANSWER_EXAMPLE = 'example: python3 scripts/brain/onboard.py answer --step 1 --field mode --value agency --quote "<the operator\'s exact words>"'
+
+
 def cmd_answer(root: Path, a) -> int:
+    try:
+        return _answer(root, a)
+    except state.BrainError as exc:
+        raise state.BrainError("%s\n%s" % (exc, ANSWER_EXAMPLE), exc.code)
+
+
+def _answer(root: Path, a) -> int:
+    if a.key and a.field and a.key != a.field:
+        raise state.BrainError("two different fields given (%r positional, %r --field); give one" % (a.key, a.field))
     field = a.field or a.key
     if not field:
         raise state.BrainError("answer needs a field (positional or --field)")
@@ -61,6 +73,7 @@ def cmd_answer(root: Path, a) -> int:
         raise state.BrainError("onboarding is already %s; use add / add-mode" % brain["onboarding"]["status"], 3)
     if a.step and answers.FIELD_STEP.get(field) != a.step:
         raise state.BrainError("field %s belongs to step %s, not %s" % (field, answers.FIELD_STEP.get(field), a.step))
+    answers.check_in_order(brain, field)
     entry = answers.record(brain, field, a.value, a.quote, a.runtime, a.session, a.at)
     state.save_brain(root, brain)
     st = state.status_of(root)
@@ -132,6 +145,9 @@ def cmd_add(root: Path, a) -> int:
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
     print("%s %s -> %s (not committed yet: save with the brain-save skill or git)" % (a.kind, a.name, dest))
+    warn = entities.start_here_budget_warning(root, brain)
+    if warn:
+        print(warn, file=sys.stderr)
     return 0
 
 

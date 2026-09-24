@@ -17,6 +17,16 @@ essential, and what v0.2 does with it.
   upgrade-safety and fresh-clone checks ([SECOND_BRAIN.md](SECOND_BRAIN.md)),
   and, when installed, the learning loop (`LEARNING.md`, `RUNTIMES.md`). Rows
   whose action is `rework` or `defer` and are not covered there are v0.2.1+.
+- **v0.2.0 onboarding, as built.** The onboarding CLI is mechanical (M):
+  it refuses an answer without a quote, an answer for a step not reached
+  yet, and `apply` before every step is answered. Running the interview is
+  instruction-dependent (I): whether the model asks one question per turn,
+  records the operator's words verbatim and reports honestly depends on the
+  model (a small model was seen making malformed calls). In Codex, asking
+  the first question when the first message is a task was 2 of 3 runs (I).
+  `brain/START-HERE.md` has a 150-line / 12 KiB budget: `onboard.py add`
+  warns when it is over, and `tessbrain.py lint` (learning loop) is the
+  enforcement point.
 - **Evidence.** The public table keeps the verdicts only. The probe notes
   behind each row stay with the maintainers. A runtime cell is a short verdict
   (what that runtime does with the component), never a quote.
@@ -226,11 +236,11 @@ Essential 2 / useful 5 / optional 0 / cut 3. Reliability proven 4 / likely 0 / u
 
 | Component | Path | CC | CX | GM | AM | Mechanism | Reliability | Essential | Status | v0.2 action | Planned for |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Conversation capture pipeline (every conversation noted) | `(missing; live Tess has kb/conversations/ by hand)` | Stop/SessionEnd/PreCompact provide transcript_path | SessionEnd/Stop hooks | SessionEnd/AfterAgent hooks | Instruction only | mixed | unproven | essential | missing | add | v0.2.0 |
+| Conversation capture pipeline (every conversation noted) | `(missing; the reference instance keeps conversation logs by hand)` | Stop/SessionEnd/PreCompact provide transcript_path | SessionEnd/Stop hooks | SessionEnd/AfterAgent hooks | Instruction only | mixed | unproven | essential | missing | add | v0.2.0 |
 | MISSING: SessionStart unsaved-work warning | (new) SessionStart hook for Claude/.codex/hooks.json/.gemini/settings.json | SessionStart stdout added as context | SessionStart stdout added as developer context | SessionStart supports context injection | n/a | mechanical | unproven | essential | missing | add | v0.2.0 |
 | anti-fabrication-guard.sh | `.claude/hooks/anti-fabrication-guard.sh` | Fires only with a dispatch lock | n/a | n/a | n/a | mechanical | broken | useful | wrong | rework | v0.2.0 + v0.2.1 |
 | Codex hooks (.codex/hooks.json) | `(absent)` | n/a | Codex loads <repo>/.codex/hooks.json or [hooks] in config.toml | n/a | n/a | none | unproven | useful | missing | add | v0.2.0 |
-| Output-path / placement guard | `(missing; live Tess output-path-guard.sh)` | PreToolUse Write\\|Edit | PreToolUse apply_patch | BeforeTool | n/a | mechanical | unproven | useful | missing | defer | v0.2.1+ |
+| Output-path / placement guard | `(missing; the reference instance has a local output-path guard)` | PreToolUse Write\\|Edit | PreToolUse apply_patch | BeforeTool | n/a | mechanical | unproven | useful | missing | defer | v0.2.1+ |
 | utc-local-context.sh | `.claude/hooks/utc-local-context.sh` | UserPromptSubmit, plain stdout reaches the model | n/a | n/a | n/a | mechanical | proven | useful | outdated | rework | v0.2.1+ |
 | vault-dispatch-scan.py | `.claude/hooks/vault-dispatch-scan.py (NOT in .tess/core/hooks, NOT in tess.lock)` | Blocks | n/a | n/a | n/a | mechanical | proven | useful | outdated | rework | v0.2.1+ |
 | dispatch-guard.sh | `.claude/hooks/dispatch-guard.sh` | Fires on every main-session Bash/Edit/Write | n/a | n/a | n/a | mechanical | broken | cut | wrong | cut | v0.2.0 + v0.2.1 |
@@ -315,7 +325,7 @@ Essential 0 / useful 0 / optional 1 / cut 0. Reliability proven 0 / likely 0 / u
 
 | Component | Path | CC | CX | GM | AM | Mechanism | Reliability | Essential | Status | v0.2 action | Planned for |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Saved workflows (.claude/workflows) | `(none in tess-os; live Tess has mission-execution.js, daily-error-report.js, supercane-incident.js)` | Workflow tool only | n/a | n/a | n/a | mechanical | unproven | optional | missing | defer | v0.2.1+ |
+| Saved workflows (.claude/workflows) | `(none in tess-os; saved workflows exist only in private instances)` | Workflow tool only | n/a | n/a | n/a | mechanical | unproven | optional | missing | defer | v0.2.1+ |
 
 ## 8. Config and state files (13)
 

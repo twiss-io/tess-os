@@ -209,6 +209,22 @@ def _parse_preset(text: str, brain: Dict[str, Any]) -> Optional[str]:
 
 # ----------------------------------------------------------- recording ------
 
+def check_in_order(brain: Dict[str, Any], field: str) -> None:
+    """Refuse an answer for a step the interview has not reached (re-answering earlier is fine)."""
+    if field not in FIELD_STEP:
+        raise state.BrainError("unknown field %r; fields: %s" % (field, ", ".join(sorted(FIELD_STEP))))
+    current = next_step(brain)
+    step = FIELD_STEP[field]
+    if step == 5 and field in _all_mode_fields() and "mode" in answered(brain) \
+            and field not in required_fields(5, brain):
+        raise state.BrainError("field %s is not asked for mode(s) %s; step 5 fields: %s"
+                               % (field, ", ".join(modes_of(brain)), ", ".join(required_fields(5, brain))))
+    if step > current:
+        missing = [f for f in required_fields(current, brain) if f not in answered(brain)]
+        raise state.BrainError("field %s belongs to step %d, but the interview is at step %d; answer %s first"
+                               % (field, step, current, ", ".join(missing) or "the current step"))
+
+
 def record(brain: Dict[str, Any], field: str, raw: Any, quote: str, runtime: str = "",
            session: str = "", at: str = "") -> Dict[str, Any]:
     """Store one answer. Re-answering a field overwrites it (same step)."""

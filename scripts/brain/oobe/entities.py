@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import scaffold, state
@@ -179,3 +180,22 @@ def update_mode_line(plan: scaffold.Plan, modes_line: str) -> None:
     if new != text:
         state.atomic_write(path, new)
         plan.actions.append(("updated", START_HERE))
+
+
+def start_here_budget_warning(root: Path, brain: Dict[str, Any]) -> str:
+    """One warning line when brain/START-HERE.md is over its budget, else ''.
+
+    `add` only warns; `tessbrain.py lint` (when installed) is the enforcement point."""
+    path = root / START_HERE
+    if not path.is_file():
+        return ""
+    budgets = dict(state.BUDGETS)
+    budgets.update(brain.get("budgets") or {})
+    data = path.read_bytes()
+    lines, size = data.count(b"\n"), len(data)
+    max_lines, max_bytes = int(budgets["start_here_lines"]), int(budgets["start_here_kib"]) * 1024
+    if lines <= max_lines and size <= max_bytes:
+        return ""
+    return ("warning: %s is %d lines / %d B, over its budget (%d lines / %d B); move rows into "
+            "brain/index/ or consolidate (`python3 scripts/brain/tessbrain.py lint` enforces this)"
+            % (START_HERE, lines, size, max_lines, max_bytes))
