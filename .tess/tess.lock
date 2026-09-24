@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T15:51:29.452252Z'
+  last_updated: '2026-09-24T18:24:10.791660Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -4593,7 +4593,7 @@ files:
   .tess/core/conductor/guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:cf5862a879e6012fdb772b695bf6a05c023ff0a3f9f0fd6bd7d43f378460f1e7
+    base_sha: sha256:3b6094dbd43922c7ea70f07198f0d835f29f78ed952f086ad0d8f4d6dcaa9f0c
     live_path: conductor/guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/hook-testing-protocol.md:

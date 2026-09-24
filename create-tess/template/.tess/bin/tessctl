@@ -7472,48 +7472,7 @@ def cmd_update(args, root: Path) -> None:
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
 
-        _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
-        # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
-        print("\nStep 5-6: plan and apply …")
-        _apply_per_file_resolution(root, lock, dry_run=dry_run)
-
-        # Step 6.5 / A1: ADVANCE CORE — sync staging into .tess/core for all tracked files
-        # that have a staging counterpart.  This must happen AFTER per-file resolution
-        # (merges use the OLD core as base — correct) and BEFORE re-pinning base_sha
-        # (so the pin reflects the new upstream pristine bytes).
-        if not dry_run:
-            print("\nStep 6.5 (A1): advance core from staging …")
-            staging_dir_adv = root / STAGING_DIR
-            advanced = 0
-            for core_key in list(lock.get("files", {}).keys()):
-                staging_src = staging_dir_adv / core_key
-                if not staging_src.exists():
-                    continue
-                if staging_src.is_symlink():
-                    print(f"  WARN  advance core: skip symlink in staging: {core_key}")
-                    continue
-                core_path = root / core_key
-                staging_bytes = staging_src.read_bytes()
-                if core_path.exists() and core_path.read_bytes() == staging_bytes:
-                    continue
-                core_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp_fd_adv, tmp_path_adv = tempfile.mkstemp(
-                    dir=str(core_path.parent), prefix=".tessctl_core_adv_"
-                )
-                try:
-                    with os.fdopen(tmp_fd_adv, "wb") as fh:
-                        fh.write(staging_bytes)
-                    os.replace(tmp_path_adv, str(core_path))
-                except Exception:
-                    try:
-                        os.unlink(tmp_path_adv)
-                    except OSError:
-                        pass
-                    raise
-                advanced += 1
-            print(f"  advanced {advanced} core file(s) from staging")
-
-        # Step 6.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
+        # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
         # lock entry is added at the upstream base_sha.  By live_path:
         #   * null (a core-only render input: template fragments, GEMINI.md.tpl,
@@ -7530,7 +7489,7 @@ def cmd_update(args, root: Path) -> None:
         # (it may be a local edit; doctor keeps flagging it as untracked).  The core
         # write honours manifest never_touch and the write gate's containment and hard
         # guards.  --dry-run/--check print the plan from the staged upstream lock.
-        print("\nStep 6.6 (A2): adopt new upstream files …")
+        print("\nStep 4.6 (A2): adopt new upstream files …")
         if dry_run:
             print("  (dry-run: planned from the upstream tess.lock already in "
                   ".tess/staging/; nothing is written)")
@@ -7695,11 +7654,55 @@ def cmd_update(args, root: Path) -> None:
             print(f"  A2: {len(a2_skipped)} new upstream file(s) NOT adopted (see WARN "
                   f"above); `tessctl doctor` reports what is left untracked")
 
-        # Step 7: RENDER — runs AFTER A1 (core advance) and A2 (new files adopted) so
-        # that CLAUDE.md.tpl, claude-md/ fragments, and settings-core.json are read from
-        # the NEW upstream core.  Rendering before A1 would produce live CLAUDE.md and
-        # .claude/settings.json from the OLD core, leaving them stale by one version and
-        # causing doctor/verify to fail after any release that touches these templates.
+        _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
+        # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
+        print("\nStep 5-6: plan and apply …")
+        _apply_per_file_resolution(root, lock, dry_run=dry_run,
+                                   exclude_keys=frozenset(a2_adopted))
+
+        # Step 6.5 / A1: ADVANCE CORE — sync staging into .tess/core for all tracked files
+        # that have a staging counterpart.  This must happen AFTER per-file resolution
+        # (merges use the OLD core as base — correct) and BEFORE re-pinning base_sha
+        # (so the pin reflects the new upstream pristine bytes).
+        if not dry_run:
+            print("\nStep 6.5 (A1): advance core from staging …")
+            staging_dir_adv = root / STAGING_DIR
+            advanced = 0
+            for core_key in list(lock.get("files", {}).keys()):
+                staging_src = staging_dir_adv / core_key
+                if not staging_src.exists():
+                    continue
+                if staging_src.is_symlink():
+                    print(f"  WARN  advance core: skip symlink in staging: {core_key}")
+                    continue
+                core_path = root / core_key
+                staging_bytes = staging_src.read_bytes()
+                if core_path.exists() and core_path.read_bytes() == staging_bytes:
+                    continue
+                core_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_fd_adv, tmp_path_adv = tempfile.mkstemp(
+                    dir=str(core_path.parent), prefix=".tessctl_core_adv_"
+                )
+                try:
+                    with os.fdopen(tmp_fd_adv, "wb") as fh:
+                        fh.write(staging_bytes)
+                    os.replace(tmp_path_adv, str(core_path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_path_adv)
+                    except OSError:
+                        pass
+                    raise
+                advanced += 1
+            print(f"  advanced {advanced} core file(s) from staging")
+
+
+        # Step 7: RENDER — runs AFTER A2 (Step 4.6, new files adopted), Step 5-6
+        # (per-file apply) and A1 (core advance) so that CLAUDE.md.tpl, claude-md/
+        # fragments, and settings-core.json are read from the NEW upstream core.
+        # Rendering before A1 would produce live CLAUDE.md and .claude/settings.json
+        # from the OLD core, leaving them stale by one version and causing
+        # doctor/verify to fail after any release that touches these templates.
         # HIGH-1: iterates every ENABLED render target (MED-3), not just Claude Code —
         # an upgrade must re-render EVERY enabled harness's artifacts atomically, or a
         # Phase-2+ target goes stale on every `tessctl update` silently.
@@ -7744,6 +7747,14 @@ def cmd_update(args, root: Path) -> None:
                 print(f"  base_sha: all entries already current")
             print(f"  A3: version bumped → {_strip_v} (upstream_ref: {target_ref})")
 
+        # v0.2 fix (Cyra PR #199 medium 2): update must not report success over a
+        # security-tier render output (e.g. CLAUDE.md) that Step 7 left drifted from
+        # core -- a "<!-- MISSING: ... -->" placeholder from a composition race is
+        # exactly this shape. Runs after Step 8 (not right after Step 7) so a real,
+        # legitimate re-pin/version-bump is never left half-applied by an early exit.
+        if not dry_run:
+            _exit_on_kept_security_render_drift(root)
+
         print("\nupdate: complete")
 
     finally:
@@ -7751,17 +7762,29 @@ def cmd_update(args, root: Path) -> None:
             update_lock_path.unlink()
 
 
-def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False) -> None:
+def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
+                               exclude_keys: frozenset = frozenset()) -> None:
     """
     Per-file decision matrix (§5.3):
       ours=live, base=core (pinned), theirs=staging (new version in .tess/staging)
     Uses git merge-file for 3-way merge.
+
+    exclude_keys: core_keys A2 (Step 4.6) already resolved in THIS update run,
+    before this function is called. A2 either wrote the live file itself (a
+    genuinely new path) or deliberately left a differing one in place (a KEEP,
+    doctor reports the drift); its freshly-added lock entry defaults to
+    status core-managed. Without this exclusion, this function's own
+    "core-managed → fast-forward" rule would immediately re-process that same
+    entry and silently overwrite what A2 just decided to keep, in the same
+    run A2 kept it (v0.2 fix, Cyra PR #199 medium 2 follow-on).
     """
     staging_dir = root / STAGING_DIR
     files = lock.get("files", {})
     plan = []
 
     for core_key, attrs in files.items():
+        if core_key in exclude_keys:
+            continue
         live_rel = attrs.get("live_path")
         if not live_rel:
             continue

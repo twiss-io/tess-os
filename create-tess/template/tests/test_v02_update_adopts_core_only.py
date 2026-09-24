@@ -235,14 +235,31 @@ def _claude_install(project, gpg_key, tmp_path, *, status):
 
 
 def test_published_claude_md_survives_a_new_fragment_entry(project, gpg_key, tmp_path, run_cli):
+    """v0.2 fix (Cyra PR #199 medium 2, follow-on): HARD_FLOOR_KEY is tier
+    security (up_lock[HARD_FLOOR_KEY].update(tier="security", ...) above).
+    security_status_unkept() (Cyra fix round 3, tests/test_v02_hard_floor_status.py)
+    already established, before this fix, that user-published never protects a
+    security-tier live path -- doctor/verify/lock --check all FAIL on it until
+    reset or captured+approved. This test originally asserted the opposite
+    (update exits 0, the published edit is the final word) for the identical
+    scenario, which would have made `update` and `doctor` disagree about
+    whether a user-published security-tier CLAUDE.md is safe -- a gap of
+    exactly the kind PR #199 medium 2 flagged. `update` now runs the same
+    check `render` already runs (_exit_on_kept_security_render_drift) and
+    fails loudly instead of reporting success; nothing is reverted, so the
+    operator's own bytes are still live and still the operator's to resolve
+    with `tessctl reset CLAUDE.md` or capture -> approve."""
     _claude_install(project, gpg_key, tmp_path, status="user-published")
     edited = project.read_live("CLAUDE.md") + "\nOPERATOR PUBLISHED EDIT\n"
     project.write_live("CLAUDE.md", edited)
 
     r = run_cli(project.root, "update", "--ref", "v2.1.0")
-    assert r.returncode == 0, f"update failed:\n{r.stdout}\n{r.stderr}"
+    assert r.returncode != 0, f"update should refuse over a security-tier drift:\n{r.stdout}\n{r.stderr}"
+    assert "SECURITY DRIFT" in r.stdout and "CLAUDE.md" in r.stdout, r.stdout
 
-    assert project.read_live("CLAUDE.md") == edited, "update overwrote the published CLAUDE.md"
+    # Nothing is reverted: the operator's own bytes are still live, and A2 still
+    # adopted the new upstream fragment entry (tracked, not left untracked).
+    assert project.read_live("CLAUDE.md") == edited, "update must not silently rewrite the operator's file"
     lock = project.lock()
     statuses = {k: a["status"] for k, a in lock["files"].items() if a["live_path"] == "CLAUDE.md"}
     assert HARD_FLOOR_KEY in statuses
@@ -264,6 +281,68 @@ def test_new_claude_md_fragment_is_pinned_as_upstream_and_rendered(
                      "base_sha": up_lock[HARD_FLOOR_KEY]["base_sha"],
                      "live_path": "CLAUDE.md", "render": "fragment"}
     assert "HARD FLOOR FIXTURE" in project.read_live("CLAUDE.md")
+    assert _untracked_core(project.root, lock) == []
+    for cmd in ("doctor", "verify"):
+        c = run_cli(project.root, cmd)
+        assert c.returncode == 0, f"{cmd} not clean after upgrade:\n{c.stdout}\n{c.stderr}"
+
+
+def test_delete_then_reupdate_composes_claude_md_with_the_full_hard_floor_section(
+        project, gpg_key, tmp_path, run_cli):
+    """v0.2 fix (Cyra PR #199 medium 2): reproduces the exact production bug end
+    to end, matching the real sequence found on the OTA kit scaffold (two
+    `tessctl update` calls, not one).
+
+    Call 1, on a 0.1.4-shaped install: hard-floor.md is on disk, untracked,
+    with OLD content that differs from what upstream now ships (A2 cannot
+    prove it is upstream's, so it is correctly left alone -- this is the
+    ordinary, common case, not the byte-identical one
+    test_new_claude_md_fragment_is_pinned_as_upstream_and_rendered covers).
+    update completes (doctor would report hard-floor.md as an untracked core
+    file, but that alone never blocks update), and its own Step 1 gate seeds
+    a clean `rendered` render_outputs record for CLAUDE.md matching its
+    current, correct, OLD-hard-floor-text composition.
+
+    The operator then follows doctor's own printed remedy for the untracked
+    file: delete it, and re-run `tessctl update` (call 2). This used to
+    corrupt CLAUDE.md instead of fixing it: Step 5-6 composed CLAUDE.md while
+    hard-floor.md was genuinely absent (just deleted), inserting
+    "<!-- MISSING: .tess/core/templates/claude-md/hard-floor.md -->" in place
+    of the whole hard-floor section, because A2 (which adopts the file fresh)
+    ran AFTER Step 5-6, not before. `update` then exited 0 over a
+    security-tier CLAUDE.md left in that state.
+
+    Fails on 436cff7 (the engine PR #199 was approved at) at the
+    MISSING-marker assertion in call 2 below; 436cff7 itself still exits 0
+    there, so the exit-code assertion alone would not have caught it -- this
+    is exactly why the fix also adds the standalone exit-non-zero safety net
+    proven by test_published_claude_md_survives_a_new_fragment_entry above."""
+    OLD_HARD_FLOOR = "HARD FLOOR FIXTURE - OLD, pre-existing 0.1.4-era text\n"
+    up_lock = _claude_install(project, gpg_key, tmp_path, status="core-managed")
+    # _claude_install wrote the const HARD_FLOOR text (byte-identical to what
+    # upstream ships) -- overwrite it with the differing OLD text so this is
+    # the "cannot prove it is upstream's" case, and re-render the live
+    # CLAUDE.md to match (a genuine pre-update install: live == current core).
+    (project.root / HARD_FLOOR_KEY).write_text(OLD_HARD_FLOOR, encoding="utf-8")
+    project.write_live("CLAUDE.md", project.mod.render_claude_md(project.root))
+
+    r1 = run_cli(project.root, "update", "--ref", "v2.1.0")
+    assert r1.returncode == 0, f"update (call 1) failed:\n{r1.stdout}\n{r1.stderr}"
+    assert f"WARN  A2: not adopted {HARD_FLOOR_KEY}" in r1.stdout, r1.stdout
+    lock1 = project.lock()
+    assert HARD_FLOOR_KEY not in lock1["files"], "call 1 must not have adopted the differing file"
+    assert OLD_HARD_FLOOR.strip() in project.read_live("CLAUDE.md")
+
+    # Follow doctor's own printed remedy for the untracked file it ships with.
+    (project.root / HARD_FLOOR_KEY).unlink()
+    r2 = run_cli(project.root, "update", "--ref", "v2.1.0")
+    assert r2.returncode == 0, f"update (call 2) failed:\n{r2.stdout}\n{r2.stderr}"
+
+    claude_md = project.read_live("CLAUDE.md")
+    assert "<!-- MISSING:" not in claude_md, claude_md
+    assert "HARD FLOOR FIXTURE" in claude_md, claude_md
+    lock = project.lock()
+    assert lock["files"][HARD_FLOOR_KEY]["base_sha"] == up_lock[HARD_FLOOR_KEY]["base_sha"]
     assert _untracked_core(project.root, lock) == []
     for cmd in ("doctor", "verify"):
         c = run_cli(project.root, cmd)
