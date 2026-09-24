@@ -11,6 +11,7 @@ SIGNING_GUIDE_MIRROR_PATH = REPO_ROOT / ".tess" / "core" / "conductor" / "verdic
 LOCK_PATH = REPO_ROOT / ".tess" / "tess.lock"
 GENERIC_ADAPTER_PATH = REPO_ROOT / "adapters" / "generic" / "README.md"
 WIZARD_SOURCE_PATH = REPO_ROOT / "create-tess" / "src" / "index.js"
+WIZARD_OUTPUT_PATH = REPO_ROOT / "create-tess" / "src" / "output.js"
 
 
 def test_gate_quickstart_documents_custody_boundary_without_bootstrap_commands():
@@ -115,7 +116,10 @@ def test_verdict_signing_guide_lock_entry_matches_mirror():
 
 
 def test_wizard_source_has_custody_only_first_push_notice():
-    source = WIZARD_SOURCE_PATH.read_text(encoding="utf-8")
+    # printFirstPushNotice lives in output.js (split out of index.js in v0.2.0).
+    source = WIZARD_SOURCE_PATH.read_text(encoding="utf-8") + WIZARD_OUTPUT_PATH.read_text(
+        encoding="utf-8"
+    )
     notice = source.split("function printFirstPushNotice()", 1)[1].split(
         "function printGateStatus", 1
     )[0]
@@ -124,7 +128,8 @@ def test_wizard_source_has_custody_only_first_push_notice():
         "Local scaffold ready; protected production work remains blocked.",
         "first governed push can fail closed",
         "Do not bypass or disable the hook",
-        "escalate to Xavier",
+        "escalate to your project's",
+        "key-custody owner",
         "Local scaffold complete; production protection requires external custody",
     ):
         assert required_text in source

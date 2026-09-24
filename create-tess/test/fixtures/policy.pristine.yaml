@@ -243,9 +243,9 @@ policy:
   # Example shape (commented out — replace with a REAL registered key, never
   # ship a placeholder fingerprint that would silently "verify" nothing):
   #   signoff_keys:
-  #     Xavier:
+  #     Maintainer:
   #       fingerprint: "CCCC2222CCCC2222CCCC2222CCCC2222CCCC2222"
-  #       public_key_file: .tess/keys/signoffs/xavier.asc
+  #       public_key_file: .tess/keys/signoffs/maintainer.asc
   signoff_keys: {}
 
   hard_floor_rules:
