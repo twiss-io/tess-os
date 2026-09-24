@@ -16,4 +16,4 @@ Present the commands grouped as:
 
 **System:** `/initiate` (legacy → `/add-mission`), `/brainstorm`, `/feedback`, `/help`
 
-Orientation reminders: Rule Zero (always dispatch, never execute solo), Telegram is the primary channel for every task, and mission flow is governed by dependency gates (intake → research → crew → review → verification). Full doctrine: [conductor/README.md](../../conductor/README.md).
+Orientation reminders: Rule Zero (always dispatch, never execute solo), progress and results are reported in the active session, and mission flow is governed by dependency gates (intake → research → crew → review → verification). Full doctrine: [conductor/README.md](../../conductor/README.md).

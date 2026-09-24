@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-07-23T21:18:06.158651Z'
+  last_updated: '2026-09-24T10:11:29.906771Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:299fc410d8073a35fd3823f93329cf49ee656ae7917e7ac288a4121cd7dca5d3
+    base_sha: sha256:4b7ec88addd8d7bd56e3fdf6a35306e4e23a016283370fe3046afbdef9209417
     live_path: null
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/personas/chief-of-staff.md:
@@ -87,7 +87,7 @@ files:
   .tess/core/agents-dispatch/amandine.md:
     status: staged
     tier: normal
-    base_sha: sha256:af09bfb85a9675c1e574ea34f8a207f2cb37842ce7bc2fe44b30279612d846e8
+    base_sha: sha256:8aaa0311416bc57027a263909f485b1bf54c5a397d468f1b9335c21234554c02
     live_path: .claude/agents/amandine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/amara.md:
@@ -159,7 +159,7 @@ files:
   .tess/core/agents-dispatch/briony.md:
     status: staged
     tier: normal
-    base_sha: sha256:7892f2b474c247a156b733b36aacc54ead94771e19ab957a8c26fa77869fb2ca
+    base_sha: sha256:e905d9930f251a1524dbac7bb88b226a3edf14f8343cdd95c27f5184ff5e4f66
     live_path: .claude/agents/briony.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/callista.md:
@@ -219,7 +219,7 @@ files:
   .tess/core/agents-dispatch/clio.md:
     status: staged
     tier: normal
-    base_sha: sha256:c05795194a535938670a09609417509ccc29e625363f1dcfb5f2af9f5819eebc
+    base_sha: sha256:efd599ebd508df7f1f0bb4d68c62d5873785cc7be8bf2c8b5965511e5d755266
     live_path: .claude/agents/clio.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/colette.md:
@@ -279,7 +279,7 @@ files:
   .tess/core/agents-dispatch/delphine.md:
     status: staged
     tier: normal
-    base_sha: sha256:684ba94556a9c7280e43ff2c0eac66e6fb8a0cde28a6134161d880312b1915f7
+    base_sha: sha256:7f9b9fdf28602e351b8955104380d10b17bea03e74b1dc69ae78d50b8f15c633
     live_path: .claude/agents/delphine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/domitille.md:
@@ -435,7 +435,7 @@ files:
   .tess/core/agents-dispatch/isadora.md:
     status: staged
     tier: normal
-    base_sha: sha256:067ce6da8f6d9d01019cb47d236936fbfda4d92d7bf8cc612c1f27e12051f0d7
+    base_sha: sha256:c4748d5520190a764d539b73eb5fb91e6dce9d454ce72377dc186c32ed295fcc
     live_path: .claude/agents/isadora.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/iseult.md:
@@ -453,7 +453,7 @@ files:
   .tess/core/agents-dispatch/jessamine.md:
     status: staged
     tier: normal
-    base_sha: sha256:c4dca7342dc8df14d749872b3ea016163acb5efdae9ecdd9925f0af724b8b5c9
+    base_sha: sha256:ccdbe7a9c22e44f0205ede2f4f472439f3c63ffedba79f22a3ae9b9e90539072
     live_path: .claude/agents/jessamine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/josephine.md:
@@ -513,7 +513,7 @@ files:
   .tess/core/agents-dispatch/lucasta.md:
     status: staged
     tier: normal
-    base_sha: sha256:5e2fe7f7571737f52a8cda5ea1ad7bc98542aa254e45ccfbdff42336be311ba7
+    base_sha: sha256:c3478008848bcb98a3bc4fc2ee291af8c1e01accd3ad8a99228dbe0c658a55d9
     live_path: .claude/agents/lucasta.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/lucienne.md:
@@ -549,7 +549,7 @@ files:
   .tess/core/agents-dispatch/marcelline.md:
     status: staged
     tier: normal
-    base_sha: sha256:0c746a4456b6b52548a21e3f9be6c6bf0455f02adec916779c975b18e05957de
+    base_sha: sha256:e2afc5a7d271b8945303e23424ace8f2f36a6abd14624e37c63d29642cd708a7
     live_path: .claude/agents/marcelline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/margot.md:
@@ -603,7 +603,7 @@ files:
   .tess/core/agents-dispatch/nadia.md:
     status: staged
     tier: normal
-    base_sha: sha256:c405a8e3fe22eb0dee78792b3b271659451819d38220cb5da196abe636046588
+    base_sha: sha256:0d33d240c183b58a55921088af392f88c233aedb01ae5e1adf883933fd367683
     live_path: .claude/agents/nadia.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/naomi.md:
@@ -681,7 +681,7 @@ files:
   .tess/core/agents-dispatch/ottilie.md:
     status: staged
     tier: normal
-    base_sha: sha256:e9dad077ef40b2e2636b2d20ac03aba28a78159308454f81a828a383d93f998b
+    base_sha: sha256:ab69e5a71e4df24d961ad59d3436dcb59352dac24d22c4ca2f4252d2037fbef9
     live_path: .claude/agents/ottilie.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/paloma.md:
@@ -753,7 +753,7 @@ files:
   .tess/core/agents-dispatch/roxane.md:
     status: staged
     tier: normal
-    base_sha: sha256:e999af26fc76cfdb76b2c4ebecfbc860a9c783c463e310f58d517d202f71cc1f
+    base_sha: sha256:6900dbb689e01b9f78b5ab34a44a1b7e835526849f837bdf1081f4fe1146469f
     live_path: .claude/agents/roxane.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sabella.md:
@@ -783,13 +783,13 @@ files:
   .tess/core/agents-dispatch/sienna.md:
     status: staged
     tier: normal
-    base_sha: sha256:f114f1739a25a9852b0785afdcb24e3c6310ea69e35ed139151d6b569be6af17
+    base_sha: sha256:17757b04eefd3e6f22b7e46f4c06a3e3948e18919f3a05c414cc003fdc09b22a
     live_path: .claude/agents/sienna.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/simone.md:
     status: staged
     tier: normal
-    base_sha: sha256:1fc7dcbf411ff15e54f29ace877f2bb50e7b1174c0eee279c83ec49e7ca4fc7c
+    base_sha: sha256:02fc98ba3532855842c05cdc430c637d0db7fe47627e43c6da88846d3ccd4fd9
     live_path: .claude/agents/simone.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/sofia.md:
@@ -927,7 +927,7 @@ files:
   .tess/core/agents-dispatch/zara.md:
     status: staged
     tier: normal
-    base_sha: sha256:ce4419840ed5bc1e91f66bae1941456821ba8e378d683885330f5ff6a5081d4a
+    base_sha: sha256:657fccbb98354a617f6d04e2944cbf2e4a96fe3f9310a2df47bc8c4acf08e703
     live_path: .claude/agents/zara.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/zelie.md:
@@ -957,7 +957,7 @@ files:
   .tess/core/agents/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:130eb32ba2bdc030d9cda9056486f81f445639fb8547d1c99de9c720e1829b7d
+    base_sha: sha256:0fe64a8cf4f4be71fa70edb2bea358b86c1c6485a320687e98f70fa4613ef1d3
     live_path: agents/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/ada/README.md:
@@ -1749,7 +1749,7 @@ files:
   .tess/core/agents/clio/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e0344037087c12027637b95be585ea6037c6286fa17b49083348f7cc4d8a4b72
+    base_sha: sha256:b3f8b491c39f5a93a045837910f36d2e37371f6ee84b0d66f155b9abe759d9cf
     live_path: agents/clio/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents/coding-team.md:
@@ -5373,7 +5373,7 @@ files:
   .tess/core/conductor/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:22d14085aaa64d9f879ab351a00815293120dcadbb329accb982c233c2b67260
+    base_sha: sha256:e44aa3e20265b6694a42a99f61dc733b92c5fec68e71c36eee208f35523eaf5e
     live_path: conductor/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/release-process.md:
@@ -5397,13 +5397,13 @@ files:
   .tess/core/conductor/channel-guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:ae625584dae8bf909a7f13a2df46979a3f453bc83aa4125c107d088dd29bc0cb
+    base_sha: sha256:03f8a0fe96d47cb9a98893a6a4663c345d1b6205452bcad6a26d8be4fd51d374
     live_path: conductor/channel-guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/commands.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f61e2f9b4f7494c0e76d8a34244958cfdfe3c097cf96ef590ea3ae0beede26b5
+    base_sha: sha256:f1815ae4ac594b2f13ca200f3a0d1f3f29e8f98e7410d3ccc2d1abddf8d6ec1d
     live_path: conductor/commands.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/cross-guild-coordination.md:
@@ -5427,7 +5427,7 @@ files:
   .tess/core/conductor/doctrine.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f25aa9c318c1eeac940ccc0907449d5daf05e90aea67be6bd2f267d63a62cf88
+    base_sha: sha256:7ea52bc23dfabc775d30bd8d336ecddb5e205eeb4ee472ba6a712ede87ee6bb7
     live_path: conductor/doctrine.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/founders-office.md:
@@ -5439,7 +5439,7 @@ files:
   .tess/core/conductor/guardrails.md:
     status: core-managed
     tier: security
-    base_sha: sha256:42b7e3059373230a5ae2313127c46a90f75346840be117e0ced9818fcd231f18
+    base_sha: sha256:bdb5b3abd5473127a433b4cc70548766d0ff42c7c0ae965abe6c42a8ebad02e8
     live_path: conductor/guardrails.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/hook-testing-protocol.md:
@@ -5475,7 +5475,7 @@ files:
   .tess/core/conductor/orchestra-model.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0c9a750762f5f70c81dc1a90759858b7d4d6440f5abdc4963c0db17e6a1c4e52
+    base_sha: sha256:cd212c9cc69a4483d0f1ee8319b2d0245cbeadd84be2fe3cb0fb21d187fd395a
     live_path: conductor/orchestra-model.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/outcome-orchestrators/README.md:
@@ -5565,7 +5565,7 @@ files:
   .tess/core/conductor/playbooks/l99-merge-discipline.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2a8ce32cd9dc08db3854cf2c3061fef72ef230c572bae06ab0b5ecad468dca1a
+    base_sha: sha256:debfa2083ae9cd45ac422746e14566b9d64e3c226da69d930425cbed47735f92
     live_path: conductor/playbooks/l99-merge-discipline.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/playbooks/product-build-mission.md:
@@ -5595,7 +5595,7 @@ files:
   .tess/core/conductor/subagent-failure-protocol.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:2501d39d8947aaf482be34b2d70242e120e046d123ea8f07ba8ee9b9f00fab02
+    base_sha: sha256:057926b8cc4f5b5fad0c2b0401730824f2e1fe68cb79e228ffb9ed043dce19da
     live_path: conductor/subagent-failure-protocol.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/user-profile.md:
@@ -5610,46 +5610,34 @@ files:
     base_sha: sha256:6123f1730663e0720eaa03a8e1e53d1ca4d35946f30023d615e221f76d5496c6
     live_path: conductor/verification-routing.md
     last_updated: 2026-06-27 10:00:00+00:00
-  .tess/core/hooks/anti-fabrication-guard.sh:
-    status: core-managed
-    tier: normal
-    base_sha: sha256:a1eb9bd3983bd7b1b6f82255232bf69ddc75ea573fce8c7b33b0263308fab9a0
-    live_path: .claude/hooks/anti-fabrication-guard.sh
-    last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:418f6b46bad5898b879ef8ee4b533d26875348270f7a562f454d459cf32082a8
+    base_sha: sha256:01a3de9d026b3361361f2f6e4fcb5aebfb5103829e564cb7f8c9b5a6722c6dea
     live_path: .claude/hooks/dispatch-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/task-lock-clear.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:fad3c32d551421f95ce774a4debd7757446f94b8274e9c27c0cebb4f30c488fc
+    base_sha: sha256:42d23e92380bbb0de76371a02206dce3328e0d6fc9cb738495152d71e0c108d0
     live_path: .claude/hooks/task-lock-clear.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/task-lock-set.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:b5fd6b9c8c99d5d240f87bd87c16faf2bb6a4e09fb8d430cfc6c4dd1e53845dc
+    base_sha: sha256:5ffbd3a042da74aa4a14d60dfa8c6698627d729f3184c64e1658554afdfc3a4a
     live_path: .claude/hooks/task-lock-set.sh
-    last_updated: 2026-06-27 10:00:00+00:00
-  .tess/core/hooks/telegram-format-guard.sh:
-    status: core-managed
-    tier: normal
-    base_sha: sha256:3545c23e19b42d72f4f78067fdf0d105c8c026df4ffd5e64316b5b4a5df79de0
-    live_path: .claude/hooks/telegram-format-guard.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/hooks/utc-local-context.sh:
     status: core-managed
     tier: normal
-    base_sha: sha256:0e7b4ede1ab13bb5085b9cfcfa17f2195de64c1be077a20b53161c324778fa6e
+    base_sha: sha256:f70f6dfc9d791bb330be27e58dca2b3faab74c39f32c8683b850049337e07728
     live_path: .claude/hooks/utc-local-context.sh
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/settings-core.json:
     status: core-managed
     tier: normal
-    base_sha: sha256:07e8e83b4128ab0d33476c92ce7773e5b1e0fa29f92209f7fdc5567cdd98f590
+    base_sha: sha256:c4f1ef592760f28e702fbae60ef86d60051cb4611f6ffebcb5d9733c768e5cf0
     live_path: .claude/settings.json
     render: rendered
     last_updated: 2026-06-27 10:00:00+00:00
@@ -5698,7 +5686,7 @@ files:
   .tess/core/templates/CLAUDE.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:7e6435c61387e71c1c88875ee7e570a4008b78f03c7a3c971617a9fa09d7c1d7
+    base_sha: sha256:7b81187be01b96befac6a84c8e02733e92078e21576e8b35360d306c33339a98
     live_path: CLAUDE.md
     render: template
     last_updated: 2026-06-28 00:00:00+00:00
@@ -5726,14 +5714,14 @@ files:
   .tess/core/templates/claude-md/rule-zero.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d1f67448c46e54cdd8a2115f3e2edd6d44a85ba9fb2f5c13fadff5732560a2bb
+    base_sha: sha256:42aeb825a163406c1d98e13a02887563836ab7a54f2d6c2d87673541475ce3db
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
   .tess/core/templates/claude-md/system-laws.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:004f443b74419dbc358aad9927c742f225a94aa7825abbfa54f827b225b02e3c
+    base_sha: sha256:385987b2c7d38818f3d6113bbf84f18c3aa81c731b82ef1e5ac855de80b6e0f7
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-27 10:00:00+00:00
@@ -5831,7 +5819,7 @@ files:
   .tess/core/commands/add-mission.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:5701cffa2c77612cbb7a4774f3c1f886ee2debda883c5acc27855c01d5b0f13c
+    base_sha: sha256:eaf2182cab6e20c679d76d81c3cf4c070bee82d904192470b92223682b3b718f
     live_path: .claude/commands/add-mission.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/brainstorm.md:
@@ -5843,13 +5831,13 @@ files:
   .tess/core/commands/close.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:634923e372abd92734efac3cc021170dd7895f863bb6b194c6eab6082a8ae155
+    base_sha: sha256:35efd8e29144d4c3c635addef419115c6a6cf8801c25346ca038fc36984cc198
     live_path: .claude/commands/close.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/code-red.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:9c77754164c7a4591ab67d996a595e5c0e068eb6b2753a1213f20b74c6e9f07b
+    base_sha: sha256:02747052e656b96893dc67c4588b24ba424f124f519124c93e91c9753b75a40d
     live_path: .claude/commands/code-red.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/cx-mode.md:
@@ -5867,7 +5855,7 @@ files:
   .tess/core/commands/finalize.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:16f37783291f8b7dbb3db89ee0b9067513be783db568a43d5a3e6f7fa7f32278
+    base_sha: sha256:38cc3c8626293a43286d0edd5f0a2268e922331fec41bcdc13bf11fc3a8f9fd6
     live_path: .claude/commands/finalize.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/founder-mode.md:
@@ -5879,7 +5867,7 @@ files:
   .tess/core/commands/help.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:82cc7b10b0f664573a27ad0ca12218c45e034d873de6b1f27394af8b746c3818
+    base_sha: sha256:54bf91915017f51736d4c35f98cb281ebd73fbe4eb354111061e5c8ffcee0ffc
     live_path: .claude/commands/help.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/commands/initiate.md:
@@ -5975,7 +5963,7 @@ files:
   .tess/core/commands/wake.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:f21afca3599ebbc011425f6db8fcd91539a2977bee39f23f9c53f5ddab46cc46
+    base_sha: sha256:069d9c3d719f2ef32d47cdb0c934eac3c73ef35a7b25c9d536a76fa4ff33b068
     live_path: .claude/commands/wake.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/contracts/README.md:

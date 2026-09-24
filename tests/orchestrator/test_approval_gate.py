@@ -1,5 +1,5 @@
 """Tests for orchestrator.approval_gate.ApprovalGate -- the abstract
-contract every adapter (local, future Telegram/web/CLI) implements."""
+contract every adapter (local, future chat-app/web/CLI) implements."""
 
 from __future__ import annotations
 

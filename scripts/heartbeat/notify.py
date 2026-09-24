@@ -1,22 +1,19 @@
 """Outbound-only notification dispatch for the heartbeat daemon.
 
-Generalized from a Telegram-only, single-operator implementation into a
-pluggable channel selected by `notify.channel` in `heartbeat.config.json`:
+Generalized from a single-operator implementation into a pluggable channel
+selected by `notify.channel` in `heartbeat.config.json`:
 
   - "none"     — default. No-op; always reports as not-sent so callers can
                  still log/inspect what *would* have been sent.
-  - "telegram" — calls Bot API `sendMessage` ONLY, never `getUpdates` or any
-                 long-poll/webhook-registering endpoint (an interactive
-                 Telegram integration may already hold that session's single
-                 getUpdates slot for the same token; a second consumer would
-                 409 and starve it). Bot token is read fresh from the env var
-                 named by `notify.telegram_bot_token_env` on every call
-                 (never cached, never committed) — chat id likewise from
-                 `notify.telegram_chat_id_env`.
   - "webhook"  — generic HTTPS POST of `{"text": message}` to the URL in the
                  env var named by `notify.webhook_url_env` (Slack incoming
                  webhooks and most generic chat-ops webhooks accept this
                  shape as-is).
+
+The base harness itself reports in the active session and needs no external
+channel; this heartbeat notification is an opt-in operator add-on. Any other
+`notify.channel` value (including a chat-service name from an older config)
+is a safe no-op.
 
 A notification failure must never crash the caller — the daemon's per-card
 loop and daily recompile continue regardless; a failed send is logged in the
@@ -50,41 +47,6 @@ class NotifyResult:
         else:
             tag = "FAILED"
         return f"<NotifyResult channel={self.channel!r} {tag}: {self.detail or self.message[:60]!r}>"
-
-
-def _send_telegram(message: str, cfg: config_mod.NotifyConfig) -> NotifyResult:
-    token = os.environ.get(cfg.telegram_bot_token_env)
-    chat_id = os.environ.get(cfg.telegram_chat_id_env)
-    if not token or not chat_id:
-        missing = [
-            name
-            for name, val in (
-                (cfg.telegram_bot_token_env, token),
-                (cfg.telegram_chat_id_env, chat_id),
-            )
-            if not val
-        ]
-        return NotifyResult(
-            sent=False, dry_run=False, channel="telegram", message=message,
-            detail=f"telegram channel selected but env var(s) not set: {', '.join(missing)}",
-        )
-    payload = json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8")
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            ok = 200 <= resp.status < 300
-            return NotifyResult(sent=ok, dry_run=False, channel="telegram", message=message, detail=body[:200])
-    except urllib.error.URLError as exc:
-        return NotifyResult(
-            sent=False, dry_run=False, channel="telegram", message=message,
-            detail=f"Telegram sendMessage failed: {exc}",
-        )
 
 
 def _send_webhook(message: str, cfg: config_mod.NotifyConfig) -> NotifyResult:
@@ -124,8 +86,6 @@ def send(message: str, dry_run: bool, cfg: Optional[config_mod.HeartbeatConfig] 
             sent=False, dry_run=False, channel="none", message=message,
             detail="notify.channel is 'none' — no channel configured, message not sent",
         )
-    if channel == "telegram":
-        return _send_telegram(message, cfg.notify)
     if channel == "webhook":
         return _send_webhook(message, cfg.notify)
 

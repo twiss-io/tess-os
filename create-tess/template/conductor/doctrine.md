@@ -35,17 +35,17 @@ Not every request requires the full gate doctrine. For tightly-scoped, single-do
 - It does not involve strategic decisions, trade-offs, or client-facing deliverables
 - The expected output is concrete and verifiable (a file, a commit, a message)
 
-**Examples:** "Push this commit." "Update this config file." "Send this Telegram message." "Fix this typo." "Add WebSearch to Reid's tools."
+**Examples:** "Push this commit." "Update this config file." "Draft this status update." "Fix this typo." "Add WebSearch to Reid's tools."
 
 **Process:**
 1. Tess identifies the task as simple (criteria above)
 2. Tess dispatches directly to the appropriate specialist agent (brief per [dispatch-brief.md](dispatch-brief.md))
 3. Agent completes and returns
-4. Tess notifies the operator via Telegram
+4. Tess reports the result to the operator in the active session
 
 **What the Simple Task Path skips:** Leah research, Eva team formation, formal mission intake, outcome orchestrator routing.
 
-**What it does NOT skip:** Telegram notification, commit + push + documentation trail (Rules 16/17), dispatch to subagent (Rule Zero), the dispatch-brief contract.
+**What it does NOT skip:** reporting the result in the active session, commit + push + documentation trail (Rules 16/17), dispatch to subagent (Rule Zero), the dispatch-brief contract.
 
 If any criterion is not met, use the full gate doctrine. When in doubt, use the full doctrine.
 

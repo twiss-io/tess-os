@@ -472,7 +472,7 @@ A follow-up integration PR is the natural place to: (a) wire a real
 after approval; (b) point `log_path` at a real deployment's own
 `state/`-equivalent registry instead of this component's local
 `spec-engine/specs/` default sink; (c) decide how a real human approval
-(Telegram button, CLI prompt, etc.) calls `finalize_spec()`; and (d)
+(chat-app button, CLI prompt, etc.) calls `finalize_spec()`; and (d)
 provision a real database and a deploy target for generated apps
 (Phase 2 Epic E4's remaining deliverables).
 

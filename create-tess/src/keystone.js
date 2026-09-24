@@ -47,7 +47,6 @@ export function writeProfile(targetDir, choices) {
     pathway: choices.pathway,
     vibe: choices.vibe,
     starter_path: choices.path,
-    telegram_channel: choices.telegram || null,
     created: new Date().toISOString(),
     wizard_version: choices.wizardVersion || '1.0.0',
   };

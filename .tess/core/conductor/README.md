@@ -25,7 +25,7 @@ Tess interprets the mission, assembles the right crew, coordinates the work, and
 | [output-framework.md](output-framework.md) | Master Mission Output Framework — executive decision memo format for all serious mission syntheses (canonical) |
 | [agent-lifecycle.md](agent-lifecycle.md) | Agent Lifecycle and Governance Framework — portfolio doctrine, status types, creation rules, naming discipline, review cadence |
 | [founders-office.md](founders-office.md) | Founder's Office Operating Doctrine — the operator profile, support modes, challenge principle, output style, zoom logic |
-| [channel-guardrails.md](channel-guardrails.md) | Telegram channel registry and group scoping — client isolation, cross-chat contamination prevention |
+| [channel-guardrails.md](channel-guardrails.md) | Session reporting and client/project isolation — cross-client contamination prevention |
 | [review-output-standards.md](review-output-standards.md) | Severity tiers, closing verdicts, summary lines for all review-mode agents |
 | [dispatch-brief.md](dispatch-brief.md) | Dispatch Brief Contract — 6 required fields for every Agent-tool dispatch, decomposition rule, destructive-ops 3-step pattern |
 | [verification-routing.md](verification-routing.md) | Verification Routing Table — mandatory verifier per output domain for prod-touching/client-facing/externally-visible outputs |

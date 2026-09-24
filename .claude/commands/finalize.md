@@ -21,4 +21,4 @@ Synthesize using the 10-section executive decision memo from [conductor/output-f
 9. Risks to Monitor
 10. Optional Upside
 
-Move the mission to AWAITING DECISION / COMPLETED as appropriate ([conductor/mission-states.md](../../conductor/mission-states.md)). Send the final memo to the operator as a new Telegram reply (not an edit) so his device pings.
+Move the mission to AWAITING DECISION / COMPLETED as appropriate ([conductor/mission-states.md](../../conductor/mission-states.md)). Deliver the final memo to the operator in the active session as one self-contained final result.

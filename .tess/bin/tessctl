@@ -1927,7 +1927,9 @@ def _scaffold_operator_stubs(root: Path) -> None:
             "     Zone: {{OPERATOR_CHANNELS}} in CLAUDE.md.tpl\n"
             "     Flip inject to true and run `tessctl render` to surface this in CLAUDE.md. -->\n"
             "---\nzone: OPERATOR_CHANNELS\ninject: false\n---\n\n"
-            "# Channel Map\n\n[Define Telegram channels here.]\n",
+            "# Channel Map\n\n[Optional. List who can give instructions with authority and which client\n"
+            "or project each scope binds to. Reporting happens in the active session;\n"
+            "external notification channels are optional operator add-ons.]\n",
             encoding="utf-8",
         )
         print(f"  created operator/org-channels.md")

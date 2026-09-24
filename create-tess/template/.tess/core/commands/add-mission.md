@@ -17,4 +17,4 @@ Run the intake-before-anything gate from [conductor/doctrine.md](../../conductor
 
 **Output:** mission brief, outcome type, assigned orchestrator, proposed guild set, state set to FRAMING ([conductor/mission-states.md](../../conductor/mission-states.md)).
 
-Notify the operator via Telegram on dispatch per [conductor/daily-operating-behavior.md](../../conductor/daily-operating-behavior.md). Remember Rule Zero: orchestrate and dispatch — never execute specialist work solo.
+Report each dispatch to the operator in the active session per [conductor/guardrails.md](../../conductor/guardrails.md) Rule 10. Remember Rule Zero: orchestrate and dispatch — never execute specialist work solo.

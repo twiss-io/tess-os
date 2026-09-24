@@ -68,11 +68,11 @@ behalf." It does **not**:
 - scale to multiple distinct human approvers sharing one OS account/CI
   runner (there is exactly one identity per OS account here, on purpose —
   a v1 scoping choice, not an oversight); or
-- replace a real IdP (SSO/OAuth, WebAuthn, a verified Telegram user id
+- replace a real IdP (SSO/OAuth, WebAuthn, a verified chat-app user id
   bound to a bot's own auth, etc.) for a genuinely multi-user production
   deployment.
 
-A production-grade adapter (Telegram, web, CLI-with-real-auth)
+A production-grade adapter (chat-app, web, CLI-with-real-auth)
 implementing `orchestrator.approval_gate.ApprovalGate` is the natural
 next step and is flagged as an open design question for Xavier — not
 built here. See the PR body / README for the full statement.

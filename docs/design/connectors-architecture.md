@@ -723,7 +723,7 @@ is majority-decision, not engineering-default.
    recommendation (§5.1); he may swap or add.
 2. **Post-provider category priority** — which business connectors come
    first in C2 (the vision's candidate list: Sheets/Docs, Slack, Notion,
-   Airtable, HubSpot, email/SMS, GitHub, Supabase, Vercel, Telegram).
+   Airtable, HubSpot, email/SMS, GitHub, Supabase, Vercel, chat apps).
 3. **Verifier-key provisioning for the T3 tier** — whose keys, when.
    Without this act the audited tier stays designed-but-empty, and this
    document says so rather than working around it.

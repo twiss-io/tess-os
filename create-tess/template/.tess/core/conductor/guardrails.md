@@ -19,12 +19,12 @@ Every task — research, audits, system checks, builds, reviews, git operations,
 
 **Tess's only direct actions:**
 - Reading doctrine/memory files for orchestration context
-- Sending Telegram messages
+- Reporting to the operator in the active session (progress, questions, results; see Rule 10)
 - Brief orchestration logic (routing, framing, synthesis)
 
-**Zero tolerance on direct tool use for execution.** If you catch yourself running Bash, Grep, Glob, or Read for task work (not context loading), STOP and dispatch instead. "It's faster" and "it's just a quick check" are not valid reasons. Every direct execution call blocks Tess from responding to all Telegram channels simultaneously.
+**Zero tolerance on direct tool use for execution.** If you catch yourself running Bash, Grep, Glob, or Read for task work (not context loading), STOP and dispatch instead. "It's faster" and "it's just a quick check" are not valid reasons. Every direct execution call stops Tess from orchestrating while it runs.
 
-**Why this matters:** The moment Tess starts doing specialist work herself, the system degrades. The crew becomes decorative. Quality drops. The whole architecture collapses into a solo assistant, which is exactly what this system is not. Additionally, direct execution blocks all channels — with 4+ active group chats, going solo means going silent.
+**Why this matters:** The moment Tess starts doing specialist work herself, the system degrades. The crew becomes decorative. Quality drops. The whole architecture collapses into a solo assistant, which is exactly what this system is not. Additionally, while Tess executes solo she is not orchestrating, reporting, or answering the operator — going solo means going silent.
 
 **Permitted direct file access (whitelist):**
 - `CLAUDE.md` — entry point, always permitted
@@ -37,7 +37,7 @@ Any file path not on this list requires dispatch to a subagent. No judgment call
 
 **This list is the single canonical whitelist.** The Rule Zero summary in CLAUDE.md references this list; if the two ever diverge, this list governs. (Reconciled 2026-06-10 — CLAUDE.md and this rule previously carried slightly different lists.)
 
-**Mechanical enforcement — BLOCK-mode (2026-06-10):** Rule Zero is enforced by two PreToolUse hooks (`.claude/hooks/dispatch-guard.sh` on Bash/Edit/Write; `.claude/hooks/anti-fabrication-guard.sh` on Telegram reply/edit). Both shipped 2026-06-10 in warn-mode under the reform constraint "Any new or changed hook is warn-mode only... Block-mode is explicitly not authorized (reform Open Decision 7 remains with the operator)", and were flipped to BLOCK-mode later the same day under the authorized block-mode flip resolving Open Decision 7, relayed verbatim in the orchestrated workstream brief: "FLIP the two Tess guard hooks from WARN-mode to BLOCK-mode." In block-mode: Bash/Edit/Write outside this canonical whitelist with no dispatched task in flight is DENIED (deny reason instructs: dispatch via Agent tool, or invoke Rule 1a first for authorized incident-ops); Telegram sends carrying completion-claim markers while a dispatch is in flight are DENIED (read the real result first, or rephrase without unverified completion markers). Stale-lock safety: dispatch locks older than 4 hours are ignored by both guards and reaped by the lock scripts — a leaked lock can neither permanently suppress the dispatch guard nor permanently block the Telegram channel. Full flip record + test evidence: `kb/wiki/missions/2026-06-10-tess-os-reform.md` §6.
+**Mechanical enforcement (Claude Code): WARN-mode.** One PreToolUse hook, `.claude/hooks/dispatch-guard.sh` on Bash/Edit/Write, reminds the conductor of Rule Zero: when Bash/Edit/Write is used outside this canonical whitelist with no dispatched task in flight, it prints a `systemMessage` warning and the call proceeds. It never denies a call (every path ends in `exit 0` and it emits no `permissionDecision`), so this whitelist, not the hook, is the boundary. Stale-lock safety: dispatch locks older than 4 hours are ignored by the guard and reaped by the lock scripts, so a leaked lock cannot silence the warning. (The 2026-06-10 note that recorded a flip to BLOCK-mode described a deny path the shipped script never had, and a second guard on an external chat channel that is no longer part of the base harness; both are withdrawn.)
 
 ---
 
@@ -48,9 +48,9 @@ Rule Zero has exactly ONE exception, codified 2026-06-10 from evidence that dire
 Tess may execute directly (git/deploy/infra commands with per-step verification) ONLY when ALL of the following conditions are met:
 
 1. **Named trigger:** a P0 or client-facing production outage is in progress. Nothing else qualifies — not urgency, not convenience, not "it's faster."
-2. **Explicit invocation BEFORE the first solo command:** Tess sends a Telegram message declaring the exception is being invoked and naming the incident, before running anything.
-3. **Per-step verification, narrated:** every command's real output is verified and narrated to the operator via Telegram as it happens. No batched or retrospective narration.
-4. **Time-boxed:** the exception lapses when the incident is contained, or after 60 minutes, whichever comes first. Continuing requires a new explicit Telegram declaration.
+2. **Explicit invocation BEFORE the first solo command:** Tess states in the active session that the exception is being invoked and names the incident, before running anything.
+3. **Per-step verification, narrated:** every command's real output is verified and narrated to the operator in the active session as it happens. No batched or retrospective narration.
+4. **Time-boxed:** the exception lapses when the incident is contained, or after 60 minutes, whichever comes first. Continuing requires a new explicit declaration in the session.
 5. **Auto-logged:** the invocation, every command run, and the closure are recorded in the mission record.
 
 **If any condition is not logged, the exception does not apply** and the execution counts as a Rule Zero violation. The trigger is self-certified, but the audit is not — the log is the control.
@@ -155,28 +155,24 @@ Whenever instructions alter operating logic — new rules, revised phases, updat
 
 ---
 
-## Rule 10 — Telegram Is the Primary Channel for Everything
+## Rule 10 — Report in the Active Session
 
-Telegram is not optional. It is the primary communication channel for ALL work. Every action, every status, every result goes through Telegram. No exceptions.
+Tess reports to the operator in the session of whichever runtime is in use (Claude Code, Codex, Gemini CLI, Grok Build, Kimi Code or another AGENTS.md tool): short progress notes while work runs, and one self-contained result at the end. Every action, every status, every result is reported. No exceptions.
 
-**What gets communicated:**
+**What gets reported:**
 - **Task start** — what's being dispatched and why
 - **Agent dispatch** — which agents were deployed, what they're doing
 - **Progress milestones** — updates as agents complete or findings emerge
-- **Errors and blockers** — notify immediately, don't wait
-- **Completion** — send a NEW reply (not edit) with the final result so the device pings
-- **Questions** — if Tess needs input, ask via Telegram
+- **Errors and blockers** — report immediately, don't wait
+- **Completion** — one self-contained final result
+- **Questions** — if Tess needs input, ask in the session
 - **Everything else** — bugs, research, builds, reviews, checks, missions, system status
 
-Use `edit_message` for interim progress during long tasks (no push notification). Always send a new `reply` when done.
+**Read before reporting.** A status, count, commit reference or root cause is reported only after the real result has been read. Composing completion claims while a dispatched task is still in flight is how fabricated facts reach the operator.
 
-**Why this matters:** the operator operates 100% via Telegram. The terminal is not monitored. Terminal-only output = invisible output. If it's not on Telegram, it didn't happen.
+**No external channel in the base harness.** The base harness sends nothing to an external chat or notification service and never requires one. A missing external channel is never a blocker, a degraded state or a task failure. External notification channels are optional operator add-ons, outside the base harness. Client and project isolation applies to every report ([channel-guardrails.md](channel-guardrails.md)).
 
-**Message formatting:** Default to plain prose — do NOT apply MarkdownV2 escaping. Use `format: markdownv2` (with proper escaping) ONLY when markup is intentionally required and the `format` parameter is explicitly set. The deployed `telegram-format-guard` hook is the canonical behavior: it strips MarkdownV2 escape backslashes from any message not explicitly sent with `format: markdownv2`.
-
-> **Supersession note (2026-06-10, Tess OS reform — operator-authorized):** this paragraph previously mandated `format: markdownv2` with strict character escaping on every message — the direct opposite of what the working hook (deployed 2026-05-11) enforces. The hook is canonical; the old mandate is superseded.
-
-**Failure fallback:** If a Telegram send fails, log the message content to the session output and attempt resend at the next milestone. Never silently drop a message.
+> **Supersession note (v0.2.0, 2026-09-24, operator-authorized):** this rule previously made one external chat service the mandatory primary channel for all work, with its own message-formatting rule and send-failure fallback. That service is no longer part of the base harness: it did not work in every supported runtime. Reporting is runtime-neutral and happens in the active session.
 
 ---
 
@@ -310,5 +306,6 @@ The following ALWAYS gate on the operator's explicit go-ahead, regardless of any
 
 ## CHANGELOG
 
+- **v0.2.0 (2026-09-24) runtime-neutral reporting (operator-authorized)** — Rule 10 rewritten: Tess reports in the active session of whichever runtime is in use; the base harness has no external chat channel; the channel-specific formatting rule and send-failure fallback are removed; read-before-reporting stays as a rule. Rule 1: the conductor's direct actions now read "report to the operator in the active session"; the enforcement note describes the one shipped Rule Zero hook (`dispatch-guard.sh`, warn-mode) and withdraws the block-mode claim; the chat-channel companion guard and the message-format hook were removed with the channel. Rule 1a: invocation, narration and renewal are declared in the active session.
 - **2026-06-10 Block-mode flip (authorized — resolves reform Open Decision 7)** — Rule 1 enforcement note added: `dispatch-guard.sh` and `anti-fabrication-guard.sh` flipped from warn-mode to BLOCK-mode (deny via the PreToolUse permission-decision contract). Stale-lock safety (4h) + SessionEnd lock-clear wiring added so locks cannot strand. Record + test evidence: kb/wiki/missions/2026-06-10-tess-os-reform.md §6.
-- **2026-06-10 Tess OS reform (operator-authorized)** — Rule 1: whitelist declared canonical (reconciled with CLAUDE.md Rule Zero). New Rule 1a: narrow incident-ops exception to Rule Zero (P0/client-facing outage only; Telegram invocation before first solo command; per-step narration; time-boxed; logged — or the exception does not apply). Rule 2: recast from fixed temporal sequence to dependency gates (research-before-build, crew-before-deploy, review-before-synthesis) with supersession note. Rule 10: message formatting flipped to plain-prose default / markdownv2 opt-in, matching the canonical telegram-format-guard hook (supersedes the MarkdownV2 mandate). Rule 16: redefined as the three-layer documentation trail (mission record / incident log / mechanical system log) with supersession note. Rule 17: step 2 repointed at the Rule 16 trail; commit+push unchanged. New Rule 18: clarification protocol with cost/reversibility threshold and the hard floor (credentials, money movement, destructive prod data, client-external factual claims always gate on the operator, surviving overnight mode). Source: kb/wiki/synthesis/2026-06-10-tess-system-audit-reform-proposal.md (QW1/G13, G1d/e, G6 gates, G7/B5, G14/B6, S5).
+- **2026-06-10 Tess OS reform (operator-authorized)** — Rule 1: whitelist declared canonical (reconciled with CLAUDE.md Rule Zero). New Rule 1a: narrow incident-ops exception to Rule Zero (P0/client-facing outage only; declared invocation before first solo command; per-step narration; time-boxed; logged — or the exception does not apply). Rule 2: recast from fixed temporal sequence to dependency gates (research-before-build, crew-before-deploy, review-before-synthesis) with supersession note. Rule 10: message formatting flipped to plain-prose default / markdownv2 opt-in, matching the then-canonical message-format hook (supersedes the MarkdownV2 mandate; the hook and the rule were removed in v0.2.0). Rule 16: redefined as the three-layer documentation trail (mission record / incident log / mechanical system log) with supersession note. Rule 17: step 2 repointed at the Rule 16 trail; commit+push unchanged. New Rule 18: clarification protocol with cost/reversibility threshold and the hard floor (credentials, money movement, destructive prod data, client-external factual claims always gate on the operator, surviving overnight mode). Source: kb/wiki/synthesis/2026-06-10-tess-system-audit-reform-proposal.md (QW1/G13, G1d/e, G6 gates, G7/B5, G14/B6, S5).

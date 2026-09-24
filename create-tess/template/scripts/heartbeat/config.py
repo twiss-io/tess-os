@@ -5,7 +5,7 @@ reference implementation this module was ported from now lives here, loaded
 from a single committed JSON file (`scripts/heartbeat/heartbeat.config.json`)
 with environment-variable overrides for anything secret or deployment-local.
 No secret VALUE is ever read from this file or committed to git — only the
-name of the environment variable that holds it (e.g. `bot_token_env`), per
+name of the environment variable that holds it (e.g. `webhook_url_env`), per
 this project's "never hardcode credentials" rule.
 
 Shipped defaults are deliberately inert:
@@ -47,9 +47,7 @@ def _env_flag(name: str) -> Optional[bool]:
 
 @dataclass
 class NotifyConfig:
-    channel: str = "none"  # "none" | "telegram" | "webhook"
-    telegram_bot_token_env: str = "TESS_MEMORY_TELEGRAM_BOT_TOKEN"
-    telegram_chat_id_env: str = "TESS_MEMORY_TELEGRAM_CHAT_ID"
+    channel: str = "none"  # "none" | "webhook"
     webhook_url_env: str = "TESS_MEMORY_WEBHOOK_URL"
 
 
@@ -112,12 +110,6 @@ def load(config_path: Optional[Path] = None) -> HeartbeatConfig:
     notify_raw = raw.get("notify", {}) or {}
     notify = NotifyConfig(
         channel=notify_raw.get("channel", "none"),
-        telegram_bot_token_env=notify_raw.get(
-            "telegram_bot_token_env", "TESS_MEMORY_TELEGRAM_BOT_TOKEN"
-        ),
-        telegram_chat_id_env=notify_raw.get(
-            "telegram_chat_id_env", "TESS_MEMORY_TELEGRAM_CHAT_ID"
-        ),
         webhook_url_env=notify_raw.get("webhook_url_env", "TESS_MEMORY_WEBHOOK_URL"),
     )
 

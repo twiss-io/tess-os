@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # PreToolUse hook for the dispatch tool (Agent/Task) — records a
-# "dispatch in flight" lock counter so dispatch-guard.sh and
-# anti-fabrication-guard.sh can distinguish tool calls made by dispatched
-# subagents (hooks fire in ALL contexts, per conductor/hook-testing-protocol.md)
+# "dispatch in flight" lock counter so dispatch-guard.sh can distinguish
+# tool calls made by dispatched subagents (hooks fire in ALL contexts, per conductor/hook-testing-protocol.md)
 # from Tess executing solo. Counter handles parallel dispatches.
 # Part of audit reform S1/G1 + S2/G2 (2026-06-10).
 # This hook NEVER blocks anything (always exit 0 on every path).
 #
 # STALE-LOCK SAFETY (block-mode flip, 2026-06-10): locks older than 4 hours
 # (240 min) are stale — pruned here and in task-lock-clear.sh, and IGNORED by
-# both guards. A leaked lock from a crashed session must neither permanently
-# suppress dispatch-guard nor permanently block Telegram sends.
+# dispatch-guard.sh. A leaked lock from a crashed session must not permanently
+# suppress dispatch-guard.
 
 LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
 STALE_MIN=240

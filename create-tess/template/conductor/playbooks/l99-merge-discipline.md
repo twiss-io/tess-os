@@ -73,12 +73,12 @@ If a merged PR introduces **any** regression within 30 minutes — new error ale
 
 ## Audit Trail (mandatory)
 
-Every autonomous merge posts a confirmation to the appropriate ops channel (ClientA group `<channel-id>` or the relevant client channel per [channel-guardrails.md](../channel-guardrails.md)) with:
+Every autonomous merge records a confirmation in the session report and the mission record, scoped to the relevant client per [channel-guardrails.md](../channel-guardrails.md), with:
 - **PR number**
 - **Merge SHA**
 - **One-line description** of what it closed
 
-the operator gets a wave-level Telegram summary at the end (new reply, not an edit, so his device pings).
+The operator gets a wave-level summary at the end, in the active session.
 
 ---
 

@@ -44,6 +44,12 @@ in the wizard.
 
 ## Reproduce it
 
+The committed recording predates v0.2.0: it still shows the wizard's former
+optional chat-channel prompt, which v0.2.0 removed (the base harness reports in
+the active session and needs no external channel). `driver.py` already matches
+the current wizard, so re-running `record-demo.sh` produces a recording without
+that prompt. The recording itself is left unedited, as described above.
+
 ```bash
 pip install asciinema           # or: pipx install asciinema
 (cd create-tess && npm install) # once, if not already done

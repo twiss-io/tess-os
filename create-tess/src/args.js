@@ -23,7 +23,6 @@
 //   overwrite      : --force
 //   skip checks    : --no-doctor / --no-verify
 //   skip gate      : --no-git-init / --no-gate-hooks
-//   telegram       : --telegram=<channel-id>
 
 export const DEFAULTS = {
   operator: 'Operator',
@@ -55,7 +54,6 @@ const VALUE_ALIASES = {
   '--template-ref': 'templateRef',
   '--target': 'target',
   '--dir': 'target',
-  '--telegram': 'telegram',
 };
 
 const BOOL_ALIASES = {
@@ -79,7 +77,6 @@ export function parseArgs(argv) {
     noGitInit: false,
     noGateHooks: false,
     help: false,
-    telegram: null,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
     templateRef: process.env.TESS_TEMPLATE_REF || null,
     target: null,
@@ -110,8 +107,8 @@ export function parseArgs(argv) {
       } else {
         // LOW: don't silently swallow the next flag as this flag's value. A
         // value beginning with '--' is almost certainly the next option (the
-        // user forgot a value); reject it. (A single '-' is allowed so negative
-        // Telegram channel ids like -100… still parse.)
+        // user forgot a value); reject it. (A single '-' is allowed so values
+        // such as negative numeric ids like -100… still parse.)
         const next = argv[i + 1];
         if (next === undefined || next.startsWith('--')) {
           throw new Error(`flag ${token} requires a value`);
@@ -161,7 +158,6 @@ OPTIONS
   --path <founders|builders|operators>   starter squad (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)
                                  chief-of-staff|co-founder|strategist|guide|operator
-  --telegram <channel-id>        optional Telegram channel to wire (default: skipped)
   --target, --dir <path>         target directory (default: cwd)
   --template-source <url|path>   OPT-IN: fetch the Tess OS template from this
                                  git URL or local path instead of the copy

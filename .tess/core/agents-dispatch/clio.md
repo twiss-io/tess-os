@@ -37,7 +37,7 @@ Schema:
 date: YYYY-MM-DD
 time: HH:MM
 client: [Client]
-chat: [chat name + chat_id]
+session: [runtime + session or thread id]
 requester: [user]
 commits: [sha1, sha2]
 status: shipped | in-flight | held | blocked

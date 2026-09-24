@@ -83,8 +83,7 @@ full schema; summary:
 | `model` | `"sonnet"` | Model passed to Tier-2's `claude -p --model`. |
 | `state_dir` | `null` (→ `~/.tess-os/memory-heartbeat/`) | Where the lockfile/state.json/logs live — outside the git repo. Override with `TESS_MEMORY_STATE_DIR`. |
 | `timezone` | `"UTC"` | IANA timezone the "is today's daily recompile due" check runs in. |
-| `notify.channel` | `"none"` | `"none"` \| `"telegram"` \| `"webhook"`. See `notify.py`. |
-| `notify.telegram_bot_token_env` / `telegram_chat_id_env` | env var *names* | Read fresh on every send — never cached, never committed. |
+| `notify.channel` | `"none"` | `"none"` \| `"webhook"`. Any other value is a safe no-op. See `notify.py`. |
 | `notify.webhook_url_env` | env var *name* | Generic HTTPS POST of `{"text": ...}` — compatible with Slack incoming webhooks and most chat-ops webhooks. |
 | `daily_recompile.org_repo_scan` | `[]` | List of GitHub orgs to scan for unregistered work via `gh repo list`. Empty = skipped. |
 | `daily_recompile.memory_project_glob` | `null` | Optional glob for cross-session project-note files (any convention an operator uses). `null` = skipped. |
