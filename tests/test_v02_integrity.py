@@ -123,8 +123,8 @@ def test_untracked_core_file_fails_integrity_commands(project, run_cli, argv):
 # ---------------------------------------------------------------------------
 
 _REAL_TREE_PARTS = (
-    ".tess", ".claude", ".codex", "conductor", "agents", "core", "clients",
-    "prompts", "operator", "CLAUDE.md", "AGENTS.md", "tess.manifest.json",
+    ".tess", ".claude", ".codex", ".agents", ".gemini", "conductor", "agents", "core", "clients",
+    "prompts", "operator", "CLAUDE.md", "AGENTS.md", "GEMINI.md", "tess.manifest.json",
 )
 
 
@@ -182,7 +182,7 @@ _MARKERS = {
     "conductor/guardrails.md": "\nMARKER-GUARDRAILS\n",
     "conductor/doctrine.md": "\nMARKER-DOCTRINE\n",
     "AGENTS.md": "\nMARKER-AGENTS\n",
-    ".codex/prompts/wake.md": "\nMARKER-WAKE-PROMPT\n",
+    ".agents/skills/tess-wake/SKILL.md": "\nMARKER-WAKE-SKILL\n",
     ".codex/config.toml": "\n[mcp_servers.demo]\ncommand = \"demo-mcp\"\n",
 }
 
