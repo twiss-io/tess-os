@@ -1827,6 +1827,8 @@ def report_render_output_results(root: Path, target: str, results: dict,
     for rel, res in sorted(results.items()):
         if isinstance(res, str) and res.startswith("skipped:"):
             by_reason.setdefault(res.split(":", 1)[1], []).append(rel)
+    target_obj = RENDER_TARGETS.get(target) if "RENDER_TARGETS" in globals() else None
+    _report_retired_render_outputs(root, target, target_obj)
     if not by_reason:
         return by_reason
     if manifest is None:
@@ -1835,7 +1837,6 @@ def report_render_output_results(root: Path, target: str, results: dict,
         except SystemExit:
             manifest = {}
     owned = manifest.get("owned_globs", []) or []
-    target_obj = RENDER_TARGETS.get(target) if "RENDER_TARGETS" in globals() else None
     not_owned = by_reason.get("not-owned", [])
     if not_owned:
         globs: dict = {}
@@ -1864,6 +1865,35 @@ def report_render_output_results(root: Path, target: str, results: dict,
             }.get(reason, "")
             print(f"  skip ({reason})  {rel}{hint}")
     return by_reason
+
+
+def _report_retired_render_outputs(root: Path, target: str, target_obj) -> list:
+    """A target may declare outputs it USED to render (retired_paths(), e.g.
+    codex's .codex/prompts/* once skills replace them). Existing retired
+    files are reported, never deleted: they may hold the operator's edits."""
+    fn = getattr(target_obj, "retired_paths", None)
+    if fn is None:
+        return []
+    try:
+        try:
+            retired = fn(root)
+        except TypeError:
+            retired = fn()
+    except Exception:  # noqa: BLE001 — a reporting helper must not break render
+        return []
+    present_set: set = set()
+    for r in (retired or ()):
+        r = str(r)
+        if any(ch in r for ch in "*?["):
+            present_set.update(q.relative_to(root).as_posix() for q in root.glob(r) if q.is_file())
+        elif (root / r).is_file() or os.path.islink(root / r):
+            present_set.add(r)
+    present = sorted(present_set)
+    if present:
+        print(f"  NOTE  {target}: {len(present)} retired output(s) left in place "
+              f"(no longer rendered, not deleted): "
+              + ", ".join(present[:5]) + (" …" if len(present) > 5 else ""))
+    return present
 
 
 def _render_output_edit_home(rel: str) -> str:
