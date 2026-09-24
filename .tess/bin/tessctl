@@ -6561,8 +6561,7 @@ def _approve_entry_keys(lock: dict, core_key: str, live_rel: str) -> list:
     if files.get(core_key, {}).get("live_path") != live_rel:
         return [core_key]
     return [core_key] + [
-        k for k, a in files.items()
-        if k != core_key and a.get("live_path") == live_rel
+        k for k, _a in _entries_for_live_path(lock, live_rel) if k != core_key
     ]
 
 
