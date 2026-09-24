@@ -21,14 +21,16 @@ A review/verification node is a **mandatory predecessor of any externally-visibl
 
 ## Routing Table
 
-| Output domain | Mandatory verifier | What they check | Primary artifacts required |
+| Output domain | Mandatory verifier (role + lens) | What they check | Primary artifacts required |
 |---|---|---|---|
-| Code diff / PR | **Reid** | Logic, security, test coverage, style; severity tiers per [review-output-standards.md](review-output-standards.md) | The actual diff read via Glob/Grep — not Tess's description |
+| Code diff / PR | **Reid** | Logic, security smells, test coverage, style; severity tiers per [review-output-standards.md](review-output-standards.md) | The actual diff read via Glob/Grep — not the conductor's description |
 | Release readiness | **Quinn** | Tests executed and passing (quoted output); edge cases; environment parity | CI run results, actual test output |
-| Security | **Cyra** | Attack surface, auth checks, data isolation, reverse-direction tests | Code read + Bash-executed bypass demonstration where possible |
-| Research / intelligence claims | **Verity** | Assumption inventory, confidence calibration, counter-interpretation | Primary sources — not the research summary |
-| Evidence / source quality | **Maialen** | Source credibility, evidence hierarchy, confidence gap | Original sources |
-| Creative outputs | **Lysandra** | Specificity, coherence, brand alignment, taste | The actual output file |
+| Security, and changes to protected paths | **Cyra** (signs the verdict with `tessctl verdict sign`) | Attack surface, auth checks, data isolation, reverse-direction tests; anything that weakens the gate, lock or hooks | Code read + Bash-executed bypass demonstration where possible |
+| Research / intelligence claims | **Reid** + `verity` lens | Assumption inventory, confidence calibration, counter-interpretation | Primary sources — not the research summary |
+| Evidence / source quality | **Reid** + `maialen` lens | Source credibility, evidence hierarchy, confidence gap | Original sources |
+| Creative outputs | **Reid** + `lysandra` lens (Iris supplies rendered evidence) | Specificity, coherence, brand alignment, taste | The actual output file |
+
+Verifiers are three roles (Reid, Quinn, Cyra, see [roster.md](roster.md)); the domain expertise for research, evidence and creative review comes from the lens loaded into Reid's brief ([lenses/](lenses/README.md)). The verdict schema still accepts the names Verity, Maialen and Lysandra so verdicts signed before v0.2 keep validating; new verdicts are issued by Reid, Quinn or Cyra.
 
 ---
 
@@ -52,12 +54,13 @@ A verifier rejection is a failure of the originating dispatch. It enters the ret
 
 ---
 
-## Why These Six
+## Why Three Roles
 
-The verification-capable agents already exist and their prompts already describe this work; what was missing was mandatory invocation. A deploy that bypassed discretionary review once shipped multiple critical/high security gaps — including a serious access-control regression — to production; mandatory invocation closes that gap. If the operator later opts to promote the guild anchors (Marcelline/Livia/Octavia/Victoria) as the verification layer instead (audit memo Decision 4 option (a)), this table is the seam to update.
+Verification needs isolation (read-only, or tests without source edits) and an accountable signer, not a separate agent per domain. Reid, Quinn and Cyra hold those permissions; lenses carry the domain checklists. A deploy that bypassed discretionary review once shipped multiple critical/high security gaps — including a serious access-control regression — to production; mandatory invocation closes that gap.
 
 ---
 
 ## CHANGELOG
 
 - **2026-06-10 Tess OS reform (operator-authorized)** — File created. Codifies the mandatory verification routing table (Reid/Quinn/Cyra/Verity/Maialen/Lysandra), the mandatory scope (prod-touching, client-facing, externally-visible, irreversible-decision-informing; discretionary otherwise), the primary-artifacts-only verifier brief standard, verdict format per review-output-standards.md, and the failed-verification → retry-protocol wiring. Source: audit memo B3, S3, G3, Decisions 4(b)/8(b).
+- **v0.2 ten-role roster** — Verifiers are the three roles Reid, Quinn and Cyra. Research, evidence and creative verification are Reid with the `verity`, `maialen` or `lysandra` lens. Cyra covers protected-path changes and signs verdicts. Schema enums keep the older names for backward compatibility. See roster.md.

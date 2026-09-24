@@ -8,8 +8,8 @@ npm create tess
 npx create-tess
 ```
 
-You name yourself, choose a world (a narrative skin), pick a starter squad of
-real agents, name your conductor, choose how that conductor talks to you — and
+You name yourself, choose a world (a narrative skin), pick a starter path (every path
+installs the same ten roles; the path picks the suggested expertise lenses), name your conductor, choose how that conductor talks to you — and
 land inside a locally scaffolded Tess OS instance with a first mission open.
 
 `npm create tess` → keystone render → live agent OS.
@@ -35,7 +35,7 @@ land inside a locally scaffolded Tess OS instance with a first mission open.
    and the template's own `.git`), writes `operator/profile.json`, then drives
    the keystone:
    ```
-   tessctl roster apply <path>     # install the starter squad + universal base
+   tessctl roster apply <path>     # install the nine dispatchable roles (same on every path)
    tessctl set-operator <name>     # who the conductor addresses
    tessctl rename <conductor>      # only if conductor != Tess
    tessctl pathway <key>           # the conductor's persona

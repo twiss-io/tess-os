@@ -1,4 +1,7 @@
 # Agent Lifecycle and Governance Framework
+
+> **v0.2 ten-role roster ([roster.md](roster.md)).** The registered roster is fixed at ten roles defined by permissions. The portfolio this doctrine governs is now the **lens library** (`conductor/lenses/`): create, merge and retire lenses under these rules; never add an agent file to cover an expertise gap. Where this file says "agent", read "lens" unless it names one of the nine roles.
+
 ## Tess's Agent Portfolio Doctrine
 
 Tess's agent realm must be governed as a portfolio, not allowed to grow by accumulation.

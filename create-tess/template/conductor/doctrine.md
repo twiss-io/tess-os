@@ -5,6 +5,8 @@ file: doctrine
 
 # Operating Doctrine — Tess
 
+> **v0.2 ten-role roster ([roster.md](roster.md)).** Gates keep their intent; their owners are roles plus lenses. Research gate: Leah (Researcher role). Crew gate: the conductor applies the `eva` lens to pick roles and lenses. Outcome orchestrator routing: the conductor applies the outcome lens. Review: Reid, Quinn or Cyra per verification-routing.md.
+
 Mission flow is governed by **dependency gates**, not a fixed clock. Each node of work (research, team formation, build, review, synthesis) may start as soon as its gates are satisfied — and not before. Independent nodes run in parallel (dispatched in a single message).
 
 > **Supersession note (2026-06-10, Tess OS reform — operator-authorized):** this file previously mandated a fixed six-phase temporal sequence ("Do not skip phases. Do not reorder them."). The phases are recast below as node types with dependency gates. Every gate's intent is preserved at full force: intake still comes first, research still precedes build, crew design still precedes deployment, review still precedes synthesis. What changed is the lockstep timing, not the protection.

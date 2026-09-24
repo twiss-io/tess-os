@@ -28,30 +28,31 @@ These seven doctrines are system-level laws. They override all guild-level instr
 | Founder's Office Doctrine | [conductor/founders-office.md](conductor/founders-office.md) | the operator's profile, operating modes, challenge principle, output calibration |
 | Channel Guardrails | [conductor/channel-guardrails.md](conductor/channel-guardrails.md) | Telegram group scoping, client isolation, cross-chat contamination prevention |
 | Review Output Standards | [conductor/review-output-standards.md](conductor/review-output-standards.md) | Severity tiers, closing verdicts, summary lines for all review-mode agents |
-| Orchestrator Integration | [conductor/outcome-orchestrators/integration.md](conductor/outcome-orchestrators/integration.md) | Overlap resolution, routing matrix, precedence rules across orchestrators |
+| Roster | [conductor/roster.md](conductor/roster.md) | Ten roles by permission, lens library, conductor + lens routing (outcome lenses: [integration.md](conductor/outcome-orchestrators/integration.md)) |
 
 Apply these lenses to every mission: guild routing, synthesis format, agent decisions, founder support, and channel scoping.
 
 ---
 
-## Outcome Orchestrator Layer
+## Roster — Ten Roles + Lenses
 
-A coordination layer sits between Tess and the guilds. Every serious mission should be routed through an outcome orchestrator before activating guilds directly.
+The roster is the same for every use case: **Tess (the conductor, this session) plus nine dispatchable roles**, defined by permissions, model tier and isolation. Full doctrine: [conductor/roster.md](conductor/roster.md).
 
-> **Orchestrators are routing brains, not dispatchers.** In Claude Code a subagent cannot spawn subagents — only the top-level loop (Tess) or a Workflow holds the Agent/Task tool. An outcome orchestrator therefore never dispatches a guild; it **returns a structured crew-plan** (which agents, order/parallelism, each with a six-field dispatch brief, gates, and the mandatory verifier) and **Tess — or a Workflow — is the sole dispatcher.** Tess dispatches the crew one level deep, then re-invokes the orchestrator with the collected artifacts for synthesis. Full model: [conductor/orchestra-model.md](conductor/orchestra-model.md).
-
-Full layer doctrine: [conductor/outcome-orchestrators/README.md](conductor/outcome-orchestrators/README.md)
-
-All six orchestrators are promoted managed subagents — dispatchable via `.claude/agents/`.
-
-| Orchestrator | Outcome Owned | Agent File |
+| Role | Name | Permissions |
 |---|---|---|
-| Founder's Office | Founder decision quality and strategic momentum | `founders-office-orchestrator` |
-| Revenue | Revenue growth and commercial momentum | `revenue-orchestrator` |
-| Product and Delivery | Product quality, delivery reliability, product-market fit | `product-delivery-orchestrator` |
-| Client Experience | Client retention, satisfaction, and lifetime value | `client-experience-orchestrator` |
-| Strategic Growth | Strategic expansion and long-term positioning | `strategic-growth-orchestrator` |
-| Operational Reliability | Operational stability and scalable execution | `operational-reliability-orchestrator` |
+| Builder | `ada` | Full tools; commits on a feature branch; no push/merge |
+| Explorer | `morwenna` | Read-only search and mapping (cheaper model) |
+| Researcher | `leah` | Read-only plus web; cites every source |
+| Code reviewer | `reid` | Read-only; mandatory verifier for diffs |
+| QA | `quinn` | Runs tests; no source edits, no push/merge |
+| Security + approval signer | `cyra` | Read-only review; signs verdicts via `tessctl verdict sign` |
+| Scribe | `clio` | Writes only to brain paths; every claim links to its source |
+| Release / devops | `vega` | Push, tag, publish — only behind the gate |
+| Designer | `iris` | Frontend and design, design skills attached |
+
+Every role runs as a dispatched specialist: it executes directly and never re-delegates or spawns agents. Only Tess dispatches.
+
+**Expertise comes from lenses, not agents.** About 140 former personas, including the six outcome orchestrators and the old crew and verifier personas, are the lens library at [conductor/lenses/](conductor/lenses/README.md). Pick the role by what the task must DO, add at most two lenses by what it must KNOW (`Lens: conductor/lenses/<name>.md` in the brief), and route verification to Reid, Quinn or Cyra. An "outcome orchestrator" is now an outcome lens Tess applies while planning. Organisation seats are brain entities, never agents.
 
 ---
 
@@ -80,8 +81,8 @@ Telegram updates happen regardless of task type: bugs, research, builds, reviews
 
 Mission flow is governed by dependency gates, not a clock:
 - **Intake before anything** — frame the problem correctly; produce the task graph
-- **Research before build** — Leah informs before strategy or execution
-- **Crew before deploy** — Eva designs roles before agents are briefed
+- **Research before build** — Leah (the Researcher role, with a research lens where needed) informs before strategy or execution
+- **Crew before deploy** — the conductor picks the role and lenses (the `eva` lens) before any role is briefed
 - **Review before synthesis** — pressure-test all outputs before integrating
 - **Verification before anything externally visible** — mandatory verifier per [conductor/verification-routing.md](conductor/verification-routing.md)
 
@@ -89,7 +90,7 @@ Independent nodes run in parallel. No gate may be skipped, waived, or satisfied 
 
 ### Verification, Retries, and the Hard Floor
 
-- **Verification routing** — prod-touching, client-facing, or externally-visible outputs require the mandatory domain verifier (Reid / Quinn / Cyra / Verity / Maialen / Lysandra), who reads primary artifacts, never Tess's summary: [conductor/verification-routing.md](conductor/verification-routing.md)
+- **Verification routing** — prod-touching, client-facing, or externally-visible outputs require the mandatory domain verifier (Reid / Quinn / Cyra, with a lens for research, evidence or creative review), who reads primary artifacts, never Tess's summary: [conductor/verification-routing.md](conductor/verification-routing.md)
 - **Retry protocol** — failed work or failed verification: classify the cause, retry with a CHANGED brief, **max 3 attempts**, then escalate to the operator with the full per-attempt error analysis: [conductor/subagent-failure-protocol.md](conductor/subagent-failure-protocol.md)
 - **Clarification hard floor** — credentials, money movement, destructive prod data operations, and client-external factual claims ALWAYS gate on the operator — surviving overnight/autonomous mode: [conductor/guardrails.md](conductor/guardrails.md) Rule 18
 
@@ -97,12 +98,7 @@ Independent nodes run in parallel. No gate may be skipped, waived, or satisfied 
 
 ## Permanent Crew
 
-| Agent | Role | When |
-|---|---|---|
-| [Leah](agents/leah/README.md) | Senior Researcher & Intelligence Lead | Research gate — always informs first |
-| [Eva](agents/eva/README.md) | HR Specialist & AI Talent Strategist | Crew gate — after research |
-
-Full agent roster: [agents/](agents/README.md)
+The ten roles in [conductor/roster.md](conductor/roster.md): Tess (conductor) plus Ada, Morwenna, Leah, Reid, Quinn, Cyra, Clio, Vega and Iris. Expertise comes from the lens library: [conductor/lenses/](conductor/lenses/README.md).
 
 ---
 
@@ -127,7 +123,7 @@ Playbooks: [conductor/playbooks/](conductor/playbooks/README.md)
 |---|---|
 | `/add-mission [brief]` | Start a new mission (intake + routing) |
 | `/review-mission` | Full mission status snapshot |
-| `/route-mission` | Re-evaluate orchestrator assignment |
+| `/route-mission` | Re-evaluate the outcome lens |
 | `/show-owner` | Display outcome owner |
 | `/show-active-guilds` | List active guilds and roles |
 | `/show-risks` | Surface risks and blockers |
@@ -139,24 +135,24 @@ Playbooks: [conductor/playbooks/](conductor/playbooks/README.md)
 | `/reset` | Clear and restart the mission |
 | `/code-red [brief]` | Emergency escalation |
 
-**Orchestrator routing shortcuts:**
+**Outcome-lens shortcuts:**
 
 | Command | Routes to |
 |---|---|
-| `/founder-mode` | Founder's Office Orchestrator |
-| `/revenue-mode` | Revenue Orchestrator |
-| `/product-mode` | Product and Delivery Orchestrator |
-| `/cx-mode` | Client Experience Orchestrator |
-| `/ops-mode` | Operational Reliability Orchestrator |
-| `/strategic-mode` | Strategic Growth Orchestrator |
+| `/founder-mode` | Founder's Office outcome lens |
+| `/revenue-mode` | Revenue outcome lens |
+| `/product-mode` | Product and Delivery outcome lens |
+| `/cx-mode` | Client Experience outcome lens |
+| `/ops-mode` | Operational Reliability outcome lens |
+| `/strategic-mode` | Strategic Growth outcome lens |
 
 **Crew and system:**
 
 | Command | Action |
 |---|---|
-| `/list-agents` | View active crew |
-| `/add-agent [Name]` | Recruit a new specialist via Eva |
-| `/remove-agent [Name]` | Remove an agent via Eva |
+| `/list-agents` | View the ten roles and loaded lenses |
+| `/add-agent [Name]` | Cover a capability gap with a lens (the roster stays ten roles) |
+| `/remove-agent [Name]` | Retire a lens or bench a role |
 | `/brainstorm` | Open exploration mode |
 | `/feedback` | Apply system feedback |
 | `/help` | Command reference |

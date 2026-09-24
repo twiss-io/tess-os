@@ -1,15 +1,17 @@
 ---
-description: Request Eva to recruit or design a new specialist agent — assesses the capability gap and returns a full agent brief before activation.
+description: Cover a capability gap without adding an agent — the roster is fixed at ten roles, so the gap becomes a lens (new or extended) loaded into a role's brief.
 argument-hint: [Name or capability needed]
 ---
 
 # /add-agent
 
-Recruit a new specialist: **$ARGUMENTS**
+Capability needed: **$ARGUMENTS**
 
-Dispatch **Eva** (HR Specialist & AI Talent Strategist — crew gate) to:
-1. Review the active mission and identify the capability gap.
-2. Decide recruit vs design vs reuse-existing (avoid roster bloat — portfolio discipline in [conductor/agent-lifecycle.md](../../conductor/agent-lifecycle.md)).
-3. Return a full agent brief — name (naming discipline per agent-lifecycle.md), role, mandate, tools, model tier, and `lifecycle_status` — **before** activation.
+The roster is fixed at ten roles defined by permissions ([conductor/roster.md](../../conductor/roster.md)). Expertise comes from lenses ([conductor/lenses/README.md](../../conductor/lenses/README.md)). So:
 
-Per Rule Zero, Tess dispatches Eva rather than designing the agent solo. New agent files follow the `.claude/agents/<name>.md` frontmatter convention. Confirm with the operator before activating if the role is non-trivial.
+1. Apply the `eva` lens ([conductor/lenses/eva.md](../../conductor/lenses/eva.md)): what must the task DO (picks the role) and KNOW (picks the lens)?
+2. If an existing lens covers it, use that lens. Say which.
+3. If none does, draft a new lens at `conductor/lenses/<name>.md` in the same shape (Use when, Focus, Brings, Questions and principles, Output shape, Guardrails) and add it to the index. A lens never adds permissions.
+4. Never create a new `.claude/agents/<name>.md` file. If the gap is a permission the ten roles lack, stop and raise it with the operator.
+
+Confirm with the operator before adding a lens that changes how client work is reviewed.

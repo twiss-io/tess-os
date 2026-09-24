@@ -146,7 +146,7 @@ for (const combo of COMBOS) {
       `wizard exited non-zero\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`,
     );
 
-    // (a) starter squad + universal base installed; everything else staged.
+    // (a) the nine roles (universal base) installed on every path.
     const agentsDir = join(target, '.claude', 'agents');
     const installed = readdirSync(agentsDir)
       .filter((f) => f.endsWith('.md'))
@@ -159,10 +159,17 @@ for (const combo of COMBOS) {
     );
     const rl = tessctl(target, 'roster', 'list');
     assert.equal(rl.status, 0, `roster list failed:\n${rl.stderr}`);
+    // v0.2 ten-role roster: every path installs the same nine role files and
+    // nothing is left staged (expertise lives in lenses, not benched agents).
+    assert.deepEqual(
+      installed,
+      ['ada', 'clio', 'cyra', 'iris', 'leah', 'morwenna', 'quinn', 'reid', 'vega'],
+      'every starter path must install exactly the nine dispatchable roles',
+    );
     const staged = rl.stdout.match(/staged \/ benched \((\d+)\)/);
     assert.ok(
-      staged && Number(staged[1]) > 0,
-      `expected the rest of the roster to be staged; got:\n${rl.stdout}`,
+      staged && Number(staged[1]) === 0,
+      `expected no staged agents on a fresh install; got:\n${rl.stdout}`,
     );
 
     // (b) rendered CLAUDE.md addresses the operator by name.

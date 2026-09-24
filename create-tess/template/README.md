@@ -13,7 +13,7 @@ before it shipped.**
 
 Run the wizard and you get a local instance: a conductor you name, one of
 five pathways for how it shows up — Chief of Staff, co-founder, strategist,
-guide, operator — and a crew drawn from a roster of 150 specialists, all
+guide, operator — and a crew of nine roles plus a library of about 140 expertise lenses, all
 running on your own machine, in your own git repo, under an Apache-2.0
 license. Every mission and gate decision leaves a plain-file, hash-chained
 trail under `.tess/state/` that you can read yourself, no proprietary memory
@@ -60,7 +60,7 @@ whether an integration fits a particular workflow.
 ![Tess OS -- create-tess wizard and Agent Receipt demo](docs/demo/tess-demo.svg)
 
 A real, unedited terminal recording, not a mockup. It runs `npm create
-tess`'s five-axis wizard end to end — vibe, operator name, starter squad,
+tess`'s five-axis wizard end to end — vibe, operator name, starter path,
 conductor name, pathway — through the actual post-bake `tessctl
 doctor`/`tessctl verify` checks and the conductor's in-voice arrival
 greeting, then the Agent Receipt "show me the receipt" demo (propose →
@@ -159,7 +159,7 @@ cd my-os
 
 This runs the interactive wizard through five axes: a **vibe** (Guild /
 Tactical / Studio — reskins the language, not the power underneath), your
-**name**, a **starter squad** (`founders` / `builders` / `operators`), your
+**name**, a **starter path** (`founders` / `builders` / `operators`; every path installs the same ten roles and only changes the suggested lenses), your
 **conductor's name**, and how it should **show up in the room** (Chief of
 Staff / Co-founder / Strategist / Guide / Operator). It then bakes the
 instance, runs `tessctl doctor`/`tessctl verify`, and the conductor greets
@@ -218,107 +218,74 @@ live drifts: 0  |  missing live files: 0  |  quarantined: 0  |  doctrine leaks: 
 verify: OK — core integrity confirmed; no security-tier tampering; live matches core
 
 $ ./tessctl roster list
-  installed (7):
-    apolline  athena  eva  founders-office-orchestrator  leah
-    revenue-orchestrator  zelie
+  installed (9):
+    ada  clio  cyra  iris  leah
+    morwenna  quinn  reid  vega
 
-  staged / benched (143):
-    ada  adrienne  alessia  alina  alouette
-    amandine  amara  anais  arielle  aurora
-    ... and 113 more
-
-$ ./tessctl recruit reid
-tessctl recruit: installed 1 agent(s): reid
-  Run `tessctl doctor` to verify.
+  staged / benched (0):
+    (none)
 ```
 
 `doctor` checks every managed file against expected state and flags
 security-tier drift; `verify` checks `.tess/core` bytes against their
 recorded `base_sha` and flags tampering. Neither one makes a branch
 protected — see [Important limits today](#important-limits-today).
-`recruit`/`bench` move an agent between the bench and installed — see
-[The specialist roster](#the-specialist-roster) next.
+`recruit`/`bench` move a role between staged and installed — see
+[The roster](#the-roster-ten-roles-and-a-lens-library) next.
 
-## The specialist roster
+## The roster: ten roles and a lens library
 
-`npm create tess` doesn't hand you an empty framework — it hands you a crew.
-**150 dispatchable specialists in this repository: 144 individual personas**
-(`agents/`) **plus 6 outcome orchestrators**
-(`conductor/outcome-orchestrators/`) that route work across them. Nobody runs
-with all 150 active — each starter path installs a small squad plus a
-universal base (Leah — research, Eva — talent/recruiting) and stages
-everyone else on the bench:
+The roster is the same for every use case (personal, agency, organisation):
+**ten roles, defined by permissions, model tier and isolation, not by
+expertise.** Every starter path installs all of them.
 
-| Path | Squad | Orchestrators |
-|---|---|---|
-| `founders` | Athena — Chief Strategy Officer · Apolline — Chief Sales Strategist · Zélie — Presentation & Deck Design | Founder's Office · Revenue |
-| `builders` | Elena — Product Engineer · Ada — Lead Backend Engineer · Iris — Lead Frontend Engineer · Quinn — QA & Reliability Architect · Reid — Code Quality & Standards | Product & Delivery |
-| `operators` | Adrienne — Chief of Staff & Executive Operations · Evangeline — Chief Customer Experience Strategist · Clio — Session Scribe | Operational Reliability · Client Experience |
+| # | Role | Name | Permissions | Model tier |
+|---|---|---|---|---|
+| 1 | Conductor | Tess (you rename it in the wizard) | The main session: plans, loads lenses, dispatches. Not an agent file. | session model |
+| 2 | Builder | Ada | Full tools; commits on a feature branch; no push or merge | default |
+| 3 | Explorer | Morwenna | Read-only search and mapping | cheaper (haiku) |
+| 4 | Researcher | Leah | Read-only plus web; cites every source | strong |
+| 5 | Code reviewer | Reid | Read-only; mandatory verifier for diffs | strong |
+| 6 | QA | Quinn | Runs tests; no source edits, no push or merge | strong |
+| 7 | Security + approval signer | Cyra | Read-only review; signs verdicts with `tessctl verdict sign` | strong |
+| 8 | Scribe | Clio | Writes only to the brain paths; every claim links to its source | default |
+| 9 | Release / devops | Vega | Push, tag, publish — only behind the gate | default |
+| 10 | Designer | Iris | Frontend and design, with the design skills attached | default |
 
-### From spec to dispatch
+Every dispatched role carries the line *"You are a dispatched specialist:
+execute directly, never re-delegate or spawn agents."* Only the conductor
+dispatches. Claude Code reads the nine role files from `.claude/agents/`; the
+Codex render target compiles the same files to `.codex/agents/<name>.toml`
+(with a `sandbox_mode` taken from each role).
 
-139 of 144 personas live as a 5-file spec under `agents/<name>/`:
-`README.md`, `identity.md`, `personality.md`, `soul.md`, `capabilities.md`.
-That's a floor, not a ceiling: the other 5 carry one or more additional
-files — Leah and Eva each add a `governance.md`, Eva also adds
-`hiring-framework.md` and `agent-profile-template.md`, and Clio, Petra, and
-Reid run leaner (1-2 files each). Once recruited, every persona compiles
-down to a single `.claude/agents/<name>.md` dispatch file: YAML frontmatter
-(`name`, `description`, `model`, `lifecycle_status`, `tools`) plus the
-merged spec body Claude Code actually reads at dispatch time.
+### Lenses
 
-Take Leah, the universal-base researcher installed on every path, as a real
-example. Here's the spec:
+The roster used to be 150 dispatchable personas. About 140 of them
+(strategists, the six outcome orchestrators, Eva, Verity, Maialen, Lysandra
+and the guild specialists) are now **lenses** in `conductor/lenses/` — short
+expertise briefs the conductor adds to a role's dispatch when a task needs
+them (`Lens: conductor/lenses/naomi.md`). A lens never widens a role's
+permissions, and lenses are never registered as agents. Full index:
+[docs/LENSES.md](docs/LENSES.md). The long-form persona specs stay under
+`agents/<name>/` as the lens source.
 
-```
-agents/leah/
-├── README.md         "Leah ensures the team never operates on incomplete,
-│                       shallow, or unchallenged information."
-├── identity.md        who she is, her function, when to call her
-├── personality.md     how she thinks, communicates, works with others
-├── soul.md            what drives her, what she stands for
-├── capabilities.md    the 9-section research-output format, hard constraints
-└── governance.md      core mandate, research protocol, and escalation rules —
-                        the one extra file beyond the 5-file floor (202 lines)
-```
+The starter path only changes which lenses the conductor suggests first:
 
-compiles to `.claude/agents/leah.md`:
+| Path | Suggested lenses |
+|---|---|
+| `founders` | Founder's Office, Revenue, Athena, Apolline, Naomi, Sienna, Zélie |
+| `builders` | Product and Delivery, Elena, Freya, Petra, Selene, Joséphine |
+| `operators` | Operational Reliability, Client Experience, Adrienne, Evangeline, Joséphine, Corinne |
 
-```yaml
----
-name: leah
-description: Senior Researcher & Intelligence Lead. Invoke at the start of
-  every mission, before any other specialist moves. Use whenever the team is
-  operating on thin or untested information...
-model: sonnet
-lifecycle_status: core
-tools: Read, Write, Glob, Grep, WebSearch, WebFetch
----
-```
+Seats in your organisation (a CFO, a client lead) are brain entities, never
+agents. Doctrine: `conductor/roster.md`.
 
-Ada, Lead Backend Engineer on the `builders` squad, is the opposite case: her
-spec under `agents/ada/` is just as complete, but there's no
-`.claude/agents/ada.md` in a fresh `founders`-path install. She's on the
-bench until you recruit her.
+### Staged vs. installed
 
-### Bench vs. active
-
-```console
-$ ./tessctl recruit reid
-tessctl recruit: installed 1 agent(s): reid
-  Run `tessctl doctor` to verify.
-
-$ ./tessctl roster list
-  installed (8):
-    apolline  athena  eva  founders-office-orchestrator  leah
-    reid  revenue-orchestrator  zelie
-```
-
-`recruit` accepts an exact name (`ada`), an orchestrator shorthand (`revenue`
-→ `revenue-orchestrator`), or a whole path group (`founders` → squad +
-orchestrators). `bench` reverses it — moves an agent back to staged and
-removes its live dispatch file. Either way, the underlying spec under
-`agents/<name>/` is untouched; only the compiled, dispatchable copy changes.
+`tessctl roster apply <path>` installs the nine roles. `tessctl bench <name>`
+stages one (removing its live file) and `tessctl recruit <name>` brings it
+back. Benching Reid, Quinn or Cyra removes a mandatory verifier, so do it
+only with a reason.
 
 ## npm and source status
 

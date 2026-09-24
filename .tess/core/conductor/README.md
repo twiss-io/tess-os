@@ -28,6 +28,8 @@ Tess interprets the mission, assembles the right crew, coordinates the work, and
 | [channel-guardrails.md](channel-guardrails.md) | Telegram channel registry and group scoping — client isolation, cross-chat contamination prevention |
 | [review-output-standards.md](review-output-standards.md) | Severity tiers, closing verdicts, summary lines for all review-mode agents |
 | [dispatch-brief.md](dispatch-brief.md) | Dispatch Brief Contract — 6 required fields for every Agent-tool dispatch, decomposition rule, destructive-ops 3-step pattern |
+| [roster.md](roster.md) | Roster — ten roles defined by permissions, the lens library, and conductor + lens routing (v0.2) |
+| [lenses/README.md](lenses/README.md) | Lens library index — about 140 expertise lenses loaded into a role's brief on demand |
 | [verification-routing.md](verification-routing.md) | Verification Routing Table — mandatory verifier per output domain for prod-touching/client-facing/externally-visible outputs |
 | [subagent-failure-protocol.md](subagent-failure-protocol.md) | Typed retry loop — failure states, cause classification, changed-brief requirement, 3-attempt cap, escalation |
 | [hook-testing-protocol.md](hook-testing-protocol.md) | Mandatory safety tests before deploying or changing any hook (incl. subagent safety test) |

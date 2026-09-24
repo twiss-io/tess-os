@@ -1,5 +1,7 @@
 # The Orchestra Model — Conductor, Crew-Plans, and the Single Dispatcher
 
+> **v0.2 ten-role roster ([roster.md](roster.md)).** The roster is now ten roles (the conductor plus nine dispatchable roles) and a lens library; the 150-agent counts below are historical. The single-dispatcher model is unchanged and stricter: only the conductor dispatches, every role executes directly and never re-delegates or spawns agents, and a crew-plan names roles plus lenses.
+
 > System doctrine. Defines how the 150-agent roster (144 persona specs + 6 outcome orchestrators — see [agents/README.md](../agents/README.md)) coordinates under one dispatcher. Resolves the orchestrator dispatch-contradiction: in Claude Code a subagent **cannot** spawn subagents, so an outcome orchestrator cannot "activate crew" — it returns a **crew-plan** that Tess (the main loop) or a **Workflow** dispatches. Composes with [dispatch-brief.md](dispatch-brief.md), [doctrine.md](doctrine.md) gates, and [verification-routing.md](verification-routing.md). Authored 2026-06-27; source defect: `kb/wiki/synthesis/2026-06-26-tess-starter-review.md` §1.3, §4 (the tess-starter review). Roster-count correction (Goal #11, 2026-07): the original count in this doctrine ("~165 agents"; "165 persona specs; 42 dispatchable today") conflated the 165 top-level filesystem entries under `agents/` (144 persona directories + 21 guild/doctrine docs) with persona specs, and predates the 2026-06-27 fix that made every persona dispatch-capable (see §6 below).
 
 ---
