@@ -93,18 +93,21 @@ task_first() {  # task_first <rt> <dir> <prefix> <label>: a real task as the fir
   k=$(count_q1 "$3"); [ "$k" -ge 2 ] && pass "$4 task-first onboarding: $k of 3" || fail "$4 task-first onboarding: $k of 3"
 }
 
-ident_ok() {  # ident_ok <rt> <file>: names Tess, plus the runtime's Tess-specific commands/skills
+ident_ok() {  # ident_ok <rt> <file>: the spec's identity + commands assertion, as written
   grep -q Tess "$2" || return 1
-  if [ "$1" = claude ]; then
+  if [ "$1" = claude ]; then  # O9: 'Tess' and >=2 of /add-mission|/wake|/close|/help|brain-onboard
     [ "$(grep -Eo '/add-mission|/wake|/close|/help|brain-onboard' "$2" | sort -u | wc -l | tr -d ' ')" -ge 2 ]
-  else
-    grep -Eq 'brain-onboard|tess-[a-z]' "$2"
+  else  # O10: 'Tess' AND 'brain-onboard' AND >=1 'tess-' skill (all three, not either)
+    grep -q 'brain-onboard' "$2" && grep -Eq 'tess-[a-z]' "$2"
   fi
 }
 
 identity() {  # identity <rt> <dir> <prefix> <label>: k of 3 single calls
   local i k=0
-  for i in 1 2 3; do "$1_ask" "$2" "$3-$i.txt" "$IDENT"; ident_ok "$1" "$3-$i.txt" && k=$((k + 1)); done
+  for i in 1 2 3; do
+    "$1_ask" "$2" "$3-$i.txt" "$IDENT"
+    if ident_ok "$1" "$3-$i.txt"; then k=$((k + 1)); echo "  run $i: pass"; else echo "  run $i: FAIL ($3-$i.txt)"; fi
+  done
   [ "$k" -ge 2 ] && pass "$4 identity + commands/skills: $k of 3" || fail "$4 identity + commands/skills: $k of 3"
 }
 

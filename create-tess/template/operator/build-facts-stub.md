@@ -23,3 +23,10 @@ inject: true
 - Record: when the operator or another principal listed in `brain/brain.json` decides, prefers, corrects or commits to something, record it with their exact words (skills `brain-decide`, `brain-remember`, when installed). Never invent a quote. Never record your own suggestion, a question or a hypothetical as their decision.
 - Save: new operator files go under `brain/`. Where the file placement rules below say `kb/` or `clients/<Client>/kb/`, use `brain/kb/` or `brain/clients/<slug>/kb/` (the old paths are never committed). Saved = in its owning folder + linked from its START HERE + committed + pushed; before saying "saved", run `python3 scripts/brain/tessbrain.py status` (skill `brain-save`) when that file exists, otherwise check `git status` and `git log @{u}..`.
 - Never put secrets, government IDs, pay, health or HR records, or contract files in `brain/`; write a pointer to where they live.
+
+## Your commands
+When asked what commands or skills you have, name these by their exact names. They are Agent Skills in `.agents/skills/<name>/SKILL.md` (in Codex: `$<name>` or `/skills`):
+- `brain-onboard`: set up or resume the second brain
+- `tess-wake`: start a session; `tess-close`: end one
+- `tess-add-mission`: start a mission; `tess-summary`: status snapshot
+- `tess-help`: the full command list (every `tess-<name>` in `.agents/skills/`)

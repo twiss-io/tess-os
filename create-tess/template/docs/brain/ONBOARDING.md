@@ -94,6 +94,14 @@ What the CLI enforces, and what it cannot:
   than "hi", asking the onboarding question depends on the model following
   BOOT (I): in the release smoke it asked in 2 of 3 runs. Say "set up my
   brain" (or run `scripts/tess codex`) if it does not ask.
+- **Codex, naming its own commands (I).** Codex has no slash-command list
+  for project skills, so `AGENTS.md` carries a short "Your commands" block
+  (from `operator/build-facts-stub.md`) naming `brain-onboard` and the main
+  `tess-*` skills. Before that block, a fresh Codex scaffold named `Tess`,
+  `brain-onboard` and a `tess-` skill in 1 of 3 runs; with it, 6 of 6 (two smoke runs of 3,
+  gpt-5.5, 24 Sep 2026).
+  It is still instruction-dependent: if Codex does not list them, `/skills`
+  or `tess-help` does.
 
 `status --json` reports `pending`, `in_progress` (with the step), `complete`,
 `deferred`, `skipped` or `source-repo`, plus `next_question` and the fields

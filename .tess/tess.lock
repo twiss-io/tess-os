@@ -6096,7 +6096,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:0975045edb321c1b44cb4fd3f0fc3f0851e72a01ea2c30c1749bf11ed783f2a6
+    rendered_sha: sha256:27a066704484de5d368d7d31e440b3c8941a9979ed7b82969982c711b183c06d
   .codex/config.toml:
     target: codex
     status: rendered
