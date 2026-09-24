@@ -95,9 +95,10 @@ Facts for v0.2.0, re-verified on 2026-09-24:
    App-bound `tessctl gate ci`, with strict up-to-date branches and no bypass
    actors. It requires 0 approving reviews, and the GitHub token the build
    agents use has admin rights on the repository.
-3. **The gate is a non-authoritative preview.** The P0 type-swap bypass
-   (the #71 hardening) and the A14 multi-push policy-reduction case are
-   still open, and the merge-admission topology (#76) is undecided.
+3. **The gate is a non-authoritative preview.** The P0 type-swap gate
+   bypass (#71 lineage; its fix #181 is deferred to v0.2.1) and the A14
+   multi-push policy-reduction case are still open, and the merge-admission
+   topology (#76) is undecided.
 4. **The human sign-off registry is empty**, so Rule-18 hard-floor actions
    remain unavailable through repository evidence alone.
 
@@ -138,9 +139,9 @@ and documentation links for each runtime.
 |---|---|---|---|
 | Claude Code | **Enforced** | Reference `claude-code` target: `CLAUDE.md`, `.claude/agents`, `.claude/commands`, and the Tess hooks in `.claude/settings.json`. | The shipped hooks run natively (`dispatch-guard` only warns, by design). The merge gate is still a preview (see [Important limits today](#important-limits-today)). |
 | Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (`$tess-<command>`). | Enforcement is Codex's own sandbox and approval settings from the rendered `.codex/config.toml`, which Codex loads only for a trusted project. No Tess hook runs inside Codex in 0.2.0. The `AGENTS.md` chain is capped at 32 KiB. |
-| Gemini CLI | **Partial** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, and the Tess commands as `/tess:<command>`. | Gemini loads these files only in a trusted folder. No Tess hook, setting or policy is rendered for Gemini in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
+| Gemini CLI | **Advisory** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, and the Tess commands as `/tess:<command>`. | The doctrine and commands load natively, but only in a trusted folder. Nothing Tess ships can block a tool call in Gemini: no Tess hook, setting or policy is rendered for it in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
 | GitHub Copilot CLI, Cursor | **Partial** (through the Claude-compatible files) | No dedicated target. Both read `CLAUDE.md`, `AGENTS.md`, `.claude/agents`, and the Claude hooks. | Not tested by Tess OS. Copilot hook timeouts fail open; Cursor fails open on hook crashes and timeouts. Both load the doctrine twice. |
-| Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro) | **Advisory** | The `AGENTS.md` doctrine text (Aider needs `read: [AGENTS.md]` in its config). | Nothing Tess ships can block a tool call there. |
+| Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro, Qwen Code) | **Advisory** | The `AGENTS.md` doctrine text (Aider needs `read: [AGENTS.md]` in its config). | Nothing Tess ships can block a tool call there. |
 | Cline, Roo Code, and any runtime not listed here | **unverified** | — | Not verified for this release. Using a frontier model, MCP, or an OpenAI-compatible API does not make a runtime supported. |
 
 ## Other surfaces

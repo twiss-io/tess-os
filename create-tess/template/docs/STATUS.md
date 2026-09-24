@@ -35,9 +35,9 @@ to a change whatever tool produced it.
 |---|---|---|
 | Claude Code | **Enforced** | Reference target and driver. The hooks in `.claude/settings.json` run natively (`dispatch-guard` only warns, by design). The merge gate is still a preview (see below). |
 | Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (`$tess-<command>`). Enforcement is Codex's own sandbox and approval settings from the rendered `.codex/config.toml`, loaded only for a trusted project. No Tess hook runs inside Codex in 0.2.0. The `AGENTS.md` chain is capped at 32 KiB. |
-| Gemini CLI | **Partial** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, plus the Tess commands as `/tess:<command>`, loaded only in a trusted folder. No Tess hook, setting or policy is rendered for Gemini in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
+| Gemini CLI | **Advisory** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, plus the Tess commands as `/tess:<command>`. The doctrine and commands load natively, but only in a trusted folder. Nothing Tess ships can block a tool call in Gemini: no Tess hook, setting or policy is rendered for it in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
 | GitHub Copilot CLI, Cursor | **Partial** | No dedicated target. Both read `CLAUDE.md`, `AGENTS.md`, `.claude/agents`, and the Claude hooks. Not tested by Tess OS. Copilot hook timeouts fail open; Cursor fails open on hook crashes and timeouts. Both load the doctrine twice. |
-| Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro) | **Advisory** | Doctrine text only (Aider needs `read: [AGENTS.md]` in its config). |
+| Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro, Qwen Code) | **Advisory** | Doctrine text only (Aider needs `read: [AGENTS.md]` in its config). |
 | Cline, Roo Code, and any runtime not listed here | **unverified** | Not verified for this release. |
 
 The per-runtime evidence is in [Adapter conformance](../adapters/CONFORMANCE.md).
@@ -54,7 +54,7 @@ lifecycle evidence exists for an adapter, not how much it enforces.
 | Auditor pack export + verify (`tessctl audit export`/`verify`) | **Available** | Exports the accountability ledger (+ any caller-supplied Agent Receipts) for a scope into a self-contained, offline-verifiable bundle (`docs/AUDIT_PACK_SPEC.md`). Tamper-evident via the ledger's unsigned hash chain, not cryptographically non-repudiable; does not perform GPG signature verification (delegated to `tools/receipt-verify/`); a `full`-scope export's tail anchor (`.tip`) is asserted so a dropped tail is detected, but a `task`/range-scoped (partial) export still cannot prove no matching event was omitted by the exporter. |
 | Claude Code target and driver | **C3 — managed-adapter preview** | Reference integration; enforcement level **Enforced**. It remains an uncertified preview for protected delivery. |
 | Codex target and driver | **C2 — manual-gated compatibility** | Enforcement level **Partial**. The renderer emits `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (Codex does not load a project `.codex/prompts/` directory). The driver is not live-tested against native event samples and does not have native-parity certification. |
-| Gemini CLI target | **C2 — manual-gated compatibility** | Enforcement level **Partial**, with no live model run. The renderer emits `GEMINI.md` (which imports `AGENTS.md`) and the Tess commands as `/tess:<command>`. It renders no Gemini hooks, settings or policies. There is no Gemini dispatch driver. |
+| Gemini CLI target | **C2 — manual-gated compatibility** | Enforcement level **Advisory**, with no live model run. The renderer emits `GEMINI.md` (which imports `AGENTS.md`) and the Tess commands as `/tess:<command>`. It renders no Gemini hooks, settings or policies. There is no Gemini dispatch driver. |
 | Generic `AGENTS.md` target | **C2 — manual-gated compatibility** | Enforcement level **Advisory** in the host tool. Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
 | `tessctl run` conductor | **Available** | Validates plans, gates, artifacts, retries, and escalation in a sequential execution model. Parallel execution and synthesis remain future work. |
 | MCP server | **Available** | Provider-neutral stdio JSON-RPC with limited read/check tools. MCP connects tools and context; it is not a review or trust-enforcement mechanism. |
@@ -98,9 +98,12 @@ and the build machine's keyring.
    policy-reduction case, is OPEN. The merge-admission topology (#76) is
    undecided. The committed `gate-arena` scorecard reports 12/12 attacks
    blocked; A14 is not part of that score.
-5. **Gemini CLI is Partial, with no live model run.** The v0.2.0 checks
-   cover the rendered files and Gemini CLI commands that need no sign-in.
-   No Gemini model session was run against a Tess install.
+5. **Gemini CLI is Advisory, with no live model run.** The doctrine and
+   the Tess commands load natively, but Tess renders no Gemini hook,
+   setting or policy in 0.2.0, so nothing Tess ships can block a tool call
+   there; the ship gate in git and CI is the only enforcement. The v0.2.0
+   checks cover the rendered files and Gemini CLI commands that need no
+   sign-in. No Gemini model session was run against a Tess install.
 
 ## Production-gate status
 

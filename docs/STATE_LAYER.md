@@ -149,8 +149,7 @@ Phase 0.1 — the fenced store:
 Phase 0.2 — the TASK STORE + ACCOUNTABILITY LEDGER (TASK LEDGER region,
 `.tess/bin/tessctl`, directly below the RUN region — a sibling of the
 MISSION LEDGER region), ported from Hermes' kanban design
-(`kb/wiki/synthesis/2026-07-19-hermes-codebase-fork-study.md` §"their
-kanban"):
+(an internal 2026-07-19 codebase study, §"their kanban"):
 
 - **`tessctl tasks new|set|claim|release|pull|render`** — file-per-task JSON
   at `.tess/state/tasks/<id>.json` (`core/contracts/task.schema.json`,
