@@ -33,7 +33,7 @@ import {
   brokenTemplate,
 } from './force-helpers.js';
 
-const NOT_SUPPORTED = new RegExp(`not supported in create-tess ${PKG_VERSION.replace(/\./g, '\\.')}`);
+const NOT_SUPPORTED = `not supported in create-tess ${PKG_VERSION}`;
 
 test('--force over user content in managed paths plus a symlinked skill: exit 1, tree unchanged, "left clean" only because it is', { timeout: 120000 }, () => {
   const target = mkTemp('ct-force-collide-');
@@ -62,7 +62,7 @@ test('--force over user content in managed paths plus a symlinked skill: exit 1,
   for (const p of ['CLAUDE.md', 'conductor/mine.md', '.claude/agents/custom.md', `.claude/skills/${skill}`]) {
     assert.ok(r.stderr.includes(p), `the refusal must name ${p}${show(r)}`);
   }
-  assert.match(r.stderr, NOT_SUPPORTED);
+  assert.ok(r.stderr.includes(NOT_SUPPORTED), show(r));
 });
 
 test('--force refuses a type conflict (a file where the template needs a directory) and writes nothing', { timeout: 120000 }, () => {
@@ -174,7 +174,7 @@ test('a non-empty, non-Tess dir without --force says adoption is not supported i
   writeFileSync(join(target, 'notes.md'), 'hello\n');
   const r = runCli([`--target=${target}`, ...FLAGS]);
   assert.equal(r.status, 1, show(r));
-  assert.match(r.stderr, NOT_SUPPORTED, show(r));
+  assert.ok(r.stderr.includes(NOT_SUPPORTED), show(r));
   assert.doesNotMatch(r.stderr, /tessctl (adopt|reconfigure)/);
   assert.equal(readFileSync(join(target, 'notes.md'), 'utf8'), 'hello\n');
 });
