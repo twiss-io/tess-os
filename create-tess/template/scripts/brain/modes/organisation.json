@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "mode": "organisation",
+  "summary": "An organisation with a team and roles: direction, seats, units, people, clients, processes and cadence.",
+  "entity_roots": ["brain/org", "brain/org/units/*", "brain/org/clients/*"],
+  "base": [
+    {"template": "modes/organisation/org", "dest": "brain/org",
+     "entity": {"kind": "org", "id": "org", "name": "{{org_name}}"}}
+  ],
+  "kinds": {
+    "unit": {"template": "modes/organisation/unit", "dest": "brain/org/units/{slug}", "entity": true},
+    "client": {"template": "modes/agency/client", "dest": "brain/org/clients/{slug}", "entity": true,
+               "privacy": "limited"},
+    "seat": {"template": "modes/organisation/seat.md", "dest": "brain/org/seats/{slug}.md",
+             "index": "brain/org/AGENTS.md"},
+    "person": {"template": "modes/organisation/person.md", "dest": "brain/org/people/{slug}.md",
+               "index": "brain/org/AGENTS.md"}
+  },
+  "seed": [
+    {"field": "seats", "kind": "seat", "max": 5},
+    {"field": "units", "kind": "unit", "max": 5}
+  ]
+}

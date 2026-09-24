@@ -220,3 +220,15 @@ kb/wiki/synthesis/*
 # ─────────────────────────────────────────────────────────────
 clients/*
 !clients/_template/
+
+# >>> tess-brain (managed by scripts/brain/onboard.py; do not edit inside) >>>
+.private/
+**/.private/
+.tess/state/brain/
+brain/**/repos/
+brain/**/dev.nosync/
+brain/clients/*/admin/*
+!brain/clients/*/admin/README.md
+.obsidian/workspace.json
+.obsidian/workspaces.json
+# <<< tess-brain <<<

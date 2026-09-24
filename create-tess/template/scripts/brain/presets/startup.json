@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "preset": "startup",
+  "base_mode": "organisation",
+  "summary": "1-10 people: founder-ceo, product, growth and operations seats, this quarter's priorities and a 5-row scorecard.",
+  "templates": [
+    {"template": "presets/startup", "dest": "brain"}
+  ],
+  "seats": ["founder-ceo", "product", "growth", "operations"],
+  "suggest_squad": "founders"
+}
