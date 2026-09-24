@@ -4,7 +4,7 @@ description = "Activate Founder's Office routing — optimise for strategic clar
 prompt = '''
 # /founder-mode
 
-Route the active (or next) mission through the **Founder's Office Orchestrator** (`founders-office-orchestrator`). See [conductor/outcome-orchestrators/README.md](conductor/outcome-orchestrators/README.md) and [conductor/founders-office.md](conductor/founders-office.md).
+Plan the active (or next) mission with the **Founder's Office** outcome lens ([conductor/lenses/founders-office-orchestrator.md](conductor/lenses/founders-office-orchestrator.md)): the conductor applies the lens to frame the outcome and bottleneck, then dispatches roles from [conductor/roster.md](conductor/roster.md). The orchestrator is a lens, not an agent. See [conductor/outcome-orchestrators/README.md](conductor/outcome-orchestrators/README.md) and [conductor/founders-office.md](conductor/founders-office.md).
 
 **Optimise for:** strategic clarity, decision quality, leverage, founder-level synthesis. Zoom out first if direction is unclear; compress to execution once the path is set. Apply the challenge principle and output calibration in founders-office.md.
 
