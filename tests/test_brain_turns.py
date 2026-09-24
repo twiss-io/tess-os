@@ -51,14 +51,14 @@ def test_current_turn_quote_is_pending_then_accepted(tmp_path):
     """A decision quoted from the turn being answered verifies against turns.jsonl
     (pending-verification), then becomes accepted once the journal has the line."""
     inst = Path(fxlib.make(str(tmp_path / "fx")))
-    _prompt(inst, "Decision: let's go with Postgres for the ledger.")
-    r = fxlib.cli(inst, "decide", "--no-sync", "--quote", "let's go with Postgres for the ledger",
-                  "--statement", "We will use Postgres for the ledger.")
+    _prompt(inst, "Decision: let's go with Firebird for the widget ledger.")
+    r = fxlib.cli(inst, "decide", "--no-sync", "--quote", "let's go with Firebird for the widget ledger",
+                  "--statement", "We will use Firebird for the widget ledger.")
     out = json.loads(r.stdout)
     assert out["status"] == "pending-verification", out
-    rec = next((inst / "brain/decisions").glob("D-*postgres*.md")).read_text()
+    rec = next((inst / "brain/decisions").glob("D-*firebird*.md")).read_text()
     assert 'source_ref: "turns:1"' in rec
     fxlib.sync_fixture(inst)
-    rec = next((inst / "brain/decisions").glob("D-*postgres*.md")).read_text()
+    rec = next((inst / "brain/decisions").glob("D-*firebird*.md")).read_text()
     assert 'status: "accepted"' in rec and "brain/journal/2026/09/24/1405-claude-11111111.md#L1" in rec
     assert fxlib.cli(inst, "lint").returncode == 0
