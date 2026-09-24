@@ -977,6 +977,7 @@ def _save_operator_profile(root: Path, profile: dict) -> None:
     so it bypasses guarded_write and writes the file directly — matching the
     precedent set by _scaffold_operator_stubs for the same directory.
     """
+    _seed_render_records_before_state_change(root)  # v0.2 eng-b
     op_dir = root / "operator"
     op_dir.mkdir(exist_ok=True)
     profile_path = op_dir / "profile.json"
@@ -1523,6 +1524,984 @@ def path_matches_globs(rel_path: str, globs: list) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# RENDER OUTPUTS (v0.2 eng-b) — per-live-path status + render records.
+#
+# Two problems share this block:
+#
+#   Bug 7 — render destroyed hand edits. Render-generated files (CLAUDE.md,
+#   .claude/settings.json, AGENTS.md, .codex/config.toml, prompts, ...) were
+#   overwritten on every `tessctl render` / `doctor --fix` / `update` Step 7,
+#   because nothing recorded what Tess last wrote there, so a hand edit and a
+#   stale render looked the same. tess.lock now carries an OPTIONAL top-level
+#   section:
+#
+#       render_outputs:
+#         <live rel path>:
+#           target: <render target name that last wrote it>
+#           status: rendered | user-published | locally-modified | held | foreign
+#           rendered_sha: sha256:<bytes Tess last wrote / last saw matching>
+#
+#   Absent is valid (every v0.1.x lock). write_render_output() is the one
+#   write path for render outputs: live == rendered_sha means a stale render
+#   (rewrite it); anything else is a hand edit (keep it, report it).
+#
+#   Bug 8 — several tess.lock entries share one live_path (CLAUDE.md is the
+#   .tpl plus its fragments). Status commands used to act on the FIRST entry
+#   only, so a published CLAUDE.md was still overwritten through the other
+#   entries. _entries_for_live_path() returns all of them and
+#   effective_live_status() folds them into one status (most protective wins).
+#
+# This block never widens the manifest write gate: a render output outside
+# owned_globs is SKIPPED ('skipped:not-owned') and reported with the glob the
+# operator can add; tess.manifest.json is never written.
+# ---------------------------------------------------------------------------
+
+RENDER_OUTPUTS_KEY = "render_outputs"
+
+# Statuses a render_outputs record may carry. 'rendered' = Tess owns the file
+# and last wrote rendered_sha; every other value protects the live bytes.
+RENDER_OUTPUT_RECORD_STATUSES = (
+    "rendered", "user-published", "locally-modified", "held", "foreign",
+)
+
+# Most protective wins when entries sharing a live_path disagree. Higher rank
+# = more protective of the LIVE bytes. quarantined outranks locally-modified
+# on purpose: a quarantined security-tier edit must stay pinned to core until
+# `tessctl approve`, never survive through a sibling entry's weaker status.
+_LIVE_STATUS_RANK = {
+    "core-managed": 0,
+    "staged": 1,
+    "patch-override": 2,
+    "locally-modified": 3,
+    "quarantined": 4,
+    "held": 5,
+    "user-published": 6,
+    "user-created": 7,
+}
+_UNKNOWN_LIVE_STATUS_RANK = 0.5   # unknown: above core-managed, below all known
+
+# Effective status -> write_render_output skip reason. Statuses absent from
+# this map (core-managed, staged, quarantined) let render write: quarantine
+# pins the authoritative core render, exactly as restore does. A quarantined
+# entry also overrides every skip below and the hand-edit check
+# (_live_path_quarantined), so a re-tampered quarantined file is re-pinned.
+_RENDER_SKIP_REASON = {
+    "user-published": "user-published",
+    "locally-modified": "locally-modified",
+    "patch-override": "locally-modified",
+    "held": "held",
+    "foreign": "foreign",
+    "user-created": "foreign",
+}
+
+
+def _entries_for_live_path(lock: dict, rel: str) -> list:
+    """Every tess.lock `files` entry whose live_path is `rel`, as
+    [(core_key, attrs)] in lock order. CLAUDE.md has several (the .tpl plus
+    each fragment); most paths have one; render-only outputs (AGENTS.md,
+    .codex/**) have none."""
+    rel = str(rel).replace(os.sep, "/")
+    files = (lock or {}).get("files") or {}
+    return [(k, a) for k, a in files.items()
+            if isinstance(a, dict) and a.get("live_path") == rel]
+
+
+def _status_rank(status: str) -> float:
+    return _LIVE_STATUS_RANK.get(status, _UNKNOWN_LIVE_STATUS_RANK)
+
+
+def effective_live_status(lock: dict, rel: str) -> str:
+    """The one status that governs the live file at `rel`: the most
+    protective status among ALL tess.lock entries sharing that live_path
+    (bug 8). 'core-managed' when no entry names `rel`. Ties keep lock order."""
+    best = None
+    for _k, attrs in _entries_for_live_path(lock, rel):
+        st = attrs.get("status", "core-managed") or "core-managed"
+        if best is None or _status_rank(st) > _status_rank(best):
+            best = st
+    return best or "core-managed"
+
+
+def _live_path_quarantined(lock: dict, rel: str) -> bool:
+    """True when ANY tess.lock entry sharing `rel` is quarantined. A
+    quarantined security edit stays pinned to the core render until
+    `tessctl approve`, whatever a sibling entry says."""
+    return any((a.get("status") or "") == "quarantined"
+               for _k, a in _entries_for_live_path(lock, rel))
+
+
+def _live_path_is_security(lock: dict, rel: str) -> bool:
+    """True when ANY tess.lock entry sharing `rel` is security-tier (e.g. a
+    `tier: security` CLAUDE.md fragment), or, with no entry, when `rel`
+    itself is a security-tier path. A hand edit to such a file is SECURITY
+    DRIFT: its remedy is capture (quarantine), never publish."""
+    rel = str(rel).replace(os.sep, "/")
+    entries = _entries_for_live_path(lock, rel)
+    if entries:
+        return any(is_security_tier(k, a) for k, a in entries)
+    return is_security_tier(rel, {"live_path": rel})
+
+
+# Render outputs that configure a runtime's ENFORCEMENT: hooks, sandbox and
+# approval policy, and the context file the runtime loads as its rules. A hand
+# edit to one of these can switch enforcement off, so `tessctl publish` never
+# keeps its live bytes (it re-seeds from core, or refuses when the output has
+# no tess.lock entry) and doctor never reclassifies its drift as expected.
+# Local settings belong in the runtime's local override file (for Claude Code:
+# .claude/settings.local.json) or an operator stub.
+ENFORCEMENT_RENDER_OUTPUTS = frozenset({
+    ".claude/settings.json",
+    ".codex/config.toml",
+    "AGENTS.md",
+    "GEMINI.md",
+    ".gemini/settings.json",
+})
+
+
+def is_enforcement_render_output(rel: str) -> bool:
+    """True for a render output that carries runtime enforcement
+    (ENFORCEMENT_RENDER_OUTPUTS)."""
+    return str(rel).replace(os.sep, "/") in ENFORCEMENT_RENDER_OUTPUTS
+
+
+# Statuses that would KEEP a local edit to an enforcement render output
+# (capture, override, hold). They are never honoured on one: `tessctl capture`
+# and `tessctl override` refuse these files, and render/restore/init/update
+# re-pin the core render and clear a status left by an older install.
+ENFORCEMENT_IGNORED_STATUSES = frozenset({"locally-modified", "patch-override", "held"})
+
+
+def _enforcement_stale_statuses(lock: dict, rel: str) -> list:
+    """The capture/override/held statuses recorded on enforcement render
+    output `rel` (tess.lock entries sharing it, and its render_outputs
+    record), sorted. [] for a non-enforcement path."""
+    rel = str(rel).replace(os.sep, "/")
+    if not is_enforcement_render_output(rel):
+        return []
+    found = {(a.get("status") or "") for _k, a in _entries_for_live_path(lock, rel)}
+    rec = render_output_record(lock, rel)
+    if rec is not None:
+        found.add(rec.get("status") or "")
+    return sorted(found & ENFORCEMENT_IGNORED_STATUSES)
+
+
+def _clear_enforcement_stale_statuses(lock: dict, rel: str) -> list:
+    """Reset every capture/override/held status on enforcement render output
+    `rel` (entries -> core-managed, record -> rendered). Mutates `lock`;
+    returns the statuses cleared."""
+    stale = _enforcement_stale_statuses(lock, rel)
+    if not stale:
+        return []
+    for _k, a in _entries_for_live_path(lock, rel):
+        if (a.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES:
+            a["status"] = "core-managed"
+            for _f in ("captured_at", "captured_by", "override_diff", "override_recorded_at"):
+                a.pop(_f, None)
+    rec = render_output_record(lock, rel)
+    if rec is not None and (rec.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES:
+        rec["status"] = "rendered"
+    return stale
+
+
+ENFORCEMENT_BYPASS_MARKER = "ENFORCEMENT BYPASS"
+
+
+def _enforcement_output_owned(lock: dict, rel: str) -> bool:
+    """True for a runtime-enforcement render output Tess owns: it has a
+    render_outputs record or a tess.lock entry, or the lock is a v0.1.x lock
+    (no render_outputs yet). render re-pins such a file whatever its bytes
+    (user-published aside); only a truly foreign file is kept."""
+    return is_enforcement_render_output(rel) and (
+        render_output_record(lock, rel) is not None
+        or bool(_entries_for_live_path(lock, rel))
+        or _is_legacy_render_lock(lock))
+
+
+def _refuse_enforcement_status_change(cmd: str, rel: str) -> None:
+    """capture / override on an enforcement render output: refused (exit 1)."""
+    sys.exit(f"tessctl {cmd}: {rel} is runtime-enforcement config rendered by Tess; "
+             f"`tessctl {cmd}` would keep a local edit to it (e.g. stripped hooks) through "
+             f"every render. Refused. Put the change in {_enforcement_edit_home(rel)}, then "
+             f"run `tessctl render` to restore {rel}.")
+
+
+def _enforcement_lock_fingerprint(lock: dict) -> str:
+    """The statuses of every tess.lock entry behind an enforcement render
+    output, for callers that save the lock only when it changed."""
+    files = (lock or {}).get("files") or {}
+    return json.dumps(sorted(
+        (k, a.get("status"), a.get("live_path")) for k, a in files.items()
+        if isinstance(a, dict) and is_enforcement_render_output(a.get("live_path") or "")),
+        default=str)
+
+
+def _enforcement_hook_findings(root: Path, lock: dict) -> list:
+    """doctor: [(rel, problem)] for every enforcement render output of an
+    enabled target that carries a capture/override/held status, and for a
+    .claude/settings.json whose live hooks lack a hook the render carries
+    (or that sets disableAllHooks)."""
+    out = []
+    for rel in sorted(p for p in render_generated_live_paths(root)
+                      if is_enforcement_render_output(p)):
+        stale = _enforcement_stale_statuses(lock, rel)
+        if stale:
+            out.append((rel, f"carries a {'/'.join(stale)} status (capture/override/hold); "
+                             f"Tess ignores it on runtime-enforcement config"))
+        live = root / rel
+        if rel != ".claude/settings.json" or not live.is_file():
+            continue
+        try:
+            want = (json.loads(render_settings_json(root)) or {}).get("hooks") or {}
+        except (SystemExit, Exception):  # noqa: BLE001 — no render, nothing to compare
+            continue
+        try:
+            got_doc = json.loads(live.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — unparsable settings has no hooks
+            got_doc = None
+        if not isinstance(got_doc, dict):
+            out.append((rel, "is not a JSON object, so it carries none of the rendered hooks"))
+            continue
+        got = got_doc.get("hooks") if isinstance(got_doc.get("hooks"), dict) else {}
+        missing = sorted(ev for ev, groups in want.items()
+                         if any(g not in (got.get(ev) or []) for g in (groups or [])))
+        if missing:
+            out.append((rel, "lacks rendered hooks: " + ", ".join(missing)))
+        if got_doc.get("disableAllHooks"):
+            out.append((rel, "sets disableAllHooks"))
+        local = root / ".claude" / "settings.local.json"
+        if local.is_file():
+            try:
+                local_doc = json.loads(local.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — Claude Code rejects it too
+                local_doc = None
+            if isinstance(local_doc, dict) and local_doc.get("disableAllHooks"):
+                out.append((rel, "is overridden by .claude/settings.local.json, which sets "
+                                 "disableAllHooks (remove that key)"))
+    return out
+
+
+def _enforcement_edit_home(rel: str) -> str:
+    """Where a local change to an enforcement render output belongs."""
+    rel = str(rel).replace(os.sep, "/")
+    if rel == ".claude/settings.json":
+        return ".claude/settings.local.json"
+    if rel.endswith(".md"):
+        return f"{rel[:-3]}.local.md / an operator stub"
+    return "an operator stub"
+
+
+def _render_output_hand_edit_remedy(lock: dict, rel: str) -> str:
+    """The one remedy line for a hand-edited render output. Security-tier:
+    capture (it quarantines). A render output with no tess.lock entry
+    (AGENTS.md, .codex/config.toml): move the edit — `publish` is not offered
+    because verify still reports the file as stale render output. Otherwise:
+    move the edit, or publish it."""
+    if _live_path_is_security(lock, rel):
+        return (f"SECURITY DRIFT — `tessctl capture {rel}` will quarantine it "
+                f"(security-tier; never publish a security edit)")
+    if is_enforcement_render_output(rel):
+        return (f"runtime-enforcement config — move the change to {_enforcement_edit_home(rel)}; "
+                f"`tessctl render` re-pins this file to the core render")
+    if not _entries_for_live_path(lock, rel):
+        return f"move the edit to {_render_output_edit_home(rel)}"
+    return f"move the edit to {_render_output_edit_home(rel)}, or `tessctl publish {rel}`"
+
+
+def _render_outputs_section(lock: dict) -> dict:
+    """The tess.lock render_outputs section, or {} when absent or malformed."""
+    sec = (lock or {}).get(RENDER_OUTPUTS_KEY)
+    return sec if isinstance(sec, dict) else {}
+
+
+def render_output_record(lock: dict, rel: str):
+    """The render_outputs record for `rel` (a dict), or None."""
+    rec = _render_outputs_section(lock).get(str(rel).replace(os.sep, "/"))
+    return rec if isinstance(rec, dict) else None
+
+
+def render_output_status(lock: dict, rel: str) -> str:
+    """Status governing writes to render output `rel`: the most protective of
+    its render_outputs record status and the effective status of the
+    tess.lock entries sharing `rel`. Returns 'rendered' when nothing protects
+    the file (Tess owns it), otherwise the protective status."""
+    rel = str(rel).replace(os.sep, "/")
+    candidates = []
+    rec = render_output_record(lock, rel)
+    if rec is not None:
+        rst = rec.get("status", "rendered") or "rendered"
+        if rst != "rendered":
+            candidates.append(rst)
+    if _entries_for_live_path(lock, rel):
+        candidates.append(effective_live_status(lock, rel))
+    protective = [s for s in candidates if s in _RENDER_SKIP_REASON]
+    if is_enforcement_render_output(rel):
+        # Runtime-enforcement config never keeps a captured / overridden /
+        # held edit: render re-pins it (see ENFORCEMENT_IGNORED_STATUSES).
+        protective = [s for s in protective if s not in ENFORCEMENT_IGNORED_STATUSES]
+    if not protective:
+        return "rendered"
+    # 'foreign' is a record-only status: rank it with user-created.
+    return max(protective,
+               key=lambda s: _status_rank("user-created" if s == "foreign" else s))
+
+
+def _is_legacy_render_lock(lock: dict) -> bool:
+    """True for a lock written before v0.2 (no render_outputs section at all):
+    every v0.1.x install. Such a lock has no record of what Tess rendered."""
+    return RENDER_OUTPUTS_KEY not in (lock or {})
+
+
+def _set_render_output_record(lock: dict, rel: str, target: str, rendered_sha: str,
+                              status: str | None = None) -> bool:
+    """Create or refresh the record for `rel`. Keeps an existing record's
+    status unless `status` is given. Returns True when the lock changed."""
+    if not isinstance(lock.get(RENDER_OUTPUTS_KEY), dict):
+        lock[RENDER_OUTPUTS_KEY] = {}
+    sec = lock[RENDER_OUTPUTS_KEY]
+    old = sec.get(rel) if isinstance(sec.get(rel), dict) else {}
+    new = {
+        "target": target,
+        "status": status or old.get("status", "rendered") or "rendered",
+        "rendered_sha": rendered_sha,
+    }
+    if old == new:
+        return False
+    sec[rel] = new
+    return True
+
+
+def _load_lock_or_empty(root: Path) -> dict:
+    """load_lock() without the sys.exit on a missing lock (fresh init)."""
+    if not (root / LOCK_FILE).exists():
+        return {}
+    try:
+        data = load_lock(root)
+    except SystemExit:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
+                        force: bool = False, lock: dict | None = None,
+                        manifest: dict | None = None) -> str:
+    """
+    The single write path for a render target's output. Returns:
+
+      'written'            live bytes replaced (missing, or a stale render)
+      'unchanged'          live already equals `data` (record refreshed)
+      'skipped:<reason>'   nothing written:
+          not-owned        `rel` is outside tess.manifest.json owned_globs
+                           (checked HERE, before the gate: no GateError, no
+                           manifest write, no gate widening)
+          symlink          the final path component is a symlink (lstat);
+                           writing would land on the link target
+          user-published | locally-modified | held | foreign
+                           a protective status (render_output_status)
+          hand-edited      live differs from what Tess last rendered there
+          foreign          (also) a file Tess has no record of ever writing,
+                           on a lock that already tracks render outputs
+
+    force=True overrides ONLY 'hand-edited'/'foreign-by-inference' — never an
+    explicit status — and snapshots the pre-image first.
+
+    A live path with a QUARANTINED entry is always re-pinned to `data` (the
+    core render), even when hand-edited again; the pre-image is snapshotted
+    and the result is 'written'.
+
+    `lock`: pass the caller's loaded lock to batch many writes (the caller
+    then saves it); when None the lock is loaded and saved here if a record
+    changed. Writes still go through the unchanged guarded_write().
+    """
+    rel = str(rel).replace(os.sep, "/")
+    if manifest is None:
+        manifest = load_manifest(root)
+    owned = manifest.get("owned_globs", []) or []
+    if not path_matches_globs(rel, owned):
+        return "skipped:not-owned"
+
+    live = root / rel
+    if os.path.islink(live):
+        return "skipped:symlink"
+
+    own_lock = lock is None
+    if own_lock:
+        lock = _load_lock_or_empty(root)
+    can_record = bool(lock) and "files" in lock
+
+    # A QUARANTINED security edit stays pinned to the core render until
+    # `tessctl approve`: re-pin it even if the live file was edited again
+    # (the pre-image goes to .tess/snapshots). No status or hand-edit check
+    # may keep a tamper in a quarantined file.
+    quarantined = _live_path_quarantined(lock, rel)
+    status = render_output_status(lock, rel)
+    if status in _RENDER_SKIP_REASON and not quarantined:
+        return f"skipped:{_RENDER_SKIP_REASON[status]}"
+    # Runtime-enforcement config with a capture/override/held status (e.g.
+    # left by an older install): that status is ignored — the file is
+    # re-pinned to the core render like a quarantined one, and the status
+    # is cleared so nothing keeps a stripped-hooks edit.
+    enforcement_stale = _enforcement_stale_statuses(lock, rel)
+    # ...and any runtime-enforcement output Tess owns (a record, a lock entry,
+    # or a v0.1.x lock) is re-pinned even when hand-edited without capture: a
+    # hook strip must not survive render. A truly foreign file stays KEEP.
+    enforcement_owned = _enforcement_output_owned(lock, rel)
+    repin = quarantined or bool(enforcement_stale) or enforcement_owned
+    hand_repinned = False
+
+    new_sha = sha256_bytes(data)
+    changed = False
+    if os.path.lexists(live):
+        if live.is_dir():
+            return "skipped:foreign"
+        current = live.read_bytes()
+        if current == data:
+            if can_record:
+                changed = _clear_render_output_enforcement(lock, rel, enforcement_stale)
+                changed = _set_render_output_record(lock, rel, target, new_sha) or changed
+                if own_lock and changed:
+                    save_lock(root, lock)
+            return "unchanged"
+        rec = render_output_record(lock, rel)
+        stale_render = rec is not None and rec.get("rendered_sha") == sha256_bytes(current)
+        if repin:
+            snapshot_single_file(root, rel)
+            hand_repinned = (enforcement_owned and not enforcement_stale
+                             and not quarantined and not stale_render)
+        elif not stale_render:
+            if not force:
+                if (rec is not None or _entries_for_live_path(lock, rel)
+                        or _is_legacy_render_lock(lock)):
+                    return "skipped:hand-edited"
+                return "skipped:foreign"
+            snapshot_single_file(root, rel)
+
+    guarded_write(root, rel, data, op="render", manifest=manifest)
+    if hand_repinned:
+        print(f"  RE-PINNED  {rel}  — hand-edited runtime-enforcement config; the core "
+              f"render is restored (the replaced bytes are in .tess/snapshots). Put local "
+              f"changes in {_enforcement_edit_home(rel)}.")
+    if can_record:
+        changed = _clear_render_output_enforcement(lock, rel, enforcement_stale)
+        changed = _set_render_output_record(lock, rel, target, new_sha) or changed
+        if own_lock and changed:
+            save_lock(root, lock)
+    return "written"
+
+
+def _clear_render_output_enforcement(lock: dict, rel: str, stale: list) -> bool:
+    """write_render_output: once enforcement output `rel` holds the core
+    render, clear the ignored capture/override/held status and say so."""
+    if not stale:
+        return False
+    _clear_enforcement_stale_statuses(lock, rel)
+    print(f"  RE-PINNED  {rel}  — runtime-enforcement config: its {'/'.join(stale)} status "
+          f"is ignored and was cleared; the core render is restored "
+          f"(the replaced bytes are in .tess/snapshots). Put local changes in "
+          f"{_enforcement_edit_home(rel)}.")
+    return True
+
+
+def write_render_outputs(root: Path, target: str, outputs: dict, *,
+                         verbose: bool = False, force: bool = False,
+                         required=()) -> dict:
+    """Batch form of write_render_output() for one target's render pass:
+    loads tess.lock and the manifest ONCE, writes every {rel: bytes} in
+    `outputs` in order, saves tess.lock once if a record changed, and prints
+    the skip report. Returns {rel: result}.
+
+    `required`: outputs whose absence from owned_globs is a corrupted
+    manifest rather than an optional output (a target's doctrine digest,
+    e.g. AGENTS.md): 'skipped:not-owned' on one of these raises GateError,
+    as the pre-v0.2 render did. Every other not-owned output is skipped and
+    reported with the glob to add."""
+    manifest = load_manifest(root)
+    lock = _load_lock_or_empty(root)
+    before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+    before += _enforcement_lock_fingerprint(lock)
+    results: dict = {}
+    try:
+        for rel, data in outputs.items():
+            results[rel] = write_render_output(
+                root, rel, data, target, force=force, lock=lock, manifest=manifest)
+            if results[rel] == "skipped:not-owned" and rel in required:
+                raise GateError(
+                    f"write gate: {rel!r} is not in tess.manifest.json owned_globs — "
+                    f"render target {target!r} cannot write its doctrine output")
+    finally:
+        after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        after += _enforcement_lock_fingerprint(lock)
+        if lock and "files" in lock and after != before:
+            save_lock(root, lock)
+    report_render_output_results(root, target, results, verbose=verbose, manifest=manifest)
+    return results
+
+
+def _missing_owned_glob_for(target_obj, rel: str, owned: list):
+    """The target live_glob that covers `rel` but is absent from owned_globs
+    (the one glob an operator adds to let Tess manage that output)."""
+    globs = []
+    try:
+        globs = list(target_obj.live_globs()) if target_obj is not None else []
+    except Exception:
+        globs = []
+    for g in globs:
+        if path_matches_globs(rel, [g]) and g not in owned:
+            return g
+    return rel
+
+
+def report_render_output_results(root: Path, target: str, results: dict,
+                                 verbose: bool = True, manifest: dict | None = None) -> dict:
+    """Print what write_render_output decided for one target's outputs.
+
+    - not-owned: ONE line per missing glob (derived from the target's
+      live_globs), never one per file, never a manifest write.
+    - hand-edited / foreign / symlink / protective statuses: one line each,
+      with the remedy.
+    Returns {reason: [rel, ...]} for the skipped outputs."""
+    by_reason: dict = {}
+    for rel, res in sorted(results.items()):
+        if isinstance(res, str) and res.startswith("skipped:"):
+            by_reason.setdefault(res.split(":", 1)[1], []).append(rel)
+    _report_retired_render_outputs(root, target, RENDER_TARGETS.get(target))
+    written = sorted(rel for rel, res in results.items() if res == "written")
+    lock = _load_lock_or_empty(root) if (written or by_reason.get("hand-edited")) else {}
+    for rel in written:
+        if _live_path_quarantined(lock, rel):
+            print(f"  QUARANTINED  {rel}  — re-pinned to the core render (the replaced bytes "
+                  f"are in .tess/snapshots); `tessctl approve {rel} --rationale ...` to accept "
+                  f"the quarantined edit")
+    if not by_reason:
+        return by_reason
+    if manifest is None:
+        try:
+            manifest = load_manifest(root)
+        except SystemExit:
+            manifest = {}
+    owned = manifest.get("owned_globs", []) or []
+    target_obj = RENDER_TARGETS.get(target)  # defined at module level; resolved at call time
+    not_owned = by_reason.get("not-owned", [])
+    if not_owned:
+        globs: dict = {}
+        for rel in not_owned:
+            globs.setdefault(_missing_owned_glob_for(target_obj, rel, owned), []).append(rel)
+        for g, rels in sorted(globs.items()):
+            print(f"  NOTE  {target}: {len(rels)} output(s) not written — outside owned_globs. "
+                  f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them "
+                  f"(tessctl never edits the manifest).")
+    for rel in by_reason.get("hand-edited", []):
+        print(f"  KEEP  {rel}  — hand-edited render output: "
+              f"{_render_output_hand_edit_remedy(lock, rel)}; to discard it, "
+              f"delete the file and re-run `tessctl render`")
+    for rel in by_reason.get("foreign", []):
+        print(f"  KEEP  {rel}  — foreign file (Tess has no record of writing it); "
+              f"left untouched. Delete or move it to let `tessctl render` write it.")
+    for rel in by_reason.get("symlink", []):
+        print(f"  KEEP  {rel}  — symlink; not followed (writing would land on its target)")
+    for reason in ("user-published", "locally-modified", "held"):
+        for rel in by_reason.get(reason, []):
+            if not verbose:
+                continue
+            hint = {
+                "user-published": f"  — run `tessctl publish --force {rel}` to re-seed from core",
+                "locally-modified": f"  — captured edit kept; `tessctl reset {rel}` discards it",
+            }.get(reason, "")
+            print(f"  skip ({reason})  {rel}{hint}")
+    return by_reason
+
+
+def _report_retired_render_outputs(root: Path, target: str, target_obj) -> list:
+    """A target may declare outputs it USED to render (retired_paths(), e.g.
+    codex's .codex/prompts/* once skills replace them). Existing retired
+    files are reported, never deleted: they may hold the operator's edits."""
+    if target_obj is None or not hasattr(target_obj, "retired_paths"):
+        return []
+    try:
+        try:
+            retired = target_obj.retired_paths(root)
+        except TypeError:
+            retired = target_obj.retired_paths()
+    except Exception:  # noqa: BLE001 — a reporting helper must not break render
+        return []
+    present_set: set = set()
+    for r in (retired or ()):
+        r = str(r)
+        if any(ch in r for ch in "*?["):
+            present_set.update(q.relative_to(root).as_posix() for q in root.glob(r) if q.is_file())
+        elif (root / r).is_file() or os.path.islink(root / r):
+            present_set.add(r)
+    present = sorted(present_set)
+    if present:
+        print(f"  NOTE  {target}: {len(present)} retired output(s) left in place "
+              f"(no longer rendered, not deleted): "
+              + ", ".join(present[:5]) + (" …" if len(present) > 5 else ""))
+    return present
+
+
+def _render_output_edit_home(rel: str) -> str:
+    """Where a hand edit to a render output belongs so render keeps it."""
+    if rel == "CLAUDE.md":
+        return "CLAUDE.md.local.md / an operator stub"
+    if rel.endswith(".md"):
+        return f"{rel[:-3]}.local.md / an operator stub"
+    return "an operator stub"
+
+
+def _render_output_drift_kind(root: Path, lock: dict, rel: str) -> str:
+    """Classify a drifted render output for doctor/update remedies:
+    'stale'       live == the recorded rendered_sha (re-render fixes it)
+    'hand-edited' anything else, including a v0.1.x lock with no record
+                  (render will keep it, so 'run tessctl render' is wrong)."""
+    live = root / rel
+    rec = render_output_record(lock, rel)
+    if rec is not None and live.exists() and not live.is_dir():
+        if rec.get("rendered_sha") == sha256_file(live):
+            return "stale"
+    if _enforcement_output_owned(lock, rel) and not os.path.islink(live):
+        return "stale"   # runtime-enforcement config: render re-pins it
+    return "hand-edited"
+
+
+def _lock_status_consistency_findings(lock: dict) -> list:
+    """Bug 8 doctor check: every live_path shared by several tess.lock
+    entries must carry ONE status. Mixed statuses mean some command changed
+    only part of a live file's entries (the v0.1.x first-match bug), so
+    restore/render would act on the file through the weaker entries.
+    Returns [{"live_path", "statuses": {core_key: status}}]; empty = clean.
+    Also flags a malformed render_outputs section."""
+    findings = []
+    by_live: dict = {}
+    for k, a in ((lock or {}).get("files") or {}).items():
+        if isinstance(a, dict) and a.get("live_path"):
+            by_live.setdefault(a["live_path"], []).append(
+                (k, a.get("status", "core-managed") or "core-managed"))
+    for rel, entries in sorted(by_live.items()):
+        if len({st for _k, st in entries}) > 1:
+            findings.append({"live_path": rel, "statuses": dict(entries)})
+    sec = (lock or {}).get(RENDER_OUTPUTS_KEY)
+    if sec is not None and not isinstance(sec, dict):
+        findings.append({"live_path": RENDER_OUTPUTS_KEY,
+                         "statuses": {"render_outputs": f"malformed ({type(sec).__name__})"}})
+    elif isinstance(sec, dict):
+        for rel, rec in sorted(sec.items()):
+            st = rec.get("status") if isinstance(rec, dict) else None
+            if st not in RENDER_OUTPUT_RECORD_STATUSES:
+                findings.append({"live_path": rel,
+                                 "statuses": {"render_outputs": f"invalid status {st!r}"}})
+    return findings
+
+
+def _print_not_owned_render_globs(root: Path) -> dict:
+    """Doctor/update note (must_fix #2): for each ENABLED target, the outputs
+    it would render that tess.manifest.json does not own. ONE line per missing
+    glob; render skips those outputs, and tessctl never edits the manifest.
+    Informational — returns {target: {glob: count}}."""
+    try:
+        owned = load_manifest(root).get("owned_globs", []) or []
+    except SystemExit:
+        return {}
+    notes: dict = {}
+    for name, target in sorted(enabled_render_targets(root).items()):
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:  # noqa: BLE001 — a note must never break doctor
+            continue
+        for rel in paths:
+            if not path_matches_globs(rel, owned):
+                g = _missing_owned_glob_for(target, rel, owned)
+                notes.setdefault(name, {}).setdefault(g, 0)
+                notes[name][g] += 1
+    for name, globs in notes.items():
+        for g, n in sorted(globs.items()):
+            print(f"  NOTE  {name}: {n} output(s) outside owned_globs are not rendered. "
+                  f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them.")
+    return notes
+
+
+def _repin_quarantined_render_outputs(root: Path, lock: dict) -> list:
+    """doctor --fix: a QUARANTINED render output (e.g. CLAUDE.md with a
+    security-tier fragment) that was edited again is re-pinned to the core
+    render — the same thing render and restore now do through
+    write_render_output. Doctor still FAILs on the quarantine until
+    `tessctl approve`. Returns the live paths that needed it."""
+    stale = []
+    for lp in sorted(render_generated_live_paths(root)):
+        ents = _entries_for_live_path(lock, lp)
+        live = root / lp
+        if not ents or not _live_path_quarantined(lock, lp) or not live.is_file():
+            continue
+        core = root / ents[0][0]
+        if core.exists() and live.read_bytes() != render_core_to_live(core, live, root):
+            stale.append(lp)
+    if stale:
+        print("\n--fix: re-pinning quarantined render output(s) to the core render: "
+              + ", ".join(stale))
+        _render_enabled_targets(root, verbose=True)
+    return stale
+
+
+def _doctor_engb_findings(root: Path, lock: dict, results: list, as_json: bool,
+                          path_filter=None, fix: bool = False) -> int:
+    """cmd_doctor's single v0.2 eng-b hook. Mixed statuses on one live_path
+    are an integrity FAILURE. --json: appended to `results` as error rows and
+    counted. Human mode: printed, then doctor exits 1 (a lock whose entries
+    disagree must be fixed before any drift report can be trusted).
+    --fix: re-pins a re-edited QUARANTINED render output first, then pulls
+    the render_outputs records render just saved into doctor's in-memory
+    `lock`, so doctor's own later save_lock cannot roll them back."""
+    if not as_json:
+        _print_not_owned_render_globs(root)
+        if fix and _repin_quarantined_render_outputs(root, lock):
+            _pull_render_outputs_from_disk(root, lock)
+        if fix and any(_enforcement_stale_statuses(lock, lp)
+                       for lp in render_generated_live_paths(root)):
+            print("\n--fix: re-pinning runtime-enforcement config that carries a "
+                  "capture/override/hold status …")
+            _render_enabled_targets(root, verbose=True)
+            _pull_render_outputs_from_disk(root, lock)
+    # A render output with NO tess.lock entry that the operator protected
+    # through render_outputs (`tessctl publish AGENTS.md`, held, foreign,
+    # locally-modified) is expected to diverge from the render: reclassify
+    # its untracked-render drift row so it is reported, not failed.
+    adjust = 0
+    for r in results:
+        lp = r.get("live_path")
+        if not (lp and r.get("core_key") is None and r.get("drift")
+                and r.get("lock_status") == "core-managed"):
+            continue
+        st = render_output_status(lock, lp)
+        if st == "rendered" or is_enforcement_render_output(lp):
+            continue   # enforcement config drift always stays an error
+        was_error = _doctor_result_is_error(r)
+        r["lock_status"] = st
+        r["issues"] = [f"render output is {st} (render_outputs) — divergence from the render is expected"]
+        if was_error and not _doctor_result_is_error(r):
+            adjust -= 1
+    # Runtime-enforcement config that lost its rendered hooks, or carries a
+    # capture/override/hold status: always a FAILURE (cmd_doctor counts the
+    # ENFORCEMENT_BYPASS_MARKER rows in human mode).
+    for rel, problem in _enforcement_hook_findings(root, lock):
+        if path_filter and rel != path_filter:
+            continue
+        results.append({
+            "core_key": None, "live_path": rel, "lock_status": "enforcement",
+            "drift": False,
+            "issues": [f"{ENFORCEMENT_BYPASS_MARKER} — {rel} {problem}. Remedy: "
+                       f"`tessctl render` (or `tessctl doctor --fix`) re-pins the core "
+                       f"render (replaced bytes go to .tess/snapshots); a user-published "
+                       f"copy needs `tessctl reset {rel}` first. Local changes belong in "
+                       f"{_enforcement_edit_home(rel)}."],
+        })
+        adjust += 1
+    findings = [f for f in _lock_status_consistency_findings(lock)
+                if not path_filter or f["live_path"] == path_filter]
+    if not findings:
+        return adjust
+    if as_json:
+        for f in findings:
+            results.append({
+                "core_key": None, "live_path": f["live_path"],
+                "lock_status": "mixed", "drift": False,
+                "issues": ["LOCK STATUS MIXED — entries sharing this live_path disagree: "
+                           + ", ".join(f"{k}={v}" for k, v in f["statuses"].items())],
+            })
+        return len(findings) + adjust
+    print("\ntessctl doctor — lock status consistency\n")
+    for f in findings:
+        print(f"  MIXED       {f['live_path']}  — entries disagree: "
+              + ", ".join(f"{k}={v}" for k, v in f["statuses"].items()))
+    print(f"\ndoctor: FAIL — {len(findings)} live path(s) with mixed lock statuses. "
+          f"Re-run the status command on the live path (`tessctl publish|capture|reset <path>` "
+          f"now act on every entry), or fix .tess/tess.lock by hand.")
+    sys.exit(1)
+
+
+def seed_render_output_records(root: Path, lock: dict, verbose: bool = False) -> dict:
+    """Legacy migration (v0.1.x lock without render_outputs). Seed a record
+    for every render output of every ENABLED target whose live bytes equal
+    what the CURRENT core + operator state renders. Non-matching outputs are
+    hand edits: preserved, reported, left without a record. Mutates `lock`
+    in memory only (the caller decides when to save).
+    Returns {"seeded": [rel], "hand_edited": [rel]}."""
+    out = {"seeded": [], "hand_edited": []}
+    if not isinstance(lock.get(RENDER_OUTPUTS_KEY), dict):
+        lock[RENDER_OUTPUTS_KEY] = {}
+    for name, target in sorted(enabled_render_targets(root).items()):
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:
+            continue
+        for rel in paths:
+            live = root / rel
+            if os.path.islink(live) or not live.is_file():
+                continue
+            _rec = render_output_record(lock, rel)
+            if _rec is not None and (_rec.get("status") or "rendered") != "rendered":
+                continue
+            try:
+                expected = target.expected_live_bytes(root, rel)
+            except SystemExit:
+                expected = None
+            if expected is None:
+                p = root / rel
+                ents = _entries_for_live_path(lock, rel)
+                if ents and (root / ents[0][0]).exists():
+                    expected = render_core_to_live(root / ents[0][0], p, root)
+            if expected is None:
+                continue
+            if live.read_bytes() == expected:
+                if _set_render_output_record(lock, rel, name, sha256_bytes(expected)):
+                    out["seeded"].append(rel)
+            elif _rec is None and is_enforcement_render_output(rel):
+                # Runtime-enforcement config is never kept as a hand edit:
+                # record the render so the next render re-pins it.
+                if _set_render_output_record(lock, rel, name, sha256_bytes(expected)):
+                    out["seeded"].append(rel)
+            elif _rec is None:
+                out["hand_edited"].append(rel)
+    if verbose:
+        print(f"  render records: seeded {len(out['seeded'])}; "
+              f"{len(out['hand_edited'])} hand-edited render output(s) preserved")
+        for rel in out["hand_edited"]:
+            print(f"    KEEP  {rel}  (differs from the current render — treated as a hand edit)")
+    return out
+
+
+def _seed_render_records_before_state_change(root: Path) -> None:
+    """Called just before operator state changes (profile save: rename,
+    set-operator, pathway, identity). Records every render output that still
+    equals the render of the CURRENT (pre-change) state, so the render that
+    follows can tell those stale renders from hand edits. This is how a
+    v0.1.x install (no render_outputs yet) gets its first records without
+    losing a rename. Never blocks the state change: a failure is reported
+    and the change proceeds (render then keeps unrecorded files)."""
+    if not (root / LOCK_FILE).exists():
+        return
+    try:
+        lock = load_lock(root)
+        before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        seed_render_output_records(root, lock, verbose=False)
+        after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        if after != before:
+            save_lock(root, lock)
+    except (SystemExit, Exception) as e:  # noqa: BLE001 — reported, not swallowed
+        print(f"  NOTE  render records not seeded before the state change ({e}); "
+              f"files that differ from the new render will be kept as hand edits.")
+
+
+def _sync_render_outputs_to_disk(root: Path, lock: dict) -> None:
+    """Write ONLY `lock`'s render_outputs section into the on-disk tess.lock
+    (for a caller that holds a long-lived in-memory lock, e.g. update)."""
+    if RENDER_OUTPUTS_KEY not in lock or not (root / LOCK_FILE).exists():
+        return
+    disk = load_lock(root)
+    if disk.get(RENDER_OUTPUTS_KEY) != lock[RENDER_OUTPUTS_KEY]:
+        disk[RENDER_OUTPUTS_KEY] = lock[RENDER_OUTPUTS_KEY]
+        save_lock(root, disk)
+
+
+def _pull_render_outputs_from_disk(root: Path, lock: dict) -> None:
+    """Copy the on-disk render_outputs section into `lock`, so a later
+    save_lock(root, lock) keeps what the render step recorded."""
+    if not (root / LOCK_FILE).exists():
+        return
+    disk = load_lock(root)
+    if RENDER_OUTPUTS_KEY in disk:
+        lock[RENDER_OUTPUTS_KEY] = disk[RENDER_OUTPUTS_KEY]
+    # ...and the enforcement-output statuses render cleared (a re-pinned
+    # .claude/settings.json must not get its old captured status back).
+    disk_files = disk.get("files") or {}
+    for k, a in (lock.get("files") or {}).items():
+        d = disk_files.get(k)
+        if (isinstance(a, dict) and isinstance(d, dict)
+                and is_enforcement_render_output(a.get("live_path") or "")
+                and (a.get("status") or "") in ENFORCEMENT_IGNORED_STATUSES
+                and (d.get("status") or "core-managed") not in ENFORCEMENT_IGNORED_STATUSES):
+            lock["files"][k] = d
+
+
+def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> list:
+    """Compiled render outputs (CLAUDE.md, .claude/settings.json: an enabled
+    target's expected_live_bytes() claims them) whose EFFECTIVE status is
+    locally-modified (captured) or patch-override, and whose sources change
+    in .tess/staging: a changed staged entry, or a new upstream entry with
+    that live_path. update cannot merge into such a file: its per-entry
+    merge / patch-apply renders 'theirs' from the CURRENT core (the target
+    compiles from root), and Step 7 skips the protected file — so the
+    upstream change would be dropped while update reports a clean merge.
+    Returns [(live_rel, status, [changed core keys])]."""
+    staging_dir = root / STAGING_DIR
+    if not staging_dir.is_dir():
+        return []
+    files = lock.get("files") or {}
+    new_by_live: dict = {}
+    up_path = staging_dir / "upstream-tess.lock"
+    if up_path.is_file():
+        try:
+            up = yaml.safe_load(up_path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 — A2 reports an unparsable lock itself
+            up = {}
+        for k, a in ((up.get("files") or {}) if isinstance(up, dict) else {}).items():
+            if isinstance(a, dict) and a.get("live_path") and k not in files:
+                new_by_live.setdefault(a["live_path"], []).append(k)
+    targets = list(enabled_render_targets(root).values())
+    out, seen = [], set()
+    for _ck, attrs in files.items():
+        rel = attrs.get("live_path") if isinstance(attrs, dict) else None
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        status = effective_live_status(lock, rel)
+        if status not in ("locally-modified", "patch-override"):
+            continue
+        if is_enforcement_render_output(rel):
+            continue   # never kept: Step 7 re-pins it to the (new) core render
+        compiled = False
+        for t in targets:
+            try:
+                compiled = t.expected_live_bytes(root, rel) is not None
+            except (SystemExit, Exception):  # noqa: BLE001 — fail closed
+                compiled = True   # a broken template/target is still a compiled output
+            if compiled:
+                break
+        if not compiled:
+            continue
+        changed = []
+        for k, _a in _entries_for_live_path(lock, rel):
+            staged, current = staging_dir / k, root / k
+            if staged.is_file() and not staged.is_symlink() and (
+                    not current.is_file() or current.read_bytes() != staged.read_bytes()):
+                changed.append(k)
+        changed += new_by_live.get(rel, [])
+        if changed:
+            out.append((rel, status, changed))
+    return out
+
+
+def _update_gate_captured_render_outputs(root: Path, lock: dict, dry_run: bool = False) -> None:
+    """cmd_update's v0.2 eng-b gate between fetch (Step 4) and apply (Step 5):
+    fail closed when a captured / overridden compiled render output has
+    upstream changes (see _captured_render_outputs_with_upstream_changes).
+    Nothing has been written yet; the update lock is released by the
+    caller's finally. Dry-run: reported, not enforced."""
+    hits = _captured_render_outputs_with_upstream_changes(root, lock)
+    if not hits:
+        return
+    print(f"\n  {'WOULD BLOCK' if dry_run else 'BLOCKED'} — {len(hits)} captured/overridden "
+          f"render output(s) have upstream changes that update cannot merge:")
+    for rel, status, changed in hits:
+        print(f"    {rel}  ({status}) — upstream changes: " + ", ".join(changed))
+    for rel, status, _changed in hits:
+        redo = "capture" if status == "locally-modified" else "override"
+        print(f"  {rel} is compiled from several sources, so your edit and the upstream change "
+              f"cannot be merged here. Either move the edit to {_render_output_edit_home(rel)} "
+              f"and run `tessctl reset {rel}`, then retry update; or `tessctl reset {rel}`, "
+              f"update, re-apply the edit and `tessctl {redo} {rel}`.")
+    if not dry_run:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Snapshot
 # ---------------------------------------------------------------------------
 
@@ -1984,12 +2963,19 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
     gate_skipped: list[str] = []
 
     files = lock.get("files", {})
+    _restore_warned: set = set()                                  # v0.2 eng-b
+    _restore_render_outputs = render_generated_live_paths(root)   # v0.2 eng-b
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
         if live_rel is None:
             continue
 
-        status = attrs.get("status", "core-managed")
+        # v0.2 eng-b (bug 8): the EFFECTIVE status across every entry that
+        # shares this live_path (most protective wins). A published CLAUDE.md
+        # is no longer overwritten through its still-core-managed fragments.
+        status = effective_live_status(lock, live_rel)
+        if status in ENFORCEMENT_IGNORED_STATUSES and is_enforcement_render_output(live_rel):
+            status = "core-managed"   # never kept: the render step re-pins it
 
         # Skip user-owned and staged (benched) statuses
         if status in ("user-published", "held", "user-created", "staged"):
@@ -2002,11 +2988,24 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False) -> dic
         # Warn and skip; operator must explicitly `tessctl reset <path>`.
         if status == "locally-modified":
             counts["skipped_locally_modified"] += 1
-            print(
-                f"  WARN  skip [locally-modified]  {live_rel}  "
-                f"— restoring would discard captured edit.  "
-                f"Run `tessctl reset {live_rel}` to explicitly discard."
-            )
+            if live_rel not in _restore_warned:
+                _restore_warned.add(live_rel)
+                print(
+                    f"  WARN  skip [locally-modified]  {live_rel}  "
+                    f"— restoring would discard captured edit.  "
+                    f"Run `tessctl reset {live_rel}` to explicitly discard."
+                )
+            continue
+
+        # v0.2 eng-b (bug 7): render outputs of an ENABLED target are written
+        # by the render step every restore/init caller runs next, through
+        # write_render_output (hand-edit / symlink / status protection).
+        # Copying them here would bypass that protection.
+        if live_rel in _restore_render_outputs:
+            counts["skipped_status"] += 1
+            if verbose and live_rel not in _restore_warned:
+                _restore_warned.add(live_rel)
+                print(f"  defer [render output]  {live_rel}  (written by the render step)")
             continue
 
         # Fast-path: if the path isn't in owned_globs there is no point running
@@ -2114,57 +3113,35 @@ def cmd_restore(args, root: Path) -> None:
 
 def _do_render(root: Path, verbose: bool = False) -> None:
     """
-    Render CLAUDE.md and .claude/settings.json.
-    M5: honors user-published status — skips those paths with a notice instead
-        of silently overwriting a deliberately published file.
-    H2/M3: uses guarded_write for all live writes (manifest-gated, atomic).
+    Render CLAUDE.md, .claude/settings.json and the name-bearing files.
+
+    v0.2 eng-b (bugs 7 + 8): every write goes through write_render_outputs()
+    / write_render_output(), which
+      - honours the EFFECTIVE status across ALL tess.lock entries sharing a
+        live path (user-published, locally-modified — e.g. a captured
+        CLAUDE.md —, held, patch-override): skipped, never re-rendered;
+      - keeps a hand-edited render output (live != the rendered_sha recorded
+        in tess.lock render_outputs) and reports it with the remedy;
+      - never follows a final-component symlink and never writes outside
+        owned_globs (skipped + reported, the manifest is not touched);
+      - records rendered_sha for what it wrote.
+    H2/M3: the writes themselves still go through guarded_write.
     """
-    # Load lock to check user-published status (M5); graceful if lock absent (init)
-    try:
-        lock_data = load_lock(root)
-        lock_files = lock_data.get("files", {})
-    except SystemExit:
-        lock_files = {}
-
-    def _live_status(live_rel: str) -> str:
-        for attrs in lock_files.values():
-            if attrs.get("live_path") == live_rel:
-                return attrs.get("status", "core-managed")
-        return "core-managed"
-
-    # CLAUDE.md
-    claude_rel = "CLAUDE.md"
-    if _live_status(claude_rel) == "user-published":
-        if verbose:
-            print(f"  skip (user-published)  {claude_rel}"
-                  f"  — run `tessctl publish --force {claude_rel}` to re-seed from core")
-    else:
-        rendered_claude = render_claude_md(root).encode("utf-8")
-        guarded_write(root, claude_rel, rendered_claude, op="render")
-        if verbose:
-            print(f"  rendered  {claude_rel}")
-
-    # .claude/settings.json
-    settings_rel = ".claude/settings.json"
-    if _live_status(settings_rel) == "user-published":
-        if verbose:
-            print(f"  skip (user-published)  {settings_rel}"
-                  f"  — run `tessctl publish --force {settings_rel}` to re-seed from core")
-    else:
-        rendered_settings = render_settings_json(root).encode("utf-8")
-        guarded_write(root, settings_rel, rendered_settings, op="render")
-        if verbose:
-            print(f"  rendered  {settings_rel}")
-
+    manifest = load_manifest(root)
+    lock = _load_lock_or_empty(root)
+    # Producers are called lazily: a protected output (e.g. user-published
+    # CLAUDE.md) is never compiled, exactly as before.
+    outputs: dict = {
+        "CLAUDE.md": lambda: render_claude_md(root).encode("utf-8"),
+        ".claude/settings.json": lambda: render_settings_json(root).encode("utf-8"),
+    }
 
     # M4/M6: re-render conductor files that carry name/pathway tokens.
-    # conductor/** is in owned_globs — guarded_write is authorised.
-    # These files are re-rendered after CLAUDE.md so the persona block and
-    # name tokens resolve from the same operator/profile.json state.
+    # conductor/** is in owned_globs. These files are re-rendered after
+    # CLAUDE.md so the persona block and name tokens resolve from the same
+    # operator/profile.json state.
     # QUINN: the client template carries {{ASSISTANT_NAME}} tokens; it must be
     # re-rendered whenever the conductor name changes (rename / set-operator).
-    # Adding it here ensures `tessctl render` (and the auto-render in rename)
-    # keeps the live template consistent with the operator profile.
     _NAME_BEARING = [
         (".tess/core/conductor/identity.md",    "conductor/identity.md"),
         (".tess/core/conductor/personality.md", "conductor/personality.md"),
@@ -2172,23 +3149,49 @@ def _do_render(root: Path, verbose: bool = False) -> None:
     ]
     for _core_key_rel, _live_rel in _NAME_BEARING:
         _core_path = root / _core_key_rel
-        _live_path = root / _live_rel
         if not _core_path.exists():
             if verbose:
                 print(f"  skip (core missing)  {_live_rel}")
             continue
-        if _live_status(_live_rel) in ("user-published", "held"):
-            if verbose:
-                print(f"  skip ({_live_status(_live_rel)})  {_live_rel}")
-            continue
-        _rendered_bytes = render_core_to_live(_core_path, _live_path, root)
-        try:
-            guarded_write(root, _live_rel, _rendered_bytes, op="render")
-            if verbose:
-                print(f"  rendered  {_live_rel}")
-        except GateError as e:
-            if verbose:
-                print(f"  WARN render: {_live_rel}: {e}")
+        outputs[_live_rel] = (lambda _c=_core_path, _l=_live_rel:
+                              render_core_to_live(_c, root / _l, root))
+
+    before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+    before += _enforcement_lock_fingerprint(lock)
+    results: dict = {}
+    _name_bearing_live = {lr for _ck, lr in _NAME_BEARING}
+    try:
+        for rel, produce in outputs.items():
+            _st = render_output_status(lock, rel)
+            if _st in _RENDER_SKIP_REASON and not _live_path_quarantined(lock, rel):
+                results[rel] = f"skipped:{_RENDER_SKIP_REASON[_st]}"
+                continue
+            try:
+                res = write_render_output(root, rel, produce(), "claude-code",
+                                          lock=lock, manifest=manifest)
+            except GateError as e:
+                # CLAUDE.md / settings.json: a gate refusal is a hard failure
+                # (unchanged). Name-bearing files: WARN and continue (unchanged).
+                if rel not in _name_bearing_live:
+                    raise
+                if verbose:
+                    print(f"  WARN render: {rel}: {e}")
+                continue
+            if res == "skipped:not-owned" and rel not in _name_bearing_live:
+                raise GateError(
+                    f"write gate: {rel!r} is not in tess.manifest.json owned_globs — "
+                    f"render target 'claude-code' cannot write it")
+            results[rel] = res
+            if verbose and res in ("written", "unchanged"):
+                suffix = "" if res == "written" else "  (unchanged)"
+                print(f"  rendered  {rel}{suffix}")
+    finally:
+        after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
+        after += _enforcement_lock_fingerprint(lock)
+        if lock and "files" in lock and after != before:
+            save_lock(root, lock)
+    report_render_output_results(root, "claude-code", results, verbose=verbose,
+                                 manifest=manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -2436,16 +3439,17 @@ class CodexRenderTarget(RenderTarget):
         return {"AGENTS.md"}
 
     def render(self, root: Path, verbose: bool = False) -> dict:
-        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
+        # v0.2 eng-b: all outputs go through write_render_outputs (status,
+        # hand-edit, symlink and not-owned protection; render records).
+        outputs = {"AGENTS.md": render_agents_md(root).encode("utf-8")}
         names = _command_names(root)
         for name in names:
             body = _render_command_prompt_bytes(root, name)
             if body is not None:
-                guarded_write(root, f".codex/prompts/{name}.md", body, op="render")
-        guarded_write(
-            root, ".codex/config.toml",
-            render_codex_config_toml(root).encode("utf-8"), op="render",
-        )
+                outputs[f".codex/prompts/{name}.md"] = body
+        outputs[".codex/config.toml"] = render_codex_config_toml(root).encode("utf-8")
+        write_render_outputs(root, self.name, outputs, verbose=verbose,
+                             required=("AGENTS.md",))
         if verbose:
             print(f"  rendered  AGENTS.md")
             print(f"  rendered  .codex/prompts/** ({len(names)} prompts)")
@@ -2490,12 +3494,15 @@ class GenericRenderTarget(RenderTarget):
         return {"AGENTS.md"}
 
     def render(self, root: Path, verbose: bool = False) -> dict:
-        guarded_write(root, "AGENTS.md", render_agents_md(root).encode("utf-8"), op="render")
+        # v0.2 eng-b: all outputs go through write_render_outputs.
+        outputs = {"AGENTS.md": render_agents_md(root).encode("utf-8")}
         names = _command_names(root)
         for name in names:
             body = _render_command_prompt_bytes(root, name)
             if body is not None:
-                guarded_write(root, f"prompts/{name}.md", body, op="render")
+                outputs[f"prompts/{name}.md"] = body
+        write_render_outputs(root, self.name, outputs, verbose=verbose,
+                             required=("AGENTS.md",))
         if verbose:
             print(f"  rendered  AGENTS.md")
             print(f"  rendered  prompts/** ({len(names)} prompts)")
@@ -2833,9 +3840,39 @@ def _render_enabled_targets(root: Path, verbose: bool = False) -> list:
     """
     targets = enabled_render_targets(root)
     names = sorted(targets)
+    _seed_enforcement_records_on_legacy_lock(root, targets)   # v0.2 eng-b
     for name in names:
         targets[name].render(root, verbose=verbose)
     return names
+
+
+def _seed_enforcement_records_on_legacy_lock(root: Path, targets: dict) -> None:
+    """v0.2 eng-b: on a v0.1.x lock (no render_outputs), record every enabled
+    target's runtime-enforcement outputs before the first target renders.
+    The first target's render creates render_outputs, so a later target's
+    AGENTS.md / .codex/config.toml would otherwise look foreign and a hand
+    edit (e.g. a hook strip) would be kept instead of re-pinned."""
+    lock = _load_lock_or_empty(root)
+    if not lock or "files" not in lock or not _is_legacy_render_lock(lock):
+        return
+    lock[RENDER_OUTPUTS_KEY] = {}
+    for name, target in sorted(targets.items()):
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:  # noqa: BLE001 — the target's own render reports it
+            continue
+        for rel in paths:
+            live = root / rel
+            if not is_enforcement_render_output(rel) or os.path.islink(live) \
+                    or not live.is_file():
+                continue
+            try:
+                expected = target.expected_live_bytes(root, rel)
+            except (SystemExit, Exception):  # noqa: BLE001
+                expected = None
+            if expected is not None:
+                _set_render_output_record(lock, rel, name, sha256_bytes(expected))
+    save_lock(root, lock)
 
 
 def cmd_render(args, root: Path) -> None:
@@ -2932,7 +3969,8 @@ def _doctor_result_is_error(r: dict) -> bool:
     if not is_error:
         for issue in r["issues"]:
             if ("UNCAPTURED DRIFT" in issue or "SECURITY-TIER ALERT" in issue
-                    or "missing" in issue.lower() or "DOCTRINE LEAK" in issue):
+                    or "missing" in issue.lower() or "DOCTRINE LEAK" in issue
+                    or ENFORCEMENT_BYPASS_MARKER in issue):
                 is_error = True
                 break
     return is_error
@@ -3224,6 +4262,7 @@ def cmd_doctor(args, root: Path) -> None:
         results.append(r)
         errors += 1
 
+    errors += _doctor_engb_findings(root, lock, results, as_json, path_filter, fix)  # v0.2 eng-b
     if as_json:
         print(json.dumps(results, indent=2, default=str))
         sys.exit(1 if errors else 0)
@@ -3264,10 +4303,24 @@ def cmd_doctor(args, root: Path) -> None:
             if live_rel not in _drift_printed:
                 _drift_printed.add(live_rel)
                 if live_rel in render_generated:
-                    print(
-                        f"  DRIFT       {live_rel}  ← run `tessctl render`"
-                        f"  (re-sync from operator-state)"
-                    )
+                    if _render_output_drift_kind(root, lock, live_rel) == "stale":
+                        print(
+                            f"  DRIFT       {live_rel}  ← run `tessctl render`"
+                            f"  (re-sync from operator-state)"
+                        )
+                    elif _live_path_is_security(lock, live_rel):
+                        print(
+                            f"  DRIFT       {live_rel} [SECURITY] *** SECURITY DRIFT ***  ← hand-edited "
+                            f"render output: run `tessctl capture {live_rel}` (it will QUARANTINE; "
+                            f"never publish a security edit)"
+                        )
+                    else:
+                        print(
+                            f"  DRIFT       {live_rel}  ← hand-edited render output: "
+                            f"{_render_output_hand_edit_remedy(lock, live_rel)}"
+                            f"  (render keeps it; to discard it, delete the file and re-run "
+                            f"`tessctl render`)"
+                        )
                 else:
                     sec_alarm = " *** SECURITY DRIFT ***" if r.get("is_security") else ""
                     print(f"  DRIFT       {live_rel}{sec_badge}{sec_alarm}  ← run `tessctl capture {live_rel}`")
@@ -3376,10 +4429,23 @@ def cmd_doctor(args, root: Path) -> None:
     blocking = (drift_count > 0 or quarantined_count > 0
                 or core_tamper_count > 0 or missing_count > 0
                 or doctrine_leak_count > 0)
+    # v0.2 eng-b: runtime-enforcement config without its hooks, or holding a
+    # capture/override/hold status (_doctor_engb_findings rows).
+    enforcement_bypass = sorted({
+        r.get("live_path") for r in results
+        if any(ENFORCEMENT_BYPASS_MARKER in i for i in (r.get("issues") or []))})
 
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
               f"Restore .tess/core from git or run `tessctl rollback`.")
+        sys.exit(1)
+    if enforcement_bypass:
+        print(f"\ndoctor: FAIL — runtime enforcement weakened in {len(enforcement_bypass)} "
+              f"file(s): {', '.join(enforcement_bypass)}. Run `tessctl render` (or "
+              f"`tessctl doctor --fix`) to re-pin the core render with its hooks (the "
+              f"replaced bytes go to .tess/snapshots); a user-published copy needs "
+              f"`tessctl reset <path>` first. Local changes belong in "
+              f".claude/settings.local.json or an operator stub — never capture/override.")
         sys.exit(1)
     if quarantined_count > 0:
         print(f"\ndoctor: FAIL — {quarantined_count} quarantined file(s) awaiting the operator approval.")
@@ -3387,14 +4453,27 @@ def cmd_doctor(args, root: Path) -> None:
     if drift_count > 0:
         print(f"\ndoctor: FAIL — {drift_count} uncaptured drift(s). Update blocked until resolved.")
         # R2: if any drifted file is render-generated, the primary remedy is re-render.
-        _rg_drift = any(
-            r.get("drift") and r.get("lock_status") == "core-managed"
+        _rg_drift = {
+            r.get("live_path") for r in results
+            if r.get("drift") and r.get("lock_status") == "core-managed"
             and r.get("live_path") in render_generated
-            for r in results
-        )
-        if _rg_drift:
+        }
+        _rg_hand = {lp for lp in _rg_drift
+                    if _render_output_drift_kind(root, lock, lp) != "stale"}
+        if _rg_drift - _rg_hand:
             print("  Render-generated file(s) are stale — run `tessctl render` to re-sync.")
-        print("  Options: `tessctl render` (for render-generated files), "
+        _rg_sec = sorted(lp for lp in _rg_hand if _live_path_is_security(lock, lp))
+        if _rg_sec:
+            print(f"  SECURITY DRIFT in {len(_rg_sec)} render output(s) ({', '.join(_rg_sec)}): "
+                  f"`tessctl capture <path>` will quarantine it; never publish a security edit.")
+        if set(_rg_hand) - set(_rg_sec):
+            print(f"  {len(set(_rg_hand) - set(_rg_sec))} hand-edited render output(s) — render "
+                  f"keeps them: move the edit to CLAUDE.md.local.md / an operator stub (or "
+                  f"`tessctl publish <path>` for a file with tess.lock entries; settings "
+                  f"changes go in .claude/settings.local.json — publish never keeps an edit "
+                  f"to runtime-enforcement config); to discard, delete the file and re-run "
+                  f"`tessctl render`.")
+        print("  Options: `tessctl render` (for stale render-generated files), "
               "`tessctl capture <path>` (for hand-edited files, quarantines security-tier), "
               "or `tessctl doctor --fix` (auto-resolves both, excludes security-tier).")
         sys.exit(1)
@@ -3450,13 +4529,17 @@ def _quarantine_file(core_key: str, live_rel: str, root: Path, lock: dict,
     else:
         print(f"  WARN  quarantine: core file missing for {core_key}")
 
-    # Update lock status
-    if core_key in lock.get("files", {}):
-        lock["files"][core_key]["status"] = "quarantined"
-        lock["files"][core_key]["quarantined_at"] = datetime.datetime.now(
-            datetime.timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-        lock["files"][core_key]["quarantined_by"] = source
+    # Update lock status — v0.2 eng-b (bug 8): every entry sharing the live
+    # file is quarantined, so no sibling entry can re-render or restore around
+    # the quarantine and `tessctl approve` sees one consistent status.
+    _q_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    _q_keys = [k for k, _a in _entries_for_live_path(lock, live_rel)]
+    if core_key in lock.get("files", {}) and core_key not in _q_keys:
+        _q_keys.append(core_key)
+    for _qk in _q_keys:
+        lock["files"][_qk]["status"] = "quarantined"
+        lock["files"][_qk]["quarantined_at"] = _q_at
+        lock["files"][_qk]["quarantined_by"] = source
 
     # Record provenance
     record_capture_event(root, core_key, live_rel, source, diff_text,
@@ -3475,6 +4558,13 @@ def _capture_file(core_key: str, live_rel: str, root: Path, lock: dict,
 
     if not live_path.exists():
         print(f"  WARN  live file not found: {live_rel}")
+        return False
+
+    # v0.2 eng-b: runtime-enforcement config is never captured — a captured
+    # hook-stripped .claude/settings.json would survive every render.
+    if is_enforcement_render_output(live_rel):
+        print(f"  REFUSED  {live_rel}  — runtime-enforcement config is never captured; "
+              f"put local changes in {_enforcement_edit_home(live_rel)} and run `tessctl render`")
         return False
 
     expected_bytes = render_core_to_live(core_path, live_path, root) if core_path.exists() else b""
@@ -3501,29 +4591,38 @@ def _capture_file(core_key: str, live_rel: str, root: Path, lock: dict,
         os.unlink(base_tmp)
 
     attrs = lock.get("files", {}).get(core_key, {})
+    # v0.2 eng-b (bug 8): the live file is captured as ONE unit — every entry
+    # that shares it (CLAUDE.md = .tpl + fragments). If ANY of them is
+    # security-tier the whole file is quarantined; otherwise all of them flip
+    # to locally-modified. No mixed statuses.
+    _group = _entries_for_live_path(lock, live_rel)
+    if core_key in lock.get("files", {}) and core_key not in [k for k, _a in _group]:
+        _group.append((core_key, attrs))
+    if not _group:
+        _group = [(core_key, attrs)]
 
     # ---- Security-tier: QUARANTINE (never locally-modified) ----
     # Defect #1: capture of a security-tier file must not auto-flip to
     # locally-modified.  Pin authoritative, record attempt, require approval.
-    if is_security_tier(core_key, attrs):
+    if any(is_security_tier(k, a) for k, a in _group):
         _quarantine_file(core_key, live_rel, root, lock, source, diff_text, rationale)
         return True
 
     # ---- Normal tier: fail-loud on missing rationale for doctrine files ----
-    tier = attrs.get("tier", "normal")
-    if tier != "normal" and not rationale:
+    _tiers = sorted({(a or {}).get("tier", "normal") for _k, a in _group} - {"normal"})
+    if _tiers and not rationale:
         sys.exit(
-            f"tessctl capture: {live_rel} is non-normal tier ({tier}) — "
+            f"tessctl capture: {live_rel} is non-normal tier ({', '.join(_tiers)}) — "
             f"--rationale is required for doctrine edits (fail-loud per spec §6)."
         )
 
     # ---- Normal tier: flip to locally-modified ----
-    if core_key in lock.get("files", {}):
-        lock["files"][core_key]["status"] = "locally-modified"
-        lock["files"][core_key]["captured_at"] = datetime.datetime.now(
-            datetime.timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-        lock["files"][core_key]["captured_by"] = source
+    _c_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    for _ck, _ca in _group:
+        if _ck in lock.get("files", {}):
+            lock["files"][_ck]["status"] = "locally-modified"
+            lock["files"][_ck]["captured_at"] = _c_at
+            lock["files"][_ck]["captured_by"] = source
 
     # Record in modified.json
     record_capture_event(root, core_key, live_rel, source, diff_text, rationale)
@@ -3545,13 +4644,28 @@ def cmd_capture(args, root: Path) -> None:
 
     files = lock.get("files", {})
     captured = 0
+    _capture_seen: set = set()   # v0.2 eng-b: one capture per live file
+
+    # v0.2 eng-b: `capture <enforcement output>` is refused outright (by live
+    # path or by the core key behind it); a bulk scan skips those files
+    # with a REFUSED line (_capture_file).
+    if target_path:
+        _tp_live = target_path
+        _tp_attrs = files.get(target_path)
+        if isinstance(_tp_attrs, dict) and _tp_attrs.get("live_path"):
+            _tp_live = _tp_attrs["live_path"]
+        if is_enforcement_render_output(_tp_live):
+            _refuse_enforcement_status_change("capture", _tp_live)
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
         if live_rel is None:
             continue
+        if live_rel in _capture_seen:
+            continue   # a sibling entry already captured this live file as a unit
 
-        status = attrs.get("status", "core-managed")
+        # v0.2 eng-b (bug 8): the live file's effective status (all entries).
+        status = effective_live_status(lock, live_rel)
 
         # Filter by path if specified
         if target_path:
@@ -3577,6 +4691,7 @@ def cmd_capture(args, root: Path) -> None:
         if sha256_bytes(expected_bytes) == sha256_bytes(live_bytes):
             continue  # No drift — nothing to capture
 
+        _capture_seen.add(live_rel)
         if dry_run:
             print(f"  would capture  {live_rel}  (status: {status} → locally-modified)")
             captured += 1
@@ -4560,9 +5675,16 @@ def cmd_update(args, root: Path) -> None:
     uncaptured: list[tuple[str, str]] = []
     render_stale: list[str] = []
     quarantined: list[tuple[str, str]] = []
+    hand_edited_outputs: list[str] = []   # v0.2 eng-b (bug 7)
     _gate_seen_live: set[str] = set()   # dedupe — same live_rel from multiple core keys
     # HIGH-1: union of every ENABLED target's render-generated paths.
     render_generated = render_generated_live_paths(root)
+    # v0.2 eng-b: legacy migration. A v0.1.x lock has no render_outputs:
+    # record every render output that equals the render of the CURRENT
+    # (pre-update) core, in memory; Step 7 persists them. Outputs that do not
+    # match are hand edits: preserved, reported, and they block below.
+    seed_render_output_records(root, lock, verbose=True)
+    mixed_status = _lock_status_consistency_findings(lock)
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
         if not live_rel:
@@ -4577,14 +5699,46 @@ def cmd_update(args, root: Path) -> None:
             quarantined.append((core_key, live_rel))
         elif r.get("drift") and r.get("lock_status") == "core-managed":
             _gate_seen_live.add(live_rel)
-            # HIGH-1: render-generated files are stale render outputs, not hand edits.
-            # Step 7 re-renders them; treat as informational, NOT a blocker.
+            # A stale render (live == the recorded rendered_sha) is not a
+            # blocker: Step 7 re-renders it. A HAND-EDITED render output is
+            # (v0.2 eng-b): Step 7 would have to keep it or destroy it.
             if live_rel in render_generated:
-                render_stale.append(live_rel)
+                if render_output_status(lock, live_rel) != "rendered":
+                    continue  # protected (published/captured/held) — render skips it
+                if _render_output_drift_kind(root, lock, live_rel) == "stale":
+                    render_stale.append(live_rel)
+                else:
+                    hand_edited_outputs.append(live_rel)
             else:
                 uncaptured.append((core_key, live_rel))
+    # Render outputs with no tess.lock entry (AGENTS.md, .codex/**, prompts/**).
+    _covered = {a.get("live_path") for a in files.values() if a.get("live_path")}
+    for r in _check_untracked_render_generated(root, _covered):
+        _lp = r.get("live_path")
+        if not r.get("drift") or not _lp or not (root / _lp).exists():
+            continue  # missing outputs are simply re-rendered by Step 7
+        if render_output_status(lock, _lp) != "rendered":
+            continue
+        if _render_output_drift_kind(root, lock, _lp) == "stale":
+            render_stale.append(_lp)
+        else:
+            hand_edited_outputs.append(_lp)
 
-    if quarantined or uncaptured:
+    if quarantined or uncaptured or hand_edited_outputs or mixed_status:
+        if mixed_status:
+            print(f"  BLOCKED — {len(mixed_status)} live path(s) whose tess.lock entries "
+                  f"disagree on status:")
+            for f in mixed_status:
+                print(f"    {f['live_path']}  "
+                      + ", ".join(f"{k}={v}" for k, v in f["statuses"].items()))
+            print("  Re-run `tessctl publish|capture|reset <path>` (they act on every entry), "
+                  "then retry update.")
+        if hand_edited_outputs:
+            print(f"  BLOCKED — {len(hand_edited_outputs)} hand-edited render output(s):")
+            for lp in hand_edited_outputs:
+                print(f"    {lp}  — {_render_output_hand_edit_remedy(lock, lp)}")
+            print("  To discard an edit instead: delete the file and run `tessctl render`, "
+                  "then retry update.")
         if render_stale:
             print(f"  INFO — {len(render_stale)} render-generated file(s) stale "
                   f"(Step 7 will re-render):")
@@ -4667,6 +5821,7 @@ def cmd_update(args, root: Path) -> None:
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
 
+        _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
         # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
         print("\nStep 5-6: plan and apply …")
         _apply_per_file_resolution(root, lock, dry_run=dry_run)
@@ -4792,8 +5947,11 @@ def cmd_update(args, root: Path) -> None:
         # an upgrade must re-render EVERY enabled harness's artifacts atomically, or a
         # Phase-2+ target goes stale on every `tessctl update` silently.
         if not dry_run:
+            _sync_render_outputs_to_disk(root, lock)     # v0.2 eng-b: Step 1 records reach render
+        if not dry_run:
             print("\nStep 7: render (from new core, post-A1/A2) …")
             _render_enabled_targets(root, verbose=True)
+            _pull_render_outputs_from_disk(root, lock)   # v0.2 eng-b: Step 8 save keeps new records
 
         # Step 8: RE-PIN lock (H1) + A1 base_sha advance + A3 version bump
         # Re-pin base_sha from the NOW-CURRENT core (after A1 advance) so that
@@ -5114,6 +6272,49 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False) ->
 # Command: publish
 # ---------------------------------------------------------------------------
 
+def _mark_published(lock: dict, core_key: str, track: str, version: str) -> None:
+    """Flip one tess.lock entry to user-published (v0.2 eng-b helper)."""
+    lock["files"][core_key]["status"] = "user-published"
+    lock["files"][core_key]["published_from"] = f"{track} v{version}"
+    lock["files"][core_key]["published_at"] = datetime.datetime.now(
+        datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+
+def _publish_render_output(root: Path, lock: dict, rel: str, manifest: dict,
+                           track: str, version: str) -> None:
+    """v0.2 eng-b: publish a render output that has no tess.lock entry
+    (AGENTS.md, .codex/config.toml, prompts). The live file is kept as it is
+    (a hand edit becomes the published version); a missing file is first
+    rendered. The render_outputs record then carries status user-published,
+    so every later render skips it."""
+    live = root / rel
+    if os.path.islink(live):
+        sys.exit(f"tessctl publish: {rel} is a symlink — refusing to publish through it")
+    if not live.exists():
+        data = None
+        for t in enabled_render_targets(root).values():
+            try:
+                data = t.expected_live_bytes(root, rel)
+            except SystemExit:
+                data = None
+            if data is not None:
+                break
+        if data is None:
+            sys.exit(f"tessctl publish: {rel} does not exist and no enabled target renders it")
+        guarded_write(root, rel, data, op="publish", manifest=manifest)
+    rec = render_output_record(lock, rel) or {}
+    target = rec.get("target")
+    if not target:
+        for name, t in sorted(enabled_render_targets(root).items()):
+            if rel in t.render_generated_paths(root):
+                target = name
+                break
+    _set_render_output_record(lock, rel, target or "unknown", sha256_file(live),
+                              status="user-published")
+    print(f"  published  {rel}  (render output; status → user-published — "
+          f"`tessctl render` will no longer write it)")
+
+
 def cmd_publish(args, root: Path) -> None:
     """
     Copy core→live, flip status to user-published, stamp @published-from.
@@ -5135,6 +6336,18 @@ def cmd_publish(args, root: Path) -> None:
         "entry-point": [k for k in lock["files"] if "CLAUDE.md.tpl" in k or "MANIFEST.md" in k],
     }
 
+    # v0.2 eng-b: .claude/settings.json (hooks) is refused like
+    # .codex/config.toml: render re-pins it; local changes go to
+    # .claude/settings.local.json.
+    _pub_live = target_path
+    if target_path and isinstance(lock["files"].get(target_path), dict):
+        _pub_live = lock["files"][target_path].get("live_path") or target_path
+    if tag_sel == "settings" or (target_path and _pub_live == ".claude/settings.json"):
+        _rel = ".claude/settings.json"
+        sys.exit(f"tessctl publish: {_rel} is runtime-enforcement config rendered by Tess; "
+                 f"it cannot be published. Put the change in {_enforcement_edit_home(_rel)}; "
+                 f"`tessctl render` re-pins {_rel} to the core render.")
+
     # Select targets
     targets = []
     if tag_sel:
@@ -5150,9 +6363,54 @@ def cmd_publish(args, root: Path) -> None:
                 targets.append(k)
                 break
         if not targets:
+            # v0.2 eng-b: runtime-enforcement config with no tess.lock entry
+            # (.codex/config.toml, AGENTS.md) has no core file to re-seed
+            # from, so publishing it would freeze a hand edit — refused.
+            if is_enforcement_render_output(target_path):
+                sys.exit(f"tessctl publish: {target_path} is runtime-enforcement config "
+                         f"rendered by Tess; it cannot be published. Put the change in "
+                         f"{_enforcement_edit_home(target_path)}; `tessctl render` rewrites "
+                         f"{target_path} once the hand edit is deleted.")
+            # A render output with no tess.lock entry (prompts, skills) is
+            # published through its render_outputs record instead.
+            if (target_path in render_generated_live_paths(root)
+                    or render_output_record(lock, target_path) is not None):
+                _publish_render_output(root, lock, target_path, manifest, track, version)
+                save_lock(root, lock)
+                print("\npublish: complete.")
+                return
             sys.exit(f"tessctl publish: path not found in lock: {target_path}")
     else:
         sys.exit("tessctl publish: specify a <path> or --tag <selector>")
+
+    # v0.2 eng-b (bug 8): publish acts on EVERY entry that shares a selected
+    # live_path (CLAUDE.md = the .tpl + its fragments), so restore/render can
+    # no longer overwrite a published file through a sibling entry. Each live
+    # file is written once; every entry behind it is flipped.
+    _expanded: list = []
+    for _k in targets:
+        _lp = lock["files"].get(_k, {}).get("live_path")
+        _group = [k for k, _a in _entries_for_live_path(lock, _lp)] if _lp else [_k]
+        for _g in (_group or [_k]):
+            if _g not in _expanded:
+                _expanded.append(_g)
+    targets = _expanded
+
+    # v0.2 eng-b: a QUARANTINED security edit is decided by `tessctl approve`
+    # (a TTY-confirmed, rationale-bearing security decision), never by publish.
+    # Refuse the whole run before anything is written.
+    _quarantined_live = sorted({
+        lock["files"][k].get("live_path") or k for k in targets
+        if (lock["files"].get(k, {}).get("status") or "") == "quarantined"})
+    if _quarantined_live:
+        for _lp in _quarantined_live:
+            print(f"  REFUSED  {_lp}  [SECURITY — quarantined]")
+        sys.exit("tessctl publish: refusing to publish a quarantined security-tier file. "
+                 "Use `tessctl approve <path> --rationale ...` to accept the quarantined edit, "
+                 "or `tessctl reset <path>` to discard it.")
+
+    _live_outcome: dict = {}   # live_rel -> "written" | "skipped"
+    _render_outputs_now = render_generated_live_paths(root)
 
     # M1: track gate-rejected targets in bulk (--tag) mode.
     # Single-target publish keeps hard-fail (GateError re-raised to main()).
@@ -5167,6 +6425,34 @@ def cmd_publish(args, root: Path) -> None:
 
         core_path = root / core_key
         live_path = root / live_rel
+
+        if _live_outcome.get(live_rel) == "skipped":
+            continue
+        if _live_outcome.get(live_rel) == "written":
+            _mark_published(lock, core_key, track, version)
+            continue
+        _live_outcome[live_rel] = "skipped"   # until the write below succeeds
+
+        # v0.2 eng-b (bug 7): a hand-edited render output IS what the operator
+        # is publishing — keep the live bytes instead of re-seeding from core.
+        # Never for a security-tier live path: a hand edit to security doctrine
+        # is SECURITY DRIFT (capture quarantines it); publish re-seeds from core.
+        # Never for runtime-enforcement config (.claude/settings.json) either:
+        # keeping a hook-stripped settings file would switch enforcement off
+        # for good, so publish re-seeds it from core like a security path.
+        _security_live = _live_path_is_security(lock, live_rel)
+        _enforcement_live = is_enforcement_render_output(live_rel)
+        if (not force and not _security_live and not _enforcement_live
+                and live_rel in _render_outputs_now
+                and live_path.is_file()
+                and not live_path.is_symlink() and core_path.exists()
+                and live_path.read_bytes() != render_core_to_live(core_path, live_path, root)
+                and _render_output_drift_kind(root, lock, live_rel) == "hand-edited"):
+            _live_outcome[live_rel] = "written"
+            _mark_published(lock, core_key, track, version)
+            print(f"  published  {live_rel}  (status → user-published; your edited live "
+                  f"file is kept as the published version)")
+            continue
 
         if force:
             # Show diff first
@@ -5200,6 +6486,19 @@ def cmd_publish(args, root: Path) -> None:
         # divergence).  Single-target publish re-raises so main() calls sys.exit.
         if core_path.exists():
             rendered = render_core_to_live(core_path, live_path, root)
+            if (_enforcement_live and not _security_live and live_path.is_file()
+                    and not live_path.is_symlink() and live_path.read_bytes() != rendered):
+                snapshot_single_file(root, live_rel)
+                print(f"  NOTE  {live_rel} [ENFORCEMENT]: the live edit is NOT published — "
+                      f"re-seeded from core (the replaced bytes are in .tess/snapshots). "
+                      f"Put local changes in {_enforcement_edit_home(live_rel)}.")
+            if (_security_live and live_rel in _render_outputs_now and live_path.is_file()
+                    and not live_path.is_symlink() and live_path.read_bytes() != rendered):
+                snapshot_single_file(root, live_rel)
+                print(f"  NOTE  {live_rel} [SECURITY]: the live edit is NOT published — "
+                      f"re-seeded from core (the replaced bytes are in .tess/snapshots). "
+                      f"`tessctl capture {live_rel}` quarantines a security edit for "
+                      f"`tessctl approve`.")
             if live_path.suffix in (".md", ".markdown"):
                 try:
                     _content = rendered.decode("utf-8")
@@ -5224,9 +6523,8 @@ def cmd_publish(args, root: Path) -> None:
         # Update lock — only reached after a successful write (or when core_path
         # was missing, which is a no-op write).  Gate-skipped targets never reach
         # here, so the persisted lock exactly mirrors what was actually written.
-        lock["files"][core_key]["status"] = "user-published"
-        lock["files"][core_key]["published_from"] = f"{track} v{version}"
-        lock["files"][core_key]["published_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+        _live_outcome[live_rel] = "written"
+        _mark_published(lock, core_key, track, version)
 
         print(f"  published  {live_rel}  (status → user-published)")
 
@@ -5268,7 +6566,13 @@ def cmd_override(args, root: Path) -> None:
             break
 
     if not core_key:
+        if is_enforcement_render_output(target_path):
+            _refuse_enforcement_status_change("override", target_path)
         sys.exit(f"tessctl override: path not found in tess.lock: {target_path}")
+    # v0.2 eng-b: a patch-override on runtime-enforcement config would keep
+    # the edit (e.g. stripped hooks) through every render — refused.
+    if is_enforcement_render_output(live_rel):
+        _refuse_enforcement_status_change("override", live_rel)
 
     core_path = root / core_key
     live_path = root / live_rel
@@ -5304,11 +6608,18 @@ def cmd_override(args, root: Path) -> None:
     manifest = load_manifest(root)
     check_manifest_write_gate(root, manifest, live_rel, op="override")
 
-    # Store in lock
-    lock["files"][core_key]["status"] = "patch-override"
-    lock["files"][core_key]["override_diff"] = diff_text
-    lock["files"][core_key]["override_recorded_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-    lock["files"][core_key]["base_sha"] = sha256_file(core_path)
+    # Store in lock — v0.2 eng-b (bug 8): on EVERY entry that shares this
+    # live_path, so restore/render cannot overwrite the live file through a
+    # sibling entry. Each entry carries the same live-file diff; update's
+    # patch-apply renders the whole live file fresh per entry, so re-applying
+    # it per entry converges on the same bytes.
+    _recorded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    for _k, _a in (_entries_for_live_path(lock, live_rel) or [(core_key, files[core_key])]):
+        lock["files"][_k]["status"] = "patch-override"
+        lock["files"][_k]["override_diff"] = diff_text
+        lock["files"][_k]["override_recorded_at"] = _recorded_at
+        if (root / _k).exists():
+            lock["files"][_k]["base_sha"] = sha256_file(root / _k)
 
     save_lock(root, lock)
     print(f"override: recorded patch for {live_rel}  ({len(diff_text.splitlines())} lines)")
@@ -6024,10 +7335,16 @@ def cmd_reset(args, root: Path) -> None:
     if not core_key:
         sys.exit(f"tessctl reset: path not found in tess.lock: {target_path}")
 
+    # v0.2 eng-b (bug 8): reset acts on EVERY entry sharing the live_path;
+    # the status gate below sees the most protective of them.
+    _reset_keys = [k for k, _a in _entries_for_live_path(lock, live_rel)] or [core_key]
     attrs = files[core_key]
-    status = attrs.get("status", "core-managed")
+    status = (effective_live_status(lock, live_rel) if live_rel
+              else attrs.get("status", "core-managed"))
 
-    if status not in ("locally-modified", "core-managed"):
+    if status not in ("locally-modified", "core-managed") and not (
+            live_rel and is_enforcement_render_output(live_rel)
+            and status in ("user-published", "patch-override", "held")):
         sys.exit(
             f"tessctl reset: {live_rel} has status {status!r} — reset only applies to\n"
             f"  locally-modified files (or already-pristine core-managed files).\n"
@@ -6056,11 +7373,13 @@ def cmd_reset(args, root: Path) -> None:
     # Restore from core — manifest-gated + atomic (H2/M3)
     guarded_write(root, live_rel, rendered, op="reset", manifest=manifest)
 
-    # Re-pin lock to pristine
-    lock["files"][core_key]["status"] = "core-managed"
-    lock["files"][core_key]["base_sha"] = sha256_file(core_path)
-    for field in ("captured_at", "captured_by", "override_diff", "override_recorded_at"):
-        lock["files"][core_key].pop(field, None)
+    # Re-pin lock to pristine (v0.2 eng-b: every entry sharing the live_path)
+    for _rk in _reset_keys:
+        lock["files"][_rk]["status"] = "core-managed"
+        if (root / _rk).exists():
+            lock["files"][_rk]["base_sha"] = sha256_file(root / _rk)
+        for field in ("captured_at", "captured_by", "override_diff", "override_recorded_at"):
+            lock["files"][_rk].pop(field, None)
 
     save_lock(root, lock)
     print(f"tessctl reset: {live_rel} restored from core. status → core-managed.")
