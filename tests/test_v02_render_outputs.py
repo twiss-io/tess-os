@@ -167,22 +167,30 @@ def test_captured_claude_md_survives_render(project, engine):
         "render re-rendered a captured (locally-modified) CLAUDE.md"
 
 
-def test_doctor_fix_keeps_hand_edited_codex_config(project, engine, capsys):
+def test_doctor_fix_repins_hand_edited_codex_config(project, engine, capsys):
+    """.codex/config.toml is runtime-enforcement config: doctor --fix re-pins
+    a hand edit to the core render (the edit goes to .tess/snapshots), and
+    doctor passes afterwards. (Was: kept — reversed in review round 4.)"""
     root = build(project, codex=True)
     render(engine, root)                      # a real render: records rendered_sha
     cfg = root / ".codex" / "config.toml"
     assert cfg.exists()
+    rendered = cfg.read_bytes()
     edited = cfg.read_text(encoding="utf-8") + '\n[mcp_servers.local]\ncommand = "x"\n'
     cfg.write_text(edited, encoding="utf-8")
     capsys.readouterr()
 
-    with pytest.raises(SystemExit) as exc:
+    try:
         engine.cmd_doctor(ns(fix=True, json_out=False, path=None), root)
+    except SystemExit:
+        pass
     out = capsys.readouterr().out
 
-    assert exc.value.code not in (0, None), "doctor --fix exited 0 over a hand-edited render output"
-    assert cfg.read_text(encoding="utf-8") == edited, "doctor --fix destroyed the hand edit"
-    assert "hand-edited render output" in out
+    assert cfg.read_bytes() == rendered, "doctor --fix kept a hand edit to .codex/config.toml"
+    assert "RE-PINNED" in out and ".codex/config.toml" in out
+    snaps = list((root / engine.SNAPSHOTS_DIR).glob("*/.codex/config.toml"))
+    assert any(p.read_text(encoding="utf-8") == edited for p in snaps), "no snapshot of the edit"
+    engine.cmd_doctor(ns(fix=False, json_out=False, path=None), root)   # exits 0
 
 
 def test_symlinked_agents_md_never_clobbers_claude_md(project, engine, capsys):
@@ -218,7 +226,10 @@ def test_hand_edited_claude_md_survives_render_and_restore(project, engine, caps
     assert project.read_live("CLAUDE.md") == edited, "restore destroyed a hand edit"
 
 
-def test_v011_lock_first_render_seeds_records_and_keeps_hand_edited_agents_md(project, engine):
+def test_v011_lock_first_render_seeds_records_and_repins_hand_edited_agents_md(project, engine):
+    """AGENTS.md is runtime-enforcement config: the first render on a v0.1.x
+    lock re-pins a hand edit (snapshotted). (Was: kept — reversed in review
+    round 4.)"""
     project.framework["version"] = "0.1.1"
     project.framework["upstream_ref"] = "v0.1.1"
     root = build(project, codex=True)
@@ -233,13 +244,16 @@ def test_v011_lock_first_render_seeds_records_and_keeps_hand_edited_agents_md(pr
 
     render(engine, root)
 
-    assert project.read_live("AGENTS.md") == agents_edited, "first render rewrote a hand-edited AGENTS.md"
+    assert project.read_live("AGENTS.md") == mod.render_agents_md(root), \
+        "first render kept a hand-edited AGENTS.md (runtime-enforcement config)"
+    snaps = list((root / engine.SNAPSHOTS_DIR).glob("*/AGENTS.md"))
+    assert any(p.read_text(encoding="utf-8") == agents_edited for p in snaps)
     lock = engine.load_lock(root)
     records = lock.get("render_outputs") or {}
     assert records.get("CLAUDE.md", {}).get("rendered_sha") == mod.sha256_file(root / "CLAUDE.md")
     assert records.get(".codex/config.toml", {}).get("rendered_sha") == \
         mod.sha256_file(root / ".codex" / "config.toml")
-    assert "AGENTS.md" not in records, "a hand edit must not be blessed as a render"
+    assert records.get("AGENTS.md", {}).get("rendered_sha") == mod.sha256_file(root / "AGENTS.md")
 
 
 # ---------------------------------------------------------------------------
