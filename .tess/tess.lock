@@ -6073,7 +6073,7 @@ render_outputs:
     status: rendered
     rendered_sha: sha256:3b302444d22e24a0e19d62f6300ac354a5319c20f3cef0f3991e66f6d57f5c7f
   AGENTS.md:
-    target: codex
+    target: gemini
     status: rendered
     rendered_sha: sha256:d15f3cd2be014672efbdca3795044974740f819aae0188a239e74f4ae13394b0
   .codex/prompts/add-agent.md:
@@ -6184,3 +6184,111 @@ render_outputs:
     target: codex
     status: rendered
     rendered_sha: sha256:dd9d53ffd6b2e3ff275414a01ed989b2b09e5fb45852f26d37909d0d107ee439
+  GEMINI.md:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:333dd4bf348b5e14f42bf713bea208762f3cdf6d848d263fdcaeb862dd394b47
+  .gemini/commands/tess/add-agent.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:64c3d28ce270f5373b5a4b93c333b9d98d0c835d1aa8d2455ec15cf9ebd04b14
+  .gemini/commands/tess/add-mission.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:b36b7679a7c4dbde740bddcbb1d361647ff5c0316dae7357c47c6d150dde5140
+  .gemini/commands/tess/brainstorm.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:1d355bb0b6c8d5a38befb276324b95e19552c63d1ecbbc0c165734b5331a48b3
+  .gemini/commands/tess/close.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:b8891877256f65b5cdb20adbd343e5bf998032261bc16adba41fec8b7b8ef684
+  .gemini/commands/tess/code-red.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:05a7f30f8af6d1828f426a90707e1b0dcb5f09ed0375f7b2731faf497cc63fd9
+  .gemini/commands/tess/cx-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:4f4075eef4088bc25b9c4980b439366cb476de466e2eb23a60fd042b2b5eb782
+  .gemini/commands/tess/feedback.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:828508bd364d44a1150f925c1ce9e6cbefb68106dd4423536ab2afaf9d9eda57
+  .gemini/commands/tess/finalize.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:d348f9de1282545ee7b21e6d3e8feb6e783cae720e389bb5a2df5a98e41dcddd
+  .gemini/commands/tess/founder-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:08aa72f980efaddcb20a0b2536b7e0396db0b79d4deed765ac90f091089fd7f6
+  .gemini/commands/tess/help.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:01b3f1ff3e4b802c34da62a8d1190064d07ef5f54c8fac10c816859b18ba62d7
+  .gemini/commands/tess/initiate.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:a7d1da1bc72df4581145c9fdd64cf02b74d7479fbfe07f2dfc0f0ed19c6d4298
+  .gemini/commands/tess/list-agents.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:cc1819b6b54fa79aee2b7a83693cce9cdf65a37139f8c2b3173103900b3b86e1
+  .gemini/commands/tess/ops-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:eebc4292241b6507664cb4b565960ed339bcd7c25ed6f3c9b2e26913218fb06d
+  .gemini/commands/tess/product-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:8486f40c3d562abf1f98709489e9596f53403db1966ffba169786717d0204951
+  .gemini/commands/tess/remove-agent.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:c1d5a09c0f75b8307bcd3f5c2c5d7390d99ae8618537206008fe36de494d97ef
+  .gemini/commands/tess/reset.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:dc13f0c640e39de8d2a9d215d512eb40836115081758af99fb2e4a62f1a1873c
+  .gemini/commands/tess/revenue-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:a38db43086f981e93a4dd300b6d72f62b5a4626ef312f8e96959827d61319c60
+  .gemini/commands/tess/review-mission.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:a89c0eb127eca1d9528625a23111d0d4ed2428f4791374d8be971d358bb74664
+  .gemini/commands/tess/route-mission.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:72d6a3b56c37e78164358462683cc624ab9610c01d2dfc7e541db0922eb093c6
+  .gemini/commands/tess/show-active-guilds.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:7e3844479e93cdcfdc60716d99f4907d9fb52fa3f77af0865f5573d10e0846c3
+  .gemini/commands/tess/show-next-moves.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:18fe4e670fac3323645919e58b7c1bc4d82aa7e8b2967a0d08337d3a0e56a81a
+  .gemini/commands/tess/show-owner.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:e94191d7e06338a50102c7cf05b02244bfe12459742810b9c1307d47a8a64d36
+  .gemini/commands/tess/show-risks.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:17fdd605679e0becbb28399b3984e371e4352445e7646150a42de90c19860084
+  .gemini/commands/tess/strategic-mode.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:1fea7496dffc2ac3debcc0b7fe74541cbd1faf35054feb6647b6084fc86d55d6
+  .gemini/commands/tess/summary.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:602e181d6cf4e49ea64be152923a2b701a004f397d8abe5a90da91a2f64ec272
+  .gemini/commands/tess/wake.toml:
+    target: gemini
+    status: rendered
+    rendered_sha: sha256:0b1b78ab79153965337f077c727a5efcce9a084664a86c73e322d9a0f4e806f2

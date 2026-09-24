@@ -3239,24 +3239,6 @@ def _gemini_symlink_on_path(root: Path, live_rel: str) -> bool:
     return False
 
 
-def _gemini_write(root: Path, live_rel: str, data: bytes) -> str:
-    """Write one gemini render output. Returns 'written', 'unchanged' or
-    'skipped:symlink'. Every real write goes through guarded_write (the
-    manifest write gate)."""
-    if _gemini_symlink_on_path(root, live_rel):
-        print(
-            f"  skipped   {live_rel} (symlink on path; tessctl does not write "
-            f"through a symlink)",
-            file=sys.stderr,
-        )
-        return "skipped:symlink"
-    live = root / live_rel
-    if live.is_file() and live.read_bytes() == data:
-        return "unchanged"
-    guarded_write(root, live_rel, data, op="render")
-    return "written"
-
-
 class GeminiRenderTarget(RenderTarget):
     """
     Gemini CLI target (v0.2.0, conformance level Partial — see
@@ -3289,41 +3271,48 @@ class GeminiRenderTarget(RenderTarget):
         return {"AGENTS.md", GEMINI_CONTEXT_FILE}
 
     def render(self, root: Path, verbose: bool = False) -> dict:
-        outcomes: dict = {}
-        outcomes["AGENTS.md"] = _gemini_write(
-            root, "AGENTS.md", render_agents_md(root).encode("utf-8")
-        )
-        outcomes[GEMINI_CONTEXT_FILE] = _gemini_write(
-            root, GEMINI_CONTEXT_FILE, render_gemini_md(root).encode("utf-8")
-        )
-        skipped_names = [
-            n for n in _command_names(root) if not _GEMINI_COMMAND_NAME_RE.match(n)
-        ]
-        for name in skipped_names:
-            print(
-                f"  skipped   command {name!r}: not a valid Gemini command "
-                f"file name ([A-Za-z0-9_.-])",
-                file=sys.stderr,
-            )
-        cmd_outcomes: dict = {}
-        for name in _gemini_command_names(root):
-            data = render_gemini_command_toml(root, name)
-            if data is None:
+        # v0.2: every output goes through write_render_outputs (eng-b): it
+        # keeps hand-edited, foreign and status-protected files, refuses a
+        # symlinked file, and reports paths outside owned_globs as
+        # 'skipped:not-owned' with the glob to add (an upgraded install's
+        # manifest lacks the gemini globs). write_render_output checks only
+        # the final path component, so a symlinked parent directory is
+        # refused here first.
+        outputs = {
+            "AGENTS.md": render_agents_md(root).encode("utf-8"),
+            GEMINI_CONTEXT_FILE: render_gemini_md(root).encode("utf-8"),
+        }
+        for name in _command_names(root):
+            if not _GEMINI_COMMAND_NAME_RE.match(name):
+                print(
+                    f"  SKIP  command {name!r}: not a valid Gemini command file "
+                    f"name ([A-Za-z0-9_.-]); not rendered for gemini",
+                    file=sys.stderr,
+                )
                 continue
-            rel = f"{GEMINI_COMMANDS_DIR}/{name}.toml"
-            cmd_outcomes[rel] = _gemini_write(root, rel, data)
-        outcomes.update(cmd_outcomes)
+            data = render_gemini_command_toml(root, name)
+            if data is not None:
+                outputs[f"{GEMINI_COMMANDS_DIR}/{name}.toml"] = data
+        results: dict = {}
+        for rel in list(outputs):
+            if _gemini_symlink_on_path(root, str(Path(rel).parent)):
+                del outputs[rel]
+                results[rel] = "skipped:symlink"
+                print(f"  KEEP  {rel}  — a parent directory is a symlink; not followed")
+        results.update(
+            write_render_outputs(root, self.name, outputs, verbose=verbose,
+                                 required=("AGENTS.md",))
+        )
         if verbose:
             for rel in ("AGENTS.md", GEMINI_CONTEXT_FILE):
-                print(f"  {outcomes[rel]:<9} {rel}")
+                print(f"  {results.get(rel, 'skipped'):<9} {rel}")
+            cmd = {r: v for r, v in results.items()
+                   if r.startswith(f"{GEMINI_COMMANDS_DIR}/")}
             counts: dict = {}
-            for status in cmd_outcomes.values():
+            for status in cmd.values():
                 counts[status] = counts.get(status, 0) + 1
             summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "none"
-            print(
-                f"  rendered  {GEMINI_COMMANDS_DIR}/** "
-                f"({len(cmd_outcomes)} commands: {summary})"
-            )
+            print(f"  rendered  {GEMINI_COMMANDS_DIR}/** ({len(cmd)} commands: {summary})")
         return {"target": self.name, "status": "rendered"}
 
     def expected_live_bytes(self, root: Path, live_rel: str) -> bytes | None:

@@ -305,16 +305,65 @@ def test_agents_md_is_shared_byte_for_byte_with_codex(engine, project):
 # Write gate and symlinks
 # ---------------------------------------------------------------------------
 
-def test_gemini_render_honours_the_manifest_write_gate(engine, project):
+def test_agents_md_outside_owned_globs_is_a_gate_error(engine, project):
     _seed(project)
     project.write()
     mf_path = project.root / "tess.manifest.json"
     manifest = json.loads(mf_path.read_text(encoding="utf-8"))
-    manifest["owned_globs"] = [g for g in manifest["owned_globs"] if g != "GEMINI.md"]
+    manifest["owned_globs"] = [g for g in manifest["owned_globs"] if g != "AGENTS.md"]
     mf_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(engine.GateError):
         engine.RENDER_TARGETS["gemini"].render(project.root, verbose=False)
+    assert not (project.root / "AGENTS.md").exists()
+
+
+# owned_globs of the create-tess 0.1.4 template manifest (commit 22d69eb):
+# an upgraded install keeps this manifest, so it owns no Gemini path.
+_OWNED_GLOBS_0_1_4 = [
+    "CLAUDE.md", "conductor/**", "agents/**", ".claude/agents/**",
+    ".claude/commands/**", ".claude/hooks/**", ".claude/skills/**",
+    ".claude/settings.json", "clients/_template/**", "core/contracts/**",
+    "core/policy/**", "AGENTS.md", ".codex/prompts/**", ".codex/config.toml",
+    "prompts/**",
+]
+
+
+def test_0_1_4_manifest_skips_gemini_outputs_as_not_owned(project, run_cli):
+    _seed(project)
+    project.write()
+    mf_path = project.root / "tess.manifest.json"
+    manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+    manifest["owned_globs"] = list(_OWNED_GLOBS_0_1_4)
+    manifest["render_targets"]["enabled"] = ["claude-code", "codex"]
+    mf_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    r = run_cli(project.root, "render", "--target", "gemini")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert 'Add "GEMINI.md" to tess.manifest.json owned_globs' in r.stdout
+    assert 'Add ".gemini/commands/tess/**" to tess.manifest.json owned_globs' in r.stdout
     assert not (project.root / "GEMINI.md").exists()
+    assert not (project.root / ".gemini").exists()
+    assert json.loads(mf_path.read_text(encoding="utf-8"))["owned_globs"] == _OWNED_GLOBS_0_1_4
+
+
+def test_hand_edit_to_a_gemini_command_survives_render_and_doctor_fix(project, run_cli):
+    _seed(project)
+    project.write()
+    _set_enabled(project, ["gemini"])
+    assert run_cli(project.root, "render").returncode == 0
+    wake = project.root / ".gemini/commands/tess/wake.toml"
+    edited = 'description = "mine"\nprompt = "my own wake"\n'
+    wake.write_text(edited, encoding="utf-8")
+
+    r = run_cli(project.root, "render")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "hand-edited render output" in r.stdout
+    assert wake.read_text(encoding="utf-8") == edited
+
+    run_cli(project.root, "doctor", "--fix")
+    assert wake.read_text(encoding="utf-8") == edited
+    d = run_cli(project.root, "doctor")
+    assert ".gemini/commands/tess/wake.toml" in d.stdout
 
 
 def test_render_never_writes_through_a_symlinked_commands_dir(engine, project, tmp_path):
