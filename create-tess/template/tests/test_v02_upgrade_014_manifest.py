@@ -102,8 +102,7 @@ def test_codex_skills_on_014_manifest_are_skipped_and_named(project, engine, cap
     assert all((root / p).is_file() for p in skills)
 
 
-def test_not_owned_outputs_are_skipped_and_the_glob_is_named_once(project, engine, capsys,
-                                                                   monkeypatch):
+def _stub_skills_target(engine):
     class StubSkillsTarget(engine.RenderTarget):
         name = "stub-skills"
         doctrine_profile = "worker"
@@ -124,7 +123,12 @@ def test_not_owned_outputs_are_skipped_and_the_glob_is_named_once(project, engin
         def render_generated_paths(self, root):
             return set(self.outputs)
 
-    stub = StubSkillsTarget()
+    return StubSkillsTarget()
+
+
+def test_not_owned_outputs_are_skipped_and_the_glob_is_named_once(project, engine, capsys,
+                                                                   monkeypatch):
+    stub = _stub_skills_target(engine)
     monkeypatch.setitem(engine.RENDER_TARGETS, "stub-skills", stub)
     root = build(project)
     mf_bytes = use_014_manifest(root)
@@ -145,6 +149,28 @@ def test_not_owned_outputs_are_skipped_and_the_glob_is_named_once(project, engin
     assert set(stub.results.values()) == {"written"}
     for rel, data in stub.outputs.items():
         assert (root / rel).read_bytes() == data
+
+
+def test_doctor_names_the_missing_owned_glob_once(project, engine, capsys, monkeypatch):
+    stub = _stub_skills_target(engine)
+    monkeypatch.setitem(engine.RENDER_TARGETS, "stub-skills", stub)
+    root = build(project)
+    use_014_manifest(root)
+    mf = json.loads((root / "tess.manifest.json").read_text(encoding="utf-8"))
+    mf["render_targets"]["enabled"] = ["claude-code", "stub-skills"]
+    (root / "tess.manifest.json").write_text(json.dumps(mf), encoding="utf-8")
+    mf_bytes = (root / "tess.manifest.json").read_bytes()
+    capsys.readouterr()
+
+    try:
+        engine.cmd_doctor(ns(fix=False, json_out=False, path=None), root)
+    except SystemExit:
+        pass   # only the note matters here
+    out = capsys.readouterr().out
+
+    named = lines_naming(out, SKILLS_GLOB)
+    assert len(named) == 1 and "stub-skills" in named[0], out
+    assert (root / "tess.manifest.json").read_bytes() == mf_bytes
 
 
 def test_v01x_update_gate_blocks_a_hand_edited_render_output(project, engine, capsys):
