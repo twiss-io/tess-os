@@ -111,11 +111,19 @@ export const EXCLUDE_NAMES = new Set([
 // category — a fixed, intentionally-bundled verification key, not a
 // per-project trust anchor a scaffold should ever discard — and is
 // deliberately NOT listed here.
+//
+// `reviews/verdicts` (v0.2.0): the maintainer's own signed review verdicts
+// (`tessctl verdict sign` writes the signature INTO the verdict file). They
+// are this repo's governance records, not adopter content. Without this
+// exclusion every verdict commit would make the committed bundle stale and
+// ship maintainer verdicts to adopters. Guarded by
+// test/verdict-exclusion.test.js.
 export const EXCLUDE_DIR_PREFIXES = [
   '.claude/tess-secrets',
   '.claude/channels',
   '.tess/keys/verifiers',
   '.tess/keys/signoffs',
+  'reviews/verdicts',
 ];
 
 // B3 (gap-loop R2) — exact relative-path excludes. `.github/workflows/` is
