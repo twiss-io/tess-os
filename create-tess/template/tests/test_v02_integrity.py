@@ -220,7 +220,9 @@ def test_init_refuses_to_clobber_uncaptured_drift_then_force_and_rollback(real_t
         if rel != "conductor/guardrails.md":
             assert not _marker_present(real_tree, rel), rel
 
-    new = sorted(set(_snapshot_dirs(real_tree)) - before)
+    # ONE consolidated snapshot for the whole `init --force` (per-file `-pre`
+    # directories written by the render write path are extra copies).
+    new = sorted(d for d in set(_snapshot_dirs(real_tree)) - before if not d.endswith("-pre"))
     assert len(new) == 1, new
     snap = _snaps(real_tree) / new[0]
     for rel, data in pre_images.items():

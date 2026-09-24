@@ -267,11 +267,23 @@ def test_finish_snapshot_discards_a_noop_snapshot(project):
 # bug a: render outputs get a pre-image
 # ---------------------------------------------------------------------------
 
+def _record_rendered(project, outputs, target="codex"):
+    """Mark `outputs` as what Tess last rendered (tess.lock render_outputs),
+    i.e. stale renders that `tessctl render` rewrites."""
+    lock = project.mod.load_lock(project.root)
+    lock["render_outputs"] = {
+        rel: {"target": target, "status": "rendered",
+              "rendered_sha": project.mod.sha256_bytes(data)}
+        for rel, data in outputs.items()
+    }
+    project.mod.save_lock(project.root, lock)
+
+
 def test_render_snapshot_restores_agents_md_and_codex_config(project):
-    """Bug a acceptance: codex enabled, a hand-maintained AGENTS.md and a
-    .codex/config.toml holding an [mcp_servers.x] block; `render` then
-    `rollback --to <id>` restores both byte-for-byte. 5c2d698's render took
-    no snapshot at all, so both were lost."""
+    """Bug a acceptance: codex enabled, AGENTS.md and a .codex/config.toml
+    holding an [mcp_servers.x] block that `render` overwrites (here: stale
+    renders); `render` then `rollback --to <id>` restores both byte-for-byte.
+    5c2d698's render took no snapshot at all, so both were lost."""
     _seed_codex(project)
     project.write()
     _set_enabled(project, ["codex"])
@@ -279,6 +291,7 @@ def test_render_snapshot_restores_agents_md_and_codex_config(project):
     config = b'approval_policy = "never"\n\n[mcp_servers.x]\ncommand = "x-server"\n'
     project.write_live("AGENTS.md", agents)
     project.write_live(".codex/config.toml", config)
+    _record_rendered(project, {"AGENTS.md": agents, ".codex/config.toml": config})
     before = set(_full_dirs(project))
 
     project.mod.cmd_render(ns(target=None, list_targets=False), project.root)

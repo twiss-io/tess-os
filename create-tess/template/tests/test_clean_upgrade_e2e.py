@@ -25,13 +25,13 @@ from conftest import make_upstream, ns
 
 def _scaffold_render(project):
     """cmd_update Step 7 renders CLAUDE.md + settings.json; give it the minimal
-    template + settings-core.json so render does not hard-exit. Neither file is
-    tracked in tess.lock, so doctor/verify ignore them."""
-    tpl = project.root / ".tess" / "core" / "templates" / "CLAUDE.md.tpl"
-    tpl.parent.mkdir(parents=True, exist_ok=True)
-    tpl.write_text("# Tess OS\n\nRoot: {{TESS_ROOT}}\n", encoding="utf-8")
-    sc = project.root / ".tess" / "core" / "settings-core.json"
-    sc.write_text('{"root": "{{TESS_ROOT}}"}\n', encoding="utf-8")
+    template + settings-core.json so render does not hard-exit. v0.2 eng-a
+    (bug 10): both are lock-tracked core-internal inputs (live_path null) —
+    an untracked .tess/core file now FAILs doctor/verify."""
+    project.add(None, "# Tess OS\n\nRoot: {{TESS_ROOT}}\n",
+                core_key=".tess/core/templates/CLAUDE.md.tpl", render_live=False)
+    project.add(None, '{"root": "{{TESS_ROOT}}"}\n',
+                core_key=".tess/core/settings-core.json", render_live=False)
 
 
 def test_clean_upgrade_e2e_acceptance(project, gpg_key, tmp_path, run_cli):
