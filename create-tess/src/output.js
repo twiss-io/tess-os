@@ -62,7 +62,7 @@ export function printFirstPushNotice() {
         '    found. Do not bypass or disable the hook to represent a change as\n' +
         '    protected, or create, register, or sign review authority from this\n' +
         '    candidate repository. Record the\n' +
-        '    gate output and base/head references, then escalate to your project\'s\n' +
+        "    gate output and base/head references, then escalate to your project's\n" +
         '    key-custody owner for an external custody decision and required\n' +
         '    GitHub-check enforcement.\n',
     ),
