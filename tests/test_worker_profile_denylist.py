@@ -108,7 +108,7 @@ def test_denylist_check_detects_synthetic_regression(engine, project):
     # Both worker-profile targets share the same AGENTS.md digest, so both
     # must be flagged, not just one.
     targets_hit = {v["target"] for v in violations}
-    assert targets_hit == {"codex", "generic"}
+    assert targets_hit == {"codex", "generic", "gemini"}
 
 
 def test_denylist_check_case_insensitive(engine, project):

@@ -12,7 +12,7 @@
     },
     "adapter_id": {
       "type": "string",
-      "enum": ["claude-code", "codex", "generic", "perplexity"],
+      "enum": ["claude-code", "codex", "gemini", "generic", "perplexity"],
       "pattern": "^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$",
       "description": "Allowlisted stable lowercase identifier for a provider or harness surface. A new identifier needs an explicit schema, manifest-directory, source-parity, and review update; an unknown manifest may not bypass the advisory checks."
     },

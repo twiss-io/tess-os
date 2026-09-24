@@ -88,7 +88,7 @@ def test_registry_contains_claude_code_and_phase_2_targets(engine):
     """Phase 2 adds "codex" and "generic" to the registry alongside Phase 1's
     "claude-code" — see tests/test_render_targets_codex_generic.py for their
     own dedicated coverage (this file stays claude-code-focused)."""
-    assert set(engine.RENDER_TARGETS) == {"claude-code", "codex", "generic"}
+    assert set(engine.RENDER_TARGETS) == {"claude-code", "codex", "generic", "gemini"}
     target = engine.RENDER_TARGETS["claude-code"]
     assert isinstance(target, engine.RenderTarget)
     assert target.name == "claude-code"

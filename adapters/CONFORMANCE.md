@@ -56,7 +56,7 @@ runtimes change quickly, so re-check before relying on a row.
 | Aider | none (needs one config line) | Advisory | Never reads `AGENTS.md` automatically. Add `read: [AGENTS.md]` to `.aider.conf.yml`, or run `aider --read AGENTS.md`. | No hooks, custom agents or user commands. | [conventions](https://aider.chat/docs/usage/conventions.html) |
 | Kiro | none (reads `AGENTS.md`) | Advisory | `AGENTS.md` is always included, at the root and in subdirectories. | Its own JSON hooks and agents; Tess renders neither. Checked through a summarising fetch, medium confidence. | [steering](https://kiro.dev/docs/steering/), [hooks](https://kiro.dev/docs/hooks/) |
 | Qwen Code | none (reads `AGENTS.md`) | Advisory | Reads `AGENTS.md` alongside `QWEN.md`. | Claude-style `settings.json` hooks exist, but Tess renders no Qwen settings and the similarity is untested. | [Qwen Code docs](https://github.com/QwenLM/qwen-code/tree/main/docs) (features: memory, hooks) |
-| Google Gemini CLI | none on this branch | not rendered | Reads `GEMINI.md` by default and ignores `AGENTS.md` unless `context.fileName` names it. Hand-apply `.gemini/settings.json`: `{"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}}`. Skills load from `.agents/skills`. | No Tess render target in this build. Different hook event names and output keys; the project policy tier is documented as non-functional ([gemini-cli#18186](https://github.com/google-gemini/gemini-cli/issues/18186)). | [GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/gemini-md.md), [hooks](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md), [trusted folders](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/trusted-folders.md) |
+| Google Gemini CLI | `gemini` | Advisory | `GEMINI.md`, rendered as a short header plus an `@./AGENTS.md` import, so the worker doctrine loads through Gemini's own import syntax; the 26 commands as `.gemini/commands/tess/<command>.toml`, run as `/tess:<command>`. Skills also load from `.agents/skills`. Project context and commands load only in a trusted folder, and folder trust is on by default in 0.61.0. | Doctrine and commands are native, but nothing Tess ships can block a tool call: no Tess hook is translated (Gemini hooks must print only JSON on stdout and the Tess hooks print text), Gemini reads hooks only from `.gemini/settings.json`, which Tess does not render, and the project policy tier is documented as non-functional ([gemini-cli#18186](https://github.com/google-gemini/gemini-cli/issues/18186)). Checked with an install, `--version`, `--help` and `skills list` smoke on 0.61.0 and the CLI's own command and memory loaders; no live model run. Details: [`gemini/README.md`](gemini/README.md). | [GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/gemini-md.md), [custom commands](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/custom-commands.md), [hooks](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/hooks/reference.md), [trusted folders](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/trusted-folders.md), [configuration](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/reference/configuration.md) |
 | Cline | none | unverified | Its docs say it detects `AGENTS.md`; hooks defer to SDK plugin docs. | Not verified for this release; treat as AGENTS.md-only. | [rules](https://docs.cline.bot/features/cline-rules) |
 | Roo Code | none | unverified | Its docs say it reads `AGENTS.md` when `useAgentRules` is on (default). | Not verified for this release; treat as AGENTS.md-only. | [custom instructions](https://roocodeinc.github.io/Roo-Code/features/custom-instructions) |
 | Any other runtime | none | unverified | Try the `generic` target. | Not checked. | [agents.md](https://agents.md/) |
@@ -84,6 +84,9 @@ and `generic`). Runtimes resolve the pair differently:
   [Amp](https://ampcode.com/docs/markdown/customize/agents-md)).
 - **Gemini CLI** reads `GEMINI.md` unless `context.fileName` is set
   ([GEMINI.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/gemini-md.md)).
+  The `gemini` target renders a `GEMINI.md` that imports `AGENTS.md` with
+  `@./AGENTS.md`, so do not also list `AGENTS.md` in `context.fileName`:
+  the doctrine would load twice.
 - **Aider** reads nothing automatically; add `read: [AGENTS.md]` to
   `.aider.conf.yml` ([conventions](https://aider.chat/docs/usage/conventions.html)).
 
@@ -134,7 +137,8 @@ this release renders them for another runtime.
 4. **Commands.** There is no universal slash-command format. Agent Skills are
    the closest shared unit ([agentskills.io](https://agentskills.io)), and
    manual-only invocation is runtime-specific (`disable-model-invocation` in
-   Claude, `allow_implicit_invocation` in Codex).
+   Claude, `allow_implicit_invocation` in Codex). The `gemini` target also
+   writes Gemini's own TOML command files.
 5. **Size and loading.** Codex caps the whole `AGENTS.md` chain at 32 KiB,
    shared with the user's global file; Devin Desktop limits a workspace rule to
    12,000 characters. The lean worker `AGENTS.md` is kept at or under 12,000
@@ -180,6 +184,7 @@ Records live in [`manifests/`](manifests/):
 
 - Claude Code — C3 managed-adapter preview
 - Codex — C2 manual-gated compatibility preview
+- Gemini CLI — C2 manual-gated compatibility preview
 - Generic AGENTS.md host — C2 manual-gated compatibility preview
 - Perplexity — C0, no adapter or driver
 

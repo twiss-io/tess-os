@@ -26,6 +26,7 @@ ENGINE_PATH = Path(".tess/bin/tessctl")
 MANIFEST_NAMES: Tuple[str, ...] = (
     "claude-code.adapter-manifest.json",
     "codex.adapter-manifest.json",
+    "gemini.adapter-manifest.json",
     "generic.adapter-manifest.json",
     "perplexity.adapter-manifest.json",
 )
@@ -56,6 +57,14 @@ EXPECTED_CLAIMS: Dict[str, Dict[str, Any]] = {
         },
         "render_target": "codex",
         "driver": "codex",
+    },
+    "gemini": {
+        "manifest": "gemini.adapter-manifest.json",
+        "support_level": "C2",
+        "status": "preview",
+        "capabilities": {"instruction-rendering", "prompt-artifacts"},
+        "render_target": "gemini",
+        "driver": None,
     },
     "generic": {
         "manifest": "generic.adapter-manifest.json",
