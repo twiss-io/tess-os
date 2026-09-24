@@ -8,7 +8,8 @@
 > The ship-gate is still enforced at git pre-push and in CI, like for every
 > runtime. The target was verified against Gemini CLI **0.61.0** (docs at
 > tag `v0.61.0`, identical to `main` on 2026-09-24) with an install, help and
-> config smoke plus the CLI's own loaders. **No live model run was made.**
+> config smoke plus the CLI's own loaders. **No model run against a
+> rendered project was made.**
 > Compared with Claude Code this target is not at parity, and nothing here
 > claims it is.
 
@@ -169,6 +170,32 @@ on 2026-09-24).
   `owned_globs` in `tess.manifest.json`, then run
   `tessctl render --target gemini`. If you already have a hand-written
   `GEMINI.md`, move its content elsewhere first.
+
+## Customising the rendered files
+
+`render` and `doctor --fix` keep a hand edit to `GEMINI.md` or to a
+`.gemini/commands/tess/*.toml` file and report it as a "hand-edited render
+output". `doctor` fails on it until you choose one of these:
+
+- **Keep your version:** `tessctl publish GEMINI.md` (or the `.toml` path).
+  Its status becomes `user-published` and `render` stops writing it.
+- **Instructions for all your projects:** put them in `~/.gemini/GEMINI.md`,
+  the global context file Gemini loads before the workspace one
+  ([gemini-md.md L18-L21](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/gemini-md.md#L18-L21)).
+  Tess never writes it.
+- **Your own commands:** put them anywhere under `.gemini/commands/` except
+  `tess/`. Tess owns only `.gemini/commands/tess/**`.
+- **Discard the edit:** delete the file and run `tessctl render`.
+
+The hint that `render` and `doctor` print also suggests `GEMINI.local.md`
+(and `AGENTS.local.md` for `AGENTS.md`). **In v0.2.0 that route does not
+work for these two files.** The gemini and generic targets do not merge a
+`.local.md` file, and Gemini CLI loads only the names in `context.fileName`
+(default `GEMINI.md`;
+[gemini-md.md L94-L98](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/gemini-md.md#L94-L98)).
+An edit moved there has no effect, and nothing warns you. Checked on
+2026-09-24: after writing both files and running `tessctl render`, neither
+line appeared in `GEMINI.md` or `AGENTS.md`.
 
 ## Verification (2026-09-24)
 
