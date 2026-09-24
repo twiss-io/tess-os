@@ -25,7 +25,7 @@ TURNS = [
     ("user", "Let's use Rust for the parser."),
     ("user", "We should keep the invoices in SGD."),
     ("user", "The staging server lives in the Frankfurt region."),
-    ("user", "Decision: we will use Fly.io for staging."),
+    ("user", "Decision: we will use Nomad for staging."),
 ]
 
 
@@ -77,8 +77,8 @@ def test_reported_pasted_taken_back_and_content_free_are_held(world, word):
 
 def test_late_take_back_moves_the_promoted_decision_to_proposed(world):
     inst = world["inst"]
-    fly = [t for t in _records(inst).values() if "Fly.io" in t]
-    assert len(fly) == 1 and 'status: "proposed"' in fly[0]
+    nomad = [t for t in _records(inst).values() if "Nomad for staging" in t]
+    assert len(nomad) == 1 and 'status: "proposed"' in nomad[0]
     assert any(h["status"] == "proposed" for h in world["second"]["held"])
 
 
