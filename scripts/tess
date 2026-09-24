@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Tess launcher: open this instance in a runtime CLI.
+
+  scripts/tess claude|codex|gemini [--print-cmd] [-- extra args for the CLI]
+
+While onboarding is pending (or in progress, or a deferral has come due) it
+passes the start prompt, so the first thing the runtime does is the next
+onboarding question:
+  claude "/brain-onboard"   codex '$brain-onboard'   gemini -i "Use the brain-onboard skill."
+Once onboarding is complete, skipped or deferred it starts the CLI plainly.
+--print-cmd prints the command instead of running it. Any other runtime name
+prints how to start there (open the folder and say "hi"). Stdlib only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+START = {
+    "claude": ["claude", "/brain-onboard"],
+    "codex": ["codex", "$brain-onboard"],
+    "gemini": ["gemini", "-i", "Use the brain-onboard skill."],
+}
+PENDING = ("pending", "in_progress")
+
+
+def onboarding_status() -> str:
+    tool = ROOT / "scripts" / "brain" / "onboard.py"
+    if not tool.exists():
+        return "unknown"
+    try:
+        done = subprocess.run([sys.executable, str(tool), "status", "--json"], cwd=str(ROOT),
+                              capture_output=True, text=True, timeout=20)
+        return json.loads(done.stdout).get("status", "unknown")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("tess: could not read onboarding status (%s); starting plainly" % exc, file=sys.stderr)
+        return "unknown"
+
+
+def command(runtime: str, status: str, extra: list) -> list:
+    if status in PENDING:
+        return START[runtime] + extra
+    return [runtime] + extra
+
+
+def main(argv: list) -> int:
+    args = list(argv)
+    extra = args[args.index("--") + 1:] if "--" in args else []
+    args = args[: args.index("--")] if "--" in args else args
+    print_only = "--print-cmd" in args
+    names = [a for a in args if not a.startswith("-")]
+    if len(names) != 1:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    runtime = names[0]
+    status = onboarding_status()
+    if runtime not in START:
+        print("Open %s in %s and say \"hi\"%s." % (ROOT, runtime, " (onboarding starts itself)"
+                                                     if status in PENDING else ""))
+        return 0
+    cmd = command(runtime, status, extra)
+    if print_only:
+        print(" ".join(shlex.quote(c) for c in cmd))
+        return 0
+    os.chdir(str(ROOT))
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as exc:
+        print("tess: cannot start %s: %s" % (cmd[0], exc), file=sys.stderr)
+        return 127
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

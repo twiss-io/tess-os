@@ -172,3 +172,25 @@ def test_skip_records_personal_layer_and_is_final(tmp_path):
     assert hook(root).stdout == ""
     again = h.onboard(root, "answer", "mode", "--value", "agency", "--quote", "agency")
     assert again.returncode == 3
+
+
+def launcher(root, *args):
+    import shutil
+    import subprocess
+    import sys
+    dest = root / "scripts" / "tess"
+    if not dest.exists():
+        shutil.copy2(str(h.REPO_ROOT / "scripts" / "tess"), str(dest))
+    return subprocess.run([sys.executable, str(dest)] + list(args), capture_output=True, text=True,
+                          env=h.env(), timeout=60)
+
+
+def test_launcher_passes_start_prompt_only_while_pending(tmp_path):
+    root = h.mini_instance(tmp_path)
+    assert launcher(root, "claude", "--print-cmd").stdout.strip() == "claude /brain-onboard"
+    assert launcher(root, "codex", "--print-cmd").stdout.strip() == "codex '$brain-onboard'"
+    assert launcher(root, "gemini", "--print-cmd").stdout.strip() == "gemini -i 'Use the brain-onboard skill.'"
+    assert h.onboard_fixture(root, "personal").returncode == 0
+    assert launcher(root, "claude", "--print-cmd", "--", "--model", "x").stdout.strip() == "claude --model x"
+    assert launcher(root, "kimi").stdout.startswith("Open ")
+    assert launcher(root).returncode == 2
