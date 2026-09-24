@@ -1827,7 +1827,7 @@ def report_render_output_results(root: Path, target: str, results: dict,
     for rel, res in sorted(results.items()):
         if isinstance(res, str) and res.startswith("skipped:"):
             by_reason.setdefault(res.split(":", 1)[1], []).append(rel)
-    target_obj = RENDER_TARGETS.get(target) if "RENDER_TARGETS" in globals() else None
+    target_obj = RENDER_TARGETS.get(target)
     _report_retired_render_outputs(root, target, target_obj)
     if not by_reason:
         return by_reason
@@ -1871,14 +1871,13 @@ def _report_retired_render_outputs(root: Path, target: str, target_obj) -> list:
     """A target may declare outputs it USED to render (retired_paths(), e.g.
     codex's .codex/prompts/* once skills replace them). Existing retired
     files are reported, never deleted: they may hold the operator's edits."""
-    fn = getattr(target_obj, "retired_paths", None)
-    if fn is None:
+    if target_obj is None or not hasattr(target_obj, "retired_paths"):
         return []
     try:
         try:
-            retired = fn(root)
+            retired = target_obj.retired_paths(root)
         except TypeError:
-            retired = fn()
+            retired = target_obj.retired_paths()
     except Exception:  # noqa: BLE001 — a reporting helper must not break render
         return []
     present_set: set = set()
