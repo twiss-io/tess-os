@@ -1827,8 +1827,7 @@ def report_render_output_results(root: Path, target: str, results: dict,
     for rel, res in sorted(results.items()):
         if isinstance(res, str) and res.startswith("skipped:"):
             by_reason.setdefault(res.split(":", 1)[1], []).append(rel)
-    target_obj = RENDER_TARGETS.get(target)
-    _report_retired_render_outputs(root, target, target_obj)
+    _report_retired_render_outputs(root, target, RENDER_TARGETS.get(target))
     if not by_reason:
         return by_reason
     if manifest is None:
@@ -1837,6 +1836,7 @@ def report_render_output_results(root: Path, target: str, results: dict,
         except SystemExit:
             manifest = {}
     owned = manifest.get("owned_globs", []) or []
+    target_obj = RENDER_TARGETS.get(target)  # defined at module level; resolved at call time
     not_owned = by_reason.get("not-owned", [])
     if not_owned:
         globs: dict = {}
