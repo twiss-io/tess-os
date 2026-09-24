@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-24T15:42:57.433585Z'
+  last_updated: '2026-09-24T15:51:29.452252Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
