@@ -1,46 +1,30 @@
 // force-plan.js — what `--force` may do to a directory that already has
-// content, decided BEFORE anything is written, plus the backup and the
-// verified restore that make a failed forced run leave the directory exactly
-// as it was.
+// content, decided BEFORE anything is written. The backup and the verified
+// restore live in force-backup.js (re-exported here).
 //
-// Contract:
-//   1. planForce() is read-only. It refuses (returns `problems`) on
-//      - a type conflict: the template needs a directory where the target has
-//        a file or a symlink, or a file where the target has a directory or a
-//        symlink. Writing through a symlink could land outside the target, so
-//        a symlink on any path the scaffold writes is always a conflict;
-//      - pre-existing content in a framework-managed path (MANAGED_PATHS)
-//        when the target is not a real Tess OS install.
-//   2. createBackup() copies every file the scaffold will overwrite, then
-//      moves the managed paths, into <target>/.create-tess-backup-<ts>/files/,
-//      and writes a manifest.json. Each copy is hash-checked against the
-//      pre-run snapshot.
-//   3. restoreFromBackup() puts everything back, deletes every path the run
-//      added, and walks the tree again. It reports `clean` ONLY when that walk
-//      (type, mode, sha256, link target) equals the pre-run snapshot.
-import {
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  mkdirSync,
-  renameSync,
-  copyFileSync,
-  rmSync,
-  writeFileSync,
-  existsSync,
-} from 'node:fs';
-import { join, dirname } from 'node:path';
+// planForce() is read-only. It refuses (returns `problems`) on
+//   - a type conflict: the template needs a directory where the target has a
+//     file or a symlink, or a file where the target has a directory or a
+//     symlink. Writing through a symlink could land outside the target, so a
+//     symlink on any path the scaffold writes is always a conflict;
+//   - an existing entry whose stored name differs from the template's only in
+//     letter case (or Unicode form): one path on a case-insensitive
+//     filesystem, which the scaffold would silently overwrite;
+//   - pre-existing content in a framework-managed path (MANAGED_PATHS) when
+//     the target is not a real Tess OS install.
+import { readdirSync, readFileSync, lstatSync } from 'node:fs';
+import { join } from 'node:path';
 import { isExcludedRel } from './ignore.js';
-import {
-  absOf,
-  lstatOrNull,
-  kindOf,
-  sha256File,
-  snapshotTree,
-  diffSnapshots,
-} from './tree-snapshot.js';
+import { absOf, lstatOrNull, kindOf, snapshotTree } from './tree-snapshot.js';
+import { CREATE_TESS_VERSION } from './version.js';
 
 export { snapshotTree, diffSnapshots, MAX_SNAPSHOT_ENTRIES } from './tree-snapshot.js';
+export {
+  BACKUP_PREFIX,
+  createBackup,
+  verifyAgainst,
+  restoreFromBackup,
+} from './force-backup.js';
 
 // Any one of these marks the directory as a Tess OS install for the
 // "already an install" message.
@@ -54,8 +38,6 @@ export const MANAGED_PATHS = ['.claude/agents', '.claude/commands', 'conductor',
 // Written by the wizard itself (keystone.js writeProfile), not copied from the
 // template, so the template walk alone would miss it.
 export const EXTRA_WRITE_PATHS = ['operator/profile.json'];
-
-export const BACKUP_PREFIX = '.create-tess-backup-';
 
 // Which install markers exist, and whether this is a REAL install: a regular
 // .tess/tess.lock with `framework:` and `files:` sections plus a
@@ -109,20 +91,52 @@ function leavesUnder(targetDir, rel, kind) {
   return leaves.length ? leaves : [`${rel}/`];
 }
 
-// Read-only preflight. Returns { install, move, overwrite, problems }.
-export function planForce(stagingDir, targetDir) {
-  const install = detectInstall(targetDir);
-  const problems = new Set();
-  const move = [];
-  const overwrite = [];
-  const collisions = [];
+// On a case-insensitive filesystem (the macOS default) lstat('README.md')
+// succeeds for a file stored as readme.md, and the scaffold would overwrite
+// it under the template's spelling. Returns a refusal line when the entry at
+// `rel` is stored under a different spelling, else null.
+function spellingProblem(listing, rel) {
+  const i = rel.lastIndexOf('/');
+  const parent = i < 0 ? '' : rel.slice(0, i);
+  const name = rel.slice(i + 1);
+  const names = listing(parent);
+  if (!names || names.includes(name)) return null;
+  const fold = (n) => n.normalize('NFC').toLowerCase();
+  const actual = names.find((n) => fold(n) === fold(name));
+  const shown = actual ? `${parent ? `${parent}/` : ''}${actual}` : `an entry named like ${rel}`;
+  return (
+    `${shown} in the target differs from the template's ${rel} only in letter case ` +
+    '(or Unicode form); this filesystem treats them as one path, so the scaffold ' +
+    'would overwrite it. Rename it'
+  );
+}
 
-  const cache = new Map();
-  const kindAt = (rel) => {
-    if (!cache.has(rel)) cache.set(rel, kindOf(lstatOrNull(absOf(targetDir, rel))));
-    return cache.get(rel);
+// Read-only, cached view of the target: kindAt(rel) is the lstat kind (or
+// null), and adds a problem when the entry is stored under another spelling;
+// ancestorProblem(rel) says why a proper ancestor cannot hold the template.
+function makeProbe(targetDir, problems) {
+  const kinds = new Map();
+  const listings = new Map();
+  const listing = (parentRel) => {
+    if (!listings.has(parentRel)) {
+      let names = null;
+      try {
+        names = readdirSync(parentRel ? absOf(targetDir, parentRel) : targetDir);
+      } catch {
+        names = null;
+      }
+      listings.set(parentRel, names);
+    }
+    return listings.get(parentRel);
   };
-  // Every proper ancestor must be absent or a real directory.
+  const kindAt = (rel) => {
+    if (kinds.has(rel)) return kinds.get(rel);
+    const k = kindOf(lstatOrNull(absOf(targetDir, rel)));
+    kinds.set(rel, k);
+    const sp = k === null ? null : spellingProblem(listing, rel);
+    if (sp) problems.add(sp);
+    return k;
+  };
   const ancestorProblem = (rel) => {
     const parts = rel.split('/');
     for (let i = 1; i < parts.length; i++) {
@@ -133,27 +147,40 @@ export function planForce(stagingDir, targetDir) {
     }
     return null;
   };
-  const underMoved = (rel) => move.some((m) => rel === m || rel.startsWith(`${m}/`));
+  return { kindAt, ancestorProblem };
+}
 
+// Managed paths: a real install moves them into the backup; anything else
+// holding content there is a collision.
+function planManaged(targetDir, install, probe, problems) {
+  const move = [];
+  const collisions = [];
   for (const m of MANAGED_PATHS) {
-    const k = kindAt(m);
+    const k = probe.kindAt(m);
     if (k === null) continue;
-    const ap = ancestorProblem(m);
+    const ap = probe.ancestorProblem(m);
     if (ap) problems.add(ap);
     else if (!install.real) collisions.push(...leavesUnder(targetDir, m, k));
     else move.push(m);
   }
+  return { move, collisions };
+}
 
+// Every other path the scaffold writes: type conflicts are problems, an
+// existing regular file is overwritten (and backed up first).
+function planWrites(stagingDir, move, probe, problems) {
+  const overwrite = [];
+  const underMoved = (rel) => move.some((m) => rel === m || rel.startsWith(`${m}/`));
   const wanted = templateEntries(stagingDir);
   for (const rel of EXTRA_WRITE_PATHS) if (!wanted.has(rel)) wanted.set(rel, 'file');
   for (const [rel, want] of wanted) {
     if (underMoved(rel)) continue;
-    const ap = ancestorProblem(rel);
+    const ap = probe.ancestorProblem(rel);
     if (ap) {
       problems.add(ap);
       continue;
     }
-    const have = kindAt(rel);
+    const have = probe.kindAt(rel);
     if (have === null) continue;
     if (want === 'dir') {
       if (have !== 'dir') problems.add(`${rel} is a ${have}, but the template needs a directory there`);
@@ -163,137 +190,28 @@ export function planForce(stagingDir, targetDir) {
       overwrite.push(rel);
     }
   }
+  return overwrite;
+}
 
+function collisionMessage(collisions) {
+  const shown = collisions.slice(0, 10).join(', ');
+  const more = collisions.length > 10 ? ` (+${collisions.length - 10} more)` : '';
+  return (
+    `framework-managed paths already hold content: ${shown}${more}. This directory is ` +
+    'not a complete Tess OS install (.tess/tess.lock plus tess.manifest.json), and ' +
+    '--force only clean-replaces managed paths in one. Adopting an existing ' +
+    `directory or instance is not supported in create-tess ${CREATE_TESS_VERSION}`
+  );
+}
+
+// Read-only preflight. Returns { install, move, overwrite, problems }.
+export function planForce(stagingDir, targetDir) {
+  const install = detectInstall(targetDir);
+  const problems = new Set();
+  const probe = makeProbe(targetDir, problems);
+  const { move, collisions } = planManaged(targetDir, install, probe, problems);
+  const overwrite = planWrites(stagingDir, move, probe, problems);
   const list = [...problems];
-  if (collisions.length) {
-    const shown = collisions.slice(0, 10).join(', ');
-    const more = collisions.length > 10 ? ` (+${collisions.length - 10} more)` : '';
-    list.unshift(
-      `framework-managed paths already hold content: ${shown}${more}. This directory is ` +
-        'not a complete Tess OS install (.tess/tess.lock plus tess.manifest.json), and ' +
-        '--force only clean-replaces managed paths in one. Adopting an existing ' +
-        'directory or instance is not supported in create-tess 0.2.0',
-    );
-  }
+  if (collisions.length) list.unshift(collisionMessage(collisions));
   return { install, move, overwrite, problems: list };
-}
-
-function uniqueBackupName(targetDir) {
-  const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  let name = `${BACKUP_PREFIX}${ts}`;
-  for (let i = 1; existsSync(join(targetDir, name)); i++) name = `${BACKUP_PREFIX}${ts}-${i}`;
-  return name;
-}
-
-// Copy every overwritten file, then move every managed path, into the backup.
-// Returns null when the plan replaces nothing. Any failure puts the moved
-// paths back and removes the backup before rethrowing, so the caller's
-// verification sees the original tree; if a moved path cannot be put back,
-// the backup is KEPT (it holds the only copy) and the error names it.
-export function createBackup(targetDir, plan, before) {
-  if (plan.overwrite.length === 0 && plan.move.length === 0) return null;
-  const name = uniqueBackupName(targetDir);
-  const dir = join(targetDir, name);
-  const filesRoot = join(dir, 'files');
-  const moved = [];
-  const overwritten = [];
-  mkdirSync(filesRoot, { recursive: true });
-  // Self-ignoring: git never picks up the backup, even with no root .gitignore.
-  writeFileSync(join(dir, '.gitignore'), '*\n');
-  try {
-    for (const rel of plan.overwrite) {
-      const dest = absOf(filesRoot, rel);
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(absOf(targetDir, rel), dest);
-      const expected = before.get(rel);
-      const sha = sha256File(dest);
-      if (!expected || !expected.endsWith(`|${sha}`)) {
-        throw new Error(`backup copy of ${rel} does not match the pre-run snapshot`);
-      }
-      overwritten.push({ path: rel, sha256: sha });
-    }
-    for (const rel of plan.move) {
-      const dest = absOf(filesRoot, rel);
-      mkdirSync(dirname(dest), { recursive: true });
-      renameSync(absOf(targetDir, rel), dest);
-      moved.push(rel);
-    }
-    const manifest = {
-      created: new Date().toISOString(),
-      tool: 'create-tess --force',
-      note:
-        'Files create-tess replaced. "moved" paths were moved here whole; ' +
-        '"overwritten" files were copied here before being replaced. To undo by hand, ' +
-        'copy files/<path> back to <path>.',
-      moved,
-      overwritten,
-    };
-    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-  } catch (err) {
-    const stuck = [];
-    for (const rel of [...moved].reverse()) {
-      try {
-        renameSync(absOf(filesRoot, rel), absOf(targetDir, rel));
-      } catch {
-        stuck.push(rel);
-      }
-    }
-    if (stuck.length === 0) rmSync(dir, { recursive: true, force: true });
-    else err.message += ` (could not put back ${stuck.join(', ')}; the originals are in ${name}/files)`;
-    throw err;
-  }
-  return { name, dir, moved, overwritten: overwritten.map((o) => o.path) };
-}
-
-// Compare the target (minus any backup dir) against `before`.
-export function verifyAgainst(targetDir, before, skipName = null) {
-  const after = snapshotTree(targetDir, { skipTop: (n) => n === skipName });
-  const diffs = diffSnapshots(before, after);
-  return { clean: diffs.length === 0, diffs, entries: before.size };
-}
-
-// Undo a failed forced run. `backup` is null when the plan replaced nothing
-// (the run only added paths). Returns { clean, diffs, errors, entries, backupKept }.
-export function restoreFromBackup(targetDir, backup, before) {
-  const errors = [];
-  const skipName = backup ? backup.name : null;
-  const filesRoot = backup ? join(backup.dir, 'files') : null;
-  const attempt = (rel, fn) => {
-    try {
-      fn();
-    } catch (err) {
-      errors.push(`${rel}: ${err.message}`);
-    }
-  };
-  for (const rel of backup ? backup.moved : []) {
-    attempt(rel, () => {
-      rmSync(absOf(targetDir, rel), { recursive: true, force: true });
-      mkdirSync(dirname(absOf(targetDir, rel)), { recursive: true });
-      renameSync(absOf(filesRoot, rel), absOf(targetDir, rel));
-    });
-  }
-  for (const rel of backup ? backup.overwritten : []) {
-    attempt(rel, () => {
-      rmSync(absOf(targetDir, rel), { recursive: true, force: true });
-      copyFileSync(absOf(filesRoot, rel), absOf(targetDir, rel));
-    });
-  }
-  // Delete everything the run added (shallowest first; a removed directory
-  // takes its subtree with it).
-  const now = snapshotTree(targetDir, { skipTop: (n) => n === skipName });
-  const removed = [];
-  for (const rel of now.keys()) {
-    if (before.has(rel)) continue;
-    if (removed.some((r) => rel.startsWith(`${r}/`))) continue;
-    attempt(rel, () => rmSync(absOf(targetDir, rel), { recursive: true, force: true }));
-    removed.push(rel);
-  }
-  let result = verifyAgainst(targetDir, before, skipName);
-  let backupKept = Boolean(backup);
-  if (backup && result.clean && errors.length === 0) {
-    rmSync(backup.dir, { recursive: true, force: true });
-    result = verifyAgainst(targetDir, before);
-    backupKept = existsSync(backup.dir);
-  }
-  return { ...result, clean: result.clean && errors.length === 0, errors, backupKept };
 }

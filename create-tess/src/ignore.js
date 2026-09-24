@@ -208,6 +208,14 @@ export const EXCLUDE_CONTENT_PREFIXES = [
   'kb/wiki',
 ];
 
+// Excluded if ANY path component starts with one of these. `create-tess
+// --force` moves or copies what it replaces into `<target>/.create-tess-backup-
+// <ts>/` (force-backup.js), including the previous instance's
+// operator/profile.json. Using such an install as a local --template-source
+// must never copy that backup into a new scaffold.
+export const BACKUP_DIR_PREFIX = '.create-tess-backup-';
+export const EXCLUDE_NAME_PREFIXES = [BACKUP_DIR_PREFIX];
+
 // Basename suffix globs (the `*.<suffix>` shape — `endsWith` match).
 // `*.env.json` mirrors the .gitignore `*.env.json` (e.g. prod.env.json); the
 // plain `.env` / `.env.*` handling below does NOT catch a `foo.env.json` name.
@@ -225,6 +233,7 @@ const EXCLUDE_DIR_PREFIXES_NORM = EXCLUDE_DIR_PREFIXES.map(normalizePath);
 const EXCLUDE_CONTENT_PREFIXES_NORM = EXCLUDE_CONTENT_PREFIXES.map(normalizePath);
 const EXCLUDE_REL_PATHS_NORM = new Set([...EXCLUDE_REL_PATHS].map(normalizePath));
 const EXCLUDE_BASENAME_GLOBS_NORM = EXCLUDE_BASENAME_GLOBS.map(normalizeComponent);
+const EXCLUDE_NAME_PREFIXES_NORM = EXCLUDE_NAME_PREFIXES.map(normalizeComponent);
 
 // `statSync`, returning `null` (fail-closed — "not proven to exist by this
 // arm", never "safe") on any stat error, instead of throwing. Split out of
@@ -268,6 +277,7 @@ export function isExcludedRel(rel) {
 
   // Name/component excludes (anywhere in the path).
   if (partsFold.some((p) => EXCLUDE_NAMES_NORM.has(p))) return true;
+  if (partsFold.some((p) => EXCLUDE_NAME_PREFIXES_NORM.some((x) => p.startsWith(x)))) return true;
 
   // Basename suffix globs.
   if (EXCLUDE_BASENAME_GLOBS_NORM.some((g) => basenameMatchesGlob(baseFold, g))) return true;

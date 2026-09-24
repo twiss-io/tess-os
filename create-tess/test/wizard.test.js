@@ -367,10 +367,16 @@ test('rollback: a failed bake removes the partial target and leaves it re-runnab
     0,
     `broken bake must exit non-zero\nSTDOUT:\n${bad.stdout}\nSTDERR:\n${bad.stderr}`,
   );
-  assert.ok(
-    !existsSync(target),
-    'a failed bake must leave NO partial target (rolled back)',
+  // The target existed (empty) before the run, so rollback empties it again
+  // and keeps the directory: no partial content, and nothing the operator
+  // created (the directory itself, or a symlink pointing at it) is deleted.
+  assert.ok(existsSync(target), 'a pre-existing target directory is kept');
+  assert.deepEqual(
+    readdirSync(target),
+    [],
+    'a failed bake must leave NO partial content in the target (rolled back)',
   );
+  assert.match(bad.stdout, /left clean/, bad.stdout);
 
   // Re-runnable: the SAME path now scaffolds cleanly with the real template,
   // proving no poisoning profile.json / tess.lock survived to trip clobberReason.

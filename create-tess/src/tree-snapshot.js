@@ -36,7 +36,15 @@ export function sha256File(p) {
 
 // Sorted snapshot of everything under `root`, never following symlinks:
 // rel -> "dir|<mode>" | "file|<mode>|<sha256>" | "symlink|<target>" | "other|<mode>".
+// A missing root is an empty snapshot. A root that exists but is not a real
+// directory (a symlink, a file) throws: its walk would be empty while writes
+// through it land somewhere real, and an empty-vs-empty comparison would
+// "verify" anything.
 export function snapshotTree(root, { skipTop = () => false } = {}) {
+  const rootKind = kindOf(lstatOrNull(root));
+  if (rootKind !== null && rootKind !== 'dir') {
+    throw new Error(`${root} is a ${rootKind}, not a directory; create-tess will not snapshot through it`);
+  }
   const out = new Map();
   const visit = (dirAbs, relBase) => {
     for (const name of readdirSync(dirAbs).sort()) {
@@ -58,7 +66,7 @@ export function snapshotTree(root, { skipTop = () => false } = {}) {
       if (st.isDirectory() && !st.isSymbolicLink()) visit(p, rel);
     }
   };
-  if (kindOf(lstatOrNull(root)) === 'dir') visit(root, '');
+  if (rootKind === 'dir') visit(root, '');
   return out;
 }
 

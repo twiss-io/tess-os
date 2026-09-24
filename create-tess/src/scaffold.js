@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { isExcludedRel, makeCopyFilter } from './ignore.js';
 import { resetPolicyFile } from './policy-reset.js';
 import { detectInstall } from './force-plan.js';
+import { CREATE_TESS_VERSION } from './version.js';
 import {
   isLocalSource,
   buildCloneArgs,
@@ -125,7 +126,7 @@ export function clobberReason(targetDir, force) {
       return (
         `Target directory ${targetDir} is not empty and is not a Tess OS install. ` +
         'Adopting an existing directory or instance is not supported in create-tess ' +
-        '0.2.0: pass a new or empty directory. --force scaffolds into it only when ' +
+        `${CREATE_TESS_VERSION}: pass a new or empty directory. --force scaffolds into it only when ` +
         'none of the framework-managed paths (CLAUDE.md, conductor/, .claude/agents/, ' +
         '.claude/commands/, .tess/core/) exist there, and backs up every file it ' +
         'replaces first.'

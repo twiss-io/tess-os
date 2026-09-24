@@ -7,79 +7,33 @@
 // bug in the code under test cannot hide itself.
 //
 // Run: npm test   (or `node --test test/force-safety.test.js`)
-import { test, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync,
-  rmSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   writeFileSync,
   copyFileSync,
   symlinkSync,
-  lstatSync,
-  readlinkSync,
   existsSync,
 } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
-import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import {
+  BUNDLED,
+  FLAGS,
+  PKG_VERSION,
+  mkTemp,
+  walkHash,
+  runCli,
+  show,
+  tessctl,
+  backupDirs,
+  brokenTemplate,
+} from './force-helpers.js';
 
-const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const PKG_DIR = resolve(TEST_DIR, '..');
-const ENTRY = join(PKG_DIR, 'bin', 'create-tess.mjs');
-const BUNDLED = join(PKG_DIR, 'template');
-
-const tempDirs = [];
-after(() => {
-  for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
-});
-function mkTemp(prefix) {
-  const d = mkdtempSync(join(tmpdir(), prefix));
-  tempDirs.push(d);
-  return d;
-}
-
-// Sorted walk, never following symlinks: "<rel> <kind> <sha256|link target>".
-function walkHash(root) {
-  const out = [];
-  (function rec(dir, base) {
-    for (const name of readdirSync(dir).sort()) {
-      const p = join(dir, name);
-      const rel = base ? `${base}/${name}` : name;
-      const st = lstatSync(p);
-      if (st.isSymbolicLink()) out.push(`${rel} symlink ${readlinkSync(p)}`);
-      else if (st.isDirectory()) {
-        out.push(`${rel} dir`);
-        rec(p, rel);
-      } else {
-        out.push(`${rel} file ${createHash('sha256').update(readFileSync(p)).digest('hex')}`);
-      }
-    }
-  })(root, '');
-  return out;
-}
-
-function runCli(args) {
-  return spawnSync(process.execPath, [ENTRY, ...args], { cwd: PKG_DIR, encoding: 'utf8' });
-}
-const FLAGS = ['--yes', '--no-git-init', '--no-gate-hooks'];
-const show = (r) => `\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}`;
-
-function tessctl(target, ...sub) {
-  return spawnSync('python3', [join(target, '.tess', 'bin', 'tessctl'), ...sub], {
-    cwd: target,
-    env: { ...process.env, TESS_ROOT: target },
-    encoding: 'utf8',
-  });
-}
-
-function backupDirs(target) {
-  return readdirSync(target).filter((n) => n.startsWith('.create-tess-backup-'));
-}
+const NOT_SUPPORTED = new RegExp(`not supported in create-tess ${PKG_VERSION.replace(/\./g, '\\.')}`);
 
 test('--force over user content in managed paths plus a symlinked skill: exit 1, tree unchanged, "left clean" only because it is', { timeout: 120000 }, () => {
   const target = mkTemp('ct-force-collide-');
@@ -108,7 +62,7 @@ test('--force over user content in managed paths plus a symlinked skill: exit 1,
   for (const p of ['CLAUDE.md', 'conductor/mine.md', '.claude/agents/custom.md', `.claude/skills/${skill}`]) {
     assert.ok(r.stderr.includes(p), `the refusal must name ${p}${show(r)}`);
   }
-  assert.match(r.stderr, /not supported in create-tess 0\.2\.0/);
+  assert.match(r.stderr, NOT_SUPPORTED);
 });
 
 test('--force refuses a type conflict (a file where the template needs a directory) and writes nothing', { timeout: 120000 }, () => {
@@ -187,15 +141,7 @@ test('a forced run that fails mid-bake restores the install byte-for-byte and ve
   writeFileSync(join(target, 'notes', 'mine.md'), 'user-only file\n');
 
   // A template whose tessctl fails every verb: promote succeeds, bake fails.
-  const broken = mkTemp('ct-force-broken-');
-  mkdirSync(join(broken, '.tess', 'core'), { recursive: true });
-  mkdirSync(join(broken, '.tess', 'bin'), { recursive: true });
-  copyFileSync(join(BUNDLED, '.tess', 'core', 'roster-paths.json'), join(broken, '.tess', 'core', 'roster-paths.json'));
-  writeFileSync(
-    join(broken, '.tess', 'bin', 'tessctl'),
-    '#!/usr/bin/env python3\nimport sys\nsys.stderr.write("simulated bake failure\\n")\nsys.exit(1)\n',
-  );
-  writeFileSync(join(broken, 'NEWFILE.md'), 'added by the broken template\n');
+  const broken = brokenTemplate();
 
   const before = walkHash(target);
   const r = runCli([`--target=${target}`, '--force', `--template-source=${broken}`, ...FLAGS]);
@@ -223,12 +169,12 @@ test('install detection: a dir holding only .tess/tess.lock is "already a Tess O
   assert.doesNotMatch(r.stderr, /adopt |reconfigure/);
 });
 
-test('a non-empty, non-Tess dir without --force says adoption is not supported in 0.2.0', { timeout: 60000 }, () => {
+test('a non-empty, non-Tess dir without --force says adoption is not supported in this version', { timeout: 60000 }, () => {
   const target = mkTemp('ct-nonempty-');
   writeFileSync(join(target, 'notes.md'), 'hello\n');
   const r = runCli([`--target=${target}`, ...FLAGS]);
   assert.equal(r.status, 1, show(r));
-  assert.match(r.stderr, /not supported in create-tess 0\.2\.0/, show(r));
+  assert.match(r.stderr, NOT_SUPPORTED, show(r));
   assert.doesNotMatch(r.stderr, /tessctl (adopt|reconfigure)/);
   assert.equal(readFileSync(join(target, 'notes.md'), 'utf8'), 'hello\n');
 });

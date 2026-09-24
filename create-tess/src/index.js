@@ -1,8 +1,8 @@
 // index.js — create-tess orchestrator.
 // Bootstrap → fetch template → journey (interactive or flags) → promote →
 // write operator profile → keystone bake → doctor/verify → arrival greeting.
-import { resolve, join } from 'node:path';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { parseArgs, isNonInteractive, HELP, DEFAULTS } from './args.js';
@@ -19,7 +19,8 @@ import {
 import { loadRoster, installSetForPath } from './roster.js';
 import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keystone.js';
 import { runJourney } from './journey.js';
-import { preflightForce, beginForcedWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
+import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
+import { resolveTarget } from './target.js';
 import { VIBES } from './content/vibes.js';
 import {
   validateName,
@@ -96,6 +97,22 @@ function resolveFromFlags(opts, roster) {
   };
 }
 
+// The REAL directory: a symlinked --target is followed once, here, so every
+// check, snapshot and write sees the same tree (target.js).
+function targetOrDie(raw) {
+  let target;
+  try {
+    target = resolveTarget(raw);
+  } catch (err) {
+    die(err.message);
+  }
+  if (target.viaSymlink) {
+    const note = `--target ${target.given} is a symlink; scaffolding into ${target.dir}`;
+    process.stdout.write((plain ? '' : '  ') + dim(note) + '\n');
+  }
+  return target;
+}
+
 export async function main(argv) {
   const opts = parseArgs(argv);
   if (opts.help) {
@@ -103,7 +120,8 @@ export async function main(argv) {
     return;
   }
 
-  const targetDir = resolve(opts.target || process.cwd());
+  const target = targetOrDie(opts.target || process.cwd());
+  const targetDir = target.dir;
   // DEFAULT (P0 G-01 BUNDLE fix): scaffold from the template bundled INSIDE
   // this package — a local copy, never a git clone/network fetch. An
   // explicit --template-source (flag or TESS_TEMPLATE_SOURCE env var) is the
@@ -148,13 +166,14 @@ export async function main(argv) {
 
   // Did the target already hold content before we touched it? If so (only
   // possible with --force), the run is planned read-only first, everything it
-  // replaces is backed up, and a failure restores and re-verifies the tree
-  // (force-run.js). Otherwise a failure removes the target it created.
-  const targetPreexisted =
-    existsSync(targetDir) &&
-    readdirSync(targetDir).filter((e) => e !== '.DS_Store').length > 0;
-  const forced = Boolean(opts.force) && targetPreexisted;
-  const forcedState = forced ? { before: null, backup: null } : null;
+  // replaces is backed up, and a failure restores and re-verifies the tree.
+  // A target that existed empty is snapshotted too, so a failure empties it
+  // again instead of deleting it. A target the run creates is removed
+  // (force-run.js rollback).
+  const hadContent =
+    target.existed && readdirSync(targetDir).filter((e) => e !== '.DS_Store').length > 0;
+  const forced = Boolean(opts.force) && hadContent;
+  const runState = target.existed ? { before: null, backup: null, hadContent } : null;
 
   // Stage the template into a temp dir so the journey can read the real roster
   // and validate names before the target is ever touched (atomicity §6.5).
@@ -196,14 +215,14 @@ export async function main(argv) {
     // template, no poisoning operator/profile.json or tess.lock that
     // clobberReason() would later refuse without --force. The rollback
     // reports "clean" only after verifying it.
-    if (forced) {
+    if (runState) {
       let begun;
       try {
-        begun = beginForcedWrite(staging, targetDir, forcedState);
+        begun = beginWrite(staging, targetDir, runState);
       } catch (err) {
         // Nothing was scaffolded. createBackup() undoes its own moves; verify.
         rmSync(staging, { recursive: true, force: true });
-        if (forcedState.before) process.stdout.write(verifyOnly(targetDir, forcedState.before));
+        if (runState.before) process.stdout.write(verifyOnly(targetDir, runState));
         die(`--force stopped before scaffolding: ${err.message}`);
       }
       if (begun.refusal) refuse(begun.refusal);
@@ -231,7 +250,7 @@ export async function main(argv) {
       writeProfile(targetDir, { ...choices, wizardVersion: '1.0.0' });
     } catch (err) {
       rmSync(staging, { recursive: true, force: true });
-      const r = rollback(targetDir, forcedState);
+      const r = rollback(targetDir, runState, target.createdRoot);
       process.stdout.write(r.stdout);
       die(
         `setup failed during scaffold/bake (${r.clean ? 'rolled back' : 'rollback incomplete, see above'}).\n` +
@@ -258,7 +277,7 @@ export async function main(argv) {
   if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
   if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
   printGateStatus(gate, targetDir);
-  if (forcedState) process.stdout.write(backupNotice(forcedState.backup, checks));
+  if (runState) process.stdout.write(backupNotice(runState.backup, checks));
   process.stdout.write(
     '  ' + (plain ? '*' : accent('★')) +
       '  Local scaffold complete; production protection requires external custody and required GitHub checks.\n',

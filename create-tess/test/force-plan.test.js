@@ -24,7 +24,7 @@ import {
   snapshotTree,
   diffSnapshots,
 } from '../src/force-plan.js';
-import { rollback } from '../src/force-run.js';
+import { rollback, verifyOnly } from '../src/force-run.js';
 
 const tempDirs = [];
 after(() => {
@@ -138,4 +138,68 @@ test('an empty plan creates no backup, and rollback still deletes what the run a
   const r = rollback(t, { before, backup });
   assert.equal(r.clean, true, r.stdout);
   assert.deepEqual(diffSnapshots(before, snapshotTree(t)), []);
+});
+
+test('snapshotTree refuses a root that is a symlink or a file instead of walking it as empty', () => {
+  const t = fixtureTarget();
+  const base = mkTemp('ct-plan-linkroot-');
+  const link = join(base, 'link');
+  symlinkSync(t, link);
+  assert.throws(() => snapshotTree(link), /is a symlink, not a directory/);
+  assert.throws(() => snapshotTree(join(t, 'a.txt')), /is a file, not a directory/);
+  assert.equal(snapshotTree(join(base, 'missing')).size, 0, 'a missing root is an empty snapshot');
+});
+
+test('rollback never says clean, and deletes nothing, when a target that had content has an empty snapshot', () => {
+  const t = fixtureTarget();
+  writeFileSync(join(t, 'added-by-run.md'), 'x\n');
+  const r = rollback(t, { before: new Map(), backup: null, hadContent: true });
+  assert.equal(r.clean, false);
+  assert.doesNotMatch(r.stdout, /left clean/);
+  assert.match(r.stdout, /NOT attempted/);
+  assert.ok(existsSync(join(t, 'a.txt')) && existsSync(join(t, 'added-by-run.md')), 'nothing may be deleted');
+  assert.doesNotMatch(verifyOnly(t, { before: new Map(), hadContent: true }), /left clean/);
+});
+
+test('rollback of a target that existed empty empties it again and keeps the directory', () => {
+  const t = mkTemp('ct-plan-empty-');
+  const before = snapshotTree(t);
+  mkdirSync(join(t, '.tess', 'bin'), { recursive: true });
+  writeFileSync(join(t, 'NEWFILE.md'), 'x\n');
+  const r = rollback(t, { before, backup: null, hadContent: false });
+  assert.equal(r.clean, true, r.stdout);
+  assert.match(r.stdout, /empty again/);
+  assert.ok(existsSync(t));
+  assert.equal(snapshotTree(t).size, 0);
+});
+
+test('planForce: a case-variant name on a case-insensitive filesystem is a clear problem', (t) => {
+  const staging = mkTemp('ct-plan-case-staging-');
+  writeFileSync(join(staging, 'README.md'), 'template\n');
+  mkdirSync(join(staging, 'kb'));
+  writeFileSync(join(staging, 'kb', 'x.md'), 'x\n');
+  const target = mkTemp('ct-plan-case-target-');
+  writeFileSync(join(target, 'readme.md'), 'mine\n');
+  mkdirSync(join(target, 'KB'));
+  writeFileSync(join(target, 'KB', 'x.md'), 'mine\n');
+  if (!existsSync(join(target, 'README.md'))) {
+    t.skip('case-sensitive filesystem');
+    return;
+  }
+  const plan = planForce(staging, target);
+  const text = plan.problems.join('\n');
+  assert.match(text, /readme\.md in the target differs from the template's README\.md only in letter case/);
+  assert.match(text, /KB in the target differs from the template's kb only in letter case/);
+});
+
+test('messages name the running create-tess version, not a hard-coded release', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const staging = mkTemp('ct-plan-ver-staging-');
+  mkdirSync(join(staging, 'conductor'));
+  writeFileSync(join(staging, 'conductor', 'x.md'), 'x\n');
+  const target = mkTemp('ct-plan-ver-target-');
+  mkdirSync(join(target, 'conductor'));
+  writeFileSync(join(target, 'conductor', 'mine.md'), 'mine\n');
+  const plan = planForce(staging, target);
+  assert.ok(plan.problems[0].endsWith(`not supported in create-tess ${pkg.version}`), plan.problems[0]);
 });
