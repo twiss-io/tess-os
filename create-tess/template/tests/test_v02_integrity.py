@@ -408,3 +408,89 @@ def test_doctor_warns_on_present_but_unmanaged(project, capsys):
     warn = [l for l in out.splitlines() if "present-but-unmanaged" in l]
     assert warn and ".claude/agents/vega.md" in warn[0]
     assert not any(".claude/agents/ada.md" in l for l in warn)
+
+
+# ---------------------------------------------------------------------------
+# Cyra fix round 1: the drift gate knows stale renders and captured overrides
+# ---------------------------------------------------------------------------
+
+def test_restore_applies_a_new_local_md_append_without_force(project, capsys):
+    """Adding `<file>.local.md` (the operator's append-first customization
+    tier) leaves the live file equal to pristine core: a stale render, not a
+    hand edit. restore applies the append and exits 0 (e5ba76a refused it as
+    WOULD CLOBBER UNCAPTURED DRIFT and exited 1; 5c2d698 applied it)."""
+    project.add("conductor/doctrine.md", "CORE DOCTRINE\n")
+    project.write()
+    _set_enabled(project.root, [])
+    (project.root / "conductor" / "doctrine.local.md").write_text("OPERATOR APPEND\n")
+
+    code = 0
+    try:
+        project.mod.cmd_restore(ns(dry_run=False, force=False), project.root)
+    except SystemExit as e:  # the behaviour under test is the exit status
+        code = e.code
+    out = capsys.readouterr().out
+    assert code in (None, 0), f"restore exited {code!r}\n{out}"
+    assert "WOULD CLOBBER" not in out
+    assert project.read_live("conductor/doctrine.md") == "CORE DOCTRINE\n\nOPERATOR APPEND\n"
+
+
+def test_restore_still_blocks_a_real_hand_edit_next_to_a_local_md(project, capsys):
+    """The stale-render rule is exact: a hand edit is still uncaptured drift,
+    and the remedy names the per-path discard (`tessctl reset <path>`)."""
+    project.add("conductor/doctrine.md", "CORE DOCTRINE\n")
+    project.write()
+    _set_enabled(project.root, [])
+    (project.root / "conductor" / "doctrine.local.md").write_text("OPERATOR APPEND\n")
+    project.write_live("conductor/doctrine.md", "CORE DOCTRINE\nHAND EDIT\n")
+
+    with pytest.raises(SystemExit) as ei:
+        project.mod.cmd_restore(ns(dry_run=False, force=False), project.root)
+    assert ei.value.code not in (None, 0)
+    assert "tessctl reset <path>" in str(ei.value.code)
+    assert "WOULD CLOBBER UNCAPTURED DRIFT conductor/doctrine.md" in capsys.readouterr().out
+    assert project.read_live("conductor/doctrine.md") == "CORE DOCTRINE\nHAND EDIT\n"
+
+
+def test_restore_keeps_a_patch_override_without_calling_it_drift(project, run_cli):
+    """A recorded patch-override is a captured customization: restore keeps it,
+    exits 0, and never labels it uncaptured drift or suggests --force
+    (5c2d698 silently reverted it to core; e5ba76a exited 1 with
+    'WOULD CLOBBER UNCAPTURED DRIFT' and --force as the only remedy)."""
+    project.add("conductor/p.md", "line1\nline2\n")
+    project.write()
+    _set_enabled(project.root, [])
+    project.write_live("conductor/p.md", "line1\nline2 OVERRIDDEN\n")
+    r = run_cli(project.root, "override", "conductor/p.md")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert project.lock()["files"][".tess/core/conductor/p.md"]["status"] == "patch-override"
+
+    r = run_cli(project.root, "restore")
+    both = r.stdout + r.stderr
+    assert r.returncode == 0, both
+    assert "WOULD CLOBBER" not in both and "--force" not in both
+    assert "patch-override" in both
+    assert project.read_live("conductor/p.md") == "line1\nline2 OVERRIDDEN\n"
+
+
+def test_security_refusal_points_at_reset_and_reset_discards(project, capsys):
+    """After `restore --force` (intent: discard), the security-tier refusal
+    names `tessctl reset <path>` as the discard and says approve only ACCEPTS
+    the change (e5ba76a pointed at capture + approve, and approve copies the
+    tampered bytes back into live). reset then restores core."""
+    project.add("conductor/guardrails.md", "GUARD\n", tier="security")
+    project.write()
+    _set_enabled(project.root, [])
+    project.write_live("conductor/guardrails.md", "GUARD weakened\n")
+    with pytest.raises(SystemExit) as ei:
+        project.mod.cmd_restore(ns(dry_run=False, force=True), project.root)
+    assert ei.value.code not in (None, 0)
+    out = capsys.readouterr().out
+    refusal = [line for line in out.splitlines() if "REFUSED" in line]
+    assert refusal, out
+    assert "tessctl reset conductor/guardrails.md" in refusal[0]
+    assert "ONLY to accept" in refusal[0]
+    assert project.read_live("conductor/guardrails.md") == "GUARD weakened\n"
+
+    project.mod.cmd_reset(ns(path="conductor/guardrails.md"), project.root)
+    assert project.read_live("conductor/guardrails.md") == "GUARD\n"

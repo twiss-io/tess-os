@@ -2089,12 +2089,34 @@ def snapshot_live_tree(root: Path, lock: dict, label: str = "update") -> str:
     return snapshot_paths(root, _operation_snapshot_rels(root, lock), label)
 
 
+# v0.2: snapshot retention is per operation label, so routine operations can
+# never push the pre-update snapshot (or a reset's pre-image) out of the ring.
+# Labels not listed here keep MAX_SNAPSHOTS each. `reset` keeps the 20-slot
+# budget the single-file `-pre` ring gave it before v0.2.
+_SNAPSHOT_LABEL_CAPS = {"pre": MAX_PRE_SNAPSHOTS, "reset": MAX_PRE_SNAPSHOTS}
+_SNAPSHOT_NAME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(?:-([A-Za-z0-9_-]+))?(?:\.\d+)?$"
+)
+
+
+def _snapshot_label(name: str) -> str:
+    """The operation label of snapshot directory `name`: `<ts>-<label>[.n]`
+    gives <label>; a legacy bare `<ts>` was update Step 0's, so 'update'; any
+    other name gives '?', a ring of its own."""
+    m = _SNAPSHOT_NAME_RE.match(name)
+    if not m:
+        return "?"
+    return m.group(1) or "update"
+
+
 def _prune_snapshots(root: Path, keep=()) -> None:
     """
-    Prune old snapshots independently per kind (N2 + Reid LOW-2).
+    Prune old snapshots independently per operation label (N2 + Reid LOW-2).
 
-    Full snapshots (legacy `<ts>` and labelled `<ts>-<label>`): cap at
-    MAX_SNAPSHOTS. Single-file `-pre` snapshots: cap at MAX_PRE_SNAPSHOTS.
+    Each label (`update`, `init`, `restore`, `render`, `doctor-fix`, `reset`,
+    single-file `pre`; a legacy bare `<ts>` counts as `update`) keeps its own
+    newest _SNAPSHOT_LABEL_CAPS.get(label, MAX_SNAPSHOTS) snapshots, so five
+    renders can no longer prune the pre-update snapshot.
 
     v0.2 (bug b2): only real snapshot DIRECTORIES are considered
     (_list_snapshot_dirs) — the shipped `.tess/snapshots/.gitkeep` used to be
@@ -2105,9 +2127,11 @@ def _prune_snapshots(root: Path, keep=()) -> None:
     pruning is housekeeping and must never abort the operation it serves.
     """
     protected = set(keep) | _ACTIVE_SNAPSHOTS
-    dirs = _list_snapshot_dirs(root)
-    for is_pre, cap in ((False, MAX_SNAPSHOTS), (True, MAX_PRE_SNAPSHOTS)):
-        kind = [d for d in dirs if d.name.endswith("-pre") == is_pre]
+    groups: dict = {}
+    for d in _list_snapshot_dirs(root):
+        groups.setdefault(_snapshot_label(d.name), []).append(d)
+    for label, kind in sorted(groups.items()):
+        cap = _SNAPSHOT_LABEL_CAPS.get(label, MAX_SNAPSHOTS)
         removable = [d for d in kind if d.name not in protected]
         excess = len(kind) - cap
         for victim in removable[:max(excess, 0)]:
@@ -2233,8 +2257,11 @@ def snapshot_paths(root: Path, rels, label: str) -> str:
          "is_symlink": bool, "link_target": str|None}
     A rel that does not exist is recorded with existed=false, so rollback
     deletes a file the operation created. A real directory at a rel is
-    recorded with "is_dir": true and not copied. `manifest.json` itself is not
-    a snapshottable rel (it names the manifest). The id stays in
+    recorded with "is_dir": true and not copied. A rel whose parent directory
+    resolves OUTSIDE root (a symlinked directory pointing elsewhere) is
+    recorded as {"out_of_tree": true} and never copied: its bytes are not the
+    instance's to snapshot, and rollback never writes there. `manifest.json`
+    itself is not a snapshottable rel (it names the manifest). The id stays in
     _ACTIVE_SNAPSHOTS (never pruned) until _finish_snapshot runs.
     """
     label = re.sub(r"[^A-Za-z0-9_-]+", "-", str(label)).strip("-") or "op"
@@ -2254,10 +2281,14 @@ def snapshot_paths(root: Path, rels, label: str) -> str:
     _ACTIVE_SNAPSHOTS.add(snap_id)
 
     manifest: dict = {}
+    root_resolved = root.resolve()
     for rel in sorted({str(r).replace(os.sep, "/") for r in rels}):
         if not _snapshot_rel_ok(rel) or rel == SNAPSHOT_MANIFEST:
             continue
         src = root / rel
+        if not _rel_parent_inside(root_resolved, src):
+            manifest[rel] = {"out_of_tree": True}
+            continue
         entry = {"existed": False, "sha256": None, "mode": None,
                  "is_symlink": False, "link_target": None}
         try:
@@ -2289,6 +2320,16 @@ def snapshot_paths(root: Path, rels, label: str) -> str:
     return snap_id
 
 
+def _rel_parent_inside(root_resolved: Path, path: Path) -> bool:
+    """True when `path`'s parent directory resolves inside the (resolved)
+    root, i.e. no symlinked directory on the way leads out of the tree."""
+    try:
+        path.parent.resolve().relative_to(root_resolved)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def _load_snapshot_manifest(snap_dir: Path) -> dict | None:
     """The snapshot's manifest dict, or None for a legacy (pre-v0.2) snapshot."""
     mf = snap_dir / SNAPSHOT_MANIFEST
@@ -2304,7 +2345,10 @@ def _load_snapshot_manifest(snap_dir: Path) -> dict | None:
 
 
 def _live_matches_snapshot_entry(root: Path, rel: str, entry: dict) -> bool:
-    """True when the live state at `rel` equals what the manifest recorded."""
+    """True when the live state at `rel` equals what the manifest recorded.
+    An out-of-tree rel (see snapshot_paths) is not tracked: always True."""
+    if entry.get("out_of_tree"):
+        return True
     p = root / rel
     exists = os.path.lexists(p)
     if not entry.get("existed"):
@@ -2351,7 +2395,10 @@ def _finish_snapshot(root: Path, snap_id: str | None, verbose: bool = True) -> b
 def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
     """
     Restore every manifest rel to its recorded state. Returns counts:
-    written, removed, matched (already equal), failed.
+    written, removed, matched (already equal), outside, failed.
+      * out_of_tree    -> reported, never written, not a failure (the path ran
+                          through a symlinked directory outside root when the
+                          snapshot was taken)
       * existed=false  -> delete the live file/symlink if present (never a
                           directory: a directory is reported, not removed)
       * is_symlink     -> recreate the symlink with the recorded target
@@ -2359,7 +2406,7 @@ def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
     Every rel is containment-checked (no absolute/'..'; its parent must resolve
     inside root) and every result is re-verified against the manifest.
     """
-    counts = {"written": 0, "removed": 0, "matched": 0, "failed": 0}
+    counts = {"written": 0, "removed": 0, "matched": 0, "outside": 0, "failed": 0}
     root_resolved = root.resolve()
     for rel in sorted(manifest):
         entry = manifest[rel] or {}
@@ -2367,10 +2414,16 @@ def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
             print(f"  WARN  rollback: skipping unsafe path {rel!r} (absolute or '..' traversal)")
             counts["failed"] += 1
             continue
+        if entry.get("out_of_tree"):
+            counts["outside"] += 1
+            print(f"  skip      {rel}  (outside the tree through a symlinked directory "
+                  f"when the snapshot was taken; not managed by rollback)")
+            continue
         dst = root / rel
-        try:
-            dst.parent.resolve().relative_to(root_resolved)
-        except (ValueError, OSError):
+        if not _rel_parent_inside(root_resolved, dst):
+            if _live_matches_snapshot_entry(root, rel, entry):
+                counts["matched"] += 1
+                continue
             print(f"  WARN  rollback: skipping out-of-tree path {rel!r} (escaped root)")
             counts["failed"] += 1
             continue
@@ -3062,9 +3115,27 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
                 print(f"  ok    {live_rel}")
             continue
 
+        # v0.2 (Cyra fix round 1): a recorded patch-override is a CAPTURED
+        # customization, like locally-modified: kept with a WARN, never
+        # reported as uncaptured drift and never a reason to reach for --force.
+        # (5c2d698 silently reverted it to core.)
+        if status == "patch-override":
+            counts["skipped_locally_modified"] += 1
+            if live_rel not in _restore_warned:
+                _restore_warned.add(live_rel)
+                print(f"  WARN  skip [patch-override]  {live_rel}  — kept: the override "
+                      f"recorded in tess.lock stays applied (`tessctl update` re-applies "
+                      f"it onto new core)")
+            continue
+
         # v0.2 drift gate (bug e): an existing live file that differs from
-        # core is uncaptured drift — never overwritten silently.
-        if os.path.lexists(live_path):
+        # core is uncaptured drift — never overwritten silently. A STALE
+        # render is not drift (Cyra fix round 1): live bytes equal to core
+        # itself (raw, or token-substituted without the .local.md append) are
+        # refreshed without --force, e.g. right after the operator adds a
+        # .local.md shadow.
+        if os.path.lexists(live_path) and not _restore_live_is_stale(
+                root, core_path, live_path):
             if live_rel in drift_seen:
                 continue  # several lock entries share this live path (CLAUDE.md)
             is_sec = live_rel in security_live and live_rel not in render_generated
@@ -3075,8 +3146,10 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
                     counts["refused_security"] += 1
                     print(
                         f"  REFUSED  {live_rel} [SECURITY]  — uncaptured security-tier "
-                        f"drift is never force-overwritten; run `tessctl capture {live_rel}` "
-                        f"(quarantine) then `tessctl approve`"
+                        f"drift is never force-overwritten. To discard: `tessctl reset "
+                        f"{live_rel}` (not yet captured) or `tessctl capture {live_rel}` "
+                        f"(pins the authoritative text and keeps your edit in quarantine "
+                        f"as evidence); run `tessctl approve` ONLY to accept the change"
                     )
                 else:
                     counts["skipped_drift"] += 1
@@ -3244,6 +3317,36 @@ def _lifecycle_sync(root: Path, op: str, force: bool = False) -> list:
     return blocked
 
 
+def _restore_live_is_stale(root: Path, core_path: Path, live_path: Path) -> bool:
+    """
+    True when an existing live file is a STALE render of its core file rather
+    than a hand edit (Cyra fix round 1): its bytes equal core itself, raw or
+    token-substituted, i.e. what core renders to WITHOUT a .local.md append.
+    The common case is an operator who has just added `<file>.local.md`: the
+    live file still equals pristine core, and restore/init must apply the
+    append instead of refusing it as uncaptured drift.
+
+    Deliberately NOT a match on the lock base_sha alone: when core itself has
+    been tampered with, a live file equal to base_sha is the good copy, and
+    treating it as stale would copy the tampered core over it without --force.
+    A live file that carries an OLDER .local.md append (the shadow was edited
+    or removed) is not provably a render and stays drift; `tessctl reset
+    <path>` discards it per path.
+    """
+    try:
+        live = live_path.read_bytes()
+        raw = core_path.read_bytes()
+    except OSError:
+        return False
+    if live == raw:
+        return True
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return live == apply_token_sub(text, root).encode("utf-8")
+
+
 def _exit_blocked_by_drift(op: str, blocked: list) -> None:
     """Non-zero exit for init/restore when uncaptured drift was left in place."""
     lines = "\n".join(f"    {p}" for p in blocked)
@@ -3251,11 +3354,17 @@ def _exit_blocked_by_drift(op: str, blocked: list) -> None:
         f"\ntessctl {op}: INCOMPLETE — {len(blocked)} path(s) with uncaptured drift "
         f"were NOT overwritten (nothing was lost):\n{lines}\n"
         f"  Resolve each one, then re-run `tessctl {op}`:\n"
-        f"    keep a hand edit    → `tessctl capture <path>` (security-tier: quarantine, then "
-        f"`tessctl approve`); for a render output (CLAUDE.md, AGENTS.md, .codex/**) move the "
-        f"edit into <file>.local.md / an operator stub, or `tessctl publish <path>`\n"
-        f"    discard the edit    → `tessctl {op} --force` (pre-images stay in the snapshot; "
-        f"security-tier copy files are never force-overwritten)"
+        f"    keep the edit       → `tessctl capture <path>`; for a render output (CLAUDE.md, "
+        f"AGENTS.md, .codex/**) move the edit into <file>.local.md / an operator stub, or "
+        f"`tessctl publish <path>`\n"
+        f"    discard one edit    → `tessctl reset <path>` (pre-image kept in a snapshot); a "
+        f"render output with no tess.lock entry: delete it, then `tessctl render`\n"
+        f"    [SECURITY] path     → to discard: `tessctl reset <path>` (not yet captured) or "
+        f"`tessctl capture <path>` (pins the authoritative text and keeps your edit in "
+        f"quarantine as evidence); run `tessctl approve` ONLY to accept the change\n"
+        f"    discard every listed non-security edit at once → `tessctl {op} --force` "
+        f"(pre-images stay in the snapshot; security-tier copy files are never "
+        f"force-overwritten)"
     )
 
 
@@ -4417,8 +4526,10 @@ def cmd_doctor(args, root: Path) -> None:
                 "lock_status": "integrity", "drift": False, "core_tamper": False,
                 "issues": [
                     f"UNTRACKED CORE FILE — {_rel} has no tess.lock entry, so no base_sha "
-                    f"protects it; add a lock entry for it, then `tessctl lock --regen "
-                    f"--only {_rel} --yes` (or delete it if it does not belong in core)"
+                    f"protects it. If it ships with the framework, `tessctl update` to a "
+                    f"release that tracks it adopts upstream's entry. Otherwise add a lock "
+                    f"entry by hand and run `tessctl lock --regen --only {_rel} --yes`, or "
+                    f"remove it if it does not belong in core"
                 ],
             })
             errors += 1
@@ -6726,9 +6837,16 @@ def cmd_override(args, root: Path) -> None:
 def cmd_rollback(args, root: Path) -> None:
     """
     Restore from a .tess/snapshots/<id> (+ tess.lock).
-    Defaults to the most recent FULL snapshot (legacy `<ts>` or a v0.2
-    consolidated `<ts>-<label>` from init/restore/render/doctor --fix/update);
-    single-file `-pre` snapshots need an explicit --to.
+    With no --to it undoes the last `tessctl update`: the most recent update
+    snapshot (legacy bare `<ts>` or v0.2 `<ts>-update`), as on 5c2d698, where
+    update was the only command that took a full snapshot. Snapshots of every
+    other operation (init/restore/render/doctor --fix/reset, `-pre`,
+    `-pre-rollback`) need an explicit --to; with no update snapshot, plain
+    rollback exits non-zero and lists the ids.
+
+    v0.2 (Cyra fix round 1): before changing anything, the current state of
+    every path the rollback may touch is saved to a `<ts>-pre-rollback`
+    snapshot whose id is printed, so a rollback can itself be undone.
 
     v0.2 (bugs b/a): only snapshot DIRECTORIES are candidates
     (_list_snapshot_dirs), so the shipped `.gitkeep` can never be "the most
@@ -6753,25 +6871,65 @@ def cmd_rollback(args, root: Path) -> None:
             available = [s.name for s in snaps]
             sys.exit(f"tessctl rollback: snapshot '{to_ts}' not found.\n  Available: {', '.join(available)}")
     else:
-        # Exclude -pre single-file snapshots from default rollback (M2)
-        full_snaps = [s for s in snaps if not s.name.endswith("-pre")]
-        if not full_snaps:
+        # v0.2 (Cyra fix round 1): plain `tessctl rollback` keeps its 5c2d698
+        # meaning, "undo the last `tessctl update`" — the command update's
+        # conflict message tells the operator to run. Every lifecycle command
+        # snapshots now, so "the most recent full snapshot" would be the last
+        # render/reset/restore instead. Other snapshots need an explicit --to.
+        update_snaps = [s for s in snaps if _snapshot_label(s.name) == "update"]
+        if not update_snaps:
             sys.exit(
-                "tessctl rollback: no full snapshots found.\n"
-                "  (-pre single-file snapshots are excluded from default rollback;\n"
-                "   use `tessctl rollback --to <id>` to target one of: "
-                + ", ".join(s.name for s in snaps) + ")"
+                "tessctl rollback: no update snapshot found (plain `tessctl rollback` "
+                "undoes the last `tessctl update`).\n"
+                "  To undo another operation, name its snapshot: "
+                "`tessctl rollback --to <id>`, one of: "
+                + ", ".join(s.name for s in snaps)
             )
-        snap = full_snaps[-1]  # Most recent full snapshot by mtime
+        snap = update_snaps[-1]  # Most recent update snapshot by mtime
+        later = [s.name for s in snaps
+                 if s.stat().st_mtime > snap.stat().st_mtime and not s.name.endswith("-pre")]
+        if later:
+            print(f"tessctl rollback: undoing the last update ({snap.name}); this also "
+                  f"reverts {len(later)} later operation snapshot(s) "
+                  f"(newest: {later[-1]}).")
 
     print(f"tessctl rollback: restoring from {snap.name} …")
 
-    manifest = _load_snapshot_manifest(snap)
+    # v0.2 (Cyra fix round 1): a rollback is itself undoable. The current
+    # state of every path it may change goes into a `<ts>-pre-rollback`
+    # snapshot first (discarded again when the rollback changes nothing).
+    # The source snapshot is protected from the prune that snapshot runs.
+    _ACTIVE_SNAPSHOTS.add(snap.name)
+    try:
+        manifest = _load_snapshot_manifest(snap)
+        if manifest is not None:
+            undo_rels = list(manifest)
+        else:
+            undo_rels = [str(p.relative_to(snap)).replace(os.sep, "/")
+                         for p in snap.rglob("*")
+                         if not p.is_dir() and p.name not in ("tess.lock.snapshot", ".kind")]
+            undo_rels.append(LOCK_FILE)
+        undo_id = snapshot_paths(root, undo_rels, "pre-rollback")
+        print(f"  current state saved to {SNAPSHOTS_DIR}/{undo_id}  "
+              f"(undo this rollback: `tessctl rollback --to {undo_id}`)")
+        try:
+            _rollback_apply(root, snap, manifest)
+        finally:
+            _finish_snapshot(root, undo_id, verbose=False)
+    finally:
+        _ACTIVE_SNAPSHOTS.discard(snap.name)
+
+
+def _rollback_apply(root: Path, snap: Path, manifest: dict | None) -> None:
+    """Body of cmd_rollback once the source snapshot is chosen and the
+    pre-rollback snapshot is taken: manifest restore (v0.2) or legacy copy."""
     if manifest is not None:
         counts = _rollback_from_manifest(root, snap, manifest)
         total = counts["written"] + counts["removed"] + counts["matched"]
         summary = (f"{counts['written']} restored, {counts['removed']} removed, "
                    f"{counts['matched']} already matched")
+        if counts["outside"]:
+            summary += f", {counts['outside']} outside the tree (not managed by rollback)"
         if counts["failed"]:
             sys.exit(f"\nrollback: INCOMPLETE — {summary}, {counts['failed']} failed "
                      f"(snapshot {snap.name} kept; see WARN lines above)")
@@ -7165,7 +7323,8 @@ def cmd_verify(args, root: Path) -> None:
     # left verify OK); an unknown render target name silently renders nothing.
     untracked_core = _untracked_core_files(root, lock)
     for rel in untracked_core:
-        print(f"  UNTRACKED CORE  {rel}  — no tess.lock entry, so no base_sha protects it")
+        print(f"  UNTRACKED CORE  {rel}  — no tess.lock entry, so no base_sha protects it "
+              f"(a framework file: `tessctl update` to a release that tracks it adopts upstream's entry)")
     unknown_targets = _unknown_render_target_findings(root)
     for msg in unknown_targets:
         print(f"  RENDER TARGETS  {msg}")
@@ -21789,7 +21948,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rollback = sub.add_parser("rollback", help="restore from snapshot + rewrite tess.lock")
     p_rollback.add_argument("--to", metavar="ID",
                             help="snapshot id, i.e. its directory name under .tess/snapshots/ "
-                                 "(default: the most recent full snapshot)")
+                                 "(default: the most recent `tessctl update` snapshot)")
 
     # diff
     p_diff = sub.add_parser("diff", help="show core (rendered) vs live")

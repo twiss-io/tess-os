@@ -335,3 +335,137 @@ def test_noop_render_leaves_no_snapshot(project):
     first = set(_full_dirs(project))
     project.mod.cmd_render(ns(target=None, list_targets=False), project.root)
     assert set(_full_dirs(project)) == first
+
+
+# ---------------------------------------------------------------------------
+# Cyra fix round 1: retention, plain rollback, undoable rollback, out-of-tree
+# ---------------------------------------------------------------------------
+
+_CLAUDE_TPL = "# Fixture\nRoot: {{TESS_ROOT}}\n"
+
+
+def _seed_claude(project):
+    project.add("CLAUDE.md", _CLAUDE_TPL, core_key=".tess/core/templates/CLAUDE.md.tpl",
+                render_live=False)
+    project.add(".claude/settings.json", '{"hooks": {}}\n',
+                core_key=".tess/core/settings-core.json", render_live=False)
+
+
+def test_update_snapshot_survives_renders_and_resets_and_plain_rollback_undoes_it(
+        project, monkeypatch, capsys):
+    """The pre-update snapshot is the most valuable recovery point. Five
+    renders that change something and seven resets must not prune it (e5ba76a
+    kept one MAX_SNAPSHOTS=5 ring for every operation and moved reset into
+    it), every reset pre-image must survive, and plain `tessctl rollback` must
+    still mean "undo the last update", not "undo the last render/reset"."""
+    monkeypatch.delenv("TESS_ROOT", raising=False)
+    _seed_claude(project)
+    for i in range(7):
+        project.add(f"conductor/f{i}.md", f"core {i}\n", status="locally-modified")
+    project.write()
+    root = project.root
+    project.mod.cmd_render(ns(target=None, list_targets=False), root)
+
+    upd = project.mod.snapshot_live_tree(root, project.mod.load_lock(root))  # update Step 0
+    project.mod._ACTIVE_SNAPSHOTS.discard(upd)                              # update finished
+
+    for _ in range(5):
+        (root / "CLAUDE.md").unlink()  # a change the render repairs
+        project.mod.cmd_render(ns(target=None, list_targets=False), root)
+    for i in range(7):
+        project.write_live(f"conductor/f{i}.md", f"captured operator edit {i}\n")
+    capsys.readouterr()
+    reset_ids = []
+    for i in range(7):
+        project.mod.cmd_reset(ns(path=f"conductor/f{i}.md"), root)
+        out = capsys.readouterr().out
+        reset_ids.append(out.split("tessctl rollback --to ")[1].split()[0])
+
+    names = {p.name for p in _snaps(project).iterdir() if p.is_dir()}
+    assert upd in names, f"update snapshot pruned: {sorted(names)}"
+    missing = [s for s in reset_ids if s not in names]
+    assert not missing, f"reset pre-images pruned: {missing}"
+
+    project.write_live("conductor/f0.md", "after everything\n")
+    project.mod.cmd_rollback(ns(to=None), root)
+    out = capsys.readouterr().out
+    assert f"restoring from {upd}" in out
+    assert project.read_live("conductor/f0.md") == "core 0\n"  # the pre-update bytes
+
+
+def test_plain_rollback_with_no_update_snapshot_exits_nonzero(project, capsys):
+    """Only a render snapshot exists: plain rollback refuses (non-zero) and
+    names the id to pass with --to; it never silently undoes the render."""
+    project.add("conductor/a.md", "core a\n")
+    project.write()
+    sid = project.mod.snapshot_paths(project.root, ["conductor/a.md"], "render")
+    project.mod._ACTIVE_SNAPSHOTS.discard(sid)
+    project.write_live("conductor/a.md", "later\n")
+    with pytest.raises(SystemExit) as ei:
+        project.mod.cmd_rollback(ns(to=None), project.root)
+    assert ei.value.code not in (None, 0)
+    assert sid in str(ei.value.code) and "--to" in str(ei.value.code)
+    assert "rollback: complete" not in capsys.readouterr().out
+    assert project.read_live("conductor/a.md") == "later\n"
+
+
+def test_rollback_is_undoable(project, capsys):
+    """Rollback deletes files that did not exist at snapshot time (e.g. a
+    .codex/config.toml with an [mcp_servers] block created later). e5ba76a did
+    that with no copy kept. It now snapshots the current state first and
+    prints the id, and `rollback --to <that id>` brings everything back."""
+    project.add("conductor/a.md", "core a\n")
+    project.write()
+    root = project.root
+    sid = project.mod.snapshot_paths(root, ["conductor/a.md", ".codex/config.toml"], "render")
+    project.mod._ACTIVE_SNAPSHOTS.discard(sid)
+    mcp = b'[mcp_servers.x]\ncommand = "x-server"\n'
+    project.write_live(".codex/config.toml", mcp)
+    project.write_live("conductor/a.md", "edited later\n")
+    capsys.readouterr()
+
+    project.mod.cmd_rollback(ns(to=sid), root)
+    out = capsys.readouterr().out
+    assert not (root / ".codex" / "config.toml").exists()
+    assert project.read_live("conductor/a.md") == "core a\n"
+    marker = "undo this rollback: `tessctl rollback --to "
+    assert marker in out, out
+    undo_id = out.split(marker)[1].split("`")[0]
+    assert (_snaps(project) / undo_id).is_dir()
+
+    project.mod.cmd_rollback(ns(to=undo_id), root)
+    assert (root / ".codex" / "config.toml").read_bytes() == mcp
+    assert project.read_live("conductor/a.md") == "edited later\n"
+
+
+def test_rollback_with_out_of_tree_symlinked_dir_completes(project, tmp_path_factory, capsys):
+    """A live path under a symlinked directory that points outside the root:
+    the snapshot records it as out of tree without copying its bytes, and
+    rollback reports it without failing (e5ba76a: 'rollback: INCOMPLETE ...
+    1 failed' on every rollback, and the outside file's bytes were copied
+    into .tess/snapshots)."""
+    project.add("conductor/a.md", "core a\n")
+    project.add("conductor/linked/s.md", "core s\n")
+    project.write()
+    _set_enabled(project, [])
+    outside = tmp_path_factory.mktemp("outside_dir")
+    (outside / "s.md").write_text("OUTSIDE BYTES\n")
+    import shutil
+    shutil.rmtree(project.root / "conductor" / "linked")
+    os.symlink(str(outside), project.root / "conductor" / "linked")
+    lock = project.mod.load_lock(project.root)
+    sid = project.mod.snapshot_live_tree(project.root, lock, label="update")
+    project.mod._ACTIVE_SNAPSHOTS.discard(sid)
+    assert not (_snaps(project) / sid / "conductor" / "linked").exists()
+    project.write_live("conductor/a.md", "changed after snapshot\n")
+
+    code = 0
+    try:
+        project.mod.cmd_rollback(ns(to=sid), project.root)
+    except SystemExit as e:  # the behaviour under test is the exit status
+        code = e.code
+    out = capsys.readouterr().out
+    assert code in (None, 0), f"rollback exited {code!r}\n{out}"
+    assert "rollback: complete" in out
+    assert project.read_live("conductor/a.md") == "core a\n"
+    assert (outside / "s.md").read_text() == "OUTSIDE BYTES\n"
