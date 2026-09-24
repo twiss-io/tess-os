@@ -156,4 +156,4 @@ def test_lines_omitted_for_an_unknown_identity_are_journaled_once_it_resolves(tm
 def test_front_matter_has_no_machine_local_paths(inst):
     _synced(inst)
     text = (inst / JOURNAL).read_text()
-    assert "source_path: \"claude-transcripts/" in text and "/Users/" not in text and "~/" not in text
+    assert "source_path: \"claude-transcripts/" in text and str(Path.home()) not in text and "~/" not in text
