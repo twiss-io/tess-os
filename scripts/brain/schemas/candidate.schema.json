@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tess-os:brain:candidate:1",
+  "title": "Tess brain inbox candidate (brain/inbox/C-*.json, spec 9.5)",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "op",
+    "statement",
+    "quote",
+    "detected_by",
+    "verification"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^C-\\d{8}-\\d{4}-\\d{2,}$"
+    },
+    "kind": {
+      "enum": [
+        "decision",
+        "preference",
+        "correction",
+        "fact",
+        "open_loop",
+        "skill"
+      ]
+    },
+    "op": {
+      "enum": [
+        "add",
+        "update",
+        "supersede",
+        "noop"
+      ]
+    },
+    "target": {
+      "type": "string"
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "statement": {
+      "type": "string"
+    },
+    "quote": {
+      "type": "string"
+    },
+    "speaker": {
+      "type": "string"
+    },
+    "source_ref": {
+      "type": "string"
+    },
+    "source_at": {
+      "type": "string"
+    },
+    "entity": {
+      "type": "string"
+    },
+    "tier": {
+      "enum": [
+        "routine",
+        "material"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "stated",
+        "inferred"
+      ]
+    },
+    "detected_by": {
+      "enum": [
+        "cue",
+        "distill",
+        "decide",
+        "onboarding",
+        "operator"
+      ]
+    },
+    "external_context": {
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string"
+    },
+    "approves_quote": {
+      "type": "string"
+    },
+    "also_quoted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "status",
+        "reasons"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "pass",
+            "fail",
+            "review",
+            "noop",
+            "waiting"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checked_at": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
