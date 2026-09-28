@@ -186,9 +186,10 @@ def test_base_harness_names_no_chat_channel():
 
 
 def test_allowlist_stays_small_and_explicit():
-    # Exactly the three reasons named in the module docstring. Growing it
-    # needs a reason in the docstring.
-    assert len(ALLOWLIST) == 5
+    # Exactly the reasons named in the module docstring (the two CHANGELOG
+    # copies and the one doc note; the template rebuild at v1.0.0 removed the
+    # two pending-rebuild entries). Growing it needs a reason in the docstring.
+    assert len(ALLOWLIST) == 3
     assert _THIS not in ALLOWLIST, "this guard must not match itself"
     assert ".env.example" not in ALLOWLIST, "v0.2.1 removed the placeholders"
     for rel, reason in ALLOWLIST.items():
