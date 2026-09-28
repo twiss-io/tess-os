@@ -149,8 +149,9 @@ def _push(cfg: Config, out: Dict, dry_run: bool) -> Dict:
     if rc == 0:
         out["pushed"] = True
     elif "COVERING_APPROVAL_MISSING" in so + se:
-        out["notes"].append("the ship-gate refused this instance's first push. Do the one-time operator seed push "
-                            "described in docs/brain/ONBOARDING.md (after reading git log), then save again.")
+        out["notes"].append("the ship-gate refused this push: a protected Tess file differs from the signed "
+                            "release and needs a verdict. Nothing was pushed; the work is saved locally. See "
+                            "docs/brain/ONBOARDING.md section 8; never bypass the check.")
     else:
         out["notes"].append("push failed: %s" % (so + se).strip()[-800:])
     return out

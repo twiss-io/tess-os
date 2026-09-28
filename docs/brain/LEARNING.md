@@ -327,8 +327,9 @@ neither the public framework repository nor reported public by `gh`. It
 checks every URL `git push` would write to (`git remote get-url --push --all`,
 so a `pushurl` or `pushInsteadOf` cannot route around the check).
 
-If the ship-gate refuses a new instance's first push, the tool points to the
-one-time operator seed push in the onboarding guide.
+The first push of a folder made with `npm create tess` passes the ship-gate
+(its release proof); if a push is refused, the tool reports the gate's
+reason and points to section 8 of the onboarding guide.
 
 ## Review, correct, retract, reject
 

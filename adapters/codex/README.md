@@ -32,8 +32,8 @@ the claude-code surface's own `.claude/commands/**` entries).
 It does **not** render `.codex/hooks.json`: both Tess hooks are inline in
 `.codex/config.toml`, so a `hooks.json` you write stays yours (Codex loads
 both and warns "prefer a single representation for this layer"). See
-[`../CONFORMANCE.md`](../CONFORMANCE.md) for the enforcement level (listed as
-Partial as shipped; the gate meets the Enforced definition once you do the
+[`../CONFORMANCE.md`](../CONFORMANCE.md) for the enforcement level: Enforced
+once the project is trusted and Tess hooks are approved in `/hooks` (the
 one-time setup below).
 
 ## Safety gate in Codex (v1.0)
@@ -43,10 +43,19 @@ one-time setup below).
 1. Trust the project when Codex asks (or set `trust_level = "trusted"` for it
    in your own `~/.codex/config.toml`). Codex ignores a project's
    `.codex/config.toml`, hooks and rules until you do.
-2. Start `codex` in the project, type `/hooks`, and approve the two Tess hooks
-   (`Tess: safety check` and `Tess: checking onboarding`). Codex pins your
-   approval to each hook's hash, so after a Tess update that changes a hook,
-   `/hooks` asks again; until you re-approve, that hook does not run.
+2. Start `codex` in the project, type `/hooks`, and approve the Tess hooks
+   (`Tess: safety check`, `Tess: checking onboarding`, `Tess: loading the
+   brain` and the three learning-loop hooks). Codex pins your approval to
+   each hook's hash, so after a Tess update that changes a hook, `/hooks`
+   asks again; until you re-approve, that hook does not run.
+3. The first time Tess saves your brain, Codex asks to run
+   `python3 scripts/brain/tessbrain.py save` outside its sandbox (the
+   default sandbox keeps `.git` read-only, so a commit cannot run inside it).
+   One click: choose "Yes, proceed", or "Yes, and don't ask again for
+   commands that start with" it so later saves do not ask. The brain-save
+   skill and the `AGENTS.md` harness note tell Codex to ask for this
+   approval rather than fail; if you say no, Tess reports the work as not
+   saved.
 
 Until both are done, nothing Tess ships blocks a Codex tool call; only
 Codex's own sandbox and approval settings apply. The `AGENTS.md` harness note

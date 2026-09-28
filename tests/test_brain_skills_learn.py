@@ -56,3 +56,20 @@ def test_never_rules():
     assert "Every change needs their words" in _text("brain-review")
     for name in SKILLS:
         assert not re.search(r"git (commit|push)[^\n]*--no-verify", _text(name))
+
+
+def test_codex_save_escalates_the_git_write_instead_of_failing():
+    """v1.0.0: Codex's default sandbox keeps .git read-only, so `tessbrain.py
+    save` fails with index.lock: Operation not permitted. The skill Codex reads
+    (.agents/skills) and the AGENTS.md Codex loads must tell the model to ask
+    for approval (escalate) and never to report the failure as saved."""
+    skill = " ".join(_text("brain-save").split())
+    assert "In Codex: its default sandbox keeps `.git` read-only" in skill
+    assert "`index.lock: Operation not permitted`" in skill
+    assert 'sandbox_permissions: "require_escalated"' in skill
+    assert '"Yes, proceed"' in skill
+    assert "never report a sandbox failure as saved" in skill
+    agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+    assert ("Codex's default sandbox keeps `.git` read-only: run a git write (a commit, "
+            "`tessbrain.py save`) with escalated permissions") in agents
+    assert "never report a sandbox failure as saved" in agents

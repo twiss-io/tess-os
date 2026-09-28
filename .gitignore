@@ -244,3 +244,7 @@ brain/life/areas/money/*
 .obsidian/workspace.json
 .obsidian/workspaces.json
 # <<< tess-brain <<<
+
+# create-tess: the release proof publish-npm.yml builds from the signed tag
+# (create-tess/scripts/build-release-proof.py); generated, never committed.
+/create-tess/release-proof.json

@@ -9,15 +9,15 @@
 schema: 1
 framework:
   track: v2
-  version: 0.2.0
+  version: 1.0.0
   channel: stable
   upstream: https://github.com/twiss-io/tess-os.git
-  upstream_ref: v0.2.0
+  upstream_ref: v1.0.0
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-28T23:23:19.190590Z'
+  last_updated: '2026-09-28T23:41:47.817032Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5787,7 +5787,7 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:7714c50fdf8184f1ae714dc642fca28578b0d7f75a78a922a6ab1a3d47ad0593
+    base_sha: sha256:56edc2bd002a0ef83b5da0be5ddd85af84ac6798acbafbc7ce21e7e8d98522e9
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:cb4c886f02a1cef326fbddeacadc3791288fc1d50f6b22f72861382728978da0
+    base_sha: sha256:7ac3276651ca279e5bc88cd584ee9fa0380f68c996cf3d88cec4462bb7b2a32c
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
 render_outputs:
@@ -6128,7 +6128,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:243ffeef2d8c9e6857bc3f8d7ff3050445cfcee586b5b5aa34095219afbccc13
+    rendered_sha: sha256:d7c3cc28f6e3d32c527009be3f9a6d426ef8cbbd923c09bed80b3f012e41b081
   .codex/config.toml:
     target: codex
     status: rendered

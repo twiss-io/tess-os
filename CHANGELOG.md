@@ -3,16 +3,47 @@
 All notable changes to Tess OS are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.0.0
+## [1.0.0] — 2026-09-29
 
-Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity) and the fixes that make them work together. Versions are not bumped yet.
+<!-- release-notes:start -->
+**Tess OS v1.0.0: your own AI assistant and a small crew in a folder, set up with one command, working in Claude Code and Codex.**
+
+- **Setup:** `npm create tess@latest my-os` asks a few questions, checks every file, sets up your second brain and saves it in git. It needs Node 18+, git and Python 3.9+ (no PyYAML), and says in plain words what is missing before it writes anything.
+- **Claude Code: Enforced. Codex: Enforced once the project is trusted and Tess hooks are approved in `/hooks`.** Tess's safety gate runs as a hook in both. Gemini CLI and other `AGENTS.md` tools stay Advisory (`adapters/CONFORMANCE.md`).
+- **It learns:** the learning loop captures what you decide and prefer from Claude Code and Codex sessions, with your exact words, and `brain-decide`, `brain-remember` and `brain-save` record and save it.
+- **Your first push works:** a new install carries the proof of the signed release it came from, so its first push passes the review gate with no reviewer keys. Any file that differs from that release still needs a verdict.
+- **Updates are signed and checked on your machine,** with an OpenPGP and an SSH signature on every release tag, so a stock Mac without gpg can verify them.
+
+Full details below. Trust model: SECURITY.md.
+<!-- release-notes:end -->
+
+Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity), #208 (SSH release signature), B4 (first run), #210 (Codex safety gate), #211 (learning loop) and the release-candidate fixes that make them work together.
+
+**Release candidate (v1.0.0)**
+- Blocker fixed — first push: a fresh install's first push was refused (`COVERING_APPROVAL_MISSING`) because the seed commit adds security-tier files and a new user has no verifier keys. publish-npm.yml now also requires the framework tag `v<version>` to carry both release signatures and name the published commit, and builds `create-tess/release-proof.json` from it (`create-tess/scripts/build-release-proof.py`: the tag object with both signatures, the commit, every tree object of the release, so every template file's git blob id, and the raw bytes of `tess.lock` and both `policy.yaml` copies). The wizard writes it to `.tess/release-proof.json` before the first commit. For a push with no base commit, the gate verifies the proof offline against the release keys the engine pins (`RELEASE_ANCHOR_*`, equal to the shipped `tess.lock` pins, and the engine is itself a protected file the proof must match) and accepts protected files only when they are that release byte for byte; the two `policy.yaml` copies must equal the release policy with the wizard's verifier/sign-off key reset applied (a byte-exact Python port, checked against the JS); `tess.lock` may differ only by that re-pin, render records of committed files and timestamps. A hand-edited protected file, a lock tier change, a widened policy, and a proof re-signed with another key (also with the key file swapped) are refused (`tests/test_v1_first_push_release_proof.py`, end to end from a packed tarball with throwaway keys). A packed tarball that is stale for HEAD refuses to build.
+- Codex conformance: Level **Enforced once the project is trusted and Tess hooks are approved in `/hooks`** in README, `docs/STATUS.md`, `docs/TECHNICAL_OVERVIEW.md`, `adapters/CONFORMANCE.md` and `docs/COMPARISON.md`. The wizard's last screen adds one line for Claude Code (trust the folder) and one for Codex (trust the folder and approve Tess's hooks, `/hooks`). The Codex onboarding hook runs through `run-pinned.py` like Claude's; a test proves an edited `onboard.py` never runs from it.
+- Codex save: Codex's default sandbox keeps `.git` read-only, so a save inside it failed with `index.lock: Operation not permitted`. The `brain-save` skill and the `AGENTS.md` harness note tell Codex to run the save with escalated permissions (`sandbox_permissions: "require_escalated"`) so the user approves it with one click, and never to report a sandbox failure as saved; `adapters/codex/README.md` documents the click. The save tool's push-refusal note no longer points at a manual seed push.
+- Versions: 1.0.0 in both `package.json` files, `tess.lock` `framework.version` (`upstream_ref: v1.0.0`), so `tessctl --version`, and this heading.
+
+**SSH release signature (#208)**
+- Every release tag also carries an SSH signature (namespace `tess-release`) over a manifest of the tag, commit and tree, checked with `ssh-keygen -Y verify` against `.tess/keys/twiss-release-allowed-signers` and the pinned `framework.trusted_ssh_key_fingerprint`. `tessctl update`, `self-update` and the release-proof gate accept an SSH-verified release without gpg; with gpg both signatures must verify. release.yml verifies both.
+
+**Codex safety gate (#210)**
+- Tess's PreToolUse gate (`.claude/hooks/tess-gate.py`, sha-pinned, `--on-fail block`) runs in Codex from `.codex/config.toml` on shell commands, `apply_patch`, subagent spawns and MCP calls, with `.codex/rules/tess.rules` as a backstop. Codex cannot ask from a hook, so asks become denies with a message telling the user what to run.
+
+**Learning loop (#211)**
+- `scripts/brain/tessbrain.py` capture hooks for Claude Code and Codex (SessionStart snapshot, prompt notes, Stop/SessionEnd sync), `recall`, and the `brain-decide`, `brain-remember` and `brain-save` skills, with adversarial tests. Reads codex-cli 0.158 rollouts.
+
+**Known issues (1.0.x follow-up)**
+- The legacy top-level `clients/_template/` still ships beside `brain/`; it is unused by onboarding and will be removed in 1.0.x.
+- The installed `tess-gate.yml` CI workflow runs the gate engine from the push's base commit. A repository's very first push has no base, so that one CI run fails closed ("no gate engine found at base ref"); the local pre-push gate checks the first push, and CI checks every push after it.
 
 **First run for non-technical users (B4)**
 - README leads with what Tess OS is, what you need (Node 18+, git, Python 3.9+, Claude Code or Codex) and a three-step quickstart; the technical detail moved to `docs/TECHNICAL_OVERVIEW.md`, and `docs/STATUS.md` states the v1.0.0 trust facts.
 - Wizard: no stale "~150 agents / 6 orchestrators / v0.1" banner, no "ten roles" or "Commander"; it says "a crew of 9 specialists plus your assistant", ends with one next step naming the folder, and replaces the key-custody paragraph with one line pointing at SECURITY.md. Missing git now fails before anything is written, like missing Python. `create-tess --version` works.
 - `tessctl help`, `tessctl help <command>` and `tessctl --version` work. `doctor` and `update` print a short summary by default (`All good — N files checked, nothing changed.`); `--verbose` or `TESS_VERBOSE=1` gives the full listing; exit codes are unchanged and a failed update always prints in full.
 - Onboarding never reports `complete` after a failed apply: it returns to `in_progress`, `status` names the error and the fix, and re-running `apply` now commits files a failed seed commit left staged.
-- Docs no longer tell anyone to push with `--no-verify` (ONBOARDING section 8 now says to back up the folder until the project has reviewer keys), no longer name skills that do not ship (`brain-decide`, `brain-remember`, `brain-save`), and list only supported runtimes (Gemini advisory; no Kimi).
+- Docs no longer tell anyone to push with `--no-verify` (ONBOARDING section 8 now says to back up the folder until the project has reviewer keys), named the `brain-*` skills only once #211 shipped them, and list only supported runtimes (Gemini advisory; no Kimi).
 
 **Integrity (#203)**
 - Security (CRITICAL): the ship gate now lists type changes, deletions and renames of protected paths (`--no-renames --diff-filter=ACDMRTUXB`). `.tess/core/**` and `.tess/tess.lock` are security-tier. doctor, verify and `lock --check` fail on a symlink at a security-tier path. Supersedes #71.

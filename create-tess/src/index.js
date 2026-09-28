@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 
 import { parseArgs, isNonInteractive, HELP, DEFAULTS } from './args.js';
 import { CREATE_TESS_VERSION } from './version.js';
+import { installReleaseProof } from './release-proof.js';
 import {
   ensurePython3,
   clobberReason,
@@ -245,6 +246,9 @@ export async function main(argv) {
       if (policyReset.changed) regenPolicyLock(targetDir);
       printBakeHeader(vibe);
       bake(targetDir, choices, makeBakeProgress(vibe));
+      // The signed release's proof, so the first push needs no verdict
+      // (release-proof.js). Only the bundled template matches it.
+      installReleaseProof(targetDir, { bundled: usingBundledDefault });
       // PREFERRED (HIGH-1): write operator/profile.json only AFTER a successful
       // bake. A failed run then leaves NO profile.json — the key clobberReason()
       // gates on — so the directory stays re-runnable.

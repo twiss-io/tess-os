@@ -43,7 +43,10 @@ routine.
 
 3. **Open the folder `my-os` in Claude Code or Codex and say hi.** Your
    assistant takes it from there: tell it what you are working on, or give it
-   a first task.
+   a first task. The first time, Claude Code asks whether you trust the
+   folder: say yes. In Codex, trust the folder and approve Tess's hooks when
+   asked (or type `/hooks`); Tess's safety checks run in Codex only after
+   that, and Codex asks again after each Tess update.
 
 To check your install later, run `./tessctl doctor` inside the folder
 ("All good" means nothing is broken). `./tessctl help` lists every command.

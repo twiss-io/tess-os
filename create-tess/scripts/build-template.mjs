@@ -76,6 +76,27 @@ try {
   die(`\`git ls-files\` failed — is ${REPO_ROOT} a git working tree? ${err.message}`);
 }
 
+// A release proof (scripts/build-release-proof.py, run by publish-npm.yml)
+// must be for the commit this bundle is built from, or every install's first
+// push would be refused; never pack a stale one.
+const PROOF = join(PKG_DIR, 'release-proof.json');
+if (existsSync(PROOF)) {
+  const { readFileSync } = await import('node:fs');
+  let proofCommit = null;
+  try {
+    proofCommit = JSON.parse(readFileSync(PROOF, 'utf8')).commit_id;
+  } catch {
+    die(`${relative(REPO_ROOT, PROOF)} is not valid JSON; delete it or rebuild it.`);
+  }
+  const head = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD']).toString().trim();
+  if (proofCommit !== head) {
+    die(
+      `${relative(REPO_ROOT, PROOF)} is for commit ${String(proofCommit).slice(0, 12)}, not HEAD ` +
+        `${head.slice(0, 12)}; delete it (a local build needs none) or rebuild it from the tag.`,
+    );
+  }
+}
+
 const tracked = lsFilesOut.toString('utf8').split('\0').filter(Boolean);
 if (tracked.length === 0) die('`git ls-files` returned zero tracked files — refusing to build an empty bundle.');
 

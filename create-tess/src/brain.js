@@ -105,6 +105,12 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor }, 
 // The last thing a person sees: what was made and the one next step, in plain
 // words. The next step names the folder by the name the person typed, because
 // that is what they will look for in Claude Code or Codex.
+// The one-time question each app asks the first time the folder is opened.
+// Codex runs Tess's safety hooks only in a trusted project, after the hooks
+// are approved (again after each Tess update: approval is pinned to a hash).
+export const FIRST_OPEN_CLAUDE = '  In Claude Code: when it asks whether you trust this folder, say yes.';
+export const FIRST_OPEN_CODEX = "  In Codex: trust this folder and approve Tess's hooks when asked (/hooks).";
+
 export function printFinalScreen(targetDir, opts) {
   const { mode, brain, checks, conductor = 'Tess', crew = 9, productionNote = '' } = opts;
   const w = (s = '') => process.stdout.write(s + '\n');
@@ -130,6 +136,8 @@ export function printFinalScreen(targetDir, opts) {
   w(`  Open the folder "${folder}" in Claude Code or Codex and say hi —`);
   w(`  ${conductor}, your assistant, will take it from there.`);
   w(dim(`  (From a terminal: cd "${targetDir}" && claude   — or codex instead of claude.)`));
+  w(FIRST_OPEN_CLAUDE);
+  w(FIRST_OPEN_CODEX);
   if (brain.status === 'failed') {
     w();
     w(`Your second brain was not set up automatically. ${conductor} will offer to finish it the`);

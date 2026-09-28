@@ -118,6 +118,33 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The package ships the release proof of the framework release it is
+      # built from, so an install's first push passes the review gate with no
+      # verdict (tessctl, "the first push of a fresh install"). That release is
+      # the framework tag v<version>: it must be signed with BOTH release
+      # signatures (OpenPGP + the SSH manifest) and name the commit this
+      # create-tess tag names, so the proof matches the template packed below.
+      - name: Gate 0b — framework tag v<version> is signed and names this commit
+        working-directory: .
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          FW="v${TAG#create-tess-v}"
+          git fetch --force origin "refs/tags/${FW}:refs/tags/${FW}"
+          .github/scripts/verify_release_tag.sh "$FW"
+          .github/scripts/verify_release_ssh_sig.sh "$FW"
+          if [ "$(git rev-parse "refs/tags/${FW}^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::${FW} and ${TAG} name different commits. Refusing to publish."
+            exit 1
+          fi
+
+      - name: Build the release proof the wizard installs
+        working-directory: .
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 create-tess/scripts/build-release-proof.py --tag "v${TAG#create-tess-v}"
+
       - name: Install dependencies
         run: npm ci
 
@@ -125,6 +152,11 @@ jobs:
       # onboarding, doctor/verify, and a scaffold from the real packed tarball.
       - name: create-tess tests (node --test)
         run: npm test
+
+      - name: The package carries the release proof
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const f=JSON.parse(s)[0].files.map(x=>x.path);if(!f.includes("release-proof.json")){console.error("::error::release-proof.json is missing from the package");process.exit(1)}})'
 
       # Provenance attestations are generated automatically with Trusted Publishing.
       - name: npm publish (Trusted Publishing / OIDC)
