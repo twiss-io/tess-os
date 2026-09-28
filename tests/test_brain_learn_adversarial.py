@@ -182,3 +182,23 @@ def test_unknown_entity_is_refused(tmp_path):
                   "--entity", "clients/nobody")
     assert r.returncode != 0 and "unknown entity" in r.stdout
     assert not (inst / "brain" / "clients" / "nobody").exists()
+
+
+# 7. two sessions in one minute with the same 8-character id prefix (codex UUIDv7) -----------------
+
+def test_same_minute_sessions_sharing_an_id_prefix_never_overwrite_each_other(tmp_path):
+    inst = Path(fxlib.make(str(tmp_path / "fx")))
+    cdir = tmp_path / "claude"
+    a, b = "01a0e9f6-2976-7d71-a6af-9a2ab44fd268", "01a0e9f6-c3da-7ed0-9679-fd4a1843cbd3"
+    fxlib.claude_session(cdir / (a + ".jsonl"), a, [("user", "Decision: we'll deploy the API on Fly.io.")])
+    fxlib.sync_dir(inst, cdir)
+    fxlib.claude_session(cdir / (b + ".jsonl"), b, [("user", "Where did I decide to deploy the API?")])
+    fxlib.sync_dir(inst, cdir)
+    fxlib.sync_dir(inst, cdir)  # a re-run keeps each session on its own file
+    notes = sorted((inst / "brain" / "journal").rglob("*-claude-01a0e9f6*.md"))
+    assert len(notes) == 2, notes
+    texts = {n.name: n.read_text() for n in notes}
+    assert sum("Fly.io." in t and a in t for t in texts.values()) == 1
+    assert sum("Where did I decide" in t and b in t for t in texts.values()) == 1
+    r = fxlib.cli(inst, "lint")
+    assert r.returncode == 0, r.stdout + r.stderr

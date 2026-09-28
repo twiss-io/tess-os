@@ -67,8 +67,28 @@ def base_relpath(cfg: Config, sess: Session) -> str:
         t = cfg.local(start)
     except (ValueError, TypeError):
         t = cfg.now()
-    sid8 = "".join(c for c in sess.session_id if c.isalnum())[:8] or "session"
-    return "journal/%s/%s-%s-%s.md" % (t.strftime("%Y/%m/%d"), t.strftime("%H%M"), sess.runtime, sid8)
+    alnum = "".join(c for c in sess.session_id if c.isalnum())
+    rel = "journal/%s/%s-%s-%s.md" % (t.strftime("%Y/%m/%d"), t.strftime("%H%M"), sess.runtime, alnum[:8] or "session")
+    owner = _owner(cfg, rel)
+    if owner and owner != sess.session_id:
+        # Two sessions in one minute whose ids share 8 leading characters: codex-cli ids are UUIDv7, so
+        # their first 8 hex digits are a timestamp. Found live 2026-09-29: the second session overwrote the
+        # first's note and its decision's source_ref pointed at the wrong words. The later one gets the id tail.
+        rel = rel[:-3] + "-" + (alnum[-8:] or "2") + ".md"
+    return rel
+
+
+def _owner(cfg: Config, rel: str) -> str:
+    """session_id recorded in the front matter of an existing journal file (committed or local body)."""
+    for base in (cfg.brain, cfg.state):
+        path = base / rel
+        if not path.is_file():
+            continue
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for _, line in zip(range(40), fh):
+                if line.startswith("session_id:"):
+                    return line.split(":", 1)[1].strip().strip('"')
+    return ""
 
 
 def build_entries(cfg: Config, sess: Session) -> Tuple[List[Entry], Dict[str, int]]:
