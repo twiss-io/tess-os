@@ -14,6 +14,7 @@ import { PATHS } from './args.js';
 import { installSetForPath } from './roster.js';
 import { validateName, checkConductorName } from './validate.js';
 import { art, accent, dim, card } from './ui.js';
+import { askWhoFor, MODE_OPTIONS } from './brain.js';
 
 function bail(value) {
   if (p.isCancel(value)) {
@@ -64,6 +65,7 @@ function recap(vibe, c) {
     `World      ${vibe.label}`,
     `${vibe.squadNoun.padEnd(10)} ${PATH_FRAMING[vibe.key][c.path].label}`,
     `Conductor  ${c.conductor}  (${c.pathway})`,
+    `For        ${MODE_OPTIONS.find((o) => o.value === c.mode).label}${c.preset ? ` (${c.preset})` : ''}`,
   ].join('\n');
 }
 
@@ -157,8 +159,11 @@ export async function runJourney(roster) {
   );
   p.log.success(PATHWAY_SET_LINE[pathway](conductor));
 
+  // S5b — WHO IS THIS FOR (second-brain mode + optional preset, brain.js).
+  const { mode, preset } = await askWhoFor(p, bail);
+
   // S6 — RECAP + the single write gate. Nothing has touched the target yet.
-  const choices = { vibe: vibe.key, operator: operatorName, path, conductor, pathway, set };
+  const choices = { vibe: vibe.key, operator: operatorName, path, conductor, pathway, set, mode, preset };
   p.note(recap(vibe, choices), "Here's the world you've built");
   const go = bail(
     await p.confirm({ message: vibe.recapVerb, active: 'Yes', inactive: 'Change something', initialValue: true }),
