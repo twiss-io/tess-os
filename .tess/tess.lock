@@ -5765,7 +5765,7 @@ files:
   .tess/core/templates/agents-md/codex-config.toml.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:dd9d53ffd6b2e3ff275414a01ed989b2b09e5fb45852f26d37909d0d107ee439
+    base_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
@@ -5807,7 +5807,7 @@ files:
   .tess/core/templates/agents-md/worker-dispatch-scope.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:a90f4959db3b058956b4dcee8ac7b2782f4f88a588bed69ed07e64285dccffec
+    base_sha: sha256:7b4100afb8c45bec999898ed267b0c74075876a941c99f444d2c965dc9fcdd67
     live_path: null
     render: fragment
     last_updated: 2026-09-24 00:00:00+00:00
@@ -6120,11 +6120,11 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:40356fd5b6afaa5451010ecac93cd7b5eb6fda134a01a35c81b42cdce488bbb6
+    rendered_sha: sha256:3cf529d93f40827ddc2bef3544162fbd4ab72c86907fedde25f783d0d7838483
   .codex/config.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:dd9d53ffd6b2e3ff275414a01ed989b2b09e5fb45852f26d37909d0d107ee439
+    rendered_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
   .agents/skills/tess-add-agent/SKILL.md:
     target: codex
     status: rendered
