@@ -25,3 +25,20 @@ approval_policy = "on-request"
 # USER-level ~/.codex/config.toml, not a project-scoped file, so they are
 # deliberately absent here (project config cannot broaden the sandbox).
 sandbox_mode = "workspace-write"
+
+# Onboarding at session start — the same scripts/brain/onboard.py hook Claude
+# Code runs from .claude/settings.json, printing Codex's SessionStart
+# shape ({"hookSpecificOutput": {"additionalContext": ...}}). Inline here, not
+# in .codex/hooks.json, so a hooks.json you write stays yours (Codex merges
+# both and warns). Codex runs project hooks only in a TRUSTED project and only
+# after you trust each hook in `/hooks` (trust is pinned to the hook's hash).
+# Until then the "Second brain" block in AGENTS.md starts onboarding on its
+# own. The command exits 0 silently when the script or python3 is missing.
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); f=\"$r/scripts/brain/onboard.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime codex || exit 0'"
+timeout = 5
+statusMessage = "Tess: checking onboarding"
