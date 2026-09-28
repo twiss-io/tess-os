@@ -238,11 +238,13 @@ for (const combo of COMBOS) {
       encoding: 'utf8',
     });
     assert.equal(branch.stdout.trim(), 'main', 'git init must set the initial branch to main');
-    const log = spawnSync('git', ['log', '--oneline'], { cwd: target, encoding: 'utf8' });
-    assert.notEqual(
-      log.status,
-      0,
-      'the fresh repo must have ZERO commits — the template\'s own history must never leak in',
+    // v0.2.1: the wizard runs onboarding, which makes exactly ONE commit (the
+    // instance's own seed). The template's own history must never leak in.
+    const log = spawnSync('git', ['log', '--format=%s'], { cwd: target, encoding: 'utf8' });
+    assert.equal(
+      log.stdout.trim(),
+      'tess: seed instance + second brain (onboarding)',
+      'the fresh repo must hold only its own seed commit — the template\'s own history must never leak in',
     );
 
     for (const hook of ['pre-commit', 'pre-push']) {
