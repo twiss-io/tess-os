@@ -128,6 +128,8 @@ Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.9 compat (int|None, X|Y unions)
 
 import argparse
+import base64
+import contextlib
 import copy
 import datetime
 import getpass
@@ -612,6 +614,56 @@ def sha256_str(s: str) -> str:
     return sha256_bytes(s.encode("utf-8"))
 
 
+# v0.2.1 (CRITICAL, 2026-09-29 review): the enforcement surface itself. A
+# symlink at any of these paths lets one tracked name serve different bytes
+# than the reviewer (or the gate's blob-SHA check) saw — e.g. replacing
+# conductor/guardrails.md with a link to docs/evil.md, then copying the same
+# text into .tess/core and re-pinning tess.lock, made doctor/verify report a
+# clean tree.
+SECURITY_SURFACE_FIXED_PATHS = (
+    LOCK_FILE,
+    CORE_DIR,
+    ".tess/bin/tessctl",
+    "tessctl",
+    "core/policy/policy.yaml",
+    CORE_DIR + "/policy/policy.yaml",
+)
+
+
+def _rel_symlink_component(root: Path, rel: str) -> str | None:
+    """The first path component of `rel` (relative to `root`, the root
+    itself excluded) that is a symlink, or None. A symlinked PARENT
+    directory redirects the file just as effectively as a symlinked file."""
+    parts = [p for p in Path(rel).parts if p not in ("", ".")]
+    cur = root
+    for i, part in enumerate(parts):
+        cur = cur / part
+        if os.path.islink(cur):
+            return "/".join(parts[: i + 1])
+    return None
+
+
+def security_tier_symlink_findings(root: Path, lock: dict) -> list:
+    """Every security-tier path (lock `tier: security` entries — both the
+    .tess/core key and the live path — SECURITY_TIER_PATHS, and the fixed
+    enforcement surface above) that is, or sits under, a symlink.
+    Returns sorted [(rel, link_component)]. doctor, verify and lock --check
+    FAIL on any entry: a security-tier path must be a regular file."""
+    rels: set = set(SECURITY_TIER_PATHS) | set(SECURITY_SURFACE_FIXED_PATHS)
+    for core_key, attrs in (lock.get("files") or {}).items():
+        if not isinstance(attrs, dict) or not is_security_tier(core_key, attrs):
+            continue
+        rels.add(core_key)
+        if attrs.get("live_path"):
+            rels.add(attrs["live_path"])
+    findings = []
+    for rel in sorted(rels):
+        link = _rel_symlink_component(root, rel)
+        if link is not None:
+            findings.append((rel, link))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Lock file I/O
 # ---------------------------------------------------------------------------
@@ -637,7 +689,15 @@ def save_lock(root: Path, data: dict) -> None:
         sort_keys=False,
         width=120,
     )
-    lock_path.write_text(LOCK_HEADER + body, encoding="utf-8")
+    # v0.2.1 (HIGH, crash safety): was a plain write_text — a crash or
+    # power loss mid-write left a truncated tess.lock, the file every other
+    # integrity check trusts. Now temp sibling + fsync + os.replace + dir
+    # fsync: a reader sees the old lock or the new one, never a torn one.
+    try:
+        mode = stat.S_IMODE(lock_path.stat().st_mode)
+    except OSError:
+        mode = 0o644
+    _atomic_write_bytes(lock_path, (LOCK_HEADER + body).encode("utf-8"), mode=mode)
 
 
 def load_manifest(root: Path) -> dict:
@@ -950,6 +1010,40 @@ def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
         pass  # Best-effort; non-fatal on unusual filesystems
 
 
+# v1.0.0 (stable launch): plain English for the most likely first-run miss —
+# a stock Mac has no gpg. The signature check itself is unchanged.
+GPG_MISSING_FOR_UPDATE_MESSAGE = (
+    "Tess can't update yet: one free tool is missing.\n"
+    "\n"
+    "  Before installing an update, Tess checks it was really published by the\n"
+    "  Tess OS team (a digital signature). That check needs GnuPG (\"gpg\"),\n"
+    "  which this computer does not have. Nothing was changed.\n"
+    "\n"
+    "  Install it with one step, then run the same command again:\n"
+    "    Mac:    brew install gnupg\n"
+    "            (no Homebrew? download GnuPG for macOS from https://gnupg.org/download/)\n"
+    "    Linux:  sudo apt install gnupg   (or your system's package manager)\n"
+    "    Windows: winget install GnuPG.GnuPG"
+)
+
+GPG_MISSING_FOR_GATE_NOTE = (
+    "  NOTE  GnuPG (\"gpg\") is not installed, so safety checks run in a limited mode:\n"
+    "          - Everyday work (your notes, clients, missions, docs) commits and pushes normally.\n"
+    "          - Changes to Tess's protected safety files (its rules, engine and lock) are\n"
+    "            REFUSED, because the reviewer signature that approves them can't be checked.\n"
+    "          - Installing Tess updates also needs gpg (Mac: brew install gnupg).\n"
+    "          Install gpg and re-run `tessctl gate install-hooks` for full protection."
+)
+
+
+def _gpg_missing_reason(what: str) -> str | None:
+    """A fail-closed reason when gpg is absent (None when present)."""
+    if shutil.which("gpg") is not None:
+        return None
+    return (f"gpg is not installed, so this {what}'s signature cannot be checked — refused "
+            f"(fail-closed). Install GnuPG to approve protected changes.")
+
+
 def _check_tools(*tools: str) -> None:
     """
     Preflight check for required external tools (M4).
@@ -988,14 +1082,32 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o644) -> None:
     try:
         with os.fdopen(tmp_fd, "wb") as fh:
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())   # v0.2.1: bytes durable BEFORE the rename
         os.chmod(tmp_path_str, mode)
         os.replace(tmp_path_str, str(path))
-    except Exception:
+    except BaseException:
         try:
             os.unlink(tmp_path_str)
         except OSError:
             pass
         raise
+    _fsync_dir(path.parent)   # v0.2.1: make the rename itself durable
+
+
+def _fsync_dir(dir_path: Path) -> None:
+    """fsync a directory so a completed os.replace survives power loss.
+    Best-effort on platforms that cannot open a directory (Windows)."""
+    try:
+        dfd = os.open(str(dir_path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 # ---------------------------------------------------------------------------
@@ -2578,7 +2690,14 @@ def seed_render_output_records(root: Path, lock: dict, verbose: bool = False) ->
     for name, target in sorted(enabled_render_targets(root).items()):
         try:
             paths = sorted(target.render_generated_paths(root))
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — recorded as a FAIL finding, never skipped
+            # v0.2.1 (MEDIUM, fail-open): used to `continue` silently, so a
+            # target whose outputs could not be listed was never checked for
+            # hand edits and update proceeded over them. Callers FAIL on it.
+            out.setdefault("errors", []).append(
+                f"render target {name!r}: could not list its generated paths "
+                f"({type(e).__name__}: {e})"
+            )
             continue
         for rel in paths:
             live = root / rel
@@ -2629,7 +2748,9 @@ def _seed_render_records_before_state_change(root: Path) -> None:
     try:
         lock = load_lock(root)
         before = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
-        seed_render_output_records(root, lock, verbose=False)
+        _seed_out = seed_render_output_records(root, lock, verbose=False)
+        for _msg in _seed_out.get("errors") or []:
+            print(f"  NOTE  render records: {_msg}")
         after = json.dumps(lock.get(RENDER_OUTPUTS_KEY, None), sort_keys=True, default=str)
         if after != before:
             save_lock(root, lock)
@@ -5186,7 +5307,16 @@ def _check_worker_profile_denylist(root: Path) -> list:
     for target in _worker_profile_targets():
         try:
             digest_paths = target.doctrine_digest_paths(root)
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — reported as a FAIL finding, never skipped
+            # v0.2.1 (MEDIUM, fail-open): an exception here used to `continue`,
+            # so a target whose digest could not even be enumerated was
+            # reported CLEAN. It is now a finding every caller fails on.
+            violations.append({
+                "target": target.name,
+                "live_path": f"<{target.name}:doctrine-digest>",
+                "phrase": f"UNCHECKABLE ({type(e).__name__}: {e})",
+                "error": True,
+            })
             continue
         for live_rel in sorted(digest_paths):
             try:
@@ -5598,6 +5728,15 @@ _PUBLISH_CLEAN_PRIVATE_GLOBS = [
     "**/*.age",
     ".claude/vault/**",
     "clients/*/.vault/**",
+    # v0.2.1 (2026-09-29 security review): the brain's local-only folders
+    # (brain/.private/, per-area .private/ dirs — journal, health, money
+    # details). The brain carries its own self-ignoring .gitignore there; this
+    # is the commit-side backstop if that ignore file is removed. Brain CLIENT
+    # data (brain/clients/**) is deliberately committed to the operator's
+    # private repo, so it is gated at PUSH time instead — see
+    # `tessctl doctor --publish-remote` below: it may only go to a private remote.
+    "brain/**/.private/**",
+    "**/.private/**",
 ]
 
 # Paths that would otherwise match a glob above but are deliberately shipped,
@@ -5623,8 +5762,10 @@ _PUBLISH_CLEAN_ALLOWLIST = frozenset({
 def _publish_clean_tracked_paths(root: Path, scope: str) -> list:
     """
     scope="staged" (the pre-commit hook default): `git diff --cached
-    --name-only --diff-filter=ACMR` — files being Added/Copied/Modified/
-    Renamed by the commit about to happen. Deliberately EXCLUDES Deleted
+    --name-only --no-renames --diff-filter=ACMRTUXB` — files being Added/
+    Copied/Modified/Renamed/Type-changed by the commit about to happen
+    (v0.2.1: T added — swapping a file for a symlink still commits the
+    path). Deliberately EXCLUDES Deleted
     (D): `git rm --cached <leaked-path>` is the documented remediation for an
     already-committed leak, and a gate that blocks the fix would be absurd.
     Deliberately narrower than the full tracked set so a never_touch path
@@ -5645,7 +5786,10 @@ def _publish_clean_tracked_paths(root: Path, scope: str) -> list:
         raise RuntimeError("git not found on PATH — cannot evaluate the publish-clean gate")
 
     if scope == "staged":
-        cmd = ["git", "-C", str(root), "diff", "--cached", "--name-only", "--diff-filter=ACMR"]
+        # v0.2.1: T/U/X/B included (a type change still commits the path);
+        # D stays excluded on purpose — see the docstring above.
+        cmd = ["git", "-C", str(root), "diff", "--cached", "--name-only", "--no-renames",
+               GATE_DIFF_FILTER_NO_DELETE]
     else:
         cmd = ["git", "-C", str(root), "ls-files"]
 
@@ -5743,6 +5887,198 @@ def _cmd_doctor_publish_clean(root: Path, scope: str = "staged") -> None:
     sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# `tessctl doctor --publish-remote REMOTE URL` — DATA-LEAK-SAFETY (v0.2.1,
+# 2026-09-29 security review, HIGH "agency client data outside the leak
+# gate"). The pre-push twin of --publish-clean: agency mode keeps real client
+# data at `brain/clients/<slug>/` (scripts/brain/modes/agency.json), which the
+# brain is DESIGNED to commit (so --publish-clean cannot block it at commit
+# time), but it must only ever reach a PRIVATE remote. Nothing stopped a
+# `git push` of that data to a public GitHub repo. This check refuses a push
+# whose commits carry any `brain/` or `clients/` data (the shipped
+# `clients/_template/` scaffold and `.gitkeep` placeholders excepted) unless
+# the destination is known to be private:
+#   * a local path / file:// remote            -> allowed (never public);
+#   * a GitHub remote + `gh` available          -> `gh api repos/O/R` decides:
+#       private -> allowed, public -> REFUSED (an allowlist cannot override);
+#   * anything else (no gh, gh error, non-GitHub host, SSH host alias)
+#       -> REFUSED unless the operator allowlisted the remote locally:
+#          `git config --add tess.privateRemote <url-or-remote-name>`
+#          (repo-local .git/config — never committed, never shipped).
+# The hook reads git's pre-push stdin (<local ref> <local sha> <remote ref>
+# <remote sha> per line). A push that only deletes refs carries no data.
+# ---------------------------------------------------------------------------
+
+_PUBLISH_REMOTE_ZERO = re.compile(r"^0+$")
+_PUBLISH_REMOTE_GITHUB = re.compile(
+    r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
+    r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+
+
+def _publish_remote_is_data_path(rel: str) -> bool:
+    """True for a path that is operator/client data, not framework scaffold."""
+    if os.path.basename(rel) == ".gitkeep":
+        return False
+    if rel.startswith("clients/_template/"):
+        return False
+    return rel.startswith("brain/") or rel.startswith("clients/")
+
+
+def _publish_remote_data_paths(root: Path, stdin_text: str) -> list:
+    found: list = []
+    for line in stdin_text.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or _PUBLISH_REMOTE_ZERO.match(parts[1]):
+            continue  # malformed line, or a ref deletion (no data pushed)
+        r = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "--name-only", parts[1]],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"`git ls-tree {parts[1]}` failed: {r.stderr.strip()}")
+        found += [p for p in r.stdout.splitlines() if _publish_remote_is_data_path(p)]
+    return sorted(set(found))
+
+
+def _publish_remote_visibility(url: str) -> str:
+    """'local' | 'private' | 'public' | 'unknown: <why>'."""
+    if url.startswith("file://") or url.startswith("/") or url.startswith("./") or url.startswith("../"):
+        return "local"
+    m = _PUBLISH_REMOTE_GITHUB.match(url)
+    if not m:
+        return "unknown: not a github.com URL, so its visibility cannot be checked"
+    gh = shutil.which("gh")
+    if not gh:
+        return "unknown: the GitHub CLI (gh) is not installed, so visibility cannot be checked"
+    try:
+        r = subprocess.run([gh, "api", f"repos/{m.group(1)}/{m.group(2)}", "--jq", ".private"],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unknown: `gh api` failed ({type(exc).__name__})"
+    out = r.stdout.strip().lower()
+    if r.returncode == 0 and out == "true":
+        return "private"
+    if r.returncode == 0 and out == "false":
+        return "public"
+    return "unknown: `gh api` could not read the repository (not logged in, or no access)"
+
+
+def _publish_remote_allowlisted(root: Path, remote: str, url: str) -> bool:
+    r = subprocess.run(["git", "-C", str(root), "config", "--get-all", "tess.privateRemote"],
+                       capture_output=True, text=True)
+    allowed = {v.strip() for v in r.stdout.splitlines() if v.strip()}
+    return bool(allowed & {remote, url})
+
+
+def _cmd_doctor_publish_remote(root: Path, remote: str, url: str, stdin_text: str) -> None:
+    """Pre-push body. Exit 0 = push allowed, exit 1 = refused (fail closed)."""
+    try:
+        data = _publish_remote_data_paths(root, stdin_text)
+    except RuntimeError as e:
+        sys.exit(f"tess-remote-guard: REFUSED — could not inspect the push ({e}). "
+                 f"Nothing was pushed.")
+    if not data:
+        return
+    visibility = _publish_remote_visibility(url)
+    if visibility in ("local", "private"):
+        return
+    shown = "\n".join(f"    {p}" for p in data[:10]) + (
+        f"\n    ... and {len(data) - 10} more" if len(data) > 10 else "")
+    if visibility == "public":
+        sys.exit(
+            f"tess-remote-guard: REFUSED — this push would publish your brain/client data to a "
+            f"PUBLIC GitHub repository ({url}).\n  Data in this push:\n{shown}\n"
+            f"  brain/ and clients/ hold your own and your clients' information and may only go\n"
+            f"  to a private remote. Make the repository private on GitHub, or push to a\n"
+            f"  different, private remote. Nothing was pushed. See docs/DATA_LEAK_SAFETY.md."
+        )
+    if _publish_remote_allowlisted(root, remote, url):
+        return
+    sys.exit(
+        f"tess-remote-guard: REFUSED — this push carries brain/client data and Tess could not\n"
+        f"  confirm that {url} is private ({visibility.split(': ', 1)[-1]}).\n"
+        f"  Data in this push:\n{shown}\n"
+        f"  If you are SURE this remote is private, allow it once on this machine:\n"
+        f"    git config --add tess.privateRemote {url}\n"
+        f"  (or install and log in to the GitHub CLI, `gh auth login`, so Tess can check).\n"
+        f"  Nothing was pushed. See docs/DATA_LEAK_SAFETY.md."
+    )
+
+
+_REMOTE_HOOK_MARKER_V1 = "# tess-remote-guard v1"
+_REMOTE_HOOK_END_SENTINEL = "# tess-remote-guard end"
+
+_REMOTE_HOOK_BODY = r"""set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TESSCTL="$ROOT/.tess/bin/tessctl"
+if [ ! -f "$TESSCTL" ]; then
+  echo "tess-remote-guard: $TESSCTL not found — fail-closed, refusing the push." >&2
+  exit 1
+fi
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "tess-remote-guard: no python3/python on PATH — fail-closed, refusing the push." >&2
+  exit 1
+fi
+TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" doctor --publish-remote "${1:-}" "${2:-}"
+"""
+
+
+def _remote_hook_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        f"{_REMOTE_HOOK_MARKER_V1}\n"
+        "# Pre-push hook: refuse to push brain/ or clients/ data to a public (or\n"
+        "# unverifiable) remote. Installed by `tessctl gate install-hooks`.\n"
+        "# Runs `tessctl doctor --publish-remote`. Git feeds ref ranges on stdin.\n"
+        + _REMOTE_HOOK_BODY
+    )
+
+
+def _remote_splice_above_existing(existing: str) -> str:
+    """Stdin-preserving splice, same technique as `_gitleaks_splice_above_existing`."""
+    inner = _REMOTE_HOOK_BODY.rstrip("\n")
+    guard_block = (
+        f"{_REMOTE_HOOK_MARKER_V1}\n"
+        "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
+        "# BLOCKS a push of brain/client data to a public remote; FALLS THROUGH otherwise.\n"
+        + 'REMOTE_GUARD_STDIN="$(cat; printf x)"; REMOTE_GUARD_STDIN="${REMOTE_GUARD_STDIN%x}"\n'
+        + "if printf '%s' \"$REMOTE_GUARD_STDIN\" | (\n"
+        + f"{inner}\n"
+        + "); then :; else\n"
+        + "  exit $?\n"
+        + "fi\n"
+        + f"{_REMOTE_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
+    )
+    lines = existing.splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        shebang, rest = lines[0], "".join(lines[1:])
+    else:
+        shebang, rest = "#!/usr/bin/env bash\n", existing
+    if rest.strip():
+        rest = "printf '%s' \"$REMOTE_GUARD_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
+    return shebang + guard_block + "\n" + rest
+
+
+def _remote_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = root / ".git" / "hooks"
+    if not git_hooks_dir.exists():
+        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return
+    hook_path = git_hooks_dir / "pre-push"
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if _REMOTE_HOOK_MARKER_V1 in existing:
+            print("  git hook pre-push: tess-remote-guard already v1 (skipped)")
+            return
+        hook_path.write_text(_remote_splice_above_existing(existing), encoding="utf-8")
+        print("  NOTICE: pre-existing pre-push hook detected — the public-remote guard was "
+              "spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).")
+    else:
+        hook_path.write_text(_remote_hook_script(), encoding="utf-8")
+    os.chmod(str(hook_path), 0o755)
+    print(f"  installed git pre-push hook (public-remote guard) at {hook_path}")
+
+
 def cmd_doctor(args, root: Path) -> None:
     """
     SHA-integrity check every core-managed file.
@@ -5754,6 +6090,10 @@ def cmd_doctor(args, root: Path) -> None:
     # "is a private path about to be committed") — handled as an early,
     # exclusive branch rather than folded into the SHA-integrity loop below,
     # so neither check's exit-code/--json contract can bleed into the other's.
+    if getattr(args, "publish_remote", None):
+        remote, url = args.publish_remote
+        _cmd_doctor_publish_remote(root, remote, url, sys.stdin.read())
+        return
     if getattr(args, "publish_clean", False):
         _cmd_doctor_publish_clean(
             root, scope="all" if getattr(args, "publish_clean_all", False) else "staged"
@@ -5844,6 +6184,9 @@ def cmd_doctor(args, root: Path) -> None:
             "lock_status": "worker-profile-denylist",
             "drift": False,
             "issues": [
+                f"DOCTRINE LEAK CHECK FAILED — worker-profile target '{dv['target']}' "
+                f"could not be checked: {dv['phrase']} (fail-closed)"
+                if dv.get("error") else
                 f"DOCTRINE LEAK — worker-profile target '{dv['target']}' render of "
                 f"{dv['live_path']} contains denylisted phrase {dv['phrase']!r} "
                 f"(orchestration doctrine must not reach a single-agent harness — "
@@ -5879,6 +6222,21 @@ def cmd_doctor(args, root: Path) -> None:
                 "issues": [_msg],
             })
             errors += 1
+    # v0.2.1: a symlink at a security-tier path is an integrity FAILURE,
+    # whatever its target's bytes (runs even when doctor is scoped to a path).
+    for _rel, _link in security_tier_symlink_findings(root, lock):
+        if path_filter and _rel != path_filter:
+            continue
+        results.append({
+            "core_key": f"<security-symlink:{_rel}>", "live_path": _rel,
+            "lock_status": "integrity", "drift": False, "core_tamper": False,
+            "issues": [
+                f"SECURITY-TIER SYMLINK — {_rel} resolves through the symlink {_link}; a "
+                f"security-tier path must be a regular file. Replace it with the regular "
+                f"file from git (`git checkout -- {_rel}`) and re-run doctor"
+            ],
+        })
+        errors += 1
     integrity_count = sum(1 for r in results if r.get("lock_status") == "integrity")
 
     errors += _doctor_engb_findings(root, lock, results, as_json, path_filter, fix)  # v0.2 eng-b
@@ -6756,6 +7114,9 @@ def _gate_verify_verdict_signature(
     """
     verifier = instance.get("verifier")
     sig = instance.get("signature")
+    _no_gpg = _gpg_missing_reason("verdict") if isinstance(sig, dict) else None
+    if _no_gpg:
+        return False, _no_gpg
     if not isinstance(sig, dict):
         return False, (
             "no signature block present on this verdict — an unsigned verdict can "
@@ -6966,6 +7327,9 @@ def _gate_verify_signoff_signature(
     """
     authorized_by = data.get("authorized_by")
     sig = data.get("signature")
+    _no_gpg = _gpg_missing_reason("sign-off") if isinstance(sig, dict) else None
+    if _no_gpg:
+        return False, _no_gpg
     if not isinstance(sig, dict):
         return False, (
             "no signature block present on this sign-off — an unsigned/hand-authored "
@@ -7103,6 +7467,65 @@ def _gate_verify_signoff_signature(
     return True, None
 
 
+def _clone_verified_signed_tag(upstream: str, ref: str, clone_dir: Path, label: str,
+                               verify) -> str:
+    """v0.2.1 (HIGH, 2026-09-29 review): fetch EXACTLY the tag `ref` and
+    check out the commit it signs. Returns that commit id.
+
+    The previous `git clone --branch <ref>` resolves a same-named BRANCH
+    before a tag, while `git verify-tag <ref>` resolves the TAG: an upstream
+    carrying branch `v0.2.0` next to signed tag `v0.2.0` got the tag's
+    signature verified and the branch's files extracted. Now:
+      1. `ref` must be a valid tag name (`git check-ref-format`);
+      2. only `refs/tags/<ref>` is fetched (explicit refspec, --no-tags) and
+         the fetch's return code is checked;
+      3. `refs/tags/<ref>` must be an annotated tag object (C4);
+      4. `verify(tag_ref, cwd)` verifies its signature (caller's policy);
+      5. `refs/tags/<ref>^{commit}` is checked out detached and HEAD is
+         asserted equal to it.
+    Any failure exits non-zero (fail-closed) before a file is extracted."""
+    if (not ref or ref.startswith("-") or ref.startswith("refs/")
+            or subprocess.run(["git", "check-ref-format", f"refs/tags/{ref}"],
+                              capture_output=True).returncode != 0):
+        sys.exit(f"tessctl {label}: SECURITY REJECT — {ref!r} is not a valid tag name.")
+    if not upstream or upstream.startswith("-"):
+        sys.exit(f"tessctl {label}: SECURITY REJECT — invalid upstream {upstream!r}.")
+    tag_ref = f"refs/tags/{ref}"
+
+    def _git(*a):
+        return subprocess.run(["git", "-C", str(clone_dir), *a], capture_output=True, text=True)
+
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    r = _git("init", "-q")
+    if r.returncode != 0:
+        sys.exit(f"tessctl {label}: clone failed (git init): {r.stderr.strip()}")
+    r = _git("fetch", "--depth=1", "--no-tags", upstream, f"+{tag_ref}:{tag_ref}")
+    if r.returncode != 0:
+        sys.exit(f"tessctl {label}: clone failed — could not fetch tag {tag_ref!r}:\n"
+                 f"  {r.stderr.strip()}")
+    r = _git("cat-file", "-t", tag_ref)
+    if r.returncode != 0 or r.stdout.strip() != "tag":
+        sys.exit(
+            f"tessctl {label}: SECURITY REJECT — ref {ref!r} resolves to "
+            f"'{r.stdout.strip()}', not an annotated tag object (C4).\n"
+            f"  Only signed annotated tags may be fetched. No files extracted."
+        )
+    verify(tag_ref, str(clone_dir))
+    r = _git("rev-parse", "--verify", "--quiet", f"{tag_ref}^{{commit}}")
+    commit = r.stdout.strip()
+    if r.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit):
+        sys.exit(f"tessctl {label}: SECURITY REJECT — tag {ref!r} does not point at a commit.")
+    r = _git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", commit)
+    if r.returncode != 0:
+        sys.exit(f"tessctl {label}: clone failed — checkout of verified tag commit "
+                 f"{commit} failed:\n  {r.stderr.strip()}")
+    head = _git("rev-parse", "HEAD").stdout.strip()
+    if head != commit:
+        sys.exit(f"tessctl {label}: SECURITY REJECT — checked-out HEAD {head!r} is not the "
+                 f"signed tag's commit {commit!r}. No files extracted.")
+    return commit
+
+
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     """
     Fetch the framework version at `ref` from upstream into .tess/staging/.
@@ -7152,50 +7575,32 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="tessctl_fetch_") as tmpdir:
         clone_dir = Path(tmpdir) / "clone"
 
-        # -- F1: shallow clone at the target tag --
-        print(f"  cloning {ref!r} …")
-        r = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", ref,
-             "--no-tags", upstream, str(clone_dir)],
-            capture_output=True, text=True
-        )
-        if r.returncode != 0:
-            sys.exit(
-                f"tessctl fetch: clone failed for ref {ref!r}:\n"
-                f"  {r.stderr.strip()}"
+        # -- F1-F3 (v0.2.1): fetch ONLY refs/tags/<ref>, verify its signature,
+        # check out exactly the commit it signs (never a same-named branch) --
+        print(f"  fetching tag {ref!r} …")
+        _tofu_state = {"fp": None, "tofu": False}
+
+        def _verify(tag_ref, cwd):
+            print(f"  verifying signature on {ref!r} …")
+            _tofu_state["fp"], _tofu_state["tofu"] = _verify_tag_secure(
+                tag_ref, cwd, trusted_fingerprint or None, root, lock,
+                allow_tofu=allow_tofu,
             )
 
-        # -- F2: explicitly fetch the annotated tag object so verify-tag can read it --
-        # (--no-tags on clone may have skipped the tag object; non-zero is tolerated
-        #  because the tag object may already be present from the clone)
-        subprocess.run(
-            ["git", "fetch", "--depth=1", "origin",
-             f"refs/tags/{ref}:refs/tags/{ref}"],
-            capture_output=True, text=True, cwd=str(clone_dir)
-        )
-
-        # -- F2.5: C4 — verify ref resolves to an annotated tag object (not branch/commit) --
-        cat_type_r = subprocess.run(
-            ["git", "cat-file", "-t", ref],
-            capture_output=True, text=True, cwd=str(clone_dir)
-        )
-        if cat_type_r.returncode != 0 or cat_type_r.stdout.strip() != "tag":
-            sys.exit(
-                f"tessctl fetch: SECURITY REJECT — ref {ref!r} resolves to "
-                f"'{cat_type_r.stdout.strip()}', not an annotated tag object (C4).\n"
-                f"  Only signed annotated tags may be fetched. No files extracted."
-            )
-
-        # -- F3: SIGNATURE VERIFICATION — mandatory pinning + TOFU + isolated GNUPGHOME --
-        print(f"  verifying signature on {ref!r} …")
-        _signing_fp, _tofu = _verify_tag_secure(
-            ref, str(clone_dir), trusted_fingerprint or None, root, lock,
-            allow_tofu=allow_tofu,
-        )
+        _verified_commit = _clone_verified_signed_tag(upstream, ref, clone_dir, "fetch", _verify)
+        # v1.0.0: keep the signed tag + tree objects so the commit this update
+        # produces can prove to the gate that it is exactly this release.
+        _RELEASE_PROOF_STATE["proof"] = None
+        try:
+            _RELEASE_PROOF_STATE["proof"] = _release_proof_build(
+                clone_dir, f"refs/tags/{ref}", ref, _verified_commit, lock)
+        except (RuntimeError, OSError, ValueError, UnicodeDecodeError) as e:
+            print(f"  WARN  could not record the release proof ({e}); committing this update "
+                  f"will need a verdict for protected files")
         # If TOFU occurred, the fingerprint is now pinned in the saved lock;
         # update our in-memory trusted_fingerprint so downstream logic is consistent.
-        if _tofu:
-            trusted_fingerprint = _signing_fp
+        if _tofu_state["tofu"]:
+            trusted_fingerprint = _tofu_state["fp"]
 
         # -- F5: extract .tess/core/ from clone → .tess/staging/ with traversal hardening --
         core_src = clone_dir / ".tess" / "core"
@@ -7303,12 +7708,238 @@ def _resolve_update_ref(args, lock: dict) -> str:
 # Command: update
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# v0.2.1 — update lock, core-tamper refusal, crash rollback, .tess-new files
+# ---------------------------------------------------------------------------
+
+UPDATE_LOCK_LEGACY_STALE_S = 3600   # only for a lock that records no PID
+_UPDATE_LOCK_DEPTH = 0              # re-entrancy: nested commands share the lock
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when `pid` names a live process on this host (EPERM counts as
+    alive: the process exists, we just may not signal it)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _update_lock_holder_is_live(path: Path, raw: bytes) -> tuple[bool, str]:
+    """(live, description) for an existing update lock. A lock whose PID is
+    alive on this host is NEVER reclaimed, however old. A lock from another
+    host, or a legacy lock with no PID, falls back to the age rule."""
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False, "vanished"
+    try:
+        info = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        info = None
+    if isinstance(info, dict) and isinstance(info.get("pid"), int):
+        desc = f"pid {info['pid']}, `tessctl {info.get('op', '?')}`, {age:.0f}s old"
+        if info.get("host") in (None, _this_host()):
+            return _pid_alive(info["pid"]), desc
+        return age <= UPDATE_LOCK_LEGACY_STALE_S, desc + f", host {info.get('host')}"
+    return age <= UPDATE_LOCK_LEGACY_STALE_S, f"legacy lock without a PID, {age:.0f}s old"
+
+
+def _this_host() -> str:
+    # No networking import (tests/test_trace_otel.py forbids one in the engine).
+    try:
+        return os.uname().nodename
+    except (AttributeError, OSError):
+        return os.environ.get("COMPUTERNAME", "?")
+
+
+@contextlib.contextmanager
+def tess_update_lock(root: Path, op: str):
+    """Hold `.tess/update.lock` for the duration of one mutating command.
+
+    Created with O_CREAT|O_EXCL (atomic: exactly one process wins). An
+    existing lock is reclaimed only when its holder is provably gone (PID
+    dead on this host) or, for a legacy/foreign-host lock with no checkable
+    PID, older than an hour. Re-entrant within one process. Released only
+    if it is still ours."""
+    global _UPDATE_LOCK_DEPTH
+    if _UPDATE_LOCK_DEPTH > 0:
+        _UPDATE_LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _UPDATE_LOCK_DEPTH -= 1
+        return
+    path = root / UPDATE_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({
+        "pid": os.getpid(), "host": _this_host(), "op": op,
+        "started": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }).encode("utf-8")
+    for _attempt in range(2):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                continue
+            live, desc = _update_lock_holder_is_live(path, raw)
+            if live:
+                sys.exit(f"tessctl {op}: another tessctl command holds {UPDATE_LOCK} ({desc}). "
+                         f"Wait for it to finish. Remove the file only if you are certain "
+                         f"that process is gone.")
+            print(f"  stale {UPDATE_LOCK} ({desc}) — reclaiming")
+            try:
+                if path.read_bytes() == raw:   # still the lock we judged stale
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        break
+    else:
+        sys.exit(f"tessctl {op}: could not acquire {UPDATE_LOCK} (contended); retry.")
+    _UPDATE_LOCK_DEPTH = 1
+    try:
+        yield
+    finally:
+        _UPDATE_LOCK_DEPTH = 0
+        try:
+            if path.read_bytes() == payload:
+                path.unlink()
+        except OSError:
+            pass
+
+
+# Commands that write tess.lock (save_lock) or the live tree, and therefore
+# must not interleave with an update. Read-only commands are not listed.
+_UPDATE_LOCKED_COMMANDS = frozenset({
+    "init", "restore", "self-update", "publish", "override", "capture",
+    "rollback", "render", "approve", "resolve", "reset", "roster", "recruit",
+    "bench", "identity", "rename", "set-operator", "pathway",
+})
+
+
+def _command_needs_update_lock(args) -> bool:
+    cmd = getattr(args, "command", None)
+    if cmd in _UPDATE_LOCKED_COMMANDS:
+        return True
+    if cmd == "doctor":
+        return bool(getattr(args, "fix", False) or getattr(args, "ack_overwrites", False))
+    if cmd == "lock":
+        return bool(getattr(args, "regen", False))
+    return False
+
+
+def _update_refuse_on_core_tamper(root: Path, lock: dict) -> None:
+    """Exit non-zero if any pinned .tess/core file differs from its base_sha,
+    or any security-tier path is a symlink. Update must never proceed over
+    (and Step 8 must never re-pin) tampered core bytes."""
+    tampered = []
+    for core_key, attrs in (lock.get("files") or {}).items():
+        if not isinstance(attrs, dict) or not attrs.get("base_sha"):
+            continue
+        core_path = root / core_key
+        if core_path.is_symlink():
+            tampered.append((core_key, "is a symlink"))
+        elif core_path.is_file() and sha256_file(core_path) != attrs["base_sha"]:
+            badge = " [SECURITY]" if is_security_tier(core_key, attrs) else ""
+            tampered.append((core_key, f"bytes differ from base_sha{badge}"))
+    for rel, link in security_tier_symlink_findings(root, lock):
+        tampered.append((rel, f"security-tier path resolves through symlink {link}"))
+    if not tampered:
+        return
+    print(f"  BLOCKED — core tamper: {len(tampered)} file(s):")
+    for rel, why in tampered:
+        print(f"    {rel}  — {why}")
+    sys.exit("tessctl update: refusing to proceed over tampered core — restore .tess/core "
+             "from git (`git checkout -- .tess/core`) and run `tessctl verify`, then retry.")
+
+
+def _update_auto_rollback(root: Path, snapshot_id: str | None, core_journal: dict,
+                          exc: BaseException) -> None:
+    """Undo a half-applied update (failure after Step 6.5 started, before
+    Step 8 saved the lock): restore every journaled .tess/core pre-image,
+    then the Step-0 snapshot (live tree + tess.lock). Never raises; always
+    prints the exact manual command as a fallback."""
+    print(f"\nupdate: FAILED after the core advance began and before tess.lock was saved "
+          f"({type(exc).__name__}: {exc}). Rolling back automatically …", file=sys.stderr)
+    core_ok = True
+    for core_key, pre in sorted(core_journal.items()):
+        target = root / core_key
+        try:
+            if pre is None:
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+            else:
+                _atomic_write_bytes(target, pre)
+        except Exception as e:  # noqa: BLE001 — reported; manual path printed below
+            core_ok = False
+            print(f"  ERROR restoring core {core_key}: {e}", file=sys.stderr)
+    snap_ok = False
+    if snapshot_id:
+        snap = root / SNAPSHOTS_DIR / snapshot_id
+        try:
+            _rollback_apply(root, snap, _load_snapshot_manifest(snap))
+            snap_ok = True
+        except BaseException as e:  # noqa: BLE001 — incl. SystemExit from an INCOMPLETE restore
+            print(f"  ERROR restoring snapshot {snapshot_id}: {e}", file=sys.stderr)
+    if core_ok and snap_ok:
+        print(f"  rolled back: .tess/core ({len(core_journal)} file(s)) and the live tree + "
+              f"tess.lock from snapshot {snapshot_id}. Run `tessctl verify`.", file=sys.stderr)
+    else:
+        print(f"  AUTOMATIC ROLLBACK INCOMPLETE. Run:\n"
+              f"    git checkout -- .tess/core\n"
+              f"    tessctl rollback --to {snapshot_id or '<id from `ls .tess/snapshots`>'}\n"
+              f"  then `tessctl verify`.", file=sys.stderr)
+
+
+def _write_tess_new_conflict_file(root: Path, live_rel: str, data: bytes,
+                                  manifest: dict) -> str:
+    """Park upstream's version of a kept live file as `<live>.tess-new`
+    (through the manifest write gate); if the gate refuses that sibling, fall
+    back to `.tess/conflicts/<live_rel with / → _>.tess-new`. Returns the
+    repo-relative path written."""
+    sibling = live_rel + ".tess-new"
+    try:
+        guarded_write(root, sibling, data, op="update-conflict", manifest=manifest)
+        return sibling
+    except GateError:
+        rel = f".tess/conflicts/{live_rel.replace('/', '_')}.tess-new"
+        _atomic_write_bytes(root / rel, data)
+        return rel
+
+
 def cmd_update(args, root: Path) -> None:
     """
     Fetch a new framework version and apply per-file resolution.
     Merge engine: git subtree pull --prefix=.tess/core <upstream> <ref>
-    Network-required for the fetch step (stubbed with a clear TODO).
+
+    v0.2.1 (MEDIUM): the update lock is taken with O_CREAT|O_EXCL BEFORE
+    Step 0 (it used to be an exists()-then-write taken after the snapshot and
+    the doctor gate), so two concurrent updates can no longer both pass.
+    A dry run changes nothing and takes no lock.
     """
+    dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
+    if dry_run:
+        _cmd_update_body(args, root)
+        return
+    with tess_update_lock(root, "update"):
+        _cmd_update_body(args, root)
+
+
+def _cmd_update_body(args, root: Path) -> None:
     dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
     to_version = getattr(args, "to", None)
 
@@ -7321,11 +7952,18 @@ def cmd_update(args, root: Path) -> None:
 
     # Step 0: Unconditional snapshot
     print("\nStep 0: snapshot …")
+    ts = None
     if not dry_run:
         ts = snapshot_live_tree(root, lock)
         print(f"  snapshot → .tess/snapshots/{ts}")
     else:
         print("  (dry-run: skipping snapshot)")
+    # v0.2.1 (HIGH, crash safety): pre-images of every .tess/core file this
+    # run writes (A2 adoption, A1 advance). If anything fails after the core
+    # advance starts and before Step 8 saves the lock, _update_auto_rollback
+    # restores these plus the Step-0 snapshot (live tree + tess.lock).
+    core_journal: dict = {}
+    txn = {"armed": False}
 
     # Step 1: Doctor gate — block on uncaptured drift AND unapproved quarantine.
     # M6: reuse doctor_check_file() so the detection rule lives in one place.
@@ -7336,6 +7974,10 @@ def cmd_update(args, root: Path) -> None:
     # to one line in each list.
     print("\nStep 1: doctor gate …")
     files = lock.get("files", {})
+    # v0.2.1 (MEDIUM): refuse on core tamper. Step 8 re-pins base_sha from
+    # the core bytes on disk, so an update over a tampered .tess/core used to
+    # BLESS the tamper as the new pristine baseline.
+    _update_refuse_on_core_tamper(root, lock)
     uncaptured: list[tuple[str, str]] = []
     render_stale: list[str] = []
     quarantined: list[tuple[str, str]] = []
@@ -7347,7 +7989,14 @@ def cmd_update(args, root: Path) -> None:
     # record every render output that equals the render of the CURRENT
     # (pre-update) core, in memory; Step 7 persists them. Outputs that do not
     # match are hand edits: preserved, reported, and they block below.
-    seed_render_output_records(root, lock, verbose=True)
+    _seed_out = seed_render_output_records(root, lock, verbose=True)
+    if _seed_out.get("errors"):
+        print(f"  BLOCKED — {len(_seed_out['errors'])} render target(s) could not be checked "
+              f"for hand edits:")
+        for _msg in _seed_out["errors"]:
+            print(f"    {_msg}")
+        sys.exit("tessctl update: refusing to proceed — fix the render target error(s) above "
+                 "(`tessctl doctor`), then retry update.")
     mixed_status = _lock_status_consistency_findings(lock)
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
@@ -7426,19 +8075,8 @@ def cmd_update(args, root: Path) -> None:
                   f"Step 7 will re-render automatically")
         print("  doctor gate: PASS — no uncaptured drift, no quarantined files")
 
-    # Step 2: Acquire update lock
-    update_lock_path = root / UPDATE_LOCK
-    if update_lock_path.exists():
-        age = (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromtimestamp(update_lock_path.stat().st_mtime, tz=datetime.timezone.utc)).total_seconds()
-        if age > 3600:
-            print(f"  stale update.lock ({age:.0f}s old) — reclaiming")
-            update_lock_path.unlink()
-        else:
-            sys.exit("tessctl update: another update is in progress (.tess/update.lock). Wait or remove it.")
-
-    if not dry_run:
-        update_lock_path.write_text(datetime.datetime.now(datetime.timezone.utc).isoformat(), encoding="utf-8")
-
+    # Step 2: update lock — v0.2.1: already held (taken by cmd_update before
+    # Step 0 via tess_update_lock, released by it on every exit path).
     try:
         # Step 3: Mission check (advisory)
         mission_states = root / "conductor" / "mission-states.md"
@@ -7520,6 +8158,7 @@ def cmd_update(args, root: Path) -> None:
         a2_adopted: list[str] = []
         a2_core_only = 0
         a2_kept: list[str] = []
+        a2_conflict_files: list[tuple[str, str]] = []   # v0.2.1 (#193)
         a2_skipped: list[str] = []
         if isinstance(upstream_lock_data, dict):
             upstream_files = upstream_lock_data.get("files") or {}
@@ -7599,9 +8238,25 @@ def cmd_update(args, root: Path) -> None:
                             live_path_new.exists()
                             and (not live_path_new.is_file()
                                  or live_path_new.read_bytes() != rendered_new)):
+                        # v0.2.1 (#193 remainder): the operator's file is KEPT
+                        # but NOT adopted — no core-managed lock entry (that
+                        # entry used to claim a file core never wrote) and no
+                        # core copy. Upstream's version is parked beside it as
+                        # a .tess-new conflict file; update exits non-zero at
+                        # the end. Re-running update after resolving adopts it.
                         a2_kept.append(live_path_rel)
-                        print(f"  KEEP  {live_path_rel}  — a different file already "
-                              f"exists; not overwritten (doctor reports it as drift)")
+                        if dry_run:
+                            print(f"  KEEP  {live_path_rel}  — a different file already "
+                                  f"exists; would write upstream's version as a "
+                                  f".tess-new conflict file")
+                        else:
+                            _where = _write_tess_new_conflict_file(
+                                root, live_path_rel, rendered_new, manifest_adopt)
+                            a2_conflict_files.append((live_path_rel, _where))
+                            print(f"  KEEP  {live_path_rel}  — a different file already "
+                                  f"exists; not overwritten, not adopted. Upstream's "
+                                  f"version → {_where}")
+                        continue
                     elif not live_path_new.exists():
                         live_bytes = rendered_new
                 label = live_path_rel or upstream_key
@@ -7625,6 +8280,7 @@ def cmd_update(args, root: Path) -> None:
                             _a2_skip(upstream_key, f"live write gate: {_ge}")
                             continue
                     if not core_present:
+                        core_journal.setdefault(upstream_key, None)   # v0.2.1: did not exist
                         core_path_new.parent.mkdir(parents=True, exist_ok=True)
                         tmp_fd_new, tmp_path_new = tempfile.mkstemp(
                             dir=str(core_path_new.parent), prefix=".tessctl_core_adopt_"
@@ -7681,6 +8337,7 @@ def cmd_update(args, root: Path) -> None:
             print("\nStep 6.5 (A1): advance core from staging …")
             staging_dir_adv = root / STAGING_DIR
             advanced = 0
+            txn["armed"] = True   # v0.2.1: from here until Step 8's save_lock
             for core_key in list(lock.get("files", {}).keys()):
                 staging_src = staging_dir_adv / core_key
                 if not staging_src.exists():
@@ -7692,6 +8349,11 @@ def cmd_update(args, root: Path) -> None:
                 staging_bytes = staging_src.read_bytes()
                 if core_path.exists() and core_path.read_bytes() == staging_bytes:
                     continue
+                if core_key not in core_journal:   # v0.2.1: pre-image for rollback
+                    core_journal[core_key] = (
+                        core_path.read_bytes()
+                        if core_path.is_file() and not core_path.is_symlink() else None
+                    )
                 core_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_fd_adv, tmp_path_adv = tempfile.mkstemp(
                     dir=str(core_path.parent), prefix=".tessctl_core_adv_"
@@ -7732,13 +8394,26 @@ def cmd_update(args, root: Path) -> None:
         if not dry_run:
             print("\nStep 8: update lock …")
             repinned = 0
+            not_repinned: list[str] = []
             for core_key, attrs in lock.get("files", {}).items():
                 core_path = root / core_key
                 if core_path.exists():
                     new_sha = sha256_file(core_path)
                     if attrs.get("base_sha") != new_sha:
-                        lock["files"][core_key]["base_sha"] = new_sha
-                        repinned += 1
+                        # v0.2.1 (MEDIUM): re-pin ONLY to bytes that are the
+                        # verified upstream release (the staged copy this run
+                        # advanced core to). Any other drift is left pinned at
+                        # the old base_sha so verify keeps reporting it.
+                        _stg = root / STAGING_DIR / core_key
+                        if (_stg.is_file() and not _stg.is_symlink()
+                                and sha256_file(_stg) == new_sha):
+                            lock["files"][core_key]["base_sha"] = new_sha
+                            repinned += 1
+                        else:
+                            not_repinned.append(core_key)
+            for _k in not_repinned:
+                print(f"  WARN  {_k}: core bytes match neither base_sha nor the fetched "
+                      f"release — NOT re-pinned (`tessctl verify` reports it)")
 
             # A3: BUMP VERSION — set framework.version + upstream_ref to fetched tag
             _strip_v = target_ref.lstrip("v") if target_ref.startswith("v") else target_ref
@@ -7749,11 +8424,19 @@ def cmd_update(args, root: Path) -> None:
                 lock["framework"]["upstream_commit"] = None
             if lock["framework"].get("upstream_digest") is not None:
                 lock["framework"]["upstream_digest"] = None
+            # v1.0.0: record the verified release (tag commit + tree proof) so
+            # the gate accepts this update's core/lock changes without a verdict.
+            _proof = _RELEASE_PROOF_STATE.get("proof")
+            if _proof and _proof.get("tag_name") == target_ref:
+                _release_proof_write(root, _proof)
+                lock["framework"]["upstream_commit"] = _proof["commit_id"]
+                print(f"  recorded release proof → {RELEASE_PROOF_FILE} (commit {_proof['commit_id'][:12]})")
 
             lock["framework"]["last_updated"] = datetime.datetime.now(
                 datetime.timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             save_lock(root, lock)
+            txn["armed"] = False   # v0.2.1: lock saved — the update is committed
             if repinned:
                 print(f"  re-pinned base_sha for {repinned} file(s)")
             else:
@@ -7767,12 +8450,23 @@ def cmd_update(args, root: Path) -> None:
         # legitimate re-pin/version-bump is never left half-applied by an early exit.
         if not dry_run:
             _exit_on_kept_security_render_drift(root)
+        if a2_kept and not dry_run:
+            # v0.2.1 (#193 remainder): never report success over a new
+            # upstream file that could not be adopted.
+            print(f"\nupdate: INCOMPLETE — {len(a2_kept)} new upstream file(s) not adopted "
+                  f"because a different file already exists at the live path:")
+            for _lp, _where in a2_conflict_files:
+                print(f"    {_lp}  (upstream version: {_where})")
+            print("  Merge upstream's version into your file, or replace your file with it "
+                  "(or delete yours), then re-run `tessctl update` to adopt it.")
+            sys.exit(1)
 
         print("\nupdate: complete")
 
-    finally:
-        if not dry_run and update_lock_path.exists():
-            update_lock_path.unlink()
+    except BaseException as exc:
+        if not dry_run and txn["armed"]:
+            _update_auto_rollback(root, ts, core_journal, exc)
+        raise
 
 
 def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
@@ -8964,6 +9658,10 @@ def cmd_verify(args, root: Path) -> None:
     unknown_targets = _unknown_render_target_findings(root)
     for msg in unknown_targets:
         print(f"  RENDER TARGETS  {msg}")
+    security_symlinks = security_tier_symlink_findings(root, lock)   # v0.2.1
+    for _rel, _link in security_symlinks:
+        print(f"  SECURITY SYMLINK  {_rel}  — resolves through symlink {_link}; "
+              f"a security-tier path must be a regular file")
 
     print(f"\n{'='*60}")
     print(
@@ -8972,12 +9670,17 @@ def cmd_verify(args, root: Path) -> None:
         f"security drifts: {len(security_drifts)}  |  live drifts: {len(normal_drifts)}  |  "
         f"missing live files: {len(missing_live_files)}  |  "
         f"quarantined: {len(quarantined_files)}  |  doctrine leaks: {len(doctrine_leaks)}  |  "
-        f"untracked core: {len(untracked_core)}  |  render-target errors: {len(unknown_targets)}"
+        f"untracked core: {len(untracked_core)}  |  render-target errors: {len(unknown_targets)}  |  "
+        f"security symlinks: {len(security_symlinks)}"
     )
 
     if (core_tampers or security_drifts or normal_drifts or missing_live_files
-            or quarantined_files or doctrine_leaks or untracked_core or unknown_targets):
+            or quarantined_files or doctrine_leaks or untracked_core or unknown_targets
+            or security_symlinks):
         print("\nverify: FAIL")
+        if security_symlinks:
+            print(f"  {len(security_symlinks)} security-tier symlink(s) — restore the regular "
+                  f"file(s) from git (`git checkout -- <path>`)")
         if core_tampers:
             print(f"  {len(core_tampers)} core tamper(s) — restore .tess/core from git or `tessctl rollback`")
         if security_drifts:
@@ -9739,6 +10442,8 @@ def cmd_lock(args, root: Path) -> None:
         issues.append(("UNTRACKED", f"{rel} (.tess/core file with no tess.lock entry)"))
     for msg in _unknown_render_target_findings(root):
         issues.append(("RENDER-TARGET", msg))
+    for _rel, _link in security_tier_symlink_findings(root, lock):   # v0.2.1
+        issues.append(("SEC-SYMLINK", f"{_rel} (resolves through symlink {_link})"))
 
     if issues:
         print(f"tessctl lock --check: FAIL — {len(issues)} issue(s)")
@@ -9807,46 +10512,32 @@ def cmd_self_update(args, root: Path) -> None:
 
         # -- Step 1: clone + verify signed tag (same security model as fetch_to_staging) --
         print("\nStep 1: verify-signed fetch …")
-        print(f"  cloning {ref!r} from {upstream} …")
-        r = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", ref,
-             "--no-tags", upstream, str(clone_dir)],
-            capture_output=True, text=True
-        )
-        if r.returncode != 0:
-            sys.exit(
-                f"tessctl self-update: clone failed:\n  {r.stderr.strip()}"
-            )
-
-        # Fetch annotated tag object explicitly
-        subprocess.run(
-            ["git", "fetch", "--depth=1", "origin",
-             f"refs/tags/{ref}:refs/tags/{ref}"],
-            capture_output=True, text=True, cwd=str(clone_dir)
-        )
-
-        # C4: verify ref is an annotated tag object
-        cat_type_r = subprocess.run(
-            ["git", "cat-file", "-t", ref],
-            capture_output=True, text=True, cwd=str(clone_dir)
-        )
-        if cat_type_r.returncode != 0 or cat_type_r.stdout.strip() != "tag":
-            sys.exit(
-                f"tessctl self-update: SECURITY REJECT — ref {ref!r} resolves to "
-                f"'{cat_type_r.stdout.strip()}', not an annotated tag object (C4).\n"
-                f"  Current engine is unchanged."
-            )
-
-        # Signature verification — mandatory pinning + TOFU + isolated GNUPGHOME
-        print(f"  verifying signature on {ref!r} …")
+        print(f"  fetching tag {ref!r} from {upstream} …")
         _allow_tofu_su = getattr(args, "trust_on_first_use", False)
-        _signing_fp, _tofu = _verify_tag_secure(
-            ref, str(clone_dir), trusted_fingerprint or None, root, lock,
-            allow_tofu=_allow_tofu_su,
-        )
-        if _tofu:
-            trusted_fingerprint = _signing_fp
-            fw["trusted_key_fingerprint"] = _signing_fp
+        _su_state = {"fp": None, "tofu": False}
+
+        def _verify_su(tag_ref, cwd):
+            # Signature verification — mandatory pinning + TOFU + isolated GNUPGHOME
+            print(f"  verifying signature on {ref!r} …")
+            _su_state["fp"], _su_state["tofu"] = _verify_tag_secure(
+                tag_ref, cwd, trusted_fingerprint or None, root, lock,
+                allow_tofu=_allow_tofu_su,
+            )
+
+        # v0.2.1: tag ref only, signature verified, HEAD == the signed commit.
+        _su_commit = _clone_verified_signed_tag(upstream, ref, clone_dir, "self-update", _verify_su)
+        # v1.0.0: the release proof lets the gate accept the new engine
+        # (a protected path) as exactly this signed release, without a verdict.
+        _su_proof = None
+        try:
+            _su_proof = _release_proof_build(clone_dir, f"refs/tags/{ref}", ref, _su_commit,
+                                             {"files": {}})
+        except (RuntimeError, OSError, ValueError, UnicodeDecodeError) as e:
+            print(f"  WARN  could not record the release proof ({e}); committing the new "
+                  f"engine will need a verdict")
+        if _su_state["tofu"]:
+            trusted_fingerprint = _su_state["fp"]
+            fw["trusted_key_fingerprint"] = _su_state["fp"]
 
         # -- Step 2: locate new engine in clone --
         new_engine_path = clone_dir / ".tess" / "bin" / "tessctl"
@@ -9916,6 +10607,9 @@ def cmd_self_update(args, root: Path) -> None:
         except OSError:
             pass
         print(f"  installed: {engine_path}")
+        if _su_proof is not None:
+            _release_proof_write(root, _su_proof)
+            print(f"  recorded release proof → {RELEASE_PROOF_FILE}")
 
         # -- Step 6: verify new engine — run doctor with it --
         print("\nStep 5: verify new engine (doctor) …")
@@ -13180,6 +13874,16 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
             {"rule_id": e.get("rule_id"), "decision_kind": e.get("decision_kind"), "reason_code": "RECEIPT_EMIT_FAILED"}
             for e in (result.get("receipt_gaps") or []) if isinstance(e, dict)
         ]
+    rp = result.get("release_proof")
+    if isinstance(rp, dict):
+        tag = rp.get("tag")
+        safe["release_proof"] = {
+            "status": "accepted" if rp.get("status") == "accepted" else "rejected",
+            "reason_code": rp.get("reason_code") if re.fullmatch(r"[a-z_]{1,40}", str(rp.get("reason_code") or "")) else None,
+            "tag": tag if isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag) else None,
+            "accepted_paths_count": int(rp.get("accepted_paths_count") or 0),
+            "lock_rejected": bool(rp.get("lock_rejected")),
+        }
     if phase is not None:
         safe = {"phase": phase, **safe}
     return safe
@@ -13232,8 +13936,12 @@ def _gate_validate_one_contract_file(root: Path, rel_path: str, contract_type: s
     reported as ONE violation string — fail-closed: an unreadable file that
     LOOKS like a contract is never silently skipped."""
     abs_path = root / rel_path
+    if abs_path.is_symlink():
+        # v0.2.1: a contract instance must be a regular file. Following the
+        # link would validate whatever it points at, not the tracked path.
+        return [f"{rel_path}: is a symlink — a contract instance must be a regular file (fail-closed)"]
     if not abs_path.exists():
-        return []  # deleted path — nothing to validate (git diff-filter=ACMR still lists renames/copies; a delete is D, already excluded)
+        return []  # deleted path — nothing to validate here; a deletion of a PROTECTED path is still gated by the covering-verdict check
     try:
         schema = load_contract_schema(root, contract_type)
         instance = load_contract_instance(abs_path)
@@ -13278,17 +13986,52 @@ def _gate_run_git(root: Path, *args: str) -> str:
     return r.stdout
 
 
+# v0.2.1 (CRITICAL, 2026-09-29 review): the changed-path listing used
+# `--diff-filter=ACMR`, which silently DROPPED T (type change: regular file ->
+# symlink) and D (deletion). Replacing conductor/guardrails.md with a symlink
+# to an ungoverned file, or deleting a protected path, therefore never reached
+# the classifier and needed no verdict. Every status letter is now listed, and
+# rename detection is OFF (`--no-renames`) so a rename of a protected path
+# surfaces BOTH its old name (a deletion) and its new name — with rename
+# detection on, `--name-only` prints only the destination and the protected
+# source path vanishes from the gate's view.
+GATE_DIFF_FILTER = "--diff-filter=ACDMRTUXB"
+# The deletion-free variant, for the ONE caller (publish-clean) whose purpose
+# is "is a private path being ADDED to history": blocking `git rm --cached
+# <leaked-path>` there would block the documented leak remediation itself.
+GATE_DIFF_FILTER_NO_DELETE = "--diff-filter=ACMRTUXB"
+# A deleted protected path has no blob at the pushed head. A verdict approves
+# the deletion explicitly by recording git's null object id for that path in
+# `artifact_hashes` — never implicitly.
+GATE_DELETED_PATH_SHA = "0" * 40
+
+
 def _gate_changed_paths_staged(root: Path) -> list:
-    """Pre-commit mode: files staged for the next commit."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    """Pre-commit mode: files staged for the next commit (every status,
+    including type changes and deletions — see GATE_DIFF_FILTER)."""
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--no-renames", GATE_DIFF_FILTER)
     return [line for line in out.splitlines() if line.strip()]
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     """Explicit-ref-range mode (used by `gate ci` always, `gate pre-push`
-    when given --base/--head, and internally for the stdin protocol)."""
-    out = _gate_run_git(root, "diff", "--name-only", "--diff-filter=ACMR", base, head)
+    when given --base/--head, and internally for the stdin protocol).
+    Every status is listed (see GATE_DIFF_FILTER): a type change or deletion
+    of a protected path is a protected change."""
+    out = _gate_run_git(root, "diff", "--name-only", "--no-renames", GATE_DIFF_FILTER, base, head)
     return [line for line in out.splitlines() if line.strip()]
+
+
+def _gate_git_all_paths(root: Path, head_shas: list) -> set:
+    """Every path present at any of `head_shas`, of ANY mode (regular,
+    executable, symlink, gitlink). Used to tell a DELETED protected path
+    (absent everywhere) from a symlinked one (present, but excluded from
+    `_gate_git_ls_tree` on purpose). Fail-closed via `_gate_run_git`."""
+    paths: set = set()
+    for sha in head_shas:
+        out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", "--name-only", sha)
+        paths.update(line for line in out.splitlines() if line.strip())
+    return paths
 
 
 def _gate_changed_paths_from_stdin(root: Path):
@@ -14650,6 +15393,407 @@ def _gate_emit_receipts_on_clear(
 # The shared ship-check — used identically by `gate pre-push` and `gate ci`.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# v1.0.0 — release proof: a genuine `tessctl update` commit passes the gate
+# without a verdict (integration issue 1, 2026-09-29).
+#
+# #203 put `.tess/core/**` and `.tess/tess.lock` in the security tier, so
+# every commit an update makes needed a signed verdict — and an installed
+# instance has no verifier key. The update already verifies the release tag
+# against the PINNED release key; what the gate lacked was a way to check
+# that the committed bytes ARE that release, offline, including in CI.
+#
+# `tessctl update` now writes `.tess/release-proof.json`: the raw signed tag
+# object, the commit object it names, and the git tree objects on the path
+# to every release file an update can write. Git objects are content
+# addressed, so the gate needs to trust nothing in the file:
+#   1. it recomputes every object id (tag -> commit -> root tree -> subtrees),
+#   2. it verifies the tag's signature with the key bytes and pinned
+#      fingerprint read from the BASE commit (never the candidate),
+#   3. it refuses a tag older than the BASE lock's framework.version,
+#   4. a changed protected path is accepted ONLY when its new blob id equals
+#      the blob id at the same path in the signed release tree, and
+#   5. a tess.lock change is accepted ONLY when every difference is one an
+#      update makes (version/ref/commit/timestamps, base_sha re-pins to
+#      proven release bytes, new core-managed entries for proven files).
+# Anything else — a hand-edited core file, a lock status/tier/fingerprint
+# change, a deletion, a symlink — still needs a covering verdict.
+# ---------------------------------------------------------------------------
+
+RELEASE_PROOF_FILE = ".tess/release-proof.json"
+RELEASE_PROOF_FORMAT = "tess-release-proof/1"
+RELEASE_KEY_FILE = ".tess/keys/twiss-release-key.asc"
+_RELEASE_PROOF_STATE: dict = {"proof": None}
+_RELEASE_PROOF_MAX_BYTES = 8 * 1024 * 1024
+_PGP_SIG_BEGIN = b"-----BEGIN PGP SIGNATURE-----"
+_RELEASE_BLOB_MODES = ("100644", "100755")
+
+
+class ReleaseProofError(Exception):
+    """A release proof that cannot be trusted. `code` is a closed-vocabulary
+    reason safe to print; the message is for local diagnostics only."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _git_object_id(kind: str, body: bytes) -> str:
+    return hashlib.sha1(f"{kind} {len(body)}".encode("ascii") + b"\0" + body).hexdigest()
+
+
+def _git_object_headers(body: bytes) -> dict:
+    """First value of each header line of a commit/tag object."""
+    headers: dict = {}
+    for line in body.split(b"\n"):
+        if not line:
+            break
+        key, _, value = line.partition(b" ")
+        headers.setdefault(key.decode("ascii", "replace"), value.decode("utf-8", "replace"))
+    return headers
+
+
+def _git_tree_entries(body: bytes) -> dict:
+    """name -> (mode, object id) for a raw (binary) git tree object."""
+    out: dict = {}
+    i = 0
+    while i < len(body):
+        sp = body.index(b" ", i)
+        nul = body.index(b"\0", sp)
+        if nul + 21 > len(body):
+            raise ValueError("truncated tree entry")
+        name = body[sp + 1:nul].decode("utf-8", "surrogateescape")
+        out[name] = (body[i:sp].decode("ascii"), body[nul + 1:nul + 21].hex())
+        i = nul + 21
+    return out
+
+
+def _release_version_tuple(text: str):
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.+-]*)?", str(text or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _git_cat_file_batch(git_dir: Path, ids: list) -> dict:
+    """id -> (type, raw bytes) via one `git cat-file --batch` call."""
+    if not ids:
+        return {}
+    r = subprocess.run(["git", "-C", str(git_dir), "cat-file", "--batch"],
+                       input=("\n".join(ids) + "\n").encode("ascii"), capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git cat-file --batch failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+    out: dict = {}
+    data, pos = r.stdout, 0
+    while pos < len(data):
+        nl = data.index(b"\n", pos)
+        header = data[pos:nl].decode("ascii").split()
+        if len(header) != 3:
+            raise RuntimeError(f"git cat-file --batch: missing object {header[0] if header else '?'}")
+        size = int(header[2])
+        out[header[0]] = (header[1], data[nl + 1:nl + 1 + size])
+        pos = nl + 1 + size + 1
+    return out
+
+
+def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: str,
+                         lock: dict) -> dict:
+    """Collect, from the verified clone, everything the gate needs to prove
+    a file is byte-identical to the signed release: the tag object, the
+    commit object and the tree objects on the path to every `.tess/**` file,
+    every core file's live counterpart and every live path either lock names."""
+    def g(*a):
+        r = subprocess.run(["git", "-C", str(clone_dir), *a], capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"git {a[0]} failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+        return r.stdout
+
+    tag_bytes = g("cat-file", "tag", tag_ref)
+    commit_bytes = g("cat-file", "commit", commit)
+    rels: set = set()
+    for rel in g("ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).decode(
+            "utf-8", "surrogateescape").split("\0"):
+        if rel.startswith(".tess/"):
+            rels.add(rel)
+        if rel.startswith(CORE_DIR + "/"):
+            rels.add(rel[len(CORE_DIR) + 1:])
+    lock_sets = [lock.get("files") or {}]
+    upstream_lock = clone_dir / LOCK_FILE
+    if upstream_lock.is_file() and not upstream_lock.is_symlink():
+        try:
+            lock_sets.append((yaml.safe_load(upstream_lock.read_text(encoding="utf-8")) or {})
+                             .get("files") or {})
+        except (yaml.YAMLError, OSError, AttributeError) as e:
+            print(f"  NOTE  release proof: could not read the release's own tess.lock ({e})")
+    for files in lock_sets:
+        for core_key, attrs in files.items():
+            rels.add(core_key)
+            if isinstance(attrs, dict) and attrs.get("live_path"):
+                rels.add(str(attrs["live_path"]))
+    dirs = {""}
+    for rel in rels:
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            dirs.add("/".join(parts[:i]))
+    dir_ids = {"": g("rev-parse", f"{commit}^{{tree}}").decode().strip()}
+    for entry in g("ls-tree", "-r", "-d", "-z", "--full-tree", commit).decode(
+            "utf-8", "surrogateescape").split("\0"):
+        meta, _, path = entry.partition("\t")
+        if path in dirs and meta.split()[1:2] == ["tree"]:
+            dir_ids[path] = meta.split()[2]
+    objects = _git_cat_file_batch(clone_dir, sorted(set(dir_ids.values())))
+    return {
+        "format": RELEASE_PROOF_FORMAT,
+        "tag_name": tag_name,
+        "commit_id": commit,
+        "tag": base64.b64encode(tag_bytes).decode("ascii"),
+        "commit": base64.b64encode(commit_bytes).decode("ascii"),
+        "trees": {oid: base64.b64encode(body).decode("ascii")
+                  for oid, (kind, body) in sorted(objects.items()) if kind == "tree"},
+    }
+
+
+def _release_proof_write(root: Path, proof: dict) -> None:
+    body = json.dumps(proof, indent=1, sort_keys=True) + "\n"
+    _atomic_write_bytes(root / RELEASE_PROOF_FILE, body.encode("utf-8"), mode=0o644)
+
+
+def _release_tag_signature_ok(payload: bytes, sig_armored: str, pinned_fp: str,
+                              key_bytes: bytes) -> tuple[bool, str]:
+    if shutil.which("gpg") is None:
+        return False, "gpg_missing"
+    home = Path(tempfile.mkdtemp(prefix="tessctl_relproof_gpg_"))
+    try:
+        try:
+            home.chmod(0o700)
+        except OSError:
+            pass
+        if not _gpg_public_certificate_from_bytes_is_safe(key_bytes, home):
+            return False, "release_key_invalid"
+        imp = subprocess.run(["gpg", "--homedir", str(home), "--batch", "--import"],
+                             input=key_bytes, capture_output=True)
+        if imp.returncode != 0:
+            return False, "release_key_invalid"
+        subprocess.run(["gpg", "--homedir", str(home), "--import-ownertrust"],
+                       input=f"{pinned_fp}:6:\n".encode(), capture_output=True)
+        ok, fp, validity = _gpg_verify_detached_signature(payload, sig_armored, home)
+    finally:
+        shutil.rmtree(str(home), ignore_errors=True)
+    if not ok:
+        return False, "signature_invalid"
+    if fp.replace(" ", "").upper() != pinned_fp:
+        return False, "signed_by_other_key"
+    if validity:
+        return False, f"release_key_{validity}"
+    return True, ""
+
+
+def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | None,
+                          min_version: str | None):
+    """Verify a release proof end to end. Returns (tag_name, commit_id,
+    resolve) where resolve(rel) -> (mode, blob id) | None. Raises
+    ReleaseProofError on anything that does not check out."""
+    if len(proof_text.encode("utf-8")) > _RELEASE_PROOF_MAX_BYTES:
+        raise ReleaseProofError("proof_malformed", "release proof is too large")
+    try:
+        proof = json.loads(proof_text)
+        if not isinstance(proof, dict) or proof.get("format") != RELEASE_PROOF_FORMAT:
+            raise ValueError("unknown format")
+        tag_bytes = base64.b64decode(proof["tag"], validate=True)
+        commit_bytes = base64.b64decode(proof["commit"], validate=True)
+        trees = {}
+        for oid, b64 in (proof.get("trees") or {}).items():
+            body = base64.b64decode(b64, validate=True)
+            if _git_object_id("tree", body) != oid:
+                raise ReleaseProofError("object_id_mismatch", f"tree {oid} does not hash to its id")
+            trees[oid] = _git_tree_entries(body)
+    except ReleaseProofError:
+        raise
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise ReleaseProofError("proof_malformed", f"release proof unreadable: {e}") from e
+
+    tag_headers = _git_object_headers(tag_bytes)
+    tag_name = tag_headers.get("tag", "")
+    commit_id = _git_object_id("commit", commit_bytes)
+    if tag_headers.get("type") != "commit" or tag_headers.get("object") != commit_id:
+        raise ReleaseProofError("object_id_mismatch", "tag does not name the proof's commit")
+    if tag_name != proof.get("tag_name") or not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag_name):
+        raise ReleaseProofError("proof_malformed", "tag name mismatch")
+    if not _FULL_FP_RE.match(pinned_fp or ""):
+        raise ReleaseProofError("no_pinned_release_key", "base lock pins no release key")
+    if not key_bytes:
+        raise ReleaseProofError("no_pinned_release_key", f"base commit has no {RELEASE_KEY_FILE}")
+    idx = tag_bytes.find(b"\n" + _PGP_SIG_BEGIN) + 1
+    if idx <= 0 or tag_bytes.find(_PGP_SIG_BEGIN, idx + 1) >= 0:
+        raise ReleaseProofError("signature_invalid", "tag has no single OpenPGP signature")
+    ok, why = _release_tag_signature_ok(tag_bytes[:idx], tag_bytes[idx:].decode("ascii", "replace"),
+                                        pinned_fp, key_bytes)
+    if not ok:
+        raise ReleaseProofError(why, f"release tag signature not accepted ({why})")
+    have, floor = _release_version_tuple(tag_name), _release_version_tuple(min_version)
+    if have is None or (floor is not None and have < floor):
+        raise ReleaseProofError("release_older_than_base",
+                                f"tag {tag_name} is older than the installed version {min_version}")
+
+    root_tree = _git_object_headers(commit_bytes).get("tree", "")
+
+    def resolve(rel: str):
+        cur = root_tree
+        parts = [p for p in rel.split("/") if p]
+        for i, part in enumerate(parts):
+            entries = trees.get(cur)
+            if entries is None or part not in entries:
+                return None
+            mode, oid = entries[part]
+            if i == len(parts) - 1:
+                return (mode, oid) if mode in _RELEASE_BLOB_MODES else None
+            if mode != "40000":
+                return None
+            cur = oid
+        return None
+
+    if root_tree not in trees:
+        raise ReleaseProofError("object_id_mismatch", "proof lacks the commit's root tree")
+    return tag_name, commit_id, resolve
+
+
+_RELEASE_LOCK_FRAMEWORK_MUTABLE = ("version", "upstream_ref", "upstream_commit",
+                                   "upstream_digest", "last_updated")
+
+
+def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str,
+                                 commit_id: str, resolve, head_blob, head_bytes) -> str | None:
+    """None when every base->head difference in tess.lock is one `tessctl
+    update` makes for the proven release; otherwise a short reason."""
+    if set(base_lock) - {RENDER_OUTPUTS_KEY} != set(head_lock) - {RENDER_OUTPUTS_KEY}:
+        return "top-level keys changed"
+    for key in base_lock:
+        if key not in ("framework", "files", RENDER_OUTPUTS_KEY) and base_lock[key] != head_lock.get(key):
+            return f"{key} changed"
+    bfw, hfw = base_lock.get("framework") or {}, head_lock.get("framework") or {}
+    for key in set(bfw) | set(hfw):
+        if key not in _RELEASE_LOCK_FRAMEWORK_MUTABLE and bfw.get(key) != hfw.get(key):
+            return f"framework.{key} changed"
+    if bfw != hfw:
+        if str(hfw.get("version")) != tag_name.lstrip("v") or hfw.get("upstream_ref") != tag_name:
+            return "framework.version/upstream_ref do not name the proven tag"
+        if hfw.get("upstream_commit") not in (None, commit_id) or hfw.get("upstream_digest") is not None:
+            return "framework.upstream_commit/digest do not match the proof"
+
+    def proven_core(core_key: str, base_sha) -> bool:
+        blob = head_blob(core_key)
+        got = resolve(core_key)
+        data = head_bytes(core_key) if blob else None
+        return bool(blob and got and got[1] == blob and data is not None
+                    and base_sha == "sha256:" + hashlib.sha256(data).hexdigest())
+
+    bfiles, hfiles = base_lock.get("files") or {}, head_lock.get("files") or {}
+    if set(bfiles) - set(hfiles):
+        return "lock entries removed"
+    for core_key, h in hfiles.items():
+        b = bfiles.get(core_key)
+        if not isinstance(h, dict):
+            return f"{core_key}: malformed entry"
+        if b is None:
+            if h.get("status") != "core-managed" or not proven_core(core_key, h.get("base_sha")):
+                return f"{core_key}: new entry is not a proven release file"
+            continue
+        for field in set(b) | set(h):
+            if field in ("base_sha", "last_updated") or b.get(field) == h.get(field):
+                continue
+            return f"{core_key}: {field} changed"
+        if b.get("base_sha") != h.get("base_sha") and not proven_core(core_key, h.get("base_sha")):
+            return f"{core_key}: base_sha re-pinned to bytes that are not the proven release"
+    # render_outputs: update re-records what it rendered. A changed or new
+    # record must say `rendered` and carry the sha256 of the committed file;
+    # a dropped record (which would stop hand-edit detection) is refused.
+    base_ro = base_lock.get(RENDER_OUTPUTS_KEY) or {}
+    head_ro = head_lock.get(RENDER_OUTPUTS_KEY) or {}
+    if not isinstance(base_ro, dict) or not isinstance(head_ro, dict):
+        return "render_outputs malformed"
+    if set(base_ro) - set(head_ro):
+        return "render_outputs records removed"
+    for rel, rec in head_ro.items():
+        if base_ro.get(rel) == rec:
+            continue
+        data = head_bytes(rel)
+        if (not isinstance(rec, dict) or rec.get("status") != "rendered" or data is None
+                or rec.get("rendered_sha") != "sha256:" + hashlib.sha256(data).hexdigest()):
+            return f"render_outputs[{rel}] does not match the committed file"
+    return None
+
+
+def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: list,
+                                  base_shas: list) -> tuple[set, dict | None]:
+    """Protected paths in `candidate_paths` whose change is exactly a
+    verified release (see the section comment). Returns (accepted, info);
+    info is None when the candidate carries no release proof at all."""
+    if len(head_shas) != 1 or not base_shas:
+        return set(), None
+    head = head_shas[0]
+    proof_text = _gate_git_show_at_ref(root, head, RELEASE_PROOF_FILE)
+    if proof_text is None:
+        return set(), None
+    info: dict = {"status": "rejected", "reason_code": "proof_malformed", "tag": None,
+                  "accepted_paths_count": 0}
+    base = next((b for b in base_shas if _gate_git_show_at_ref(root, b, LOCK_FILE) is not None), None)
+    if base is None:
+        info["reason_code"] = "no_base_lock"
+        return set(), info
+    try:
+        base_lock = yaml.safe_load(_gate_git_show_at_ref(root, base, LOCK_FILE)) or {}
+        head_lock_text = _gate_git_show_at_ref(root, head, LOCK_FILE)
+        head_lock = yaml.safe_load(head_lock_text) if head_lock_text is not None else None
+    except yaml.YAMLError:
+        info["reason_code"] = "lock_unreadable"
+        return set(), info
+    bfw = (base_lock.get("framework") or {}) if isinstance(base_lock, dict) else {}
+    pinned = str(bfw.get("trusted_key_fingerprint") or "").replace(" ", "").upper()
+    key_bytes = _gate_git_regular_blob_bytes(root, base, RELEASE_KEY_FILE)
+    try:
+        tag_name, commit_id, resolve = _release_proof_verify(
+            proof_text, pinned, key_bytes, str(bfw.get("version") or "") or None)
+    except ReleaseProofError as e:
+        info["reason_code"] = e.code
+        return set(), info
+    info.update(status="accepted", reason_code=None, tag=tag_name)
+    try:
+        head_index = _gate_git_ls_tree(root, head)
+    except GateSpineError:
+        info.update(status="rejected", reason_code="git_failed")
+        return set(), info
+    accepted = set()
+    for rel in candidate_paths:
+        if rel == LOCK_FILE:
+            continue
+        got = resolve(rel)
+        if got is not None and head_index.get(rel) == got[1]:
+            accepted.add(rel)
+    if LOCK_FILE in candidate_paths:
+        why = "lock missing at head"
+        if isinstance(base_lock, dict) and isinstance(head_lock, dict):
+            why = _gate_release_lock_change_ok(
+                base_lock, head_lock, tag_name, commit_id, resolve, head_index.get,
+                lambda rel: _gate_git_regular_blob_bytes(root, head, rel))
+        if why is None:
+            accepted.add(LOCK_FILE)
+        else:
+            info["lock_rejected"] = True
+    info["accepted_paths_count"] = len(accepted)
+    return accepted, info
+
+
+def _gate_git_regular_blob_bytes(root: Path, ref: str, rel_path: str) -> bytes | None:
+    """Raw bytes of a regular-file blob at `ref:rel_path`; None if absent,
+    a symlink or unreadable."""
+    ls = subprocess.run(["git", "-C", str(root), "ls-tree", "--full-tree", ref, "--", rel_path],
+                        capture_output=True, text=True)
+    line = ls.stdout.strip()
+    if ls.returncode != 0 or not line or line.split()[0] not in _RELEASE_BLOB_MODES:
+        return None
+    r = subprocess.run(["git", "-C", str(root), "cat-file", "blob", line.split()[2]],
+                       capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
 def _gate_run_ship_check(
     root: Path, changed_paths: list, verdict_dirs: list = None,
     head_shas: list = None, base_shas: list = None,
@@ -14682,6 +15826,17 @@ def _gate_run_ship_check(
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
     if baseline_policy_instance is not None:
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
+
+    # v1.0.0: a path whose new bytes are exactly the signed release a
+    # `tessctl update` installed needs no verdict (see RELEASE_PROOF_FILE).
+    # Hard-floor matches are never exempted.
+    release_info = None
+    if path_rule_matches:
+        released, release_info = _gate_release_update_accepted(
+            root, sorted(path_rule_matches), head_shas or [], base_shas or [],
+        )
+        for _rel in released:
+            path_rule_matches.pop(_rel, None)
 
     # Signature verification trusts only verifier/sign-off registrations
     # present at BASE. Candidate-added keys cannot authorize their own PR;
@@ -14746,15 +15901,31 @@ def _gate_run_ship_check(
         except GateSpineError as e:
             reasons.append(f"[gate] {e}")
             return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+        # v0.2.1: a protected path absent from EVERY pushed head (any mode)
+        # was deleted. Its only acceptable "current content" is the null
+        # object id, so a verdict must name the deletion explicitly. A path
+        # still present as a symlink keeps an EMPTY current-sha set (see
+        # _gate_git_ls_tree): a symlink at a protected path is uncoverable.
+        try:
+            present_any_mode = _gate_git_all_paths(root, head_shas or [])
+        except GateSpineError as e:
+            reasons.append(f"[gate] {e}")
+            return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+        coverage_index = dict(tree_index)
+        for _rel in path_rule_matches:
+            if _rel not in tree_index and _rel not in present_any_mode:
+                coverage_index[_rel] = {GATE_DELETED_PATH_SHA}
         approved = _gate_find_covering_approved_verdicts(root, tree_index, verdict_dirs)
         cov_reasons, cov_cleared = _gate_covering_gap_report(
-            path_rule_matches, approved, tree_index, root, effective_policy_instance,
+            path_rule_matches, approved, coverage_index, root, effective_policy_instance,
             trusted_verifier_key_blobs, trusted_verifier_key_errors,
         )
         reasons += cov_reasons
 
     blocked = bool(reasons)
     result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
+    if release_info is not None:
+        result["release_proof"] = release_info
 
     # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
     # push (some rules cleared, others not) is still a BLOCKED push overall
@@ -14784,6 +15955,16 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
     status = "BLOCKED" if safe["blocked"] else "PASS"
     print(f"tessctl gate {phase} — {status}")
     print(f"  changed paths: {safe['changed_paths_count']}")
+    rp = safe.get("release_proof")
+    if rp and rp["status"] == "accepted":
+        print(f"  release update: {rp['accepted_paths_count']} protected file(s) are exactly the "
+              f"signed Tess OS release {rp['tag']} — no verdict needed for them")
+        if rp["lock_rejected"]:
+            print("  release update: tess.lock has changes an update does not make — it still "
+                  "needs a verdict")
+    elif rp:
+        print(f"  release update: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
+              f"({rp['reason_code']}); protected files still need a verdict")
     for reason in safe["reasons"]:
         print(f"    - {reason}")
     if safe["blocked"]:
@@ -15460,7 +16641,12 @@ def _cmd_gate_install_hooks(args, root: Path) -> None:
     _gate_install_git_hooks(root)
     _publish_install_git_hooks(root)
     _gitleaks_install_git_hooks(root)
+    _remote_install_git_hooks(root)
     _gate_install_ci_workflow(root)
+    # v1.0.0: a stock Mac has no gpg. Every hook above is installed anyway;
+    # say in plain English what is limited until gpg is installed.
+    if shutil.which("gpg") is None:
+        print(GPG_MISSING_FOR_GATE_NOTE)
 
 
 # ---------------------------------------------------------------------------
@@ -23620,6 +24806,12 @@ def build_parser() -> argparse.ArgumentParser:
              "*.local.md, kb/**, clients/**, .env*, vault) — the pre-commit hook body",
     )
     p_doctor.add_argument(
+        "--publish-remote", nargs=2, metavar=("REMOTE", "URL"), dest="publish_remote",
+        help="pre-push hook body: refuse to push brain/ or clients/ data (ref lines on stdin) "
+             "to a public or unverifiable remote (allow a private one: git config --add "
+             "tess.privateRemote <url>)",
+    )
+    p_doctor.add_argument(
         "--publish-clean-all", action="store_true", dest="publish_clean_all",
         help="with --publish-clean, audit the FULL git-tracked set (git ls-files) "
              "instead of just staged changes — a repo-hygiene audit, not the hook default",
@@ -24594,7 +25786,10 @@ def main() -> None:
         "approve":     ["diff"],           # diff -u for event log
         "publish":     ["git"],            # git diff --no-index (--force mode)
         "resolve":     [],                 # --ours/--theirs: no subprocess; --edit: $EDITOR
-        "gate":        ["git", "gpg"],     # changed-path discovery (git) + covering-verdict signature verify (isolated GNUPGHOME, gpg)
+        # v1.0.0: gpg is only needed to CHECK a verdict/sign-off/release
+        # signature. Without it the gate still runs: ordinary changes pass,
+        # protected changes are refused (no signature can be checked).
+        "gate":        ["git"],            # changed-path discovery (git); gpg checked lazily per signature
         "verdict":     ["gpg"],            # sign (detach-sign) / verify (isolated GNUPGHOME)
     }
     tools_needed = _TOOL_REQUIREMENTS.get(args.command, [])
@@ -24603,6 +25798,9 @@ def main() -> None:
         # external tool first so every environment gets the same explicit
         # TRUST_BOOTSTRAP_REQUIRED state without invoking or requiring GPG.
         tools_needed = []
+    if (args.command in ("update", "self-update") and "gpg" in tools_needed
+            and shutil.which("gpg") is None):
+        sys.exit(GPG_MISSING_FOR_UPDATE_MESSAGE)
     if tools_needed:
         _check_tools(*tools_needed)
 
@@ -24697,7 +25895,11 @@ def main() -> None:
     # pattern again — _cmd_skill_from_task already catches it locally too;
     # this is the defense-in-depth backstop.
     try:
-        fn(args, root)
+        if _command_needs_update_lock(args):   # v0.2.1: no interleaving with update
+            with tess_update_lock(root, args.command):
+                fn(args, root)
+        else:
+            fn(args, root)
     except (
         GateError, MissionError, RunError, TaskError, LedgerError,
         MemoryAdoptError, AuditError, SkillError,

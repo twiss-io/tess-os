@@ -36,7 +36,7 @@ def test_doctor_clean_tree_is_green(project, capsys):
 def test_doctor_detects_uncaptured_drift(project, capsys):
     _clean_project(project)
     project.write_live("conductor/a.md", "alpha TAMPERED\n")
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match=r"^1$") as ei:  # exit code 1, not a message
         project.mod.cmd_doctor(ns(json_out=False, fix=False, path=None), project.root)
     assert ei.value.code == 1
     out = capsys.readouterr().out
@@ -77,7 +77,7 @@ def test_verify_detects_core_tamper(project, capsys):
     ck = _clean_project(project)  # returns project, not key
     # Tamper .tess/core bytes so they no longer match the pinned base_sha.
     (project.root / ".tess" / "core" / "conductor" / "a.md").write_text("HACKED CORE\n")
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match=r"^1$") as ei:  # exit code 1, not a message
         project.mod.cmd_verify(ns(), project.root)
     assert ei.value.code == 1
     out = capsys.readouterr().out
@@ -88,7 +88,7 @@ def test_verify_detects_security_tier_drift(project, capsys):
     _clean_project(project)
     # Edit a security-tier file in place without quarantine.
     project.write_live("conductor/guardrails.md", "GUARDRAILS weakened\n")
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match=r"^1$") as ei:  # exit code 1, not a message
         project.mod.cmd_verify(ns(), project.root)
     assert ei.value.code == 1
     out = capsys.readouterr().out

@@ -128,6 +128,7 @@ Merge engine: git merge-file (3-way textual). No custom diff algorithm.
 from __future__ import annotations  # PEP 563 — lazy annotation eval; keeps 3.9 compat (int|None, X|Y unions)
 
 import argparse
+import base64
 import contextlib
 import copy
 import datetime
@@ -1007,6 +1008,40 @@ def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
         os.chmod(str(live_path), final_mode & ~_umask)
     except OSError:
         pass  # Best-effort; non-fatal on unusual filesystems
+
+
+# v1.0.0 (stable launch): plain English for the most likely first-run miss —
+# a stock Mac has no gpg. The signature check itself is unchanged.
+GPG_MISSING_FOR_UPDATE_MESSAGE = (
+    "Tess can't update yet: one free tool is missing.\n"
+    "\n"
+    "  Before installing an update, Tess checks it was really published by the\n"
+    "  Tess OS team (a digital signature). That check needs GnuPG (\"gpg\"),\n"
+    "  which this computer does not have. Nothing was changed.\n"
+    "\n"
+    "  Install it with one step, then run the same command again:\n"
+    "    Mac:    brew install gnupg\n"
+    "            (no Homebrew? download GnuPG for macOS from https://gnupg.org/download/)\n"
+    "    Linux:  sudo apt install gnupg   (or your system's package manager)\n"
+    "    Windows: winget install GnuPG.GnuPG"
+)
+
+GPG_MISSING_FOR_GATE_NOTE = (
+    "  NOTE  GnuPG (\"gpg\") is not installed, so safety checks run in a limited mode:\n"
+    "          - Everyday work (your notes, clients, missions, docs) commits and pushes normally.\n"
+    "          - Changes to Tess's protected safety files (its rules, engine and lock) are\n"
+    "            REFUSED, because the reviewer signature that approves them can't be checked.\n"
+    "          - Installing Tess updates also needs gpg (Mac: brew install gnupg).\n"
+    "          Install gpg and re-run `tessctl gate install-hooks` for full protection."
+)
+
+
+def _gpg_missing_reason(what: str) -> str | None:
+    """A fail-closed reason when gpg is absent (None when present)."""
+    if shutil.which("gpg") is not None:
+        return None
+    return (f"gpg is not installed, so this {what}'s signature cannot be checked — refused "
+            f"(fail-closed). Install GnuPG to approve protected changes.")
 
 
 def _check_tools(*tools: str) -> None:
@@ -7079,6 +7114,9 @@ def _gate_verify_verdict_signature(
     """
     verifier = instance.get("verifier")
     sig = instance.get("signature")
+    _no_gpg = _gpg_missing_reason("verdict") if isinstance(sig, dict) else None
+    if _no_gpg:
+        return False, _no_gpg
     if not isinstance(sig, dict):
         return False, (
             "no signature block present on this verdict — an unsigned verdict can "
@@ -7289,6 +7327,9 @@ def _gate_verify_signoff_signature(
     """
     authorized_by = data.get("authorized_by")
     sig = data.get("signature")
+    _no_gpg = _gpg_missing_reason("sign-off") if isinstance(sig, dict) else None
+    if _no_gpg:
+        return False, _no_gpg
     if not isinstance(sig, dict):
         return False, (
             "no signature block present on this sign-off — an unsigned/hand-authored "
@@ -7546,7 +7587,16 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                 allow_tofu=allow_tofu,
             )
 
-        _clone_verified_signed_tag(upstream, ref, clone_dir, "fetch", _verify)
+        _verified_commit = _clone_verified_signed_tag(upstream, ref, clone_dir, "fetch", _verify)
+        # v1.0.0: keep the signed tag + tree objects so the commit this update
+        # produces can prove to the gate that it is exactly this release.
+        _RELEASE_PROOF_STATE["proof"] = None
+        try:
+            _RELEASE_PROOF_STATE["proof"] = _release_proof_build(
+                clone_dir, f"refs/tags/{ref}", ref, _verified_commit, lock)
+        except (RuntimeError, OSError, ValueError, UnicodeDecodeError) as e:
+            print(f"  WARN  could not record the release proof ({e}); committing this update "
+                  f"will need a verdict for protected files")
         # If TOFU occurred, the fingerprint is now pinned in the saved lock;
         # update our in-memory trusted_fingerprint so downstream logic is consistent.
         if _tofu_state["tofu"]:
@@ -8374,6 +8424,13 @@ def _cmd_update_body(args, root: Path) -> None:
                 lock["framework"]["upstream_commit"] = None
             if lock["framework"].get("upstream_digest") is not None:
                 lock["framework"]["upstream_digest"] = None
+            # v1.0.0: record the verified release (tag commit + tree proof) so
+            # the gate accepts this update's core/lock changes without a verdict.
+            _proof = _RELEASE_PROOF_STATE.get("proof")
+            if _proof and _proof.get("tag_name") == target_ref:
+                _release_proof_write(root, _proof)
+                lock["framework"]["upstream_commit"] = _proof["commit_id"]
+                print(f"  recorded release proof → {RELEASE_PROOF_FILE} (commit {_proof['commit_id'][:12]})")
 
             lock["framework"]["last_updated"] = datetime.datetime.now(
                 datetime.timezone.utc
@@ -10468,7 +10525,16 @@ def cmd_self_update(args, root: Path) -> None:
             )
 
         # v0.2.1: tag ref only, signature verified, HEAD == the signed commit.
-        _clone_verified_signed_tag(upstream, ref, clone_dir, "self-update", _verify_su)
+        _su_commit = _clone_verified_signed_tag(upstream, ref, clone_dir, "self-update", _verify_su)
+        # v1.0.0: the release proof lets the gate accept the new engine
+        # (a protected path) as exactly this signed release, without a verdict.
+        _su_proof = None
+        try:
+            _su_proof = _release_proof_build(clone_dir, f"refs/tags/{ref}", ref, _su_commit,
+                                             {"files": {}})
+        except (RuntimeError, OSError, ValueError, UnicodeDecodeError) as e:
+            print(f"  WARN  could not record the release proof ({e}); committing the new "
+                  f"engine will need a verdict")
         if _su_state["tofu"]:
             trusted_fingerprint = _su_state["fp"]
             fw["trusted_key_fingerprint"] = _su_state["fp"]
@@ -10541,6 +10607,9 @@ def cmd_self_update(args, root: Path) -> None:
         except OSError:
             pass
         print(f"  installed: {engine_path}")
+        if _su_proof is not None:
+            _release_proof_write(root, _su_proof)
+            print(f"  recorded release proof → {RELEASE_PROOF_FILE}")
 
         # -- Step 6: verify new engine — run doctor with it --
         print("\nStep 5: verify new engine (doctor) …")
@@ -13805,6 +13874,16 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
             {"rule_id": e.get("rule_id"), "decision_kind": e.get("decision_kind"), "reason_code": "RECEIPT_EMIT_FAILED"}
             for e in (result.get("receipt_gaps") or []) if isinstance(e, dict)
         ]
+    rp = result.get("release_proof")
+    if isinstance(rp, dict):
+        tag = rp.get("tag")
+        safe["release_proof"] = {
+            "status": "accepted" if rp.get("status") == "accepted" else "rejected",
+            "reason_code": rp.get("reason_code") if re.fullmatch(r"[a-z_]{1,40}", str(rp.get("reason_code") or "")) else None,
+            "tag": tag if isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag) else None,
+            "accepted_paths_count": int(rp.get("accepted_paths_count") or 0),
+            "lock_rejected": bool(rp.get("lock_rejected")),
+        }
     if phase is not None:
         safe = {"phase": phase, **safe}
     return safe
@@ -15314,6 +15393,407 @@ def _gate_emit_receipts_on_clear(
 # The shared ship-check — used identically by `gate pre-push` and `gate ci`.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# v1.0.0 — release proof: a genuine `tessctl update` commit passes the gate
+# without a verdict (integration issue 1, 2026-09-29).
+#
+# #203 put `.tess/core/**` and `.tess/tess.lock` in the security tier, so
+# every commit an update makes needed a signed verdict — and an installed
+# instance has no verifier key. The update already verifies the release tag
+# against the PINNED release key; what the gate lacked was a way to check
+# that the committed bytes ARE that release, offline, including in CI.
+#
+# `tessctl update` now writes `.tess/release-proof.json`: the raw signed tag
+# object, the commit object it names, and the git tree objects on the path
+# to every release file an update can write. Git objects are content
+# addressed, so the gate needs to trust nothing in the file:
+#   1. it recomputes every object id (tag -> commit -> root tree -> subtrees),
+#   2. it verifies the tag's signature with the key bytes and pinned
+#      fingerprint read from the BASE commit (never the candidate),
+#   3. it refuses a tag older than the BASE lock's framework.version,
+#   4. a changed protected path is accepted ONLY when its new blob id equals
+#      the blob id at the same path in the signed release tree, and
+#   5. a tess.lock change is accepted ONLY when every difference is one an
+#      update makes (version/ref/commit/timestamps, base_sha re-pins to
+#      proven release bytes, new core-managed entries for proven files).
+# Anything else — a hand-edited core file, a lock status/tier/fingerprint
+# change, a deletion, a symlink — still needs a covering verdict.
+# ---------------------------------------------------------------------------
+
+RELEASE_PROOF_FILE = ".tess/release-proof.json"
+RELEASE_PROOF_FORMAT = "tess-release-proof/1"
+RELEASE_KEY_FILE = ".tess/keys/twiss-release-key.asc"
+_RELEASE_PROOF_STATE: dict = {"proof": None}
+_RELEASE_PROOF_MAX_BYTES = 8 * 1024 * 1024
+_PGP_SIG_BEGIN = b"-----BEGIN PGP SIGNATURE-----"
+_RELEASE_BLOB_MODES = ("100644", "100755")
+
+
+class ReleaseProofError(Exception):
+    """A release proof that cannot be trusted. `code` is a closed-vocabulary
+    reason safe to print; the message is for local diagnostics only."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _git_object_id(kind: str, body: bytes) -> str:
+    return hashlib.sha1(f"{kind} {len(body)}".encode("ascii") + b"\0" + body).hexdigest()
+
+
+def _git_object_headers(body: bytes) -> dict:
+    """First value of each header line of a commit/tag object."""
+    headers: dict = {}
+    for line in body.split(b"\n"):
+        if not line:
+            break
+        key, _, value = line.partition(b" ")
+        headers.setdefault(key.decode("ascii", "replace"), value.decode("utf-8", "replace"))
+    return headers
+
+
+def _git_tree_entries(body: bytes) -> dict:
+    """name -> (mode, object id) for a raw (binary) git tree object."""
+    out: dict = {}
+    i = 0
+    while i < len(body):
+        sp = body.index(b" ", i)
+        nul = body.index(b"\0", sp)
+        if nul + 21 > len(body):
+            raise ValueError("truncated tree entry")
+        name = body[sp + 1:nul].decode("utf-8", "surrogateescape")
+        out[name] = (body[i:sp].decode("ascii"), body[nul + 1:nul + 21].hex())
+        i = nul + 21
+    return out
+
+
+def _release_version_tuple(text: str):
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.+-]*)?", str(text or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _git_cat_file_batch(git_dir: Path, ids: list) -> dict:
+    """id -> (type, raw bytes) via one `git cat-file --batch` call."""
+    if not ids:
+        return {}
+    r = subprocess.run(["git", "-C", str(git_dir), "cat-file", "--batch"],
+                       input=("\n".join(ids) + "\n").encode("ascii"), capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git cat-file --batch failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+    out: dict = {}
+    data, pos = r.stdout, 0
+    while pos < len(data):
+        nl = data.index(b"\n", pos)
+        header = data[pos:nl].decode("ascii").split()
+        if len(header) != 3:
+            raise RuntimeError(f"git cat-file --batch: missing object {header[0] if header else '?'}")
+        size = int(header[2])
+        out[header[0]] = (header[1], data[nl + 1:nl + 1 + size])
+        pos = nl + 1 + size + 1
+    return out
+
+
+def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: str,
+                         lock: dict) -> dict:
+    """Collect, from the verified clone, everything the gate needs to prove
+    a file is byte-identical to the signed release: the tag object, the
+    commit object and the tree objects on the path to every `.tess/**` file,
+    every core file's live counterpart and every live path either lock names."""
+    def g(*a):
+        r = subprocess.run(["git", "-C", str(clone_dir), *a], capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"git {a[0]} failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+        return r.stdout
+
+    tag_bytes = g("cat-file", "tag", tag_ref)
+    commit_bytes = g("cat-file", "commit", commit)
+    rels: set = set()
+    for rel in g("ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).decode(
+            "utf-8", "surrogateescape").split("\0"):
+        if rel.startswith(".tess/"):
+            rels.add(rel)
+        if rel.startswith(CORE_DIR + "/"):
+            rels.add(rel[len(CORE_DIR) + 1:])
+    lock_sets = [lock.get("files") or {}]
+    upstream_lock = clone_dir / LOCK_FILE
+    if upstream_lock.is_file() and not upstream_lock.is_symlink():
+        try:
+            lock_sets.append((yaml.safe_load(upstream_lock.read_text(encoding="utf-8")) or {})
+                             .get("files") or {})
+        except (yaml.YAMLError, OSError, AttributeError) as e:
+            print(f"  NOTE  release proof: could not read the release's own tess.lock ({e})")
+    for files in lock_sets:
+        for core_key, attrs in files.items():
+            rels.add(core_key)
+            if isinstance(attrs, dict) and attrs.get("live_path"):
+                rels.add(str(attrs["live_path"]))
+    dirs = {""}
+    for rel in rels:
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            dirs.add("/".join(parts[:i]))
+    dir_ids = {"": g("rev-parse", f"{commit}^{{tree}}").decode().strip()}
+    for entry in g("ls-tree", "-r", "-d", "-z", "--full-tree", commit).decode(
+            "utf-8", "surrogateescape").split("\0"):
+        meta, _, path = entry.partition("\t")
+        if path in dirs and meta.split()[1:2] == ["tree"]:
+            dir_ids[path] = meta.split()[2]
+    objects = _git_cat_file_batch(clone_dir, sorted(set(dir_ids.values())))
+    return {
+        "format": RELEASE_PROOF_FORMAT,
+        "tag_name": tag_name,
+        "commit_id": commit,
+        "tag": base64.b64encode(tag_bytes).decode("ascii"),
+        "commit": base64.b64encode(commit_bytes).decode("ascii"),
+        "trees": {oid: base64.b64encode(body).decode("ascii")
+                  for oid, (kind, body) in sorted(objects.items()) if kind == "tree"},
+    }
+
+
+def _release_proof_write(root: Path, proof: dict) -> None:
+    body = json.dumps(proof, indent=1, sort_keys=True) + "\n"
+    _atomic_write_bytes(root / RELEASE_PROOF_FILE, body.encode("utf-8"), mode=0o644)
+
+
+def _release_tag_signature_ok(payload: bytes, sig_armored: str, pinned_fp: str,
+                              key_bytes: bytes) -> tuple[bool, str]:
+    if shutil.which("gpg") is None:
+        return False, "gpg_missing"
+    home = Path(tempfile.mkdtemp(prefix="tessctl_relproof_gpg_"))
+    try:
+        try:
+            home.chmod(0o700)
+        except OSError:
+            pass
+        if not _gpg_public_certificate_from_bytes_is_safe(key_bytes, home):
+            return False, "release_key_invalid"
+        imp = subprocess.run(["gpg", "--homedir", str(home), "--batch", "--import"],
+                             input=key_bytes, capture_output=True)
+        if imp.returncode != 0:
+            return False, "release_key_invalid"
+        subprocess.run(["gpg", "--homedir", str(home), "--import-ownertrust"],
+                       input=f"{pinned_fp}:6:\n".encode(), capture_output=True)
+        ok, fp, validity = _gpg_verify_detached_signature(payload, sig_armored, home)
+    finally:
+        shutil.rmtree(str(home), ignore_errors=True)
+    if not ok:
+        return False, "signature_invalid"
+    if fp.replace(" ", "").upper() != pinned_fp:
+        return False, "signed_by_other_key"
+    if validity:
+        return False, f"release_key_{validity}"
+    return True, ""
+
+
+def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | None,
+                          min_version: str | None):
+    """Verify a release proof end to end. Returns (tag_name, commit_id,
+    resolve) where resolve(rel) -> (mode, blob id) | None. Raises
+    ReleaseProofError on anything that does not check out."""
+    if len(proof_text.encode("utf-8")) > _RELEASE_PROOF_MAX_BYTES:
+        raise ReleaseProofError("proof_malformed", "release proof is too large")
+    try:
+        proof = json.loads(proof_text)
+        if not isinstance(proof, dict) or proof.get("format") != RELEASE_PROOF_FORMAT:
+            raise ValueError("unknown format")
+        tag_bytes = base64.b64decode(proof["tag"], validate=True)
+        commit_bytes = base64.b64decode(proof["commit"], validate=True)
+        trees = {}
+        for oid, b64 in (proof.get("trees") or {}).items():
+            body = base64.b64decode(b64, validate=True)
+            if _git_object_id("tree", body) != oid:
+                raise ReleaseProofError("object_id_mismatch", f"tree {oid} does not hash to its id")
+            trees[oid] = _git_tree_entries(body)
+    except ReleaseProofError:
+        raise
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise ReleaseProofError("proof_malformed", f"release proof unreadable: {e}") from e
+
+    tag_headers = _git_object_headers(tag_bytes)
+    tag_name = tag_headers.get("tag", "")
+    commit_id = _git_object_id("commit", commit_bytes)
+    if tag_headers.get("type") != "commit" or tag_headers.get("object") != commit_id:
+        raise ReleaseProofError("object_id_mismatch", "tag does not name the proof's commit")
+    if tag_name != proof.get("tag_name") or not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag_name):
+        raise ReleaseProofError("proof_malformed", "tag name mismatch")
+    if not _FULL_FP_RE.match(pinned_fp or ""):
+        raise ReleaseProofError("no_pinned_release_key", "base lock pins no release key")
+    if not key_bytes:
+        raise ReleaseProofError("no_pinned_release_key", f"base commit has no {RELEASE_KEY_FILE}")
+    idx = tag_bytes.find(b"\n" + _PGP_SIG_BEGIN) + 1
+    if idx <= 0 or tag_bytes.find(_PGP_SIG_BEGIN, idx + 1) >= 0:
+        raise ReleaseProofError("signature_invalid", "tag has no single OpenPGP signature")
+    ok, why = _release_tag_signature_ok(tag_bytes[:idx], tag_bytes[idx:].decode("ascii", "replace"),
+                                        pinned_fp, key_bytes)
+    if not ok:
+        raise ReleaseProofError(why, f"release tag signature not accepted ({why})")
+    have, floor = _release_version_tuple(tag_name), _release_version_tuple(min_version)
+    if have is None or (floor is not None and have < floor):
+        raise ReleaseProofError("release_older_than_base",
+                                f"tag {tag_name} is older than the installed version {min_version}")
+
+    root_tree = _git_object_headers(commit_bytes).get("tree", "")
+
+    def resolve(rel: str):
+        cur = root_tree
+        parts = [p for p in rel.split("/") if p]
+        for i, part in enumerate(parts):
+            entries = trees.get(cur)
+            if entries is None or part not in entries:
+                return None
+            mode, oid = entries[part]
+            if i == len(parts) - 1:
+                return (mode, oid) if mode in _RELEASE_BLOB_MODES else None
+            if mode != "40000":
+                return None
+            cur = oid
+        return None
+
+    if root_tree not in trees:
+        raise ReleaseProofError("object_id_mismatch", "proof lacks the commit's root tree")
+    return tag_name, commit_id, resolve
+
+
+_RELEASE_LOCK_FRAMEWORK_MUTABLE = ("version", "upstream_ref", "upstream_commit",
+                                   "upstream_digest", "last_updated")
+
+
+def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str,
+                                 commit_id: str, resolve, head_blob, head_bytes) -> str | None:
+    """None when every base->head difference in tess.lock is one `tessctl
+    update` makes for the proven release; otherwise a short reason."""
+    if set(base_lock) - {RENDER_OUTPUTS_KEY} != set(head_lock) - {RENDER_OUTPUTS_KEY}:
+        return "top-level keys changed"
+    for key in base_lock:
+        if key not in ("framework", "files", RENDER_OUTPUTS_KEY) and base_lock[key] != head_lock.get(key):
+            return f"{key} changed"
+    bfw, hfw = base_lock.get("framework") or {}, head_lock.get("framework") or {}
+    for key in set(bfw) | set(hfw):
+        if key not in _RELEASE_LOCK_FRAMEWORK_MUTABLE and bfw.get(key) != hfw.get(key):
+            return f"framework.{key} changed"
+    if bfw != hfw:
+        if str(hfw.get("version")) != tag_name.lstrip("v") or hfw.get("upstream_ref") != tag_name:
+            return "framework.version/upstream_ref do not name the proven tag"
+        if hfw.get("upstream_commit") not in (None, commit_id) or hfw.get("upstream_digest") is not None:
+            return "framework.upstream_commit/digest do not match the proof"
+
+    def proven_core(core_key: str, base_sha) -> bool:
+        blob = head_blob(core_key)
+        got = resolve(core_key)
+        data = head_bytes(core_key) if blob else None
+        return bool(blob and got and got[1] == blob and data is not None
+                    and base_sha == "sha256:" + hashlib.sha256(data).hexdigest())
+
+    bfiles, hfiles = base_lock.get("files") or {}, head_lock.get("files") or {}
+    if set(bfiles) - set(hfiles):
+        return "lock entries removed"
+    for core_key, h in hfiles.items():
+        b = bfiles.get(core_key)
+        if not isinstance(h, dict):
+            return f"{core_key}: malformed entry"
+        if b is None:
+            if h.get("status") != "core-managed" or not proven_core(core_key, h.get("base_sha")):
+                return f"{core_key}: new entry is not a proven release file"
+            continue
+        for field in set(b) | set(h):
+            if field in ("base_sha", "last_updated") or b.get(field) == h.get(field):
+                continue
+            return f"{core_key}: {field} changed"
+        if b.get("base_sha") != h.get("base_sha") and not proven_core(core_key, h.get("base_sha")):
+            return f"{core_key}: base_sha re-pinned to bytes that are not the proven release"
+    # render_outputs: update re-records what it rendered. A changed or new
+    # record must say `rendered` and carry the sha256 of the committed file;
+    # a dropped record (which would stop hand-edit detection) is refused.
+    base_ro = base_lock.get(RENDER_OUTPUTS_KEY) or {}
+    head_ro = head_lock.get(RENDER_OUTPUTS_KEY) or {}
+    if not isinstance(base_ro, dict) or not isinstance(head_ro, dict):
+        return "render_outputs malformed"
+    if set(base_ro) - set(head_ro):
+        return "render_outputs records removed"
+    for rel, rec in head_ro.items():
+        if base_ro.get(rel) == rec:
+            continue
+        data = head_bytes(rel)
+        if (not isinstance(rec, dict) or rec.get("status") != "rendered" or data is None
+                or rec.get("rendered_sha") != "sha256:" + hashlib.sha256(data).hexdigest()):
+            return f"render_outputs[{rel}] does not match the committed file"
+    return None
+
+
+def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: list,
+                                  base_shas: list) -> tuple[set, dict | None]:
+    """Protected paths in `candidate_paths` whose change is exactly a
+    verified release (see the section comment). Returns (accepted, info);
+    info is None when the candidate carries no release proof at all."""
+    if len(head_shas) != 1 or not base_shas:
+        return set(), None
+    head = head_shas[0]
+    proof_text = _gate_git_show_at_ref(root, head, RELEASE_PROOF_FILE)
+    if proof_text is None:
+        return set(), None
+    info: dict = {"status": "rejected", "reason_code": "proof_malformed", "tag": None,
+                  "accepted_paths_count": 0}
+    base = next((b for b in base_shas if _gate_git_show_at_ref(root, b, LOCK_FILE) is not None), None)
+    if base is None:
+        info["reason_code"] = "no_base_lock"
+        return set(), info
+    try:
+        base_lock = yaml.safe_load(_gate_git_show_at_ref(root, base, LOCK_FILE)) or {}
+        head_lock_text = _gate_git_show_at_ref(root, head, LOCK_FILE)
+        head_lock = yaml.safe_load(head_lock_text) if head_lock_text is not None else None
+    except yaml.YAMLError:
+        info["reason_code"] = "lock_unreadable"
+        return set(), info
+    bfw = (base_lock.get("framework") or {}) if isinstance(base_lock, dict) else {}
+    pinned = str(bfw.get("trusted_key_fingerprint") or "").replace(" ", "").upper()
+    key_bytes = _gate_git_regular_blob_bytes(root, base, RELEASE_KEY_FILE)
+    try:
+        tag_name, commit_id, resolve = _release_proof_verify(
+            proof_text, pinned, key_bytes, str(bfw.get("version") or "") or None)
+    except ReleaseProofError as e:
+        info["reason_code"] = e.code
+        return set(), info
+    info.update(status="accepted", reason_code=None, tag=tag_name)
+    try:
+        head_index = _gate_git_ls_tree(root, head)
+    except GateSpineError:
+        info.update(status="rejected", reason_code="git_failed")
+        return set(), info
+    accepted = set()
+    for rel in candidate_paths:
+        if rel == LOCK_FILE:
+            continue
+        got = resolve(rel)
+        if got is not None and head_index.get(rel) == got[1]:
+            accepted.add(rel)
+    if LOCK_FILE in candidate_paths:
+        why = "lock missing at head"
+        if isinstance(base_lock, dict) and isinstance(head_lock, dict):
+            why = _gate_release_lock_change_ok(
+                base_lock, head_lock, tag_name, commit_id, resolve, head_index.get,
+                lambda rel: _gate_git_regular_blob_bytes(root, head, rel))
+        if why is None:
+            accepted.add(LOCK_FILE)
+        else:
+            info["lock_rejected"] = True
+    info["accepted_paths_count"] = len(accepted)
+    return accepted, info
+
+
+def _gate_git_regular_blob_bytes(root: Path, ref: str, rel_path: str) -> bytes | None:
+    """Raw bytes of a regular-file blob at `ref:rel_path`; None if absent,
+    a symlink or unreadable."""
+    ls = subprocess.run(["git", "-C", str(root), "ls-tree", "--full-tree", ref, "--", rel_path],
+                        capture_output=True, text=True)
+    line = ls.stdout.strip()
+    if ls.returncode != 0 or not line or line.split()[0] not in _RELEASE_BLOB_MODES:
+        return None
+    r = subprocess.run(["git", "-C", str(root), "cat-file", "blob", line.split()[2]],
+                       capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
 def _gate_run_ship_check(
     root: Path, changed_paths: list, verdict_dirs: list = None,
     head_shas: list = None, base_shas: list = None,
@@ -15346,6 +15826,17 @@ def _gate_run_ship_check(
     path_rule_matches, hard_floor_matches = _gate_classify_paths(policy_instance, changed_paths)
     if baseline_policy_instance is not None:
         _gate_union_baseline_matches(baseline_policy_instance, changed_paths, path_rule_matches, hard_floor_matches)
+
+    # v1.0.0: a path whose new bytes are exactly the signed release a
+    # `tessctl update` installed needs no verdict (see RELEASE_PROOF_FILE).
+    # Hard-floor matches are never exempted.
+    release_info = None
+    if path_rule_matches:
+        released, release_info = _gate_release_update_accepted(
+            root, sorted(path_rule_matches), head_shas or [], base_shas or [],
+        )
+        for _rel in released:
+            path_rule_matches.pop(_rel, None)
 
     # Signature verification trusts only verifier/sign-off registrations
     # present at BASE. Candidate-added keys cannot authorize their own PR;
@@ -15433,6 +15924,8 @@ def _gate_run_ship_check(
 
     blocked = bool(reasons)
     result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
+    if release_info is not None:
+        result["release_proof"] = release_info
 
     # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
     # push (some rules cleared, others not) is still a BLOCKED push overall
@@ -15462,6 +15955,16 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
     status = "BLOCKED" if safe["blocked"] else "PASS"
     print(f"tessctl gate {phase} — {status}")
     print(f"  changed paths: {safe['changed_paths_count']}")
+    rp = safe.get("release_proof")
+    if rp and rp["status"] == "accepted":
+        print(f"  release update: {rp['accepted_paths_count']} protected file(s) are exactly the "
+              f"signed Tess OS release {rp['tag']} — no verdict needed for them")
+        if rp["lock_rejected"]:
+            print("  release update: tess.lock has changes an update does not make — it still "
+                  "needs a verdict")
+    elif rp:
+        print(f"  release update: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
+              f"({rp['reason_code']}); protected files still need a verdict")
     for reason in safe["reasons"]:
         print(f"    - {reason}")
     if safe["blocked"]:
@@ -16140,6 +16643,10 @@ def _cmd_gate_install_hooks(args, root: Path) -> None:
     _gitleaks_install_git_hooks(root)
     _remote_install_git_hooks(root)
     _gate_install_ci_workflow(root)
+    # v1.0.0: a stock Mac has no gpg. Every hook above is installed anyway;
+    # say in plain English what is limited until gpg is installed.
+    if shutil.which("gpg") is None:
+        print(GPG_MISSING_FOR_GATE_NOTE)
 
 
 # ---------------------------------------------------------------------------
@@ -25279,7 +25786,10 @@ def main() -> None:
         "approve":     ["diff"],           # diff -u for event log
         "publish":     ["git"],            # git diff --no-index (--force mode)
         "resolve":     [],                 # --ours/--theirs: no subprocess; --edit: $EDITOR
-        "gate":        ["git", "gpg"],     # changed-path discovery (git) + covering-verdict signature verify (isolated GNUPGHOME, gpg)
+        # v1.0.0: gpg is only needed to CHECK a verdict/sign-off/release
+        # signature. Without it the gate still runs: ordinary changes pass,
+        # protected changes are refused (no signature can be checked).
+        "gate":        ["git"],            # changed-path discovery (git); gpg checked lazily per signature
         "verdict":     ["gpg"],            # sign (detach-sign) / verify (isolated GNUPGHOME)
     }
     tools_needed = _TOOL_REQUIREMENTS.get(args.command, [])
@@ -25288,6 +25798,9 @@ def main() -> None:
         # external tool first so every environment gets the same explicit
         # TRUST_BOOTSTRAP_REQUIRED state without invoking or requiring GPG.
         tools_needed = []
+    if (args.command in ("update", "self-update") and "gpg" in tools_needed
+            and shutil.which("gpg") is None):
+        sys.exit(GPG_MISSING_FOR_UPDATE_MESSAGE)
     if tools_needed:
         _check_tools(*tools_needed)
 

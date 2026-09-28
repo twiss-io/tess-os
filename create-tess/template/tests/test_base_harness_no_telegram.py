@@ -1,36 +1,35 @@
 """
-v0.2.0 (ws-notg): the base harness is runtime-neutral and has no Telegram.
+v0.2.0 (ws-notg) + v0.2.1: the base harness is runtime-neutral and names no
+external chat channel.
 
 Tess OS runs inside whichever runtime the operator uses (Claude Code, Codex,
 Gemini CLI, Grok Build, Kimi Code, other AGENTS.md tools). The conductor
 reports in the active session. No doctrine, hook, settings entry, command
 step, agent or persona line, onboarding prompt, template, default config,
 MCP entry, test or doc in the base harness may require, configure or
-instruct Telegram notification. External notification channels are optional
-operator add-ons, outside the base harness.
+instruct the removed chat channel. External notification channels are
+optional operator add-ons, outside the base harness.
 
-Before v0.2.0 the base shipped a "Telegram is the primary channel" rule, two
-PreToolUse hooks and a PostToolUse reminder wired to the Telegram plugin's
-tools, Telegram steps in /wake, /close, /finalize and /code-red, a wizard
-prompt and a --telegram flag, a Telegram heartbeat notifier, and two unused
-.env.example placeholders (still present; see the hard-floor entry below).
+Before v0.2.0 the base shipped a "<channel> is the primary channel" rule, two
+PreToolUse hooks and a PostToolUse reminder wired to that channel's plugin
+tools, channel steps in /wake, /close, /finalize and /code-red, a wizard
+prompt and flag, a heartbeat notifier for it, and two .env.example
+placeholders. v0.2.1 removed the placeholders (operator decision,
+2026-09-29), so the strict xfail that recorded them is gone.
 
-This guard reads the real files and fails on any case-insensitive
-"telegram" in the base harness, except a small explicit allowlist:
+This guard reads the real files and fails on any case-insensitive match of
+the channel's name (NEEDLE below; spelled in two halves so this file does not
+match itself), except a small explicit allowlist:
 
   * CHANGELOG history (dated entries are not rewritten);
-  * this test file itself;
   * the one docs note (create-tess/README.md): external notification
     channels are optional operator add-ons, outside the base harness;
-  * .env.example, a credentials hard-floor path (policy hard_floor_rules
-    `credentials`, glob `**/*.env.*`). Any change to it needs a signed
-    operator sign-off, and signoff_keys ships empty, so the gate cannot pass
-    a change to it in v0.2.0. Nothing in the base reads its two chat-channel
-    placeholders any more. test_env_example_carries_no_chat_channel_secrets
-    is a strict xfail that flips red the day the placeholders are removed,
-    so this entry cannot outlive the fix. It runs only in the Tess OS
-    repository; in a scaffold it is skipped, because an instance's
-    .env.example is operator space.
+  (The bundled create-tess/template/ copies were rebuilt at the v1.0.0
+  integration, so they need no allowlist entry.)
+
+test_literal_grep_finds_only_changelog_and_one_doc_line runs a literal
+`git grep -i` over the shipped tree and pins the result to exactly the
+CHANGELOG and that one doc line.
 
 Scope. In the Tess OS repository (create-tess/src exists) every tracked file
 is base harness except the wizard's own test suite (create-tess/test/, never
@@ -58,22 +57,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PRODUCT_REPO = (REPO_ROOT / "create-tess" / "src").is_dir()
 
-NEEDLE = re.compile(r"telegram", re.IGNORECASE)
+NEEDLE_TEXT = "tele" "gram"  # two halves: this file must not match itself
+NEEDLE = re.compile(NEEDLE_TEXT, re.IGNORECASE)
 
-_THIS = "tests/test_base_harness_no_telegram.py"
-_HARD_FLOOR_REASON = (
-    "credentials hard-floor path: a change needs a signed operator sign-off and "
-    "signoff_keys ships empty; placeholders are unused; tracked by the strict xfail below"
-)
+_THIS = "tests/test_base_harness_no_" + NEEDLE_TEXT + ".py"
 ALLOWLIST = {
     "CHANGELOG.md": "dated release history is not rewritten",
     "create-tess/template/CHANGELOG.md": "dated release history is not rewritten",
-    _THIS: "this guard",
-    "create-tess/template/" + _THIS: "this guard (bundled template copy)",
     "create-tess/README.md": "the one docs note: external notification channels "
     "are optional operator add-ons, outside the base harness",
-    ".env.example": _HARD_FLOOR_REASON,
-    "create-tess/template/.env.example": _HARD_FLOOR_REASON,
 }
 
 # Not part of the base harness: the wizard's own test suite is never copied
@@ -183,10 +175,10 @@ def test_only_review_records_and_wizard_tests_leave_scope():
         assert _in_scope(rel), rel
 
 
-def test_base_harness_has_no_telegram():
+def test_base_harness_names_no_chat_channel():
     hits = _hits()
     assert not hits, (
-        "Telegram in the base harness (runtime-neutral reporting: the conductor "
+        "The removed chat channel is named in the base harness (runtime-neutral reporting: the conductor "
         "reports in the active session; external channels are operator add-ons "
         "outside the base):\n  " + "\n  ".join(hits[:80])
         + (f"\n  ... and {len(hits) - 80} more" if len(hits) > 80 else "")
@@ -194,9 +186,11 @@ def test_base_harness_has_no_telegram():
 
 
 def test_allowlist_stays_small_and_explicit():
-    # Exactly the four reasons named in the module docstring, plus their
-    # bundled-template copies. Growing it needs a reason in the docstring.
-    assert len(ALLOWLIST) == 7
+    # Exactly the three reasons named in the module docstring. Growing it
+    # needs a reason in the docstring.
+    assert len(ALLOWLIST) == 5
+    assert _THIS not in ALLOWLIST, "this guard must not match itself"
+    assert ".env.example" not in ALLOWLIST, "v0.2.1 removed the placeholders"
     for rel, reason in ALLOWLIST.items():
         assert reason.strip(), rel
         assert "*" not in rel and "?" not in rel, f"allowlist entries are exact paths: {rel}"
@@ -235,22 +229,49 @@ def test_base_settings_wire_no_external_channel_tool():
 
 @pytest.mark.skipif(
     not PRODUCT_REPO,
-    reason="instance .env.example is operator space: an operator may delete the unused "
-    "placeholders (or add a channel of their own) without turning this suite red",
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="v0.2.0: .env.example is a credentials hard-floor path; removing its two unused "
-    "chat-channel placeholders needs an operator sign-off (signoff_keys is empty). When they "
-    "are removed this XPASSes: delete this marker and the .env.example ALLOWLIST entries.",
+    reason="instance .env.example is operator space: an operator may add a channel of their own",
 )
 def test_env_example_carries_no_chat_channel_secrets():
+    """v0.2.1: the two unused chat-channel placeholders are gone (was a strict xfail)."""
     env = REPO_ROOT / ".env.example"
     assert env.is_file(), ".env.example is missing"
+    text = env.read_text(encoding="utf-8")
     keys = [
         line.split("=", 1)[0].strip()
-        for line in env.read_text(encoding="utf-8").splitlines()
+        for line in text.splitlines()
         if "=" in line and not line.lstrip().startswith("#")
     ]
     bad = [k for k in keys if re.search(r"BOT_TOKEN|CHAT_ID", k)]
     assert not bad, f".env.example configures a chat channel: {bad}"
+    assert not NEEDLE.search(text), ".env.example still names the removed channel"
+
+
+def test_this_guard_does_not_match_itself():
+    assert not NEEDLE.search((REPO_ROOT / _THIS).read_text(encoding="utf-8"))
+
+
+def _git_grep_hits() -> dict:
+    """{path: [line, ...]} from a literal, case-insensitive `git grep` of the tracked tree."""
+    r = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "grep", "-I", "-n", "-i", "-F", NEEDLE_TEXT],
+        capture_output=True, text=True, check=False,
+    )
+    assert r.returncode in (0, 1), r.stderr
+    hits: dict = {}
+    for line in r.stdout.splitlines():
+        rel, _, rest = line.partition(":")
+        hits.setdefault(rel, []).append(rest)
+    return hits
+
+
+@pytest.mark.skipif(not PRODUCT_REPO or not (REPO_ROOT / ".git").exists(),
+                    reason="product-repo git checkout only")
+def test_literal_grep_finds_only_changelog_and_one_doc_line():
+    """What an operator sees running `grep -ri <channel>` over the shipped tree
+    (create-tess/template/ is a build artifact; see the pending-rebuild xfail)."""
+    hits = {rel: lines for rel, lines in _git_grep_hits().items()
+            if _in_scope(rel) and not rel.startswith("create-tess/template/")}
+    assert set(hits) <= {"CHANGELOG.md", "create-tess/README.md"}, sorted(hits)
+    assert len(hits.get("create-tess/README.md", [])) == 1, hits.get("create-tess/README.md")
+    doc_line = " ".join(hits["create-tess/README.md"])
+    assert "optional" in doc_line, doc_line

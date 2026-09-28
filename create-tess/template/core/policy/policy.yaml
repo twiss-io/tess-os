@@ -114,7 +114,11 @@ policy:
         wrapper: the workflow gates its trigger FILE but was not gating the
         CODE that file invokes) and the hard-floor SIGN-OFF ARTIFACT
         DIRECTORY (.tess/gate/signoffs/**: a sign-off used to be an
-        unauthenticated JSON file any agent could write). Silently weakening
+        unauthenticated JSON file any agent could write), PLUS — v0.2.1
+        (2026-09-29 review, CRITICAL) — the pristine core mirror
+        (.tess/core/**) and its pin file (.tess/tess.lock): together they are
+        what doctor/verify compare the live security doctrine against, so an
+        unreviewed edit to both could re-bless tampered doctrine. Silently weakening
         any of these is exactly as consequential as an unreviewed production
         change — treat edits here as prod_touching.
       globs:
@@ -131,6 +135,20 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+        - .tess/core/**
+        - .tess/tess.lock
+        # v0.2.1 (2026-09-29 security review, MEDIUM "hooks run agent-editable
+        # code"): everything a Claude Code hook executes or is wired by. Hooks
+        # run automatically on every session/prompt/tool call, so an edit here
+        # changes what runs without anyone invoking it — same weight as an
+        # engine edit. run-pinned.py refuses to run a copy that no longer
+        # matches tess.lock; this glob gates re-pinning it.
+        - .claude/hooks/**
+        - .tess/core/hooks/**
+        - .claude/settings.json
+        - .tess/core/settings-core.json
+        - .tess/core/pinned-scripts.sha256
+        - scripts/brain/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

@@ -3,7 +3,38 @@
 All notable changes to Tess OS are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — v1.0.0
+
+Integrates the three v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install) and the fixes that make them work together. Versions are not bumped yet.
+
+**Integrity (#203)**
+- Security (CRITICAL): the ship gate now lists type changes, deletions and renames of protected paths (`--no-renames --diff-filter=ACDMRTUXB`). `.tess/core/**` and `.tess/tess.lock` are security-tier. doctor, verify and `lock --check` fail on a symlink at a security-tier path. Supersedes #71.
+- Security (HIGH): `update`/`self-update` fetch only `refs/tags/<tag>`, verify it, and check out exactly the signed commit. A same-named branch can no longer substitute its files.
+- Reliability (HIGH): `tess.lock` writes are atomic and fsynced. A failure between the core advance and the lock save rolls back automatically.
+- Reliability (MEDIUM): `update` refuses to run over tampered core and never re-pins to non-release bytes. The update lock is taken with O_EXCL before the snapshot, never reclaimed from a live PID, and held by every lock-writing command.
+- Reliability (MEDIUM): two fail-open exception handlers now produce FAIL findings.
+- Fix (#193): a kept, unadopted live file gets a `.tess-new` conflict file and a non-zero exit instead of a phantom core-managed lock entry.
+
+**Safety (#202)**
+- Security: pre-push guard refuses to push `brain/` or `clients/` data to a public or unverifiable remote (`tessctl doctor --publish-remote`; re-run `tessctl gate install-hooks` on existing installs). publish-clean blocks `.private/` folders.
+- Security: hooks run only scripts that match `tess.lock` (`.claude/hooks/run-pinned.py`); hook, settings and `scripts/brain` paths are security-tier.
+- Security: shipped settings pre-approve only read-only git commands.
+- Security: dispatch lock dir is per-user (mode 700); the dispatch secret scan fails closed.
+- Changed: Claude Code auto memory is on by default, as a cache, until automatic capture (#195) ships.
+- Removed: `.env.example` chat-channel placeholders; the base harness names no external channel.
+
+**Install (#204)**
+- Install works on stock macOS: tessctl no longer needs PyYAML (vendored 6.0.3 fallback); plain-English Python check.
+- Scaffolds from npm now get their .gitignore files (shipped as `gitignore`, restored at install).
+- Onboarding's first commit is path-scoped and cannot deadlock on private files.
+- create-tess asks who Tess is for, sets up the second brain itself, and ends with plain next steps (`--mode`, `--preset`, `--no-onboarding`).
+- Release: create-tess publishes only from a tag signed by the pinned release key, in the `npm-publish` environment, with a pinned npm; framework releases fail on any version mismatch; all actions SHA-pinned; macOS and packed-tarball e2e CI legs.
+
+**Integration fixes (v1.0.0)**
+- Updates pass the gate without a verdict: `tessctl update` and `self-update` write `.tess/release-proof.json` (the signed release tag, its commit and the git tree objects for the files an update writes) and record the verified commit in `framework.upstream_commit`. The gate re-hashes every object, verifies the tag with the release key and pinned fingerprint from the base commit, refuses a release older than the installed version, and accepts a protected change only when its bytes equal the signed release at the same path. `tess.lock` changes pass only if they are the changes an update makes. A hand-edited core file still needs a verdict.
+- No gpg (stock macOS): `tessctl gate install-hooks` installs every hook and explains in plain English what is limited. Without gpg, ordinary work passes and protected changes are refused. `tessctl update` without gpg names the one install step (`brew install gnupg`) and changes nothing.
+- `scripts/brain/oobe/seed.py` (new in #204) and the changed `apply.py`/`restore.py` are re-pinned in `.tess/core/pinned-scripts.sha256`, so the pinned-hook launcher (#202) runs #204's onboarding. The first-commit fallback private globs in `seed.py` now include #202's `.private/` folders, matching the publish-clean gate.
+- `create-tess/template` rebuilt from the integrated tree.
 
 ## [0.2.0] — 2026-09-24
 

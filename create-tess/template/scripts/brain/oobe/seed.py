@@ -25,6 +25,8 @@ FALLBACK_PRIVATE_GLOBS = [
     "kb/**", "clients/*/**", "operator/**", ".env", ".env.*", "*.local.md", "**/*.local.md",
     "missions/**", ".tess/state/**", "UPGRADE-NOTES.md", ".mcp.json", "**/*.age",
     ".claude/vault/**", "clients/*/.vault/**",
+    # v0.2.1 #202: brain/.private/ and per-area .private/ folders are never committed.
+    "brain/**/.private/**", "**/.private/**",
 ]
 FALLBACK_ALLOWLIST = frozenset({
     "operator/build-facts-stub.md", "operator/identity-stub.md", "operator/org-channels.md",

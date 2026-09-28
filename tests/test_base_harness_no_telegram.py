@@ -24,11 +24,8 @@ match itself), except a small explicit allowlist:
   * CHANGELOG history (dated entries are not rewritten);
   * the one docs note (create-tess/README.md): external notification
     channels are optional operator add-ons, outside the base harness;
-  * the bundled create-tess/template/ copies of files this release changed
-    (.env.example and this guard). The template is a build artifact that
-    integration rebuilds; test_template_copies_still_pending_rebuild is a
-    strict xfail that turns red once the rebuilt copies are clean, so those
-    entries cannot outlive the rebuild.
+  (The bundled create-tess/template/ copies were rebuilt at the v1.0.0
+  integration, so they need no allowlist entry.)
 
 test_literal_grep_finds_only_changelog_and_one_doc_line runs a literal
 `git grep -i` over the shipped tree and pins the result to exactly the
@@ -64,20 +61,11 @@ NEEDLE_TEXT = "tele" "gram"  # two halves: this file must not match itself
 NEEDLE = re.compile(NEEDLE_TEXT, re.IGNORECASE)
 
 _THIS = "tests/test_base_harness_no_" + NEEDLE_TEXT + ".py"
-_PENDING_REBUILD = (
-    "bundled template copy of a file v0.2.1 changed; stale until integration rebuilds "
-    "create-tess/template (tracked by the strict xfail test_template_copies_still_pending_rebuild)"
-)
-PENDING_TEMPLATE_REBUILD = (
-    "create-tess/template/.env.example",
-    "create-tess/template/" + _THIS,
-)
 ALLOWLIST = {
     "CHANGELOG.md": "dated release history is not rewritten",
     "create-tess/template/CHANGELOG.md": "dated release history is not rewritten",
     "create-tess/README.md": "the one docs note: external notification channels "
     "are optional operator add-ons, outside the base harness",
-    **{rel: _PENDING_REBUILD for rel in PENDING_TEMPLATE_REBUILD},
 }
 
 # Not part of the base harness: the wizard's own test suite is never copied
@@ -287,16 +275,3 @@ def test_literal_grep_finds_only_changelog_and_one_doc_line():
     assert len(hits.get("create-tess/README.md", [])) == 1, hits.get("create-tess/README.md")
     doc_line = " ".join(hits["create-tess/README.md"])
     assert "optional" in doc_line, doc_line
-
-
-@pytest.mark.skipif(not PRODUCT_REPO, reason="product-repo only")
-@pytest.mark.xfail(
-    strict=True,
-    reason="create-tess/template is rebuilt at integration, not in the v0.2.1 fix PR. Once the "
-    "rebuilt copies are clean this XPASSes: delete this test and PENDING_TEMPLATE_REBUILD.",
-)
-def test_template_copies_still_pending_rebuild():
-    dirty = [rel for rel in PENDING_TEMPLATE_REBUILD
-             if (REPO_ROOT / rel).is_file()
-             and NEEDLE.search((REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace"))]
-    assert not dirty, f"template copies still stale: {dirty}"
