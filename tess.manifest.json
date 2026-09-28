@@ -23,6 +23,7 @@
     "AGENTS.md",
     ".agents/skills/tess-*/**",
     ".codex/config.toml",
+    ".codex/rules/tess.rules",
     ".codex/agents/**",
     "prompts/**",
     "GEMINI.md",

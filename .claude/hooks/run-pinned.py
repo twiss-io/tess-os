@@ -14,8 +14,9 @@ matches the value pinned by `.tess/tess.lock`:
     masters are pinned there); or
   * through `.tess/core/pinned-scripts.sha256`, a core file that tess.lock
     itself pins (base_sha). It lists scripts that have no `.tess/core` master:
-    this launcher, `vault-dispatch-scan.py`, and every `scripts/brain/**/*.py`
-    file the onboarding hook can import.
+    this launcher, `vault-dispatch-scan.py`, `tess-gate.py` (the Codex
+    PreToolUse safety gate, v1.0), and every `scripts/brain/**/*.py` file the
+    onboarding hook can import.
 
 `--closure DIR` additionally verifies every `*.py` under DIR (recursive,
 `__pycache__` skipped) against the pin list and refuses if any is unpinned
@@ -61,7 +62,7 @@ LOCK_REL = ".tess/tess.lock"
 PINS_REL = ".tess/core/pinned-scripts.sha256"
 SELF_REL = ".claude/hooks/run-pinned.py"
 # What --regen-pins writes: scripts that hooks run but that have no .tess/core master.
-PIN_SET_FILES = (SELF_REL, ".claude/hooks/vault-dispatch-scan.py")
+PIN_SET_FILES = (SELF_REL, ".claude/hooks/vault-dispatch-scan.py", ".claude/hooks/tess-gate.py")
 PIN_SET_TREES = ("scripts/brain",)
 PINS_HEADER = (
     "# pinned-scripts.sha256 — hook-executed scripts with no .tess/core master.\n"

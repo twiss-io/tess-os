@@ -16,12 +16,12 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-28T20:18:14.869511Z'
+  last_updated: '2026-09-28T21:18:47.929137Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c4c7f0a3f7155436f06aae3545871d3a7e87c1e0857ad06df0d8ab25e443d128
+    base_sha: sha256:0315b4561e6eb01ca16489ba02fbf6cf48d76e1e871b07228ff272b7deb2359a
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/personas/chief-of-staff.md:
@@ -5762,10 +5762,17 @@ files:
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
+  .tess/core/templates/agents-md/codex-tess.rules.tpl:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:093148a46415d196b03e4e7c2852ead5a6336f140f221453ec7df33b9862624c
+    live_path: null
+    render: template
+    last_updated: '2026-09-29T00:00:00Z'
   .tess/core/templates/agents-md/codex-config.toml.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
+    base_sha: sha256:afcbcc12b98b8ee26a0dac2992e2b282969f32aad54526060b055b895da578c3
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
@@ -5779,7 +5786,7 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e1431d1f29557bb8aed4d9152b094273911f3bf819ecc760aea1a0723af543a8
+    base_sha: sha256:7714c50fdf8184f1ae714dc642fca28578b0d7f75a78a922a6ab1a3d47ad0593
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6093,7 +6100,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:5553dcd3e0ecc2c5dbe53ef6286f796c3f01d640fb9b29557b1d15220fdc2444
+    base_sha: sha256:480d658c6272454210b6451f1da8cee1d2043e3691062a49df88f9437375653f
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
 render_outputs:
@@ -6120,11 +6127,11 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:3cf529d93f40827ddc2bef3544162fbd4ab72c86907fedde25f783d0d7838483
+    rendered_sha: sha256:604f8d4489332ee9eec68439944d330a8f89cdda20e7d9975d4e55e93736b6f8
   .codex/config.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
+    rendered_sha: sha256:afcbcc12b98b8ee26a0dac2992e2b282969f32aad54526060b055b895da578c3
   .agents/skills/tess-add-agent/SKILL.md:
     target: codex
     status: rendered
@@ -6477,3 +6484,7 @@ render_outputs:
     target: codex
     status: rendered
     rendered_sha: sha256:d49de7b1de107efe6b3eb50bc83cece5593d91a6117830468889449f57a97473
+  .codex/rules/tess.rules:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:093148a46415d196b03e4e7c2852ead5a6336f140f221453ec7df33b9862624c
