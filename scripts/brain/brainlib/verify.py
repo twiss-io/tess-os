@@ -115,6 +115,12 @@ def _duplicate(cfg: Config, cand: Dict, ref: str = "") -> Optional[str]:
     return None
 
 
+def duplicate_of(cfg: Config, cand: Dict) -> Optional[str]:
+    """V5 for a candidate already located (its source_ref filled in): the id of the active record it repeats."""
+    ref = str(cand.get("source_ref") or "")
+    return _duplicate(cfg, cand, ref if "/journal/" in ref else "")
+
+
 def _v2(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     speaker = line.speaker if line.principal else None
     p = cfg.principal(speaker) if speaker else None

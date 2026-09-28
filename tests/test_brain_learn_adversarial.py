@@ -202,3 +202,19 @@ def test_same_minute_sessions_sharing_an_id_prefix_never_overwrite_each_other(tm
     assert sum("Where did I decide" in t and b in t for t in texts.values()) == 1
     r = fxlib.cli(inst, "lint")
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# 8. a held cue candidate merges into the operator's own record of the same line -------------------
+
+def test_held_cue_candidate_merges_into_a_later_decide_of_the_same_line(tmp_path):
+    line = "Decision: we'll deploy the API on Fly.io. Also, our support hours are 9am to 6pm Singapore time."
+    inst = _session(tmp_path, [("user", line)])
+    held = [json.loads(p.read_text()) for p in (inst / "brain/inbox").glob("C-*.json")]
+    assert held and "Fly.io" in held[0]["quote"]  # the cue pass holds it (a later clause names other options)
+    r = fxlib.cli(inst, "--json", "decide", "--quote", "Decision: we'll deploy the API on Fly.io.",
+                  "--title", "deploy the API on Fly.io")
+    assert json.loads(r.stdout)["status"] == "accepted", r.stdout
+    fxlib.sync_dir(inst, tmp_path / "claude")
+    assert not list((inst / "brain/inbox").glob("C-*.json"))
+    assert len([t for t in _decisions(inst) if "Fly.io" in t]) == 1
+    assert fxlib.cli(inst, "lint").returncode == 0

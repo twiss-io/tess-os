@@ -136,11 +136,28 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
     return outcome
 
 
+def _merge_if_recorded(cfg: Config, cand: Dict) -> Optional[Dict]:
+    """A held candidate that duplicates an active record (same statement, same quote, or an overlapping
+    quote from the same line) is merged into it: dropped as noop. Live run 2026-09-29: the cue pass held
+    "we'll deploy the API on Fly.io" for review, then the operator's own `decide` accepted the same line,
+    and lint failed on the leftover candidate."""
+    dup = verify.duplicate_of(cfg, cand)
+    if not dup or cand.get("supersedes"):
+        return None
+    receipts.append(cfg, cand.get("speaker") or "unknown", "verify", cand["id"], "noop", ["V5: duplicate of %s" % dup])
+    _drop(cfg, cand)
+    return {"candidate": cand["id"], "kind": cand["kind"], "status": "noop", "reasons": ["V5: duplicate of %s" % dup],
+            "record": "", "statement": redact.redact(cand.get("statement", ""))[0]}
+
+
 def process_all(cfg: Config, cands: Optional[List[Dict]] = None) -> List[Dict]:
     out = []
     for cand in (cands if cands is not None else pending(cfg)):
         if cand.get("verification", {}).get("status") == "review" and cands is None:
-            continue  # waiting for the operator; re-checked only on request
+            merged = _merge_if_recorded(cfg, cand)  # the operator recorded it themselves (decide/remember)
+            if merged:
+                out.append(merged)
+            continue  # otherwise waiting for the operator; re-checked only on request
         try:
             out.append(process(cfg, cand))
         except Exception as exc:  # noqa: BLE001 - one bad candidate never blocks the rest
