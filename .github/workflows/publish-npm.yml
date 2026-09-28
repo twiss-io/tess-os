@@ -17,8 +17,9 @@ name: Publish create-tess to npm
 #     .github/scripts/verify_release_tag.sh in a throwaway GNUPGHOME.
 #   - the tag version equals create-tess/package.json's version.
 #   - the job runs in the `npm-publish` GitHub environment. That environment
-#     is created in the repository settings (required reviewers, tag-only
-#     deployment rule); the npm Trusted Publisher for create-tess must name
+#     is created in the repository settings with a tag-only deployment rule
+#     (`create-tess-v*`) and no required reviewers (SECURITY.md, "Trust
+#     model": the signed tag is the approval); the npm Trusted Publisher for create-tess must name
 #     this workflow file AND this environment, so a run outside it cannot mint
 #     the OIDC publish credential.
 #   - npm is pinned (NPM_VERSION below), the same npm ci.yml's create-tess
@@ -48,6 +49,10 @@ jobs:
   publish:
     name: npm publish create-tess
     runs-on: ubuntu-latest
+    # The `npm-publish` environment only admits `create-tess-v*` TAG refs
+    # (deployment policy, no reviewers). npm Trusted Publishing is bound to
+    # this environment, so a branch run (or a copy of this workflow wired to
+    # another trigger) cannot obtain a publish-capable OIDC token.
     environment: npm-publish
     permissions:
       contents: read
@@ -62,15 +67,23 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # Gate 0: the release key is the single root of trust (SECURITY.md,
+      # "Trust model"). Refuse anything that is not a `create-tess-v*` tag ref
+      # (fail closed even if the trigger is ever widened), then require an
+      # annotated tag signed by the pinned key EBEABC618C11B6A7340A7D1601DD637667B8CC89.
       # actions/checkout turns an annotated tag into a lightweight ref; fetch
       # the real tag object before verifying it. The tag name only reaches the
       # shell through the TAG environment variable (no expression injection).
-      - name: Verify the tag is signed by the pinned release key
+      - name: Gate 0 — tag must be signed by the Twiss release key
         working-directory: .
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [[ "$TAG" != create-tess-v* ]]; then
+            echo "::error::publish must run on a create-tess-v* tag (got ${GITHUB_REF_TYPE} '${TAG}'). Refusing (fail closed)."
+            exit 1
+          fi
           git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
           .github/scripts/verify_release_tag.sh "$TAG"
 
