@@ -1,0 +1,8 @@
+{
+  "session_id": "11111111-aaaa-4bbb-8ccc-000000000001",
+  "transcript_path": "",
+  "cwd": "/work/fx",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "OK."
+}

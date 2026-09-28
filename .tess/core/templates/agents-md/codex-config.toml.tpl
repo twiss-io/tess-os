@@ -26,22 +26,58 @@ approval_policy = "on-request"
 # deliberately absent here (project config cannot broaden the sandbox).
 sandbox_mode = "workspace-write"
 
-# Onboarding at session start — the same scripts/brain/onboard.py hook Claude
-# Code runs from .claude/settings.json, printing Codex's SessionStart
-# shape ({"hookSpecificOutput": {"additionalContext": ...}}). Inline here, not
-# in .codex/hooks.json, so a hooks.json you write stays yours (Codex merges
-# both and warns). Codex runs project hooks only in a TRUSTED project and only
-# after you trust each hook in `/hooks` (trust is pinned to the hook's hash).
-# Until then the "Second brain" block in AGENTS.md starts onboarding on its
-# own. The command exits 0 silently when the script or python3 is missing.
+# Second-brain hooks: onboarding and the learning loop (docs/brain/LEARNING.md).
+# The same pinned scripts Claude Code runs from .claude/settings.json, each
+# through .claude/hooks/run-pinned.py, which runs a script only when its sha256
+# matches the release pinned by .tess/tess.lock (a changed or unpinned file is
+# skipped with a warning, never run). Inline here, not in .codex/hooks.json, so
+# a hooks.json you write stays yours (Codex merges both and warns).
+#   SessionStart      onboarding question + the brain snapshot (what was learned)
+#   UserPromptSubmit  notes the redacted prompt; a one-line nudge on a cue
+#   Stop, SessionEnd  hand the transcript to a detached, locked sync (journal,
+#                     cue pass, verifier, promote, index); they print {} (Codex
+#                     expects JSON from Stop)
+# No hook ever blocks a turn: every one exits 0, and a failure is a warning.
+# Codex runs project hooks only in a TRUSTED project and only after you trust
+# each hook in `/hooks` (trust is pinned to the hook's hash). Until then the
+# "Second brain" block in AGENTS.md starts onboarding on its own and
+# `tessbrain.py sync` (skill brain-save) sweeps ~/.codex/sessions for this
+# project. Each command exits 0 silently when the launcher or python3 is missing.
 [[hooks.SessionStart]]
 matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); f=\"$r/scripts/brain/onboard.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime codex || exit 0'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime codex || exit 0'"
 timeout = 5
 statusMessage = "Tess: checking onboarding"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook session-start --runtime codex || exit 0'"
+timeout = 5
+statusMessage = "Tess: loading the brain"
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook prompt --runtime codex || exit 0'"
+timeout = 5
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
+timeout = 30
+
+[[hooks.SessionEnd]]
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
+timeout = 30
 
 # Tess safety gate (v1.0) — the Codex twin of the Claude Code PreToolUse hooks.
 # One hook on every shell command (`Bash` covers shell and exec_command), file
