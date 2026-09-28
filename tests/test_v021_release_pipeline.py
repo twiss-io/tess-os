@@ -51,9 +51,15 @@ def test_publish_runs_in_the_npm_publish_environment_with_a_verified_tag():
     assert job["environment"] == "npm-publish"
     assert job["permissions"] == {"contents": "read", "id-token": "write"}
     names = [s.get("name", "") for s in job["steps"]]
-    verify = names.index("Verify the tag is signed by the pinned release key")
+    verify = names.index("Gate 0 — tag must be signed by the Twiss release key")
     assert verify < names.index("npm publish (Trusted Publishing / OIDC)")
-    assert ".github/scripts/verify_release_tag.sh \"$TAG\"" in job["steps"][verify]["run"]
+    run = job["steps"][verify]["run"]
+    assert ".github/scripts/verify_release_tag.sh \"$TAG\"" in run
+    # #205 union: fail closed on anything but a create-tess-v* tag ref,
+    # before the signature check runs.
+    guard = run.index('"$GITHUB_REF_TYPE" != "tag"')
+    assert guard < run.index("verify_release_tag.sh")
+    assert "create-tess-v*" in run[guard:run.index("verify_release_tag.sh")]
 
 
 def test_publish_npm_is_pinned_and_the_same_npm_is_tested_in_ci():
