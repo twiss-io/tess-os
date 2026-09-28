@@ -63,6 +63,23 @@ def cmd_journal_note(cfg: Config, a) -> Out:
     return 0, {"journaled": bool(sess), "outcomes": outcomes}
 
 
+def _entity(cfg: Config, a) -> str:
+    """Normalise --entity to an id under brain/ ("brain", "brain/x" -> "", "x"); refuse an unknown one.
+
+    Live run 2026-09-29: a model passed `--entity brain` and the fact landed in brain/brain/facts/."""
+    raw = str(getattr(a, "entity", "") or "").strip().strip("/")
+    while raw == "brain" or raw.startswith("brain/"):
+        raw = raw[len("brain"):].lstrip("/")
+    if raw in ("", "."):
+        a.entity = ""
+        return ""
+    if ".." in raw.split("/") or not (cfg.brain / raw / "AGENTS.md").is_file():
+        return ("unknown entity %r: use an entity id listed in brain/START-HERE.md (for example clients/acme), "
+                "or leave --entity out to record under brain/" % raw)
+    a.entity = raw
+    return ""
+
+
 def _candidate(cfg: Config, a, kind: str, detected: str) -> Dict:
     return inbox.new_candidate(
         cfg, kind, a.statement or a.quote, a.quote, detected_by=detected, source_ref=getattr(a, "source_ref", ""),
@@ -87,7 +104,7 @@ def _run_candidate(cfg: Config, cand: Dict, dry: bool) -> Out:
 
 
 def cmd_decide(cfg: Config, a) -> Out:
-    why = _need(cfg)
+    why = _need(cfg) or _entity(cfg, a)
     if why:
         return 1, {"error": why}
     if not a.no_sync:
@@ -96,7 +113,7 @@ def cmd_decide(cfg: Config, a) -> Out:
 
 
 def cmd_remember(cfg: Config, a) -> Out:
-    why = _need(cfg)
+    why = _need(cfg) or _entity(cfg, a)
     if why:
         return 1, {"error": why}
     if not a.no_sync:
@@ -105,7 +122,7 @@ def cmd_remember(cfg: Config, a) -> Out:
 
 
 def cmd_inbox_add(cfg: Config, a) -> Out:
-    why = _need(cfg)
+    why = _need(cfg) or _entity(cfg, a)
     if why:
         return 1, {"error": why}
     return _run_candidate(cfg, _candidate(cfg, a, a.kind, a.detected_by), a.dry_run)

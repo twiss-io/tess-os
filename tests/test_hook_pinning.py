@@ -77,9 +77,15 @@ def test_every_hook_command_goes_through_the_pinned_launcher():
         assert ".claude/hooks/run-pinned.py" in cmd, label
 
 
-def test_no_hook_wires_the_unshipped_tessbrain_tool():
-    assert "tessbrain" not in json.dumps(SETTINGS)
-    assert not (REPO / "scripts" / "brain" / "tessbrain.py").exists()
+def test_tessbrain_ships_and_is_wired_only_through_the_launcher():
+    """v1.0: the learning tool ships, so hooks may run it, but only via the pinned launcher."""
+    assert (REPO / "scripts" / "brain" / "tessbrain.py").is_file()
+    cmds = [h["command"] for groups in SETTINGS["hooks"].values() for g in groups for h in g["hooks"]
+            if "tessbrain" in h["command"]]
+    assert len(cmds) == 4
+    for cmd in cmds:
+        assert cmd.startswith('python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn '
+                              '--closure scripts/brain -- scripts/brain/tessbrain.py hook '), cmd
 
 
 def test_every_hook_target_is_pinned_today(proj):
@@ -238,6 +244,8 @@ def test_vault_scan_blocks_when_python3_is_missing(proj, tmp_path):
 def test_no_shipped_hook_uses_the_shared_tmp_lock_dir():
     for base in (".claude/hooks", ".tess/core/hooks"):
         for p in (REPO / base).iterdir():
+            if not p.is_file():
+                continue  # e.g. a __pycache__ left by a local import of run-pinned.py
             for line in p.read_text().splitlines():
                 if line.startswith("LOCK_DIR="):
                     assert "/tmp" not in line, (p, line)

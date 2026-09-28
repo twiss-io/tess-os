@@ -100,7 +100,7 @@ def test_every_brain_script_is_pinned_and_the_pin_list_is_locked():
         rel = p.relative_to(REPO).as_posix()
         assert pins.get(rel) == hashlib.sha256(p.read_bytes()).hexdigest(), "unpinned or stale: " + rel
     assert "scripts/brain/tessbrain.py" in pins
-    r = subprocess.run([sys.executable, "-c",
+    r = subprocess.run([sys.executable, "-B", "-c",
                         "import importlib.util,sys;s=importlib.util.spec_from_file_location('rp',sys.argv[1]);"
                         "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
                         "print(m.verify(m.Path(sys.argv[2]),'scripts/brain/tessbrain.py','scripts/brain'))",

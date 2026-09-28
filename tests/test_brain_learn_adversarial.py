@@ -161,3 +161,24 @@ def test_note_has_a_summary_and_bounded_replies(tmp_path):
     note = Path(fxlib.journal_of(inst, SID)).read_text()
     assert "## Summary" in note and "1 decision" in note and "Opened with (L1)" in note
     assert len(note) < 4000 and "[... see transcript]" in note
+
+
+# 6. a model's bad --entity never creates a stray tree ---------------------------------------------
+
+@pytest.mark.parametrize("entity", ["brain", "brain/", "/brain"])
+def test_entity_brain_means_the_root_register(tmp_path, entity):
+    """Live run 2026-09-29: `remember --entity brain` wrote brain/brain/facts/. Now it means brain/."""
+    inst = _session(tmp_path, [("user", "Our fiscal year starts on 1 April.")])
+    r = fxlib.cli(inst, "--json", "remember", "--kind", "fact", "--quote", "Our fiscal year starts on 1 April.",
+                  "--entity", entity)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (inst / "brain" / "brain").exists()
+    assert list((inst / "brain" / "facts").glob("F-*.md"))
+
+
+def test_unknown_entity_is_refused(tmp_path):
+    inst = _session(tmp_path, [("user", "Our fiscal year starts on 1 April.")])
+    r = fxlib.cli(inst, "--json", "remember", "--kind", "fact", "--quote", "Our fiscal year starts on 1 April.",
+                  "--entity", "clients/nobody")
+    assert r.returncode != 0 and "unknown entity" in r.stdout
+    assert not (inst / "brain" / "clients" / "nobody").exists()
