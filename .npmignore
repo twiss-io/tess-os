@@ -11,6 +11,7 @@ tess-secrets/
 .claude/vault/vault.age
 .claude/vault/vault.recipients
 .claude/vault/identity.age
+.claude/vault/.vault.lock
 clients/*/.vault/
 **/vault.age
 **/identity.age
