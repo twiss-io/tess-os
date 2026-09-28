@@ -85,6 +85,13 @@ def session_start(root: Path, runtime: str) -> int:
         text = unreadable_line(root)
     if not text:
         return 0
+    if runtime == "codex" and text.startswith("ONBOARDING PENDING"):
+        # v0.2.1 Codex parity: live runs (gpt-5.5, codex-cli 0.145) read "without
+        # running a tool first" as "no tools at all" and dropped the operator's
+        # task (1 of 3 runs answered only the step question). Claude's text is
+        # unchanged.
+        text += (" If their message is a task, do the task first with the tools it needs, "
+                 "then end your reply with the step question.")
     nonce = os.environ.get("TESS_BRAIN_TEST_NONCE")
     if nonce:
         text += " (test nonce: %s)" % nonce

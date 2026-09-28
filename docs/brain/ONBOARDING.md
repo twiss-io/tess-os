@@ -44,7 +44,7 @@ without running it).
 |---|---|---|---|---|
 | BOOT rule in the entry file ("if `brain/brain.json` is missing or onboarding is not complete, your first reply ends with the next onboarding question"; a first message that is a task gets a short answer first, then the question) | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` -> `AGENTS.md` | I |
 | `brain-onboard` skill, whose description starts "START HERE when brain/brain.json is missing or onboarding is not complete" | `.claude/skills/` | `.agents/skills/` | `.agents/skills/` | I |
-| SessionStart hook line `ONBOARDING PENDING (step k/7): ...` from `onboard.py hook session-start` | after trust | v0.2.1 | v0.2.1 | M/T |
+| SessionStart hook line `ONBOARDING PENDING (step k/7): ...` from `onboard.py hook session-start` | after trust | after project trust + `/hooks` approval (inline in `.codex/config.toml`) | not rendered | M/T |
 | Launcher start prompt (`claude "/brain-onboard"`, `codex '$brain-onboard'`, `gemini -i "Use the brain-onboard skill."`) | yes | yes | yes | M |
 
 The hook is silent in the Tess OS source repo, once onboarding is complete or
