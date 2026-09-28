@@ -21,9 +21,9 @@ files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:bb05304f158ce71af6515f9d06c0f97455dfbd4501ab302efda1b6ec48247db6
+    base_sha: sha256:c4c7f0a3f7155436f06aae3545871d3a7e87c1e0857ad06df0d8ab25e443d128
     live_path: null
-    last_updated: 2026-06-27 10:00:00+00:00
+    last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/personas/chief-of-staff.md:
     status: core-managed
     tier: normal
@@ -5629,25 +5629,25 @@ files:
     last_updated: *id001
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
-    tier: normal
-    base_sha: sha256:ecfcc70ebfd4eb199576691515fa13b679e05364344796bd6a6e6402c940218f
+    tier: security
+    base_sha: sha256:5ebd28d03dd123d222c51327e4428a81699a90112939fc95855f370b9c8ed60d
     live_path: .claude/hooks/dispatch-guard.sh
-    last_updated: 2026-06-27 10:00:00+00:00
+    last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/hooks/task-lock-clear.sh:
     status: core-managed
-    tier: normal
-    base_sha: sha256:42d23e92380bbb0de76371a02206dce3328e0d6fc9cb738495152d71e0c108d0
+    tier: security
+    base_sha: sha256:9a21e5d6cc37f972f02a373eaa5ab4c07e4d60445110eb67a25a36673ff725d6
     live_path: .claude/hooks/task-lock-clear.sh
-    last_updated: 2026-06-27 10:00:00+00:00
+    last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/hooks/task-lock-set.sh:
     status: core-managed
-    tier: normal
-    base_sha: sha256:5ffbd3a042da74aa4a14d60dfa8c6698627d729f3184c64e1658554afdfc3a4a
+    tier: security
+    base_sha: sha256:869c770ec74a3b08944e847164dba0f66f09db70bb9c3b8da2796ee7e360ebbb
     live_path: .claude/hooks/task-lock-set.sh
-    last_updated: 2026-06-27 10:00:00+00:00
+    last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/hooks/utc-local-context.sh:
     status: core-managed
-    tier: normal
+    tier: security
     base_sha: sha256:f70f6dfc9d791bb330be27e58dca2b3faab74c39f32c8683b850049337e07728
     live_path: .claude/hooks/utc-local-context.sh
     last_updated: 2026-06-27 10:00:00+00:00
@@ -5659,11 +5659,11 @@ files:
     last_updated: 2026-09-24 00:00:00+00:00
   .tess/core/settings-core.json:
     status: core-managed
-    tier: normal
-    base_sha: sha256:cdcb418ebf11c04c58e026044aa7e75aab2fc2eadd378a145c871fda1590487b
+    tier: security
+    base_sha: sha256:bd13ce2623f992d9ad8953d8d625ef95c8fb17cfe513f38a8b5f6227568bb329
     live_path: .claude/settings.json
     render: rendered
-    last_updated: 2026-06-27 10:00:00+00:00
+    last_updated: '2026-09-28T17:56:20.991251Z'
   .tess/core/skills/3d-web-experience/SKILL.md:
     status: core-managed
     tier: normal
@@ -6075,9 +6075,9 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:44bf4901e8585194f1de9539bbd22409c07b1b7e13d022256e983de074323b5d
+    base_sha: sha256:ed0ea6b9331ab8ebe9e03a54bea6309b83bd2c5adcd328a3ff1cb26901e7bc77
     live_path: core/policy/policy.yaml
-    last_updated: '2026-07-06T22:50:20.142367Z'
+    last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/contracts/task.schema.json:
     status: core-managed
     tier: normal
@@ -6090,6 +6090,12 @@ files:
     base_sha: sha256:fae4b57dd23d02a5344e94e5b0fc8a3d82aece2588508a270203cd0be13eefc8
     live_path: core/contracts/ledger-event.schema.json
     last_updated: '2026-07-19T00:00:00.000000Z'
+  .tess/core/pinned-scripts.sha256:
+    status: core-managed
+    tier: security
+    base_sha: sha256:1e8d844e588592e74d0ce0476298d74749c842639bc69be9dbab995d416a6d30
+    live_path: null
+    last_updated: '2026-09-28T17:49:44.108190Z'
 render_outputs:
   CLAUDE.md:
     target: claude-code
@@ -6098,7 +6104,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:cdcb418ebf11c04c58e026044aa7e75aab2fc2eadd378a145c871fda1590487b
+    rendered_sha: sha256:bd13ce2623f992d9ad8953d8d625ef95c8fb17cfe513f38a8b5f6227568bb329
   conductor/identity.md:
     target: claude-code
     status: rendered
