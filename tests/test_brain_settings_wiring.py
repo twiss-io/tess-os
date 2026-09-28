@@ -25,7 +25,8 @@ LAUNCH = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail wa
 ONBOARD_START = LAUNCH + "scripts/brain/onboard.py hook session-start --runtime claude"
 LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
-               for c in ("recall", "status", "review", "decide", "remember")]
+               for c in ("recall", "status", "review", "sync", "index", "lint", "decide", "remember", "inbox",
+                         "journal note")]
 READ_ONLY_GIT = [
     "Bash(git status:*)",
     "Bash(git diff:*)",

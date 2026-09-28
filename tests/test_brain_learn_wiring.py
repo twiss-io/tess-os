@@ -83,7 +83,9 @@ def test_live_codex_config_is_the_core_template_and_both_are_locked():
 
 def test_save_is_never_pre_approved():
     allow = SETTINGS["permissions"]["allow"]
-    assert not any("tessbrain.py save" in a or a == "Bash(python3 scripts/brain/tessbrain.py:*)" for a in allow)
+    for verb in ("save", "confirm", "promote", "reject", "retract", "githooks"):
+        assert not any("tessbrain.py %s" % verb in a for a in allow), verb
+    assert "Bash(python3 scripts/brain/tessbrain.py:*)" not in allow
 
 
 def test_every_brain_script_is_pinned_and_the_pin_list_is_locked():

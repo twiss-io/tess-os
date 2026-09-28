@@ -10,8 +10,13 @@
       "Bash(python3 scripts/brain/tessbrain.py recall:*)",
       "Bash(python3 scripts/brain/tessbrain.py status:*)",
       "Bash(python3 scripts/brain/tessbrain.py review:*)",
+      "Bash(python3 scripts/brain/tessbrain.py sync:*)",
+      "Bash(python3 scripts/brain/tessbrain.py index:*)",
+      "Bash(python3 scripts/brain/tessbrain.py lint:*)",
       "Bash(python3 scripts/brain/tessbrain.py decide:*)",
-      "Bash(python3 scripts/brain/tessbrain.py remember:*)"
+      "Bash(python3 scripts/brain/tessbrain.py remember:*)",
+      "Bash(python3 scripts/brain/tessbrain.py inbox:*)",
+      "Bash(python3 scripts/brain/tessbrain.py journal note:*)"
     ]
   },
   "autoMemoryEnabled": true,

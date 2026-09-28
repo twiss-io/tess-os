@@ -16,7 +16,7 @@ framework:
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
-  last_updated: '2026-09-28T21:06:07.910440Z'
+  last_updated: '2026-09-28T21:30:51.743828Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5660,7 +5660,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: security
-    base_sha: sha256:f9e763c248ff1f31d3e68eba7ff563860b33593ade7990cbc74d7fabc9065259
+    base_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
     live_path: .claude/settings.json
     render: rendered
     last_updated: '2026-09-28T17:56:20.991251Z'
@@ -6104,7 +6104,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:f9e763c248ff1f31d3e68eba7ff563860b33593ade7990cbc74d7fabc9065259
+    rendered_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
   conductor/identity.md:
     target: claude-code
     status: rendered
