@@ -120,6 +120,9 @@ test('P0 G-01 permanent guard: a fresh scaffold carries NO verifier/sign-off key
   // conductor/release-process.md). Everything else in the tree is a
   // per-project trust-anchor artifact that must never appear.
   const ALLOWED_KEY_FILE = join(target, '.tess', 'keys', 'twiss-release-key.asc');
+  // v1.0.0: the SSH release-verification public key (OpenSSH allowed_signers
+  // format, no PGP block) ships alongside it for installs without gpg.
+  const ALLOWED_SSH_SIGNERS = 'twiss-release-allowed-signers';
 
   const offendersBlock = [];
   const offendersFingerprint = [];
@@ -161,8 +164,18 @@ test('P0 G-01 permanent guard: a fresh scaffold carries NO verifier/sign-off key
   const keysEntries = readdirSync(keysDir).sort();
   assert.deepEqual(
     keysEntries,
-    ['twiss-release-key.asc'],
-    `.tess/keys/ must contain ONLY the release-verification key, got: ${keysEntries.join(', ')}`,
+    [ALLOWED_SSH_SIGNERS, 'twiss-release-key.asc'],
+    `.tess/keys/ must contain ONLY the two release-verification keys, got: ${keysEntries.join(', ')}`,
+  );
+  assert.match(
+    readFileSync(join(keysDir, ALLOWED_SSH_SIGNERS), 'utf8'),
+    /^twiss-release namespaces="tess-release" ssh-ed25519 [A-Za-z0-9+/]{68}$/m,
+    'the SSH release-verification key must ship as a single allowed_signers entry',
+  );
+  assert.match(
+    readFileSync(join(target, '.tess', 'tess.lock'), 'utf8'),
+    /^  trusted_ssh_key_fingerprint: SHA256:[A-Za-z0-9+/]{43}$/m,
+    'a scaffolded instance must pin the SSH release key so it can update without gpg',
   );
   assert.match(
     readFileSync(join(keysDir, 'twiss-release-key.asc'), 'utf8'),

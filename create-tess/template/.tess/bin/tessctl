@@ -1016,8 +1016,10 @@ GPG_MISSING_FOR_UPDATE_MESSAGE = (
     "Tess can't update yet: one free tool is missing.\n"
     "\n"
     "  Before installing an update, Tess checks it was really published by the\n"
-    "  Tess OS team (a digital signature). That check needs GnuPG (\"gpg\"),\n"
-    "  which this computer does not have. Nothing was changed.\n"
+    "  Tess OS team (a digital signature). This install can only check it with\n"
+    "  GnuPG (\"gpg\"), which this computer does not have. Nothing was changed.\n"
+    "  (Installs that pin the SSH release key check it with the built-in\n"
+    "  ssh-keygen instead; see SECURITY.md.)\n"
     "\n"
     "  Install it with one step, then run the same command again:\n"
     "    Mac:    brew install gnupg\n"
@@ -1031,8 +1033,10 @@ GPG_MISSING_FOR_GATE_NOTE = (
     "          - Everyday work (your notes, clients, missions, docs) commits and pushes normally.\n"
     "          - Changes to Tess's protected safety files (its rules, engine and lock) are\n"
     "            REFUSED, because the reviewer signature that approves them can't be checked.\n"
-    "          - Installing Tess updates also needs gpg (Mac: brew install gnupg).\n"
-    "          Install gpg and re-run `tessctl gate install-hooks` for full protection."
+    "          - Tess updates still install and pass this check: they are verified with the\n"
+    "            SSH release signature (ssh-keygen, built in) when the install pins that key.\n"
+    "          Install gpg (Mac: brew install gnupg) and re-run `tessctl gate install-hooks`\n"
+    "          for full protection."
 )
 
 
@@ -6863,7 +6867,16 @@ def _verify_tag_secure(
                 ["gpg", "--export", "--armor", canon_pin],
                 capture_output=True,
             )
-            if export_r.returncode != 0 or not export_r.stdout.strip():
+            key_material = export_r.stdout if export_r.returncode == 0 else b""
+            # v1.0.0: fall back to the installed release public key
+            # (.tess/keys/twiss-release-key.asc) so a fresh install needs no
+            # manual `gpg --import`. Still pinned: the signer must be exactly
+            # canon_pin (checked below), whatever else the file holds.
+            bundled = root / RELEASE_KEY_FILE
+            if (not key_material.strip() and bundled.is_file() and not bundled.is_symlink()
+                    and _gpg_public_certificate_from_bytes_is_safe(bundled.read_bytes(), isolated_gpg)):
+                key_material = bundled.read_bytes()
+            if not key_material.strip():
                 sys.exit(
                     f"tessctl: SECURITY REJECT — cannot export pinned key "
                     f"{trusted_fingerprint!r} from system GPG keyring.\n"
@@ -6872,7 +6885,7 @@ def _verify_tag_secure(
 
             subprocess.run(
                 ["gpg", "--homedir", str(isolated_gpg), "--import"],
-                input=export_r.stdout, capture_output=True,
+                input=key_material, capture_output=True,
             )
             # Set ultimate trust so verify-tag does not fail on untrusted-key warning
             subprocess.run(
@@ -6980,6 +6993,222 @@ def _verify_tag_secure(
 
         print(f"  signature OK (TOFU) — key pinned for future verification")
         return signing_fp, True
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 — SSH release signature, so updates verify on a machine without gpg
+#
+# A stock Mac has no gpg, but macOS, most Linux and Windows 10+ ship OpenSSH
+# `ssh-keygen -Y verify`. Every release tag keeps its OpenPGP signature and
+# ALSO carries an SSH signature by the Twiss SSH release key, inside the tag
+# message, so it travels with the tag through the same `git fetch` and is
+# itself covered by the OpenPGP signature:
+#
+#     Release v1.0.0
+#
+#     Tess-Release-SSH-Signature: tess-release-manifest/1
+#         -----BEGIN SSH SIGNATURE-----
+#         ...
+#         -----END SSH SIGNATURE-----
+#
+# The SSH signature (namespace "tess-release") covers a manifest that the
+# verifier REBUILDS from content-addressed git objects, never reads from the
+# tag:  "tess-release-manifest/1\ntag <name>\nobject <commit>\ntree <tree>\n".
+# It therefore binds the tag name and the exact commit (and tree) update
+# checks out. Moving the tag, renaming it or copying the block onto another
+# commit all change the manifest. The public key is the installed
+# .tess/keys/twiss-release-allowed-signers; its SHA256 fingerprint is pinned
+# in tess.lock framework.trusted_ssh_key_fingerprint (security tier).
+#
+# Policy: gpg present -> the OpenPGP signature must verify (as before) AND,
+# when an SSH key is pinned and ssh-keygen exists, the SSH one too. gpg
+# absent -> the SSH signature alone, and it must verify. Anything else fails
+# closed.
+# ---------------------------------------------------------------------------
+
+RELEASE_SSH_SIGNERS_FILE = ".tess/keys/twiss-release-allowed-signers"
+RELEASE_SSH_NAMESPACE = "tess-release"
+RELEASE_SSH_PRINCIPAL = "twiss-release"
+RELEASE_MANIFEST_FORMAT = "tess-release-manifest/1"
+RELEASE_SSH_MARKER = "Tess-Release-SSH-Signature: " + RELEASE_MANIFEST_FORMAT
+RELEASE_SSH_INDENT = "    "
+_SSH_FP_RE = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
+_SSH_SIGNER_RE = re.compile(
+    r'twiss-release[ \t]+namespaces="tess-release"[ \t]+ssh-ed25519[ \t]+'
+    r'([A-Za-z0-9+/]{68})(?:[ \t]+[^\n]*)?')
+_ED25519_BLOB_PREFIX = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+_GIT_OID_RE = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
+def _release_manifest(tag_name: str, commit_id: str, tree_id: str) -> bytes:
+    """The exact bytes the SSH release signature covers."""
+    return (f"{RELEASE_MANIFEST_FORMAT}\ntag {tag_name}\nobject {commit_id}\n"
+            f"tree {tree_id}\n").encode("ascii")
+
+
+def _release_ssh_signer(key_bytes: bytes) -> tuple[str, str]:
+    """(base64 public key, SHA256 fingerprint) of the ONE entry in a release
+    allowed_signers file. ValueError on anything else (extra entries, other
+    principals, options, key types)."""
+    text = key_bytes.decode("utf-8")
+    entries = [ln.strip() for ln in text.splitlines()
+               if ln.strip() and not ln.lstrip().startswith("#")]
+    if len(entries) != 1:
+        raise ValueError(f"expected exactly one allowed_signers entry, found {len(entries)}")
+    m = _SSH_SIGNER_RE.fullmatch(entries[0])
+    if not m:
+        raise ValueError("allowed_signers entry is not the twiss-release ssh-ed25519 key")
+    blob = base64.b64decode(m.group(1), validate=True)
+    if len(blob) != 51 or not blob.startswith(_ED25519_BLOB_PREFIX):
+        raise ValueError("allowed_signers key is not a well-formed ed25519 key")
+    fp = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    return m.group(1), fp
+
+
+def _release_ssh_signature_block(tag_bytes: bytes) -> str | None:
+    """The armored SSH signature inside a tag message; None when there is
+    none. ValueError when it is duplicated or malformed."""
+    cut = tag_bytes.find(b"\n" + _PGP_SIG_BEGIN)
+    payload = tag_bytes[:cut + 1] if cut >= 0 else tag_bytes
+    _, sep, message = payload.partition(b"\n\n")
+    if not sep:
+        return None
+    lines = message.decode("utf-8", "replace").split("\n")
+    if sum("Tess-Release-SSH-Signature" in ln for ln in lines) == 0:
+        return None
+    at = [i for i, ln in enumerate(lines) if ln == RELEASE_SSH_MARKER]
+    if len(at) != 1 or sum("Tess-Release-SSH-Signature" in ln for ln in lines) != 1:
+        raise ValueError("SSH signature marker is duplicated or malformed")
+    block = []
+    for ln in lines[at[0] + 1:]:
+        if not ln.startswith(RELEASE_SSH_INDENT):
+            break
+        block.append(ln[len(RELEASE_SSH_INDENT):])
+    if (len(block) < 3 or block[0] != "-----BEGIN SSH SIGNATURE-----"
+            or block[-1] != "-----END SSH SIGNATURE-----"):
+        raise ValueError("SSH signature block is malformed")
+    return "\n".join(block) + "\n"
+
+
+def _release_ssh_reason(tag_bytes: bytes, commit_bytes: bytes, key_bytes: bytes | None,
+                        pinned_fp: str) -> str:
+    """'' when the tag carries a valid SSH signature, by the pinned SSH
+    release key, over the manifest of THIS tag object and THIS commit.
+    Otherwise a closed-vocabulary reason code (safe to print)."""
+    if not _SSH_FP_RE.fullmatch(pinned_fp or ""):
+        return "no_pinned_ssh_key"
+    if not key_bytes:
+        return "ssh_key_missing"
+    try:
+        key_b64, key_fp = _release_ssh_signer(key_bytes)
+    except (ValueError, UnicodeDecodeError):
+        return "ssh_key_invalid"
+    if key_fp != pinned_fp:
+        return "ssh_key_not_pinned"
+    headers = _git_object_headers(tag_bytes)
+    commit_id = _git_object_id("commit", commit_bytes)
+    tree_id = _git_object_headers(commit_bytes).get("tree", "")
+    tag_name = headers.get("tag", "")
+    if (headers.get("type") != "commit" or headers.get("object") != commit_id
+            or not _GIT_OID_RE.fullmatch(tree_id)):
+        return "object_id_mismatch"
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag_name):
+        return "tag_name_invalid"
+    try:
+        sig = _release_ssh_signature_block(tag_bytes)
+    except ValueError:
+        return "ssh_signature_malformed"
+    if sig is None:
+        return "ssh_signature_missing"
+    if shutil.which("ssh-keygen") is None:
+        return "ssh_keygen_missing"
+    with tempfile.TemporaryDirectory(prefix="tessctl_sshsig_") as d:
+        signers = Path(d) / "allowed_signers"
+        signers.write_text(f'{RELEASE_SSH_PRINCIPAL} namespaces="{RELEASE_SSH_NAMESPACE}" '
+                           f'ssh-ed25519 {key_b64}\n', encoding="ascii")
+        sig_path = Path(d) / "release.sig"
+        sig_path.write_text(sig, encoding="ascii")
+        try:
+            r = subprocess.run(
+                ["ssh-keygen", "-Y", "verify", "-f", str(signers), "-I", RELEASE_SSH_PRINCIPAL,
+                 "-n", RELEASE_SSH_NAMESPACE, "-s", str(sig_path)],
+                input=_release_manifest(tag_name, commit_id, tree_id),
+                capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return "ssh_keygen_failed"
+    if r.returncode != 0 or key_fp not in r.stdout.decode("utf-8", "replace"):
+        return "ssh_signature_invalid"
+    return ""
+
+
+def _release_ssh_pin(lock: dict) -> str:
+    fw = lock.get("framework") if isinstance(lock, dict) else None
+    return str((fw or {}).get("trusted_ssh_key_fingerprint") or "").strip()
+
+
+def _release_ssh_signers_bytes(root: Path) -> bytes | None:
+    """The INSTALLED allowed_signers file (never one from the fetched clone)."""
+    p = root / RELEASE_SSH_SIGNERS_FILE
+    if p.is_symlink() or not p.is_file():
+        return None
+    return p.read_bytes()
+
+
+def _release_ssh_ready(root: Path) -> bool:
+    """True when this install can verify a release without gpg: an SSH key
+    is pinned in tess.lock, the allowed_signers file is installed and
+    ssh-keygen is on PATH."""
+    try:
+        lock = yaml.safe_load((root / LOCK_FILE).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        return False
+    return (bool(_release_ssh_pin(lock)) and _release_ssh_signers_bytes(root) is not None
+            and shutil.which("ssh-keygen") is not None)
+
+
+def _verify_release_tag(tag_ref: str, cwd: str, ref: str, trusted_fingerprint: str | None,
+                        root: Path, lock: dict, allow_tofu: bool, label: str):
+    """Release-tag signature policy for update/self-update (see the section
+    comment). Returns (openpgp_fingerprint_or_None, tofu_occurred); exits
+    non-zero on any failure, before a file is extracted."""
+    def cat(kind: str, obj: str) -> bytes:
+        r = subprocess.run(["git", "-C", cwd, "cat-file", kind, obj], capture_output=True)
+        if r.returncode != 0:
+            sys.exit(f"tessctl {label}: SECURITY REJECT — cannot read {kind} {obj!r} of tag "
+                     f"{ref!r}. No files were extracted.")
+        return r.stdout
+
+    tag_bytes = cat("tag", tag_ref)
+    headers = _git_object_headers(tag_bytes)
+    if headers.get("tag") != ref:
+        sys.exit(f"tessctl {label}: SECURITY REJECT — the tag object at {tag_ref!r} is named "
+                 f"{headers.get('tag')!r}, not {ref!r} (a re-labelled tag). No files were extracted.")
+    have_gpg = shutil.which("gpg") is not None
+    ssh_pin = _release_ssh_pin(lock)
+    have_ssh = shutil.which("ssh-keygen") is not None
+    if not have_gpg and not (ssh_pin and have_ssh):
+        sys.exit(GPG_MISSING_FOR_UPDATE_MESSAGE)
+
+    fp, tofu = None, False
+    if have_gpg:
+        fp, tofu = _verify_tag_secure(tag_ref, cwd, trusted_fingerprint, root, lock,
+                                      allow_tofu=allow_tofu)
+    if ssh_pin and have_ssh:
+        obj = headers.get("object", "")
+        if headers.get("type") != "commit" or not _GIT_OID_RE.fullmatch(obj):
+            sys.exit(f"tessctl {label}: SECURITY REJECT — tag {ref!r} does not name a commit. "
+                     f"No files were extracted.")
+        why = _release_ssh_reason(tag_bytes, cat("commit", obj), _release_ssh_signers_bytes(root),
+                                  ssh_pin)
+        if why:
+            sys.exit(f"tessctl {label}: SECURITY REJECT — tag {ref!r} failed SSH release-signature "
+                     f"verification ({why}).\n"
+                     f"  Expected SSH key: {ssh_pin} ({RELEASE_SSH_SIGNERS_FILE})\n"
+                     f"  No files were extracted.")
+        print("  SSH release signature OK — key matches the pinned fingerprint")
+    elif ssh_pin:
+        print("  NOTE  ssh-keygen not found; checked the OpenPGP signature only")
+    return fp, tofu
 
 
 # ---------------------------------------------------------------------------
@@ -7622,9 +7851,9 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
 
         def _verify(tag_ref, cwd):
             print(f"  verifying signature on {ref!r} …")
-            _tofu_state["fp"], _tofu_state["tofu"] = _verify_tag_secure(
-                tag_ref, cwd, trusted_fingerprint or None, root, lock,
-                allow_tofu=allow_tofu,
+            _tofu_state["fp"], _tofu_state["tofu"] = _verify_release_tag(
+                tag_ref, cwd, ref, trusted_fingerprint or None, root, lock,
+                allow_tofu=allow_tofu, label="fetch",
             )
 
         _verified_commit = _clone_verified_signed_tag(upstream, ref, clone_dir, "fetch", _verify)
@@ -10559,9 +10788,9 @@ def cmd_self_update(args, root: Path) -> None:
         def _verify_su(tag_ref, cwd):
             # Signature verification — mandatory pinning + TOFU + isolated GNUPGHOME
             print(f"  verifying signature on {ref!r} …")
-            _su_state["fp"], _su_state["tofu"] = _verify_tag_secure(
-                tag_ref, cwd, trusted_fingerprint or None, root, lock,
-                allow_tofu=_allow_tofu_su,
+            _su_state["fp"], _su_state["tofu"] = _verify_release_tag(
+                tag_ref, cwd, ref, trusted_fingerprint or None, root, lock,
+                allow_tofu=_allow_tofu_su, label="self-update",
             )
 
         # v0.2.1: tag ref only, signature verified, HEAD == the signed commit.
@@ -15631,10 +15860,16 @@ def _release_tag_signature_ok(payload: bytes, sig_armored: str, pinned_fp: str,
 
 
 def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | None,
-                          min_version: str | None):
+                          min_version: str | None, ssh_pin: str | None = None,
+                          ssh_key_bytes: bytes | None = None):
     """Verify a release proof end to end. Returns (tag_name, commit_id,
     resolve) where resolve(rel) -> (mode, blob id) | None. Raises
-    ReleaseProofError on anything that does not check out."""
+    ReleaseProofError on anything that does not check out.
+
+    Signatures (v1.0.0): with gpg on PATH the OpenPGP tag signature must
+    verify; when the BASE lock also pins an SSH release key (ssh_pin) and
+    ssh-keygen exists, the SSH release signature must verify too. Without
+    gpg, the SSH signature alone decides; with neither, the proof fails."""
     if len(proof_text.encode("utf-8")) > _RELEASE_PROOF_MAX_BYTES:
         raise ReleaseProofError("proof_malformed", "release proof is too large")
     try:
@@ -15661,17 +15896,24 @@ def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | No
         raise ReleaseProofError("object_id_mismatch", "tag does not name the proof's commit")
     if tag_name != proof.get("tag_name") or not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag_name):
         raise ReleaseProofError("proof_malformed", "tag name mismatch")
-    if not _FULL_FP_RE.match(pinned_fp or ""):
-        raise ReleaseProofError("no_pinned_release_key", "base lock pins no release key")
-    if not key_bytes:
-        raise ReleaseProofError("no_pinned_release_key", f"base commit has no {RELEASE_KEY_FILE}")
-    idx = tag_bytes.find(b"\n" + _PGP_SIG_BEGIN) + 1
-    if idx <= 0 or tag_bytes.find(_PGP_SIG_BEGIN, idx + 1) >= 0:
-        raise ReleaseProofError("signature_invalid", "tag has no single OpenPGP signature")
-    ok, why = _release_tag_signature_ok(tag_bytes[:idx], tag_bytes[idx:].decode("ascii", "replace"),
-                                        pinned_fp, key_bytes)
-    if not ok:
-        raise ReleaseProofError(why, f"release tag signature not accepted ({why})")
+    ssh_pin = (ssh_pin or "").strip()
+    use_ssh = bool(ssh_pin) and shutil.which("ssh-keygen") is not None
+    if shutil.which("gpg") is not None or not use_ssh:
+        if not _FULL_FP_RE.match(pinned_fp or ""):
+            raise ReleaseProofError("no_pinned_release_key", "base lock pins no release key")
+        if not key_bytes:
+            raise ReleaseProofError("no_pinned_release_key", f"base commit has no {RELEASE_KEY_FILE}")
+        idx = tag_bytes.find(b"\n" + _PGP_SIG_BEGIN) + 1
+        if idx <= 0 or tag_bytes.find(_PGP_SIG_BEGIN, idx + 1) >= 0:
+            raise ReleaseProofError("signature_invalid", "tag has no single OpenPGP signature")
+        ok, why = _release_tag_signature_ok(tag_bytes[:idx], tag_bytes[idx:].decode("ascii", "replace"),
+                                            pinned_fp, key_bytes)
+        if not ok:
+            raise ReleaseProofError(why, f"release tag signature not accepted ({why})")
+    if use_ssh:
+        why = _release_ssh_reason(tag_bytes, commit_bytes, ssh_key_bytes, ssh_pin)
+        if why:
+            raise ReleaseProofError(why, f"release tag SSH signature not accepted ({why})")
     have, floor = _release_version_tuple(tag_name), _release_version_tuple(min_version)
     if have is None or (floor is not None and have < floor):
         raise ReleaseProofError("release_older_than_base",
@@ -15792,9 +16034,13 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
     bfw = (base_lock.get("framework") or {}) if isinstance(base_lock, dict) else {}
     pinned = str(bfw.get("trusted_key_fingerprint") or "").replace(" ", "").upper()
     key_bytes = _gate_git_regular_blob_bytes(root, base, RELEASE_KEY_FILE)
+    # The SSH pin and key come from the BASE commit too, never the candidate.
+    ssh_pin = str(bfw.get("trusted_ssh_key_fingerprint") or "").strip()
+    ssh_key_bytes = _gate_git_regular_blob_bytes(root, base, RELEASE_SSH_SIGNERS_FILE)
     try:
         tag_name, commit_id, resolve = _release_proof_verify(
-            proof_text, pinned, key_bytes, str(bfw.get("version") or "") or None)
+            proof_text, pinned, key_bytes, str(bfw.get("version") or "") or None,
+            ssh_pin=ssh_pin, ssh_key_bytes=ssh_key_bytes)
     except ReleaseProofError as e:
         info["reason_code"] = e.code
         return set(), info
@@ -25821,8 +26067,9 @@ def main() -> None:
     # but e.g. capture only needs diff; update needs git+patch; resolve needs nothing
     # (--ours/--theirs do no subprocess; --edit invokes $EDITOR, not checked here).
     _TOOL_REQUIREMENTS: dict[str, list[str]] = {
-        "update":      ["git", "patch", "gpg"],  # signed-tag fetch (git) + merge-file (git) + patch-apply (patch) + isolated GNUPGHOME (gpg)
-        "self-update": ["git", "gpg"],           # signed-tag fetch + clone + isolated GNUPGHOME
+        # v1.0.0: gpg OR (pinned SSH release key + ssh-keygen) — checked below.
+        "update":      ["git", "patch"],   # signed-tag fetch (git) + merge-file (git) + patch-apply (patch)
+        "self-update": ["git"],            # signed-tag fetch + clone
         "capture":     ["diff"],           # diff -u for provenance log
         "diff":        ["git"],            # git diff --no-index
         "doctor":      ["diff"],           # doctor --fix calls diff -u (Reid LOW-1)
@@ -25842,8 +26089,8 @@ def main() -> None:
         # external tool first so every environment gets the same explicit
         # TRUST_BOOTSTRAP_REQUIRED state without invoking or requiring GPG.
         tools_needed = []
-    if (args.command in ("update", "self-update") and "gpg" in tools_needed
-            and shutil.which("gpg") is None):
+    if (args.command in ("update", "self-update") and shutil.which("gpg") is None
+            and not _release_ssh_ready(root)):
         sys.exit(GPG_MISSING_FOR_UPDATE_MESSAGE)
     if tools_needed:
         _check_tools(*tools_needed)

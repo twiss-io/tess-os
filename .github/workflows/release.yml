@@ -83,6 +83,15 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: .github/scripts/verify_release_tag.sh "$TAG"
 
+      # Gate 1d — the tag must ALSO carry the SSH release signature (pinned
+      # tess.lock framework.trusted_ssh_key_fingerprint) over the manifest of
+      # this exact tag + commit + tree. Installs without gpg verify updates
+      # with it (`ssh-keygen -Y verify`), so a release without it must not ship.
+      - name: Gate 1d — tag carries the pinned SSH release signature
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .github/scripts/verify_release_ssh_sig.sh "$TAG"
+
       # Gate 1c — tag, both package.json files, tess.lock framework.version
       # and a CHANGELOG section must all name the same version (fails, never warns).
       - name: Gate 1c — every version agrees with the tag
