@@ -237,10 +237,17 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 
 | Core file | Live path | Tier |
 |---|---|---|
-| `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | normal |
-| `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | normal |
-| `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | normal |
-| `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | normal |
+| `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | security |
+| `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | security |
+| `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | security |
+| `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | security |
+| `pinned-scripts.sha256` | (none — read in place by `.claude/hooks/run-pinned.py`) | security |
+
+v0.2.1: every hook command in `settings-core.json` runs through
+`.claude/hooks/run-pinned.py`, which runs a script only when its sha256 matches
+tess.lock (directly for the four hooks above; via `pinned-scripts.sha256` for
+`run-pinned.py`, `vault-dispatch-scan.py` and `scripts/brain/**/*.py`, which have
+no core master). See docs/HARNESS_HARDENING.md.
 
 ## skills/ — framework skills
 
@@ -346,4 +353,4 @@ doctrine text.
 | Core file | Live path | Tier |
 |---|---|---|
 | `MANIFEST.md` | `—` | normal |
-| `settings-core.json` | `.claude/settings.json` | normal |
+| `settings-core.json` | `.claude/settings.json` | security |

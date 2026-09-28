@@ -23,10 +23,15 @@ this folder when the learning tools are installed.
   pass the instance's pre-commit gate. Framework paths (`conductor/`, `agents/`,
   `.claude/`, ...) belong to Tess OS and are refreshed by updates; `brain/` is
   never touched by an update (checked by `tests/test_brain_upgrade_safety.py`).
-- **Runtime memories are caches.** New installs turn Claude Code's auto memory
-  off at project level (`"autoMemoryEnabled": false` in `.claude/settings.json`),
-  so there is one brain, not two. Codex memories and Gemini Auto Memory are off
-  by default.
+- **Runtime memories are caches.** Claude Code's auto memory is ON at project
+  level (`"autoMemoryEnabled": true` in `.claude/settings.json`) from v0.2.1,
+  as a cache, until automatic conversation and decision capture into `brain/`
+  ships (#195). Until then it keeps useful context between sessions that would
+  otherwise be lost. It is still a cache, not the brain: it is private to one
+  machine and one runtime, no other agent can read it, and it can be pruned at
+  any time. Durable facts, decisions and client knowledge must still be written
+  to `brain/` (and committed) before anyone calls them saved. Codex memories
+  and Gemini Auto Memory are off by default.
 - **Routing, not recall.** A zero-context agent reaches every fact the same
   way: the BOOT block in `CLAUDE.md` / `AGENTS.md`, then `brain/START-HERE.md`
   (the map), then the entity's `AGENTS.md` (which starts with `# START HERE`),
