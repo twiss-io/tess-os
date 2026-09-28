@@ -222,6 +222,11 @@ test('P0 G-01: verifier/signoff key material is excluded from scaffold; the rele
     false,
     'the bundled release-verification key must still ship — it is not a per-project trust anchor',
   );
+  assert.equal(
+    isExcludedRel('.tess/keys/twiss-release-allowed-signers'),
+    false,
+    'the bundled SSH release-verification key must ship too (gpg-less installs verify updates with it)',
+  );
 });
 
 // B3 (gap-loop R2) — the scaffold copies `.github/workflows/` verbatim, so

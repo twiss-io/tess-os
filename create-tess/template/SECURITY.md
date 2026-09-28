@@ -81,6 +81,36 @@ We are especially interested in reports concerning:
   instance, or the npm package to ship a real secret or client data — this repo
   is designed to contain **zero** of either.
 
+### Release signatures (how `tessctl update` trusts a release)
+
+Every release tag carries two independent signatures, and both keys are pinned
+in the install:
+
+- **OpenPGP.** The annotated tag is signed with the Twiss Release Signing Key
+  (`.tess/keys/twiss-release-key.asc`, fingerprint pinned in `.tess/tess.lock`
+  `framework.trusted_key_fingerprint`). This is unchanged from earlier releases.
+- **SSH.** The tag message also carries an OpenSSH signature (namespace
+  `tess-release`) by the Twiss SSH release key
+  (`.tess/keys/twiss-release-allowed-signers`, SHA256 fingerprint pinned in
+  `framework.trusted_ssh_key_fingerprint`). It signs the manifest
+  `tess-release-manifest/1`, `tag <name>`, `object <commit>`, `tree <tree>`.
+  The verifier rebuilds that manifest from the fetched git objects, so the
+  signature is bound to the exact tag name and the exact commit that
+  `tessctl update` and `self-update` check out. It cannot be replayed onto
+  another commit, a renamed tag or a same-named branch. It needs only
+  `ssh-keygen -Y verify`, which ships with macOS, most Linux distributions
+  and Windows 10+, so installs without gpg can still verify updates.
+
+When gpg is installed, the OpenPGP signature must verify; when the SSH key is
+also pinned and `ssh-keygen` is present, the SSH signature must verify too.
+Without gpg, the SSH signature alone decides. A missing, malformed or
+wrong-key signature fails closed before any file is written. The ship gate
+applies the same rule to `.tess/release-proof.json`, reading both pins and
+both public keys from the base commit, never from the candidate. Write access
+to the repository is not enough to forge a release: both private keys stay
+offline on the maintainer's machine, each behind a passphrase that is released
+only after an interactive approval.
+
 ### Generally not in scope
 
 - Vulnerabilities in third-party dependencies you install yourself (report those
