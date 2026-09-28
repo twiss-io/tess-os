@@ -1,10 +1,12 @@
-"""Claude Code settings wiring for the brain (frozen spec section 9.6).
+"""Claude Code settings wiring for the brain (frozen spec section 9.6, as amended in v0.2.1).
 
-Pins the exact hook command lines both builders code against, that
-.claude/settings.json is byte-identical to .tess/core/settings-core.json,
-that auto memory is off at project level, that the lock pins the new
-settings bytes, and that every hook line is a guarded no-op when its script
-is absent (so ws-oobe can ship without ws-learn).
+Pins the exact hook command line, that .claude/settings.json is
+byte-identical to .tess/core/settings-core.json, that auto memory is ON at
+project level (v0.2.1 decision: a cache until automatic capture, #195,
+ships), that agents are pre-approved only for read-only git, that the lock
+pins the new settings bytes, and that the unshipped tessbrain.py is wired
+nowhere (v0.2.1 security review: hooks must not run a file that does not
+ship; the tool gets its own pinned entry when it ships).
 """
 from __future__ import annotations
 
@@ -19,19 +21,15 @@ REPO = Path(__file__).resolve().parent.parent
 CORE = REPO / ".tess" / "core" / "settings-core.json"
 LIVE = REPO / ".claude" / "settings.json"
 
-
-def line(script: str, event: str) -> str:
-    return ("sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/%s\"; [ -f \"$f\" ] && "
-            "command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" "
-            "hook %s --runtime claude || exit 0'" % (script, event))
-
-
-FROZEN = {
-    "onboard_start": line("onboard.py", "session-start"),
-    "learn_start": line("tessbrain.py", "session-start"),
-    "prompt": line("tessbrain.py", "prompt"),
-    "stop": line("tessbrain.py", "stop"),
-}
+ONBOARD_START = ('python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn '
+                 '--closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime claude')
+READ_ONLY_GIT = [
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    "Bash(git branch --list:*)",
+]
 
 
 @pytest.fixture(scope="module")
@@ -43,51 +41,39 @@ def test_live_settings_byte_identical_to_core():
     assert LIVE.read_bytes() == CORE.read_bytes()
 
 
-def test_auto_memory_off_and_permissions(settings):
-    assert settings["autoMemoryEnabled"] is False
+def test_auto_memory_on_and_permissions(settings):
+    assert settings["autoMemoryEnabled"] is True
     allow = settings["permissions"]["allow"]
     assert "Bash(python3 scripts/brain/onboard.py:*)" in allow
-    # tessbrain.py ships with ws-learn, which adds its own permission; this tree has no such file.
     assert not any("tessbrain.py" in entry for entry in allow)
-    assert allow[0] == "Bash(git*)", "pre-existing entries kept first"
+    assert allow[:5] == READ_ONLY_GIT, "read-only git first, in this order"
+    git_rules = [e for e in allow if e.startswith("Bash(git")]
+    assert git_rules == READ_ONLY_GIT, "no write git command may be pre-approved"
+    assert "Bash(git*)" not in allow and "Bash(git:*)" not in allow
 
 
-def test_session_start_two_parallel_hooks(settings):
+def test_session_start_runs_only_the_pinned_onboarding_hook(settings):
     groups = settings["hooks"]["SessionStart"]
     assert len(groups) == 1 and groups[0]["matcher"] == "startup|resume|clear|compact"
-    hooks = groups[0]["hooks"]
-    assert [x["command"] for x in hooks] == [FROZEN["onboard_start"], FROZEN["learn_start"]]
-    assert all(x["type"] == "command" and x["timeout"] == 5 for x in hooks)
+    assert groups[0]["hooks"] == [{"type": "command", "command": ONBOARD_START, "timeout": 5}]
 
 
-def test_prompt_hook_appended_after_utc_context(settings):
+def test_prompt_hook_is_only_the_pinned_utc_context(settings):
     hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]
-    assert hooks[0]["command"] == "$CLAUDE_PROJECT_DIR/.claude/hooks/utc-local-context.sh"
-    assert hooks[1] == {"type": "command", "command": FROZEN["prompt"], "timeout": 3}
+    assert [h["command"] for h in hooks] == [
+        'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn -- '
+        '.claude/hooks/utc-local-context.sh']
 
 
-def test_stop_hook_is_async_write_only(settings):
-    groups = settings["hooks"]["Stop"]
-    assert groups == [{"hooks": [{"type": "command", "command": FROZEN["stop"], "async": True, "timeout": 30}]}]
+def test_no_stop_hook_until_the_learning_tool_ships(settings):
+    assert "Stop" not in settings["hooks"]
+    assert "tessbrain" not in json.dumps(settings)
 
 
-def test_brain_wiring_touches_only_its_three_events(settings):
-    """Additive only: brain commands live in SessionStart / UserPromptSubmit / Stop and nowhere else.
-
-    Deliberately names no other workstream's hooks, so removing or changing them
-    elsewhere (for example the v0.2 base-harness channel removal) never breaks this.
-    """
-    brain_events = set()
-    for event, groups in settings["hooks"].items():
-        for group in groups:
-            for hook in group.get("hooks", []):
-                if "scripts/brain/" in hook.get("command", ""):
-                    brain_events.add(event)
-    assert brain_events == {"SessionStart", "UserPromptSubmit", "Stop"}
-    frozen = set(FROZEN.values())
-    brain_cmds = [x["command"] for e in brain_events for g in settings["hooks"][e] for x in g["hooks"]
-                  if "scripts/brain/" in x["command"]]
-    assert sorted(brain_cmds) == sorted(frozen)
+def test_brain_wiring_touches_only_session_start(settings):
+    brain_events = {event for event, groups in settings["hooks"].items() for g in groups
+                    for h in g.get("hooks", []) if "scripts/brain/" in h.get("command", "")}
+    assert brain_events == {"SessionStart"}
 
 
 def test_lock_pins_new_settings_bytes():
@@ -95,24 +81,4 @@ def test_lock_pins_new_settings_bytes():
     digest = "sha256:" + hashlib.sha256(CORE.read_bytes()).hexdigest()
     block = lock.split("  .tess/core/settings-core.json:\n", 1)[1].split("\n  .", 1)[0]
     assert "base_sha: %s" % digest in block
-
-
-@pytest.mark.parametrize("key", sorted(FROZEN))
-def test_hook_line_is_a_guarded_noop_without_its_script(tmp_path, key):
-    done = subprocess.run(["sh", "-c", FROZEN[key].split("sh -c ", 1)[1].strip("'")],
-                          env={"CLAUDE_PROJECT_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
-                          capture_output=True, text=True, timeout=10)
-    assert done.returncode == 0 and done.stdout == "" and done.stderr == ""
-
-
-@pytest.mark.parametrize("key", sorted(FROZEN))
-def test_hook_line_exits_zero_when_python3_is_missing(tmp_path, key):
-    """A failed `exec` ends sh before `|| exit 0` runs (rc 127); the guard prevents it."""
-    script = "onboard.py" if key == "onboard_start" else "tessbrain.py"
-    (tmp_path / "scripts" / "brain").mkdir(parents=True)
-    (tmp_path / "scripts" / "brain" / script).write_text("raise SystemExit(9)\n")
-    (tmp_path / "nobin").mkdir()
-    done = subprocess.run(["/bin/sh", "-c", FROZEN[key].split("sh -c ", 1)[1].strip("'")],
-                          env={"CLAUDE_PROJECT_DIR": str(tmp_path), "PATH": str(tmp_path / "nobin")},
-                          capture_output=True, text=True, timeout=10)
-    assert done.returncode == 0 and done.stdout == "", (done.returncode, done.stderr)
+    assert "tier: security" in block

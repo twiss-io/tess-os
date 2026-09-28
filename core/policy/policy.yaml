@@ -131,6 +131,18 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+        # v0.2.1 (2026-09-29 security review, MEDIUM "hooks run agent-editable
+        # code"): everything a Claude Code hook executes or is wired by. Hooks
+        # run automatically on every session/prompt/tool call, so an edit here
+        # changes what runs without anyone invoking it — same weight as an
+        # engine edit. run-pinned.py refuses to run a copy that no longer
+        # matches tess.lock; this glob gates re-pinning it.
+        - .claude/hooks/**
+        - .tess/core/hooks/**
+        - .claude/settings.json
+        - .tess/core/settings-core.json
+        - .tess/core/pinned-scripts.sha256
+        - scripts/brain/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
