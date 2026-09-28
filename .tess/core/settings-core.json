@@ -6,7 +6,12 @@
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(git branch --list:*)",
-      "Bash(python3 scripts/brain/onboard.py:*)"
+      "Bash(python3 scripts/brain/onboard.py:*)",
+      "Bash(python3 scripts/brain/tessbrain.py recall:*)",
+      "Bash(python3 scripts/brain/tessbrain.py status:*)",
+      "Bash(python3 scripts/brain/tessbrain.py review:*)",
+      "Bash(python3 scripts/brain/tessbrain.py decide:*)",
+      "Bash(python3 scripts/brain/tessbrain.py remember:*)"
     ]
   },
   "autoMemoryEnabled": true,
@@ -17,6 +22,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/utc-local-context.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook prompt --runtime claude",
+            "timeout": 5
           }
         ]
       }
@@ -56,12 +66,28 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime claude",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/task-lock-clear.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime claude",
+            "timeout": 30
           }
         ]
       }
@@ -73,6 +99,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime claude",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook session-start --runtime claude",
             "timeout": 5
           }
         ]
