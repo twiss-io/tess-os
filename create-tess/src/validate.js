@@ -56,7 +56,7 @@ export function checkConductorName(name, operatorName, installedAgents) {
     );
   }
   if (name.length === 1) {
-    warnings.push(`Single-character names read oddly in "Commander ${name}" frames.`);
+    warnings.push(`Single-character names read oddly when your assistant greets you ("Hi ${name}").`);
   }
   return { block: false, warnings };
 }

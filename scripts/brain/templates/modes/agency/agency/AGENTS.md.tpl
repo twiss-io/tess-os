@@ -31,7 +31,7 @@ verify_via: operator
 
 ## Rules for this entity
 - Each client is isolated: work for one client never reads or quotes another client's folder unless the task names both.
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 - Secrets, government IDs, pay, health or HR records and contract files never go here: write a pointer to where they live.
 
 ## Decisions (latest 5 accepted)

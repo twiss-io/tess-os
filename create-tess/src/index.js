@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { parseArgs, isNonInteractive, HELP, DEFAULTS } from './args.js';
+import { CREATE_TESS_VERSION } from './version.js';
 import {
   ensurePython3,
   clobberReason,
@@ -21,6 +22,7 @@ import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keys
 import { runJourney } from './journey.js';
 import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
 import { resolveTarget } from './target.js';
+import { gitPreflight } from './git-check.js';
 import { resolveBrainFlags, runOnboarding, printFinalScreen } from './brain.js';
 import { VIBES } from './content/vibes.js';
 import {
@@ -30,13 +32,14 @@ import {
   validatePath,
   validatePathway,
 } from './validate.js';
-import { c, plain, dim, accent } from './ui.js';
+import { c, plain, dim } from './ui.js';
 import {
   printBakeHeader,
-  okLine,
   makeBakeProgress,
+  printChecks,
   printGateStatus,
   printArrival,
+  PRODUCTION_NOTE,
 } from './output.js';
 
 function die(msg, code = 1) {
@@ -110,8 +113,8 @@ function targetOrDie(raw) {
 
 export async function main(argv) {
   const opts = parseArgs(argv);
-  if (opts.help) {
-    process.stdout.write(HELP + '\n');
+  if (opts.help || opts.version) {
+    process.stdout.write((opts.help ? HELP : `create-tess ${CREATE_TESS_VERSION}`) + '\n');
     return;
   }
 
@@ -147,6 +150,8 @@ export async function main(argv) {
 
   // Bootstrap gates (design doc §5.1); plain-English Python message (python.js).
   try { ensurePython3(); } catch (err) { die(err.message); }
+  const gitProblem = gitPreflight(opts, usingBundledDefault);
+  if (gitProblem) die(gitProblem);
   // Reid LOW: refuse any template source that is not an allowed transport form
   // up front (blocks `ext::`/`file://` coercion and flag-shaped argument injection
   // into `git clone`); see isSafeTemplateSource for the allowlist.
@@ -186,7 +191,7 @@ export async function main(argv) {
   try {
     const refSuffix = templateRef ? ` @ ${templateRef}` : '';
     const fetchLabel = usingBundledDefault
-      ? 'Fetching keystone (bundled template — no network required) …'
+      ? 'Preparing Tess OS (no internet needed) …'
       : `Fetching keystone (${isLocalSource(source) ? 'local template' : 'git'}: ${source}${refSuffix}) …`;
     process.stdout.write((plain ? '' : '  ') + dim(fetchLabel) + '\n');
     fetchTemplate(source, staging, templateRef);
@@ -275,18 +280,15 @@ export async function main(argv) {
     rmSync(staging, { recursive: true, force: true });
   }
 
-  if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
-  if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
+  printChecks(checks);
   printGateStatus(gate, targetDir);
   if (runState) process.stdout.write(backupNotice(runState.backup, checks));
-  process.stdout.write(
-    '  ' + (plain ? '*' : accent('★')) +
-      '  Local scaffold complete; production protection requires external custody and required GitHub checks.\n',
-  );
 
   // Arrival — the conductor speaks the operator's name back (design doc §3.6).
-  printArrival(vibe, choices, checks);
-  printFinalScreen(targetDir, { mode: choices.mode, brain, checks });
+  printArrival(vibe, choices);
+  printFinalScreen(targetDir, { mode: choices.mode, brain, checks, conductor: choices.conductor,
+    crew: choices.set.agentKeys.length,
+    productionNote: PRODUCTION_NOTE });
 
   // Non-zero exit if a requested integrity check failed (CI signal).
   if (checks.doctor === false || checks.verify === false) {

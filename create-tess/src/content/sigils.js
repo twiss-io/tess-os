@@ -8,10 +8,10 @@ export const NEUTRAL = {
    │            T  E  S  S     O  S             │
    │          intelligence conductor os         │
    └────────────────────────────────────────────┘
-   v0.1  •  ~150 agents standing by  •  6 orchestrators loaded
+   a crew of 9 specialists plus your assistant
 `,
   plain: `TESS OS — intelligence conductor os
-v0.1  •  ~150 agents standing by  •  6 orchestrators loaded`,
+a crew of 9 specialists plus your assistant`,
 };
 
 export const SIGILS = {
@@ -25,18 +25,18 @@ export const SIGILS = {
    ·          ╚═╝   ╚══════╝╚══════╝╚══════╝  ·
    ·          INTELLIGENCE CONDUCTOR OS       ·
      ✦ · · · · · · · · · · · · · · · · · ✦
-  v0.1  •  ~150 agents standing by  •  6 orchestrators loaded`,
+  a crew of 9 specialists plus your assistant`,
     plain: `=== TESS OS — THE GUILD ===
-~150 agents standing by  •  6 orchestrators loaded`,
+a crew of 9 specialists plus your assistant`,
   },
   command: {
     fancy: `
   ╔═══════════════════════════════════════════════════╗
   ║        T E S S   O S   //  COMMAND PROTOCOL       ║
   ╚═══════════════════════════════════════════════════╝
-  ~150 specialist agents waiting. Starter squad activates today. The rest, you recruit.`,
+  A crew of 9 specialists plus your assistant, ready today.`,
     plain: `// TESS OS // COMMAND PROTOCOL
-~150 specialist agents waiting. Starter squad activates today. The rest, you recruit.`,
+A crew of 9 specialists plus your assistant, ready today.`,
   },
   // L2 — a BESPOKE drafting-table sigil (rounded frame + an L-square ruler in
   // the margin), distinct from the neutral wordmark so the Studio cold-open no
@@ -48,10 +48,10 @@ export const SIGILS = {
    │   ┆  └┄┄┄┄┄  T E S S   O S                                 │
    │   ┆  ┌┄┄┄┄┄  T H E   S T U D I O                           │
    │   └┄┄┘  the drafting table — the house is empty            │
-   │   you choose who walks in first; the bench fills the rest  │
+   │   a crew of 9 specialists plus your assistant             │
    ╰────────────────────────────────────────────────────────────╯
-   ~150 on the bench  •  6 orchestrators on call`,
+`,
     plain: `TESS OS — THE STUDIO  (the drafting table — the house is empty)
-you choose who walks in first; ~150 on the bench  •  6 orchestrators on call`,
+a crew of 9 specialists plus your assistant`,
   },
 };

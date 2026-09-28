@@ -65,11 +65,10 @@ A piece of work is saved only when all four are true:
 1. it is in its owning folder under `brain/` (or `memory/projects/`);
 2. it is linked from that entity's START HERE, or from a generated index;
 3. it is committed;
-4. it is pushed to the instance's private remote.
+4. it is pushed to the instance's private remote, when the instance has one.
 
-When the learning tools are installed, `python3 scripts/brain/tessbrain.py status`
-checks all four and names what is missing; the `brain-save` skill runs it
-before an agent says "saved".
+Before an agent says "saved" it checks `git status` (and `git log @{u}..`
+when there is a remote). A save checker is coming with the learning loop.
 
 ## Principals and quotes
 
@@ -117,13 +116,12 @@ Labels used across these docs:
 Conversation capture, decision capture and verification are covered in
 `LEARNING.md` / `RUNTIMES.md` when the learning tools are installed.
 
-## Known gaps in v0.2.0
+## Known gaps
 
-- **Seed push.** The first push of a new instance is refused by the ship-gate
-  (`COVERING_APPROVAL_MISSING`: instances have no verifier keys). The operator
-  runs `git push --no-verify -u origin main` once, after reading `git log`.
-  Tess never runs `--no-verify`. Later brain pushes pass, because brain paths
-  are outside the gate's approval requirement.
+- **Pushing to a remote.** A new instance's ship-gate refuses a push until the
+  project has its own reviewer keys (`COVERING_APPROVAL_MISSING`). Work is saved
+  in git locally; back up the folder to keep a copy elsewhere
+  ([ONBOARDING.md](ONBOARDING.md), section 8). Tess never skips the check.
 - **Placement rows.** The file-placement tables in `CLAUDE.md` and `AGENTS.md`
   still say `kb/` and `clients/<Client>/kb/`. The BOOT block overrides them
   (`brain/kb/`, `brain/clients/<slug>/kb/`), because the old paths are refused

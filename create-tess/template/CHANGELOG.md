@@ -7,6 +7,13 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity) and the fixes that make them work together. Versions are not bumped yet.
 
+**First run for non-technical users (B4)**
+- README leads with what Tess OS is, what you need (Node 18+, git, Python 3.9+, Claude Code or Codex) and a three-step quickstart; the technical detail moved to `docs/TECHNICAL_OVERVIEW.md`, and `docs/STATUS.md` states the v1.0.0 trust facts.
+- Wizard: no stale "~150 agents / 6 orchestrators / v0.1" banner, no "ten roles" or "Commander"; it says "a crew of 9 specialists plus your assistant", ends with one next step naming the folder, and replaces the key-custody paragraph with one line pointing at SECURITY.md. Missing git now fails before anything is written, like missing Python. `create-tess --version` works.
+- `tessctl help`, `tessctl help <command>` and `tessctl --version` work. `doctor` and `update` print a short summary by default (`All good — N files checked, nothing changed.`); `--verbose` or `TESS_VERBOSE=1` gives the full listing; exit codes are unchanged and a failed update always prints in full.
+- Onboarding never reports `complete` after a failed apply: it returns to `in_progress`, `status` names the error and the fix, and re-running `apply` now commits files a failed seed commit left staged.
+- Docs no longer tell anyone to push with `--no-verify` (ONBOARDING section 8 now says to back up the folder until the project has reviewer keys), no longer name skills that do not ship (`brain-decide`, `brain-remember`, `brain-save`), and list only supported runtimes (Gemini advisory; no Kimi).
+
 **Integrity (#203)**
 - Security (CRITICAL): the ship gate now lists type changes, deletions and renames of protected paths (`--no-renames --diff-filter=ACDMRTUXB`). `.tess/core/**` and `.tess/tess.lock` are security-tier. doctor, verify and `lock --check` fail on a symlink at a security-tier path. Supersedes #71.
 - Security (HIGH): `update`/`self-update` fetch only `refs/tags/<tag>`, verify it, and check out exactly the signed commit. A same-named branch can no longer substitute its files.

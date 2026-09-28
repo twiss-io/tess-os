@@ -29,6 +29,12 @@ from pathlib import Path
 
 import pytest
 
+# v1.0 (B4): `tessctl doctor` and `tessctl update` print a short summary by
+# default and the full per-file listing with --verbose. The suite predates the
+# short default and asserts on the full listing, so it runs verbose; the tests
+# of the short default (tests/test_v1_plain_output.py) clear this explicitly.
+os.environ.setdefault("TESS_VERBOSE", "1")
+
 # ---------------------------------------------------------------------------
 # Locate the engine + the real manifest (authoritative owned_globs/never_touch)
 # ---------------------------------------------------------------------------

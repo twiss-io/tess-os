@@ -69,6 +69,8 @@ const BOOL_ALIASES = {
   '--no-onboarding': 'noOnboarding',
   '--help': 'help',
   '-h': 'help',
+  '--version': 'version',
+  '-v': 'version',
 };
 
 export function parseArgs(argv) {
@@ -159,7 +161,7 @@ OPTIONS
   --operator, --name <text>      operator name (default: Operator)
   --conductor, --assistant <t>   conductor name (default: Tess)
   --vibe <rpg|command|studio>    narrative skin (default: rpg)
-  --path <founders|builders|operators>   starter path: same ten roles on every path,
+  --path <founders|builders|operators>   starter path: same crew of 9 on every path,
                                  only the suggested lenses differ (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)
                                  chief-of-staff|co-founder|strategist|guide|operator
@@ -190,4 +192,5 @@ OPTIONS
   --no-gate-hooks                skip tessctl gate install-hooks (default: on)
   --yes, -y                      run fully unattended with defaults for unset flags
   --help, -h                     show this help
+  --version, -v                  print the create-tess version
 `;

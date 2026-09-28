@@ -76,7 +76,11 @@ test('v0.2.1: npm-packed tarball installs on a Python without PyYAML, restores .
   assert.ok(tracked.has('brain/brain.json') && tracked.has('.gitignore'), 'brain and .gitignore are committed');
   assert.ok(!tracked.has('operator/profile.json'), 'operator/profile.json must never be committed');
   assert.equal(git('status', '--porcelain').stdout, '', 'nothing left uncommitted');
-  assert.match(run.stdout, /tessctl doctor — OK/);
-  assert.match(run.stdout, /tessctl verify — OK/);
-  assert.match(run.stdout, /What to do next:\n {2}1\. Open this folder in Claude Code or Codex\./);
+  assert.match(run.stdout, /Checked every Tess OS file: all in place \(tessctl doctor OK\)/);
+  assert.match(run.stdout, /Checked the install matches the release \(tessctl verify OK\)/);
+  const folder = target.split(/[\\/]/).pop();
+  assert.ok(
+    run.stdout.includes(`What to do next:\n  Open the folder "${folder}" in Claude Code or Codex and say hi`),
+    'the final screen must name the folder and the one next step',
+  );
 });

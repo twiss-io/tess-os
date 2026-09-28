@@ -17,13 +17,14 @@ export function missingPythonMessage(platform = process.platform) {
         '  then click Install in the window that appears. When it finishes, run this installer again.\n' +
         `  (Or install Python from ${DOWNLOAD} and run this installer again.)`
       : `  Install Python from ${DOWNLOAD}, then run this installer again.`;
-  return `Tess OS needs Python ${MIN_TEXT} or newer, and this computer does not have it yet.\n${how}`;
+  return `Tess OS needs Python ${MIN_TEXT} or newer, and this computer does not have it yet.\n${how}\n  Nothing was installed.`;
 }
 
 export function oldPythonMessage(version) {
   return (
     `Tess OS needs Python ${MIN_TEXT} or newer, and this computer has Python ${version}.\n` +
-    `  Install a newer Python from ${DOWNLOAD}, then run this installer again.`
+    `  Install a newer Python from ${DOWNLOAD}, then run this installer again.\n` +
+    '  Nothing was installed.'
   );
 }
 

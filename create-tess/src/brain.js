@@ -9,7 +9,7 @@
 // install, it is reported in plain words with the one next step.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { plain, dim, accent } from './ui.js';
 
 export const BRAIN_MODES = ['personal', 'agency', 'organisation'];
@@ -102,32 +102,42 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor }, 
   }
 }
 
-// The last thing a person sees: what was made and the one next step.
-export function printFinalScreen(targetDir, { mode, brain, checks }) {
+// The last thing a person sees: what was made and the one next step, in plain
+// words. The next step names the folder by the name the person typed, because
+// that is what they will look for in Claude Code or Codex.
+export function printFinalScreen(targetDir, opts) {
+  const { mode, brain, checks, conductor = 'Tess', crew = 9, productionNote = '' } = opts;
   const w = (s = '') => process.stdout.write(s + '\n');
   const bullet = plain ? '-' : '•';
   const safe = checks.doctor !== false && checks.verify !== false;
+  const folder = basename(targetDir);
   w();
   w(plain ? 'ALL SET' : accent('All set.'));
-  w(`Tess OS is ready in: ${targetDir}`);
+  w(`Tess OS is ready in the folder "${folder}".`);
+  w(dim(`  (full path: ${targetDir})`));
   w();
   w('What was created:');
-  w(`  ${bullet} Your AI team: ten roles and the rules they follow.`);
+  w(`  ${bullet} Your AI team: a crew of ${crew} specialists plus your assistant, ${conductor}.`);
   if (brain.status === 'kept') w(`  ${bullet} Your existing second brain in the brain folder, kept as it was.`);
   if (brain.status === 'done') {
     const saved = brain.commit ? `, saved in git (first save ${brain.commit})` : '';
     w(`  ${bullet} A second brain for ${MODE_WORDS[mode] || 'you'} in the brain folder${saved}.`);
   }
+  if (brain.status === 'failed') w(`  ${bullet} Your second brain: not set up yet (${conductor} will finish it with you).`);
   w(`  ${bullet} Safety checks: ${safe ? 'passed' : 'found a problem (see the lines above)'}.`);
   w();
   w('What to do next:');
-  w('  1. Open this folder in Claude Code or Codex.');
-  w(`     In a terminal: cd "${targetDir}" && claude`);
-  w('  2. Say hello. Tess takes it from there.');
+  w(`  Open the folder "${folder}" in Claude Code or Codex and say hi —`);
+  w(`  ${conductor}, your assistant, will take it from there.`);
+  w(dim(`  (From a terminal: cd "${targetDir}" && claude   — or codex instead of claude.)`));
   if (brain.status === 'failed') {
     w();
-    w('Your second brain was not set up automatically. Tess will offer to finish it the');
+    w(`Your second brain was not set up automatically. ${conductor} will offer to finish it the`);
     w('first time you open the folder. Details for a helper:');
     w(dim(brain.detail.split('\n').map((l) => '    ' + l).join('\n')));
+  }
+  if (productionNote) {
+    w();
+    w(dim(productionNote));
   }
 }

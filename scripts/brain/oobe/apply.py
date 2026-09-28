@@ -18,9 +18,9 @@ from typing import Any, Dict, List, Optional
 from . import answers, chart, entities, gitignore, records, scaffold, seed, state
 from .slug import name_key, one_line, slugify
 
-SEED_PUSH = ("First push of a new instance: a one-time step you run yourself after reading `git log`; "
-             "the exact command is in docs/brain/ONBOARDING.md, section 8 (The one-time seed push). "
-             "Tess never runs it.")
+SEED_PUSH = ("Saved in git on this computer. Pushing this folder to a remote needs the project's "
+             "own reviewer keys first (docs/brain/ONBOARDING.md, section 8); to keep a copy "
+             "elsewhere, back up the folder. Never skip the safety checks to push.")
 
 
 def value(brain: Dict[str, Any], field: str, default: Any = None) -> Any:
@@ -254,17 +254,36 @@ def run(root: Path, dry: bool = False, final_status: str = "complete") -> Dict[s
     if not done_before:
         onb.update({"status": final_status, "step": state.TOTAL_STEPS,
                     "completed_at": state.now_iso(brain.get("timezone"))})
+        onb.pop("last_apply_error", None)
     result = {"status": onb["status"], "dry_run": dry, "decision": rid, "commit": None,
               "created": plan.created(),
               "skipped": sum(1 for a, _ in plan.actions if a == "skipped (exists)")}
     if dry:
         return result
     state.save_brain(root, brain)
-    run_learn(root)
-    sync_identity(root, brain, seed=git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0)
-    msg = "brain: onboarding apply (%s)" % ", ".join(brain["modes"] + brain["presets"])
-    result["commit"] = commit_brain(root, msg, [".gitignore"] if gi_changed else [])
+    try:
+        run_learn(root)
+        sync_identity(root, brain, seed=git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0)
+        msg = "brain: onboarding apply (%s)" % ", ".join(brain["modes"] + brain["presets"])
+        result["commit"] = commit_brain(root, msg, [".gitignore"] if gi_changed else [])
+    except Exception as exc:
+        if not done_before:
+            _mark_apply_failed(root, brain, exc)
+        raise
     return result
+
+
+def _mark_apply_failed(root: Path, brain: Dict[str, Any], exc: Exception) -> None:
+    """v1.0 (B4): a failed apply never leaves onboarding marked complete.
+
+    The files apply created stay (apply is create-only, so running it again is
+    safe); onboarding goes back to in_progress on the last step, with the
+    first line of the error, so `status` shows what is left and the one fix.
+    """
+    first = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+    brain["onboarding"].update({"status": "in_progress", "step": state.TOTAL_STEPS,
+                                "completed_at": None, "last_apply_error": first[:300]})
+    state.save_brain(root, brain)
 
 
 def print_summary(result: Dict[str, Any], brain: Optional[Dict[str, Any]]) -> None:

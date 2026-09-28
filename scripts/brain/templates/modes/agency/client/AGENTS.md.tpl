@@ -34,7 +34,7 @@ Client: {{name}}. What we do for them and why it matters to them (at most 3 line
 ## Rules for this entity
 - Client data stays in this folder: never carry it into another client's output.
 - Only this client's owner and the operator decide here (see principals in `brain/brain.json`).
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 - Secrets, government IDs, pay, health or HR records and contract files never go here: write a pointer to where they live.
 
 ## Decisions (latest 5 accepted)

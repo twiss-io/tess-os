@@ -48,7 +48,8 @@ def cmd_status(root: Path, a) -> int:
         st["detected_timezone"] = state.detect_timezone()
         st["missing"] = [f for f in answers.required_fields(st["step"] or 1, brain)
                          if f not in answers.answered(brain)]
-    _emit(st, a.json, "onboarding: %s" % state.status_line(st))
+    ready = " (ready: run apply)" if st.get("ready_to_apply") and not st.get("last_apply_error") else ""
+    _emit(st, a.json, "onboarding: %s%s" % (state.status_line(st), ready))
     return 0
 
 
@@ -144,7 +145,7 @@ def cmd_add(root: Path, a) -> int:
     records.probe_refresh(plan, brain)
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
-    print("%s %s -> %s (not committed yet: save with the brain-save skill or git)" % (a.kind, a.name, dest))
+    print("%s %s -> %s (not committed yet: save it with git, e.g. commit the brain/ folder)" % (a.kind, a.name, dest))
     warn = entities.start_here_budget_warning(root, brain)
     if warn:
         print(warn, file=sys.stderr)

@@ -6148,6 +6148,10 @@ def cmd_doctor(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
     fix = getattr(args, "fix", False)
     path_filter = getattr(args, "path", None)
+    # v1.0 (B4): by default doctor prints only what needs attention plus one
+    # plain summary line; --verbose (or TESS_VERBOSE=1) lists every file.
+    # Exit codes and --json are identical in both modes.
+    verbose = _verbose_output(args)
 
     # v0.2 (bug e): `--ack-overwrites` clears the forced-overwrite WARNs that
     # `init/restore --force` record in modified.json, then doctor runs as usual.
@@ -6289,7 +6293,8 @@ def cmd_doctor(args, root: Path) -> None:
         sys.exit(1 if errors else 0)
 
     # Human-readable output
-    print(f"\ntessctl doctor — {len(results)} files checked\n")
+    if verbose:
+        print(f"\ntessctl doctor — {len(results)} files checked\n")
 
     _drift_printed: set[str] = set()   # LOW-2: dedupe drift output by live_rel
     for r in results:
@@ -6308,7 +6313,8 @@ def cmd_doctor(args, root: Path) -> None:
             for sw in r.get("staged_warn", []):
                 print(f"  STAGED-WARN {live_rel or r['core_key']}  — {sw}")
         elif r.get("pristine") is True and not r["issues"]:
-            print(f"  ok          {live_rel}{sec_badge}")
+            if verbose:
+                print(f"  ok          {live_rel}{sec_badge}")
         elif r.get("drift") and lock_status == "locally-modified":
             print(f"  captured    {live_rel}{sec_badge}  (locally-modified)")
         elif r.get("drift") and lock_status == "user-published" and not r.get("is_security"):
@@ -6349,11 +6355,12 @@ def cmd_doctor(args, root: Path) -> None:
                         print(f"              ^^^ security-tier — capture will QUARANTINE (not locally-modify)")
         elif r["issues"]:
             print(f"  ISSUE       {live_rel}{sec_badge}  — " + "; ".join(r["issues"]))
-        else:
+        elif verbose:
             print(f"  ok          {live_rel}")
 
     # Summary — LOW-2: dedupe by live_path so 6 CLAUDE.md entries count as 1 drift.
-    print(f"\n{'='*60}")
+    if verbose:
+        print(f"\n{'='*60}")
     pristine = sum(1 for r in results if r.get("pristine") and not r.get("drift") and r.get("lock_status") != "staged")
     staged_count = sum(1 for r in results if r.get("lock_status") == "staged")
     _drift_live_set = {
@@ -6384,12 +6391,13 @@ def cmd_doctor(args, root: Path) -> None:
     }
     security_drift += len(_sec_override_live_set)
 
-    print(
-        f"pristine: {pristine}  |  staged (benched): {staged_count}  |  "
-        f"uncaptured drift: {drift_count}  |  captured: {captured}  |  "
-        f"quarantined: {quarantined_count}  |  core tamper: {core_tamper_count}  |  "
-        f"security alerts: {security_drift}"
-    )
+    if verbose:
+        print(
+            f"pristine: {pristine}  |  staged (benched): {staged_count}  |  "
+            f"uncaptured drift: {drift_count}  |  captured: {captured}  |  "
+            f"quarantined: {quarantined_count}  |  core tamper: {core_tamper_count}  |  "
+            f"security alerts: {security_drift}"
+        )
 
     # v0.2 (bug e): every `init/restore --force` overwrite of uncaptured drift
     # stays visible (non-failing WARN) until acknowledged, with the snapshot
@@ -6405,7 +6413,7 @@ def cmd_doctor(args, root: Path) -> None:
     # Phase 0.3 — memory-link check (informational only; see
     # _print_memory_link_report's own header banner for why this never
     # touches errors/warnings/the exit code).
-    _print_memory_link_report(root)
+    _print_memory_link_report(root, verbose=verbose)
 
     # Defect #2: --fix EXCLUDES security-tier (never route to capture/launder).
     # R2: --fix re-renders render-generated files instead of capturing them.
@@ -6491,6 +6499,9 @@ def cmd_doctor(args, root: Path) -> None:
                 or doctrine_leak_count > 0 or integrity_count > 0
                 or bool(_sec_override_live_set) or bool(enforcement_bypass))
 
+    if blocking and not verbose:
+        print(f"\n{len(results):,} files checked. Only the problems are listed above; "
+              f"`tessctl doctor --verbose` lists every file.")
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
               f"Restore .tess/core from git or run `tessctl rollback`.")
@@ -6552,7 +6563,112 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"\ndoctor: FAIL — {integrity_count} integrity issue(s): untracked .tess/core "
               f"file(s) or unknown render target name(s) (see ISSUE lines above).")
         sys.exit(1)
-    print("\ndoctor: OK")
+    if verbose:
+        print("\ndoctor: OK")
+    else:
+        print(f"\n{_doctor_ok_sentence(len(results), captured)}")
+        print("doctor: OK")
+
+
+def _doctor_ok_sentence(checked: int, kept: int) -> str:
+    """The one line a person reads after a clean `tessctl doctor` (v1.0 B4)."""
+    if kept:
+        return (f"All good — {checked:,} files checked; {kept:,} file(s) you changed "
+                f"on purpose are kept as you left them.")
+    return f"All good — {checked:,} files checked, nothing changed."
+
+
+def _verbose_output(args) -> bool:
+    """True when a human asked for the full listing: --verbose, or TESS_VERBOSE=1
+    (set by the test suite and by anyone who always wants the detail)."""
+    if getattr(args, "verbose", False):
+        return True
+    return os.environ.get("TESS_VERBOSE", "").strip() not in ("", "0", "false", "no")
+
+
+class _OutputRecorder:
+    """Holds a command's stdout so a successful run can be summarised (v1.0 B4)."""
+
+    def __init__(self, real):
+        self.real = real
+        self.parts: list = []
+
+    def write(self, text):
+        self.parts.append(text)
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    @property
+    def encoding(self):
+        try:
+            return self.real.encoding or "utf-8"
+        except AttributeError:
+            return "utf-8"
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+_UPDATE_PLAN_LINE = re.compile(r"^  \[([a-z0-9:_-]+)\s*\] ")
+_UPDATE_NOTABLE_LINE = re.compile(r"\b(WARN|BLOCKED|INCOMPLETE|KEEP|FAIL|ERROR)\b")
+_UPDATE_ACTION_WORDS = {
+    "fast-forward": "updated",
+    "merge": "merged with your changes",
+    "patch-apply": "your override re-applied",
+}
+
+
+def _print_update_summary(text: str) -> None:
+    """The short default `tessctl update` output: the header, anything that
+    needs attention, one counted summary line and the result line."""
+    lines = text.splitlines()
+    counts: dict = {}
+    for line in lines:
+        m = _UPDATE_PLAN_LINE.match(line)
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    for line in lines:
+        if line.startswith("tessctl update"):
+            print(line)
+            break
+    for line in lines:
+        if _UPDATE_NOTABLE_LINE.search(line) or "dry-run: would" in line:
+            print(line)
+    if counts:
+        parts = [f"{n:,} {_UPDATE_ACTION_WORDS.get(a, a)}" for a, n in sorted(counts.items())]
+        print(f"{sum(counts.values()):,} files checked: " + ", ".join(parts) + ".")
+    for line in lines:
+        if line.startswith("update:") or "version bumped" in line:
+            print(line.strip())
+    print("(`tessctl update --verbose` shows every step and file.)")
+
+
+def _run_summarised(fn, summarise) -> None:
+    """Run fn with stdout held back. Success prints summarise(text); any failure
+    or crash prints the full held-back output first, so nothing is hidden when
+    something went wrong. Exit codes are unchanged."""
+    real = sys.stdout
+    recorder = _OutputRecorder(real)
+    sys.stdout = recorder
+    ok = False
+    try:
+        fn()
+        ok = True
+    except SystemExit as exc:
+        ok = exc.code in (None, 0)
+        raise
+    finally:
+        sys.stdout = real
+        if ok:
+            summarise(recorder.text())
+        else:
+            real.write(recorder.text())
+            real.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -8202,10 +8318,19 @@ def cmd_update(args, root: Path) -> None:
     """
     dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
     if dry_run:
-        _cmd_update_body(args, root)
+        _cmd_update_run(args, root)
         return
     with tess_update_lock(root, "update"):
+        _cmd_update_run(args, root)
+
+
+def _cmd_update_run(args, root: Path) -> None:
+    # v1.0 (B4): a short summary by default; --verbose (or TESS_VERBOSE=1)
+    # prints every step and file as before. A failure always prints in full.
+    if _verbose_output(args):
         _cmd_update_body(args, root)
+    else:
+        _run_summarised(lambda: _cmd_update_body(args, root), _print_update_summary)
 
 
 def _cmd_update_body(args, root: Path) -> None:
@@ -24532,9 +24657,11 @@ def _check_memory_link(root: Path) -> list:
     return reports
 
 
-def _print_memory_link_report(root: Path) -> None:
+def _print_memory_link_report(root: Path, verbose: bool = True) -> None:
     for report in _check_memory_link(root):
         if not report["adopted"]:
+            if not verbose:
+                continue
             print(
                 "\n  memory-link  not adopted (optional) — run `tessctl memory adopt` to "
                 "share memory across harnesses"
@@ -24548,7 +24675,8 @@ def _print_memory_link_report(root: Path) -> None:
                 extra = "index present, coherence gaps below"
             else:
                 extra = "index coherent"
-            print(f"\n  memory-link  ok — {label} adopted, symlink resolves, store writable ({extra})")
+            if verbose:
+                print(f"\n  memory-link  ok — {label} adopted, symlink resolves, store writable ({extra})")
         else:
             print(f"\n  memory-link  ISSUE (non-fatal) — {label}: " + "; ".join(report["issues"]))
         if report["index_broken_links"]:
@@ -25061,7 +25189,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tessctl",
         description="Tess OS keystone CLI — framework lifecycle management",
     )
+    parser.add_argument("--version", action="store_true", dest="show_version",
+                        help="print the Tess OS version and exit")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # help (v1.0 B4): `tessctl help` and `tessctl help <command>`
+    p_help = sub.add_parser("help", help="show this help, or `tessctl help <command>` for one command")
+    p_help.add_argument("topic", nargs="?", metavar="COMMAND")
 
     # init
     p_init = sub.add_parser("init", help="scaffold project from framework; run restore + render")
@@ -25111,11 +25245,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="acknowledge the forced-overwrite WARNs (init/restore --force) recorded in "
              ".tess/modified.json; the snapshots themselves are left alone",
     )
+    p_doctor.add_argument("--verbose", "-v", action="store_true",
+                          help="list every file checked (default: problems plus a one-line summary)")
     p_doctor.add_argument("path", nargs="?", help="check a specific file")
 
     # update
     p_update = sub.add_parser("update", help="fetch new version; snapshot → doctor → signed-verify → merge → render → re-pin")
     p_update.add_argument("--check", action="store_true", help="report without writing (safe nightly version-watch)")
+    p_update.add_argument("--verbose", "-v", action="store_true",
+                          help="print every step and file (default: a short summary; failures always print in full)")
     p_update.add_argument("--dry-run", action="store_true", dest="dry_run")
     p_update.add_argument("--ref", metavar="TAG",
                           help="signed release tag to fetch (e.g. v2.1.0); default: framework.upstream_ref in tess.lock")
@@ -26052,10 +26190,49 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _installed_version() -> str:
+    """Tess OS version from tess.lock (framework.version), found the same way
+    commands find their root, without exiting when there is none."""
+    candidates = []
+    if os.environ.get("TESS_ROOT"):
+        candidates.append(Path(os.environ["TESS_ROOT"]))
+    cur = Path.cwd().resolve()
+    candidates += [cur] + list(cur.parents)
+    candidates.append(Path(__file__).resolve().parent.parent.parent)
+    for cand in candidates:
+        lock_path = cand / LOCK_FILE
+        if lock_path.is_file():
+            try:
+                fw = (load_lock(cand) or {}).get("framework", {}) or {}
+            except Exception as exc:  # noqa: BLE001 — a version readout must never crash
+                return f"(version unreadable: {exc})"
+            version = str(fw.get("version") or "unknown")
+            return f"{version} (Tess OS)"
+    return "(not inside a Tess OS folder)"
+
+
+def _print_help(parser: argparse.ArgumentParser, topic: str | None) -> None:
+    if topic:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction) and topic in action.choices:
+                action.choices[topic].print_help()
+                return
+        print(f"tessctl: no command named {topic!r}.\n")
+    parser.print_help()
+    print("\nEveryday commands: `tessctl doctor` (check your files), "
+          "`tessctl update` (get the latest release), `tessctl --version`.")
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if getattr(args, "show_version", False):
+        print(f"tessctl {_installed_version()}")
+        sys.exit(0)
+    if args.command == "help":
+        _print_help(parser, getattr(args, "topic", None))
+        sys.exit(0)
     if not args.command:
         parser.print_help()
         sys.exit(0)

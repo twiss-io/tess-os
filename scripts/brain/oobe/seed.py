@@ -91,7 +91,11 @@ def is_private(path: str, private: List[str], allow: frozenset, owned: List[str]
 
 def seed_paths(root: Path) -> Tuple[List[str], List[str]]:
     """(paths to commit, private paths left out) for the seed commit."""
-    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--others", "--exclude-standard"],
+    # --cached too (v1.0 B4): a seed commit that failed (for example, refused by
+    # a hook) leaves its files staged, and the re-run must still commit them.
+    # The same private/allow filters below apply to staged and untracked files.
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+                             "--exclude-standard"],
                             capture_output=True, text=True, check=True).stdout
     private, allow, match = load_rules(root)
     owned = owned_globs(root)

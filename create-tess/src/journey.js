@@ -61,10 +61,10 @@ function revealSquad(vibe, set) {
 
 function recap(vibe, c) {
   return [
-    `${vibe.operatorTerm} ${c.operator}`,
+    `You        ${c.operator}`,
     `World      ${vibe.label}`,
     `${vibe.squadNoun.padEnd(10)} ${PATH_FRAMING[vibe.key][c.path].label}`,
-    `Conductor  ${c.conductor}  (${c.pathway})`,
+    `Assistant  ${c.conductor}  (${c.pathway})`,
     `For        ${MODE_OPTIONS.find((o) => o.value === c.mode).label}${c.preset ? ` (${c.preset})` : ''}`,
   ].join('\n');
 }

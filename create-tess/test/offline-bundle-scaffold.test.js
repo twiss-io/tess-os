@@ -320,7 +320,7 @@ test(
     // Proves the fetch genuinely used the bundled copy, not a fallback path.
     assert.match(
       run.stdout,
-      /bundled template — no network required/,
+      /Preparing Tess OS \(no internet needed\)/,
       'the wizard must report it fetched from the bundled template, not git',
     );
 

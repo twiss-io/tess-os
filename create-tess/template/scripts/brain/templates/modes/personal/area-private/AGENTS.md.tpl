@@ -25,7 +25,7 @@ Private area: {{name}}. Only this pointer is committed; the details stay local.
 
 ## Rules for this entity
 - Never copy details from `brain/.private/` into this file or any committed file.
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 - Secrets, government IDs, pay, health or HR records and contract files never go here: write a pointer to where they live.
 
 ## Decisions (latest 5 accepted)

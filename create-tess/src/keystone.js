@@ -215,14 +215,14 @@ export function activateGate(
     result.gitInit = 'already';
   } else {
     try {
-      onStep('Initialising git repository', 'start');
+      onStep('Starting the history of your folder (git)', 'start');
       execFileSync('git', ['init', '--quiet', '-b', 'main'], {
         cwd: targetDir,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       result.gitInit = 'done';
-      onStep('Initialising git repository', 'done');
+      onStep('Starting the history of your folder (git)', 'done');
     } catch (err) {
       result.gitInit = 'failed';
       result.error = gitErrorMessage(err);
@@ -243,11 +243,11 @@ export function activateGate(
     return result;
   }
   try {
-    onStep('Installing gate hooks (tessctl gate install-hooks)', 'start');
+    onStep('Turning on the safety checks that run on every save', 'start');
     result.hooksOut = tessctl(targetDir, ['gate', 'install-hooks']);
     result.hooksInstalled = true;
     result.gitHooksLive = /installed git (pre-commit|pre-push) hook/.test(result.hooksOut);
-    onStep('Installing gate hooks (tessctl gate install-hooks)', 'done');
+    onStep('Turning on the safety checks that run on every save', 'done');
   } catch (err) {
     result.hooksInstalled = false;
     result.error = result.error ? `${result.error}\n${err.message}` : err.message;

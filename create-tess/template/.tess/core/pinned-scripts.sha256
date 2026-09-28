@@ -4,11 +4,11 @@
 #   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256
 9351c82bea525e14e548d82576c0e0f813db716db7f04f59007cb0395c276fbb  .claude/hooks/run-pinned.py
 755e3e31bd4630f896472c66c1a1f98ac5118392b0be014f035937b5572d74b2  .claude/hooks/vault-dispatch-scan.py
-9476968905683c9bd29707197333c792cda3897b6b47b6a0af7f6ac073964672  scripts/brain/onboard.py
+432107cc18bfecb324c3d38aa7ee249437bebd1e973e0dabef5c51daa17b22be  scripts/brain/onboard.py
 b186ce8679048f3655182a70cea4e21b632057aca11e84f26a7cdecfb5605fe1  scripts/brain/probe.py
 ce2b8cbb196e18f71f0d629244c90249363fd33e952761e2d31422e77ec072f7  scripts/brain/oobe/__init__.py
 ca9a405f44fa4f68149063a96a47f10ed2f825a86af57b98b529fc88a0c4d91e  scripts/brain/oobe/answers.py
-bb039e4d0f7a417d9561254c21c5b68e6e8cce7d2e1f3afb8e6035613641db76  scripts/brain/oobe/apply.py
+f0e30cf3fb8424282d666a44d2f91ea8c8933e8f1712ee1352b24b45312e18e4  scripts/brain/oobe/apply.py
 1434d1cceaf797d0183b49a1867308c26a9e99f718acb9054e506a0ec9ad9ccd  scripts/brain/oobe/chart.py
 0f53d2cf582c7bec92ed7000c8b0c10022bd6c60aaf151e8d8c1f2557eb07441  scripts/brain/oobe/convert.py
 0ca0c6e9282f37a4438510d633cc2214c6e4e769cb1c42777a0b1b42e1f6c273  scripts/brain/oobe/entities.py
@@ -17,6 +17,6 @@ bb039e4d0f7a417d9561254c21c5b68e6e8cce7d2e1f3afb8e6035613641db76  scripts/brain/
 ef2fabf80ec219e7d7df20988379a4933e1066b6b0c29da44be4ae081cddd775  scripts/brain/oobe/records.py
 6dbd0b23a40efb18f6ef876d9abb9a4987df8ca798f1b9b000680b9a8d4792e2  scripts/brain/oobe/restore.py
 f85fe0d48ac501daf1d49fe7506977973d8807386d172b1cdd682758435030e8  scripts/brain/oobe/scaffold.py
-3c1b5e098e098fd0001931210ce4c2d44436e7265c1a63ca0070152cb62f7965  scripts/brain/oobe/seed.py
+04d9dd75301bb394cc2e4966574f5bb752d0465017a6111b6169edc4dca48223  scripts/brain/oobe/seed.py
 99360bc1e5224c96150c8c66edc94f4681cd229057b4496cfce1a194c30cf405  scripts/brain/oobe/slug.py
-992ec725deaf5acc3708df98f8ebfe93418f98ebe6d56df7534f142d62306f35  scripts/brain/oobe/state.py
+2e9f5f74d2daa45cf45327c13322cc635e9b5b20691016793357a3db0b1bbe17  scripts/brain/oobe/state.py
