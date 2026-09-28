@@ -84,11 +84,13 @@ def test_codex_config_has_onboarding_session_start_hook(engine):
     assert cfg["approval_policy"] == "on-request" and cfg["sandbox_mode"] == "workspace-write"
     groups = cfg["hooks"]["SessionStart"]
     assert len(groups) == 1 and groups[0]["matcher"] == "startup|resume|clear|compact"
-    (handler,) = groups[0]["hooks"]
+    handler, brain = groups[0]["hooks"]  # v1.0: onboarding first, then the learning-loop snapshot
     assert handler["type"] == "command" and handler["timeout"] == 5
     cmd = handler["command"]
     assert "scripts/brain/onboard.py" in cmd and "--runtime codex" in cmd
     assert "git rev-parse --show-toplevel" in cmd and "|| exit 0" in cmd
+    assert '"$l" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py' in cmd  # pinned launcher
+    assert "scripts/brain/tessbrain.py hook session-start --runtime codex" in brain["command"]
 
 
 @pytest.mark.skipif(tomllib is None, reason="tomllib needs Python 3.11+")
@@ -98,6 +100,10 @@ def test_rendered_codex_hook_command_runs_from_a_subdirectory(engine, tmp_path):
     cfg = tomllib.loads(engine.render_codex_config_toml(REPO))
     cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
     root = h.mini_instance(tmp_path)
+    import shutil  # v1.0: the hook runs through the pinned launcher, so the instance carries it and its pins
+    for rel in (".claude/hooks/run-pinned.py", ".tess/tess.lock", ".tess/core/pinned-scripts.sha256"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(REPO / rel), str(root / rel))
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     sub = root / "docs" / "deep"
     sub.mkdir(parents=True)
@@ -110,6 +116,32 @@ def test_rendered_codex_hook_command_runs_from_a_subdirectory(engine, tmp_path):
     assert ctx.startswith("ONBOARDING PENDING (step 1/7)")
     assert "do the task first with the tools it needs" in ctx
     assert "without running a tool first" in ctx
+
+
+def test_rendered_codex_onboarding_hook_refuses_an_edited_script(engine, tmp_path):
+    """v1.0.0: the Codex onboarding hook has the same run-pinned hash check as
+    Claude's: an onboard.py whose bytes are not the pinned release is never
+    run (the launcher warns and the hook exits 0, so the turn is not blocked)."""
+    if tomllib is None:
+        pytest.skip("tomllib (Python 3.11+) required")
+    cfg = tomllib.loads(engine.render_codex_config_toml(REPO))
+    cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "scripts/brain/onboard.py" in cmd
+    root = h.mini_instance(tmp_path)
+    import shutil
+    for rel in (".claude/hooks/run-pinned.py", ".tess/tess.lock", ".tess/core/pinned-scripts.sha256"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(REPO / rel), str(root / rel))
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    marker = tmp_path / "tampered-code-ran"
+    script = root / "scripts" / "brain" / "onboard.py"
+    script.write_text(script.read_text() + f"\nopen({str(marker)!r}, 'w').write('x')\n")
+    done = subprocess.run(["sh", "-c", cmd], cwd=str(root), input="{}", capture_output=True,
+                          text=True, env=h.env({}), timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert not marker.exists(), "an edited onboard.py ran from the Codex hook"
+    assert "ONBOARDING PENDING" not in done.stdout
+    assert "onboard.py" in done.stderr + done.stdout  # the launcher names what it refused
 
 
 def test_rendered_codex_hook_is_silent_outside_an_instance(engine, tmp_path):

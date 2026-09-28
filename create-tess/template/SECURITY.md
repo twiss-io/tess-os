@@ -168,7 +168,27 @@ also pinned and `ssh-keygen` is present, the SSH signature must verify too.
 Without gpg, the SSH signature alone decides. A missing, malformed or
 wrong-key signature fails closed before any file is written. The ship gate
 applies the same rule to `.tess/release-proof.json`, reading both pins and
-both public keys from the base commit, never from the candidate. Write access
+both public keys from the base commit, never from the candidate.
+
+**The first push of a fresh install** has no base commit, so no earlier
+`tess.lock` pins a key. The npm package ships the proof of the signed release
+it was built from (publish-npm.yml builds it from the framework tag, which must
+carry both signatures and name the published commit), and the wizard writes it
+to `.tess/release-proof.json` before the first commit. For a push with no base,
+the gate verifies that proof against the release fingerprints compiled into
+the engine (`RELEASE_ANCHOR_OPENPGP_FP`, `RELEASE_ANCHOR_SSH_FP`, equal to the
+shipped pins), never against a key the pushed tree names alone, and accepts a
+protected file only if it is the signed release's file byte for byte. The
+engine and key files are themselves protected files, so a tree with a changed
+engine or key is refused. Two differences are allowed: both `policy.yaml`
+copies with the wizard's verifier/sign-off key reset applied (it only removes
+trust), and the `tess.lock` re-pin and render records that follow from it.
+Limit: on the first push only the local pre-push gate and a manual
+`tessctl gate ci` apply this check. The installed CI workflow takes its gate
+engine from the base commit and fails closed when there is none, so the first
+CI run on a brand-new repository fails; every later push is checked in CI.
+
+Write access
 to the repository is not enough to forge a release: both private keys stay
 offline on the maintainer's machine, each behind a passphrase that is released
 only after an interactive approval.

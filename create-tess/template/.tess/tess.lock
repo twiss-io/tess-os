@@ -9,20 +9,20 @@
 schema: 1
 framework:
   track: v2
-  version: 0.2.0
+  version: 1.0.0
   channel: stable
   upstream: https://github.com/twiss-io/tess-os.git
-  upstream_ref: v0.2.0
+  upstream_ref: v1.0.0
   upstream_commit: null
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-28T21:55:19.881299Z'
+  last_updated: '2026-09-28T23:41:47.817032Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c4c7f0a3f7155436f06aae3545871d3a7e87c1e0857ad06df0d8ab25e443d128
+    base_sha: sha256:0315b4561e6eb01ca16489ba02fbf6cf48d76e1e871b07228ff272b7deb2359a
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/personas/chief-of-staff.md:
@@ -5661,7 +5661,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: security
-    base_sha: sha256:bd13ce2623f992d9ad8953d8d625ef95c8fb17cfe513f38a8b5f6227568bb329
+    base_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
     live_path: .claude/settings.json
     render: rendered
     last_updated: '2026-09-28T17:56:20.991251Z'
@@ -5763,10 +5763,17 @@ files:
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
+  .tess/core/templates/agents-md/codex-tess.rules.tpl:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:093148a46415d196b03e4e7c2852ead5a6336f140f221453ec7df33b9862624c
+    live_path: null
+    render: template
+    last_updated: '2026-09-29T00:00:00Z'
   .tess/core/templates/agents-md/codex-config.toml.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
+    base_sha: sha256:159498e6764917d508098992b8cae93e40a95c63f9bf17b6581798dc23f89f1a
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00
@@ -5780,7 +5787,7 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e1431d1f29557bb8aed4d9152b094273911f3bf819ecc760aea1a0723af543a8
+    base_sha: sha256:56edc2bd002a0ef83b5da0be5ddd85af84ac6798acbafbc7ce21e7e8d98522e9
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6094,18 +6101,18 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:14ee9f61c0cc9ec6410cbe01df55f0f7cd14c129f21b7ed42b1fd159868bbec8
+    base_sha: sha256:7ac3276651ca279e5bc88cd584ee9fa0380f68c996cf3d88cec4462bb7b2a32c
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
 render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:5e832fb12271ff276839b453e7d50c7b9025997d401cfa14d435b5f91517eaed
+    rendered_sha: sha256:1a9255addfabb2c2bf7955d17905755ee9cd67486f1a1a81135d094fc69ed8e0
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:bd13ce2623f992d9ad8953d8d625ef95c8fb17cfe513f38a8b5f6227568bb329
+    rendered_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
   conductor/identity.md:
     target: claude-code
     status: rendered
@@ -6121,11 +6128,11 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:62932966266088fcb98ab1a030859ae9c909ac3487138af73f65c21263e06c51
+    rendered_sha: sha256:d7c3cc28f6e3d32c527009be3f9a6d426ef8cbbd923c09bed80b3f012e41b081
   .codex/config.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:036aa5c03e4d201bff41100e67a22114fdedc0c14cddd380c83e401177312e50
+    rendered_sha: sha256:159498e6764917d508098992b8cae93e40a95c63f9bf17b6581798dc23f89f1a
   .agents/skills/tess-add-agent/SKILL.md:
     target: codex
     status: rendered
@@ -6478,3 +6485,7 @@ render_outputs:
     target: codex
     status: rendered
     rendered_sha: sha256:d49de7b1de107efe6b3eb50bc83cece5593d91a6117830468889449f57a97473
+  .codex/rules/tess.rules:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:093148a46415d196b03e4e7c2852ead5a6336f140f221453ec7df33b9862624c

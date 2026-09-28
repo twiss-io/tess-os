@@ -118,9 +118,11 @@ Conversation capture, decision capture and verification are covered in
 
 ## Known gaps
 
-- **Pushing to a remote.** A new instance's ship-gate refuses a push until the
-  project has its own reviewer keys (`COVERING_APPROVAL_MISSING`). Work is saved
-  in git locally; back up the folder to keep a copy elsewhere
+- **Pushing to a remote.** The first push of a folder made with
+  `npm create tess` passes the ship-gate (it carries the signed release's
+  proof). A push that changes a protected Tess file is refused until the
+  project has its own reviewer keys (`COVERING_APPROVAL_MISSING`). Work is
+  saved in git locally; back up the folder to keep a copy elsewhere
   ([ONBOARDING.md](ONBOARDING.md), section 8). Tess never skips the check.
 - **Placement rows.** The file-placement tables in `CLAUDE.md` and `AGENTS.md`
   still say `kb/` and `clients/<Client>/kb/`. The BOOT block overrides them

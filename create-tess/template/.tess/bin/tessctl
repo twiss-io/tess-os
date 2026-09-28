@@ -504,6 +504,10 @@ AGENTS_TOKEN_MAP = {
 }
 AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
+# v1.0: Codex command rules (prefix_rule) — the backstop behind the tess-gate
+# PreToolUse hook that codex-config.toml.tpl wires (adapters/codex/README.md).
+CODEX_RULES_TPL = ".tess/core/templates/agents-md/codex-tess.rules.tpl"
+CODEX_RULES_LIVE = ".codex/rules/tess.rules"
 COMMANDS_CORE_DIR = ".tess/core/commands"
 
 # v0.2.0 (ws-rt) — Codex commands as Agent Skills. Codex never loads a
@@ -1631,6 +1635,23 @@ def render_codex_config_toml(root: Path) -> str:
     return rendered
 
 
+def render_codex_rules(root: Path) -> str:
+    """
+    Render `.codex/rules/tess.rules` from the static core fragment (v1.0).
+    Codex prefix rules: `forbidden` for `--no-verify` and `gh auth token`,
+    `prompt` for remote, visibility, hooksPath and force-push changes. A
+    backstop only — rules match a command prefix, so the PreToolUse hook in
+    `.codex/config.toml` (`.claude/hooks/tess-gate.py`) is the real guard.
+    """
+    src = root / CODEX_RULES_TPL
+    if not src.exists():
+        sys.exit(f"tessctl render: {CODEX_RULES_TPL} not found at {src}")
+    rendered = apply_token_sub(src.read_text(encoding="utf-8"), root)
+    if "{{" in rendered:
+        sys.exit(f"tessctl render: {CODEX_RULES_TPL} has an unresolved {{{{TOKEN}}}} after substitution")
+    return rendered
+
+
 # ---------------------------------------------------------------------------
 # Agent Skills rendering (v0.2.0 — the `codex` target's command surface; see
 # AGENT_SKILLS_DIR above for why skills replace `.codex/prompts/`).
@@ -2043,6 +2064,7 @@ def _live_path_is_security(lock: dict, rel: str) -> bool:
 ENFORCEMENT_RENDER_OUTPUTS = frozenset({
     ".claude/settings.json",
     ".codex/config.toml",
+    CODEX_RULES_LIVE,
     "AGENTS.md",
     "GEMINI.md",
     ".gemini/settings.json",
@@ -4754,8 +4776,15 @@ class CodexRenderTarget(RenderTarget):
         theirs. Codex runs it only in a trusted project, after the operator
         trusts the hook in `/hooks`; the AGENTS.md BOOT block starts
         onboarding without it.
-    Still does NOT translate the Claude PreToolUse gate hooks
-    (adapters/CONFORMANCE.md "What does not translate").
+      * Safety gate (v1.0): `.codex/config.toml` also carries a PreToolUse
+        hook on Bash/apply_patch/Agent/MCP that runs
+        `.claude/hooks/tess-gate.py` through run-pinned.py `--on-fail block`
+        (secret scan, protected-path writes, hook bypasses, public-remote
+        push guard; every "ask" is sent as "deny" because Codex cannot ask
+        from a hook), and `.codex/rules/tess.rules` (render_codex_rules) is
+        the prefix-rule backstop. Codex level: Enforced once the operator
+        trusts the project and approves the hooks in `/hooks`
+        (adapters/CONFORMANCE.md).
     """
 
     name = "codex"
@@ -4765,7 +4794,8 @@ class CodexRenderTarget(RenderTarget):
                                  # spawns a role only when asked (v0.2.1).
 
     def live_globs(self) -> list:
-        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", ".codex/agents/**"]
+        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", CODEX_RULES_LIVE,
+                ".codex/agents/**"]
 
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
@@ -4784,6 +4814,10 @@ class CodexRenderTarget(RenderTarget):
                 render_agent_skill_openai_yaml(root, name),
             ))
         out.append((".codex/config.toml", render_codex_config_toml(root).encode("utf-8")))
+        # Only when the core carries the rules template (a v1.0+ core); an older
+        # core, or a test fixture without it, renders everything else unchanged.
+        if (root / CODEX_RULES_TPL).exists():
+            out.append((CODEX_RULES_LIVE, render_codex_rules(root).encode("utf-8")))
         return out
 
     def render(self, root: Path, verbose: bool = False) -> dict:
@@ -4799,6 +4833,7 @@ class CodexRenderTarget(RenderTarget):
             (f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}*/ ({n_skills} skills)",
              lambda r: r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}")),
             (".codex/config.toml", lambda r: r == ".codex/config.toml"),
+            (CODEX_RULES_LIVE, lambda r: r == CODEX_RULES_LIVE),
         ], verbose)
         _retire_render_outputs(root, self)
         # v0.2 ten-role roster: mirror each installed role as a Codex
@@ -4814,6 +4849,10 @@ class CodexRenderTarget(RenderTarget):
             return render_agents_md(root).encode("utf-8")
         if live_rel == ".codex/config.toml":
             return render_codex_config_toml(root).encode("utf-8")
+        if live_rel == CODEX_RULES_LIVE:
+            if not (root / CODEX_RULES_TPL).exists():
+                return None
+            return render_codex_rules(root).encode("utf-8")
         name, inner = _agent_skill_command_for(live_rel)
         if name is not None:
             if inner == "SKILL.md":
@@ -4828,6 +4867,8 @@ class CodexRenderTarget(RenderTarget):
 
     def render_generated_paths(self, root: Path) -> set:
         paths = {"AGENTS.md", ".codex/config.toml"}
+        if (root / CODEX_RULES_TPL).exists():
+            paths.add(CODEX_RULES_LIVE)
         for name in _command_names(root):
             paths.add(f"{agent_skill_dir(name)}/SKILL.md")
             paths.add(f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}")
@@ -14277,6 +14318,7 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
             "tag": tag if isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", tag) else None,
             "accepted_paths_count": int(rp.get("accepted_paths_count") or 0),
             "lock_rejected": bool(rp.get("lock_rejected")),
+            "first_push": bool(rp.get("first_push")),
         }
     if phase is not None:
         safe = {"phase": phase, **safe}
@@ -15820,6 +15862,17 @@ def _gate_emit_receipts_on_clear(
 
 RELEASE_PROOF_FILE = ".tess/release-proof.json"
 RELEASE_PROOF_FORMAT = "tess-release-proof/1"
+# The release keys this engine trusts for a FIRST push (a push with no base
+# commit: nothing earlier in the history pins a key). They must equal the
+# framework.trusted_key_fingerprint / trusted_ssh_key_fingerprint pins in the
+# shipped .tess/tess.lock (tests/test_v1_first_push_release_proof.py checks),
+# and this file is itself one of the protected files the proof must match.
+RELEASE_ANCHOR_OPENPGP_FP = "EBEABC618C11B6A7340A7D1601DD637667B8CC89"
+RELEASE_ANCHOR_SSH_FP = "SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI"
+# Release files whose raw bytes the npm package's proof carries: the first-
+# install check compares the committed lock and policy against them.
+_FIRST_INSTALL_POLICY_PATHS = ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml")
+RELEASE_PROOF_BLOB_PATHS = (".tess/tess.lock",) + _FIRST_INSTALL_POLICY_PATHS
 RELEASE_KEY_FILE = ".tess/keys/twiss-release-key.asc"
 _RELEASE_PROOF_STATE: dict = {"proof": None}
 _RELEASE_PROOF_MAX_BYTES = 8 * 1024 * 1024
@@ -15893,11 +15946,18 @@ def _git_cat_file_batch(git_dir: Path, ids: list) -> dict:
 
 
 def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: str,
-                         lock: dict) -> dict:
+                         lock: dict, full: bool = False, blob_paths: tuple = ()) -> dict:
     """Collect, from the verified clone, everything the gate needs to prove
     a file is byte-identical to the signed release: the tag object, the
     commit object and the tree objects on the path to every `.tess/**` file,
-    every core file's live counterpart and every live path either lock names."""
+    every core file's live counterpart and every live path either lock names.
+
+    `full=True` (the proof the create-tess npm package ships) includes EVERY
+    tree object of the release commit, so every file the template carries has
+    its git blob id in the proof, and `blob_paths` adds the raw bytes of a
+    few release files the first-install check compares against (tess.lock
+    and the two policy.yaml copies). Every object is content addressed: the
+    gate re-hashes each one, so nothing in the file is trusted as given."""
     def g(*a):
         r = subprocess.run(["git", "-C", str(clone_dir), *a], capture_output=True)
         if r.returncode != 0:
@@ -15906,6 +15966,30 @@ def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: s
 
     tag_bytes = g("cat-file", "tag", tag_ref)
     commit_bytes = g("cat-file", "commit", commit)
+    if full:
+        tree_ids = {g("rev-parse", f"{commit}^{{tree}}").decode().strip()}
+        for entry in g("ls-tree", "-r", "-d", "-z", "--full-tree", commit).decode(
+                "utf-8", "surrogateescape").split("\0"):
+            meta = entry.partition("\t")[0].split()
+            if meta[1:2] == ["tree"]:
+                tree_ids.add(meta[2])
+        blob_ids = []
+        for rel in blob_paths:
+            meta = g("ls-tree", "--full-tree", commit, "--", rel).decode().split()
+            if meta[:2] and meta[1] == "blob":
+                blob_ids.append(meta[2])
+        objects = _git_cat_file_batch(clone_dir, sorted(tree_ids | set(blob_ids)))
+        return {
+            "format": RELEASE_PROOF_FORMAT,
+            "tag_name": tag_name,
+            "commit_id": commit,
+            "tag": base64.b64encode(tag_bytes).decode("ascii"),
+            "commit": base64.b64encode(commit_bytes).decode("ascii"),
+            "trees": {oid: base64.b64encode(body).decode("ascii")
+                      for oid, (kind, body) in sorted(objects.items()) if kind == "tree"},
+            "blobs": {oid: base64.b64encode(body).decode("ascii")
+                      for oid, (kind, body) in sorted(objects.items()) if kind == "blob"},
+        }
     rels: set = set()
     for rel in g("ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).decode(
             "utf-8", "surrogateescape").split("\0"):
@@ -16009,6 +16093,12 @@ def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | No
             if _git_object_id("tree", body) != oid:
                 raise ReleaseProofError("object_id_mismatch", f"tree {oid} does not hash to its id")
             trees[oid] = _git_tree_entries(body)
+        blobs = {}
+        for oid, b64 in (proof.get("blobs") or {}).items():
+            body = base64.b64decode(b64, validate=True)
+            if _git_object_id("blob", body) != oid:
+                raise ReleaseProofError("object_id_mismatch", f"blob {oid} does not hash to its id")
+            blobs[oid] = body
     except ReleaseProofError:
         raise
     except (ValueError, KeyError, TypeError, AttributeError) as e:
@@ -16063,6 +16153,14 @@ def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | No
 
     if root_tree not in trees:
         raise ReleaseProofError("object_id_mismatch", "proof lacks the commit's root tree")
+
+    def release_bytes(rel: str):
+        """Raw bytes of the release file at `rel`, when the proof carries
+        them (already re-hashed above and reached through the signed tree)."""
+        got = resolve(rel)
+        return blobs.get(got[1]) if got else None
+
+    resolve.release_bytes = release_bytes
     return tag_name, commit_id, resolve
 
 
@@ -16146,6 +16244,9 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
     info: dict = {"status": "rejected", "reason_code": "proof_malformed", "tag": None,
                   "accepted_paths_count": 0}
     base = next((b for b in base_shas if _gate_git_show_at_ref(root, b, LOCK_FILE) is not None), None)
+    if base is None and all(b == EMPTY_TREE_SHA for b in base_shas):
+        # A first push (new history): no earlier commit pins a release key.
+        return _gate_first_install_accepted(root, candidate_paths, head, proof_text, info)
     if base is None:
         info["reason_code"] = "no_base_lock"
         return set(), info
@@ -16192,6 +16293,179 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
             accepted.add(LOCK_FILE)
         else:
             info["lock_rejected"] = True
+    info["accepted_paths_count"] = len(accepted)
+    return accepted, info
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 — the first push of a fresh install
+#
+# `npm create tess` commits the whole framework in one seed commit. On the
+# first push there is no base commit, so no earlier tess.lock pins a release
+# key and the update check above has nothing to verify against; every
+# protected file then needed a verdict that no new user can sign. The npm
+# package ships `.tess/release-proof.json` for the exact signed release it was
+# built from (publish-npm.yml), the wizard writes it into the install, and the
+# gate accepts a first push whose protected files ARE that release:
+#   1. the proof verifies against the release keys this engine pins
+#      (RELEASE_ANCHOR_*), never keys chosen by the pushed tree alone;
+#   2. every protected path equals the release blob at the same path, except
+#      the two policy.yaml copies, which must equal the release policy with
+#      the wizard's one change applied (verifier_keys / signoff_keys emptied —
+#      it only removes trust);
+#   3. tess.lock differs from the release lock only by the wizard's re-pin of
+#      those policy files, render records of committed files and timestamps.
+# Hard-floor paths are never exempted; anything else still needs a verdict.
+# ---------------------------------------------------------------------------
+
+def _policy_reset_key_inline(text: str, key: str) -> str:
+    """Byte-for-byte port of create-tess/src/policy-reset.js
+    resetKeyToEmptyInline(): replace the `key:` block with `key: {}`."""
+    lines = re.findall(r"[^\n]*\n|[^\n]+$", text) if text else []
+
+    def lead(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    empty, header = f"{key}: {{}}", f"{key}:"
+    idx = indent = None
+    for i, line in enumerate(lines):
+        if line[lead(line):].startswith("#"):
+            continue
+        if line.strip() in (empty, header):
+            idx, indent = i, lead(line)
+            break
+    if idx is None:
+        raise ValueError(f"no `{key}:` key found in policy text")
+    if lines[idx].strip() == empty:
+        return text
+    end, pending = idx + 1, 0
+    while end < len(lines):
+        line = lines[end]
+        if line.strip() == "" or line[lead(line):].startswith("#"):
+            pending += 1
+            end += 1
+            continue
+        if lead(line) <= indent:
+            end -= pending
+            break
+        pending = 0
+        end += 1
+    return "".join(lines[:idx] + [" " * indent + empty + "\n"] + lines[end:])
+
+
+def _policy_reset_registries_text(text: str) -> str:
+    for key in ("verifier_keys", "signoff_keys"):
+        text = _policy_reset_key_inline(text, key)
+    return text
+
+
+def _first_install_lock_change_ok(rel_lock: dict, head_lock: dict, tag_name: str,
+                                  accepted_core: set, head_bytes) -> str | None:
+    """None when every release->head difference in tess.lock is one the
+    wizard makes; otherwise a short reason."""
+    if set(rel_lock) != set(head_lock):
+        return "top-level keys changed"
+    for key in rel_lock:
+        if key not in ("framework", "files", RENDER_OUTPUTS_KEY) and rel_lock[key] != head_lock[key]:
+            return f"{key} changed"
+    rfw, hfw = rel_lock.get("framework") or {}, head_lock.get("framework") or {}
+    for key in set(rfw) | set(hfw):
+        if key != "last_updated" and rfw.get(key) != hfw.get(key):
+            return f"framework.{key} changed"
+    if str(rfw.get("version")) != tag_name.lstrip("v"):
+        return "the release lock does not name the proven tag's version"
+    if (str(rfw.get("trusted_key_fingerprint") or "").replace(" ", "").upper() != RELEASE_ANCHOR_OPENPGP_FP
+            or str(rfw.get("trusted_ssh_key_fingerprint") or "").strip() != RELEASE_ANCHOR_SSH_FP):
+        return "the release lock pins other release keys than this engine"
+    rfiles, hfiles = rel_lock.get("files") or {}, head_lock.get("files") or {}
+    if set(rfiles) != set(hfiles):
+        return "lock entries added or removed"
+    for core_key, h in hfiles.items():
+        r = rfiles[core_key]
+        if not isinstance(h, dict) or not isinstance(r, dict):
+            return f"{core_key}: malformed entry"
+        for field in set(r) | set(h):
+            if field not in ("base_sha", "last_updated") and r.get(field) != h.get(field):
+                return f"{core_key}: {field} changed"
+        if r.get("base_sha") != h.get("base_sha"):
+            data = head_bytes(core_key) if core_key in accepted_core else None
+            if data is None or h.get("base_sha") != "sha256:" + hashlib.sha256(data).hexdigest():
+                return f"{core_key}: base_sha re-pinned to bytes that are not the installed release"
+    rro, hro = rel_lock.get(RENDER_OUTPUTS_KEY) or {}, head_lock.get(RENDER_OUTPUTS_KEY) or {}
+    if not isinstance(rro, dict) or not isinstance(hro, dict):
+        return "render_outputs malformed"
+    if set(rro) - set(hro):
+        return "render_outputs records removed"
+    for rel, rec in hro.items():
+        if rro.get(rel) == rec:
+            continue
+        data = head_bytes(rel)
+        if (not isinstance(rec, dict) or rec.get("status") != "rendered" or data is None
+                or rec.get("rendered_sha") != "sha256:" + hashlib.sha256(data).hexdigest()):
+            return f"render_outputs[{rel}] does not match the committed file"
+    return None
+
+
+def _gate_first_install_accepted(root: Path, candidate_paths: list, head: str, proof_text: str,
+                                 info: dict) -> tuple[set, dict]:
+    """Protected paths of a FIRST push that are exactly the signed release the
+    npm package shipped (see the section comment above)."""
+    info["first_push"] = True
+    try:
+        tag_name, commit_id, resolve = _release_proof_verify(
+            proof_text, RELEASE_ANCHOR_OPENPGP_FP,
+            _gate_git_regular_blob_bytes(root, head, RELEASE_KEY_FILE), None,
+            ssh_pin=RELEASE_ANCHOR_SSH_FP,
+            ssh_key_bytes=_gate_git_regular_blob_bytes(root, head, RELEASE_SSH_SIGNERS_FILE))
+    except ReleaseProofError as e:
+        info["reason_code"] = e.code
+        return set(), info
+    info.update(status="accepted", reason_code=None, tag=tag_name)
+    try:
+        head_index = _gate_git_ls_tree(root, head)
+    except GateSpineError:
+        info.update(status="rejected", reason_code="git_failed")
+        return set(), info
+
+    def head_bytes(rel):
+        return _gate_git_regular_blob_bytes(root, head, rel)
+
+    accepted = set()
+    for rel in candidate_paths:
+        if rel == LOCK_FILE:
+            continue
+        got = resolve(rel)
+        if got is not None and head_index.get(rel) == got[1]:
+            accepted.add(rel)
+        elif rel in _FIRST_INSTALL_POLICY_PATHS and head_index.get(rel):
+            release, mine = resolve.release_bytes(rel), head_bytes(rel)
+            try:
+                if (release is not None and mine is not None and mine
+                        == _policy_reset_registries_text(release.decode("utf-8")).encode("utf-8")):
+                    accepted.add(rel)
+            except (UnicodeDecodeError, ValueError):
+                pass
+    # A lock entry (keyed by its repo path, e.g. `.tess/core/policy/policy.yaml`)
+    # may be re-pinned only to the committed bytes of a file accepted above.
+    if LOCK_FILE in candidate_paths:
+        why = "release lock missing from the proof"
+        rel_lock_bytes = resolve.release_bytes(LOCK_FILE)
+        head_lock_bytes = head_bytes(LOCK_FILE)
+        if rel_lock_bytes is not None and head_lock_bytes is not None:
+            try:
+                rel_lock = yaml.safe_load(rel_lock_bytes.decode("utf-8"))
+                head_lock = yaml.safe_load(head_lock_bytes.decode("utf-8"))
+                why = "lock malformed"
+                if isinstance(rel_lock, dict) and isinstance(head_lock, dict):
+                    why = _first_install_lock_change_ok(rel_lock, head_lock, tag_name,
+                                                       set(accepted), head_bytes)
+            except (yaml.YAMLError, UnicodeDecodeError):
+                why = "lock unreadable"
+        if why is None:
+            accepted.add(LOCK_FILE)
+        else:
+            info["lock_rejected"] = True
+            info["lock_reason"] = why
     info["accepted_paths_count"] = len(accepted)
     return accepted, info
 
@@ -16372,13 +16646,16 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
     print(f"  changed paths: {safe['changed_paths_count']}")
     rp = safe.get("release_proof")
     if rp and rp["status"] == "accepted":
-        print(f"  release update: {rp['accepted_paths_count']} protected file(s) are exactly the "
+        what = "first push" if rp.get("first_push") else "release update"
+        print(f"  {what}: {rp['accepted_paths_count']} protected file(s) are exactly the "
               f"signed Tess OS release {rp['tag']} — no verdict needed for them")
         if rp["lock_rejected"]:
-            print("  release update: tess.lock has changes an update does not make — it still "
+            print(f"  {what}: tess.lock has changes "
+                  f"{'setup' if rp.get('first_push') else 'an update'} does not make — it still "
                   "needs a verdict")
     elif rp:
-        print(f"  release update: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
+        what = "first push" if rp.get("first_push") else "release update"
+        print(f"  {what}: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
               f"({rp['reason_code']}); protected files still need a verdict")
     for reason in safe["reasons"]:
         print(f"    - {reason}")

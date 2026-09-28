@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tess-os:brain:decision:1",
+  "title": "Tess brain decision record (front matter, spec 9.3)",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "type",
+    "title",
+    "status",
+    "tier",
+    "decided_by",
+    "source_quote",
+    "source_ref"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^D-\\d{8}-\\d{4}-[a-z0-9-]+$"
+    },
+    "type": {
+      "const": "decision"
+    },
+    "kind": {
+      "enum": [
+        "decision",
+        "requirement",
+        "constraint",
+        "question"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "proposed",
+        "pending-verification",
+        "accepted",
+        "rejected",
+        "superseded",
+        "retracted",
+        "unverified"
+      ]
+    },
+    "tier": {
+      "enum": [
+        "routine",
+        "material"
+      ]
+    },
+    "authority": {
+      "enum": [
+        "principal",
+        "approval",
+        "delegated"
+      ]
+    },
+    "decided_by": {
+      "type": "string"
+    },
+    "decider_seat": {
+      "type": "string"
+    },
+    "entity": {
+      "type": "string"
+    },
+    "consulted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "informed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "also_quoted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "approves_quote": {
+      "type": "string"
+    },
+    "delegation_ref": {
+      "type": "string"
+    },
+    "detected_by": {
+      "enum": [
+        "cue",
+        "decide",
+        "distill",
+        "onboarding",
+        "operator"
+      ]
+    },
+    "confirmed": {
+      "type": "boolean"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "verified_at": {
+      "type": "string"
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "body_sha256": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64}|)$",
+      "description": "set at acceptance; lint fails on any later body change"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_quote": {
+      "type": "string",
+      "description": "the principal's exact words (verified by V1)"
+    },
+    "source_speaker": {
+      "type": "string"
+    },
+    "source_at": {
+      "type": "string"
+    },
+    "source_ref": {
+      "type": "string",
+      "pattern": "^(brain/journal/.+\\.md#L\\d+|turns:\\d+|brain/brain\\.json#.+|)$",
+      "description": "journal path#L<n>; turns:<n> while pending-verification"
+    },
+    "source_session": {
+      "type": "string",
+      "description": "runtime:session_id"
+    }
+  }
+}

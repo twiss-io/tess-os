@@ -171,10 +171,14 @@ grows.
 
 Everything onboarding creates is already saved in git on this computer.
 
-A new instance's ship-gate refuses a push to a remote until the project has
-its own reviewer keys, because a push is where protected changes are checked
-(see [Gate operation and custody](../GATE_QUICKSTART.md)). Do not skip or
-disable the check to get past it. Until the keys are set up:
+A folder made with `npm create tess` carries the proof of the signed Tess OS
+release it came from (`.tess/release-proof.json`), so its first push to a
+remote passes the ship-gate with no reviewer keys, as long as Tess's
+protected files are exactly that release. A later change to a protected
+file, or a folder made another way (a git clone, `--template-source`),
+needs the project's own reviewer keys, because a push is where protected
+changes are checked (see [Gate operation and custody](../GATE_QUICKSTART.md)).
+Do not skip or disable the check to get past it. Until the keys are set up:
 
 - back up the folder like any other folder (Time Machine, an external drive,
   or your usual backup tool), or

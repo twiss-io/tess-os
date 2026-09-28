@@ -1,0 +1,7 @@
+{
+  "session_id": "11111111-aaaa-4bbb-8ccc-000000000001",
+  "transcript_path": "",
+  "cwd": "/work/fx",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "From now on, always reply in British English."
+}
