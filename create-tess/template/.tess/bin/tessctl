@@ -1556,6 +1556,10 @@ def render_agents_md(root: Path) -> str:
             content = f"<!-- MISSING: {rel_path} -->"
         tpl = tpl.replace(token, content)
 
+    # v0.2.1 Codex parity: the installed roster, computed (recruit/bench
+    # change it), so the doctrine never names a role that is not installed.
+    tpl = tpl.replace(WORKER_ROLES_TOKEN, _worker_roles_line(root))
+
     # Operator-fillable zones (parse_operator_stub's inject:true/false
     # contract — same convention render_claude_md() uses for
     # OPERATOR_TOKEN_MAP). Empty/inject:false by default: the framework
@@ -1575,6 +1579,30 @@ def render_agents_md(root: Path) -> str:
     # both the fragments above and the template's own prose.
     tpl = apply_token_sub(tpl, root)
     return tpl
+
+
+WORKER_ROLES_TOKEN = "{{WORKER_ROLES}}"
+
+
+def _worker_roles_line(root: Path) -> str:
+    """One line naming every INSTALLED role with its short title, e.g.
+    "`ada` Builder, `leah` Researcher". The title is the first sentence of
+    the role file's `description:` frontmatter. Pure function of the core
+    role files + tess.lock status, so AGENTS.md stays byte-identical for the
+    codex and generic targets. No installed roles -> "none installed"."""
+    parts = []
+    for name in _installed_role_names(root):
+        path = root / AGENTS_DISPATCH_CORE_DIR / f"{name}.md"
+        title = ""
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines()[1:20]:
+                if line.startswith("description:"):
+                    title = line.split(":", 1)[1].strip().split(". ", 1)[0].rstrip(".")
+                    break
+        except (OSError, UnicodeDecodeError):
+            pass
+        parts.append(f"`{name}` {title}".rstrip())
+    return ", ".join(parts) if parts else "none installed"
 
 
 def render_codex_config_toml(root: Path) -> str:
@@ -4712,13 +4740,25 @@ class CodexRenderTarget(RenderTarget):
     by the claude-code surface's own `.claude/commands/**` lock entries (the
     lock schema gives one core_key exactly one live_path). doctor/verify/
     `lock --check` drift-check them via `_check_untracked_render_generated()`.
-    Does NOT render `.codex/agents/` (no worker-profile agent set exists) or
-    `.codex/hooks.json` (hook translation is v0.2.1+; adapters/CONFORMANCE.md).
+      * `.codex/agents/<role>.toml` — one Codex custom agent per INSTALLED
+        role (_sync_codex_role_agents). AGENTS.md's "Roles and Dispatch"
+        section names the installed roles and tells the top-level Codex
+        session when to spawn one (v0.2.1 parity).
+      * Onboarding: `.codex/config.toml` carries an inline SessionStart hook
+        that runs scripts/brain/onboard.py (the same hook Claude Code runs).
+        Inline, not `.codex/hooks.json`, so an operator's own hooks.json stays
+        theirs. Codex runs it only in a trusted project, after the operator
+        trusts the hook in `/hooks`; the AGENTS.md BOOT block starts
+        onboarding without it.
+    Still does NOT translate the Claude PreToolUse gate hooks
+    (adapters/CONFORMANCE.md "What does not translate").
     """
 
     name = "codex"
-    doctrine_profile = "worker"  # G3: Tess renders no Codex agent roster, so
-                                 # "always dispatch" would be false here.
+    doctrine_profile = "worker"  # G3: Codex can spawn the rendered roles, but
+                                 # "always dispatch" stays false here: the top-
+                                 # level session works directly by default and
+                                 # spawns a role only when asked (v0.2.1).
 
     def live_globs(self) -> list:
         return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", ".codex/agents/**"]
@@ -14128,7 +14168,11 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
                 path_rule_matches.setdefault(rel_path, []).append(rule)
         for hf_rule in hard_floor_rules:
             globs = hf_rule.get("globs") or []
-            if globs and path_matches_globs(rel_path, globs):
+            # v1.0.0: `exclude_globs` carves public templates (.env.example)
+            # out of a floor. Baseline union still applies to the push that
+            # adds an exclusion (_gate_union_baseline_matches).
+            if (globs and path_matches_globs(rel_path, globs)
+                    and not path_matches_globs(rel_path, hf_rule.get("exclude_globs") or [])):
                 hard_floor_matches.setdefault(rel_path, []).append(hf_rule)
     return path_rule_matches, hard_floor_matches
 

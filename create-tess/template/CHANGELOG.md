@@ -5,7 +5,7 @@ All notable changes to Tess OS are documented here. This project adheres to
 
 ## [Unreleased] — v1.0.0
 
-Integrates the three v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install) and the fixes that make them work together. Versions are not bumped yet.
+Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity) and the fixes that make them work together. Versions are not bumped yet.
 
 **Integrity (#203)**
 - Security (CRITICAL): the ship gate now lists type changes, deletions and renames of protected paths (`--no-renames --diff-filter=ACDMRTUXB`). `.tess/core/**` and `.tess/tess.lock` are security-tier. doctor, verify and `lock --check` fail on a symlink at a security-tier path. Supersedes #71.
@@ -30,10 +30,20 @@ Integrates the three v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install) 
 - create-tess asks who Tess is for, sets up the second brain itself, and ends with plain next steps (`--mode`, `--preset`, `--no-onboarding`).
 - Release: create-tess publishes only from a tag signed by the pinned release key, in the `npm-publish` environment, with a pinned npm; framework releases fail on any version mismatch; all actions SHA-pinned; macOS and packed-tarball e2e CI legs.
 
+**Trust model (#205)**
+- Security: SECURITY.md states the trust model. The release signing key is the single root of trust and signing a release tag is the single human step. A Cyra verifier signature is an automated review attestation, not a human approval. `main` requires no human review, by design. README key-custody passages match.
+- Release: `publish-npm.yml` also fails closed unless the run is on a `create-tess-v*` tag ref, before the signature check (merged with #204's hardening).
+
+**Codex parity (#206)**
+- AGENTS.md's dispatch scope names the installed roles and tells a top-level Codex session when to spawn one (`_worker_roles_line`). `.codex/config.toml` carries an inline SessionStart hook that runs onboarding (after the operator trusts it in `/hooks`). CONFORMANCE and the Codex adapter docs updated; `tests/test_v021_codex_parity.py`.
+
 **Integration fixes (v1.0.0)**
 - Updates pass the gate without a verdict: `tessctl update` and `self-update` write `.tess/release-proof.json` (the signed release tag, its commit and the git tree objects for the files an update writes) and record the verified commit in `framework.upstream_commit`. The gate re-hashes every object, verifies the tag with the release key and pinned fingerprint from the base commit, refuses a release older than the installed version, and accepts a protected change only when its bytes equal the signed release at the same path. `tess.lock` changes pass only if they are the changes an update makes. A hand-edited core file still needs a verdict.
 - No gpg (stock macOS): `tessctl gate install-hooks` installs every hook and explains in plain English what is limited. Without gpg, ordinary work passes and protected changes are refused. `tessctl update` without gpg names the one install step (`brew install gnupg`) and changes nothing.
 - `scripts/brain/oobe/seed.py` (new in #204) and the changed `apply.py`/`restore.py` are re-pinned in `.tess/core/pinned-scripts.sha256`, so the pinned-hook launcher (#202) runs #204's onboarding. The first-commit fallback private globs in `seed.py` now include #202's `.private/` folders, matching the publish-clean gate.
+- Merged `publish-npm.yml` (#204 + #205): tag-only trigger, `verify_release_tag.sh` against the committed key and pinned fingerprint `EBEABC618C11B6A7340A7D1601DD637667B8CC89`, the `npm-publish` environment (tag-only rule, no reviewers), npm pinned to 12.1.0, and #205's tag-ref guard. #205's second check against a `TESS_SIGNING_PUBKEY` secret was dropped as a duplicate.
+- Security policy: committed `.env` templates (`**/*.env.example`, `**/*.env.*.example`) are no longer a credentials hard floor, through a new optional `exclude_globs` on hard-floor rules. `.env`, other `.env.*` files, `*.env`, the age identities and `secrets/**` still need a signed operator sign-off. The exclusion does not apply to the push that introduces it (baseline union).
+- Docs: README status banner and "Important limits today" updated for the trust model and the closed type-swap bypass. SECURITY.md states that A14 (multi-push policy reduction on `main`) is out of scope, and describes the fail-closed `--trust-on-first-use` behaviour correctly.
 - `create-tess/template` rebuilt from the integrated tree.
 
 ## [0.2.0] — 2026-09-24
