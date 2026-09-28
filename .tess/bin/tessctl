@@ -504,6 +504,10 @@ AGENTS_TOKEN_MAP = {
 }
 AGENTS_MD_TPL = ".tess/core/templates/agents-md/AGENTS.md.tpl"
 CODEX_CONFIG_TOML_TPL = ".tess/core/templates/agents-md/codex-config.toml.tpl"
+# v1.0: Codex command rules (prefix_rule) — the backstop behind the tess-gate
+# PreToolUse hook that codex-config.toml.tpl wires (adapters/codex/README.md).
+CODEX_RULES_TPL = ".tess/core/templates/agents-md/codex-tess.rules.tpl"
+CODEX_RULES_LIVE = ".codex/rules/tess.rules"
 COMMANDS_CORE_DIR = ".tess/core/commands"
 
 # v0.2.0 (ws-rt) — Codex commands as Agent Skills. Codex never loads a
@@ -1631,6 +1635,23 @@ def render_codex_config_toml(root: Path) -> str:
     return rendered
 
 
+def render_codex_rules(root: Path) -> str:
+    """
+    Render `.codex/rules/tess.rules` from the static core fragment (v1.0).
+    Codex prefix rules: `forbidden` for `--no-verify` and `gh auth token`,
+    `prompt` for remote, visibility, hooksPath and force-push changes. A
+    backstop only — rules match a command prefix, so the PreToolUse hook in
+    `.codex/config.toml` (`.claude/hooks/tess-gate.py`) is the real guard.
+    """
+    src = root / CODEX_RULES_TPL
+    if not src.exists():
+        sys.exit(f"tessctl render: {CODEX_RULES_TPL} not found at {src}")
+    rendered = apply_token_sub(src.read_text(encoding="utf-8"), root)
+    if "{{" in rendered:
+        sys.exit(f"tessctl render: {CODEX_RULES_TPL} has an unresolved {{{{TOKEN}}}} after substitution")
+    return rendered
+
+
 # ---------------------------------------------------------------------------
 # Agent Skills rendering (v0.2.0 — the `codex` target's command surface; see
 # AGENT_SKILLS_DIR above for why skills replace `.codex/prompts/`).
@@ -2043,6 +2064,7 @@ def _live_path_is_security(lock: dict, rel: str) -> bool:
 ENFORCEMENT_RENDER_OUTPUTS = frozenset({
     ".claude/settings.json",
     ".codex/config.toml",
+    CODEX_RULES_LIVE,
     "AGENTS.md",
     "GEMINI.md",
     ".gemini/settings.json",
@@ -4754,8 +4776,15 @@ class CodexRenderTarget(RenderTarget):
         theirs. Codex runs it only in a trusted project, after the operator
         trusts the hook in `/hooks`; the AGENTS.md BOOT block starts
         onboarding without it.
-    Still does NOT translate the Claude PreToolUse gate hooks
-    (adapters/CONFORMANCE.md "What does not translate").
+      * Safety gate (v1.0): `.codex/config.toml` also carries a PreToolUse
+        hook on Bash/apply_patch/Agent/MCP that runs
+        `.claude/hooks/tess-gate.py` through run-pinned.py `--on-fail block`
+        (secret scan, protected-path writes, hook bypasses, public-remote
+        push guard; every "ask" is sent as "deny" because Codex cannot ask
+        from a hook), and `.codex/rules/tess.rules` (render_codex_rules) is
+        the prefix-rule backstop. Codex level: Enforced once the operator
+        trusts the project and approves the hooks in `/hooks`
+        (adapters/CONFORMANCE.md).
     """
 
     name = "codex"
@@ -4765,7 +4794,8 @@ class CodexRenderTarget(RenderTarget):
                                  # spawns a role only when asked (v0.2.1).
 
     def live_globs(self) -> list:
-        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", ".codex/agents/**"]
+        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", CODEX_RULES_LIVE,
+                ".codex/agents/**"]
 
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
@@ -4784,6 +4814,10 @@ class CodexRenderTarget(RenderTarget):
                 render_agent_skill_openai_yaml(root, name),
             ))
         out.append((".codex/config.toml", render_codex_config_toml(root).encode("utf-8")))
+        # Only when the core carries the rules template (a v1.0+ core); an older
+        # core, or a test fixture without it, renders everything else unchanged.
+        if (root / CODEX_RULES_TPL).exists():
+            out.append((CODEX_RULES_LIVE, render_codex_rules(root).encode("utf-8")))
         return out
 
     def render(self, root: Path, verbose: bool = False) -> dict:
@@ -4799,6 +4833,7 @@ class CodexRenderTarget(RenderTarget):
             (f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}*/ ({n_skills} skills)",
              lambda r: r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}")),
             (".codex/config.toml", lambda r: r == ".codex/config.toml"),
+            (CODEX_RULES_LIVE, lambda r: r == CODEX_RULES_LIVE),
         ], verbose)
         _retire_render_outputs(root, self)
         # v0.2 ten-role roster: mirror each installed role as a Codex
@@ -4814,6 +4849,10 @@ class CodexRenderTarget(RenderTarget):
             return render_agents_md(root).encode("utf-8")
         if live_rel == ".codex/config.toml":
             return render_codex_config_toml(root).encode("utf-8")
+        if live_rel == CODEX_RULES_LIVE:
+            if not (root / CODEX_RULES_TPL).exists():
+                return None
+            return render_codex_rules(root).encode("utf-8")
         name, inner = _agent_skill_command_for(live_rel)
         if name is not None:
             if inner == "SKILL.md":
@@ -4828,6 +4867,8 @@ class CodexRenderTarget(RenderTarget):
 
     def render_generated_paths(self, root: Path) -> set:
         paths = {"AGENTS.md", ".codex/config.toml"}
+        if (root / CODEX_RULES_TPL).exists():
+            paths.add(CODEX_RULES_LIVE)
         for name in _command_names(root):
             paths.add(f"{agent_skill_dir(name)}/SKILL.md")
             paths.add(f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}")

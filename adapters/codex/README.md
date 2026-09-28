@@ -1,9 +1,11 @@
 # Codex render target — pilot
 
 > This is a shipped Tess OS render target, not certified native-parity support.
-> The driver has not been live-tested against Codex event samples. Treat the
-> files below as a project-level pilot and confirm current Codex behavior in
-> your environment before relying on them. See
+> The driver has not been live-tested against Codex event samples. The v1.0
+> safety gate was checked against live codex-cli 0.158 hook payloads (see
+> "Safety gate in Codex"). Treat the other files below as a project-level
+> pilot and confirm current Codex behavior in your environment before relying
+> on them. See
 > [Support and status](../../docs/STATUS.md).
 
 Implementation: `CodexRenderTarget` in `.tess/bin/tessctl`
@@ -16,7 +18,8 @@ Implementation: `CodexRenderTarget` in `.tess/bin/tessctl`
 | `AGENTS.md` | `render_agents_md()` — SHARED with the `generic` target (see below) |
 | `.agents/skills/tess-<name>/SKILL.md` | one Agent Skill per `.tess/core/commands/*.md` command body (the same 26 files the claude-code target restores to `.claude/commands/*.md`) — `render_agent_skill_md()`: frontmatter `name` (`tess-<name>`, equal to the directory name) and `description` (the command's own), then the body through `apply_token_sub()` with relative links rebased onto the skill directory |
 | `.agents/skills/tess-<name>/agents/openai.yaml` | `render_agent_skill_openai_yaml()` — `policy: allow_implicit_invocation: false`, so Codex runs a Tess command only when the user names it (`$tess-<name>`), the way a Claude Code slash command works |
-| `.codex/config.toml` | `.tess/core/templates/agents-md/codex-config.toml.tpl` — `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`, and one inline `[[hooks.SessionStart]]` that runs `scripts/brain/onboard.py hook session-start --runtime codex` (v0.2.1) |
+| `.codex/config.toml` | `.tess/core/templates/agents-md/codex-config.toml.tpl` — `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`, one inline `[[hooks.SessionStart]]` that runs `scripts/brain/onboard.py hook session-start --runtime codex` (v0.2.1), and one inline `[[hooks.PreToolUse]]`, the Tess safety gate (v1.0, see below) |
+| `.codex/rules/tess.rules` | `.tess/core/templates/agents-md/codex-tess.rules.tpl` — `render_codex_rules()`: Codex prefix rules, the backstop behind the gate (v1.0) |
 | `.codex/agents/<role>.toml` | one Codex custom agent per INSTALLED role in `.tess/core/agents-dispatch/` (`_render_codex_agent_bytes()`): `name`, `description`, `sandbox_mode` (from the role's `sandbox:`; anything but `workspace-write` becomes `read-only`), `developer_instructions` = the role body. Removed when a role is benched; files you author in the same directory are never touched |
 
 `CodexRenderTarget.expected_live_bytes()` and `render_generated_paths()`
@@ -26,11 +29,97 @@ skills get drift-checked without an individual `tess.lock` entry (the
 underlying `.tess/core/commands/*.md` source is already base_sha-pinned by
 the claude-code surface's own `.claude/commands/**` entries).
 
-It does **not** render `.codex/hooks.json` (the onboarding hook is inline in
-`.codex/config.toml`, so a `hooks.json` you write stays yours; Codex merges
-both and warns) and translates none of the Claude PreToolUse gate hooks. See
-[`../CONFORMANCE.md`](../CONFORMANCE.md) for what that means for enforcement
-(Codex is Partial).
+It does **not** render `.codex/hooks.json`: both Tess hooks are inline in
+`.codex/config.toml`, so a `hooks.json` you write stays yours (Codex loads
+both and warns "prefer a single representation for this layer"). See
+[`../CONFORMANCE.md`](../CONFORMANCE.md) for the enforcement level (listed as
+Partial as shipped; the gate meets the Enforced definition once you do the
+one-time setup below).
+
+## Safety gate in Codex (v1.0)
+
+### Do this once
+
+1. Trust the project when Codex asks (or set `trust_level = "trusted"` for it
+   in your own `~/.codex/config.toml`). Codex ignores a project's
+   `.codex/config.toml`, hooks and rules until you do.
+2. Start `codex` in the project, type `/hooks`, and approve the two Tess hooks
+   (`Tess: safety check` and `Tess: checking onboarding`). Codex pins your
+   approval to each hook's hash, so after a Tess update that changes a hook,
+   `/hooks` asks again; until you re-approve, that hook does not run.
+
+Until both are done, nothing Tess ships blocks a Codex tool call; only
+Codex's own sandbox and approval settings apply. The `AGENTS.md` harness note
+tells the Codex session this, so it can remind you.
+
+### What the gate checks
+
+One PreToolUse hook, matcher `^(Bash|apply_patch|Edit|Write|Agent|spawn_agent|mcp__.*)$`,
+runs `.claude/hooks/tess-gate.py --runtime codex` through
+`.claude/hooks/run-pinned.py --on-fail block`. The launcher checks the
+script against the sha pinned in `.tess/core/pinned-scripts.sha256` (itself
+pinned by `.tess/tess.lock`); a missing, edited or unpinned script blocks
+the call rather than skipping the check. So do a missing `python3` and a
+session started outside a Tess project (the hook walks up from the session
+cwd to the nearest `.tess/tess.lock`).
+
+| Codex event / tool (0.158) | Can the hook block it? | Tess check wired |
+|---|---|---|
+| PreToolUse `Bash` (shell and `exec_command`; payload `tool_input.command` is the command string) | Yes: `permissionDecision: "deny"` or exit 2 | Secret-shaped values (PEM, GitHub, Stripe, Slack, AWS, age formats); `--no-verify` and `git commit -n`; `core.hooksPath` via `-c`, `--config-env`, `git config`, `GIT_CONFIG_*` or `export`; shell writes (`>`, `tee`, `sed -i`, `rm`, `mv`, `cp`, `git rm`, ...) to protected files and under `.git/hooks`; `gh auth token`; `git push` of brain/ or clients/ data to a public or unverifiable remote (runs `tessctl doctor --publish-remote`, the pre-push guard's own check). Ask, sent as deny: force push, `git remote add/set-url/rename/remove`, visibility changes (`gh repo edit --visibility`, `gh repo create --public`, `gh api ... visibility=`). Nested `bash -c`, `sh -c` and `eval` are read too. |
+| PreToolUse `apply_patch` (also matched as `Edit`/`Write`; payload `tool_input.command` is the patch text, absolute paths) | Yes | Every `*** Add/Update/Delete File:` and `*** Move to:` path is resolved (symlinks, `..`, case) and checked against the protected list; a patch whose files cannot be read is denied. |
+| PreToolUse `spawn_agent` (matched as `Agent`) | Yes | The full `vault-dispatch-scan.py` pattern set over the whole dispatch, the same scan Claude runs on `Task`/`Agent`. |
+| PreToolUse `mcp__*` | Yes | A write-shaped MCP tool (name contains write, edit, create, move, delete, ...) aimed at a protected path. |
+| PreToolUse on hosted tools (web search) | No: hosted tools skip hooks | None. |
+| PermissionRequest | Yes (allow/deny an approval prompt) | Not used. The PreToolUse gate runs first. |
+| SessionStart | Adds context only | Onboarding check (`scripts/brain/onboard.py`), unchanged from v0.2.1. |
+| UserPromptSubmit, PostToolUse, SessionEnd | UserPromptSubmit and PostToolUse can block; SessionEnd cannot | Not rendered: Claude's UTC context, task-lock and warn-only dispatch-guard hooks serve the conductor profile, and the Codex target uses the worker profile. |
+
+Protected files are every `.tess/tess.lock` entry tagged `tier: security`
+plus `PROTECTED_GLOBS` in the gate: the security-tier doctrine, `core/policy/**`,
+`core/contracts/**`, `.tess/bin/**`, `.tess/core/**`, `.tess/tess.lock`,
+`.tess/keys/**`, `.tess/gate/**`, `.github/workflows/**`, `.claude/hooks/**`,
+`.claude/settings.json`, `scripts/brain/**`, `CLAUDE.md`, `AGENTS.md`,
+`GEMINI.md`, `.codex/config.toml`, `.codex/hooks.json`, `.codex/rules/**`,
+`.git/hooks/**`, `.git/config` and `.gitleaks.toml`. Reading them is fine.
+To change one, do it yourself outside the agent; the ship gate still asks for
+a signed verdict.
+
+Why deny instead of ask: Codex parses `permissionDecision: "ask"` but does not
+support it; the hook fails and the command runs
+([hooks](https://learn.chatgpt.com/docs/hooks.md), "Unsupported PreToolUse
+features"). A payload with `turn_id` is treated as Codex even without
+`--runtime codex`. Every deny and ask is appended, redacted, to
+`~/.cache/tess/gate-decisions.log` (`TESS_GATE_LOG` overrides).
+
+### Rules backstop
+
+`.codex/rules/tess.rules` forbids `git <commit|push|merge|rebase|am|cherry-pick|revert|pull> --no-verify`,
+`git commit -n` and `gh auth token`, and prompts for `git -c`, `git config`
+hook and scope changes, `git remote add/set-url/rename/remove`,
+`gh repo edit/create/rename/delete/archive` and force pushes. Rules match only
+a command prefix (`git commit -m x --no-verify` is not caught), and Codex loads
+them only in a trusted project, so they are a backstop for an unapproved hook,
+not the guard. Check one with
+`codex execpolicy check --pretty --rules .codex/rules/tess.rules -- <command>`.
+
+### Live check (2026-09-29, codex-cli 0.158.0, `gpt-6-astra`)
+
+A fresh clone of this branch, run with `codex exec --json
+--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox
+-c 'projects."<path>".trust_level="trusted"'` (so no sandbox or approval
+prompt could stand in for the gate), plus a throwaway project `hooks.json`
+that recorded each payload:
+
+| Prompt | Result |
+|---|---|
+| Run `git commit --allow-empty --no-verify -m ...` | Blocked; no commit. The Tess gate logged a deny for the call. On the test machine a user-level git guard also denied it and its message is the one Codex showed. |
+| `apply_patch` a line onto `conductor/guardrails.md` | Blocked with `TESS GATE: blocked because it edits .../conductor/guardrails.md, a protected Tess path`; file unchanged; the model reported the block and did not retry another way. |
+| `apply_patch` a new `notes/e2e-normal.md`, then `git add` and `git commit` | Both allowed; the commit landed. The gate returned nothing on all 9 calls in the run. |
+
+Payloads seen: `tool_name` `Bash` with `tool_input.command` a string, and
+`apply_patch` with `tool_input.command` the patch text; every payload carried
+`turn_id` and `permission_mode` (`bypassPermissions` in these runs).
+Unit and command-level tests: `tests/test_codex_gate.py`.
 
 ## Roles, onboarding and brain capture in Codex (v0.2.1)
 
@@ -161,9 +250,10 @@ subagents (`.codex/agents/*.toml`, the `spawn_agent` tool —
 [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents.md)),
 and since v0.2.1 this target renders the installed roster there and
 `AGENTS.md` tells a Codex session how and when to spawn a role. It is still
-Tier B: nothing Tess ships can block a Codex tool call, and the conductor
-doctrine (always hand work to a role) is not mounted — a Codex session works
-directly by default and uses a role when asked.
+Tier B: since v1.0 the Tess safety gate can block a Codex tool call (after
+the one-time setup above), but the conductor doctrine (always hand work to a
+role) is not mounted — a Codex session works directly by default and uses a
+role when asked.
 
 ## Doctrine profile (G3, 2026-07-08)
 

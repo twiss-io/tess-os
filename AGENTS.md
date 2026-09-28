@@ -70,7 +70,7 @@ A push touching a path matched by a `require_verdict` rule in `core/policy/polic
 
 ## Command Shortcuts
 
-This project's commands (`.tess/core/commands/**`) are rendered as Agent Skills at `.agents/skills/tess-<name>/SKILL.md` by the `codex` target — Codex, Gemini CLI, Cursor, Copilot CLI, OpenCode and Amp all read `.agents/skills/`. In Codex, run one with `$tess-<name>` or `/skills`; they are explicit-only (never picked implicitly). The `generic` target mirrors the same bodies as plain `prompts/<name>.md` for any other AGENTS.md-reading agent.
+This project's commands (`.tess/core/commands/**`) are rendered as Agent Skills at `.agents/skills/tess-<name>/SKILL.md` by the `codex` target — Codex, Gemini CLI, Cursor, Copilot CLI, OpenCode and Amp all read `.agents/skills/`. In Codex, run one with `$tess-<name>` or `/skills`; they are explicit-only (never picked implicitly). The `generic` target mirrors the same bodies as plain `prompts/<name>.md` for any other AGENTS.md-reading agent. In Codex, Tess's safety gate is a PreToolUse hook in `.codex/config.toml` (with `.codex/rules/tess.rules` as a backstop). It runs only after the user trusts this project and approves the Tess hooks in `/hooks`, and again after each Tess update. When a Tess hook blocks a call, tell the user its reason and what it says to run; never reach the same result another way.
 
 These are optional — read one only if invoked by name; this digest does not reproduce their contents (see the banner above for why it stays lean).
 
