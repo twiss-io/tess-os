@@ -114,7 +114,11 @@ policy:
         wrapper: the workflow gates its trigger FILE but was not gating the
         CODE that file invokes) and the hard-floor SIGN-OFF ARTIFACT
         DIRECTORY (.tess/gate/signoffs/**: a sign-off used to be an
-        unauthenticated JSON file any agent could write). Silently weakening
+        unauthenticated JSON file any agent could write), PLUS — v0.2.1
+        (2026-09-29 review, CRITICAL) — the pristine core mirror
+        (.tess/core/**) and its pin file (.tess/tess.lock): together they are
+        what doctor/verify compare the live security doctrine against, so an
+        unreviewed edit to both could re-bless tampered doctrine. Silently weakening
         any of these is exactly as consequential as an unreviewed production
         change — treat edits here as prod_touching.
       globs:
@@ -131,6 +135,8 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+        - .tess/core/**
+        - .tess/tess.lock
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
