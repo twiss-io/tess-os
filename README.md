@@ -5,7 +5,7 @@
 [![Latest release](https://img.shields.io/github/v/release/twiss-io/tess-os)](https://github.com/twiss-io/tess-os/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/twiss-io/tess-os/ci.yml?label=CI)](https://github.com/twiss-io/tess-os/actions/workflows/ci.yml)
 
-> **Status: technology preview. Do not use the current release or `main` to protect production merges.**
+> **Status: stable (v1.0.0). What you install is protected by the signed release tag and the pinned release key, not by `main`: merges to `main` are automated and need no human review. See the [Trust model](SECURITY.md#trust-model).**
 
 **Your own AI, not a subscription to someone else's assistant. It keeps a
 plain record of what happened — and can prove what a change went through
@@ -85,7 +85,7 @@ message such as **"no covering APPROVE verdict found"** is an expected block,
 not an invitation to create a key, sign the candidate's own work, or work
 around the gate.
 
-Facts for v0.2.0, re-verified on 2026-09-24:
+Facts for v1.0.0, as of 2026-09-29:
 
 1. **Verifier approvals are automated attestations.** The Cyra verifier key
    has no passphrase and is used by the review automation, by design. An
@@ -102,17 +102,22 @@ Facts for v0.2.0, re-verified on 2026-09-24:
    approving reviews, and the GitHub token the build agents use has admin
    rights on the repository. `main` is therefore not a release; only a signed
    tag is.
-3. **The gate is a non-authoritative preview.** The P0 type-swap gate
-   bypass (#71 lineage; its fix #181 is deferred to v0.2.1) and the A14
-   multi-push policy-reduction case are still open, and the merge-admission
-   topology (#76) is undecided.
+3. **The gate is a merge check, not the release control.** The P0
+   type-swap gate bypass (#71 lineage) is closed: the gate now sees type
+   changes, deletions and renames of protected paths. The A14 multi-push
+   policy-reduction case is out of scope under the trust model: `main`
+   protections are best-effort, and users are protected by the signed
+   release and the pinned key when they update (see
+   [SECURITY.md](SECURITY.md#trust-model)).
 4. **The human sign-off registry is empty**, so Rule-18 hard-floor actions
-   remain unavailable through repository evidence alone.
+   remain unavailable through repository evidence alone. Committed `.env`
+   templates (`.env.example`) are not a hard floor; `.env` and other secret
+   files are.
 
-Until those are resolved, a passing local command or GitHub Action is useful
-engineering evidence, not a production admission control. The committed
-`gate-arena` scorecard on `main` reports **12/12 attacks blocked**. A14 is a
-disclosed but untested case and is not included in that score. The score is
+A passing local command or GitHub Action is useful engineering evidence about
+`main`; the release signature is what admits code to your install. The
+committed `gate-arena` scorecard on `main` reports **12/12 attacks blocked**.
+A14 is out of scope under the trust model and is not included in that score. The score is
 disclosed evidence, not a production-readiness certificate. Full detail:
 [Support and status](docs/STATUS.md).
 

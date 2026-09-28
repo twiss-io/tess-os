@@ -61,7 +61,7 @@ comes from a tag signed by that key.
 |---|---|---|
 | GitHub Release (`v*` tags) | `release.yml` Gate 1: the tag must be annotated and pass `git verify-tag` against the `TESS_SIGNING_PUBKEY` secret. | GitHub Actions |
 | npm `create-tess` (`create-tess-v*` tags) | `publish-npm.yml` Gate 0: annotated tag, `VALIDSIG` from the pinned fingerprint above. The job runs in the `npm-publish` environment, which only admits `create-tess-v*` tags, and npm Trusted Publishing is bound to that environment. | GitHub Actions |
-| `tessctl update` / `self-update` | The tag is verified in an isolated GNUPGHOME seeded only with the pinned `framework.trusted_key_fingerprint` before any file is extracted. If no fingerprint is pinned, the first key seen is recorded (trust on first use). | The user's machine |
+| `tessctl update` / `self-update` | The tag is verified in an isolated GNUPGHOME seeded only with the pinned `framework.trusted_key_fingerprint` before any file is extracted. If no fingerprint is pinned, the update refuses unless the operator passes `--trust-on-first-use`, which records the first signer seen. New installs ship with the fingerprint pinned. | The user's machine |
 
 Repository rulesets back this up. `v*` and `create-tess-v*` tags cannot be moved
 or deleted by anyone, including admins. Only repository admins can create them.
@@ -99,8 +99,9 @@ unreviewed-by-a-human code. That is why `main` is not a release.
 **Limits, stated plainly:**
 - The build automation's GitHub credentials have **admin** rights. Someone holding those credentials can create release tags and edit workflows, so the CI gates are not the last line against them. For `tessctl update` with a pinned fingerprint, the check on the user's machine still holds, because no repository change can forge the release signature.
 - GitHub Release pages and uploaded assets are not signed artifacts; the signed tag is. Verify with `git verify-tag <tag>` against the key above.
-- An unpinned `tessctl` install trusts the first signer it sees. Pin `framework.trusted_key_fingerprint` to the fingerprint above.
+- An unpinned `tessctl` install refuses to update; with `--trust-on-first-use` it trusts the first signer it sees. Keep `framework.trusted_key_fingerprint` pinned to the fingerprint above.
 - If the release key or the maintainer's machine is compromised, this model is compromised. Report suspected misuse privately (see above).
+- **Multi-push policy reduction on `main` (A14, the #181 lineage) is out of scope.** Someone with write access can weaken `policy.yaml` in one merge and use the weaker policy in a later one; the gate only stops a relaxation from applying to the push that introduces it. This is accepted: `main` protections are best-effort, `main` is not a release, and users are protected by the signed release tag and the pinned key when they install or update. Reports of this pattern alone are not treated as vulnerabilities; a way to get unsigned code accepted by `tessctl update` with a pinned fingerprint is.
 
 ## Scope and threat model
 
