@@ -236,12 +236,21 @@ policy:
         key in signoff_keys below — an unsigned/hand-authored/forged
         sign-off can no longer clear this floor (see signoff_keys' own
         custody-boundary comment).
+        v1.0.0: committed `.env` TEMPLATES (`.env.example`,
+        `.env.<name>.example`) are excluded. They hold placeholder names, no
+        values, and are public by design; requiring a signed sign-off for
+        every edit made any release that touched one unmergeable. Real
+        secret files (`.env`, `.env.local`, `.env.production`, ...), the age
+        identities and everything under `secrets/` stay covered.
       globs:
         - "**/*.env"
         - "**/*.env.*"
         - "**/vault.age"
         - "**/*identity.age"
         - "**/secrets/**"
+      exclude_globs:
+        - "**/*.env.example"
+        - "**/*.env.*.example"
 
     - id: money-movement
       category: money_movement
