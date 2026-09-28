@@ -160,7 +160,20 @@ except ImportError:  # pragma: no cover — POSIX-only (Linux/macOS CI + darwin 
 try:
     import yaml
 except ImportError:
-    sys.exit("tessctl requires pyyaml: pip install pyyaml")
+    # Stock macOS /usr/bin/python3 has no PyYAML. Fall back to the unmodified
+    # PyYAML copy vendored at .tess/vendor/yaml (see .tess/vendor/README.md)
+    # so a fresh install works with zero pip steps. Appended, not prepended:
+    # an installed PyYAML always wins when present.
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "vendor"))
+    try:
+        import yaml
+    except ImportError:
+        sys.exit(
+            "tessctl could not load its YAML reader. The bundled copy at "
+            ".tess/vendor/yaml is missing. Re-run the installer "
+            "(npx create-tess@latest), or install it yourself with: "
+            "python3 -m pip install pyyaml"
+        )
 
 
 class GateError(Exception):

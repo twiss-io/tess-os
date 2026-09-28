@@ -54,6 +54,8 @@ const VALUE_ALIASES = {
   '--template-ref': 'templateRef',
   '--target': 'target',
   '--dir': 'target',
+  '--mode': 'mode',
+  '--preset': 'preset',
 };
 
 const BOOL_ALIASES = {
@@ -64,6 +66,7 @@ const BOOL_ALIASES = {
   '--no-verify': 'noVerify',
   '--no-git-init': 'noGitInit',
   '--no-gate-hooks': 'noGateHooks',
+  '--no-onboarding': 'noOnboarding',
   '--help': 'help',
   '-h': 'help',
 };
@@ -76,6 +79,7 @@ export function parseArgs(argv) {
     noVerify: false,
     noGitInit: false,
     noGateHooks: false,
+    noOnboarding: false,
     help: false,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
     templateRef: process.env.TESS_TEMPLATE_REF || null,
@@ -159,6 +163,12 @@ OPTIONS
                                  only the suggested lenses differ (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)
                                  chief-of-staff|co-founder|strategist|guide|operator
+  --mode <personal|agency|organisation>  who this is for: just you, your business
+                                 with clients, or a team (default: personal)
+  --preset <none|solo-consultant|startup>  optional starter kit: solo-consultant
+                                 (agency only) or startup (organisation only)
+  --no-onboarding                do not set up the second brain now; Tess
+                                 offers it the first time you open the folder
   --target, --dir <path>         target directory (default: cwd)
   --template-source <url|path>   OPT-IN: fetch the Tess OS template from this
                                  git URL or local path instead of the copy

@@ -65,6 +65,7 @@ if (!existsSync(join(REPO_ROOT, 'tess.manifest.json'))) {
 }
 
 const { isExcludedRel } = await import(join(PKG_DIR, 'src', 'ignore.js'));
+const { packGitignores, SHIPPED_GITIGNORE } = await import(join(PKG_DIR, 'src', 'dotfiles.js'));
 
 let lsFilesOut;
 try {
@@ -89,6 +90,12 @@ for (const rel of tracked) {
   if (rel === 'create-tess' || rel.startsWith('create-tess/')) continue;
   // The single shared secrets + framework-internal-CI exclusion filter.
   if (isExcludedRel(rel)) continue;
+  // A tracked file literally named `gitignore` would be renamed to
+  // `.gitignore` at scaffold time (src/dotfiles.js); refuse to build rather
+  // than silently turn it into ignore rules.
+  if (rel.split('/').pop() === SHIPPED_GITIGNORE) {
+    die(`tracked file ${rel} is named "${SHIPPED_GITIGNORE}", which the bundle reserves for .gitignore files.`);
+  }
 
   keepFiles.add(rel);
   const parts = rel.split('/');
@@ -124,6 +131,11 @@ for (const entry of readdirSync(REPO_ROOT)) {
     dereference: false,
   });
 }
+
+// npm drops every `.gitignore` from a packed tarball, so ship them as
+// `gitignore`; scaffold.js fetchTemplate() renames them back (src/dotfiles.js).
+const packedIgnores = packGitignores(TEMPLATE_DIR);
+if (!packedIgnores.includes(SHIPPED_GITIGNORE)) die('the root .gitignore did not reach the bundle.');
 
 // No content overrides: the three user-profile files (conductor/, its
 // .tess/core mirror, operator/) are generic templates in the repo itself, so
