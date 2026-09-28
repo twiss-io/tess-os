@@ -17,10 +17,11 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
+
+tomllib = pytest.importorskip("tomllib", reason="tomllib needs Python 3.11+ (the Codex wiring is TOML)")
 
 from fixtures.brain_learn import fxlib
 

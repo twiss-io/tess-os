@@ -152,7 +152,7 @@ def test_binary_stdin_is_logged_not_swallowed(inst):
 
 
 def test_codex_hook_lines_are_guarded(tmp_path):
-    import tomllib  # v1.0: the Codex hooks live inline in .codex/config.toml (rendered from core)
+    tomllib = pytest.importorskip("tomllib")  # v1.0: Codex hooks live inline in .codex/config.toml (3.11+)
     hooks = tomllib.loads((Path(fxlib.REPO) / ".codex/config.toml").read_text())["hooks"]
     cmds = [h["command"] for ev in hooks.values() for group in ev for h in group["hooks"]
             if "tessbrain.py" in h["command"]]
