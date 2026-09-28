@@ -46,7 +46,7 @@ _CREDENTIAL = re.compile(
 _SAID = re.compile(
     r"(?i)\b((?:password|passwd|passcode|pin|secret(?: access)?(?: key)?|token|api key|access key|private key)"
     r"\s+(?:is|was|=|:)\s+)(?!<REDACTED:)([\"']?)([^\s\"'<]{6,})\2")
-_CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
+_CARD = re.compile(r"(?<![\w-])(?:\d[ -]?){12,18}\d(?![\w-])")  # \w: never inside a hex hash or id
 _BANK = re.compile(
     r"(?i)\b(iban|bank account(?: (?:no|number))?|account (?:no|number)|acct(?: no)?)\b"
     r"([\s.:#]*)([A-Z0-9][A-Z0-9 -]{6,32}[A-Z0-9])")

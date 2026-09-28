@@ -218,3 +218,17 @@ def test_held_cue_candidate_merges_into_a_later_decide_of_the_same_line(tmp_path
     assert not list((inst / "brain/inbox").glob("C-*.json"))
     assert len([t for t in _decisions(inst) if "Fly.io" in t]) == 1
     assert fxlib.cli(inst, "lint").returncode == 0
+
+
+# 9. a record's own hashes are never mistaken for a card number ------------------------------------
+
+def test_hex_hash_with_a_luhn_valid_digit_run_is_not_a_card():
+    import sys as _sys
+    _sys.path.insert(0, str(Path(fxlib.REPO) / "scripts" / "brain"))
+    from brainlib import redact
+    # Live run 2026-09-29: save refused a fact because its body_sha256 held the Luhn-valid run 9829004715697.
+    sha = "108a1f6281b9cb1a791bdbc0631ad9829004715697d73f861b24ffc4b8f46b08"
+    assert redact.luhn_ok("9829004715697")
+    assert redact.redact('body_sha256: "%s"' % sha)[0] == 'body_sha256: "%s"' % sha
+    assert not redact.scan('body_sha256: "%s"' % sha)
+    assert "card" in redact.redact("my card is 4111 1111 1111 1111 thanks")[0].lower()
