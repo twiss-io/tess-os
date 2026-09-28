@@ -211,3 +211,39 @@ def test_codex_hooks_outside_a_work_tree_exit_zero(tmp_path):
             assert r.returncode == 0, (event, r.stderr)
             if event in ("Stop", "SessionEnd"):
                 assert json.loads(r.stdout or "{}") == {}
+
+
+# --- codex-cli 0.158 rollout shape (verified live 2026-09-29) ------------------------------------
+
+def _rollout_0158(path, cwd):
+    tid = "01a0e9f3-0000-7000-a000-00000000c158"
+    recs = [
+        {"type": "session_meta", "payload": {"id": tid, "cwd": cwd, "cli_version": "0.158.0",
+                                              "timestamp": "2026-09-29T05:37:50Z"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "# AGENTS.md instructions for x\n<INSTRUCTIONS>..."}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": DECISION}]}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "UserMessage", "content": [{"type": "text", "text": DECISION}]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "command": ["/bin/zsh", "-lc", "cat brain/.private/pay.md"]}}},
+        {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "AgentMessage", "content": [{"type": "Text", "text": "Recorded: Postgres for the ledger."}]}}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "Recorded: Postgres for the ledger."}]}},
+    ]
+    for r in recs:
+        r["timestamp"] = "2026-09-29T05:38:00Z"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    return path
+
+
+def test_codex_0158_rollout_is_journaled_once_with_its_reply(tmp_path):
+    sys.path.insert(0, str(REPO / "scripts" / "brain"))
+    from brainlib.parsers import codex
+    sess = codex.parse(_rollout_0158(tmp_path / "rollout-2026-09-29T05-37-50-x.jsonl", "/work/fx"))
+    assert [(m.role, m.text) for m in sess.msgs] == [("human", DECISION),
+                                                     ("assistant", "Recorded: Postgres for the ledger.")]
+    assert any(".private" in t for t in sess.tool_inputs)  # a shell read of a private path is seen

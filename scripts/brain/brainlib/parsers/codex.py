@@ -75,7 +75,25 @@ def discover(root: Path, home: Optional[str], also_cwd: List[str], days: Optiona
     return out
 
 
-def _response_item(p: Dict, ordinal: int, at: str, sess: Session, fallback: List[Msg]) -> None:
+def _item_completed(p: Dict, ordinal: int, at: str, sess: Session, users: List[Msg], replies: List[Msg]) -> None:
+    """codex-cli 0.158+ rollouts: `event_msg` `item_completed` carries UserMessage / AgentMessage /
+    CommandExecution items (verified live 2026-09-29; the older user_message/agent_message events are absent)."""
+    item = p.get("item") if isinstance(p.get("item"), dict) else {}
+    kind = item.get("type")
+    if kind == "CommandExecution":
+        sess.note_tool_input(item.get("command"))
+        return
+    text = "\n".join(iter_text_blocks(item.get("content"), ("text", "Text", "input_text", "output_text"))).strip()
+    if not text:
+        return
+    if kind == "UserMessage" and not text.startswith(_INJECTED):
+        users.append(Msg(ordinal, at, "human", "operator", "cli", text))
+    elif kind == "AgentMessage":
+        replies.append(Msg(ordinal, at, "assistant", "assistant", "reply", text))
+
+
+def _response_item(p: Dict, ordinal: int, at: str, sess: Session, fallback: List[Msg],
+                   fallback_replies: Optional[List[Msg]] = None) -> None:
     kind = p.get("type")
     if kind in ("function_call", "custom_tool_call"):
         name = str(p.get("name") or "")
@@ -87,6 +105,10 @@ def _response_item(p: Dict, ordinal: int, at: str, sess: Session, fallback: List
             sess.add_file(f.strip())
     elif kind == "web_search_call":
         sess.external_context = True
+    elif kind == "message" and p.get("role") == "assistant" and fallback_replies is not None:
+        text = "\n".join(iter_text_blocks(p.get("content"), ("output_text", "text"))).strip()
+        if text:
+            fallback_replies.append(Msg(ordinal, at, "assistant", "assistant", "reply", text))
     elif kind == "message" and p.get("role") == "user":
         for text in iter_text_blocks(p.get("content"), ("input_text", "text")):
             if text.strip() and not text.lstrip().startswith(_INJECTED):
@@ -110,6 +132,9 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
     users: List[Msg] = []
     fallback: List[Msg] = []
     replies: List[Msg] = []
+    item_users: List[Msg] = []
+    item_replies: List[Msg] = []
+    fallback_replies: List[Msg] = []
     for ordinal, rec in rows:
         if not isinstance(rec, dict):
             continue
@@ -122,14 +147,16 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
             sess.runtime_version = str(p.get("cli_version") or "")
             sess.started_at = str(p.get("timestamp") or at)
             sess.git_branch = str((p.get("git") or {}).get("branch") or "")
+        elif kind == "event_msg" and p.get("type") == "item_completed":
+            _item_completed(p, ordinal, at, sess, item_users, item_replies)
         elif kind == "event_msg":
             reply = _event(p, ordinal, at, users)
             if reply is not None:
                 replies.append(reply)
         elif kind == "response_item":
-            _response_item(p, ordinal, at, sess, fallback)
-    humans = users or fallback
-    sess.msgs = _final_replies(humans, replies)
+            _response_item(p, ordinal, at, sess, fallback, fallback_replies)
+    humans = users or item_users or fallback  # one source only, so no turn is counted twice
+    sess.msgs = _final_replies(humans, replies or item_replies or fallback_replies)
     if not sess.session_id:
         sess.session_id = Path(path).stem[-36:]
     return sess
