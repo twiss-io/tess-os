@@ -248,3 +248,13 @@ def test_codex_0158_rollout_is_journaled_once_with_its_reply(tmp_path):
     assert [(m.role, m.text) for m in sess.msgs] == [("human", DECISION),
                                                      ("assistant", "Recorded: Postgres for the ledger.")]
     assert any(".private" in t for t in sess.tool_inputs)  # a shell read of a private path is seen
+
+
+def test_codex_session_end_timeout_fits_what_codex_allows():
+    """codex-cli 0.158 clamps a SessionEnd hook timeout to 3 s and prints a
+    warning on every session when the config asks for more (seen live on a
+    fresh install, 2026-09-29). The hook only hands the transcript to a
+    detached sync, so 3 s is enough; ask for no more than Codex grants."""
+    for group in CODEX["hooks"]["SessionEnd"]:
+        for h in group["hooks"]:
+            assert 0 < h["timeout"] <= 3, h

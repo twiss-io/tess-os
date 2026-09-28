@@ -77,7 +77,7 @@ timeout = 30
 [[hooks.SessionEnd.hooks]]
 type = "command"
 command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
-timeout = 30
+timeout = 3
 
 # Tess safety gate (v1.0) — the Codex twin of the Claude Code PreToolUse hooks.
 # One hook on every shell command (`Bash` covers shell and exec_command), file
