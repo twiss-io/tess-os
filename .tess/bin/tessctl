@@ -14168,7 +14168,11 @@ def _gate_classify_paths(policy_instance: dict, changed_rel_paths: list):
                 path_rule_matches.setdefault(rel_path, []).append(rule)
         for hf_rule in hard_floor_rules:
             globs = hf_rule.get("globs") or []
-            if globs and path_matches_globs(rel_path, globs):
+            # v1.0.0: `exclude_globs` carves public templates (.env.example)
+            # out of a floor. Baseline union still applies to the push that
+            # adds an exclusion (_gate_union_baseline_matches).
+            if (globs and path_matches_globs(rel_path, globs)
+                    and not path_matches_globs(rel_path, hf_rule.get("exclude_globs") or [])):
                 hard_floor_matches.setdefault(rel_path, []).append(hf_rule)
     return path_rule_matches, hard_floor_matches
 
