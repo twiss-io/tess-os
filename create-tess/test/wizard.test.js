@@ -281,7 +281,8 @@ for (const combo of COMBOS) {
     }
     const folder = target.split(/[\\/]/).pop();
     assert.ok(
-      run.stdout.includes(`What to do next:\n  Open the folder "${folder}" in Claude Code or Codex and say hi —\n`),
+      run.stdout.includes('What to do next:\n  In this terminal, type these two lines, pressing Return after each:\n      cd ') &&
+        run.stdout.includes(`(Or open the folder "${folder}" in Claude Code or Codex and say hi.)`),
       `the final screen must name the folder and the one next step\n${run.stdout}`,
     );
     assert.match(run.stdout, /a crew of 9 specialists plus your assistant/);

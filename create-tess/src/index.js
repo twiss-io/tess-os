@@ -207,7 +207,11 @@ export async function main(argv) {
     if (isNonInteractive(opts)) {
       choices = resolveFromFlags(opts, roster);
     } else {
-      choices = await runJourney(roster);
+      if (opts.vibe !== undefined) {
+        const r = validateVibe(opts.vibe);
+        if (!r.ok) die(r.error);
+      }
+      choices = await runJourney(roster, { vibe: opts.vibe });
     }
     vibe = VIBES[choices.vibe];
 

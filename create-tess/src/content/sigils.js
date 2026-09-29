@@ -6,11 +6,11 @@ export const NEUTRAL = {
   fancy: `
    ┌────────────────────────────────────────────┐
    │            T  E  S  S     O  S             │
-   │          intelligence conductor os         │
+   │       your assistant and your AI team      │
    └────────────────────────────────────────────┘
    a crew of 9 specialists plus your assistant
 `,
-  plain: `TESS OS — intelligence conductor os
+  plain: `TESS OS — your assistant and your AI team
 a crew of 9 specialists plus your assistant`,
 };
 

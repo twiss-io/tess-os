@@ -139,6 +139,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -6379,8 +6380,10 @@ def cmd_doctor(args, root: Path) -> None:
                     elif _live_path_is_security(lock, live_rel):
                         print(
                             f"  DRIFT       {live_rel} [SECURITY] *** SECURITY DRIFT ***  ← hand-edited "
-                            f"render output: run `tessctl capture {live_rel}` (it will QUARANTINE; "
-                            f"never publish a security edit)"
+                            f"render output: one of Tess's safety files was changed by hand. To undo "
+                            f"it, delete the file and run `tessctl render`. To keep it, run "
+                            f"`tessctl capture {live_rel}`: your edit is set aside for review and "
+                            f"only counts after `tessctl approve`."
                         )
                     else:
                         print(
@@ -6393,7 +6396,9 @@ def cmd_doctor(args, root: Path) -> None:
                     sec_alarm = " *** SECURITY DRIFT ***" if r.get("is_security") else ""
                     print(f"  DRIFT       {live_rel}{sec_badge}{sec_alarm}  ← run `tessctl capture {live_rel}`")
                     if r.get("is_security"):
-                        print(f"              ^^^ security-tier — capture will QUARANTINE (not locally-modify)")
+                        print("              ^^^ one of Tess's safety files: capture sets your edit aside "
+                              "for review (it only counts after `tessctl approve`); "
+                              f"`git restore -- {live_rel}` undoes it")
         elif r["issues"]:
             print(f"  ISSUE       {live_rel}{sec_badge}  — " + "; ".join(r["issues"]))
         elif verbose:
@@ -6662,17 +6667,32 @@ _UPDATE_ACTION_WORDS = {
     "merge": "merged with your changes",
     "patch-apply": "your override re-applied",
 }
+_UPDATE_CHECK_WORDS = {
+    "same": "already match the release (nothing to do)",
+    "fast-forward": "would be updated",
+    "merge": "would be merged with your changes",
+    "patch-apply": "would get your override re-applied",
+}
 
 
-def _print_update_summary(text: str) -> None:
+UPDATE_CHECK_RESULT = ("Nothing was changed: this was only a check. "
+                       "Run `tessctl update` to apply it.")
+
+
+def _print_update_summary(text: str, check: bool = False) -> None:
     """The short default `tessctl update` output: the header, anything that
-    needs attention, one counted summary line and the result line."""
+    needs attention, one counted summary line and the result line. With
+    check=True (`--check`/`--dry-run`) every count says "would" and the
+    result line says plainly that nothing was changed."""
     lines = text.splitlines()
     counts: dict = {}
     for line in lines:
         m = _UPDATE_PLAN_LINE.match(line)
         if m:
-            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+            # A check that fetched nothing plans "no staging = same as core":
+            # nothing would change for that file, so do not call it an update.
+            action = "same" if check and "no staging" in line else m.group(1)
+            counts[action] = counts.get(action, 0) + 1
     for line in lines:
         if line.startswith("tessctl update"):
             print(line)
@@ -6681,11 +6701,21 @@ def _print_update_summary(text: str) -> None:
         if _UPDATE_NOTABLE_LINE.search(line) or "dry-run: would" in line:
             print(line)
     if counts:
-        parts = [f"{n:,} {_UPDATE_ACTION_WORDS.get(a, a)}" for a, n in sorted(counts.items())]
+        words = _UPDATE_CHECK_WORDS if check else _UPDATE_ACTION_WORDS
+        parts = [f"{n:,} {words.get(a, a)}" for a, n in sorted(counts.items())]
         print(f"{sum(counts.values()):,} files checked: " + ", ".join(parts) + ".")
+    elif check:
+        print("No file would change.")
+    if check and "dry-run: would fetch" in text:
+        print("This check did not go online: it compares your files with the Tess OS release "
+              "already on this computer.")
     for line in lines:
+        if check and line.startswith("update"):
+            continue
         if line.startswith("update:") or "version bumped" in line:
             print(line.strip())
+    if check:
+        print(UPDATE_CHECK_RESULT)
     print("(`tessctl update --verbose` shows every step and file.)")
 
 
@@ -8371,7 +8401,9 @@ def _cmd_update_run(args, root: Path) -> None:
     if _verbose_output(args):
         _cmd_update_body(args, root)
     else:
-        _run_summarised(lambda: _cmd_update_body(args, root), _print_update_summary)
+        check = bool(getattr(args, "dry_run", False) or getattr(args, "check", False))
+        _run_summarised(lambda: _cmd_update_body(args, root),
+                        lambda text: _print_update_summary(text, check=check))
 
 
 def _cmd_update_body(args, root: Path) -> None:
@@ -8896,7 +8928,10 @@ def _cmd_update_body(args, root: Path) -> None:
                   "(or delete yours), then re-run `tessctl update` to adopt it.")
             sys.exit(1)
 
-        print("\nupdate: complete")
+        if dry_run:
+            print("\nupdate check: complete — " + UPDATE_CHECK_RESULT)
+        else:
+            print("\nupdate: complete")
 
     except BaseException as exc:
         if not dry_run and txn["armed"]:
@@ -16636,7 +16671,114 @@ def _gate_run_ship_check(
     return result
 
 
-def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
+GATE_REFUSAL_DOC = "docs/WHEN_TESS_STOPS_A_PUSH.md"
+_GATE_REFUSAL_SHOWN = 5
+_GATE_REFUSED_PATH = re.compile(
+    r"^(?P<path>[^\[].*?): (?:no covering APPROVE verdict found|a covering)"
+)
+
+
+def _gate_refused_paths(result: dict) -> list:
+    """The protected files a refusal is about, read from the engine's own
+    per-path reasons (local output only; the JSON/trace/MCP projections stay
+    path-free through `_safe_gate_result`)."""
+    seen: list = []
+    for raw in result.get("reasons", []) or []:
+        m = _GATE_REFUSED_PATH.match(str(raw))
+        if m and m.group("path") not in seen:
+            seen.append(m.group("path"))
+    return seen
+
+
+def _gate_undo_source(root, bases) -> str | None:
+    """The commit a refused file can be put back to: what the remote already
+    has, or for a brand-new history the install's first commit."""
+    real = [b for b in (bases or []) if b and b != EMPTY_TREE_SHA and set(b) != {"0"}]
+    if len(real) == 1:
+        return real[0][:12]
+    if root is None or real:
+        return None
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    roots = out.stdout.split() if out.returncode == 0 else []
+    return roots[-1][:12] if len(roots) == 1 else None
+
+
+def _gate_verbose_hint(phase: str) -> str:
+    verb = {"pre-push": "git push", "pre-commit": "git commit ..."}.get(phase)
+    return f"`TESS_VERBOSE=1 {verb}`" if verb else f"`tessctl gate {phase} --verbose`"
+
+
+def _gate_quote_path(path: str) -> str:
+    return shlex.quote(path)
+
+
+def _gate_print_refusal(phase: str, result: dict, safe: dict, *, verbose: bool,
+                        root=None, bases=None) -> None:
+    """The plain refusal (v1.0 e2e review, B1): one summary naming the files,
+    what it means, the one command that undoes the change, and a real doc.
+    Repeated reasons are collapsed; `--verbose` lists everything."""
+    local = phase != "ci"   # CI logs can be public: never name files there
+    paths = _gate_refused_paths(result)
+    rp = safe.get("release_proof")
+    first_push = bool(bases) and all(b == EMPTY_TREE_SHA for b in bases)
+    proof_missing = first_push and (rp is None or rp["status"] != "accepted")
+    print()
+    if paths:
+        print(f"Tess stopped this {'push' if phase != 'ci' else 'change'} because it changes "
+              f"{len(paths):,} protected file(s)" + (":" if local else "."))
+        if local:
+            for rel in paths[:_GATE_REFUSAL_SHOWN]:
+                print(f"    {rel}")
+            if len(paths) > _GATE_REFUSAL_SHOWN:
+                print(f"    … and {len(paths) - _GATE_REFUSAL_SHOWN:,} more "
+                      f"({_gate_verbose_hint(phase)} lists them all)")
+    else:
+        print(f"Tess stopped this {'push' if phase != 'ci' else 'change'} (fail-closed).")
+    if proof_missing and paths:
+        print("What this means: this looks like the first push of a Tess OS folder that has no "
+              f"accepted release proof ({RELEASE_PROOF_FILE}), so Tess cannot tell its own files "
+              "from edits. Nothing was sent.")
+        print(f"What to do: see {GATE_REFUSAL_DOC}, section \"First push of a new folder\".")
+    elif paths:
+        print("What this means: these files hold Tess's own safety rules, so a change to them "
+              "needs a signed approval before it can leave this computer. Nothing was sent.")
+        source = _gate_undo_source(root, bases) if local else None
+        shown = paths[:_GATE_REFUSAL_SHOWN]
+        if local and source and len(paths) <= _GATE_REFUSAL_SHOWN:
+            files = " ".join(_gate_quote_path(p) for p in shown)
+            print("To undo your change (puts the file(s) back and saves that):")
+            print(f"    git restore --source={source} -- {files}")
+            print(f"    git commit -m \"Undo change to protected Tess files\" -- {files}")
+            print("  then push again. Or ask your assistant: \"undo my change to "
+                  f"{shown[0]}\".")
+        else:
+            print("To undo a change to one file: git restore --source=<the commit before your "
+                  "change> -- <file>, then commit it and push again.")
+        print(f"More help: {GATE_REFUSAL_DOC}")
+    else:
+        print(f"More help: {GATE_REFUSAL_DOC}")
+    counts: dict = {}
+    for reason in safe["reasons"]:
+        counts[reason] = counts.get(reason, 0) + 1
+    print("Details:" if verbose else "Details (repeats collapsed):")
+    if verbose:
+        for reason in safe["reasons"]:
+            print(f"    - {reason}")
+        if local:
+            for rel in paths:
+                print(f"    file: {rel}")
+    else:
+        for reason, n in counts.items():
+            print(f"    - {reason}" + (f"  (×{n:,})" if n > 1 else ""))
+        print(f"  ({_gate_verbose_hint(phase)} shows every line.)")
+
+
+def _gate_print_result(phase: str, result: dict, as_json: bool, *, verbose: bool = False,
+                       root=None, bases=None) -> None:
     safe = _safe_gate_result(result, phase=phase)
     if as_json:
         print(json.dumps(safe, indent=2))
@@ -16657,13 +16799,11 @@ def _gate_print_result(phase: str, result: dict, as_json: bool) -> None:
         what = "first push" if rp.get("first_push") else "release update"
         print(f"  {what}: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
               f"({rp['reason_code']}); protected files still need a verdict")
-    for reason in safe["reasons"]:
-        print(f"    - {reason}")
     if safe["blocked"]:
-        print(
-            "  refusing (fail-closed) — see README.md 'tessctl gate', "
-            "conductor/verification-routing.md, docs/ULTIMATE_FRAMEWORK_PLAN.md Decision #6"
-        )
+        _gate_print_refusal(phase, result, safe, verbose=verbose, root=root, bases=bases)
+    else:
+        for reason in safe["reasons"]:
+            print(f"    - {reason}")
     # PR-2 (Agent Receipt EMIT wiring) — only present on a PASS. A gap is
     # printed LOUDLY (never silently) but never flips `status` above — see
     # `_gate_emit_receipts_on_clear`'s own docstring for the fail-closed
@@ -16723,7 +16863,7 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
             root, phase="gate", action="gate.pre-commit", outcome="error", exit_code=1,
             duration_s=time.perf_counter() - _trace_t0, changed_paths=[], reasons=result["reasons"],
         )
-        _gate_print_result("pre-commit", result, as_json)
+        _gate_print_result("pre-commit", result, as_json, verbose=_verbose_output(args), root=root)
         sys.exit(1)
 
     violations = _gate_validate_contracts(root, changed)
@@ -16738,7 +16878,7 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
         duration_s=time.perf_counter() - _trace_t0, changed_paths=changed,
         violations_count=len(violations), reasons=result["reasons"],
     )
-    _gate_print_result("pre-commit", result, as_json)
+    _gate_print_result("pre-commit", result, as_json, verbose=_verbose_output(args), root=root)
     sys.exit(1 if result["blocked"] else 0)
 
 
@@ -16775,7 +16915,8 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=trace_reasons,
         extra_counts=trace_extra_counts,
     )
-    _gate_print_result("pre-push", result, as_json)
+    _gate_print_result("pre-push", result, as_json, verbose=_verbose_output(args),
+                       root=root, bases=base_shas)
     sys.exit(1 if result["blocked"] else 0)
 
 
@@ -16802,7 +16943,8 @@ def _cmd_gate_ci(args, root: Path) -> None:
         duration_s=time.perf_counter() - _trace_t0, changed_paths=changed, reasons=trace_reasons,
         extra_counts=trace_extra_counts,
     )
-    _gate_print_result("ci", result, as_json)
+    _gate_print_result("ci", result, as_json, verbose=_verbose_output(args),
+                       root=root, bases=[args.base])
     sys.exit(1 if result["blocked"] else 0)
 
 
@@ -25471,8 +25613,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     # help (v1.0 B4): `tessctl help` and `tessctl help <command>`
-    p_help = sub.add_parser("help", help="show this help, or `tessctl help <command>` for one command")
+    p_help = sub.add_parser("help", help="the everyday commands; `help --all` lists every command, "
+                                         "`help <command>` explains one")
     p_help.add_argument("topic", nargs="?", metavar="COMMAND")
+    p_help.add_argument("--all", action="store_true", dest="show_all", help="list every command")
 
     # init
     p_init = sub.add_parser("init", help="scaffold project from framework; run restore + render")
@@ -25880,6 +26024,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate staged brief/crew-plan/verdict/return-manifest/policy files (git pre-commit hook body)",
     )
     p_gate_precommit.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+    p_gate_precommit.add_argument("--verbose", action="store_true",
+                           help="on a refusal, list every reason and file (also: TESS_VERBOSE=1)")
 
     p_gate_prepush = gate_sub.add_parser(
         "pre-push",
@@ -25892,6 +26038,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",
     )
     p_gate_prepush.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+    p_gate_prepush.add_argument("--verbose", action="store_true",
+                           help="on a refusal, list every reason and file (also: TESS_VERBOSE=1)")
 
     p_gate_ci = gate_sub.add_parser(
         "ci",
@@ -25904,6 +26052,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="restrict the covering-verdict search to this repo-relative dir (repeatable; default: whole repo)",
     )
     p_gate_ci.add_argument("--json", action="store_true", dest="json_out", help="machine-readable JSON output")
+    p_gate_ci.add_argument("--verbose", action="store_true",
+                           help="on a refusal, list every reason and file (also: TESS_VERBOSE=1)")
 
     gate_sub.add_parser(
         "install-hooks",
@@ -26488,16 +26638,32 @@ def _installed_version() -> str:
     return "(not inside a Tess OS folder)"
 
 
-def _print_help(parser: argparse.ArgumentParser, topic: str | None) -> None:
+EVERYDAY_HELP = """tessctl — look after your Tess OS folder. Everyday commands:
+
+  tessctl doctor              check that every Tess OS file is in place
+  tessctl update --check      preview what an update would change (changes nothing)
+  tessctl update              get the latest Tess OS release and install it
+  tessctl restore --dry-run   see which Tess files differ from the release
+  tessctl roster list         show your AI team
+  tessctl rename <name>       give your assistant a new name
+  tessctl gate install-hooks  turn Tess's safety checks on again
+  tessctl --version           show which Tess OS you have
+
+More: `tessctl help <command>` explains one command; `tessctl help --all` lists them all.
+If Tess stopped a push, see docs/WHEN_TESS_STOPS_A_PUSH.md."""
+
+
+def _print_help(parser: argparse.ArgumentParser, topic: str | None, show_all: bool = False) -> None:
     if topic:
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction) and topic in action.choices:
                 action.choices[topic].print_help()
                 return
         print(f"tessctl: no command named {topic!r}.\n")
-    parser.print_help()
-    print("\nEveryday commands: `tessctl doctor` (check your files), "
-          "`tessctl update` (get the latest release), `tessctl --version`.")
+    if show_all:
+        parser.print_help()
+        return
+    print(EVERYDAY_HELP)
 
 
 def main() -> None:
@@ -26508,10 +26674,10 @@ def main() -> None:
         print(f"tessctl {_installed_version()}")
         sys.exit(0)
     if args.command == "help":
-        _print_help(parser, getattr(args, "topic", None))
+        _print_help(parser, getattr(args, "topic", None), getattr(args, "show_all", False))
         sys.exit(0)
     if not args.command:
-        parser.print_help()
+        _print_help(parser, None)
         sys.exit(0)
 
     root = find_tess_root()

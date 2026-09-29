@@ -2,7 +2,11 @@
 // map; vibe only relabels. Copy is house "never hype" standard: grounded, warm,
 // honest. Each vibe supplies the lexicon + framing for every downstream step.
 
-export const VIBE_ORDER = ['rpg', 'command', 'studio'];
+// 'plain' is the default for every new install (v1.0 e2e review, S4): no game
+// words, no "conductor", no lens lists. The other three stay as opt-in skins
+// (`--vibe rpg|command|studio`).
+export const VIBE_ORDER = ['plain', 'rpg', 'command', 'studio'];
+export const DEFAULT_VIBE = 'plain';
 
 // L3 / Lysandra #5 — the one honesty line that must surface for EVERY vibe, not
 // just Studio. The vibe is paint; the engine and the install set are identical
@@ -14,6 +18,38 @@ export const VIBE_HONESTY =
   'Same engine underneath — the vibe sets the language, not the power.';
 
 export const VIBES = {
+  // ── 2.0 Plain (default) ──────────────────────────────────────────────────
+  plain: {
+    key: 'plain',
+    label: 'Plain',
+    tag: 'Plain',
+    selectLabel: 'Plain              Plain words, no theme.',
+    selectHint: 'Plain',
+    engaged: 'Plain words it is — ready when you are.',
+    operatorTerm: '',
+    worldNoun: 'Tess OS',
+    squadNoun: 'team',
+    lore: `Tess OS gives you an assistant and a small team of AI specialists that work
+inside one folder on this computer. A few questions, then it sets itself up.`,
+    namePrompt: 'What is your name? (type it and press Enter; there is no default)',
+    nameConfirm: (op) => `Hello, ${op}.`,
+    conductorPrompt: 'What should your assistant be called? (press Enter to keep "Tess")',
+    conductorConfirm: (c) => `Your assistant is called ${c}.`,
+    pathPrompt: 'What will you use it for first?',
+    pathwayPrompt: (c) => `How should ${c} talk to you?`,
+    bakeTitle: 'Setting up Tess OS.',
+    recapVerb: 'Set it up now?',
+    outroRule: 'Ask your assistant any time to add expertise.',
+    bakeGlyph: '',
+    bakeSteps: {
+      roster: 'Adding your AI team',
+      setOperator: (x) => `Saving your name — ${x.operator}`,
+      rename: (x) => `Naming your assistant — ${x.conductor}`,
+      pathway: (x) => `Setting how ${x.conductor} talks to you`,
+      render: "Writing your assistant's instructions",
+    },
+  },
+
   // ── 2.1 RPG / Guild ──────────────────────────────────────────────────────
   rpg: {
     key: 'rpg',

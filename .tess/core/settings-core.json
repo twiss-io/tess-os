@@ -11,6 +11,7 @@
       "Bash(python3 scripts/brain/tessbrain.py status:*)",
       "Bash(python3 scripts/brain/tessbrain.py review:*)",
       "Bash(python3 scripts/brain/tessbrain.py sync:*)",
+      "Bash(python3 scripts/brain/tessbrain.py save:*)",
       "Bash(python3 scripts/brain/tessbrain.py index:*)",
       "Bash(python3 scripts/brain/tessbrain.py lint:*)",
       "Bash(python3 scripts/brain/tessbrain.py decide:*)",
@@ -56,6 +57,16 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/dispatch-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Bash|Edit|Write|MultiEdit|NotebookEdit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"TESS GATE NOT RUN: python3 was not found, so the Tess safety check cannot run; this tool call is blocked.\" >&2; exit 2; }; exec python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail block -- .claude/hooks/tess-gate.py --runtime claude",
+            "timeout": 120
           }
         ]
       }

@@ -17,12 +17,12 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-28T23:57:07.287821Z'
+  last_updated: '2026-09-29T01:41:46.777385Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0315b4561e6eb01ca16489ba02fbf6cf48d76e1e871b07228ff272b7deb2359a
+    base_sha: sha256:df1ab85ce6c7fb50e1c0a0a931c0eeb1ded6fb6b0a558a513f19db6cb681ee84
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/personas/chief-of-staff.md:
@@ -5661,7 +5661,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: security
-    base_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
+    base_sha: sha256:1ae8ece2f645e33b2a65ae97d293f587193881d7376b020b3fba27ecbe9d2c2c
     live_path: .claude/settings.json
     render: rendered
     last_updated: '2026-09-28T17:56:20.991251Z'
@@ -5787,7 +5787,7 @@ files:
   .tess/core/templates/agents-md/harness-note.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:56edc2bd002a0ef83b5da0be5ddd85af84ac6798acbafbc7ce21e7e8d98522e9
+    base_sha: sha256:6f85b8c6cffec69cdfcfdbc14d428d2347715d98265fced874090f6e14137a46
     live_path: null
     render: fragment
     last_updated: 2026-07-20 00:00:00+00:00
@@ -6112,7 +6112,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
+    rendered_sha: sha256:1ae8ece2f645e33b2a65ae97d293f587193881d7376b020b3fba27ecbe9d2c2c
   conductor/identity.md:
     target: claude-code
     status: rendered
@@ -6128,7 +6128,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:d7c3cc28f6e3d32c527009be3f9a6d426ef8cbbd923c09bed80b3f012e41b081
+    rendered_sha: sha256:335947070fcaadc2ffec0a47edc723ce0cbcb55509b01c74427d67273bb0edc9
   .codex/config.toml:
     target: codex
     status: rendered

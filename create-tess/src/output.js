@@ -94,6 +94,9 @@ export function printGateStatus(gate, targetDir) {
 }
 
 export function printArrival(vibe, choices) {
+  // The plain setup ends on the final screen alone: no second greeting, no
+  // list of team names (v1.0 e2e review, S4).
+  if (vibe.key === 'plain') return;
   const ctx = {
     operator: choices.operator,
     conductor: choices.conductor,

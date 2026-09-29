@@ -34,7 +34,7 @@ without running it).
 
 | Runtime | Step | What it enables | Works without it |
 |---|---|---|---|
-| Claude Code | one workspace-trust click (`claude -p` counts as trusted; `--bare` skips hooks) | brain hooks (the onboarding reminder), tool permissions for the brain scripts | `CLAUDE.md` + BOOT, commands, skills |
+| Claude Code | one workspace-trust click, in an interactive `claude` session (`claude -p` does not count: it runs the project hooks, but ignores the project's tool allow list until the folder has been trusted once; `--bare` skips hooks) | tool permissions for the brain scripts, so saving and recalling do not ask every time | `CLAUDE.md` + BOOT, commands, skills |
 | Codex CLI | none to start; optional: trust the project and approve the hooks in `/hooks` (approval is pinned to the hook text: re-approve after an update) | per-turn hooks | `AGENTS.md` + BOOT, `.agents/skills` |
 | Gemini CLI (advisory) | one folder-trust click (an untrusted headless run exits 55) | `GEMINI.md` (imports `AGENTS.md`) and the `/tess:*` commands | `.agents/skills` |
 | Other AGENTS.md tools (advisory) | tool-specific | nothing from Tess | `AGENTS.md` only |
