@@ -9,7 +9,8 @@ a terminal (an agent, CI, a pipe) the update stops and changes nothing.
 
 v1.0.1 (GPT-6 review round 2, HIGH): the approval is signed. It carries an
 HMAC under a per-machine operator key kept outside the repo
-($XDG_CONFIG_HOME/tess/operator/key), bound to the project's root commit, the
+(~/.config/tess/operator/key under the OS user record's home; round 3
+N-2 tests: tests/test_v1_r3_operator_key_home.py), bound to the project's root commit, the
 release tag and commit, and the rule digests. Unsigned, hand-written, foreign
 or keyless approvals are rejected, and the approvals directory is protected.
 """
@@ -29,41 +30,13 @@ from test_v1_gate_hardening import (  # noqa: F401 — fixtures + helpers
     _tessctl, needs_gpg,
 )
 from test_codex_gate import _decision, _hook, proj  # noqa: F401 — fixture
+from fixtures.os_home import operator_home, use_os_home  # noqa: F401 — autouse: fake OS-record home
 
 TAG = "v2.1.0"
 APPROVAL = f".tess/gate/policy-approvals/{TAG}.json"
 NEW_GLOB = "docs/SECURITY_NEW.md"
 VENDOR_LINE = "        - .tess/vendor/**\n"
 RULES_CHANGED = RELEASE_POLICY.replace(VENDOR_LINE, VENDOR_LINE + f"        - {NEW_GLOB}\n", 1)
-
-
-FAKE_OS_HOME_SITE = Path(__file__).resolve().parent / "fixtures" / "fake_os_home"
-
-
-def _use_os_home(monkeypatch, home: Path) -> None:
-    """Point the OS user record's home at `home` for this process and for every
-    tessctl subprocess (tests/fixtures/fake_os_home/sitecustomize.py). Round 3
-    (N-2): tessctl ignores $HOME / $XDG_CONFIG_HOME for the operator key, so an
-    environment variable no longer moves it."""
-    import pwd
-    monkeypatch.setenv("TESS_TEST_OS_HOME", str(home))
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
-        [str(FAKE_OS_HOME_SITE)] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
-    real = pwd.getpwuid
-
-    def fake(uid):
-        rec = real(uid)
-        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid,
-                                  rec.pw_gecos, os.environ["TESS_TEST_OS_HOME"], rec.pw_shell))
-    monkeypatch.setattr(pwd, "getpwuid", fake)
-
-
-@pytest.fixture(autouse=True)
-def _operator_home(tmp_path_factory, monkeypatch):
-    """Every test gets its own operator key location, never the real ~/.config."""
-    home = tmp_path_factory.mktemp("os-home")  # outside every test project
-    _use_os_home(monkeypatch, home)
-    return home / ".config"
 
 
 def _write_approval(root: Path, record: dict) -> None:
@@ -231,11 +204,11 @@ def test_signed_approval_checks_project_release_and_key(engine):
 def test_operator_key_lives_outside_the_project_and_is_private(engine, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
-    _use_os_home(monkeypatch, proj)
+    use_os_home(monkeypatch, proj)
     key, why = engine._operator_key(proj, create=True)
     assert key is None and "inside this project" in why
     assert not (proj / ".config").exists()
-    _use_os_home(monkeypatch, tmp_path / "cfg")
+    use_os_home(monkeypatch, tmp_path / "cfg")
     assert engine._operator_key(proj, create=False) == (None, "there is no operator key on this machine")
     key, why = engine._operator_key(proj, create=True)
     assert key is not None and len(key) == 32 and why == ""
@@ -313,40 +286,3 @@ def test_plain_update_and_normal_commands_stay_allowed(proj):
                          "tool_input": {"command": cmd}})
         dec = _decision(r)
         assert dec is None or "only the operator" not in dec[1], (cmd, dec)
-
-
-def test_operator_key_ignores_home_and_xdg_config_home(engine, tmp_path, monkeypatch):
-    """Round 3, N-2: `XDG_CONFIG_HOME=/tmp/x tessctl ...` (or a moved HOME) must
-    not make tessctl read a key the agent planted. The key directory comes from
-    the OS user record; the planted key is never read and nothing is created there."""
-    proj, planted = tmp_path / "proj", tmp_path / "agent-cfg"
-    proj.mkdir()
-    (planted / "tess" / "operator").mkdir(parents=True, mode=0o700)
-    (planted / "tess" / "operator" / "key").write_bytes(b"p" * 32)
-    (planted / "tess" / "operator" / "key").chmod(0o600)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(planted))
-    monkeypatch.setenv("HOME", str(planted))
-    real_home = Path(os.environ["TESS_TEST_OS_HOME"])
-    assert engine._operator_key_dir() == real_home / ".config" / "tess" / "operator"
-    assert engine._operator_key(proj, create=False) == (None, "there is no operator key on this machine")
-    key, why = engine._operator_key(proj, create=True)
-    assert key is not None and key != b"p" * 32 and why == ""
-    assert (real_home / ".config" / "tess" / "operator" / "key").read_bytes() == key
-    assert (planted / "tess" / "operator" / "key").read_bytes() == b"p" * 32
-
-
-def test_tessctl_subprocess_ignores_xdg_config_home(engine, tmp_path, monkeypatch):
-    """The same through a real tessctl process (the pre-push gate path)."""
-    planted = tmp_path / "agent-cfg"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(planted))
-    code = ("import importlib.machinery, importlib.util, sys; "
-            "l = importlib.machinery.SourceFileLoader('t', sys.argv[1]); "
-            "s = importlib.util.spec_from_loader('t', l); m = importlib.util.module_from_spec(s); "
-            "l.exec_module(m); print(m._operator_key_dir())")
-    from conftest import REPO_ROOT
-    r = subprocess.run([sys.executable, "-c", code, str(REPO_ROOT / ".tess" / "bin" / "tessctl")],
-                       capture_output=True, text=True, env=dict(os.environ))
-    assert r.returncode == 0, r.stderr
-    out = Path(r.stdout.strip())
-    assert out == Path(os.environ["TESS_TEST_OS_HOME"]) / ".config" / "tess" / "operator"
-    assert str(planted) not in r.stdout

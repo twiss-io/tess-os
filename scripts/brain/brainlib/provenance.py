@@ -11,7 +11,8 @@ as the operator's own words. Evidence is now authenticated:
   recorded cwd is inside the instance (transcript_ok).
 * When the journal writes lines from a trusted transcript it attests each
   line: HMAC-SHA256 over (project id, ref, kind, speaker, text, time) under a
-  per-machine key kept OUTSIDE the repo (~/.config/tess/brain/key, 0600;
+  per-machine key kept OUTSIDE the repo (~/.config/tess/brain/key under the
+  OS user record's home, never $HOME or $XDG_CONFIG_HOME; 0600;
   created by the SessionStart hook, since a sandboxed agent shell may read but
   not write there). Nothing in the repo can mint one.
 * GPT-6 review round 2 (R5): the attestations, presentations and consumed
@@ -37,7 +38,7 @@ import stat
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .config import Config, log_error
+from .config import Config, log_error, os_user_home
 from .textutil import normalize
 
 KEY_ENV = "TESS_BRAIN_PROVENANCE_DIR"
@@ -46,11 +47,10 @@ _STORE_CACHE: Dict[str, Tuple[int, Dict, object]] = {}
 
 
 def key_dir() -> Path:
+    """~/.config/tess/brain under the OS user record's home; $HOME/$XDG_CONFIG_HOME ignored (N-2).
+    KEY_ENV is the test suite's override (the gate denies any command naming it)."""
     env = os.environ.get(KEY_ENV)
-    if env:
-        return Path(env)
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "tess" / "brain"
+    return Path(env) if env else os_user_home() / ".config" / "tess" / "brain"
 
 
 def _inside(child: str, parent: str) -> bool:

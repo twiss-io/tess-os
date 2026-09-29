@@ -34,6 +34,18 @@ def quiet_env() -> bool:
     return _truthy_env("TESS_BRAIN_QUIET") or _truthy_env("TESS_HEADLESS")
 
 
+def os_user_home() -> Path:
+    """The home directory in the OS user record for this uid (v1.0.0 security
+    review round 3, N-2). $HOME and $XDG_CONFIG_HOME are ignored: a command run
+    with either pointed at a folder an agent controls would otherwise put the
+    brain key there. Where the OS has no user database (Windows), Path.home()."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, AttributeError):
+        return Path.home()
+
+
 def default_root() -> Path:
     env = os.environ.get("TESS_BRAIN_ROOT")
     if env:

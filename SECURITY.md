@@ -148,10 +148,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `git pull` is not checked (what it merges is known only after the fetch), and a
   patch read from a pipe is checked only when its text is in the command. An
   anti-rollback anchor kept outside the repository is planned for 1.0.1.
-- **The operator key is found from your OS user record.** `tessctl` reads it from
-  `~/.config/tess/operator/key` under the home directory in the user database and
-  ignores `$HOME` and `$XDG_CONFIG_HOME`, so a command run with those pointed
-  elsewhere cannot verify against a key an agent made.
+- **The operator key and the brain key are found from your OS user record.** `tessctl`
+  reads `~/.config/tess/operator/key`, and the brain reads `~/.config/tess/brain/key` and
+  its per-project ledger, under the home directory in the user database; both ignore
+  `$HOME` and `$XDG_CONFIG_HOME`, so a command run with those pointed elsewhere
+  cannot sign or verify with a key an agent made.
 - **In Claude Code, MCP tools are not routed through the Tess gate.** The base
   settings must not target MCP tools (they can be external chat channels), so an
   MCP server with filesystem access can read `~/.config/tess` in Claude Code. The
