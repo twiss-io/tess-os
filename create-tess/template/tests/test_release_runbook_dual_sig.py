@@ -19,8 +19,10 @@ RUNBOOKS = [REPO / "conductor" / "release-process.md", REPO / ".tess" / "core" /
 def test_both_runbook_copies_sign_both_tags_with_the_helper_on_the_same_commit():
     a, b = (p.read_text() for p in RUNBOOKS)
     assert a == b
-    assert 'scripts/release/sign-release-tag.sh v<new-semver> "$M"' in a
-    assert 'scripts/release/sign-release-tag.sh create-tess-v<new-semver> "$M"' in a
+    # round 2 (M-5): the helper runs from a hash-verified copy taken from M
+    assert 'git show "$M:scripts/release/sign-release-tag.sh" > "$SIGNER"' in a
+    assert 'bash "$SIGNER" v<new-semver> "$M"' in a
+    assert 'bash "$SIGNER" create-tess-v<new-semver> "$M"' in a
     assert "verify_release_ssh_sig.sh" in a
     assert not re.search(r"^\s*git\b.*\btag -s\b", a, re.M), "git tag -s makes no SSH signature"
     assert not re.search(r"^\s*git tag create-tess-v", a, re.M), "an unsigned npm tag is refused"

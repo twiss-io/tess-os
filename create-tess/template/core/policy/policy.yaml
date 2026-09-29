@@ -154,6 +154,12 @@ policy:
         # refuses to load it unless every file matches hashes embedded in
         # .tess/bin/tessctl, and tess.lock pins each file.
         - .tess/vendor/**
+        # v1.0 security review round 2 (M-5): the maintainer release tooling.
+        # sign-release-tag.sh runs while the release signing keys are unlocked,
+        # so an unreviewed edit could sign attacker-chosen content. CODEOWNERS
+        # decides who must review these paths, so it is gated the same way.
+        - scripts/release/**
+        - .github/CODEOWNERS
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

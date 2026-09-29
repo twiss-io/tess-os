@@ -49,6 +49,31 @@ computed at run time makes later relative writes a deny), and, best effort,
 an inline interpreter program (`python -c`, `node -e`, a heredoc fed to one)
 that names a protected path and calls a write-shaped API.
 
+v1.0.0 security review round 2 also:
+  * denies git options that write a file or run a helper: `--output`
+    (`--output=X`, `--output X`, any unique abbreviation such as `--outp`),
+    `--output-directory`, `-o` on the diff/log family, `--no-index`,
+    `--ext-diff`, `--textconv`, `git grep -O`, GIT_EXTERNAL_DIFF, and `-c` /
+    `git config` of keys whose value is a command git runs (H-A);
+  * asks (Claude) / denies (Codex) for anything that changes what Tess
+    believes a remote already holds or where it points: `git config`
+    remote.*.url / pushurl, url.*.insteadOf, tess.privateRemote,
+    `git update-ref refs/remotes/...`, a fetch/push refspec into
+    refs/remotes/, and `git push --delete` (H-B);
+  * denies reads and writes of the per-user key directory
+    (~/.config/tess, $XDG_CONFIG_HOME/tess, $TESS_BRAIN_PROVENANCE_DIR) by
+    shell commands, Read/Grep/Glob, edits and (Codex; Claude does not route
+    MCP tools to this hook) MCP tools (M-1). This is a
+    guard against an agent reading a key by accident or on a planted
+    instruction, NOT a boundary: the agent runs as the operator's own user,
+    so a program it assembles at run time can still read any file the
+    operator can, and whatever holds the key can sign as the operator;
+  * matches git's unique-prefix abbreviations of long options
+    (`--no-veri`, `--forc`, `--mirr`, `--del`, `--outp`) (M-2);
+  * asks only in a known interactive `permission_mode` (default,
+    acceptEdits, plan, auto); a missing or unknown mode cannot be trusted to
+    pause for the operator, so its ask becomes a deny (L-c).
+
 Known limits (adapters/CONFORMANCE.md, Codex row): the shell checks read the
 command text, so a write assembled at run time (`$(...)`, variables), a
 script file run by an interpreter, or an interpreter write this pattern
@@ -73,6 +98,9 @@ from pathlib import Path
 
 ALLOW, ASK, DENY = 0, 1, 2
 NO_PROMPT_MODES = {"bypassPermissions", "dontAsk"}
+# Claude Code modes that pause and show the operator an "ask" (L-c). Any other
+# value, or none, is treated as a mode that cannot ask.
+INTERACTIVE_MODES = {"default", "acceptEdits", "plan", "auto"}
 SCAN_REL = ".claude/hooks/vault-dispatch-scan.py"
 LAUNCHER_REL = ".claude/hooks/run-pinned.py"
 TESSCTL_REL = ".tess/bin/tessctl"
@@ -88,12 +116,14 @@ PROTECTED_GLOBS = (
     ".tess/tess.lock",
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
     ".claude/hooks/**", ".claude/settings.json", "scripts/brain/**",
+    "scripts/release/**", ".github/CODEOWNERS",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
     ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
 )
 
 DISPATCH_TOOLS = {"Agent", "Task", "spawn_agent"}
+READ_TOOLS = {"Read", "Grep", "Glob", "NotebookRead", "LS"}
 SHELL_TOOLS = {"Bash", "shell", "exec_command", "local_shell", "unified_exec"}
 EDIT_TOOLS = {"apply_patch", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 MCP_WRITE_WORDS = ("write", "edit", "create", "move", "rename", "delete",
@@ -133,6 +163,40 @@ _INTERP_WRITE = re.compile(
     r"\.chmod\(|\.touch\(|File\.(write|open|delete|rename)|\bsystem\(|open\([^)]*['\"][rwxa]?[wxa+]",
 )
 _INTERP_TOKEN = re.compile(r"[A-Za-z0-9_./~+-]+")
+# --- git option tables (security review round 2) -----------------------------
+# git's parse-options accepts any unique prefix of a long option (`--no-veri`
+# is `--no-verify`), so each dangerous option is matched as a prefix, not by
+# exact string. A prefix git would reject as ambiguous is flagged too, which
+# costs nothing. _NOT_ABBREV lists real options that are themselves a prefix
+# of a flagged one (git takes an exact match over an abbreviation).
+_NOT_ABBREV = {"--text"}
+_NO_VERIFY_SUBS = {"commit", "merge", "am", "rebase", "cherry-pick", "revert", "push", "pull",
+                   "commit-tree", "notes"}
+# Options that make git write its output to a file or run an external helper.
+_GIT_FILE_OPTS = ("--output", "--output-directory", "--no-index", "--ext-diff", "--textconv")
+# Subcommands whose short -o means "write the output to <file/dir>".
+_GIT_SHORT_O_SUBS = {"diff", "log", "show", "format-patch", "whatchanged", "archive", "diff-tree",
+                     "diff-index", "diff-files", "range-diff"}
+# Short options of the diff/log family that take their value in the same
+# cluster (`-Sfoo`, `-U5`, `-M50%`): the rest of the cluster is that value.
+_DIFF_VALUE_SHORT = set("SGOUlnMCBXIL")
+# Config keys whose value is a command git runs or an external diff/pager (H-A),
+# set with -c / --config-env or written by `git config`.
+_GIT_CMD_KEYS = re.compile(
+    r"^(diff\.external|diff\..+\.(command|textconv)|core\.pager|pager\..+|core\.fsmonitor|"
+    r"core\.sshcommand|core\.editor|sequence\.editor|core\.askpass|credential\.helper|"
+    r"credential\..+\.helper|gpg\.program|gpg\..+\.program|filter\..+\.(clean|smudge|process)|"
+    r"merge\..+\.driver|core\.gitproxy|core\.alternaterefscommand|uploadpack\.packobjectshook|"
+    r"remote\..+\.(uploadpack|receivepack)|protocol\..*allow)$", re.IGNORECASE)
+_BENIGN_VALUE = re.compile(r"^(cat|less|more|true|:|vi|vim|nano)(\s+-[A-Za-z]+)*$|^$")
+# Config keys the public-remote guard trusts to know where a push goes or
+# which remote is private (H-B).
+_GIT_REMOTE_KEYS = re.compile(r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|"
+                              r"tess\.privateremote)$", re.IGNORECASE)
+# The key directory named in command text (M-1): `~/.config/tess`,
+# `$HOME/.config/tess`, `${XDG_CONFIG_HOME}/tess`, the provenance override.
+_KEY_TEXT = re.compile(r"(?i)\.config[/\\]+tess(?![\w.-])|\$\{?XDG_CONFIG_HOME\}?[/\\]+tess(?![\w.-])"
+                       r"|TESS_BRAIN_PROVENANCE_DIR")
 PROTECTED_DIR_ROOTS = {".tess", ".git", ".claude", ".codex", ".gemini", ".github",
                        ".git/hooks", ".claude/hooks", ".github/workflows", "core/policy",
                        "core/contracts", "scripts/brain", ".tess/core", ".tess/bin", ".tess/keys"}
@@ -172,8 +236,23 @@ def _leak_pattern_names(root: Path, text: str, specific_only: bool) -> list:
     return hits
 
 
+# L-b: a whole PEM block (header, base64 body, footer; a missing footer
+# redacts to the end of the text), and any long base64 run that is not a
+# plain hex object id, are removed before the scanner's own patterns run.
+_PEM_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}-----.*?(?:-----END [A-Z0-9 ]{0,40}-----|\Z)",
+                        re.DOTALL)
+_B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9+/=_-])")
+
+
+def _redact_blob(m) -> str:
+    s = m.group(0)
+    return s if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", s) else "[REDACTED]"
+
+
 def _redact(root: Path, text: str) -> str:
     text = _URL_CREDS.sub(r"\1***@", text)
+    text = _PEM_BLOCK.sub("[REDACTED PEM BLOCK]", text)
+    text = _B64_RUN.sub(_redact_blob, text)
     try:
         for pattern, _desc in _scanner(root)._PATTERNS:
             text = pattern.sub("[REDACTED]", text)
@@ -253,6 +332,81 @@ def protected_hit(root: Path, cwd: str, path: str) -> str | None:
     return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS)
 
 
+# --------------------------------------------------------------------------- key directory (M-1)
+
+def _key_dirs() -> list:
+    """Real paths of the per-user directories that hold Tess signing keys:
+    the brain provenance key and the operator key dir (~/.config/tess), the
+    XDG variant, and the provenance override. Same-user files: see the
+    module docstring for what this does and does not stop."""
+    home = os.path.expanduser("~")
+    dirs = [os.path.join(home, ".config", "tess")]
+    if os.environ.get("XDG_CONFIG_HOME"):
+        dirs.append(os.path.join(os.environ["XDG_CONFIG_HOME"], "tess"))
+    if os.environ.get("TESS_BRAIN_PROVENANCE_DIR"):
+        dirs.append(os.environ["TESS_BRAIN_PROVENANCE_DIR"])
+    return sorted({os.path.realpath(d) for d in dirs})
+
+
+def _expand(path: str) -> str:
+    home = os.path.expanduser("~")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    for var, val in (("HOME", home), ("XDG_CONFIG_HOME", xdg)):
+        path = path.replace("${" + var + "}", val).replace("$" + var, val)
+    return os.path.expanduser(path)
+
+
+def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
+    """The key directory `path` reaches (itself, inside it, or through a
+    symlink); with `ancestors`, also a directory ABOVE it that a recursive
+    search (Grep, `grep -r`) would descend into."""
+    if not path or not isinstance(path, str):
+        return None
+    full = _expand(path)
+    full = full if os.path.isabs(full) else os.path.join(cwd or os.getcwd(), full)
+    cands = {os.path.normpath(full), os.path.realpath(full)}
+    home = os.path.realpath(os.path.expanduser("~")).rstrip(os.sep) + os.sep
+    for d in _key_dirs():
+        for c in cands:
+            if c == d or c.startswith(d.rstrip(os.sep) + os.sep):
+                return d
+            # A search rooted between the home directory and the key dir
+            # (~/.config). A search of the whole home directory or of / is
+            # not refused: that is the stated same-user limit, not a boundary.
+            if ancestors and c.startswith(home) and d.startswith(c.rstrip(os.sep) + os.sep):
+                return d
+    return None
+
+
+def _check_key_text(cwd: str, argv: list, raw: str, v) -> None:
+    """Bash: any argument (or `--opt=value` value) that reaches the key
+    directory, or command text that names it (an inline `python -c open(...)`)."""
+    if _KEY_TEXT.search(raw):
+        v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing keys "
+                    "there are for the operator's own tools, not for an agent", "keys")
+        return
+    name = os.path.basename(argv[0]) if argv else ""
+    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd") or \
+        any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
+    for a in argv[1:]:
+        for part in {a, a.split("=", 1)[-1]}:
+            if key_hit(cwd, part, ancestors=recursive) or (
+                    any(c in part for c in "*?[") and any(key_hit(cwd, g) for g in _glob(cwd, part))):
+                v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
+                            "the operator's own tools, not for an agent", "keys")
+                return
+
+
+def _glob(cwd: str, pattern: str) -> list:
+    import glob as _g
+    pat = _expand(pattern)
+    pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
+    try:
+        return _g.glob(pat, recursive=False)[:200]
+    except Exception:
+        return []
+
+
 # --------------------------------------------------------------------------- shell parsing
 
 def _tokens(cmd: str) -> list:
@@ -311,6 +465,10 @@ ADVICE = {
     "push": "Push to a private remote, or follow the steps above.",
     "error": "Try a simpler command. If it keeps failing, run `./tessctl doctor`, or run the "
              "command yourself outside the agent.",
+    "gitfile": "Let git print to the terminal (drop the output-file option), or redirect the "
+               "output to a file outside Tess's protected paths yourself.",
+    "keys": "Tess's signing keys stay with the operator. Run the tessctl or tessbrain command "
+            "that needs the key; it reads the key itself.",
     "operator": "Ask the operator to run it in their own terminal and type the answer "
                 "themselves (for an update: `./tessctl update`, then `accept <version>`).",
 }
@@ -362,7 +520,7 @@ def _commit_no_verify(args: list) -> bool:
     return False
 
 
-def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str):
+def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str, depth: int = 0):
     args = argv[1:]
     cfg, i, gcwd = [], 0, cwd
     while i < len(args) and args[i].startswith("-"):
@@ -387,24 +545,28 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
     if any(_GIT_CONFIG_INDIRECT.match(c) for c in cfg):
         v.add(DENY, "it sets a git include or alias on the command line, which can switch off "
                     "Tess's git hooks or run another command", "hookspath")
+    _check_git_cmd_values(root, gcwd, env, cfg, v, depth)
+    if any(_GIT_REMOTE_KEYS.match(c.split("=", 1)[0]) for c in cfg):
+        v.add(ASK, "it overrides a remote's URL (or Tess's private-remote list) for one command, "
+                   "which changes where a push goes")
+    opts = rest[:rest.index("--")] if "--" in rest else rest
     if sub == "config":
-        keys = [a.lower() for a in rest]
-        reading = any(k in ("--get", "--get-all", "--list", "-l", "--get-regexp", "get", "list")
-                      for k in keys)
-        if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys) and not reading:
-            v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
-        if any(k == "--file" or k == "-f" for k in keys) and any("hook" in k for k in keys):
-            v.add(DENY, "it edits git hook configuration directly", "hookspath")
-        if not reading and any(_GIT_CONFIG_INDIRECT.match(k) for k in keys):
-            v.add(DENY, "it writes a git include or alias, which can switch off Tess's git hooks "
-                        "or run another command in place of a git one", "hookspath")
-    if sub in ("commit", "merge", "am", "rebase", "cherry-pick", "revert", "push", "pull",
-               "commit-tree", "notes") and "--no-verify" in rest:
+        _check_git_config(rest, v)
+    if sub in _NO_VERIFY_SUBS and any(_abbrev(a, "--no-verify") for a in opts):
         v.add(DENY, "--no-verify skips Tess's git hooks (secret scan and ship gate)", "noverify")
     if sub == "commit" and _commit_no_verify(rest):
         v.add(DENY, "`git commit -n` is --no-verify: it skips Tess's git hooks", "noverify")
+    _check_git_file_opts(sub, opts, v)
     if sub == "remote" and rest and rest[0] in ("add", "set-url", "rename", "remove", "rm"):
         v.add(ASK, "it changes where this repository pushes (git remote " + rest[0] + ")")
+    if sub == "update-ref" and any(a == "--stdin" or a.startswith("refs/remotes/") for a in rest):
+        v.add(ASK, "it writes a remote-tracking ref (refs/remotes/...), which records what a "
+                   "remote holds; a forged one could hide data from the public-remote guard")
+    if sub in ("fetch", "push") and any(
+            not a.startswith("-") and ":" in a and a.lstrip("+").split(":", 1)[1].startswith(
+                ("refs/remotes/", "remotes/")) for a in rest):
+        v.add(ASK, "its refspec writes a remote-tracking ref (refs/remotes/...), which records "
+                   "what a remote holds")
     if sub in ("rm", "mv"):
         for a in rest:
             hit = not a.startswith("-") and protected_hit(root, gcwd, a)
@@ -414,15 +576,93 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
         _check_push(root, gcwd, rest, v)
 
 
+def _abbrev(arg: str, *targets: str) -> str | None:
+    """The flagged long option `arg` names, exactly or as a unique-prefix
+    abbreviation git would accept (`--no-veri` -> `--no-verify`)."""
+    if not arg.startswith("--") or len(arg) < 3:
+        return None
+    name = arg.split("=", 1)[0]
+    if name in _NOT_ABBREV:
+        return None
+    return next((t for t in targets if t.startswith(name)), None)
+
+
+def _check_git_cmd_values(root: Path, cwd: str, env: dict, cfg: list, v: Verdict, depth: int):
+    """A command hidden in a git setting (H-A): `-c core.pager='cp x .git/hooks/pre-push'`,
+    `GIT_EXTERNAL_DIFF=...`. The value is checked as a command in its own right."""
+    values = [c.split("=", 1)[1] for c in cfg
+              if "=" in c and _GIT_CMD_KEYS.match(c.split("=", 1)[0])]
+    values += [val for k, val in env.items()
+               if k in ("GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+                        "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "GIT_PROXY_COMMAND")]
+    for val in values:
+        if depth < 4 and val.strip():
+            check_command(root, cwd, val, v, depth + 1)
+    if any(c.split("=", 1)[0].lower().startswith("core.fsmonitor") and c.split("=", 1)[-1].lower() not in
+           ("false", "0", "", "true", "1", "yes", "no", "on", "off") for c in cfg):
+        v.add(DENY, "it points git's fsmonitor at a program, which git runs on every command", "hookspath")
+
+
+def _check_git_config(rest: list, v: Verdict):
+    keys = [a.lower() for a in rest]
+    reading = any(k in ("--get", "--get-all", "--list", "-l", "--get-regexp", "get", "list",
+                        "--get-urlmatch", "--show-origin", "--show-scope")
+                  for k in keys) and not any(k in ("set", "--add", "--replace-all", "unset",
+                                                  "--unset", "--unset-all") for k in keys)
+    if reading:
+        return
+    if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys):
+        v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
+    if any(k == "--file" or k == "-f" for k in keys) and any("hook" in k for k in keys):
+        v.add(DENY, "it edits git hook configuration directly", "hookspath")
+    if any(_GIT_CONFIG_INDIRECT.match(k) for k in keys):
+        v.add(DENY, "it writes a git include or alias, which can switch off Tess's git hooks "
+                    "or run another command in place of a git one", "hookspath")
+    words = [a for a in rest if not a.startswith("-") and a not in ("set", "unset")]
+    if words and _GIT_CMD_KEYS.match(words[0]) and not (
+            len(words) > 1 and _BENIGN_VALUE.match(words[1].strip())):
+        v.add(DENY, f"it saves a command in git config ({words[0]}); git would run it later, "
+                    "outside Tess's checks", "hookspath")
+    if words and _GIT_REMOTE_KEYS.match(words[0]):
+        v.add(ASK, f"it changes {words[0]}, which decides where a push goes or which remote Tess "
+                   "treats as private")
+
+
+def _check_git_file_opts(sub: str, opts: list, v: Verdict):
+    """H-A: git options that write the command's output to a file (any path,
+    hooks and settings included) or run an external diff/text-conversion."""
+    for i, a in enumerate(opts):
+        hit = _abbrev(a, *_GIT_FILE_OPTS)
+        if hit:
+            v.add(DENY, f"`{a}` ({hit}) makes git write a file or run an external program; "
+                        "git can overwrite any file this way, Tess's hooks and settings included",
+                  "gitfile")
+        if sub == "grep" and (a.startswith("--op") or re.match(r"^-[A-Za-z]*O", a)):
+            v.add(DENY, "`git grep -O` runs a program on the matching files", "gitfile")
+        if sub in _GIT_SHORT_O_SUBS and re.match(r"^-[A-Za-z]", a) and not a.startswith("--"):
+            for ch in a[1:]:
+                if ch == "o":
+                    v.add(DENY, f"`{a}` (-o) makes git write its output to a file or directory",
+                          "gitfile")
+                    break
+                if ch in _DIFF_VALUE_SHORT:
+                    break
+
+
 def _check_push(root: Path, cwd: str, rest: list, v: Verdict):
     flags = _short_flags(rest)
     opts = [a for a in rest if a.startswith("--")]
     if "--dry-run" in opts or "n" in flags:
         return
-    if ("f" in flags or any(o == "--force" or o.startswith("--force-with-lease")
-                            or o in ("--force-if-includes", "--mirror", "--prune") for o in opts)
+    if ("f" in flags or any(_abbrev(o, "--force", "--force-with-lease", "--force-if-includes",
+                                    "--mirror", "--prune") for o in opts)
             or any(a.startswith("+") for a in rest if not a.startswith("-"))):
         v.add(ASK, "it is a force push, which can overwrite commits on the remote")
+    if ("d" in flags or any(_abbrev(o, "--delete") for o in opts)
+            or any(a.startswith(":") for a in rest if not a.startswith("-"))):
+        v.add(ASK, "it deletes a branch or tag on the remote")
+        if "d" in flags or any(_abbrev(o, "--delete") for o in opts):
+            return  # every refspec names a ref to delete: no data is published
     pos, i = [], 0
     while i < len(rest):
         a = rest[i]
@@ -589,8 +829,9 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
             and a.partition("=")[2] not in _EMPTY_CONFIG for a in argv[1:]):
         v.add(DENY, "it points git at another config file through the environment, which can "
                     "switch off Tess's git hooks", "hookspath")
+    _check_key_text(cwd, argv, " ".join(argv), v)
     if name == "git":
-        _check_git(root, cwd, env, argv, v, raw)
+        _check_git(root, cwd, env, argv, v, raw, depth)
     elif name == "gh":
         _check_gh(argv, v)
     for target in _write_targets(argv):
@@ -707,7 +948,19 @@ def evaluate(data: dict, root: Path) -> Verdict:
         if hits:
             v.add(DENY, "the command contains secret-shaped value(s): " + ", ".join(hits)
                   + ". Read the secret from the environment or `tessctl vault exec` instead", "secret")
+        if _KEY_TEXT.search(cmd):
+            v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing "
+                        "keys there are for the operator's own tools, not for an agent", "keys")
         check_command(root, cwd, cmd, v)
+    elif tool in READ_TOOLS:
+        if isinstance(tin, dict):
+            for k in ("file_path", "path", "notebook_path"):
+                if key_hit(cwd, tin.get(k), ancestors=(tool == "Grep" and k == "path")):
+                    v.add(DENY, f"it reads {tin.get(k)}, Tess's key directory; the signing keys "
+                                "there are for the operator's own tools, not for an agent", "keys")
+            if tool in ("Grep", "Glob") and _KEY_TEXT.search(
+                    " ".join(str(tin.get(k) or "") for k in ("pattern", "glob"))):
+                v.add(DENY, "it searches Tess's key directory (~/.config/tess)", "keys")
     elif tool in EDIT_TOOLS:
         paths = []
         if isinstance(tin, dict):
@@ -722,8 +975,14 @@ def evaluate(data: dict, root: Path) -> Verdict:
             hit = protected_hit(root, cwd, p)
             if hit:
                 v.add(DENY, f"it edits {p}, a protected Tess path ({hit})", "protected")
-    elif tool.startswith("mcp__") and any(w in tool.lower() for w in MCP_WRITE_WORDS):
-        if isinstance(tin, dict):
+            if key_hit(cwd, p):
+                v.add(DENY, f"it writes {p}, in Tess's key directory", "keys")
+    elif tool.startswith("mcp__"):
+        for val in _strings(tin):
+            if key_hit(cwd, val, ancestors=True) or _KEY_TEXT.search(val):
+                v.add(DENY, "it reaches Tess's key directory (~/.config/tess)", "keys")
+                break
+        if isinstance(tin, dict) and any(w in tool.lower() for w in MCP_WRITE_WORDS):
             for k, val in tin.items():
                 if k.lower() in MCP_PATH_KEYS and isinstance(val, str):
                     hit = protected_hit(root, cwd, val)
@@ -741,8 +1000,12 @@ def decide(data: dict, root: Path, runtime: str) -> tuple:
     cmd = _command_text(data.get("tool_input") or {}) if tool in SHELL_TOOLS else ""
     is_codex = runtime == "codex" or "turn_id" in data
     why = "; ".join(v.reasons)
-    if v.level == ASK and (is_codex or data.get("permission_mode") in NO_PROMPT_MODES):
-        where = "Codex" if is_codex else f"{data.get('permission_mode')} mode"
+    mode = data.get("permission_mode")
+    if v.level == ASK and (is_codex or mode not in INTERACTIVE_MODES):
+        # L-c: only a known interactive mode pauses for the operator. A no-prompt
+        # mode, a missing mode or one Tess does not recognise gets the deny.
+        where = ("Codex" if is_codex else f"{mode} mode" if mode in NO_PROMPT_MODES
+                 else f"an unrecognised permission mode ({str(mode)[:40]!r})")
         reason = (f"TESS GATE: blocked because this needs your approval and {where} cannot pause "
                   f"to ask: {why}. If you want it, run it yourself in your own terminal"
                   + (f": {_short(root, cmd)}" if cmd else "") + ".")

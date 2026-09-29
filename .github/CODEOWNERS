@@ -1,0 +1,25 @@
+# CODEOWNERS — who must review changes to Tess OS's security-tier paths.
+# Kept in step with core/policy/policy.yaml rule tess-os-security-tier-doctrine.
+# GitHub enforces this only when branch protection requires code-owner review.
+
+/scripts/release/               @XavierJ21
+/.github/CODEOWNERS             @XavierJ21
+/.github/workflows/             @XavierJ21
+/.github/scripts/               @XavierJ21
+/.tess/bin/                     @XavierJ21
+/.tess/core/                    @XavierJ21
+/.tess/tess.lock                @XavierJ21
+/.tess/keys/                    @XavierJ21
+/.tess/vendor/                  @XavierJ21
+/tessctl                        @XavierJ21
+/core/policy/                   @XavierJ21
+/core/contracts/                @XavierJ21
+/.claude/hooks/                 @XavierJ21
+/.claude/settings.json          @XavierJ21
+/.codex/                        @XavierJ21
+/scripts/brain/                 @XavierJ21
+/conductor/guardrails.md        @XavierJ21
+/conductor/verification-routing.md @XavierJ21
+/conductor/channel-guardrails.md   @XavierJ21
+/conductor/dispatch-brief.md    @XavierJ21
+/conductor/release-process.md   @XavierJ21

@@ -101,9 +101,31 @@ git fetch origin && M=$(git rev-parse origin/main)
 #    v<new-semver>. Do not use `git tag -s`: it makes the OpenPGP signature only.
 #    Each run shows two Keychain prompts (SSH, then gpg): click "Allow",
 #    never "Always Allow".
+#
+#    Run the helper from a HASH-VERIFIED COPY, never from the working tree
+#    (security review round 2, M-5): it runs while the release keys are
+#    unlocked, and a working-tree file can be edited by anything running as
+#    you. Take the bytes from the reviewed merge commit M, and check their
+#    sha256 against the copy in the LAST SIGNED release (checked first). If
+#    the two differ, the helper changed in this release: read
+#    `git diff v<previous-semver> "$M" -- scripts/release/` (the path is
+#    security tier and CODEOWNERS-gated, so the change was reviewed in the PR),
+#    and only then set WANT to the new sha256 by hand. Record the sha256 you
+#    ran in the GitHub release notes, so the next release checks against it.
+#    First release that ships the helper (v1.0.0; v0.2.0 has none): set WANT
+#    to the sha256 the verifier recorded in the signed verdict for the PR.
+PREV=v<previous-semver>
+git verify-tag --raw "$PREV" 2>&1 | grep -q 'VALIDSIG EBEABC618C11B6A7340A7D1601DD637667B8CC89' \
+  || { echo "STOP: $PREV is not signed by the release key"; exit 1; }
+SIGNER_DIR="$(mktemp -d)"; SIGNER="$SIGNER_DIR/sign-release-tag.sh"
+git show "$M:scripts/release/sign-release-tag.sh" > "$SIGNER"
+WANT=$(git show "$PREV:scripts/release/sign-release-tag.sh" | shasum -a 256 | cut -d' ' -f1)
+GOT=$(shasum -a 256 "$SIGNER" | cut -d' ' -f1)
+test "$GOT" = "$WANT" || { echo "STOP: helper differs from $PREV (see above)"; exit 1; }
 export TESS_RELEASE_SSH_KEY=<path to the SSH release private key, outside any repo>
-scripts/release/sign-release-tag.sh v<new-semver> "$M"
-scripts/release/sign-release-tag.sh create-tess-v<new-semver> "$M"
+bash "$SIGNER" v<new-semver> "$M"
+bash "$SIGNER" create-tess-v<new-semver> "$M"
+rm -rf "$SIGNER_DIR"
 for t in v<new-semver> create-tess-v<new-semver>; do
   git cat-file -t "$t"                          # must print: tag
   test "$(git rev-parse "$t^{commit}")" = "$M"  # both tags on M

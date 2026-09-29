@@ -27,11 +27,10 @@ LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
                for c in ("recall", "status", "review", "sync", "save", "index", "lint", "decide", "remember",
                          "inbox", "journal note")]
+# v1.0 security review round 2 (H-A): git diff/log/show are no longer
+# pre-approved; they take --output=<file>, which writes any file.
 READ_ONLY_GIT = [
     "Bash(git status:*)",
-    "Bash(git diff:*)",
-    "Bash(git log:*)",
-    "Bash(git show:*)",
     "Bash(git branch --list:*)",
 ]
 
@@ -53,7 +52,7 @@ def test_auto_memory_on_and_permissions(settings):
     # prompt every time. It is the one path-scoped commit of brain/; the git hooks and
     # the pre-push ship gate still run on it. Every other write verb stays unapproved.
     assert [e for e in allow if "tessbrain.py" in e] == LEARN_ALLOW
-    assert allow[:5] == READ_ONLY_GIT, "read-only git first, in this order"
+    assert allow[:len(READ_ONLY_GIT)] == READ_ONLY_GIT, "read-only git first, in this order"
     git_rules = [e for e in allow if e.startswith("Bash(git")]
     assert git_rules == READ_ONLY_GIT, "no write git command may be pre-approved"
     assert "Bash(git*)" not in allow and "Bash(git:*)" not in allow

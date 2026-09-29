@@ -116,13 +116,13 @@ def test_generated_hooks_scan_with_git_show(engine, tmp_path):
     pre_push = (tmp_path / ".git" / "hooks" / "pre-push").read_text()
 
     for body in (pre_commit, pre_push):
-        assert "git show" in body
+        assert "git cat-file blob" in body  # round 2 (L-d): no textconv, fail closed
         # the old working-tree existence gate must be gone
         assert '[ -f "$file" ]' not in body
         # secret patterns are still present
         assert "AGE-SECRET-KEY-" in body
     # pre-commit reads the staged index blob, pre-push the pushed sha blob
-    assert 'git show "$blob"' in pre_commit
+    assert 'git cat-file blob "$blob"' in pre_commit
     assert "${local_sha}:${_f}" in pre_push
 
 

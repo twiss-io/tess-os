@@ -127,8 +127,14 @@ def test_template_settings_deny_git_read_rule_escapes(path, cmd):
 
 
 @pytest.mark.parametrize("path", _SETTINGS, ids=["core", "live"])
-@pytest.mark.parametrize("cmd", ["git diff", "git diff --stat HEAD~1", "git log --oneline -5",
-                                 "git show HEAD", "git status"])
-def test_template_settings_still_allow_plain_git_reads(path, cmd):
+@pytest.mark.parametrize("cmd,want", [
+    # v1.0 security review round 2 (H-A): diff/log/show take --output=<file>
+    # (and abbreviations the deny rules cannot list), so they are no longer
+    # pre-approved; tess-gate.py parses their options.
+    ("git diff", "prompt"), ("git diff --stat HEAD~1", "prompt"),
+    ("git log --oneline -5", "prompt"), ("git show HEAD", "prompt"),
+    ("git status", "allow"), ("git branch --list", "allow"),
+])
+def test_template_settings_pre_approve_only_git_reads_that_cannot_write(path, cmd, want):
     perms = json.loads(path.read_text(encoding="utf-8"))["permissions"]
-    assert _decision(perms, cmd) == "allow", cmd
+    assert _decision(perms, cmd) == want, cmd
