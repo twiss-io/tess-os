@@ -186,7 +186,9 @@ def test_claude_settings_wire_the_gate_for_every_write_tool(rel):
     ("Bash", {"command": "git commit --allow-empty --no-verify -m probe"}, "deny"),
     ("Edit", {"file_path": "conductor/guardrails.md", "old_string": "a", "new_string": "b"}, "deny"),
     ("MultiEdit", {"file_path": ".claude/settings.json", "edits": []}, "deny"),
-    ("Bash", {"command": "git push --force origin main"}, "ask"),
+    # HEAD to a local path: CI checks out a detached HEAD with no local `main`,
+    # and the gate fails closed on a ref it cannot resolve.
+    ("Bash", {"command": "git push --force ../tess-backup.git HEAD:main"}, "ask"),
     ("Bash", {"command": "ls -la"}, None),
 ])
 def test_claude_gate_hook_blocks_and_asks_through_the_pinned_launcher(tool, tool_input, want):

@@ -82,7 +82,9 @@ def test_claude_gate_denies_the_hardened_bypasses(cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    "git push --force origin main",
+    # HEAD to a local path: CI checks out a detached HEAD with no local `main`,
+    # and the gate fails closed on a ref it cannot resolve.
+    "git push --force ../tess-backup.git HEAD:main",
     "git remote set-url origin https://example.invalid/x.git",
 ])
 def test_claude_approval_cases_ask_and_are_denied_where_nobody_can_answer(cmd):
