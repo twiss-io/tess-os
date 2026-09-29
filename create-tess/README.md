@@ -119,7 +119,7 @@ its default (`Operator` / `Tess` / `rpg` / `founders` / `chief-of-staff`).
 target. A directory holding `.tess/tess.lock`, `tess.manifest.json` or
 `operator/profile.json` is reported as an existing Tess OS install, with
 `tessctl doctor` / `tessctl update` as the next steps. Adopting an existing
-directory or instance into Tess OS is not supported in 0.2.0.
+directory or instance into Tess OS is not supported in 1.0.0.
 
 **`--force` plans first, backs up, and verifies.** Before writing anything,
 `--force` makes a read-only plan against the staged template and refuses
@@ -158,7 +158,8 @@ reachable. Pass `--template-source <git-url>` / set `TESS_TEMPLATE_SOURCE` to
 explicitly opt into a live git fetch instead (your own fork, a mirror, a
 specific upstream commit); a clone of the upstream repository is pinned to
 `DEFAULT_TEMPLATE_REF` (`src/git-template-source.js`), the framework release
-tag `v0.2.0`, unless you pass `--template-ref`/`TESS_TEMPLATE_REF` yourself.
+tag `v<this package's version>` (`v1.0.0` for create-tess 1.0.0), unless you
+pass `--template-ref`/`TESS_TEMPLATE_REF` yourself.
 Earlier versions pinned `create-tess-v0.1.2`, a tag that was never cut.
 
 Point `--template-source` at a local path to test a git-style fetch, or to
@@ -215,9 +216,10 @@ implementable at conductor-naming time.
    fallback ALONE, silently skipping this tag cut each time; that gap is
    exactly what left `DEFAULT_TEMPLATE_REF` (the git-clone pin used by the
    explicit `--template-source` git opt-in) pointing at a tag that was never
-   cut, across three release cycles (P0 G-01). From 0.2.0 it pins the
-   framework release tag (`v0.2.0`), which the framework release cuts; the
-   bundled default flow does not depend on either tag.
+   cut, across three release cycles (P0 G-01). It now pins the framework
+   release tag `v<version>`, derived from this package's own version so it
+   cannot go stale again, and the framework release cuts that tag on the
+   same commit; the bundled default flow does not depend on either tag.
 3. **Manual fallback** (if Trusted Publishing isn't live yet): from
    `create-tess/`, checked out at the tag, run `npm publish --access public`
    as an npm-authenticated maintainer. `prepack` still regenerates

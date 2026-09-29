@@ -111,9 +111,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      # Gate 2 — the full test suite must pass.
+      # Gate 2 — the full test suite must pass, and the first-push release
+      # proof (tests/test_v1_first_push_release_proof.py) must RUN: it skips
+      # without create-tess/node_modules, so install it first and refuse a skip.
       - name: Gate 2 — full test suite (pytest)
-        run: python -m pytest
+        run: |
+          set -euo pipefail
+          npm ci --prefix create-tess
+          python -m pytest -rs | tee "$RUNNER_TEMP/pytest.log"
+          if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run before a release"
+            exit 1
+          fi
 
       - name: Gate 2b — tessctl doctor
         env:

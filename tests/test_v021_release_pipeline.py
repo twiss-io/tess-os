@@ -111,8 +111,14 @@ def _gate(tag: str, root: Path) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
-def _fixture(tmp: Path, root_v="1.2.3", ct_v="1.2.3", lock_v="1.2.3", changelog="## [1.2.3] - 2026-09-29\n") -> Path:
-    (tmp / "create-tess").mkdir(parents=True)
+DERIVED_JS = (ROOT / "create-tess" / "src" / "git-template-source.js").read_text()
+
+
+def _fixture(tmp: Path, root_v="1.2.3", ct_v="1.2.3", lock_v="1.2.3", changelog="## [1.2.3] - 2026-09-29\n",
+             py_v="1.2.3", ref_js=None) -> Path:
+    (tmp / "create-tess" / "src").mkdir(parents=True)
+    (tmp / "create-tess" / "src" / "git-template-source.js").write_text(DERIVED_JS if ref_js is None else ref_js)
+    (tmp / "pyproject.toml").write_text('[project]\nname = "tess"\nversion = "%s"\n\n[tool.x]\nversion = "9.9.9"\n' % py_v)
     (tmp / ".tess").mkdir()
     (tmp / "package.json").write_text(json.dumps({"version": root_v}))
     (tmp / "create-tess" / "package.json").write_text(json.dumps({"version": ct_v}))
@@ -124,10 +130,17 @@ def _fixture(tmp: Path, root_v="1.2.3", ct_v="1.2.3", lock_v="1.2.3", changelog=
 def test_version_gate_passes_only_when_everything_agrees(tmp_path):
     assert _gate("v1.2.3", _fixture(tmp_path / "ok")).returncode == 0
     for name, kw in [("root", {"root_v": "1.2.2"}), ("ct", {"ct_v": "1.2.4"}), ("lock", {"lock_v": "1.2.2"}),
-                     ("log", {"changelog": "## [1.2.2]\n"})]:
+                     ("log", {"changelog": "## [1.2.2]\n"}), ("py", {"py_v": "0.2.0"}),
+                     ("stale-ref", {"ref_js": "export const DEFAULT_TEMPLATE_REF = 'v0.2.0';\n"}),
+                     ("unknown-ref", {"ref_js": "export const DEFAULT_TEMPLATE_REF = pickRef();\n"})]:
         done = _gate("v1.2.3", _fixture(tmp_path / name, **kw))
         assert done.returncode == 1 and "::error::version gate:" in done.stdout, (name, done.stdout)
     assert _gate("release-1.2.3", _fixture(tmp_path / "badtag")).returncode == 1
+    # A literal pin is accepted when it names the tag, and the derived form follows package.json.
+    lit = _fixture(tmp_path / "lit", ref_js="export const DEFAULT_TEMPLATE_REF = 'v1.2.3';\n")
+    assert _gate("v1.2.3", lit).returncode == 0
+    stale = _gate("v1.2.3", _fixture(tmp_path / "stale2", ref_js="export const DEFAULT_TEMPLATE_REF = 'v0.2.0';\n"))
+    assert "DEFAULT_TEMPLATE_REF is v0.2.0, tag says v1.2.3" in stale.stdout, stale.stdout
 
 
 def test_version_gate_accepts_this_repo_at_its_own_version():
@@ -156,7 +169,7 @@ def _tag_repo(tmp: Path) -> tuple:
                                   text=True, check=True).stdout)
     repo = tmp / "repo"
     repo.mkdir()
-    for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"],
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "x"],
                  ["-c", "user.signingkey=" + fpr, "tag", "-s", "-m", "signed", "v9.9.9"],
                  ["tag", "-a", "-m", "unsigned", "v9.9.8"], ["tag", "v9.9.7"]):
         subprocess.run(["git", "-C", str(repo)] + args, env=env, check=True, capture_output=True)
@@ -190,3 +203,30 @@ def test_verify_release_tag_accepts_the_real_signed_release_tag():
         pytest.skip("annotated %s not fetched in this checkout" % tag)
     done = subprocess.run([str(SCRIPTS / "verify_release_tag.sh"), tag], cwd=str(ROOT), capture_output=True, text=True)
     assert done.returncode == 0 and PINNED in done.stdout, done.stdout + done.stderr
+
+
+FIRST_PUSH = "test_v1_first_push_release_proof"
+
+
+def _all_steps(wf: str) -> dict:
+    jobs = yaml.safe_load((WF / wf).read_text())["jobs"]
+    return {name: job.get("steps", []) for name, job in jobs.items()}
+
+
+def test_first_push_release_proof_runs_in_ci_and_release_not_skips():
+    # v1.0 code review, HIGH: that file skips without create-tess/node_modules,
+    # and every pytest job ran before any `npm ci`, so it never ran in CI.
+    ci = _all_steps("ci.yml")
+    for job in ("test", "macos"):
+        runs = [str(s.get("run", "")) for s in ci[job]]
+        npm = next(i for i, r in enumerate(runs) if "npm ci --prefix create-tess" in r)
+        py = next(i for i, r in enumerate(runs) if "python -m pytest -rs" in r)
+        assert npm < py, job
+        assert "SKIPPED.*" + FIRST_PUSH in runs[py] and "exit 1" in runs[py], job
+        assert "set -euo pipefail" in runs[py], job
+    gate2 = [str(s.get("run", "")) for steps in _all_steps("release.yml").values() for s in steps
+             if str(s.get("name", "")).startswith("Gate 2 ")]
+    assert len(gate2) == 1
+    run = gate2[0]
+    assert run.index("npm ci --prefix create-tess") < run.index("python -m pytest")
+    assert "SKIPPED.*" + FIRST_PUSH in run and "set -euo pipefail" in run

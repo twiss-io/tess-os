@@ -102,7 +102,7 @@ def real_engine_root(tmp_path):
     shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     assert (dst / WORKFLOW_REL).exists()
     assert (dst / ".tess" / "bin" / "tessctl").exists()
-    _git(dst, "init", "-q")
+    _git(dst, "init", "-b", "main", "-q")
     _git(dst, "config", "user.email", "test@tess.test")
     _git(dst, "config", "user.name", "Test")
     _git(dst, "config", "commit.gpgsign", "false")

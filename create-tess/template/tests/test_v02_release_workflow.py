@@ -73,7 +73,7 @@ def checked_out_tag(tmp_path: Path) -> Path:
     """A clone left exactly as actions/checkout@v4 leaves it for a push of an annotated tag."""
     origin_work = tmp_path / "origin-work"
     origin_work.mkdir()
-    _git(origin_work, "init", "-q")
+    _git(origin_work, "init", "-b", "main", "-q")
     (origin_work / "f.txt").write_text("x\n")
     _git(origin_work, "add", "f.txt")
     _git(origin_work, "commit", "-q", "-m", "c1")
@@ -83,7 +83,7 @@ def checked_out_tag(tmp_path: Path) -> Path:
                    capture_output=True)
     ws = tmp_path / "workspace"
     ws.mkdir()
-    _git(ws, "init", "-q")
+    _git(ws, "init", "-b", "main", "-q")
     _git(ws, "remote", "add", "origin", str(origin))
     # checkout's first fetch (fetch-depth: 0, fetch-tags: true)
     _git(ws, "fetch", "-q", "--prune", "--no-recurse-submodules", "origin",

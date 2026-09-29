@@ -49,7 +49,7 @@ printf 'tess-release-manifest/1\ntag %s\nobject %s\ntree %s\n' "$TAG" "$object" 
 awk '/^-----BEGIN PGP SIGNATURE-----$/ {exit} {print}' "$work/tag" > "$work/payload"
 if [ "$(grep -c 'Tess-Release-SSH-Signature' "$work/payload" || true)" != "1" ] \
    || [ "$(grep -cx "$MARKER" "$work/payload" || true)" != "1" ]; then
-  echo "::error::${TAG} carries no (or more than one) SSH release signature. Sign with scripts/release/sign-release-tag.sh."
+  echo "::error::${TAG} carries no (or more than one) SSH release signature. Sign with scripts/release/sign-release-tag.sh (tess-os maintainer tool; see conductor/release-process.md step 8)."
   exit 1
 fi
 awk -v m="$MARKER" '$0==m {f=1; next} f && /^    / {print substr($0,5); next} f {exit}' \

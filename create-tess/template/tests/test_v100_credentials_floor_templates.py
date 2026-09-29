@@ -115,7 +115,7 @@ def floor_repo(project):
                          "hard_floor_rules": [_credentials_rule(_load(POLICY_COPIES[0]))]}}
     (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
     (root / ".env.example").write_text("API_KEY=your-key-here\n", encoding="utf-8")
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")

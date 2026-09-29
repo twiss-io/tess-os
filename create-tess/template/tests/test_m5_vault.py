@@ -546,7 +546,7 @@ def test_secret_patterns_match_known_secrets(engine):
 def test_scan_flags_tracked_secret(tmp_path, engine, run_cli):
     scan = Project(tmp_path / "scanrepo", engine)
     root = scan.root
-    for a in (("init", "-q"), ("config", "user.email", "t@t.test"),
+    for a in (("init", "-q", "-b", "main"), ("config", "user.email", "t@t.test"),
               ("config", "user.name", "t")):
         subprocess.run(["git", "-C", str(root), *a], capture_output=True)
     # contiguous in the written file (so scan detects it), split in source
@@ -561,7 +561,7 @@ def test_scan_flags_tracked_secret(tmp_path, engine, run_cli):
 def test_scan_clean_tree(tmp_path, engine, run_cli):
     scan = Project(tmp_path / "scanclean", engine)
     root = scan.root
-    for a in (("init", "-q"), ("config", "user.email", "t@t.test"),
+    for a in (("init", "-q", "-b", "main"), ("config", "user.email", "t@t.test"),
               ("config", "user.name", "t")):
         subprocess.run(["git", "-C", str(root), *a], capture_output=True)
     (root / "clean.txt").write_text("nothing sensitive here, just prose.\n")

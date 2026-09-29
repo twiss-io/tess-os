@@ -82,7 +82,7 @@ def repo(tmp_path):
     shutil.copy2(ENGINE, root / ".tess" / "bin" / "tessctl")
     shutil.copy2(MANIFEST_SRC, root / "tess.manifest.json")
     (root / ".tess" / "tess.lock").write_text('{"schema": 1, "framework": {}, "files": {}}')
-    _git(tmp_path, "init", "-q", str(root))
+    _git(tmp_path, "init", "-b", "main", "-q", str(root))
     (root / "README.md").write_text("hello\n")
     (root / "clients" / "_template").mkdir(parents=True)
     (root / "clients" / "_template" / "CLAUDE.md").write_text("scaffold\n")
@@ -233,7 +233,7 @@ def test_real_push_to_local_remote_runs_guard_and_operator_hook(repo, fake_path,
     assert "already v1" in _install(repo)
     _add_client(repo)
     bare = tmp_path / "remote.git"
-    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(tmp_path, "init", "-b", "main", "-q", "--bare", str(bare))
     _git(repo, "remote", "add", "origin", str(bare))
     env = {**os.environ, "PATH": path_env}
     r = _git(repo, "push", "-q", "origin", "HEAD:refs/heads/main", check=False, env=env)

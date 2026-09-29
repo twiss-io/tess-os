@@ -4,7 +4,7 @@
 #   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256
 19d59011a77448350ba2aeced5a014d60e2e50de634da25f40ab8905aba590b3  .claude/hooks/run-pinned.py
 755e3e31bd4630f896472c66c1a1f98ac5118392b0be014f035937b5572d74b2  .claude/hooks/vault-dispatch-scan.py
-890e9196ae6254382594745625ff8eade6e526be02cbcf8e6d8ce147604b511a  .claude/hooks/tess-gate.py
+a76d5daeed90d502a9383265e8a541de238d09ceaf106df62431ccaeae9a3028  .claude/hooks/tess-gate.py
 432107cc18bfecb324c3d38aa7ee249437bebd1e973e0dabef5c51daa17b22be  scripts/brain/onboard.py
 b186ce8679048f3655182a70cea4e21b632057aca11e84f26a7cdecfb5605fe1  scripts/brain/probe.py
 72e925245730c6f0d7727b825344bfee524712cec32ce623f60292f268bcd53f  scripts/brain/tessbrain.py
@@ -32,7 +32,7 @@ ddb8287fa7779d96761750a3c9e9284f2bb0c8f99d08ca2c34de8c849c80b71d  scripts/brain/
 5f70e9ed73d5d0b81dac7ca8ca2515a28b46b7e255af8d66180a10dfec43b95c  scripts/brain/brainlib/reach.py
 301bc89bcdca07364f07c81c2cb351fc90d3b34c03a0eeb481c8a78cfe81f7af  scripts/brain/brainlib/recall.py
 b2a600e0420823a639681639925ea46b591a424f6b2f34ee6de92eee16686eda  scripts/brain/brainlib/receipts.py
-1d769afc7e05dc67d5be7c5512882034ee9a3ccb8133733408e76d3e606b18e1  scripts/brain/brainlib/records.py
+047d9a5865204809ddc6324d2ae200ab894be1afdf3ec0fae640a860720c1020  scripts/brain/brainlib/records.py
 97bea8a1011928b6bc746c8462be7fbeece74b12dbd20bc88c600523d2fb0e8d  scripts/brain/brainlib/redact.py
 b357eca61b53e1154113b20c7c5326e265fd32618358095c498fc0faf6206f99  scripts/brain/brainlib/save.py
 cdcb4bcc0f8aaea9d784409b0b835e56e7975f37f192d215d7b6553594fe0c14  scripts/brain/brainlib/settle.py

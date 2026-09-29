@@ -17,7 +17,7 @@ def inst(tmp_path):
     p.write_text(json.dumps(bj))
     inst = Path(fxlib.make(str(tmp_path / "fx"), brain_json=str(p)))
     bare = tmp_path / "bare.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q", "--bare", str(bare)], check=True)
     fxlib.run(str(inst), "remote", "add", "origin", str(bare))
     fxlib.run(str(inst), "push", "-q", "-u", "origin", "main")  # the harness seed push
     return inst

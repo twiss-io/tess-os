@@ -50,7 +50,7 @@ def _git(root, *args, check=True, input_text=None):
 
 
 def _init_repo(root):
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")
@@ -331,7 +331,7 @@ def test_e2e_pre_commit_hook_fires_and_allows_valid_brief(e2e_repo):
 
 def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_path):
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     push0 = _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False)
     assert push0.returncode == 0, f"baseline push should succeed:\n{push0.stdout}\n{push0.stderr}"
@@ -348,7 +348,7 @@ def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_
 
 def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_path, engine, verifier_gpg_keys):
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     # Seed the same remote ref this test updates below.  Pushing the default
     # local branch name here and then `HEAD:main` later would make the latter
@@ -390,7 +390,7 @@ def test_e2e_git_push_no_verify_bypasses_local_hook_but_ci_would_still_catch_it(
     range independently still blocks — i.e. the backstop is real, not just
     asserted in a comment."""
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     base = _git(e2e_repo, "rev-parse", "HEAD").stdout.strip()
     assert _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False).returncode == 0

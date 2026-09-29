@@ -228,12 +228,8 @@ def test_decision_body_comes_from_the_learn_template_when_present(tmp_path):
 
 
 def test_decision_round_trips_through_learn_frontmatter_when_installed(tmp_path):
-    """After integration (ws-learn merged), its own parser + writer reproduce the file byte for byte."""
+    """ws-learn's own parser + writer (scripts/brain/brainlib, always in tree) reproduce the file byte for byte."""
     import sys
-    lib = h.BRAIN_TOOLS / "brainlib" / "frontmatter.py"
-    if not lib.exists():
-        import pytest
-        pytest.skip("ws-learn (scripts/brain/brainlib) is not in this tree")
     sys.path.insert(0, str(h.BRAIN_TOOLS))
     try:
         from brainlib import frontmatter, records  # type: ignore

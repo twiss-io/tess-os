@@ -29,7 +29,7 @@ NOW = datetime(2026, 1, 10, tzinfo=timezone.utc)
 def _init_local_only_repo(tmp_path: Path) -> Path:
     """A git repo with NO remote configured — `git push` inside it can never
     reach a real network destination."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     (tmp_path / "memory").mkdir()

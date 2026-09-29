@@ -69,8 +69,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      # tests/test_v1_first_push_release_proof.py builds the real npm tarball and
+      # SKIPS unless create-tess/node_modules exists. Install it before pytest,
+      # then fail the step if that file reports SKIPPED (v1.0 code review, HIGH):
+      # the first-push release proof must run, not pass by skipping.
+      - name: Install create-tess dependencies (first-push release proof needs them)
+        run: npm ci --prefix create-tess
+
       - name: Run test suite (pytest)
-        run: python -m pytest
+        run: |
+          set -euo pipefail
+          python -m pytest -rs | tee "$RUNNER_TEMP/pytest.log"
+          if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run in CI"
+            exit 1
+          fi
 
       # Independent, explicit proof (on top of the full-suite run above)
       # that the DoD B.9 e2e genuinely EXECUTED its 3 cases in this CI run
@@ -180,8 +193,21 @@ jobs:
             exit 1
           fi
 
+      # tests/test_v1_first_push_release_proof.py builds the real npm tarball and
+      # SKIPS unless create-tess/node_modules exists. Install it before pytest,
+      # then fail the step if that file reports SKIPPED (v1.0 code review, HIGH):
+      # the first-push release proof must run, not pass by skipping.
+      - name: Install create-tess dependencies (first-push release proof needs them)
+        run: npm ci --prefix create-tess
+
       - name: Run test suite (pytest)
-        run: python -m pytest
+        run: |
+          set -euo pipefail
+          python -m pytest -rs | tee "$RUNNER_TEMP/pytest.log"
+          if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run in CI"
+            exit 1
+          fi
 
       - name: create-tess tests, wizard on stock /usr/bin/python3
         working-directory: create-tess
