@@ -16,6 +16,9 @@ from . import promote, receipts, redact, verify
 from .config import Config, iso, log_error, write_json
 
 KINDS = ("decision", "preference", "correction", "fact", "open_loop", "skill")
+# Set only in memory by the trusted paths (the verifier, confirm.py). A candidate FILE is repo-writable
+# (Codex review finding 1: `operator_approved: true` on disk skipped fidelity, V6 and settling).
+PRIVILEGED = ("operator_approved", "confirmed_ref", "confirmed", "verified")
 DETECTORS = ("cue", "distill", "decide", "onboarding", "operator")
 OVER_CAP = "over-cap"
 
@@ -89,10 +92,30 @@ def pending(cfg: Config) -> List[Dict]:
     out = []
     for p in sorted(d.glob("C-*.json")) if d.is_dir() else []:
         try:
-            out.append(json.loads(p.read_text(encoding="utf-8")))
+            cand = sanitize(json.loads(p.read_text(encoding="utf-8")), p.stem)
         except (OSError, ValueError) as exc:
-            log_error(cfg, "inbox: unreadable candidate %s" % p.name, exc)
+            log_error(cfg, "inbox: unreadable or malformed candidate %s" % p.name, exc)
+            continue
+        out.append(cand)
     return out
+
+
+def sanitize(raw: object, stem: str) -> Dict:
+    """A candidate read from disk: privileged and in-memory (_*) fields dropped, shape checked."""
+    if not isinstance(raw, dict):
+        raise ValueError("not an object")
+    cand = {k: v for k, v in raw.items() if not str(k).startswith("_") and k not in PRIVILEGED}
+    if cand.get("id") != stem or cand.get("kind") not in KINDS or cand.get("detected_by") not in DETECTORS:
+        raise ValueError("id/kind/detected_by invalid")
+    for k in ("statement", "quote", "approves_quote", "source_ref", "speaker", "supersedes", "target", "title"):
+        if not isinstance(cand.get(k, ""), str):
+            raise ValueError("%s is not a string" % k)
+    if not isinstance(cand.get("also_quoted") or [], list):
+        raise ValueError("also_quoted is not a list")
+    ver = cand.get("verification") if isinstance(cand.get("verification"), dict) else {}
+    cand["verification"] = {"status": str(ver.get("status") or "pending"), "reasons": list(ver.get("reasons") or []),
+                            "checked_at": str(ver.get("checked_at") or "")}
+    return cand
 
 
 def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
@@ -114,7 +137,7 @@ def process(cfg: Config, cand: Dict, dry_run: bool = False) -> Dict:
     elif res.status == "waiting":  # V12: a clean decision in a session that has not settled; re-checked each sync
         save(cfg, cand)
     elif res.status == "review" or cand["kind"] == "skill" or (
-            cand["kind"] == "fact" and not promote.principal_fact(cfg, cand) and not cand.get("operator_approved")):
+            cand["kind"] == "fact" and not promote.principal_fact(cfg, cand) and not cand.get(verify.APPROVED)):
         if cand["kind"] == "skill":
             outcome["record"] = promote.skill_draft(cfg, cand)
             _drop(cfg, cand)

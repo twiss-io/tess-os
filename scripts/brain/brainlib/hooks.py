@@ -87,6 +87,9 @@ def spawn(args: List[str]) -> None:
 
 def session_start(cfg: Config, runtime: str, data: Dict) -> None:
     budget = cfg.budgets["session_start_kib"] * 1024
+    if cfg.active():  # create the provenance key here: Codex runs the agent's shell in a sandbox that can
+        from . import provenance  # read ~/.config/tess but not create files there
+        provenance.key(cfg)
     text = status.snapshot(cfg, runtime)
     nonce = os.environ.get("TESS_BRAIN_TEST_NONCE")
     if nonce:

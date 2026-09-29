@@ -29,7 +29,10 @@ def _local(cfg: Config, sess: Session, text: str) -> str:
 
 
 def private_read(cfg: Config, sess: Session) -> bool:
-    """True when any tool call in the session named a private path (.private/, clients/, kb/)."""
+    """True when any tool call in the session named a private path (.private/, clients/, kb/), or when the
+    parser could not keep every place a tool input named one (then the replies are withheld to be safe)."""
+    if getattr(sess, "inspection_incomplete", False):
+        return True
     return any(is_private_path(_local(cfg, sess, t)) for t in getattr(sess, "tool_inputs", []))
 
 

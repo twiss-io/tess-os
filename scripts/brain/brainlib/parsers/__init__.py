@@ -24,6 +24,10 @@ PRIVATE_PATH = re.compile(r"(?:^|[^A-Za-z0-9_.-])\.private(?:/|\b)"
                           r"|(?<!brain/)(?<![A-Za-z0-9_.-])kb/")
 
 
+_MARKER = re.compile(r"\.private|clients/|kb/")
+_LEAD, _TAIL, MAX_WINDOWS = 1024, 256, 5000
+
+
 def is_private_path(text: str) -> bool:
     """True when `text` names a private path (see PRIVATE_PATH)."""
     return bool(text) and bool(PRIVATE_PATH.search(str(text)))
@@ -55,21 +59,35 @@ class Session:
         self.msgs: List[Msg] = []
         self.files: List[str] = []
         self.external_context = False
-        self.tool_inputs: List[str] = []  # bounded; checked for private paths by the journal
+        self.tool_inputs: List[str] = []  # every place a tool input names a private-path marker (bounded)
+        self.inspection_incomplete = False  # the bound was hit: the journal withholds replies
         self.last_ordinal = 0
         self.prefix_sha256 = ""
+        self._seen: set = set()
 
     def note_tool_input(self, payload: Any) -> None:
-        """Keep a bounded copy of every tool input; the journal checks them for private paths
-        (it knows the instance root, so an instance that itself lives under a `clients/` folder is fine)."""
-        if len(self.tool_inputs) >= 5000:
-            return
+        """Keep, for the journal's private-path check, every stretch of a tool input that could name one.
+
+        PRIVATE_PATH can only match where `.private`, `clients/` or `kb/` occurs, so only those places are
+        kept: a window around each occurrence (with enough lead-in for the journal to strip the instance
+        root), across the WHOLE input. Codex review finding 5: inputs were cut at 8,192 characters and calls
+        after the 5,000th were dropped, so `cat clients/acme/...` past either bound escaped and the reply
+        was journaled. When the bound on kept windows is hit, inspection_incomplete withholds the replies."""
         try:
             text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, default=str)
         except (TypeError, ValueError):
             text = str(payload)
-        if text:
-            self.tool_inputs.append(text[:8192])
+        if not text or self.inspection_incomplete:
+            return
+        for m in _MARKER.finditer(text):
+            window = text[max(0, m.start() - _LEAD):m.end() + _TAIL]
+            if window in self._seen:
+                continue
+            if len(self.tool_inputs) >= MAX_WINDOWS:
+                self.inspection_incomplete = True
+                return
+            self._seen.add(window)
+            self.tool_inputs.append(window)
 
     def add_file(self, path: Any) -> None:
         if isinstance(path, str) and path and path not in self.files:

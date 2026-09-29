@@ -8,11 +8,16 @@ description: "Show the operator what the brain learned or holds for confirmation
 ## Steps
 
 1. `python3 scripts/brain/tessbrain.py review --json`
-2. Show a numbered list: number, what it is, the statement, why it is waiting
-   (the verifier's reason). Keep it short.
-3. Ask the operator to answer in words, for example "approve 1 and 3,
-   reject 2, 4 is wrong: it should be ...".
-4. Apply each answer with the operator's exact reply as the quote:
+2. Show a numbered list: number, the item's **id**, what it is, the statement,
+   why it is waiting (the verifier's reason). Keep it short. Running `review`
+   records that these items, as they are now, were shown to the operator.
+3. Ask the operator to answer in words that NAME EACH ID, for example
+   "confirm D-20260929-1412-use-postgres, reject C-20260929-1200-01". An
+   answer is accepted only when it comes after this listing, names the exact
+   id, and says what to do with it: a list number, an earlier message, or a
+   bare "yes" is not enough (the tool refuses it, and you never type the
+   approval yourself).
+4. Apply each answer with the operator's exact reply (including the id) as the quote:
 
    ```
    python3 scripts/brain/tessbrain.py confirm <id> --quote "<their words>"     # approve (sets confirmed: true)
@@ -20,6 +25,10 @@ description: "Show the operator what the brain learned or holds for confirmation
    python3 scripts/brain/tessbrain.py retract <id> --quote "<their words>"     # "forget that / that is wrong"
    python3 scripts/brain/tessbrain.py promote <C-id> --quote "<their words>"   # approve an inbox candidate
    ```
+
+   If the tool answers that the item "has not been shown", "changed since it
+   was shown" or that their words "predate" the listing, run step 1 again,
+   show the item, and ask again.
 
    A correction ("4 should be ...") is recorded with skill `brain-remember`
    (`--kind correction --supersedes <id>`).
@@ -43,5 +52,5 @@ days; START HERE files whose `last_verified` is older than 30 days; budgets
 
 ## Never
 
-- Never approve on the operator's behalf. Every change needs their words.
+- Never approve on the operator's behalf. Every change needs their words, naming the id.
 - Never edit record files by hand; the tool keeps history intact.

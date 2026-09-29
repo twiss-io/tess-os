@@ -91,7 +91,10 @@ def _errors(inst):
 
 
 def test_stop_returns_fast_and_journals_in_background(inst, tmp_path):
-    src = Path(fxlib.CLAUDE_DIR) / "11111111-aaaa-4bbb-8ccc-000000000001.jsonl"
+    src = tmp_path / "store" / "11111111-aaaa-4bbb-8ccc-000000000001.jsonl"  # a session run in this instance
+    src.parent.mkdir()
+    src.write_text((Path(fxlib.CLAUDE_DIR) / src.name).read_text().replace('"cwd": "/work/fx"',
+                                                                        '"cwd": %s' % json.dumps(str(inst))))
     data = json.loads((STDIN / "stop.json").read_text())
     data["transcript_path"] = str(src)
     r, dt = _hook(inst, "stop", stdin=json.dumps(data))

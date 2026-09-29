@@ -1,5 +1,6 @@
 """turns.jsonl: the current turn, redacted, local only (spec G4)."""
 import json
+import time
 from pathlib import Path
 
 from fixtures.brain_learn import fxlib
@@ -66,6 +67,11 @@ def test_current_turn_quote_is_pending_then_accepted(tmp_path):
     assert 'status: "proposed"' in rec and "brain/journal/2026/09/24/1405-claude-11111111.md#L1" in rec
     assert "Firebird" not in (inst / "brain/decisions/INDEX.md").read_text().split("## Accepted")[1].split("##")[0]
     r = fxlib.cli(inst, "confirm", path.stem, "--quote", "let's go with Firebird for the widget ledger")
+    assert r.returncode == 1  # the decision's own words are not a confirmation
+    assert fxlib.cli(inst, "review").returncode == 0  # shown, with its id
+    time.sleep(1.1)  # the operator's reply comes after the listing
+    _prompt(inst, "Yes, confirm %s." % path.stem)  # captured by the hook, MAC-checked
+    r = fxlib.cli(inst, "confirm", path.stem, "--quote", "confirm %s" % path.stem)
     assert r.returncode == 0, r.stdout + r.stderr  # the operator confirms it in review
     rec = path.read_text()
     assert 'status: "accepted"' in rec and "confirmed: true" in rec

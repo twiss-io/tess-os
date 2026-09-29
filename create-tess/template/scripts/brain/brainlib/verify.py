@@ -9,18 +9,24 @@ V9 target register inside the speaker's scope
 V10 statement fidelity and V11 context (guards.py) send to review. V12
 (settle.py): a routine decision is a candidate until its session settles with
 no doubt, or the operator confirms it; it is never accepted from wording alone.
+V13 (provenance.py): a quote found only in an unattested journal file (one the
+repo could have written) goes to review; only the operator's confirmation by id
+(confirm.py) accepts it. `_operator_approved` is set in memory by that path only.
 """
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
 
-from . import cues, frontmatter, guards, lookup, records, redact, settle
+from . import cues, frontmatter, guards, lookup, provenance, records, redact, settle
 from .config import Config
 from .textutil import contains, glob_match, normalize, sentences, statement_hash
 
 JUDGED = ("decision", "preference", "correction")
 EXTERNAL = "V6: session used external context; never auto-promoted"
+UNVERIFIED = ("V13: the quoted line is not authenticated operator evidence (a journal file not attested from this "
+              "machine's runtime transcript); the operator confirms it by id")
+APPROVED = "_operator_approved"
 _TOKENS = re.compile(r"https?://\S+|[\w.+-]+@[\w-]+\.[\w.-]+|\d+(?:[.,:/-]\d+)*")
 
 
@@ -37,11 +43,12 @@ class Result:
 
 def _locate(cfg: Config, cand: Dict, res: Result) -> Optional[lookup.JLine]:
     quote = cand.get("quote") or ""
+    hits = lookup.search(cfg, quote)  # principal, journal, authenticated first
     line = lookup.resolve(cfg, cand.get("source_ref") or "")
-    if line is not None and contains(line.text, quote) and (line.kind != "turn" or line.principal):
-        if line.kind != "turn":
-            return line
-    hits = lookup.search(cfg, quote)
+    if line is not None and line.kind != "turn" and contains(line.text, quote):
+        rank = lookup.trusted(cfg, line)
+        if rank or not [h for h in hits if h.kind != "turn" and lookup.trusted(cfg, h)]:
+            return line  # the cited line, unless it is forged and an authenticated one exists
     journal_hits = [h for h in hits if h.kind != "turn"]
     if journal_hits:
         return journal_hits[0]
@@ -74,7 +81,7 @@ def _v3(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     proposal = cand.get("approves_quote") or ""
     session = lookup.lines_for(cfg, line.path) if line.kind != "turn" else []
     replies = sorted((l for l in session if l.kind == "reply" and contains(l.text, proposal)
-                      and l.order < line.order), key=lambda l: l.order)
+                      and l.order < line.order and lookup.trusted(cfg, l)), key=lambda l: l.order)
     if not replies:
         return "V3: approves_quote is not verbatim in an earlier assistant reply of this session"
     later = sorted((l for l in session if l.kind == "msg" and l.principal and l.order > replies[-1].order),
@@ -89,6 +96,9 @@ def _external(cfg: Config, line: lookup.JLine) -> str:
     """V6 reason or '': the session used web/MCP/search, or it is a hand-written note."""
     if line.kind == "turn":
         return ""
+    attested = provenance.session_of(cfg, line.path)
+    if attested is not None and attested.get("external"):
+        return EXTERNAL  # the attested flag wins over the file's (editable) front matter
     rel = line.path[len("brain/"):] if line.path.startswith("brain/") else line.path
     for p in (cfg.brain / rel, cfg.state / rel):
         if p.is_file():
@@ -133,7 +143,7 @@ def _v2(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
 
 def _also_quoted(cfg: Config, cand: Dict) -> Optional[str]:
     for q in cand.get("also_quoted") or []:
-        if not [h for h in lookup.search(cfg, q) if h.principal]:
+        if not [h for h in lookup.search(cfg, q) if h.principal and lookup.trusted(cfg, h)]:
             return "V1: also_quoted %r is not a principal's words in the journal or current turn" % q
     return None
 
@@ -193,8 +203,10 @@ def check(cfg: Config, cand: Dict) -> Result:
         res.status = "review"
         res.reasons.append(held)
         return res
-    why = "" if res.status != "pass" or cand.get("operator_approved") else (
+    why = "" if res.status != "pass" or cand.get(APPROVED) else (
         EXTERNAL if cand.get("external_context") else _external(cfg, line))
+    if not why and res.status == "pass" and not cand.get(APPROVED) and not lookup.trusted(cfg, line):
+        why = UNVERIFIED  # V13
     if why:
         res.status = "review"
         res.reasons.append(why)
@@ -213,7 +225,7 @@ def settle_check(cfg: Config, cand: Dict, line: lookup.JLine) -> Result:
 
 def _settle(cfg: Config, cand: Dict, line: lookup.JLine, res: Result) -> None:
     """V12: a routine decision is accepted only when confirmed, or settled with no doubt (settle.py)."""
-    if cand.get("kind") != "decision" or cand.get("operator_approved") or cand.get("tier") == "material":
+    if cand.get("kind") != "decision" or cand.get(APPROVED) or cand.get("tier") == "material":
         return
     strict = settle.strict_for(cand.get("detected_by") or "")
     decision = " ".join(x for x in (cand.get("quote"), cand.get("approves_quote")) if x)
@@ -253,7 +265,7 @@ def _following(cfg: Config, line: lookup.JLine) -> str:
 def _guard(cfg: Config, cand: Dict, line: lookup.JLine) -> Optional[str]:
     """V10 (statement fidelity) then V11 (context); skipped once the operator approved it."""
     kind = cand.get("kind") or ""
-    if cand.get("operator_approved") or kind == "skill":
+    if cand.get(APPROVED) or kind == "skill":
         return None
     source = " ".join([line.text, cand.get("quote") or "", cand.get("approves_quote") or ""]
                       + list(cand.get("also_quoted") or []))

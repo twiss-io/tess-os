@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import cues, frontmatter, gitutil, redact
+from . import cues, frontmatter, gitutil, lookup, redact
 from .notes import WITHHELD, private_read, private_file, summary
 from .config import Config, iso, read_json, write_json, write_text_if_changed
 from .parsers import Session, count_lines
@@ -91,9 +91,10 @@ def _owner(cfg: Config, rel: str) -> str:
     return ""
 
 
-def build_entries(cfg: Config, sess: Session) -> Tuple[List[Entry], Dict[str, int]]:
+def build_entries(cfg: Config, sess: Session, sticky: bool = False) -> Tuple[List[Entry], Dict[str, int]]:
+    """`sticky`: an earlier sync of this transcript already saw a private read, so replies stay withheld."""
     counts: Dict[str, int] = {}
-    withhold = private_read(cfg, sess)
+    withhold = sticky or private_read(cfg, sess)
     entries: List[Entry] = []
     nl = 0
     for m in sess.msgs:
@@ -222,12 +223,14 @@ def cursors(cfg: Config) -> Dict[str, Dict]:
     return read_json(cfg.state / "cursors.json", {})
 
 
-def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str]):
+def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str], trusted: bool = False):
     """Journal one transcript -> (session or None, entries new since the cursor, commit()).
 
     The caller persists what it derived from the new entries (inbox
     candidates) and only then calls commit() to advance the cursor, so a
     crash in between re-derives them next time instead of losing them.
+    `trusted`: the transcript is the runtime's own log (sync vetted it), so every journaled line is
+    attested (provenance.py); a hand-written note never is.
     """
     noop = (None, [], lambda: None)
     if cfg.journal_policy == "off":
@@ -240,22 +243,27 @@ def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str]):
     if n <= through and not revived:
         return noop
     sess = parser(path, upto=n)
-    built = build_entries(cfg, sess)
+    built = build_entries(cfg, sess, sticky=bool(cur.get("private")))
     entries = built[0]
     if not [e for e in entries if e.kind == "msg"]:
         return None, [], lambda: _save_cursor(cfg, key, sess, "", entries)
     rel0 = base_relpath(cfg, sess)
     if not cur:
-        through = _marker_through(cfg, rel0)
+        through = lookup.marker_through(cfg, rel0)
     ents = sorted({eid for e in entries if e.kind == "msg" and e.principal
                    for eid, name in entity_names.items() if cues.mentions(e.text, name)})
-    head = _existing_head(cfg, rel0) or gitutil.head(cfg.root)
-    for rel, public, local in render(cfg, sess, ents, head, built):
+    head = lookup.existing_head(cfg, rel0) or gitutil.head(cfg.root)
+    rendered = render(cfg, sess, ents, head, built)
+    for rel, public, local in rendered:
         if public:
             write_text_if_changed(cfg.brain / rel, public)
         if local is not None:
             cfg.ensure_state()
             write_text_if_changed(cfg.state / rel, local)
+    if trusted:
+        from . import provenance
+        provenance.attest_journal(cfg, sess, [(rel, [e for e in entries if e.ref.partition("#")[0] == "brain/" + rel])
+                                              for rel, _, _ in rendered])
     new = [e for e in entries if e.ordinal > through or e.ordinal in revived]
     return sess, new, lambda: _save_cursor(cfg, key, sess, rel0, entries)
 
@@ -271,29 +279,11 @@ def _revived(cfg: Config, cur: Dict) -> set:
     return out
 
 
-def _marker_through(cfg: Config, rel: str) -> int:
-    """Fallback cursor: the through= marker of an existing journal file."""
-    import re
-    for p in (cfg.state / rel, cfg.brain / rel):
-        if p.is_file():
-            m = re.search(r"<!-- tess:session [^>]*through=(\d+) -->", p.read_text(encoding="utf-8", errors="replace"))
-            if m:
-                return int(m.group(1))
-    return 0
-
-
-def _existing_head(cfg: Config, rel: str) -> str:
-    for p in (cfg.brain / rel, cfg.state / rel):
-        if p.is_file():
-            meta, _ = frontmatter.read(p)
-            return str(meta.get("git_head") or "")
-    return ""
-
-
 def _save_cursor(cfg: Config, key: str, sess: Session, rel: str, entries: List[Entry]) -> None:
     cfg.ensure_state()
     data = cursors(cfg)
     data[key] = {"through": sess.last_ordinal, "session_id": sess.session_id, "runtime": sess.runtime,
                  "journal": ("brain/" + rel) if rel else "",
+                 "private": bool((data.get(key) or {}).get("private")) or private_read(cfg, sess),
                  "omitted": [[e.ordinal, e.speaker] for e in entries if e.kind == "msg" and not e.principal]}
     write_json(cfg.state / "cursors.json", data)

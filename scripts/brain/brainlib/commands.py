@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Tuple
 
-from . import (githooks, hooks, inbox, index, lint, lookup, promote, recall, records, save, status, sync)
+from . import (confirm, githooks, hooks, inbox, index, lint, promote, recall, records, save, status, sync, verify)
 from .config import Config, iso
 from .parsers import count_lines
 
@@ -103,13 +103,24 @@ def _run_candidate(cfg: Config, cand: Dict, dry: bool) -> Out:
     return (1 if outcome["status"] == "fail" else rc), outcome
 
 
+def _shown(cfg: Config, a, res: Out) -> Out:
+    """The agent relays this outcome: a proposed record or held candidate is now shown, id and all."""
+    if not getattr(a, "dry_run", False) and isinstance(res[1], dict):
+        out = res[1]
+        confirm.present_outcome(cfg, out)
+        held = [c for c in inbox.pending(cfg) if c["id"] == out.get("candidate")]
+        if held:
+            confirm.present(cfg, held[0]["id"], confirm.candidate_hash(held[0]))
+    return res
+
+
 def cmd_decide(cfg: Config, a) -> Out:
     why = _need(cfg) or _entity(cfg, a)
     if why:
         return 1, {"error": why}
     if not a.no_sync:
         sync.run(cfg, "all", days=2)
-    return _run_candidate(cfg, _candidate(cfg, a, "decision", "decide"), a.dry_run)
+    return _shown(cfg, a, _run_candidate(cfg, _candidate(cfg, a, "decision", "decide"), a.dry_run))
 
 
 def cmd_remember(cfg: Config, a) -> Out:
@@ -118,14 +129,14 @@ def cmd_remember(cfg: Config, a) -> Out:
         return 1, {"error": why}
     if not a.no_sync:
         sync.run(cfg, "all", days=2)
-    return _run_candidate(cfg, _candidate(cfg, a, a.kind, "operator"), a.dry_run)
+    return _shown(cfg, a, _run_candidate(cfg, _candidate(cfg, a, a.kind, "operator"), a.dry_run))
 
 
 def cmd_inbox_add(cfg: Config, a) -> Out:
     why = _need(cfg) or _entity(cfg, a)
     if why:
         return 1, {"error": why}
-    return _run_candidate(cfg, _candidate(cfg, a, a.kind, a.detected_by), a.dry_run)
+    return _shown(cfg, a, _run_candidate(cfg, _candidate(cfg, a, a.kind, a.detected_by), a.dry_run))
 
 
 def cmd_inbox_list(cfg: Config, a) -> Out:
@@ -137,6 +148,8 @@ def cmd_inbox_verify(cfg: Config, a) -> Out:
 
 
 def cmd_promote(cfg: Config, a) -> Out:
+    """Approve an inbox candidate: only with the operator's fresh, authenticated words naming its id
+    after it was shown (confirm.py). A candidate file cannot approve itself (inbox.sanitize)."""
     why = _need(cfg)
     if why:
         return 1, {"error": why}
@@ -144,15 +157,17 @@ def cmd_promote(cfg: Config, a) -> Out:
     cands = {c["id"]: c for c in inbox.pending(cfg)}
     if a.id not in cands:
         return 1, {"error": "no inbox candidate %s" % a.id}
-    hits = [h for h in lookup.search(cfg, a.quote) if h.principal]
-    if not hits:
-        return 1, {"error": "V1/V2: approval quote is not a principal's words in the journal or current turn"}
-    cand = dict(cands[a.id], operator_approved=True)
+    line, err = confirm.find(cfg, a.id, a.quote, "promote", confirm.candidate_hash(cands[a.id]))
+    if line is None:
+        return 1, {"error": "V1/V2: %s" % err}
+    cand = dict(cands[a.id], confirmed_ref=line.ref)
+    cand[verify.APPROVED] = True
     cand["verification"] = {"status": "pending", "reasons": [], "checked_at": ""}
     code, out = _run_candidate(cfg, cand, False)
+    confirm.consume(cfg, line, a.id)
     rid = str(out.get("record", "")).rsplit("/", 1)[-1][:-3] if out.get("record") else ""
     if rid and rid.startswith(("D-", "P-", "C-", "F-", "L-")):
-        res = promote.change_status(cfg, rid, "confirm", a.quote)  # the operator's approval confirms it
+        res = promote.change_status(cfg, rid, "confirm", a.quote, line)  # the operator's approval confirms it
         out["status"] = res.get("status", out.get("status"))
         out["confirmed"] = bool(res.get("confirmed"))
         index.regenerate(cfg)
@@ -169,12 +184,23 @@ def cmd_status_change(cfg: Config, a) -> Out:
         if a.action != "reject":
             return 1, {"error": "%s is an inbox candidate: reject it, or promote it with the operator's words" % a.id}
         c = cands[a.id]
+        line, err = confirm.find(cfg, a.id, a.quote, "reject", confirm.candidate_hash(c))
+        if line is None:
+            return 1, {"error": "V1/V2: %s" % err}
         c["verification"] = {"status": "fail", "reasons": ["rejected by operator: %s" % a.quote], "checked_at": iso(cfg.now())}
         inbox.save(cfg, c, "rejected")
         (inbox.inbox_dir(cfg) / ("%s.json" % a.id)).unlink()
+        confirm.consume(cfg, line, a.id)
         index.regenerate(cfg)
         return 0, {"ok": True, "candidate": a.id, "status": "rejected"}
-    res = promote.change_status(cfg, a.id, a.action, a.quote)
+    rec = records.find(cfg, a.id)
+    if rec is None:
+        return 1, {"ok": False, "error": "no record %s" % a.id}
+    line, err = confirm.find(cfg, rec.id, a.quote, a.action, confirm.record_hash(rec))
+    if line is None:
+        return 1, {"ok": False, "error": "V1/V2: %s" % err}
+    res = promote.change_status(cfg, rec.id, a.action, a.quote, line)
+    confirm.consume(cfg, line, rec.id)
     index.regenerate(cfg)
     return (0 if res.get("ok") else 1), res
 
@@ -194,6 +220,7 @@ def cmd_review(cfg: Config, a) -> Out:
                           "why": [why], "path": r.rel(cfg)})
     for n, it in enumerate(items, 1):
         it["n"] = n
+    confirm.present_all(cfg, items)  # shown now: the operator confirms each by its id, after this listing
     return 0, items
 
 

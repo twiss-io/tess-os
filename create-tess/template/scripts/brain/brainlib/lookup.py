@@ -15,7 +15,10 @@ from .config import Config
 from .textutil import contains
 
 _LINE = re.compile(r"^\[([LR])(\d+) (\S+) (\S+) (\S+)\] ?(.*)$")
-_SESSION_FILE = re.compile(r"^\d{4}-[a-z0-9]+-[A-Za-z0-9]+(?:-\d+)?\.md$")
+# HHMM-<runtime>-<sid8>[-<sid tail8>][-<part>].md: the id tail is added when two same-minute sessions share
+# their first 8 id characters (codex UUIDv7). Live run 2026-09-29: without it here, search never read such a
+# session, and the operator's "confirm <id>" in a resumed Codex session was never found.
+_SESSION_FILE = re.compile(r"^\d{4}-[a-z0-9]+-[A-Za-z0-9]+(?:-[A-Za-z0-9]{1,8})?(?:-\d+)?\.md$")
 
 
 class JLine:
@@ -88,8 +91,10 @@ def resolve(cfg: Config, ref: str) -> Optional[JLine]:
             return None
         if not rec:
             return None
+        from . import provenance  # a turns.jsonl row counts only with the capture hook's MAC
         return JLine(ref=ref, label="T%s" % rec["n"], speaker=rec.get("speaker"), channel=rec.get("runtime"),
-                     text=rec.get("text", ""), principal=bool(rec.get("principal")), kind="turn",
+                     text=rec.get("text", ""), principal=bool(rec.get("principal")) and provenance.turn_ok(cfg, rec),
+                     kind="turn",
                      path="turns", index=int(rec["n"]))
     path, _, label = ref.partition("#")
     for line in lines_for(cfg, path):
@@ -121,8 +126,21 @@ def search(cfg: Config, quote: str, max_files: int = 400) -> List[JLine]:
         if contains(rec.get("text", ""), quote):
             hits.append(resolve(cfg, "turns:%s" % rec["n"]))
     hits = [h for h in hits if h is not None]
-    hits.sort(key=lambda h: (not h.principal, h.kind == "turn"))
+    hits.sort(key=lambda h: (not h.principal, h.kind == "turn", not trusted(cfg, h)))
     return hits
+
+
+def trusted(cfg: Config, line: Optional[JLine]) -> bool:
+    """Authenticated evidence: an attested line of an intact journal file, or a MAC-checked captured turn.
+
+    A journal-shaped markdown file anyone wrote into the repo is readable evidence for recall, never
+    evidence that the operator said something (Codex review finding 3)."""
+    from . import provenance
+    if line is None:
+        return False
+    if line.kind == "turn":
+        return bool(line.principal)
+    return provenance.line_trusted(cfg, line)
 
 
 def session_meta(cfg: Config, ref_path: str) -> Dict:
@@ -152,3 +170,23 @@ def line_time(cfg: Config, line: JLine) -> str:
     if t < start:
         t += _dt.timedelta(days=1)
     return iso(t)
+
+
+def marker_through(cfg: Config, rel: str) -> int:
+    """Fallback cursor: the through= marker of an existing journal file."""
+    import re
+    for p in (cfg.state / rel, cfg.brain / rel):
+        if p.is_file():
+            m = re.search(r"<!-- tess:session [^>]*through=(\d+) -->", p.read_text(encoding="utf-8", errors="replace"))
+            if m:
+                return int(m.group(1))
+    return 0
+
+
+def existing_head(cfg: Config, rel: str) -> str:
+    from . import frontmatter
+    for p in (cfg.brain / rel, cfg.state / rel):
+        if p.is_file():
+            meta, _ = frontmatter.read(p)
+            return str(meta.get("git_head") or "")
+    return ""

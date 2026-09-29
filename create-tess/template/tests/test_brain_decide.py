@@ -49,8 +49,10 @@ def test_decide_syncs_first_and_records_a_resolving_quote(inst):
 def test_supersede_keeps_history_and_indexes_only_the_active_one(inst):
     _, held = decide(inst, "--quote", "We will publish the newsletter on Tuesdays", "--title", "Newsletter on Tuesdays")
     assert held["status"] == "review"
-    r = fxlib.cli(inst, "--json", "promote", held["candidate"], "--quote",
-                  "We will publish the newsletter on Tuesdays", env=ENV)  # the operator approves it in review
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(inst))  # the operator approves it in review, by its id
+    fxlib.operator_says(Path(ENV["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (SID + ".jsonl"), SID,
+                        "Approve %s please." % held["candidate"])
+    r = fxlib.cli(inst, "--json", "promote", held["candidate"], "--quote", "Approve %s" % held["candidate"], env=ENV)
     first = json.loads(r.stdout)
     assert r.returncode == 0 and first["status"] == "accepted", first
     old_id = Path(first["record"]).stem
