@@ -81,7 +81,7 @@ Exit code 4 means git or tessctl failed: show the operator the message.
 ## 4. Trust steps, one line per runtime they use
 
 - **Claude Code**: one workspace-trust click. It enables the brain hooks (onboarding reminder, capture) and the tool permissions; CLAUDE.md, commands and skills work without it.
-- **Codex CLI**: nothing is needed to start. Optional: trust the project and approve the Tess hooks in `/hooks` for per-turn capture; approval is pinned to the hook text, so re-approve after an update.
+- **Codex CLI**: REQUIRED, once: trust the folder, then type `/hooks` in Codex and approve Tess's hooks; Codex asks again after each Tess update. Tess's safety checks (secret scan, protected files, push guard) and conversation capture run in Codex only after that. Until they are approved, every first reply starts with the warning from `python3 scripts/tess hooks-status`.
 - **Gemini CLI**: one folder-trust click. It loads GEMINI.md and the `/tess:*` commands; `.agents/skills` works without it.
 - **Kimi and other AGENTS.md tools**: nothing to configure; Tess works from AGENTS.md instructions only.
 

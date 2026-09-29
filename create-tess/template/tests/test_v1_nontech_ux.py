@@ -220,7 +220,8 @@ def test_update_check_summary_says_would_and_nothing_changed(engine, capsys):
     ])
     engine._print_update_summary(text, check=True)
     out = capsys.readouterr().out
-    assert "3 files checked: 2 would be updated, 1 would be merged with your changes." in out
+    assert "Of Tess's own files, 2 would be updated, 1 would be merged with your changes." in out
+    assert out.splitlines()[0] == "tessctl update — you have Tess OS v1.0.0"  # no "v2" track label
     assert "Nothing was changed: this was only a check." in out
     assert "update: complete" not in out and " 2 updated" not in out
     engine._print_update_summary("tessctl update — current: v2 v1.0.0\n", check=True)
@@ -238,7 +239,8 @@ def test_update_check_without_a_fetch_never_calls_identical_files_updated(engine
     ])
     engine._print_update_summary(text, check=True)
     out = capsys.readouterr().out
-    assert "2 files checked: 2 already match the release (nothing to do)." in out
+    assert "Every Tess file already matches the release (nothing to do)." in out
+    assert "fetch-and-verify" not in out and "files checked" not in out  # e2e round 2
     assert "This check did not go online" in out and "Nothing was changed" in out
     assert "updated" not in out.replace("would be updated", "")
 

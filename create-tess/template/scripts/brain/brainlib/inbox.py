@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -53,12 +54,40 @@ def _next_id(cfg: Config) -> str:
     stamp = cfg.now().strftime("%Y%m%d-%H%M")
     taken = {p.stem for p in inbox_dir(cfg).rglob("C-*.json")} if inbox_dir(cfg).is_dir() else set()
     taken |= getattr(_next_id, "_issued", set())
+    seen = getattr(_next_id, "_scanned", None)  # one scan per brain per minute; _issued covers the rest
+    if not seen or seen[0] != (str(cfg.brain), stamp):
+        seen = ((str(cfg.brain), stamp), _ids_in_use(cfg, stamp))
+        _next_id._scanned = seen  # type: ignore[attr-defined]
+    taken |= seen[1]
     n = 1
     while "C-%s-%02d" % (stamp, n) in taken:
         n += 1
     cid = "C-%s-%02d" % (stamp, n)
     _next_id._issued = taken | {cid}  # type: ignore[attr-defined]
     return cid
+
+
+def _ids_in_use(cfg: Config, stamp: str) -> set:
+    """Every C-<stamp>-NN already mentioned by a record, a candidate or the ledger: a candidate
+    promoted and removed from the inbox in an earlier run keeps its id taken (no duplicate ids
+    within one minute across runs)."""
+    pat = re.compile(r"C-%s-\d{2,}" % re.escape(stamp))
+    found: set = set()
+    files = [p for p in cfg.brain.rglob("*") if p.suffix in (".md", ".json", ".jsonl")] if cfg.brain.is_dir() else []
+    try:
+        from . import extstate
+        d = extstate.project_dir(cfg, create=False)
+        if d is not None and d.is_dir():
+            files += [p for p in d.iterdir() if p.suffix in (".jsonl", ".json")]
+    except Exception as exc:  # noqa: BLE001 - the brain/ scan above still applies
+        log_error(cfg, "inbox: ledger ids unreadable", exc)
+    for p in files:
+        try:
+            if p.is_file() and not p.is_symlink():
+                found.update(pat.findall(p.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    return found
 
 
 def redacted(cand: Dict) -> Dict:

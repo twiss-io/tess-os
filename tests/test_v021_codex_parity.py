@@ -115,7 +115,7 @@ def test_rendered_codex_hook_command_runs_from_a_subdirectory(engine, tmp_path):
     ctx = out["additionalContext"]
     assert ctx.startswith("ONBOARDING PENDING (step 1/7)")
     assert "do the task first with the tools it needs" in ctx
-    assert "without running a tool first" in ctx
+    assert "with no tool call first except" in ctx
 
 
 def test_rendered_codex_onboarding_hook_refuses_an_edited_script(engine, tmp_path):

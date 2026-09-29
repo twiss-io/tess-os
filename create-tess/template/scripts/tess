@@ -2,6 +2,15 @@
 """Tess launcher: open this instance in a runtime CLI.
 
   scripts/tess claude|codex|gemini [--print-cmd] [-- extra args for the CLI]
+  scripts/tess hooks-status [--runtime claude|codex]
+
+hooks-status (read-only) prints one plain line saying whether Tess's hooks,
+and so its safety checks, ran in the CURRENT session: the SessionStart and
+UserPromptSubmit hooks write .tess/state/hooks-alive.json (runtime + session
+id + time; see scripts/brain/brainlib/hooksalive.py), and the session id comes
+from CODEX_THREAD_ID (Codex) or CLAUDE_CODE_SESSION_ID (Claude Code). Exit 0
+on, 1 off, 3 when the runtime or session cannot be told (it then prints why).
+The BOOT block in AGENTS.md / CLAUDE.md runs it at the first reply.
 
 While onboarding is pending (or in progress, or a deferral has come due) it
 passes the start prompt, so the first thing the runtime does is the next
@@ -49,6 +58,53 @@ def onboarding_status() -> str:
     return status
 
 
+HOOKS_ALIVE = ROOT / ".tess" / "state" / "hooks-alive.json"
+RUNTIME_LABEL = {"codex": "Codex", "claude": "Claude Code"}
+HOOKS_OFF = {
+    "codex": "Tess's safety checks are OFF in this Codex session \u2014 type /hooks and approve "
+             "Tess's hooks, then start a new session.",
+    "claude": "Tess's safety checks are OFF in this Claude Code session \u2014 type /hooks, check "
+              "that Tess's hooks are listed and turned on, then start a new session.",
+}
+
+
+def current_session(forced: str = "") -> tuple:
+    """(runtime, session id) of the session running this command. Codex first: a Codex
+    started from inside Claude Code inherits CLAUDE_CODE_SESSION_ID."""
+    codex = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID") or ""
+    claude = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if forced:
+        return forced, codex if forced == "codex" else claude if forced == "claude" else ""
+    if codex:
+        return "codex", codex
+    if claude:
+        return "claude", claude
+    return "", ""
+
+
+def hooks_status(argv: list) -> int:
+    forced = argv[argv.index("--runtime") + 1] if "--runtime" in argv[:-1] else ""
+    runtime, sid = current_session(forced)
+    if runtime not in HOOKS_OFF:
+        print("Tess can't tell which app this session runs in, so it can't check its safety "
+              "checks here.")
+        return 3
+    if not sid:
+        print("Tess can't read this %s session's id, so it can't check its safety checks here."
+              % RUNTIME_LABEL[runtime])
+        return 3
+    try:
+        doc = json.loads(HOOKS_ALIVE.read_text(encoding="utf-8"))
+        rows = doc.get(runtime) if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        rows = None
+    if any(isinstance(r, dict) and r.get("session_id") == sid for r in rows or []):
+        print("Tess's safety checks are on in this %s session." % RUNTIME_LABEL[runtime])
+        return 0
+    print(HOOKS_OFF[runtime])
+    return 1
+
+
 def command(runtime: str, status: str, extra: list) -> list:
     if status in PENDING:
         return [runtime] + extra + START[runtime][1:]
@@ -57,6 +113,8 @@ def command(runtime: str, status: str, extra: list) -> list:
 
 def main(argv: list) -> int:
     args = list(argv)
+    if args[:1] == ["hooks-status"]:
+        return hooks_status(args[1:])
     extra = args[args.index("--") + 1:] if "--" in args else []
     args = args[: args.index("--")] if "--" in args else args
     print_only = "--print-cmd" in args

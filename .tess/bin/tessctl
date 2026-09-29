@@ -6635,6 +6635,13 @@ def cmd_doctor(args, root: Path) -> None:
         print(f"  WARN        {_evt.get('path')}  — overwritten by `tessctl {_evt.get('source')} --force` "
               f"at {_evt.get('ts')}; {_where}; clear with `tessctl doctor --ack-overwrites`")
 
+    # e2e round 2: Codex runs Tess's hooks (the safety gate included) only
+    # after the operator approves them in /hooks, and again after every hook
+    # change. A plain, non-failing warning; read-only.
+    _codex_warning = _codex_hook_trust_warning(root)
+    if _codex_warning:
+        print(f"  WARNING     {_codex_warning}")
+
     # Phase 0.3 — memory-link check (informational only; see
     # _print_memory_link_report's own header banner for why this never
     # touches errors/warnings/the exit code).
@@ -6791,8 +6798,122 @@ def cmd_doctor(args, root: Path) -> None:
     if verbose:
         print("\ndoctor: OK")
     else:
-        print(f"\n{_doctor_ok_sentence(len(results), captured)}")
+        _ok_line = _doctor_ok_sentence(len(results), captured)
+        if _codex_warning:
+            _ok_line += " One warning above: Codex's safety hooks."
+        print(f"\n{_ok_line}")
         print("doctor: OK")
+
+
+# ── Codex hook trust (e2e round 2) ─────────────────────────────────────
+# Codex stores the operator's /hooks approval in the USER config
+# ($CODEX_HOME/config.toml, default ~/.codex/config.toml) as
+#   [hooks.state."<abs path>/.codex/config.toml:<event>:<group>:<handler>"]
+#   trusted_hash = "sha256:<hex>"
+# where <hex> is sha256 of the canonical (sorted-key, compact) JSON of the
+# normalized hook identity {event_name, matcher?, hooks: [handler]}
+# (openai/codex codex-rs/hooks/src/engine/discovery.rs `hook_hash`,
+# codex-rs/config/src/fingerprint.rs `version_for_toml`). A missing key is
+# "not approved"; a different hash is "changed since approval" (Codex then
+# skips the hook). Read-only: nothing here writes the user's config.
+_CODEX_EVENT_KEYS = {
+    "PreToolUse": "pre_tool_use", "PermissionRequest": "permission_request",
+    "PostToolUse": "post_tool_use", "PreCompact": "pre_compact", "PostCompact": "post_compact",
+    "SessionStart": "session_start", "SessionEnd": "session_end",
+    "UserPromptSubmit": "user_prompt_submit", "SubagentStart": "subagent_start",
+    "SubagentStop": "subagent_stop", "Stop": "stop", "Interrupt": "interrupt",
+}
+_CODEX_NO_MATCHER_EVENTS = {"UserPromptSubmit", "Stop", "Interrupt"}
+CODEX_HOOKS_OFF_WARNING = ("Codex: Tess's safety hooks are not approved yet \u2014 open Codex here "
+                           "and type /hooks")
+
+
+def _codex_hook_hash(event: str, group: dict, handler: dict) -> str:
+    timeout = handler.get("timeout")
+    if event in ("SessionEnd", "Interrupt"):
+        timeout = max(1, min(3, 1 if timeout is None else int(timeout)))
+    else:
+        timeout = max(1, 600 if timeout is None else int(timeout))
+    hd = {"type": "command", "command": handler.get("command", ""), "timeout": timeout,
+          "async": bool(handler.get("async", False))}
+    if handler.get("statusMessage") is not None:
+        hd["statusMessage"] = handler["statusMessage"]
+    extra = handler.get("additionalContextLimit")
+    if extra is not None and extra != 2500 and event in (
+            "PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "SubagentStart"):
+        hd["additionalContextLimit"] = extra
+    ident = {"event_name": _CODEX_EVENT_KEYS[event], "hooks": [hd]}
+    if event not in _CODEX_NO_MATCHER_EVENTS and group.get("matcher") is not None:
+        ident["matcher"] = group["matcher"]
+    blob = json.dumps(ident, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _codex_hook_trust_findings(root: Path, codex_home: Path | None = None) -> list | None:
+    """[(key, "missing"|"changed"|"disabled"|"untrusted-folder")] for every Tess
+    hook in <root>/.codex/config.toml that Codex will not run; [] when all are
+    approved; None when it cannot be told (no Codex, no tomllib, no hooks)."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        return None
+    home = Path(codex_home or os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    project_cfg = root / ".codex" / "config.toml"
+    if not home.is_dir() or not project_cfg.is_file():
+        return None
+    try:
+        hooks = tomllib.loads(project_cfg.read_text(encoding="utf-8")).get("hooks") or {}
+    except (OSError, ValueError):
+        return None
+    if not hooks:
+        return None
+    try:
+        user = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        user = {}
+    except (OSError, ValueError):
+        return None
+    roots = {str(root), str(root.resolve())}
+    projects = user.get("projects") or {}
+    trusted = any(
+        (v or {}).get("trust_level") == "trusted"
+        and any(r == k or r.startswith(k.rstrip("/") + "/") for r in roots)
+        for k, v in projects.items() if isinstance(v, dict))
+    if not trusted:
+        return [(str(project_cfg), "untrusted-folder")]
+    state = (user.get("hooks") or {}).get("state") or {}
+    findings = []
+    for event, groups in hooks.items():
+        if event not in _CODEX_EVENT_KEYS or not isinstance(groups, list):
+            continue
+        for gi, group in enumerate(groups):
+            for hi, handler in enumerate((group or {}).get("hooks") or []):
+                if (handler or {}).get("type", "command") != "command":
+                    continue
+                suffix = f"/.codex/config.toml:{_CODEX_EVENT_KEYS[event]}:{gi}:{hi}"
+                entry = next((state[r + suffix] for r in roots if isinstance(state.get(r + suffix), dict)),
+                             None)
+                if entry is None or not entry.get("trusted_hash"):
+                    findings.append((suffix, "missing"))
+                elif entry.get("enabled") is False:
+                    findings.append((suffix, "disabled"))
+                elif entry["trusted_hash"] != _codex_hook_hash(event, group, handler):
+                    findings.append((suffix, "changed"))
+    return findings
+
+
+def _codex_hook_trust_warning(root: Path, codex_home: Path | None = None) -> str:
+    """One plain line for `tessctl doctor`, or '' (all approved, or no Codex here)."""
+    try:
+        findings = _codex_hook_trust_findings(root, codex_home)
+    except Exception:  # noqa: BLE001 - an advisory check must never break doctor
+        return ""
+    if not findings:
+        return ""
+    if findings[0][1] == "untrusted-folder":
+        return ("Codex: this folder is not trusted in Codex yet, so Tess's safety hooks cannot run "
+                "\u2014 open Codex here, trust the folder, then type /hooks")
+    return CODEX_HOOKS_OFF_WARNING
 
 
 def _doctor_ok_sentence(checked: int, kept: int) -> str:
@@ -6874,15 +6995,22 @@ def _print_update_summary(text: str, check: bool = False) -> None:
             counts[action] = counts.get(action, 0) + 1
     for line in lines:
         if line.startswith("tessctl update"):
-            print(line)
+            # e2e round 2: the lock's internal track label ("v2") is not the version
+            print(re.sub(r"current: \S+ v", "you have Tess OS v", line, count=1))
             break
     for line in lines:
-        if _UPDATE_NOTABLE_LINE.search(line) or "dry-run: would" in line:
+        if _UPDATE_NOTABLE_LINE.search(line):
             print(line)
     if counts:
+        # No total: doctor counts every file Tess tracks (rendered copies too), so a
+        # second, different "files checked" number here only confused people.
         words = _UPDATE_CHECK_WORDS if check else _UPDATE_ACTION_WORDS
-        parts = [f"{n:,} {words.get(a, a)}" for a, n in sorted(counts.items())]
-        print(f"{sum(counts.values()):,} files checked: " + ", ".join(parts) + ".")
+        parts = [f"{n:,} {words.get(a, a)}" for a, n in sorted(counts.items()) if a != "same"]
+        if not parts:
+            print("Every Tess file already matches the release (nothing to do).")
+        else:
+            rest = "; the rest already match the release" if counts.get("same") else ""
+            print("Of Tess's own files, " + ", ".join(parts) + rest + ".")
     elif check:
         print("No file would change.")
     if check and "dry-run: would fetch" in text:
@@ -17595,10 +17723,18 @@ def _gate_print_refusal(phase: str, result: dict, safe: dict, *, verbose: bool,
     else:
         print(f"Tess stopped this {'push' if phase != 'ci' else 'change'} (fail-closed).")
     if proof_missing and paths:
-        print("What this means: this looks like the first push of a Tess OS folder that has no "
-              f"accepted release proof ({RELEASE_PROOF_FILE}), so Tess cannot tell its own files "
-              "from edits. Nothing was sent.")
-        print(f"What to do: see {GATE_REFUSAL_DOC}, section \"First push of a new folder\".")
+        # e2e round 2: no reason code or proof-file path by default (`--verbose`
+        # keeps them); the fix is in the message itself.
+        print("What this means: this is the first push of this folder, and Tess cannot confirm "
+              "that its own files are an unchanged Tess OS release (the folder was not made with "
+              "`npm create tess`, or a Tess file was edited first). Nothing was sent.")
+        print("What to do: make a new folder with `npm create tess@latest my-os` and move your "
+              "own work into it, then push from there. Or keep this folder on this computer "
+              "for now: your work is already saved in git here.")
+        print(f"More help: {GATE_REFUSAL_DOC}, section \"First push of a new folder\".")
+        if not verbose:
+            print(f"  ({_gate_verbose_hint(phase)} shows the technical details.)")
+            return
     elif paths:
         print("What this means: these files hold Tess's own safety rules, so a change to them "
               "needs a signed approval before it can leave this computer. Nothing was sent.")
@@ -17655,7 +17791,7 @@ def _gate_print_result(phase: str, result: dict, as_json: bool, *, verbose: bool
             print(f"  {what}: tess.lock has changes "
                   f"{'setup' if rp.get('first_push') else 'an update'} does not make — it still "
                   "needs a verdict")
-    elif rp:
+    elif rp and (verbose or not rp.get("first_push")):  # first push: the refusal explains it
         what = "first push" if rp.get("first_push") else "release update"
         print(f"  {what}: the release proof in {RELEASE_PROOF_FILE} was NOT accepted "
               f"({rp['reason_code']}); protected files still need a verdict")

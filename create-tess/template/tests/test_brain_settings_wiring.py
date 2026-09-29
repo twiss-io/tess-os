@@ -25,7 +25,7 @@ LAUNCH = 'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-f
 ONBOARD_START = LAUNCH + "scripts/brain/onboard.py hook session-start --runtime claude"
 LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
-               for c in ("recall", "status", "review", "sync", "save", "index", "lint", "decide", "remember",
+               for c in ("recall", "status", "review", "sync", "save", "confirm", "reject", "index", "lint", "decide", "remember",
                          "inbox", "journal note")]
 # v1.0 security review round 2 (H-A): git diff/log/show are no longer
 # pre-approved; they take --output=<file>, which writes any file.

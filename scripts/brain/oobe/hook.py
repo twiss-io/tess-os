@@ -51,8 +51,8 @@ def message(root: Path) -> Optional[str]:
         text = ("ONBOARDING PENDING (step %d/%d): greet the operator as %s and continue the "
                 "brain-onboard interview before anything else (skill brain-onboard). This line is "
                 "the current onboarding status: your reply to the operator's message, even \"hi\", "
-                "ends with this step's question, asked now without running a tool first (if they "
-                "asked you something, answer it in a line or two before the question); record "
+                "ends with this step's question, asked now with no tool call first except the BOOT `python3 scripts/tess hooks-status` "
+                "check (if they asked you something, answer it in a line or two before the question); record "
                 "their answer with `python3 scripts/brain/onboard.py answer`."
                 % (step, state.TOTAL_STEPS, who))
         text += " Question for step %d: %s" % (step, answers.question_for(step, brain or {}))

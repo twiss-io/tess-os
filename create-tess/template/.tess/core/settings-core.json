@@ -9,12 +9,15 @@
       "Bash(python3 scripts/brain/tessbrain.py review:*)",
       "Bash(python3 scripts/brain/tessbrain.py sync:*)",
       "Bash(python3 scripts/brain/tessbrain.py save:*)",
+      "Bash(python3 scripts/brain/tessbrain.py confirm:*)",
+      "Bash(python3 scripts/brain/tessbrain.py reject:*)",
       "Bash(python3 scripts/brain/tessbrain.py index:*)",
       "Bash(python3 scripts/brain/tessbrain.py lint:*)",
       "Bash(python3 scripts/brain/tessbrain.py decide:*)",
       "Bash(python3 scripts/brain/tessbrain.py remember:*)",
       "Bash(python3 scripts/brain/tessbrain.py inbox:*)",
-      "Bash(python3 scripts/brain/tessbrain.py journal note:*)"
+      "Bash(python3 scripts/brain/tessbrain.py journal note:*)",
+      "Bash(python3 scripts/tess hooks-status)"
     ],
     "deny": [
       "Bash(git diff *--no-index*)",

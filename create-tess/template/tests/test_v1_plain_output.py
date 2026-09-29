@@ -32,6 +32,9 @@ def _quiet_env(root: Path) -> dict:
 
 def _tessctl(root: Path, *args: str, verbose_env: bool = False) -> subprocess.CompletedProcess:
     env = _quiet_env(root)
+    # hermetic: no Codex user config, so doctor's Codex hook-trust warning
+    # (tests/test_v1_r2_ux_fixes.py) never depends on this machine's ~/.codex
+    env["CODEX_HOME"] = str(root / ".no-codex-home")
     if verbose_env:
         env["TESS_VERBOSE"] = "1"
     return subprocess.run([sys.executable, str(root / ".tess" / "bin" / "tessctl"), *args],
@@ -122,9 +125,9 @@ def test_update_summary_counts_and_keeps_warnings(engine, capsys):
     ])
     engine._print_update_summary(text)
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "tessctl update — current: v2 v0.2.0"
+    assert out[0] == "tessctl update — you have Tess OS v0.2.0"
     assert "  WARN  skipped 'd.md' (gate): refused" in out
-    assert "3 files checked: 2 updated, 1 merged with your changes." in out
+    assert "Of Tess's own files, 2 updated, 1 merged with your changes." in out
     assert "update: complete" in out and "A3: version bumped → 1.0.0 (upstream_ref: v1.0.0)" in out
     assert not any(l.startswith("Step ") or "[fast-forward]" in l for l in out)
 

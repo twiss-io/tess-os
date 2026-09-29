@@ -55,8 +55,8 @@ A folder made with `npm create tess` carries the proof of the signed Tess OS
 release it came from (`.tess/release-proof.json`). Its first push passes as
 long as Tess's files are exactly that release.
 
-If Tess says "this looks like the first push of a Tess OS folder that has no
-accepted release proof", the folder was made another way (a git clone, a copy,
+If Tess says "this is the first push of this folder, and Tess cannot confirm
+that its own files are an unchanged Tess OS release", the folder was made another way (a git clone, a copy,
 or `--template-source`), or a Tess file was edited before the first push.
 Either:
 

@@ -39,8 +39,13 @@ sandbox_mode = "workspace-write"
 #                     expects JSON from Stop)
 # No hook ever blocks a turn: every one exits 0, and a failure is a warning.
 # Codex runs project hooks only in a TRUSTED project and only after you trust
-# each hook in `/hooks` (trust is pinned to the hook's hash). Until then the
-# "Second brain" block in AGENTS.md starts onboarding on its own and
+# each hook in `/hooks` (trust is pinned to the hook's hash). REQUIRED: type
+# /hooks in Codex and approve Tess's hooks; Codex asks again after each Tess
+# update. SessionStart and UserPromptSubmit also write the heartbeat
+# .tess/state/hooks-alive.json: at its first reply the assistant runs
+# `python3 scripts/tess hooks-status` and warns when they did not run in this
+# session, and `tessctl doctor` warns when Codex has not approved this hook
+# text. Until then the "Second brain" block in AGENTS.md starts onboarding and
 # `tessbrain.py sync` (skill brain-save) sweeps ~/.codex/sessions for this
 # project. Each command exits 0 silently when the launcher or python3 is missing.
 [[hooks.SessionStart]]

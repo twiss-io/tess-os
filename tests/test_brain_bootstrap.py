@@ -21,8 +21,9 @@ CONDUCTOR_LINE = ("- As conductor, you run onboarding and brain reads and writes
 
 def test_boot_is_the_frozen_block():
     lines = BOOT.splitlines()
-    assert lines[0] == "## Second brain: read this first" and len(lines) == 7
-    assert [ln.split(":")[0] for ln in lines[2:6]] == ["- Setup", "- Orient", "- Record", "- Save"]
+    assert lines[0] == "## Second brain: read this first" and len(lines) == 8
+    assert lines[2].startswith("- First reply of every session:")
+    assert [ln.split(":")[0] for ln in lines[3:7]] == ["- Setup", "- Orient", "- Record", "- Save"]
     assert "{{ASSISTANT_NAME}}" in BOOT and "{{OPERATOR_NAME}}" in BOOT
 
 
@@ -52,7 +53,9 @@ def test_committed_entry_files_equal_a_fresh_render(engine):
 def test_agents_md_budget():
     text = (REPO / "AGENTS.md").read_text()
     assert text.count("\n") < 100
-    assert len(text.encode("utf-8")) <= 12000
+    # 12000 -> 12800 (e2e round 2): the first-reply line (hooks-status check + plain greeting).
+    # Codex reads up to project_doc_max_bytes (32 KiB by default).
+    assert len(text.encode("utf-8")) <= 12800
 
 
 @pytest.mark.parametrize("phrase", ["always dispatch", "never execute solo", "rule zero",

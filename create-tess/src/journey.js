@@ -14,7 +14,7 @@ import { PATHS } from './args.js';
 import { installSetForPath } from './roster.js';
 import { validateName, checkConductorName } from './validate.js';
 import { art, accent, dim, card } from './ui.js';
-import { askWhoFor, MODE_OPTIONS } from './brain.js';
+import { askWhoFor, MODE_OPTIONS, presetLabel } from './brain.js';
 
 function bail(value) {
   if (p.isCancel(value)) {
@@ -65,7 +65,7 @@ function recap(vibe, c) {
     `World      ${vibe.label}`,
     `${vibe.squadNoun.padEnd(10)} ${PATH_FRAMING[vibe.key][c.path].label}`,
     `Assistant  ${c.conductor}  (${c.pathway})`,
-    `For        ${MODE_OPTIONS.find((o) => o.value === c.mode).label}${c.preset ? ` (${c.preset})` : ''}`,
+    `For        ${MODE_OPTIONS.find((o) => o.value === c.mode).label}${c.preset ? ` (${presetLabel(c.preset)})` : ''}`,
   ].join('\n');
 }
 
@@ -134,7 +134,7 @@ async function runPlainJourney(roster) {
     `Your name       ${choices.operator}`,
     `Your assistant  ${choices.conductor}`,
     `Talks to you    ${PLAIN_PATHWAY_OPTIONS.find((o) => o.value === pathway).label}`,
-    `For             ${MODE_OPTIONS.find((o) => o.value === mode).label}${preset ? ` (${preset})` : ''}`,
+    `For             ${MODE_OPTIONS.find((o) => o.value === mode).label}${preset ? ` (${presetLabel(preset)})` : ''}`,
   ].join('\n'), 'Your choices');
   const go = bail(await p.confirm({ message: vibe.recapVerb, active: 'Yes', inactive: 'No, stop', initialValue: true }));
   if (!go) {

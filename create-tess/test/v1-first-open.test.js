@@ -27,7 +27,7 @@ test('final screen: one plain line each for Claude Code and Codex, after the nex
   const out = capture(() => printFinalScreen('/tmp/my-os', {
     mode: 'personal', brain: { status: 'done', commit: 'abc1234' }, checks: { doctor: true, verify: true },
   }));
-  assert.equal(FIRST_OPEN_CODEX, "  In Codex: trust this folder and approve Tess's hooks when asked (/hooks).");
+  assert.equal(FIRST_OPEN_CODEX, "  In Codex (required for Tess's safety checks): trust this folder, then type /hooks and approve Tess's hooks. Codex asks again after each Tess update.");
   assert.match(FIRST_OPEN_CLAUDE, /In Claude Code: .*trust this folder/);
   const next = out.indexOf('What to do next:');
   assert.ok(next >= 0, out);

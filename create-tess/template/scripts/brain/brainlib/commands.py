@@ -208,8 +208,16 @@ def cmd_index(cfg: Config, a) -> Out:
 
 def cmd_lint(cfg: Config, a) -> Out:
     if not cfg.exists:
+        if a.warn_only and not a.json:
+            return 0, None
         return 0, {"errors": [], "warnings": ["no brain/brain.json; nothing to lint"]}
     res = lint.run(cfg, staged=a.staged)
+    if a.warn_only and not a.json:  # the pre-commit hook: silent when clean, plain lines otherwise
+        problems = list(res["errors"]) + list(res["warnings"])
+        if not problems:
+            return 0, None
+        return 0, "\n".join(["Tess brain check (a warning only; the commit goes ahead):"]
+                             + ["  - %s" % p for p in problems])
     return (1 if res["errors"] and not a.warn_only else 0), res
 
 

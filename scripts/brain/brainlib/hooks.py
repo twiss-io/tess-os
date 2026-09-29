@@ -24,7 +24,7 @@ DISTILL_EVERY = 10
 _INJECTED = __import__("re").compile(r"<channel\s[^>]*>")
 
 
-def read_stdin(cfg: Config) -> Dict:
+def read_stdin(cfg: Optional[Config]) -> Dict:
     try:
         raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     except (OSError, ValueError) as exc:  # includes UnicodeDecodeError (binary stdin)
@@ -144,15 +144,14 @@ def dispatch(root, event: str, runtime: str) -> int:
     cfg: Optional[Config] = None
     try:
         cfg = Config(root)
+        data = read_stdin(cfg)
+        if event in ("session-start", "prompt"):  # proof the hooks run, before onboarding too
+            from . import hooksalive
+            hooksalive.beat(cfg.root, runtime, data, event)
         if quiet_env() or not cfg.active():
-            try:
-                sys.stdin.read()
-            except (OSError, ValueError):
-                pass
             if event == "stop" and runtime == "codex":
                 print("{}")
             return 0
-        data = read_stdin(cfg)
         from . import provenance  # hooks run outside the agent's sandbox: drain what a sandboxed shell queued
         provenance.prepare(cfg)
         {"session-start": session_start, "prompt": prompt, "stop": stop}[event](cfg, runtime, data)
