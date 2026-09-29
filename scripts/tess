@@ -82,6 +82,46 @@ def current_session(forced: str = "") -> tuple:
     return "", ""
 
 
+# v1.0.0: the runtime config that loads Tess's hooks, and the gate hook it must
+# carry. Without it the runtime runs no Tess hook at all (so no heartbeat is
+# written either), and the heartbeat alone is only a detection aid an agent
+# could write, so these are checked first.
+HOOK_CONFIG = {
+    "claude": (".claude/settings.json", "tess-gate.py --runtime claude"),
+    "codex": (".codex/config.toml", "tess-gate.py --runtime codex"),
+}
+
+
+def config_problem(runtime: str) -> str:
+    rel, needle = HOOK_CONFIG[runtime]
+    try:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "%s is missing, so %s loads none of Tess's hooks" % (rel, RUNTIME_LABEL[runtime])
+    if needle not in text:
+        return "%s no longer runs Tess's safety gate" % rel
+    return ""
+
+
+def anchor_problem() -> str:
+    """The plain stop line when Tess's safety files differ from the approved
+    record kept outside the project (checked by .claude/hooks/run-pinned.py)."""
+    launcher = ROOT / ".claude" / "hooks" / "run-pinned.py"
+    if not launcher.is_file():
+        return ""
+    try:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("tess_run_pinned", str(launcher))
+        spec = importlib.util.spec_from_loader("tess_run_pinned", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        mod.anchor_check(ROOT)
+    except Exception as exc:  # AnchorError, or a launcher that cannot even load
+        return str(exc) or type(exc).__name__
+    return ""
+
+
 def hooks_status(argv: list) -> int:
     forced = argv[argv.index("--runtime") + 1] if "--runtime" in argv[:-1] else ""
     runtime, sid = current_session(forced)
@@ -89,6 +129,18 @@ def hooks_status(argv: list) -> int:
         print("Tess can't tell which app this session runs in, so it can't check its safety "
               "checks here.")
         return 3
+    # Only in a Tess instance (it has .tess/tess.lock): a bare copy of this
+    # script has no hook configuration to check.
+    why = ""
+    if (ROOT / ".tess" / "tess.lock").is_file():
+        why = config_problem(runtime) or (
+            "" if (ROOT / ".claude" / "hooks" / "run-pinned.py").is_file()
+            else ".claude/hooks/run-pinned.py is missing, so no Tess hook can run") or anchor_problem()
+    if why:
+        print("Tess's safety checks are OFF in this %s session \u2014 %s" % (RUNTIME_LABEL[runtime], why)
+              + ("" if "tessctl restore" in why else
+                 ". Run `./tessctl restore` in your own terminal, then start a new session."))
+        return 1
     if not sid:
         print("Tess can't read this %s session's id, so it can't check its safety checks here."
               % RUNTIME_LABEL[runtime])

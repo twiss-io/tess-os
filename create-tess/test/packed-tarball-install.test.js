@@ -16,10 +16,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, symlinkSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, symlinkSync, readdirSync, appendFileSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { forgetTempAnchors } from './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temps = [];
@@ -85,4 +86,35 @@ test('v0.2.1: npm-packed tarball installs on a Python without PyYAML, restores .
       run.stdout.includes(`(Or open the folder "${folder}" in Claude Code or Codex and say hi.)`),
     'the final screen must name the folder and the one next step',
   );
+
+  // v1.0.0 enforcement anchor: the wizard recorded the safety files outside
+  // the folder; a changed gate stops the REAL hook, and restore brings it back.
+  assert.match(run.stdout, /Recorded your safety files outside the folder \(tessctl anchor OK\)/);
+  const py = join(shim, 'python3');
+  const tessctl = (...a) => sh(py, ['-I', '-B', join(target, '.tess', 'bin', 'tessctl'), ...a],
+    { cwd: target, env: { ...env, TESS_ROOT: target } });
+  const hookCmd = JSON.parse(readFileSync(join(target, '.claude', 'settings.json'), 'utf8'))
+    .hooks.PreToolUse.flatMap((e) => e.hooks).find((h) => h.command.includes('tess-gate.py')).command;
+  const hook = (cmd) => sh('sh', ['-c', hookCmd], {
+    cwd: target,
+    input: JSON.stringify({ session_id: 's', hook_event_name: 'PreToolUse', cwd: target,
+      permission_mode: 'default', tool_name: 'Bash', tool_input: { command: cmd } }),
+    env: { ...env, CLAUDE_PROJECT_DIR: target, TESS_GATE_LOG: '/dev/null' },
+  });
+  try {
+    assert.match(tessctl('anchor', 'status').stdout, /^anchor: OK/);
+    assert.equal(hook('ls').status, 0);
+    appendFileSync(join(target, '.claude', 'hooks', 'tess-gate.py'), '\n# tampered\n');
+    const stopped = hook('ls');
+    assert.equal(stopped.status, 2, stopped.stderr);
+    assert.match(stopped.stderr, /Tess's safety files have changed/);
+    assert.equal(tessctl('anchor', 'status').status, 1);
+    const restored = tessctl('restore');
+    assert.match(restored.stdout, /safety files: back to the approved copies/, restored.stdout + restored.stderr);
+    assert.match(tessctl('anchor', 'status').stdout, /^anchor: OK/);
+    assert.equal(hook('ls').status, 0);
+  } finally {
+    rmSync(dirname(target), { recursive: true, force: true });
+    forgetTempAnchors();
+  }
 });
