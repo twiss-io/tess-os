@@ -18,10 +18,21 @@ matches the value pinned by `.tess/tess.lock`:
     PreToolUse safety gate, v1.0), and every `scripts/brain/**/*.py` file the
     onboarding hook can import.
 
-`--closure DIR` additionally verifies every `*.py` under DIR (recursive,
-`__pycache__` skipped) against the pin list and refuses if any is unpinned
-or changed: the entry script imports its siblings, and an extra module such
-as `DIR/json.py` would shadow the standard library.
+`--closure DIR` additionally verifies every `*.py` under DIR (recursive)
+against the pin list and refuses if any is unpinned or changed: the entry
+script imports its siblings, and an extra module such as `DIR/json.py` would
+shadow the standard library. v1.0.1 (GPT-6 review round 2, HIGH): it also
+refuses while DIR holds ANY other importable artifact, because Python's
+import system prefers some of them over the verified source and none of them
+is hashed: a native extension (`brainlib/__init__.so`, `.pyd`, `.dylib`, any
+suffix from importlib.machinery.all_suffixes()), a sourceless `.pyc`/`.pyo`
+outside `__pycache__`, a `.pth` file, or a symlink anywhere in the tree.
+`__pycache__` directories are tolerated only as plain directories of plain
+files: every target runs with `-X pycache_prefix=<empty temp dir>`, so
+Python never reads them, and a `.pyc` inside `__pycache__` is never imported
+without its source. Data directories without `__init__.py` (templates,
+schemas) are allowed: once every code file in them is rejected they are at
+most an empty namespace package, which ranks below any regular module.
 
 Fail closed. On any mismatch, missing file, symlink or parse error the
 script is NOT run. `--on-fail warn` (default) prints a visible warning and
@@ -31,7 +42,11 @@ job is to block).
 
 Python targets run with `-I -B -X pycache_prefix=<empty temp dir>`: no
 PYTHONPATH/user-site injection, and no stale or planted `.pyc` from the
-working tree is ever loaded.
+working tree is ever loaded. The target's own bytes are read ONCE, hashed,
+and those captured bytes are what the interpreter executes (a private temp
+copy fed to a fixed `-c` bootstrap), so swapping the target file after the
+check changes nothing. Sibling modules are still read from disk at import
+time (see Known limits).
 
 Maintainers: after a deliberate, reviewed change to a pinned script run
   python3 .claude/hooks/run-pinned.py --regen-pins
@@ -95,6 +110,22 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # started without -I, so the launcher refuses to run while one exists.
 BESIDE_ALLOWED = frozenset({"run-pinned.py", "vault-dispatch-scan.py", "tess-gate.py"})
 _IMPORTABLE_SUFFIXES = (".py", ".pyc", ".pyo", ".pyw", ".so", ".pyd", ".dylib")
+# Anything Python could load as code from a closure directory, on any
+# platform (the current interpreter's own suffixes are added at check time).
+_CLOSURE_CODE_SUFFIXES = (".py", ".pyc", ".pyo", ".pyw", ".so", ".pyd", ".dylib", ".dll", ".pth")
+# The fixed program a Python target runs under: it executes the verified
+# bytes captured by the launcher (argv[1], a file in the launcher's private
+# temp dir) as __main__, with __file__ and argv naming the real script.
+_BOOTSTRAP = (
+    "import sys\n"
+    "_tess_src_path, _tess_file = sys.argv[1], sys.argv[2]\n"
+    "with open(_tess_src_path, 'rb') as _tess_fh:\n"
+    "    _tess_code = compile(_tess_fh.read(), _tess_file, 'exec')\n"
+    "sys.argv[:] = sys.argv[2:]\n"
+    "__file__ = _tess_file\n"
+    "del _tess_src_path, _tess_file, _tess_fh\n"
+    "exec(_tess_code)\n"
+)
 
 
 class PinError(Exception):
@@ -203,6 +234,69 @@ def _check(root: Path, rel: str, entries: dict, pins: dict) -> Path:
     return path
 
 
+def _check_capture(root: Path, rel: str, entries: dict, pins: dict) -> bytes:
+    """The target's bytes, read once and verified; these exact bytes are run."""
+    path = _safe_rel(root, rel)
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read()
+    if hashlib.sha256(data).hexdigest() != _expected(rel, entries, pins):
+        raise PinError(f"{rel} does not match the sha pinned in {LOCK_REL} (edited since release?)")
+    return data
+
+
+def _code_suffixes() -> tuple:
+    try:
+        import importlib.machinery as _m  # stdlib; safe: we run with -I
+        extra = tuple(s.lower() for s in _m.all_suffixes())
+    except Exception:  # fail closed: the static list still applies
+        extra = ()
+    return tuple(sorted(set(_CLOSURE_CODE_SUFFIXES + extra)))
+
+
+def _check_closure(root: Path, closure: str, entries: dict, pins: dict) -> None:
+    """Refuse unless every importable artifact under `closure` is a pinned,
+    unchanged `.py` file (see the module docstring)."""
+    rel_top = closure.strip("/")
+    if not rel_top or rel_top.startswith("/") or ".." in Path(rel_top).parts:
+        raise PinError(f"refusing a closure outside the project: {closure!r}")
+    base = root / rel_top
+    for part in range(1, len(Path(rel_top).parts) + 1):
+        if (root / Path(*Path(rel_top).parts[:part])).is_symlink():
+            raise PinError(f"{rel_top} passes through a symlink; hook code must be regular files")
+    if not base.is_dir():
+        raise PinError(f"{rel_top} does not exist")
+    suffixes = _code_suffixes()
+    bad = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        here = Path(dirpath)
+        in_cache = here.name == "__pycache__"
+        for name in sorted(dirnames + filenames):
+            path = here / name
+            rel = path.relative_to(root).as_posix()
+            if os.path.islink(path) or not (os.path.isdir(path) or os.path.isfile(path)):
+                bad.append(f"{rel} (symlink or special file)")
+                continue
+            if os.path.isdir(path):
+                if in_cache:
+                    bad.append(f"{rel} (directory inside __pycache__)")
+                continue
+            if in_cache:
+                continue  # plain files in a plain __pycache__: never read (pycache_prefix)
+            low = name.lower()
+            if low.endswith(suffixes) or ".cpython-" in low or ".abi3." in low:
+                if name.endswith(".py"):
+                    _check(root, rel, entries, pins)  # raises when unpinned or changed
+                else:
+                    bad.append(f"{rel} (importable code that is not a pinned .py file)")
+        dirnames[:] = sorted(d for d in dirnames if not os.path.islink(here / d))
+    if bad:
+        raise PinError(
+            f"{rel_top} holds code Tess did not ship and cannot verify ("
+            + ", ".join(bad[:5]) + ("" if len(bad) <= 5 else ", ...")
+            + "); Python could load it instead of the verified scripts. Move or delete it")
+
+
 def _tree_py(root: Path, tree: str) -> list:
     base = root / tree
     out = []
@@ -240,12 +334,20 @@ def verify(root: Path, target: str, closure: "str | None") -> Path:
     pins = _pins(root, entries)
     _check(root, SELF_REL, entries, pins)
     if closure:
-        for rel in _tree_py(root, closure):
-            _check(root, rel, entries, pins)
+        _check_closure(root, closure, entries, pins)
         for rel in pins:
             if rel.startswith(closure.rstrip("/") + "/"):
                 _safe_rel(root, rel)
     return _check(root, target, entries, pins)
+
+
+def verify_capture(root: Path, target: str, closure: "str | None") -> "tuple[Path, bytes | None]":
+    """verify(), plus the target's captured bytes when it is a Python file."""
+    path = verify(root, target, closure)
+    if path.suffix != ".py":
+        return path, None
+    entries = _lock_entries(root)
+    return path, _check_capture(root, target, entries, _pins(root, entries))
 
 
 def regen_pins(root: Path) -> None:
@@ -271,10 +373,17 @@ def _fail(mode: str, target: str, reason: str) -> int:
     return 0
 
 
-def _run(path: Path, args: list) -> int:
+def _run(path: Path, args: list, code: "bytes | None" = None) -> int:
     if path.suffix == ".py":
         with tempfile.TemporaryDirectory(prefix="tess-hook-") as tmp:
-            cmd = [sys.executable, "-I", "-B", "-X", f"pycache_prefix={tmp}/none", str(path), *args]
+            if code is None:
+                raise PinError("the verified script bytes were not captured")
+            src = Path(tmp) / "verified-source.py"
+            fd = os.open(str(src), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(code)
+            cmd = [sys.executable, "-I", "-B", "-X", f"pycache_prefix={tmp}/none", "-c", _BOOTSTRAP,
+                   str(src), str(path), *args]
             return subprocess.run(cmd).returncode
     bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
     if not bash:
@@ -303,8 +412,8 @@ def main(argv: list) -> int:
     target, rest = args[0], args[1:]
     root = _root()
     try:
-        path = verify(root, target, closure)
-        return _run(path, rest)
+        path, code = verify_capture(root, target, closure)
+        return _run(path, rest, code)
     except PinError as exc:
         return _fail(mode, target, str(exc))
     except Exception as exc:  # fail closed on anything unexpected

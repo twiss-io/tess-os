@@ -37,7 +37,7 @@ def onboarding_status() -> str:
     if not tool.exists():
         return "unknown"
     try:
-        done = subprocess.run([sys.executable, str(tool), "status", "--json"], cwd=str(ROOT),
+        done = subprocess.run([sys.executable, "-I", "-B", str(tool), "status", "--json"], cwd=str(ROOT),
                               capture_output=True, text=True, timeout=20)
         status = json.loads(done.stdout).get("status", "unknown")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

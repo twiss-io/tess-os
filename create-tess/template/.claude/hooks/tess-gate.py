@@ -489,7 +489,10 @@ def _publish_remote_check(root: Path, cwd: str, pos: list, opts: list, v: Verdic
         v.add(DENY, f"{TESSCTL_REL} is missing, so Tess cannot check what this push would publish", "error")
         return
     env = dict(os.environ, TESS_ROOT=top)
-    r = subprocess.run([sys.executable, str(tessctl), "doctor", "--publish-remote", remote, url],
+    # -I -B: the engine lives in the working tree, and a planted
+    # .tess/bin/argparse.py (or yaml.py) beside it must never run inside this hook.
+    r = subprocess.run([sys.executable, "-I", "-B", str(tessctl), "doctor", "--publish-remote",
+                        remote, url],
                        input=stdin, capture_output=True, text=True, cwd=top, env=env, timeout=90)
     if r.returncode != 0:
         detail = (r.stderr.strip() or r.stdout.strip() or "tess-remote-guard refused the push")

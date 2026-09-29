@@ -135,6 +135,7 @@ import datetime
 import getpass
 import glob
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -11185,7 +11186,7 @@ def cmd_self_update(args, root: Path) -> None:
         # -- Step 3: AST parse-check before touching the live engine --
         print("\nStep 2: parse-check new engine …")
         parse_result = subprocess.run(
-            [sys.executable, "-c",
+            [sys.executable, "-I", "-B", "-c",
              "import ast, sys; ast.parse(open(sys.argv[1]).read()); print('parse OK')",
              str(new_engine_path)],
             capture_output=True, text=True
@@ -11247,7 +11248,7 @@ def cmd_self_update(args, root: Path) -> None:
         # -- Step 6: verify new engine — run doctor with it --
         print("\nStep 5: verify new engine (doctor) …")
         verify_run = subprocess.run(
-            [sys.executable, str(engine_path), "doctor"],
+            [sys.executable, "-I", "-B", str(engine_path), "doctor"],
             capture_output=True, text=True,
             cwd=str(root), env={**os.environ, "TESS_ROOT": str(root)}
         )
@@ -14517,6 +14518,8 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
             "accepted_paths_count": int(rp.get("accepted_paths_count") or 0),
             "lock_rejected": bool(rp.get("lock_rejected")),
             "first_push": bool(rp.get("first_push")),
+            "policy_approval": (rp.get("policy_approval")
+                                if rp.get("policy_approval") in ("verified", "rejected") else None),
         }
     if phase is not None:
         safe = {"phase": phase, **safe}
@@ -15789,7 +15792,7 @@ def _gate_emit_one_receipt(
             decision_path = tmp_dir_path / "decision.json"
             decision_path.write_text(json.dumps(decision, sort_keys=True), encoding="utf-8")
             args = [
-                sys.executable, str(emit_cli), "emit",
+                sys.executable, "-I", "-B", str(emit_cli), "emit",
                 "--decision", str(decision_path),
                 "--rule-id", rule_id,
                 "--policy", str(policy_path),
@@ -16647,7 +16650,9 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
         if rel in _FIRST_INSTALL_POLICY_PATHS:
             if _gate_release_policy_ok(_gate_git_show_at_ref(root, base, rel), head_bytes(rel),
                                        resolve.release_bytes(rel),
-                                       _gate_policy_approval_at(root, head, tag_name), tag_name):
+                                       _gate_verified_policy_approval(root, base, head, tag_name,
+                                                                      commit_id, info),
+                                       tag_name):
                 accepted.add(rel)
                 got = resolve(rel)
                 if got is None or head_index.get(rel) != got[1]:
@@ -16656,6 +16661,13 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
         got = resolve(rel)
         if got is not None and head_index.get(rel) == got[1]:
             accepted.add(rel)
+    # v1.0.1: the approval file is itself protected; it needs no verdict only
+    # when it is the verified approval for this proven tag.
+    approval_rel = _policy_approval_rel(tag_name)
+    if (approval_rel in candidate_paths and head_index.get(approval_rel)
+            and _gate_verified_policy_approval(root, base, head, tag_name, commit_id,
+                                               {}) is not None):
+        accepted.add(approval_rel)
     why = "lock missing at head"
     if isinstance(head_lock, dict):
         why = _gate_release_lock_change_ok(
@@ -16845,10 +16857,37 @@ def _update_carry_policy_registries(root: Path) -> None:
 # cryptographic boundary (a process that allocates its own pseudo-terminal can
 # satisfy it); the digests and the signed-release-bytes rule bound what an
 # approval can ever let through.
+#
+# v1.0.1 (GPT-6 review round 2, HIGH "operator approval is forgeable JSON"):
+# the approval file used to be plain JSON, so anyone who could write the repo
+# (a collaborator pushing to a shared repo, CI, an agent working around the
+# hook) could write a matching one. It is now signed: format /2 carries an
+# HMAC-SHA256 over (project id, tag, release commit, old and new rule
+# digests, approval time) under a per-machine OPERATOR KEY that lives OUTSIDE
+# the repo ($XDG_CONFIG_HOME/tess/operator/key, else ~/.config/tess/operator/
+# key; directory 0700, key 0600, owned by the user; created on first
+# interactive `accept`, never by the gate). The project id is the root commit
+# of the first-parent history, so an approval copied from another project on
+# the same machine does not verify. The gate verifies the HMAC with that key
+# and ignores unsigned, foreign or mismatched approvals; and
+# .tess/gate/policy-approvals/** is itself a protected path, accepted without
+# a verdict only when it is exactly the verified approval for the proven tag.
+#
+# What this does and does not stop, honestly: someone who can only write the
+# repository cannot forge an approval, because they do not have the key. A
+# process running as the SAME OS user on the operator's machine can read the
+# key, exactly as it could run `tessctl approve` itself; the terminal check,
+# the gate hooks and the digests are the only limits there. The gate running
+# where the key is absent (a CI runner, another machine) cannot verify any
+# approval and fails closed: a release that changes policy rules is blocked
+# there unless the pusher's own pre-push gate accepted it, or a verifier signs
+# a covering verdict. That is the price of not trusting repo bytes.
 # ---------------------------------------------------------------------------
 
 POLICY_APPROVALS_DIR = ".tess/gate/policy-approvals"
-POLICY_APPROVAL_FORMAT = "tess-policy-approval/1"
+POLICY_APPROVAL_FORMAT = "tess-policy-approval/2"
+POLICY_APPROVAL_MAC_DOMAIN = b"tess-os policy approval v2\0"
+OPERATOR_KEY_BYTES = 32
 _POLICY_RULE_KEYS = ("rules", "hard_floor_rules")
 _POLICY_REGISTRY_KEYS = ("verifier_keys", "signoff_keys")
 
@@ -16937,6 +16976,120 @@ def _policy_approval_covers(approval, tag: str, base_doc, head_doc) -> bool:
             and approval.get("approved_by_typing") == f"accept {tag}")
 
 
+def _operator_key_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "tess" / "operator"
+
+
+def _path_within(child: str, parent: str) -> bool:
+    c, p = os.path.realpath(child), os.path.realpath(parent)
+    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def _operator_key(root: Path, create: bool = False) -> tuple:
+    """(key bytes | None, why-not). The per-machine operator key; created
+    (0600, in a 0700 directory) only when `create` (the interactive accept).
+    Refused when it lives inside the project, is a symlink, is not owned by
+    this user, or is readable/writable by others. Never printed."""
+    d = _operator_key_dir()
+    p = d / "key"
+    if _path_within(str(d), str(root)):
+        return None, "the operator key directory is inside this project"
+    nofollow = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+    try:
+        if create:
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not os.path.lexists(p):
+                fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(secrets.token_bytes(OPERATOR_KEY_BYTES))
+        for path, mask in ((d, 0o022), (p, 0o077)):
+            st = os.lstat(path)
+            if stat.S_ISLNK(st.st_mode):
+                return None, f"{path} is a symlink"
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return None, f"{path} is not owned by this user"
+            if os.name == "posix" and st.st_mode & mask:
+                return None, f"{path} is accessible to other users (mode {stat.S_IMODE(st.st_mode):o})"
+        fd = os.open(str(p), os.O_RDONLY | nofollow)
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read(4096)
+    except FileNotFoundError:
+        return None, "there is no operator key on this machine"
+    except OSError as e:
+        return None, f"the operator key is unreadable ({type(e).__name__})"
+    if len(data) < OPERATOR_KEY_BYTES:
+        return None, "the operator key is too short"
+    return data, ""
+
+
+def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
+    """A stable id for this project: the root commit of `ref`'s first-parent
+    history (a subtree merge adds roots only as second parents)."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), "rev-list", "--first-parent",
+                            "--max-parents=0", ref, "--"], capture_output=True, text=True,
+                           timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    roots = r.stdout.split() if r.returncode == 0 else []
+    if len(roots) != 1 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", roots[0]):
+        return None
+    return "git-root:" + roots[0]
+
+
+def _policy_approval_mac(key: bytes, project_id, tag, release_commit, old_digest, new_digest,
+                         approved_at) -> str:
+    msg = json.dumps({"format": POLICY_APPROVAL_FORMAT, "project_id": project_id, "tag": tag,
+                      "release_commit": release_commit, "old_rules_sha256": old_digest,
+                      "new_rules_sha256": new_digest, "approved_at": approved_at},
+                     sort_keys=True, separators=(",", ":"))
+    return "hmac-sha256:" + hmac.new(key, POLICY_APPROVAL_MAC_DOMAIN + msg.encode("utf-8"),
+                                     hashlib.sha256).hexdigest()
+
+
+def _policy_approval_authentic(approval, key: bytes | None, project_id: str | None, tag: str,
+                               release_commit: str | None) -> str | None:
+    """None when `approval` is signed by this machine's operator key for this
+    project, tag and release commit; otherwise the reason it is not."""
+    if not isinstance(approval, dict):
+        return "no approval record"
+    if approval.get("format") != POLICY_APPROVAL_FORMAT or not approval.get("mac"):
+        return "the approval is not signed (older or hand-written format)"
+    if key is None:
+        return "this machine has no operator key, so no approval can be verified here"
+    if not project_id or approval.get("project_id") != project_id:
+        return "the approval belongs to a different project"
+    if not release_commit or approval.get("release_commit") != release_commit:
+        return "the approval names a different release commit"
+    if approval.get("tag") != tag:
+        return "the approval names a different release"
+    want = _policy_approval_mac(key, project_id, tag, release_commit,
+                                approval.get("old_rules_sha256"),
+                                approval.get("new_rules_sha256"), approval.get("approved_at"))
+    if not hmac.compare_digest(str(approval.get("mac")), want):
+        return "the approval signature does not verify with this machine's operator key"
+    return None
+
+
+def _gate_verified_policy_approval(root: Path, base: str, head: str, tag: str,
+                                   commit_id: str | None, info: dict):
+    """The committed approval for `tag` at `head` when its HMAC verifies for
+    this project (identified at BASE, which the pusher cannot rewrite) and
+    this release commit; else None, with the reason in info."""
+    approval = _gate_policy_approval_at(root, head, tag)
+    if approval is None:
+        return None
+    key, why_key = _operator_key(root, create=False)
+    why = _policy_approval_authentic(approval, key, _project_identity(root, base), tag, commit_id)
+    if why is not None:
+        info["policy_approval"] = "rejected"
+        info["policy_approval_reason"] = why
+        return None
+    info["policy_approval"] = "verified"
+    return approval
+
+
 def _gate_policy_approval_at(root: Path, ref: str, tag: str):
     """The committed operator approval for `tag` at `ref`, parsed, or None."""
     if not isinstance(tag, str) or not re.fullmatch(r"v[0-9A-Za-z.+-]{1,63}", tag):
@@ -16998,16 +17151,31 @@ def _update_confirm_policy_rule_changes(root: Path, tag: str) -> None:
     if typed.strip() != f"accept {tag}":
         sys.exit(f"tessctl update: stopped — you did not type `accept {tag}`. Nothing was "
                  f"changed; you stay on your current version.")
+    proof = _RELEASE_PROOF_STATE.get("proof") or {}
+    release_commit = proof.get("commit_id") if proof.get("tag_name") == tag else None
+    project_id = _project_identity(root, "HEAD")
+    key, why_key = _operator_key(root, create=True)
+    if key is None or not project_id or not release_commit:
+        why = (why_key if key is None else
+               "this project has no commit yet to identify it" if not project_id else
+               "the fetched release was not verified, so there is no release commit to approve")
+        sys.exit(f"tessctl update: stopped — your approval could not be signed: {why}. "
+                 f"Nothing was changed; you stay on your current version.")
+    approved_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old_digest, new_digest = _policy_rules_digest(old_doc), _policy_rules_digest(new_doc)
     record = {
         "format": POLICY_APPROVAL_FORMAT,
         "tag": tag,
-        "old_rules_sha256": _policy_rules_digest(old_doc),
-        "new_rules_sha256": _policy_rules_digest(new_doc),
+        "project_id": project_id,
+        "release_commit": release_commit,
+        "old_rules_sha256": old_digest,
+        "new_rules_sha256": new_digest,
         "changes": lines,
         "approved_by_typing": f"accept {tag}",
-        "approved_at": datetime.datetime.now(datetime.timezone.utc)
-                       .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "approved_at": approved_at,
         "approved_by": _operator_display_name(root),
+        "mac": _policy_approval_mac(key, project_id, tag, release_commit, old_digest,
+                                    new_digest, approved_at),
     }
     dest = root / _policy_approval_rel(tag)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -17424,6 +17592,10 @@ def _gate_print_result(phase: str, result: dict, as_json: bool, *, verbose: bool
         what = "first push" if rp.get("first_push") else "release update"
         print(f"  {what}: {rp['accepted_paths_count']} protected file(s) are exactly the "
               f"signed Tess OS release {rp['tag']} — no verdict needed for them")
+        if rp.get("policy_approval") == "rejected":
+            print(f"  {what}: the committed approval of the new safety rules was NOT accepted "
+                  f"(it is unsigned, from another project or machine, or does not match this "
+                  f"release); approvals verify only where `tessctl update` was approved")
         if rp["lock_rejected"]:
             print(f"  {what}: tess.lock has changes "
                   f"{'setup' if rp.get('first_push') else 'an update'} does not make — it still "

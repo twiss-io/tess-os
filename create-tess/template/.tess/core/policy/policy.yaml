@@ -135,6 +135,10 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+        # v1.0.1 (GPT-6 review round 2, HIGH): operator approvals of a
+        # release's rule changes. The gate accepts one without a verdict only
+        # when its HMAC verifies under the operator's own key (tessctl).
+        - .tess/gate/policy-approvals/**
         - .tess/core/**
         - .tess/tess.lock
         # v0.2.1 (2026-09-29 security review, MEDIUM "hooks run agent-editable

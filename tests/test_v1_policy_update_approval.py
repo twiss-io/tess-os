@@ -6,6 +6,12 @@ asks the person at the terminal to type `accept <tag>`. Their answer is
 recorded in .tess/gate/policy-approvals/<tag>.json, bound to the old and new
 rule digests; the gate accepts exactly that change and nothing else. Without
 a terminal (an agent, CI, a pipe) the update stops and changes nothing.
+
+v1.0.1 (GPT-6 review round 2, HIGH): the approval is signed. It carries an
+HMAC under a per-machine operator key kept outside the repo
+($XDG_CONFIG_HOME/tess/operator/key), bound to the project's root commit, the
+release tag and commit, and the rule digests. Unsigned, hand-written, foreign
+or keyless approvals are rejected, and the approvals directory is protected.
 """
 from __future__ import annotations
 
@@ -29,6 +35,24 @@ APPROVAL = f".tess/gate/policy-approvals/{TAG}.json"
 NEW_GLOB = "docs/SECURITY_NEW.md"
 VENDOR_LINE = "        - .tess/vendor/**\n"
 RULES_CHANGED = RELEASE_POLICY.replace(VENDOR_LINE, VENDOR_LINE + f"        - {NEW_GLOB}\n", 1)
+
+
+@pytest.fixture(autouse=True)
+def _operator_home(tmp_path_factory, monkeypatch):
+    """Every test gets its own operator key location, never the real ~/.config."""
+    xdg = tmp_path_factory.mktemp("xdg-config")  # outside every test project
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    return xdg
+
+
+def _write_approval(root: Path, record: dict) -> None:
+    (root / APPROVAL).parent.mkdir(parents=True, exist_ok=True)
+    (root / APPROVAL).write_text(json.dumps(record), encoding="utf-8")
+
+
+def _recommit_update(root: Path, base: str, msg: str) -> str:
+    _git(root, "reset", "-q", "--soft", base)
+    return _commit(root, msg)
 
 
 def _update_in_pty(root: Path, answer: str) -> tuple[int, str]:
@@ -103,6 +127,13 @@ def test_typed_acceptance_updates_and_the_gate_accepts_exactly_that(
         assert _registries(project.root, rel) == ({}, {})       # still the user's own
     record = json.loads((project.root / APPROVAL).read_text(encoding="utf-8"))
     assert record["tag"] == TAG and record["approved_by_typing"] == f"accept {TAG}"
+    assert record["format"] == engine.POLICY_APPROVAL_FORMAT
+    assert record["mac"].startswith("hmac-sha256:") and record["release_commit"]
+    assert record["project_id"] == engine._project_identity(project.root, base)
+    key_file = Path(os.environ["XDG_CONFIG_HOME"]) / "tess" / "operator" / "key"
+    assert key_file.is_file() and (key_file.stat().st_mode & 0o777) == 0o600
+    assert not str(key_file.resolve()).startswith(str(project.root.resolve()))
+    genuine = dict(record)
     head = _commit(project.root, "tessctl update v2.1.0 (rules approved)")
     r, res = _gate_ci(project.root, base, head)
     assert r.returncode == 0 and res["blocked"] is False, res
@@ -124,6 +155,83 @@ def test_typed_acceptance_updates_and_the_gate_accepts_exactly_that(
     forged = _commit(project.root, "update with a forged approval")
     r, res = _gate_ci(project.root, base, forged)
     assert r.returncode == 1 and res["blocked"] is True, res
+
+    # Reverse direction 3 (round 2): hand-written JSON with the RIGHT digests
+    # but no operator signature (what a repo-only writer can produce).
+    unsigned = {k: v for k, v in genuine.items() if k != "mac"}
+    for forged_record in (unsigned, {**unsigned, "format": "tess-policy-approval/1"},
+                          {**genuine, "mac": "hmac-sha256:" + "0" * 64}):
+        _write_approval(project.root, forged_record)
+        r, res = _gate_ci(project.root, base, _recommit_update(project.root, base, "forged"))
+        assert r.returncode == 1 and res["blocked"] is True, (forged_record, res)
+        assert res["release_proof"]["policy_approval"] == "rejected", res
+
+    # Reverse direction 4: a genuinely signed approval, but for ANOTHER project
+    # (same machine, same key, different root commit).
+    key = key_file.read_bytes()
+    other = {**genuine, "project_id": "git-root:" + "1" * 40}
+    other["mac"] = engine._policy_approval_mac(
+        key, other["project_id"], TAG, other["release_commit"], other["old_rules_sha256"],
+        other["new_rules_sha256"], other["approved_at"])
+    _write_approval(project.root, other)
+    r, res = _gate_ci(project.root, base, _recommit_update(project.root, base, "foreign"))
+    assert r.returncode == 1 and res["blocked"] is True, res
+
+    # Reverse direction 5: the genuine approval, checked where the operator key
+    # is absent (a CI runner, another machine): cannot be verified, so blocked.
+    _write_approval(project.root, genuine)
+    again = _recommit_update(project.root, base, "genuine again")
+    r, res = _gate_ci(project.root, base, again)
+    assert r.returncode == 0 and res["blocked"] is False, res
+    os.environ["XDG_CONFIG_HOME"] = str(Path(os.environ["XDG_CONFIG_HOME"]).parent / "no-key-here")
+    r, res = _gate_ci(project.root, base, again)
+    assert r.returncode == 1 and res["blocked"] is True, res
+
+
+def test_signed_approval_checks_project_release_and_key(engine):
+    key, other_key = b"k" * 32, b"o" * 32
+    args = ("git-root:" + "a" * 40, TAG, "c" * 40, "sha256:old", "sha256:new",
+            "2026-09-29T00:00:00Z")
+    rec = {"format": engine.POLICY_APPROVAL_FORMAT, "project_id": args[0], "tag": TAG,
+           "release_commit": args[2], "old_rules_sha256": args[3], "new_rules_sha256": args[4],
+           "approved_at": args[5], "mac": engine._policy_approval_mac(key, *args)}
+    ok = engine._policy_approval_authentic
+    assert ok(rec, key, args[0], TAG, args[2]) is None
+    assert "different project" in ok(rec, key, "git-root:" + "b" * 40, TAG, args[2])
+    assert "release commit" in ok(rec, key, args[0], TAG, "d" * 40)
+    assert "does not verify" in ok(rec, other_key, args[0], TAG, args[2])
+    assert "no operator key" in ok(rec, None, args[0], TAG, args[2])
+    unsigned = {k: v for k, v in rec.items() if k != "mac"}
+    assert "not signed" in ok(unsigned, key, args[0], TAG, args[2])
+    later = {**rec, "approved_at": "2027-01-01T00:00:00Z"}
+    assert "does not verify" in ok(later, key, args[0], TAG, args[2])
+
+
+def test_operator_key_lives_outside_the_project_and_is_private(engine, tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(proj / ".config"))
+    key, why = engine._operator_key(proj, create=True)
+    assert key is None and "inside this project" in why
+    assert not (proj / ".config").exists()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    assert engine._operator_key(proj, create=False) == (None, "there is no operator key on this machine")
+    key, why = engine._operator_key(proj, create=True)
+    assert key is not None and len(key) == 32 and why == ""
+    assert engine._operator_key(proj, create=True)[0] == key       # stable, not re-created
+    if os.name == "posix":
+        (tmp_path / "cfg" / "tess" / "operator" / "key").chmod(0o644)
+        key, why = engine._operator_key(proj, create=False)
+        assert key is None and "accessible to other users" in why
+
+
+def test_approvals_directory_is_itself_protected(engine):
+    import yaml
+    from conftest import REPO_ROOT
+    for rel in ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml"):
+        policy = yaml.safe_load((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        matches, _ = engine._gate_classify_paths(policy, [APPROVAL])
+        assert APPROVAL in matches, rel
 
 
 def test_approval_never_covers_a_registry_change_or_another_tag(engine):
