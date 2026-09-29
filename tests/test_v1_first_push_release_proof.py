@@ -154,8 +154,10 @@ def _commit_on_seed(fp, name: str, mutate) -> str:
     _git(inst, "checkout", "-q", "-B", name, fp["seed"])
     mutate(inst)
     _git(inst, "add", "-A")
-    _git(inst, "-c", "core.hooksPath=/dev/null", "commit", "-q", "--no-verify", "-m", name,
-         env=fp["env"])
+    # CI runners have no global git identity: name one for this commit.
+    _git(inst, "-c", "core.hooksPath=/dev/null", "-c", "user.email=probe@tess.test",
+         "-c", "user.name=Probe", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify",
+         "-m", name, env=fp["env"])
     head = _git(inst, "rev-parse", "HEAD")
     _git(inst, "checkout", "-q", "main")
     return head
