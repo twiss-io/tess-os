@@ -6226,7 +6226,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:d8fd71bb6b984f78152eb5d6cc598fc84d89baf53ca89174a559550127b78ee3
+    rendered_sha: sha256:dec3ed5cbb0e0d268f5035b5cf4bf4816c4157ba1c9e2c221fc29e8033c41ce8
   conductor/identity.md:
     target: claude-code
     status: rendered
