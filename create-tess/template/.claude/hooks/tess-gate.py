@@ -40,11 +40,23 @@ Audit trail: every deny/ask is appended (redacted, one JSON line) to
 $TESS_GATE_LOG, default ${XDG_CACHE_HOME:-~/.cache}/tess/gate-decisions.log
 (rotated at 1 MB). Logging is best effort and never changes a decision.
 
+v1.0.0 security review (M1) also denies: pointing git at another config file
+(GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM / GIT_CONFIG_PARAMETERS in the
+environment), writing `include.*` / `includeIf.*` / `alias.*` git config
+(`git config` or `git -c`), shell writes after a `cd` into a protected
+directory (the cwd is tracked across `cd`/`pushd`; a `cd` whose target is
+computed at run time makes later relative writes a deny), and, best effort,
+an inline interpreter program (`python -c`, `node -e`, a heredoc fed to one)
+that names a protected path and calls a write-shaped API.
+
 Known limits (adapters/CONFORMANCE.md, Codex row): the shell checks read the
-command text, so a write done inside an interpreter (`python -c`, `node -e`),
-a command assembled at run time (`$(...)`, variables), or an alias is not
-seen; hosted tools never reach hooks. The ship-gate in git/CI stays the wall;
-this gate is the in-session guard in front of it.
+command text, so a write assembled at run time (`$(...)`, variables), a
+script file run by an interpreter, or an interpreter write this pattern
+match misses is not seen; hosted tools never reach hooks; Codex `write_stdin`
+(typed input to an already-open unified-exec shell) never reaches
+PreToolUse; a hook that times out or crashes in the host fails open for that
+call. The ship-gate in git/CI stays the wall; this gate is the in-session
+guard in front of it.
 """
 
 from __future__ import annotations
@@ -72,7 +84,8 @@ PROTECTED_GLOBS = (
     "conductor/guardrails.md", "conductor/verification-routing.md",
     "conductor/channel-guardrails.md", "conductor/dispatch-brief.md",
     "core/contracts/**", "core/policy/**",
-    ".tess/bin/**", "tessctl", ".tess/core/**", ".tess/tess.lock",
+    ".tess/bin/**", "tessctl", ".tess/core/**", ".tess/core/policy/policy.yaml",
+    ".tess/tess.lock",
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
     ".claude/hooks/**", ".claude/settings.json", "scripts/brain/**",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
@@ -104,6 +117,25 @@ ZERO = "0" * 40
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$|^\*\*\* Move to: (.+?)\s*$",
                          re.MULTILINE)
 _URL_CREDS = re.compile(r"(//)[^/@\s]+@")
+# git reads another config file (which can set core.hooksPath, an alias or an
+# include) from these; any assignment of them is a deny.
+GIT_CONFIG_FILE_ENV = {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS",
+                       "GIT_CONFIG"}
+# An empty config (the usual test isolation, GIT_CONFIG_GLOBAL=/dev/null) sets nothing.
+_EMPTY_CONFIG = {"/dev/null", "", "''", '""'}
+# Config keys that pull in other config (include) or define commands (alias).
+_GIT_CONFIG_INDIRECT = re.compile(r"^(include|includeif\.[^=]*|alias)\.", re.IGNORECASE)
+INTERPRETERS = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|osascript)$")
+_INTERP_WRITE = re.compile(
+    r"write_text|write_bytes|\.write\(|writeFile|appendFile|createWriteStream|\bunlink|"
+    r"\bos\.(remove|rename|replace|system|symlink|chmod|truncate|popen|makedirs)|rmtree|"
+    r"\bshutil\.|\bsubprocess\b|child_process|execSync|spawnSync|rmSync|\.rename\(|\.symlink_to\(|"
+    r"\.chmod\(|\.touch\(|File\.(write|open|delete|rename)|\bsystem\(|open\([^)]*['\"][rwxa]?[wxa+]",
+)
+_INTERP_TOKEN = re.compile(r"[A-Za-z0-9_./~+-]+")
+PROTECTED_DIR_ROOTS = {".tess", ".git", ".claude", ".codex", ".gemini", ".github",
+                       ".git/hooks", ".claude/hooks", ".github/workflows", "core/policy",
+                       "core/contracts", "scripts/brain", ".tess/core", ".tess/bin", ".tess/keys"}
 
 
 # --------------------------------------------------------------------------- helpers
@@ -333,6 +365,9 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
     if hooks_env or any(c.lower().startswith("core.hookspath") for c in cfg):
         v.add(DENY, "it points git at a different hooks directory (core.hooksPath), which "
                     "switches off Tess's git hooks (secret scan, ship gate, public-remote guard)", "hookspath")
+    if any(_GIT_CONFIG_INDIRECT.match(c) for c in cfg):
+        v.add(DENY, "it sets a git include or alias on the command line, which can switch off "
+                    "Tess's git hooks or run another command", "hookspath")
     if sub == "config":
         keys = [a.lower() for a in rest]
         reading = any(k in ("--get", "--get-all", "--list", "-l", "--get-regexp", "get", "list")
@@ -341,6 +376,9 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
             v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
         if any(k == "--file" or k == "-f" for k in keys) and any("hook" in k for k in keys):
             v.add(DENY, "it edits git hook configuration directly", "hookspath")
+        if not reading and any(_GIT_CONFIG_INDIRECT.match(k) for k in keys):
+            v.add(DENY, "it writes a git include or alias, which can switch off Tess's git hooks "
+                        "or run another command in place of a git one", "hookspath")
     if sub in ("commit", "merge", "am", "rebase", "cherry-pick", "revert", "push", "pull",
                "commit-tree", "notes") and "--no-verify" in rest:
         v.add(DENY, "--no-verify skips Tess's git hooks (secret scan and ship gate)", "noverify")
@@ -469,11 +507,52 @@ def _write_targets(argv: list) -> list:
     return out
 
 
-def _check_segment(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth: int):
+def _interp_code(argv: list, raw: str) -> str:
+    """The program an interpreter segment runs from the command text: the
+    -c/-e argument, else (stdin / heredoc) the whole command text."""
+    for j, a in enumerate(argv[1:], 1):
+        if a in ("-c", "-e", "-E", "--eval", "-p", "--print", "-r") and j + 1 < len(argv):
+            return argv[j + 1]
+        if re.match(r"^-[A-Za-z]*[ceE]$", a) and j + 1 < len(argv):
+            return argv[j + 1]
+    return raw
+
+
+def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
+    """Best effort (M1): an inline program that names a protected path and
+    calls a write-shaped API. A script FILE is not read; the ship gate stays
+    the wall."""
+    code = _interp_code(argv, raw)
+    if not _INTERP_WRITE.search(code):
+        return
+    for tok in _INTERP_TOKEN.findall(code):
+        t = tok[2:] if tok.startswith("./") else tok
+        hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/"))
+        if not hit and ("/" in t or "." in t):
+            hit = protected_hit(root, cwd, t)
+        if hit:
+            v.add(DENY, f"an inline {os.path.basename(argv[0])} program writes near {tok}, a "
+                        f"protected Tess path ({hit})", "protected")
+            return
+
+
+def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int):
     env, argv = _strip_prefix(argv)
+    for k, val in env.items():
+        if k in GIT_CONFIG_FILE_ENV and val not in _EMPTY_CONFIG:
+            v.add(DENY, f"it sets {k}, which makes git read another config file (that file can "
+                        "switch off Tess's git hooks)", "hookspath")
     if not argv:
         return
     name = os.path.basename(argv[0])
+    if cwd is None:
+        # a `cd` earlier in this command went somewhere Tess cannot resolve
+        if any(not os.path.isabs(os.path.expanduser(t)) for t in _write_targets(argv)):
+            v.add(DENY, "it writes to a relative path after a `cd` whose target is only known "
+                        "at run time, so Tess cannot check it against the protected list", "protected")
+        cwd = str(root)
+    if INTERPRETERS.match(name):
+        _check_interpreter(root, cwd, argv, v, raw)
     if name in SHELLS and depth < 4:
         for j, a in enumerate(argv[1:], 1):
             if re.match(r"^-[a-z]*c[a-z]*$", a) and j + 1 < len(argv):
@@ -486,6 +565,11 @@ def _check_segment(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth
             "hookspath" in a.lower() for a in argv[1:]):
         v.add(DENY, "it sets core.hooksPath through the environment, which switches off "
                     "Tess's git hooks", "hookspath")
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            re.split(r"[=\s]", a, 1)[0] in GIT_CONFIG_FILE_ENV
+            and a.partition("=")[2] not in _EMPTY_CONFIG for a in argv[1:]):
+        v.add(DENY, "it points git at another config file through the environment, which can "
+                    "switch off Tess's git hooks", "hookspath")
     if name == "git":
         _check_git(root, cwd, env, argv, v, raw)
     elif name == "gh":
@@ -509,8 +593,27 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
         if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/hooks", low):
             v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
         return
+    cur = cwd or str(root)
     for argv in segs:
-        _check_segment(root, cwd, argv, v, cmd, depth)
+        _check_segment(root, cur, argv, v, cmd, depth)
+        cur = _next_cwd(root, cur, argv)
+
+
+def _next_cwd(root: Path, cur: str | None, argv: list) -> str | None:
+    """Track `cd` / `pushd` across the segments of one command (M1), so
+    `cd .git/hooks && echo x > pre-commit` is checked as a write to
+    .git/hooks/pre-commit. None = moved somewhere only known at run time."""
+    _, argv = _strip_prefix(argv)
+    if not argv or os.path.basename(argv[0]) not in ("cd", "pushd", "chdir"):
+        return cur
+    args = [a for a in argv[1:] if a not in ("-L", "-P", "-e", "--")]
+    if not args or args[0] in ("~",):
+        return os.path.expanduser("~")
+    target = args[0]
+    if target == "-" or any(c in target for c in "$`*?[") or cur is None:
+        return None
+    target = os.path.expanduser(target)
+    return target if os.path.isabs(target) else os.path.join(cur, target)
 
 
 def _command_text(tool_input) -> str:

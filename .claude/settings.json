@@ -17,6 +17,18 @@
       "Bash(python3 scripts/brain/tessbrain.py remember:*)",
       "Bash(python3 scripts/brain/tessbrain.py inbox:*)",
       "Bash(python3 scripts/brain/tessbrain.py journal note:*)"
+    ],
+    "deny": [
+      "Bash(git diff *--no-index*)",
+      "Bash(git diff *--output*)",
+      "Bash(git diff *--ext-diff*)",
+      "Bash(git diff *--textconv*)",
+      "Bash(git log *--output*)",
+      "Bash(git log *--ext-diff*)",
+      "Bash(git log *--textconv*)",
+      "Bash(git show *--output*)",
+      "Bash(git show *--ext-diff*)",
+      "Bash(git show *--textconv*)"
     ]
   },
   "autoMemoryEnabled": true,

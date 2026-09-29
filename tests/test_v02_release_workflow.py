@@ -40,7 +40,7 @@ pytestmark = [
 
 def _steps() -> list:
     wf = yaml.safe_load(RELEASE_YML.read_text(encoding="utf-8"))
-    return wf["jobs"]["release"]["steps"]
+    return [s for job in wf["jobs"].values() for s in job["steps"]]  # gates, then release
 
 
 def _git(cwd: Path, *args: str) -> str:

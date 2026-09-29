@@ -5870,20 +5870,23 @@ def _publish_clean_tracked_paths(root: Path, scope: str) -> list:
     if not shutil.which("git"):
         raise RuntimeError("git not found on PATH — cannot evaluate the publish-clean gate")
 
+    # v1.0.0 security review (H1): `-z` + core.quotePath=false — a quoted or
+    # newline-split name would match no private glob (see _gate_run_git).
     if scope == "staged":
         # v0.2.1: T/U/X/B included (a type change still commits the path);
         # D stays excluded on purpose — see the docstring above.
-        cmd = ["git", "-C", str(root), "diff", "--cached", "--name-only", "--no-renames",
-               GATE_DIFF_FILTER_NO_DELETE]
+        cmd = ["git", "-C", str(root), "-c", "core.quotePath=false", "diff", "--cached",
+               "--name-only", "-z", "--no-renames", GATE_DIFF_FILTER_NO_DELETE]
     else:
-        cmd = ["git", "-C", str(root), "ls-files"]
+        cmd = ["git", "-C", str(root), "-c", "core.quotePath=false", "ls-files", "-z"]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"`{' '.join(cmd[2:])}` failed (not a git repository?): {result.stderr.strip()}"
+            f"`{' '.join(cmd[4:])}` failed (not a git repository?): "
+            f"{result.stderr.decode('utf-8', 'replace').strip()}"
         )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return _gate_split_nul(result.stdout.decode("utf-8", "surrogateescape"))
 
 
 def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged") -> list:
@@ -6010,17 +6013,42 @@ def _publish_remote_is_data_path(rel: str) -> bool:
     return rel.startswith("brain/") or rel.startswith("clients/")
 
 
-def _publish_remote_data_paths(root: Path, stdin_text: str) -> list:
+def _publish_remote_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), "-c", "core.quotePath=false",
+                           "-c", "log.showRoot=true", *args], capture_output=True)
+
+
+def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None) -> list:
+    """Data paths ADDED or MODIFIED by ANY commit this push publishes — not
+    just the pushed tip's tree (v1.0.0 security review, H3: a data file
+    committed and then `git rm`-ed is absent at the tip but still published
+    in history). The pushed commits are `<local_sha> --not <remote_sha>
+    --remotes=<remote>`: everything the remote does not already hold. Every
+    commit's own changes are listed (`-m`: a merge against each parent, so an
+    evil merge counts; the root commit against the empty tree). Deletions are
+    not data being published — removing a leaked file must stay pushable."""
     found: list = []
     for line in stdin_text.splitlines():
         parts = line.split()
         if len(parts) < 4 or _PUBLISH_REMOTE_ZERO.match(parts[1]):
             continue  # malformed line, or a ref deletion (no data pushed)
-        r = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "--name-only", parts[1]],
-                           capture_output=True, text=True)
+        local_sha, remote_sha = parts[1], parts[3]
+        excludes: list = []
+        if (not _PUBLISH_REMOTE_ZERO.match(remote_sha)
+                and _publish_remote_git(root, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode == 0):
+            excludes.append(remote_sha)
+        if remote and not remote.startswith("-") and "/" not in remote and ":" not in remote:
+            excludes.append(f"--remotes={remote}")
+        args = ["log", "-z", "--format=", "--name-only", "--no-renames", "-m",
+                GATE_DIFF_FILTER_NO_DELETE, local_sha]
+        if excludes:
+            args += ["--not", *excludes]
+        r = _publish_remote_git(root, *args)
         if r.returncode != 0:
-            raise RuntimeError(f"`git ls-tree {parts[1]}` failed: {r.stderr.strip()}")
-        found += [p for p in r.stdout.splitlines() if _publish_remote_is_data_path(p)]
+            raise RuntimeError(f"`git log {local_sha}` failed: "
+                               f"{r.stderr.decode('utf-8', 'replace').strip()}")
+        found += [p for p in _gate_split_nul(r.stdout.decode("utf-8", "surrogateescape"))
+                  if _publish_remote_is_data_path(p)]
     return sorted(set(found))
 
 
@@ -6057,7 +6085,7 @@ def _publish_remote_allowlisted(root: Path, remote: str, url: str) -> bool:
 def _cmd_doctor_publish_remote(root: Path, remote: str, url: str, stdin_text: str) -> None:
     """Pre-push body. Exit 0 = push allowed, exit 1 = refused (fail closed)."""
     try:
-        data = _publish_remote_data_paths(root, stdin_text)
+        data = _publish_remote_data_paths(root, stdin_text, remote)
     except RuntimeError as e:
         sys.exit(f"tess-remote-guard: REFUSED — could not inspect the push ({e}). "
                  f"Nothing was pushed.")
@@ -8019,7 +8047,8 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
         _RELEASE_PROOF_STATE["proof"] = None
         try:
             _RELEASE_PROOF_STATE["proof"] = _release_proof_build(
-                clone_dir, f"refs/tags/{ref}", ref, _verified_commit, lock)
+                clone_dir, f"refs/tags/{ref}", ref, _verified_commit, lock,
+                blob_paths=RELEASE_PROOF_BLOB_PATHS)
         except (RuntimeError, OSError, ValueError, UnicodeDecodeError) as e:
             print(f"  WARN  could not record the release proof ({e}); committing this update "
                   f"will need a verdict for protected files")
@@ -8557,6 +8586,8 @@ def _cmd_update_body(args, root: Path) -> None:
                 "  This should not happen if fetch_to_staging succeeded.\n"
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
+        if not dry_run:
+            _update_carry_policy_registries(root)   # v1.0.0 security review (H2)
 
         # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
@@ -12425,7 +12456,7 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
   exit 0
 fi
 
-STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
+STAGED="$(git -c core.quotePath=false diff --cached --name-only 2>/dev/null || true)"
 # Blob specs for the content scan: the STAGED INDEX copy of each file
 # (`git show ":path"`), so a secret staged then scrubbed in the working tree is
 # still caught.
@@ -12464,9 +12495,9 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
     # git's empty-tree object (4b825dc6...).  Using rev-list --max-parents=0 gives
     # the root commit SHA, but root..local produces an empty diff — the root commit's
     # own files are silently skipped.  The empty-tree diff covers every file ever added.
-    files="$(git diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904.."$local_sha" 2>/dev/null || true)"
+    files="$(git -c core.quotePath=false diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904.."$local_sha" 2>/dev/null || true)"
   else
-    files="$(git diff --name-only "${remote_sha}..${local_sha}" 2>/dev/null || true)"
+    files="$(git -c core.quotePath=false diff --name-only "${remote_sha}..${local_sha}" 2>/dev/null || true)"
   fi
   if [ -n "$files" ]; then
     STAGED="${STAGED}${files}"$'\n'
@@ -13089,14 +13120,14 @@ def _vault_cmd_scan(args, root: Path) -> None:
     """
     staged_only = getattr(args, "staged", False)
     if staged_only:
-        result = subprocess.run(["git", "diff", "--cached", "--name-only"],
-                                capture_output=True, text=True, cwd=str(root))
-        files = [root / f for f in result.stdout.splitlines() if f.strip()]
+        result = subprocess.run(["git", "-c", "core.quotePath=false", "diff", "--cached",
+                                 "--name-only", "-z"], capture_output=True, cwd=str(root))
+        files = [root / f for f in _gate_split_nul(result.stdout.decode("utf-8", "surrogateescape"))]
     else:
         # All tracked files
-        result = subprocess.run(["git", "ls-files"],
-                                capture_output=True, text=True, cwd=str(root))
-        files = [root / f for f in result.stdout.splitlines() if f.strip()]
+        result = subprocess.run(["git", "-c", "core.quotePath=false", "ls-files", "-z"],
+                                capture_output=True, cwd=str(root))
+        files = [root / f for f in _gate_split_nul(result.stdout.decode("utf-8", "surrogateescape"))]
 
     hits = []
     compiled = [re.compile(p, re.IGNORECASE) for p in VAULT_SECRET_PATTERNS]
@@ -14416,10 +14447,22 @@ def _gate_validate_contracts(root: Path, rel_paths: list) -> list:
 # ---------------------------------------------------------------------------
 
 def _gate_run_git(root: Path, *args: str) -> str:
-    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    # v1.0.0 security review (H1): `core.quotePath=false` + raw bytes decoded
+    # with surrogateescape, so a path is never C-quoted ("\303\251.yml") and a
+    # non-UTF-8 name round-trips back into argv unchanged. Every path LISTING
+    # below also passes `-z` and splits on NUL (`_gate_split_nul`): with
+    # newline-separated output a name containing `"`, a tab or a newline comes
+    # back quoted or split and matches no protected pattern.
+    r = subprocess.run(["git", "-C", str(root), "-c", "core.quotePath=false", *args],
+                       capture_output=True)
     if r.returncode != 0:
         raise GateSpineError("GIT_OPERATION_FAILED")
-    return r.stdout
+    return r.stdout.decode("utf-8", "surrogateescape")
+
+
+def _gate_split_nul(out: str) -> list:
+    """Paths from a `-z` git listing (NUL-terminated, never quoted)."""
+    return [p for p in out.split("\0") if p]
 
 
 # v0.2.1 (CRITICAL, 2026-09-29 review): the changed-path listing used
@@ -14445,8 +14488,9 @@ GATE_DELETED_PATH_SHA = "0" * 40
 def _gate_changed_paths_staged(root: Path) -> list:
     """Pre-commit mode: files staged for the next commit (every status,
     including type changes and deletions — see GATE_DIFF_FILTER)."""
-    out = _gate_run_git(root, "diff", "--cached", "--name-only", "--no-renames", GATE_DIFF_FILTER)
-    return [line for line in out.splitlines() if line.strip()]
+    out = _gate_run_git(root, "diff", "--cached", "--name-only", "-z", "--no-renames",
+                        GATE_DIFF_FILTER)
+    return _gate_split_nul(out)
 
 
 def _gate_diff_paths(root: Path, base: str, head: str) -> list:
@@ -14454,8 +14498,9 @@ def _gate_diff_paths(root: Path, base: str, head: str) -> list:
     when given --base/--head, and internally for the stdin protocol).
     Every status is listed (see GATE_DIFF_FILTER): a type change or deletion
     of a protected path is a protected change."""
-    out = _gate_run_git(root, "diff", "--name-only", "--no-renames", GATE_DIFF_FILTER, base, head)
-    return [line for line in out.splitlines() if line.strip()]
+    out = _gate_run_git(root, "diff", "--name-only", "-z", "--no-renames", GATE_DIFF_FILTER,
+                        base, head)
+    return _gate_split_nul(out)
 
 
 def _gate_git_all_paths(root: Path, head_shas: list) -> set:
@@ -14465,8 +14510,8 @@ def _gate_git_all_paths(root: Path, head_shas: list) -> set:
     `_gate_git_ls_tree` on purpose). Fail-closed via `_gate_run_git`."""
     paths: set = set()
     for sha in head_shas:
-        out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", "--name-only", sha)
-        paths.update(line for line in out.splitlines() if line.strip())
+        out = _gate_run_git(root, "ls-tree", "-r", "-z", "--full-tree", "--name-only", sha)
+        paths.update(_gate_split_nul(out))
     return paths
 
 
@@ -14995,11 +15040,9 @@ def _gate_git_ls_tree(root: Path, ref: str) -> dict:
     proven `ref` resolvable via `_gate_diff_paths`, so a failure here means
     something changed underneath the run — refuse rather than silently
     return an empty/partial index)."""
-    out = _gate_run_git(root, "ls-tree", "-r", "--full-tree", ref)
+    out = _gate_run_git(root, "ls-tree", "-r", "-z", "--full-tree", ref)
     result: dict = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
+    for line in _gate_split_nul(out):
         meta, _, rel = line.partition("\t")
         if not rel:
             continue
@@ -16021,7 +16064,15 @@ def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: s
         meta, _, path = entry.partition("\t")
         if path in dirs and meta.split()[1:2] == ["tree"]:
             dir_ids[path] = meta.split()[2]
-    objects = _git_cat_file_batch(clone_dir, sorted(set(dir_ids.values())))
+    # v1.0.0 security review (H2): an update proof also carries the release
+    # tess.lock and policy.yaml bytes, so the gate can check a new lock entry
+    # against the release's own lock and recompute a carried-registry policy.
+    blob_ids = []
+    for rel in blob_paths:
+        meta = g("ls-tree", "--full-tree", commit, "--", rel).decode().split()
+        if meta[:2] and meta[1] == "blob":
+            blob_ids.append(meta[2])
+    objects = _git_cat_file_batch(clone_dir, sorted(set(dir_ids.values()) | set(blob_ids)))
     return {
         "format": RELEASE_PROOF_FORMAT,
         "tag_name": tag_name,
@@ -16030,6 +16081,8 @@ def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: s
         "commit": base64.b64encode(commit_bytes).decode("ascii"),
         "trees": {oid: base64.b64encode(body).decode("ascii")
                   for oid, (kind, body) in sorted(objects.items()) if kind == "tree"},
+        "blobs": {oid: base64.b64encode(body).decode("ascii")
+                  for oid, (kind, body) in sorted(objects.items()) if kind == "blob"},
     }
 
 
@@ -16169,9 +16222,14 @@ _RELEASE_LOCK_FRAMEWORK_MUTABLE = ("version", "upstream_ref", "upstream_commit",
 
 
 def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str,
-                                 commit_id: str, resolve, head_blob, head_bytes) -> str | None:
+                                 commit_id: str, resolve, head_blob, head_bytes,
+                                 carried_policy: frozenset = frozenset()) -> str | None:
     """None when every base->head difference in tess.lock is one `tessctl
-    update` makes for the proven release; otherwise a short reason."""
+    update` makes for the proven release; otherwise a short reason.
+    `carried_policy`: policy.yaml lock keys already accepted as "the release
+    policy with the user's own key registries carried over" — their re-pin
+    must name the committed bytes (which are, by construction, not the
+    release blob)."""
     if set(base_lock) - {RENDER_OUTPUTS_KEY} != set(head_lock) - {RENDER_OUTPUTS_KEY}:
         return "top-level keys changed"
     for key in base_lock:
@@ -16188,6 +16246,9 @@ def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str
             return "framework.upstream_commit/digest do not match the proof"
 
     def proven_core(core_key: str, base_sha) -> bool:
+        if core_key in carried_policy:
+            data = head_bytes(core_key)
+            return data is not None and base_sha == "sha256:" + hashlib.sha256(data).hexdigest()
         blob = head_blob(core_key)
         got = resolve(core_key)
         data = head_bytes(core_key) if blob else None
@@ -16230,11 +16291,117 @@ def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str
     return None
 
 
+_RELEASE_POLICY_TRUST_KEYS = ("rules", "hard_floor_rules", "verifier_keys", "signoff_keys")
+
+
+def _gate_release_advance_reason(base_lock: dict, head_lock, tag_name: str,
+                                 commit_id: str) -> str | None:
+    """v1.0.0 security review (H2): None when the head tess.lock records an
+    update from the base's version to EXACTLY the proven tag — version,
+    upstream_ref and upstream_commit all name the proof, and the tag is
+    strictly newer than the base. A proof re-used from an earlier update (or
+    the install) therefore blesses nothing: its tag is not newer than base."""
+    if not isinstance(head_lock, dict):
+        return "lock missing at head"
+    bfw = base_lock.get("framework") or {}
+    hfw = head_lock.get("framework") or {}
+    if not isinstance(bfw, dict) or not isinstance(hfw, dict):
+        return "framework block malformed"
+    if (str(hfw.get("version")) != tag_name.lstrip("v") or hfw.get("upstream_ref") != tag_name
+            or hfw.get("upstream_commit") != commit_id):
+        return "tess.lock does not record an update to the proven tag"
+    have, was = _release_version_tuple(tag_name), _release_version_tuple(str(bfw.get("version") or ""))
+    if have is None or was is None or not have > was:
+        return "the proven tag is not newer than the base version"
+    return None
+
+
+def _gate_release_core_managed(base_lock: dict, head_lock: dict, release_lock) -> set:
+    """The paths a release proof may exempt: every path the BASE lock marks
+    core-managed (the core copy, i.e. the lock key, and its live_path). Plus
+    one narrow addition, so a release that ships a NEW core file stays
+    updatable: a lock entry the base lacks, that the head adds exactly as
+    the proven release's own tess.lock lists it (status core-managed, same
+    tier/live_path/render), and a live_path no base entry names. A path the
+    base lock holds under any other status (e.g. a file the operator took
+    over) is never exempt."""
+    out: set = set()
+    base_files = base_lock.get("files") or {}
+    named: set = set(base_files)
+    for key, attrs in base_files.items():
+        live = attrs.get("live_path") if isinstance(attrs, dict) else None
+        if isinstance(live, str) and live:
+            named.add(live)
+        if isinstance(attrs, dict) and attrs.get("status") == "core-managed":
+            out.add(key)
+            if isinstance(live, str) and live:
+                out.add(live)
+    release_files = (release_lock.get("files") if isinstance(release_lock, dict) else None) or {}
+    head_files = head_lock.get("files") or {}
+    if not (isinstance(release_files, dict) and isinstance(head_files, dict)):
+        return out
+    for key, h in head_files.items():
+        r = release_files.get(key)
+        if key in named or not (isinstance(h, dict) and isinstance(r, dict)):
+            continue
+        if h.get("status") != "core-managed" or any(
+                h.get(f) != r.get(f) for f in ("status", "tier", "live_path", "render")):
+            continue
+        out.add(key)
+        live = h.get("live_path")
+        if isinstance(live, str) and live and live not in named:
+            out.add(live)
+    return out
+
+
+def _gate_release_lock_from_proof(resolve):
+    data = resolve.release_bytes(LOCK_FILE)
+    if data is None:
+        return None
+    try:
+        return yaml.safe_load(data.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return None
+
+
+def _gate_release_policy_ok(base_text: str | None, head_data: bytes | None,
+                            release_data: bytes | None) -> bool:
+    """v1.0.0 security review (H2): a policy.yaml copy changed by an update is
+    accepted only when its bytes are the release policy with the BASE's own
+    verifier_keys/signoff_keys carried over (what `tessctl update` writes —
+    see _policy_carry_registries) AND its rules, hard_floor_rules,
+    verifier_keys and signoff_keys all equal the base's. A proof can never
+    restore a registry the user removed, or loosen a rule."""
+    if base_text is None or head_data is None or release_data is None:
+        return False
+    try:
+        release_text, head_text = release_data.decode("utf-8"), head_data.decode("utf-8")
+        if head_text not in (release_text, _policy_carry_registries(release_text, base_text)):
+            return False
+        base_doc, head_doc = yaml.safe_load(base_text), yaml.safe_load(head_text)
+    except (UnicodeDecodeError, ValueError, yaml.YAMLError):
+        return False
+    if not (isinstance(base_doc, dict) and isinstance(head_doc, dict)):
+        return False
+    bp, hp = base_doc.get("policy"), head_doc.get("policy")
+    if not (isinstance(bp, dict) and isinstance(hp, dict)):
+        return False
+    return all(bp.get(k) == hp.get(k) for k in _RELEASE_POLICY_TRUST_KEYS)
+
+
 def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: list,
-                                  base_shas: list) -> tuple[set, dict | None]:
+                                  base_shas: list, changed_paths: list | None = None
+                                  ) -> tuple[set, dict | None]:
     """Protected paths in `candidate_paths` whose change is exactly a
     verified release (see the section comment). Returns (accepted, info);
-    info is None when the candidate carries no release proof at all."""
+    info is None when the candidate carries no release proof at all.
+
+    v1.0.0 security review (H2) — an exemption needs ALL of: tess.lock is in
+    the change set, passes `_gate_release_lock_change_ok`, and advances to
+    exactly the proven tag (`_gate_release_advance_reason`); the path is
+    core-managed in the BASE lock; its head bytes are the release blob (or,
+    for a policy.yaml copy, `_gate_release_policy_ok`). If the lock change is
+    not accepted, nothing is."""
     if len(head_shas) != 1 or not base_shas:
         return set(), None
     head = head_shas[0]
@@ -16271,28 +16438,62 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
         info["reason_code"] = e.code
         return set(), info
     info.update(status="accepted", reason_code=None, tag=tag_name)
+    if not isinstance(base_lock, dict):
+        info.update(status="rejected", reason_code="lock_unreadable")
+        return set(), info
+    changed = set(changed_paths if changed_paths is not None else candidate_paths)
+    advance_why = (_gate_release_advance_reason(base_lock, head_lock, tag_name, commit_id)
+                   if LOCK_FILE in changed else "tess.lock is not part of this change")
+    if advance_why is not None:
+        info.update(status="rejected", reason_code="lock_not_advanced", lock_rejected=True,
+                    lock_reason=advance_why)
+        return set(), info
     try:
         head_index = _gate_git_ls_tree(root, head)
     except GateSpineError:
         info.update(status="rejected", reason_code="git_failed")
         return set(), info
-    accepted = set()
+
+    def head_bytes(rel):
+        return _gate_git_regular_blob_bytes(root, head, rel)
+
+    core_managed = _gate_release_core_managed(base_lock, head_lock,
+                                              _gate_release_lock_from_proof(resolve))
+    head_files = head_lock.get("files") or {}
+    accepted, carried = set(), set()
     for rel in candidate_paths:
-        if rel == LOCK_FILE:
+        if rel == LOCK_FILE or rel not in core_managed or not head_index.get(rel):
+            continue
+        entry = head_files.get(rel) if isinstance(head_files, dict) else None
+        if isinstance(entry, dict):
+            # A lock key's pin must name exactly the committed bytes.
+            data = head_bytes(rel)
+            if data is None or entry.get("base_sha") != "sha256:" + hashlib.sha256(data).hexdigest():
+                continue
+        if rel in _FIRST_INSTALL_POLICY_PATHS:
+            if _gate_release_policy_ok(_gate_git_show_at_ref(root, base, rel), head_bytes(rel),
+                                       resolve.release_bytes(rel)):
+                accepted.add(rel)
+                got = resolve(rel)
+                if got is None or head_index.get(rel) != got[1]:
+                    carried.add(rel)
             continue
         got = resolve(rel)
         if got is not None and head_index.get(rel) == got[1]:
             accepted.add(rel)
+    why = "lock missing at head"
+    if isinstance(head_lock, dict):
+        why = _gate_release_lock_change_ok(
+            base_lock, head_lock, tag_name, commit_id, resolve, head_index.get,
+            head_bytes, frozenset(carried))
+    if why is not None:
+        info["lock_rejected"] = True
+        info["lock_reason"] = why
+        info["accepted_paths_count"] = 0
+        return set(), info
     if LOCK_FILE in candidate_paths:
-        why = "lock missing at head"
-        if isinstance(base_lock, dict) and isinstance(head_lock, dict):
-            why = _gate_release_lock_change_ok(
-                base_lock, head_lock, tag_name, commit_id, resolve, head_index.get,
-                lambda rel: _gate_git_regular_blob_bytes(root, head, rel))
-        if why is None:
-            accepted.add(LOCK_FILE)
-        else:
-            info["lock_rejected"] = True
+        accepted.add(LOCK_FILE)
+    info["lock_rejected"] = False
     info["accepted_paths_count"] = len(accepted)
     return accepted, info
 
@@ -16357,6 +16558,91 @@ def _policy_reset_registries_text(text: str) -> str:
     for key in ("verifier_keys", "signoff_keys"):
         text = _policy_reset_key_inline(text, key)
     return text
+
+
+def _policy_key_block(text: str, key: str):
+    """(lines, start, end, indent) of the `key:` block in policy text, using
+    the same scan as _policy_reset_key_inline; None when the key is absent."""
+    lines = re.findall(r"[^\n]*\n|[^\n]+$", text) if text else []
+
+    def lead(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    for idx, line in enumerate(lines):
+        body = line[lead(line):]
+        if body.startswith("#"):
+            continue
+        if body.rstrip("\n").rstrip() == f"{key}:" or body.startswith(f"{key}: "):
+            indent = lead(line)
+            if body.rstrip() != f"{key}:":
+                return lines, idx, idx + 1, indent        # inline value (`key: {}`)
+            end, pending = idx + 1, 0
+            while end < len(lines):
+                cur = lines[end]
+                if cur.strip() == "" or cur[lead(cur):].startswith("#"):
+                    pending += 1
+                    end += 1
+                    continue
+                if lead(cur) <= indent:
+                    end -= pending
+                    break
+                pending = 0
+                end += 1
+            return lines, idx, end, indent
+    return None
+
+
+def _policy_carry_registries(new_text: str, old_text: str) -> str:
+    """v1.0.0 security review (H2): `new_text` (a release policy.yaml) with
+    its verifier_keys / signoff_keys blocks replaced by the ones in
+    `old_text` (the policy the user already has). A registry the user does
+    not have becomes `{}`. `tessctl update` applies this so an update never
+    re-introduces a verifier or sign-off key the wizard (or the operator)
+    removed; the gate recomputes it to accept exactly this change."""
+    for key in ("verifier_keys", "signoff_keys"):
+        target = _policy_key_block(new_text, key)
+        if target is None:
+            continue
+        lines, start, end, indent = target
+        source = _policy_key_block(old_text, key)
+        if source is None:
+            block = [" " * indent + f"{key}: {{}}\n"]
+        else:
+            s_lines, s_start, s_end, s_indent = source
+            shift = indent - s_indent
+            block = []
+            for line in s_lines[s_start:s_end]:
+                if shift > 0 and line.strip():
+                    line = " " * shift + line
+                elif shift < 0 and line.strip():
+                    line = line[min(-shift, len(line) - len(line.lstrip(" "))):]
+                block.append(line)
+            if block and not block[-1].endswith("\n") and end < len(lines):
+                block[-1] += "\n"
+        new_text = "".join(lines[:start] + block + lines[end:])
+    return new_text
+
+
+def _update_carry_policy_registries(root: Path) -> None:
+    """Before the core advance: give the staged release policy.yaml the
+    installed policy's own verifier_keys / signoff_keys (see
+    _policy_carry_registries). Without this, updating an install whose
+    wizard emptied both registries would restore the upstream maintainers'
+    verifier key into the user's trust registry."""
+    rel = ".tess/core/policy/policy.yaml"
+    staged, current = root / STAGING_DIR / rel, root / rel
+    if not (staged.is_file() and not staged.is_symlink()
+            and current.is_file() and not current.is_symlink()):
+        return
+    try:
+        new_text = staged.read_text(encoding="utf-8")
+        carried = _policy_carry_registries(new_text, current.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        sys.exit(f"tessctl update: cannot carry your policy key registries into the new "
+                 f"release policy ({e}); nothing was changed.")
+    if carried != new_text:
+        staged.write_text(carried, encoding="utf-8")
+        print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
 
 
 def _first_install_lock_change_ok(rel_lock: dict, head_lock: dict, tag_name: str,
@@ -16523,6 +16809,7 @@ def _gate_run_ship_check(
     if path_rule_matches:
         released, release_info = _gate_release_update_accepted(
             root, sorted(path_rule_matches), head_shas or [], base_shas or [],
+            changed_paths=list(changed_paths),
         )
         for _rel in released:
             path_rule_matches.pop(_rel, None)
@@ -16942,13 +17229,14 @@ def _gate_install_git_hooks(root: Path) -> None:
         print(f"  installed git {hook_name} hook at {hook_path}")
 
 
-_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v3"
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v4"
 
 # Prior template version(s) this installer recognizes as "a tess-gate-ci file,
 # just outdated" — an install-hooks run UPGRADES these in place (overwrites
 # with the current template) rather than either silently skipping them
 # forever or treating them as some unrelated operator-authored workflow.
-_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3")
+_GATE_CI_WORKFLOW_KNOWN_MARKERS = ("# tess-gate-ci v1", "# tess-gate-ci v2", "# tess-gate-ci v3",
+                                   "# tess-gate-ci v4")
 
 _GATE_CI_WORKFLOW = f"""\
 {_GATE_CI_WORKFLOW_MARKER}
@@ -17024,26 +17312,42 @@ jobs:
     name: tessctl gate ci
     runs-on: ubuntu-latest
     steps:
+      # v4 (v1.0.0 security review, M4): actions pinned by commit SHA, pyyaml
+      # pinned; workflow_dispatch inputs reach the script only through env
+      # (never interpolated into it), must name commits, and the base must be
+      # an ancestor of the default branch (a dispatch cannot diff from a
+      # commit that already contains the change it is meant to check).
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pyyaml
+        run: python -m pip install "pyyaml==6.0.2"
 
       - name: Resolve base/head for this trigger
         id: refs
+        env:
+          DISPATCH_BASE: ${{{{ inputs.base }}}}
+          DISPATCH_HEAD: ${{{{ inputs.head }}}}
+          DEFAULT_BRANCH: ${{{{ github.event.repository.default_branch }}}}
         run: |
           EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
           if [ "${{{{ github.event_name }}}}" = "workflow_dispatch" ]; then
-            BASE="${{{{ inputs.base }}}}"
-            HEAD="${{{{ inputs.head }}}}"
+            BASE="$(git rev-parse --verify --quiet --end-of-options "${{DISPATCH_BASE}}^{{commit}}")" \\
+              || {{ echo "::error::tess-gate-ci: dispatch base is not a commit in this repository"; exit 1; }}
+            HEAD="$(git rev-parse --verify --quiet --end-of-options "${{DISPATCH_HEAD}}^{{commit}}")" \\
+              || {{ echo "::error::tess-gate-ci: dispatch head is not a commit in this repository"; exit 1; }}
+            if ! git merge-base --is-ancestor "$BASE" "refs/remotes/origin/${{DEFAULT_BRANCH}}"; then
+              echo "::error::tess-gate-ci: dispatch base $BASE is not an ancestor of the default branch (${{DEFAULT_BRANCH}}); refusing"
+              exit 1
+            fi
           elif [ "${{{{ github.event_name }}}}" = "pull_request" ]; then
             BASE="${{{{ github.event.pull_request.base.sha }}}}"
             HEAD="${{{{ github.event.pull_request.head.sha }}}}"

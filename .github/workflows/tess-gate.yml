@@ -1,4 +1,4 @@
-# tess-gate-ci v3
+# tess-gate-ci v4
 # Installed/upgraded by `tessctl gate install-hooks`. CI entrypoint for the
 # gate spine (docs/ULTIMATE_FRAMEWORK_PLAN.md Design Decision #2/#6) — the
 # harness-independent backstop that still catches `git push --no-verify`.
@@ -71,26 +71,42 @@ jobs:
     name: tessctl gate ci
     runs-on: ubuntu-latest
     steps:
+      # v4 (v1.0.0 security review, M4): actions pinned by commit SHA, pyyaml
+      # pinned; workflow_dispatch inputs reach the script only through env
+      # (never interpolated into it), must name commits, and the base must be
+      # an ancestor of the default branch (a dispatch cannot diff from a
+      # commit that already contains the change it is meant to check).
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pyyaml
+        run: python -m pip install "pyyaml==6.0.2"
 
       - name: Resolve base/head for this trigger
         id: refs
+        env:
+          DISPATCH_BASE: ${{ inputs.base }}
+          DISPATCH_HEAD: ${{ inputs.head }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BASE="${{ inputs.base }}"
-            HEAD="${{ inputs.head }}"
+            BASE="$(git rev-parse --verify --quiet --end-of-options "${DISPATCH_BASE}^{commit}")" \
+              || { echo "::error::tess-gate-ci: dispatch base is not a commit in this repository"; exit 1; }
+            HEAD="$(git rev-parse --verify --quiet --end-of-options "${DISPATCH_HEAD}^{commit}")" \
+              || { echo "::error::tess-gate-ci: dispatch head is not a commit in this repository"; exit 1; }
+            if ! git merge-base --is-ancestor "$BASE" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+              echo "::error::tess-gate-ci: dispatch base $BASE is not an ancestor of the default branch (${DEFAULT_BRANCH}); refusing"
+              exit 1
+            fi
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"

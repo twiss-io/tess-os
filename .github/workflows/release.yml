@@ -15,17 +15,22 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: Gated release
+  # v1.0.0 security review (M5): every gate runs in this READ-ONLY job, and its
+  # checkout keeps no credentials, so no test, script or dependency it runs
+  # ever holds a write token. Only the `release` job below, which runs no
+  # project code, gets contents: write.
+  gates:
+    name: Release gates (read-only)
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # required to publish the GitHub Release
+      contents: read
     steps:
       - name: Checkout (full history + tags)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       # actions/checkout re-points refs/tags/<tag> at the tagged COMMIT
       # (it fetches +<sha>:refs/tags/<tag>), so an annotated tag arrives as a
@@ -154,11 +159,17 @@ jobs:
       # a paid GITLEAKS_LICENSE secret for GitHub *organization*-owned repos (this
       # repo is org-owned), so the wrapper is not used. The CLI is free and applies
       # the committed .gitleaks.toml allowlist to the full git history.
+      # L3 (v1.0.0 security review): the tarball must match the pinned sha256
+      # (gitleaks_8.30.1_checksums.txt; the GitHub release asset digest agrees).
       - name: Install gitleaks
         run: |
+          set -euo pipefail
           GITLEAKS_VERSION=8.30.1
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C /usr/local/bin gitleaks
           gitleaks version
 
       # Scans the full history reachable from the tag. Without --log-opts,
@@ -233,6 +244,18 @@ jobs:
               sys.exit(1)
           print(f'OK: vault.registry.json passes --strict schema check.')
           "
+
+  release:
+    name: Publish the GitHub Release
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # required to publish the GitHub Release
+    steps:
+      - name: Checkout the tag (release notes source; no credentials kept)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # The release notes are the curated summary of this version's CHANGELOG
       # section: the text between the release-notes markers inside
