@@ -12,7 +12,9 @@
 // `npm test` also runs this file directly: `pretest` records what
 // ~/.config/tess holds (`snapshot`), and `posttest`, after every test process
 // has exited, removes the copies this run added that no anchor names and the
-// directories it created and left empty (`final`), so a passing run leaves
+// directories it created and left empty, and the brain state folders it
+// added that hold only a project id (the wizard's brain setup makes one per
+// temp install under ~/.config/tess/brain/projects) (`final`), so a passing run leaves
 // ~/.config/tess as it found it. Each copy is a whole file (tessctl alone is
 // ~1.4 MB), so they are not left to accumulate.
 import { before } from 'node:test';
@@ -30,9 +32,11 @@ tmp, mode, snap = os.path.realpath(sys.argv[1]), sys.argv[2], sys.argv[3]
 tess = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "tess"
 projects, blobs = tess / "projects", tess / "anchor-blobs"
 dirs = (blobs, projects / "by-path", projects)  # innermost first
+brain = tess / "brain" / "projects"
 if mode == "snapshot":
     Path(snap).write_text(json.dumps({
         "blobs": sorted(p.name for p in blobs.iterdir()) if blobs.is_dir() else [],
+        "brain": sorted(p.name for p in brain.iterdir()) if brain.is_dir() else [],
         "dirs": [str(d) for d in dirs if d.is_dir()]}))
     sys.exit(0)
 start = None
@@ -63,6 +67,17 @@ for b in (blobs.iterdir() if blobs.is_dir() else []):
     except OSError:
         pass
 if start is not None:
+    # The brain's per-install state folder (brain/projects/<sha256(path)[:24]>)
+    # that a wizard run in a temp dir creates: removed when this run added it
+    # and it holds nothing but the random project id (no ledger, no outbox).
+    for d in (brain.iterdir() if brain.is_dir() and "brain" in start else []):
+        try:
+            if d.name not in start["brain"] and d.is_dir() and not d.is_symlink() \\
+                    and [c.name for c in d.iterdir()] == ["id"] and (d / "id").is_file():
+                (d / "id").unlink()
+                d.rmdir()
+        except OSError:
+            pass
     for d in dirs:
         if str(d) not in start["dirs"]:
             try:
