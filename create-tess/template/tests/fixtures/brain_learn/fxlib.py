@@ -117,3 +117,17 @@ def journal_of(root, sid):
 def note(root, speaker, text, env=None):
     """`journal note --speaker`: how another principal's words enter in these tests (held for review)."""
     return cli(root, "--json", "journal", "note", "--speaker", speaker, "--text", text, env=env)
+
+
+def operator_says(path, sid, text, at=None, cwd="/work/fx"):
+    """The operator types `text` in session `sid` NOW (after `review` or a tool result showed an item):
+    one user record appended to the transcript. Confirmations must be later than the showing (confirm.py)."""
+    import datetime as _dt
+    import json as _json
+    ts = at or (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    rec = {"type": "user", "sessionId": sid, "timestamp": ts, "cwd": cwd, "version": "2.1.281", "gitBranch": "main",
+           "uuid": "u-%s-say-%s" % (sid[:4], ts), "isSidechain": False, "promptSource": "typed",
+           "message": {"role": "user", "content": text}}
+    with open(str(path), "a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(rec) + "\n")
+    return path

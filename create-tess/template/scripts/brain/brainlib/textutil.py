@@ -11,6 +11,9 @@ _SMART = {
     "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
 }
 _WS = re.compile(r"\s+")
+# A brain record or inbox id (D-20260929-1412-use-postgres, C-20260929-1200-01). Ids carry slug words
+# ("do-not-use-redis"), so text about a record is read with its ids blanked (confirm.py, settle.py).
+BRAIN_ID = re.compile(r"(?<![\w-])[A-Z]-\d{8}-[\w-]+", re.I)
 _SENT = re.compile(r"(?<=[.!?])\s+(?=\S)")
 
 

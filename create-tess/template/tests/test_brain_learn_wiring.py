@@ -137,8 +137,10 @@ def _run_hook(cmd, root, payload):
                           text=True, env=_env(root), timeout=120)
 
 
-def _transcript(tmp_path, turns):
-    return fxlib.claude_session(tmp_path / "t" / (SID + ".jsonl"), SID, turns)
+def _transcript(tmp_path, turns, cwd):
+    """A transcript of a session run IN the instance: a Stop-hook path is journaled only when its own cwd
+    is inside the instance (Codex review finding 4)."""
+    return fxlib.claude_session(tmp_path / "t" / (SID + ".jsonl"), SID, turns, cwd=str(cwd))
 
 
 def _one(hooks, event):
@@ -146,7 +148,7 @@ def _one(hooks, event):
 
 
 def test_claude_prompt_then_stop_captures_notes_and_records(pinned, tmp_path):
-    t = _transcript(tmp_path, [("user", DECISION), ("assistant", "Noted: Postgres for the ledger.")])
+    t = _transcript(tmp_path, [("user", DECISION), ("assistant", "Noted: Postgres for the ledger.")], pinned)
     base = {"session_id": SID, "transcript_path": str(t), "cwd": str(pinned)}
     r = _run_hook(_one(SETTINGS["hooks"], "UserPromptSubmit"), pinned, dict(base, prompt=DECISION))
     assert r.returncode == 0 and "TESS HOOK NOT RUN" not in r.stdout + r.stderr, r.stderr
@@ -161,7 +163,7 @@ def test_claude_prompt_then_stop_captures_notes_and_records(pinned, tmp_path):
 
 
 def test_codex_stop_hook_prints_json_and_records(pinned, tmp_path):
-    t = _transcript(tmp_path, [("user", DECISION), ("assistant", "Noted.")])
+    t = _transcript(tmp_path, [("user", DECISION), ("assistant", "Noted.")], pinned)
     cmd = _one(CODEX["hooks"], "Stop").replace("--runtime codex", "--runtime claude")  # fixture is a Claude file
     r = _run_hook(cmd, pinned, {"session_id": SID, "transcript_path": str(t), "cwd": str(pinned)})
     assert r.returncode == 0, r.stderr

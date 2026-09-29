@@ -40,7 +40,7 @@ from typing import List, Optional, Set, Tuple
 from . import cues, lookup, takeback
 from .config import Config, parse_iso
 from .switch import ALT_QUESTION, CHOICE, SWITCH, TOPIC_STOP
-from .textutil import clip, sentences
+from .textutil import BRAIN_ID, clip, sentences
 
 ACK = set("""
 thanks thank you ty thx cheers ok okay k kk great cool nice perfect good awesome noted got it sounds lovely
@@ -210,6 +210,7 @@ def assess(cfg: Config, line: lookup.JLine, quote: str, strict: bool = True,
     offered = restated = False
     confirmed = ""
     for kind, _speaker, ref, text in tail.items:
+        text = BRAIN_ID.sub(" ", text)  # "confirm D-..." is about that record; its slug is not an option
         if kind == "reply":
             offered, restated = _offer(quote, text, strict)
             continue

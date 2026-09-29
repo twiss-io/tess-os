@@ -43,7 +43,8 @@ def world(tmp_path_factory):
     r = fxlib.sync_dir(inst, cdir)
     assert r.returncode == 0, r.stdout + r.stderr
     note = fxlib.note(inst, "sam", "Decision: we'll switch to the green palette.")  # sam's words, by note
-    return {"inst": inst, "sync": json.loads(r.stdout), "note": json.loads(note.stdout), "learned0": _learned(inst)}
+    return {"inst": inst, "sync": json.loads(r.stdout), "note": json.loads(note.stdout), "learned0": _learned(inst),
+            "cdir": cdir}
 
 
 def _learned(inst):
@@ -66,7 +67,12 @@ def test_principal_decision_accepted_with_resolving_source(world):
     start = (inst / "brain/START-HERE.md").read_text()
     assert "awaiting review (not accepted)" in start and "Postgres" not in start
     r = fxlib.cli(inst, "--json", "promote", held[0]["id"], "--quote", "let's use Postgres for the ledger")
-    assert r.returncode == 0, r.stdout + r.stderr  # the operator approves it in review
+    assert r.returncode == 1 and "naming %s" % held[0]["id"] in r.stdout  # an old quote never approves it
+    assert fxlib.cli(inst, "--json", "review").returncode == 0  # shown to the operator, with its id
+    fxlib.operator_says(world["cdir"] / (SID + ".jsonl"), SID, "approve %s" % held[0]["id"])
+    assert fxlib.sync_dir(inst, world["cdir"]).returncode == 0
+    r = fxlib.cli(inst, "--json", "promote", held[0]["id"], "--quote", "approve %s" % held[0]["id"])
+    assert r.returncode == 0, r.stdout + r.stderr  # the operator approves it in review, by id
     recs = list((inst / "brain").rglob("D-*-lets-use-postgres*.md"))  # session named Acme: clients/acme
     assert len(recs) == 1
     text = recs[0].read_text()

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import cues, entities, guards, inbox, index, journal, lookup, promote, records, switch
+from . import cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, switch
 from .config import Config, iso, log_error, read_json, write_json
 from .parsers import claude, codex, gemini
 
@@ -35,7 +35,41 @@ def remember_session(cfg: Config, runtime: str, session_id: str, transcript: str
 
 
 def _known(cfg: Config, runtime: str) -> List[str]:
-    return [v.get("transcript_path", "") for v in sessions_state(cfg).values() if v.get("runtime") == runtime]
+    return [str(v.get("transcript_path") or "") for v in sessions_state(cfg).values()
+            if isinstance(v, dict) and v.get("runtime") == runtime]
+
+
+def _cwd_of(runtime: str, path: Path) -> str:
+    if runtime == "codex":
+        return codex.session_cwd(path) or ""
+    if runtime == "gemini":
+        return ""
+    return claude._first_cwd(path)
+
+
+def vetted(cfg: Config, runtime: str, paths: List[str], also_cwd: List[str], store: Optional[List[Path]]) -> List[Path]:
+    """Hook-reported (sessions.json) or --transcript paths that pass the same ownership checks as discovered
+    ones: a uid-owned regular file outside the instance, in the runtime's store (cached paths), whose own
+    session cwd is inside this instance. sessions.json is a repo file: an entry pointing at another project's
+    rollout was journaled here merely because the file existed (Codex review finding 4)."""
+    out: List[Path] = []
+    for k in paths:
+        if not k:
+            continue
+        p = Path(k)
+        if not p.exists():
+            continue  # a session whose transcript is gone (or was never written): nothing to journal
+        why = provenance.transcript_ok(cfg, p, _cwd_of(runtime, p) if p.is_file() else "", also_cwd, store)
+        if why:
+            log_error(cfg, "sync: refusing %s transcript %s: %s" % (runtime, k, why))
+            continue
+        out.append(Path(os.path.realpath(str(p))))
+    return out
+
+
+def _claude_store(claude_dir: Optional[str]) -> List[Path]:
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
+    return [base] + ([Path(claude_dir)] if claude_dir else [])
 
 
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
@@ -45,14 +79,17 @@ def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Op
     also_cwd = list(also_cwd) + cfg.also_cwd
     cutoff = time.time() - days * 86400 if days else None
     if runtime in ("all", "claude"):
-        for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, _known(cfg, "claude")):
+        known = [str(p) for p in vetted(cfg, "claude", _known(cfg, "claude"), also_cwd, _claude_store(claude_dir))]
+        for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, known):
             if cutoff is None or p.stat().st_mtime >= cutoff:
                 out.append((p, claude.parse))
     if runtime in ("all", "codex"):
         paths = codex.discover(cfg.root, codex_home, also_cwd, days, deadline)
-        for k in _known(cfg, "codex"):
-            if k and Path(k).is_file() and Path(k) not in paths:
-                paths.append(Path(k))
+        seen = {os.path.realpath(str(p)) for p in paths}
+        store = [codex.codex_home(codex_home) / "sessions"]
+        for p in vetted(cfg, "codex", _known(cfg, "codex"), also_cwd, store):
+            if str(p) not in seen:
+                paths.append(p)
         out.extend((p, codex.parse) for p in paths)
     if runtime in ("all", "gemini"):
         for p in gemini.discover(cfg.root, gemini_home, also_cwd):
@@ -94,7 +131,7 @@ def verify_onboarding(cfg: Config) -> List[str]:
     for key, ans in answers.items():
         if not isinstance(ans, dict) or not ans.get("quote") or ans.get("verified"):
             continue
-        hits = [h for h in lookup.search(cfg, str(ans["quote"])) if h.principal and h.kind != "turn"]
+        hits = [h for h in lookup.search(cfg, str(ans["quote"])) if h.principal and lookup.trusted(cfg, h)]
         if hits:
             ans["verified"] = True
             changed = True
@@ -118,7 +155,7 @@ def _onboarding_records(cfg: Config) -> List[Dict]:
         if rec.meta.get("detected_by") != "onboarding" or rec.status != "pending-verification":
             continue
         q = str(rec.meta.get("source_quote") or "")
-        hits = [h for h in lookup.search(cfg, q) if h.principal and h.kind != "turn"] if q.strip() else []
+        hits = [h for h in lookup.search(cfg, q) if h.principal and lookup.trusted(cfg, h)] if q.strip() else []
         if hits:
             records.update_fields(rec, {"status": "accepted", "verified": True, "verified_at": iso(cfg.now()),
                                         "source_ref": hits[0].ref, "source_speaker": hits[0].speaker,
@@ -177,7 +214,8 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
     ents = entities.names(cfg)
     if transcript:
         parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
-        srcs = [(Path(transcript), parser)]
+        rt = runtime if runtime in ("codex", "gemini") else "claude"
+        srcs = [(p, parser) for p in vetted(cfg, rt, [transcript], list(also_cwd) + cfg.also_cwd, None)]
     else:
         srcs = sources(cfg, runtime, claude_dir, codex_home, also_cwd, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
@@ -185,7 +223,7 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
     taken_back: List[str] = []
     for path, parser in srcs:
         try:
-            sess, new, commit = journal.update(cfg, path, parser, ents)
+            sess, new, commit = journal.update(cfg, path, parser, ents, trusted=_trusted(cfg, path))
             found = cue_candidates(cfg, sess, new, ents) if sess is not None else []
             for cand in found:
                 inbox.save(cfg, cand)  # persisted before the cursor moves
@@ -206,6 +244,12 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days
     rc, msgs = index.regenerate(cfg)
     summary["index"] = {"rc": rc, "messages": msgs}
     return summary
+
+
+def _trusted(cfg: Config, path: Path) -> bool:
+    """Every source here was discovered in the runtime's store or vetted; its lines are attested when the
+    file itself is a uid-owned, non-shared file outside the instance."""
+    return not provenance.transcript_ok(cfg, path, str(cfg.root), [], None)
 
 
 JUDGED_BACK = ("decision", "preference", "correction")

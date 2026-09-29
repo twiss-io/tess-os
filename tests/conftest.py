@@ -515,3 +515,22 @@ def corrupt_tag_signature(repo_path: Path, tag: str) -> None:
         ["git", "-C", str(repo_path), "update-ref", f"refs/tags/{tag}", new_hash],
         check=True,
     )
+
+
+# --------------------------------------------------------------------------
+# Brain provenance key (scripts/brain/brainlib/provenance.py): tests never
+# touch the real ~/.config/tess. One per-session key dir, outside every
+# instance, 0700; subprocesses inherit it through the environment.
+# --------------------------------------------------------------------------
+@pytest.fixture(autouse=True, scope="session")
+def _brain_key_dir(tmp_path_factory):
+    if os.environ.get("TESS_BRAIN_PROVENANCE_DIR"):
+        yield os.environ["TESS_BRAIN_PROVENANCE_DIR"]
+        return
+    d = tmp_path_factory.mktemp("tess-brain-key")
+    os.chmod(str(d), 0o700)
+    os.environ["TESS_BRAIN_PROVENANCE_DIR"] = str(d)
+    try:
+        yield str(d)
+    finally:
+        os.environ.pop("TESS_BRAIN_PROVENANCE_DIR", None)

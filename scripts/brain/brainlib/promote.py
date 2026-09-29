@@ -10,7 +10,7 @@ skill -> brain/skills-drafts/ only                 quote only in turns -> pendin
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from . import lookup, records, verify
 from .config import Config, iso
@@ -169,7 +169,8 @@ def recheck_pending(cfg: Config) -> List[Dict]:
         if rec.status != "pending-verification" or rec.meta.get("detected_by") == "onboarding":
             continue
         quote = str(rec.meta.get("source_quote") or "")
-        hits = [h for h in lookup.search(cfg, quote) if h.kind != "turn" and h.principal] if quote else []
+        hits = [h for h in lookup.search(cfg, quote) if h.kind != "turn" and h.principal
+                and lookup.trusted(cfg, h)] if quote else []
         if hits:
             line = hits[0]
             kind = rec.kind
@@ -203,18 +204,15 @@ def recheck_pending(cfg: Config) -> List[Dict]:
     return out
 
 
-def change_status(cfg: Config, rid: str, action: str, quote: str) -> Dict:
-    """reject | retract | confirm, each backed by the principal's own verified words."""
+def change_status(cfg: Config, rid: str, action: str, quote: str, line: lookup.JLine) -> Dict:
+    """reject | retract | confirm. `line` is the operator's fresh, authenticated, id-bound words, already
+    checked by confirm.find (the caller); this only applies the change."""
     rec = records.find(cfg, rid)
     if rec is None:
         return {"ok": False, "error": "no record %s" % rid}
-    hits = [h for h in lookup.search(cfg, quote) if h.principal] if len((quote or "").strip()) >= 2 else []
-    if not hits:
-        return {"ok": False, "error": "V1/V2: the quote is not a principal's words in the journal or current turn"}
-    line = hits[0]
     now = iso(cfg.now())
     if action == "confirm":
-        upd = {"confirmed": True}
+        upd = {"confirmed": True, "confirmed_ref": line.ref} if rec.kind == "decision" else {"confirmed": True}
         if rec.status == "proposed":
             upd["status"] = "accepted" if rec.kind == "decision" else "active"
         if rec.kind == "open_loop":

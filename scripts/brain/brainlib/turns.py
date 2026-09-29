@@ -33,6 +33,8 @@ def append(cfg: Config, runtime: str, session: str, text: str, raw_speaker: str 
         "text": clean if principal else "[non-principal %s omitted: no consent]" % raw_speaker,
         "redactions": redact.total(counts),
     }
+    from . import provenance  # the capture hook signs what it saw; a row written by anything else is not the operator
+    rec["mac"] = provenance.turn_mac(cfg, rec)
     with open(_path(cfg), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
     return rec
