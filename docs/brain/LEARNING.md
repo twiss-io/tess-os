@@ -347,15 +347,20 @@ reason and points to section 8 of the onboarding guide.
 ### What counts as a confirmation
 
 The operator's words must be a plain instruction naming the id they were
-shown: the whole message, or one line of it, is `confirm <id>`,
-`yes, confirm <id>` or `accept <id>` (case does not matter; a trailing
-"please" or full stop is fine), or `reject <id>` / `retract <id>` with an
-optional short reason after a comma, colon or dash. Refused, whatever else
-the message says: a question (`Should I confirm D-0929-pricing?`), a
+shown: the WHOLE message (trimmed, optionally wrapped in one pair of quotes
+and followed by a full stop) is `confirm <id>`, `yes, confirm <id>` or
+`accept <id>` (case does not matter; a trailing "please" or full stop is
+fine), or `reject <id>` / `retract <id>` with an optional short reason after
+a comma, colon or dash. A message of several lines counts only when every
+non-empty line is itself such an instruction, each for a different id, with
+nothing else. Refused: a question (`Should I confirm D-0929-pricing?`), a
 condition or a delay (`if`, `only`, `after`, `unless`, `when`, `once`,
-`pending`), a hypothetical (`would`, `could`, `maybe`), a negation
-(`don't confirm ...`), a quote (`he said "confirm ..."`), two ids on one
-line, and a directive with another line that qualifies it (`actually wait`).
+`pending`), on the same line or another one (`If legal approves:` then
+`confirm D-0929-pricing` on the next line), a hypothetical (`would`,
+`could`, `maybe`), a negation (`don't confirm ...`), a quote
+(`he said "confirm ..."`), a code block, a `>` blockquote, a list item
+(`- confirm ...`), two ids on one line, and a directive with any other line
+(`Looks right.` or `actually wait`).
 The short id counts only as it was shown in the recorded presentation, and
 only while it still names exactly one item.
 
@@ -379,7 +384,26 @@ evidence: the evidence stops verifying and the item waits in review.
   again; earlier evidence then waits in review.
 - **Codex sandbox:** the agent's shell can read `~/.config/tess` but not
   write it, so its rows wait, signed, in `.tess/state/brain/outbox.jsonl`
-  until the next hook moves them into the ledger.
+  until the next hook moves them into the ledger. Every row carries a
+  one-use event id and the ledger position (sequence and chain head) it was
+  made against, inside its MAC. A row whose id is already in the ledger, or
+  that is older than the ledger's newest row for the same item, is dropped
+  (logged in `errors.log`): a kept copy of an old presentation cannot be put
+  back to make earlier words look fresh.
+- **Confirmations are consumed outside the repo first.** `confirm`,
+  `reject`, `retract` and `promote` write the used operator line to the
+  ledger BEFORE they change anything or report success. In a sandboxed
+  shell that write is impossible, so the command answers
+  `"status": "pending"` and changes nothing; the confirmation waits, signed,
+  in the outbox, and the next sync outside the sandbox (started by the
+  hooks, at the latest when the turn ends) records it, re-checks it against
+  the item as it is then, and applies it once.
+- **The outbox window, stated plainly:** until the next hook, a repo writer
+  can DELETE a pending row. A deleted presentation or journal line leaves
+  the evidence unverified (review only); a deleted pending confirmation
+  confirms nothing, and the operator is asked again. A pending row cannot be
+  replayed, reordered into a newer one, or used to accept anything before it
+  is durable.
 - The old `.tess/state/brain/provenance.jsonl` is ignored.
 
 ### Extra transcript roots

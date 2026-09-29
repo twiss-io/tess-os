@@ -19,13 +19,15 @@ description: "Show the operator what the brain learned or holds for confirmation
    were shown to the operator, together with each short id.
 3. Ask the operator to answer with those phrases. An answer is accepted only
    when it comes after this listing, names the item's short id (or full id),
-   and is a plain instruction: the reply, or one line of it, is exactly
+   and is a plain instruction: the WHOLE reply is exactly
    `confirm <short id>` (or `yes, confirm ...`, `accept ...`) or
-   `reject <short id>` (a short reason after a comma is fine). A list number,
-   an earlier message, a bare "yes", a question ("should I confirm ...?"), a
-   condition ("confirm ... after legal approves") or a quote is not enough
-   (the tool refuses it, and you never type the approval yourself). Several
-   answers in one reply go on separate lines, one id per line.
+   `reject <short id>` (a short reason after a comma is fine), optionally in
+   quotes. A list number, an earlier message, a bare "yes", a question
+   ("should I confirm ...?"), a condition on the same or another line
+   ("If legal approves:" then "confirm ..."), a code block, a `>` quote, a
+   list item or a quote is not enough (the tool refuses it, and you never
+   type the approval yourself). Several answers in one reply go on separate
+   lines, one id per line, with nothing else in the reply.
 4. Apply each answer with the operator's exact reply as the quote, and the
    item's FULL id (`id`) as `<id>`:
 
@@ -40,6 +42,11 @@ description: "Show the operator what the brain learned or holds for confirmation
    was shown", that their words "predate" the listing, or that the quote must
    name a different id (another item now shares the short id), run step 1
    again, show the item with its new `reply` line, and ask again.
+
+   If the tool answers `"status": "pending"`, this shell cannot write the
+   brain's private state (a sandbox): the confirmation is queued, and the
+   next hook records and applies it when this turn ends. Tell the operator
+   exactly that; do not say it was accepted, and do not run it again.
 
    A correction ("4 should be ...") is recorded with skill `brain-remember`
    (`--kind correction --supersedes <id>`).

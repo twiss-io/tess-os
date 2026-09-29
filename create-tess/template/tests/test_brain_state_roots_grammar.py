@@ -261,6 +261,8 @@ REFUSED = [
     "> confirm D-0929-pricing",
     "confirm D-0929-pricing and D-0929-other",
     "confirm D-0929-pricing\nactually wait, not yet",
+    # round 3: the WHOLE message must be the directive; a lead-in line no longer passes
+    "Looks right to me.\nconfirm D-0929-pricing",
 ]
 ACCEPTED = [
     "confirm D-0929-pricing",
@@ -271,7 +273,6 @@ ACCEPTED = [
     "confirm D-0929-pricing please.",
     "accept D-0929-pricing",
     "confirm D-20260929-1412-pricing",
-    "Looks right to me.\nconfirm D-0929-pricing",
     '"confirm D-0929-pricing"',
 ]
 

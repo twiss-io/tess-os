@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Tuple
 
-from . import (confirm, githooks, hooks, inbox, index, lint, promote, recall, records, save, status, sync, verify)
+from . import (claims, confirm, githooks, hooks, inbox, index, lint, promote, recall, records, save, status, sync, verify)
 from .config import Config, iso
 from .parsers import count_lines
+
+_run_candidate = claims.run_candidate
 
 Out = Tuple[int, object]
 
@@ -113,18 +115,6 @@ def _candidate(cfg: Config, a, kind: str, detected: str) -> Dict:
         verify_via=getattr(a, "verify_via", "") or "")
 
 
-def _run_candidate(cfg: Config, cand: Dict, dry: bool) -> Out:
-    outcome = inbox.process(cfg, cand, dry_run=dry)
-    rc = 0
-    if not dry:
-        rc, msgs = index.regenerate(cfg)
-        if msgs:
-            outcome["index"] = msgs
-    if outcome["status"] == inbox.OVER_CAP:
-        return 3, outcome
-    return (1 if outcome["status"] == "fail" else rc), outcome
-
-
 def _shown(cfg: Config, a, res: Out) -> Out:
     """The agent relays this outcome: a proposed record or held candidate is now shown, id and all."""
     if not getattr(a, "dry_run", False) and isinstance(res[1], dict):
@@ -172,29 +162,13 @@ def cmd_inbox_verify(cfg: Config, a) -> Out:
 
 def cmd_promote(cfg: Config, a) -> Out:
     """Approve an inbox candidate: only with the operator's fresh, authenticated words naming its id
-    after it was shown (confirm.py). A candidate file cannot approve itself (inbox.sanitize)."""
+    after it was shown (confirm.py), consumed in the external ledger first (claims.py). A candidate file
+    cannot approve itself (inbox.sanitize)."""
     why = _need(cfg)
     if why:
         return 1, {"error": why}
     sync.run(cfg, "all", days=2)
-    cands = {c["id"]: c for c in inbox.pending(cfg)}
-    if a.id not in cands:
-        return 1, {"error": "no inbox candidate %s" % a.id}
-    line, err = confirm.find(cfg, a.id, a.quote, "promote", confirm.candidate_hash(cands[a.id]))
-    if line is None:
-        return 1, {"error": "V1/V2: %s" % err}
-    cand = dict(cands[a.id], confirmed_ref=line.ref)
-    cand[verify.APPROVED] = True
-    cand["verification"] = {"status": "pending", "reasons": [], "checked_at": ""}
-    code, out = _run_candidate(cfg, cand, False)
-    confirm.consume(cfg, line, a.id)
-    rid = str(out.get("record", "")).rsplit("/", 1)[-1][:-3] if out.get("record") else ""
-    if rid and rid.startswith(("D-", "P-", "C-", "F-", "L-")):
-        res = promote.change_status(cfg, rid, "confirm", a.quote, line)  # the operator's approval confirms it
-        out["status"] = res.get("status", out.get("status"))
-        out["confirmed"] = bool(res.get("confirmed"))
-        index.regenerate(cfg)
-    return code, out
+    return claims.apply_promote(cfg, a)
 
 
 def cmd_status_change(cfg: Config, a) -> Out:
@@ -202,30 +176,7 @@ def cmd_status_change(cfg: Config, a) -> Out:
     if why:
         return 1, {"error": why}
     sync.run(cfg, "all", days=2)  # the operator's reply must be on disk to verify it
-    cands = {c["id"]: c for c in inbox.pending(cfg)}
-    if a.id in cands:  # an inbox candidate (C-YYYYMMDD-HHMM-NN), not a C- correction record
-        if a.action != "reject":
-            return 1, {"error": "%s is an inbox candidate: reject it, or promote it with the operator's words" % a.id}
-        c = cands[a.id]
-        line, err = confirm.find(cfg, a.id, a.quote, "reject", confirm.candidate_hash(c))
-        if line is None:
-            return 1, {"error": "V1/V2: %s" % err}
-        c["verification"] = {"status": "fail", "reasons": ["rejected by operator: %s" % a.quote], "checked_at": iso(cfg.now())}
-        inbox.save(cfg, c, "rejected")
-        (inbox.inbox_dir(cfg) / ("%s.json" % a.id)).unlink()
-        confirm.consume(cfg, line, a.id)
-        index.regenerate(cfg)
-        return 0, {"ok": True, "candidate": a.id, "status": "rejected"}
-    rec = records.find(cfg, a.id)
-    if rec is None:
-        return 1, {"ok": False, "error": "no record %s" % a.id}
-    line, err = confirm.find(cfg, rec.id, a.quote, a.action, confirm.record_hash(rec))
-    if line is None:
-        return 1, {"ok": False, "error": "V1/V2: %s" % err}
-    res = promote.change_status(cfg, rec.id, a.action, a.quote, line)
-    confirm.consume(cfg, line, rec.id)
-    index.regenerate(cfg)
-    return (0 if res.get("ok") else 1), res
+    return claims.apply_status(cfg, a)
 
 
 def cmd_review(cfg: Config, a) -> Out:

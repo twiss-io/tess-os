@@ -6,15 +6,20 @@ material proposal. A confirmation now has to be:
 
 1. the operator's AUTHENTICATED words (lookup.trusted: an attested journal line
    or a MAC-checked captured turn), never a repo-written file;
-2. a narrow directive naming the exact id: the whole message, or one standalone
-   line of it, is "confirm D-..." / "yes, confirm D-..." / "accept D-..." (or
-   "reject D-..." with an optional plain reason); never a question, quote,
-   condition, hypothetical or negation (GPT-6 review round 2, R7);
+2. a narrow directive naming the exact id: the WHOLE message is "confirm D-..."
+   / "yes, confirm D-..." / "accept D-..." (or "reject D-..." with an optional
+   plain reason), optionally wrapped in one pair of quotes; never a question,
+   quote, condition, hypothetical or negation (GPT-6 review round 2, R7). A
+   multi-line message counts only when every non-empty line is itself such a
+   directive, each for a different id (round 3): a condition on another line
+   ("If legal approves:\nconfirm D-..."), a code fence, a blockquote or a list
+   item never confirms;
 3. about the content that was SHOWN: every listing (review, decide/remember
    outcomes) records a presentation in the external ledger (extstate.py) of (id, content hash, time, session),
    and the item must be unchanged since;
 4. fresh: said after the latest presentation, in the session it was shown in
-   when both are known, and each (line, id) pair is used once (no replays).
+   when both are known, and each (line, id) pair is used once (no replays),
+   recorded in the external ledger before the change is made (claims.py).
 
 v1.0.0 (release integration, item b): every presentation also carries a SHORT
 id ("D-0929-pricing") and a ready-to-say phrase ('Reply "confirm D-0929-pricing"
@@ -148,10 +153,11 @@ def _mentions(text: str, item_id: str) -> bool:
 
 # GPT-6 review round 2, R7: "Should I confirm D-...?" and "Confirm D-... only after legal approval" were read as
 # approvals because an approval verb and the id appeared in the same clause. A confirmation is now a narrow
-# directive: the whole message, or one standalone line of it, is exactly `[yes,] confirm|accept|approve <id>`
-# (optional trailing "please" and full stop). A rejection is `[no,] reject|retract|drop|withdraw <id>`, optionally
-# followed by a plain reason after a comma, colon, dash or full stop. Anything else (a question, a quote, a
-# condition, a hypothetical, a negation, two ids) is not a directive.
+# directive: the whole message is exactly `[yes,] confirm|accept|approve <id>` (optional trailing "please" and
+# full stop). A rejection is `[no,] reject|retract|drop|withdraw <id>`, optionally followed by a plain reason
+# after a comma, colon, dash or full stop. Anything else (a question, a quote, a condition, a hypothetical, a
+# negation, two ids) is not a directive. Round 3: "If legal approves:\nconfirm D-..." passed because ONE line
+# of it was a directive; now every non-empty line must be (messages()).
 _ID = r"(?P<id>[A-Za-z]-[A-Za-z0-9][\w-]*)"
 CONFIRM_LINE = re.compile(r"(?i)^(?:(?:yes|ok|okay)\s*,?\s+)?(?:confirm|accept|approve)\s+%s(?:\s*,?\s*please)?\s*\.?$"
                           % _ID)
@@ -159,7 +165,6 @@ DENY_LINE = re.compile(r"(?i)^(?:no\s*,?\s+)?(?:reject|retract|drop|withdraw)\s+
                        r"(?:\s*(?:[,:.;]|\s[-\u2013\u2014])\s*(?P<why>.*))?\s*\.?$" % _ID)
 HEDGE = re.compile(r"(?i)[?\"`\u201c\u201d]|\b(if|only|after|unless|when|once|pending|until|should|would|could|"
                    r"might|maybe|perhaps|wait|hold|later|yet|confirm|accept|approve|keep)\b")
-DOUBT = re.compile(r"(?i)\b(wait|hold on|hold off|not yet|don'?t|do not|never|cancel|scratch that|actually)\b|n't\b")
 
 
 # v1.0.0 item c (friendly confirms): users copy the phrase shown in 'Reply "confirm D-0929-pricing" ...'
@@ -193,23 +198,30 @@ def directive(line: str) -> Tuple[str, str]:
     return "", ""
 
 
+def directives(text: str) -> List[Tuple[str, str]]:
+    """The directives of a whole message: [] unless ALL of it is directives. One line (trimmed, optionally
+    wrapped in one pair of quotes) must be one directive; several lines must each be one, for distinct ids,
+    with nothing else (no condition line, code fence, blockquote or list item)."""
+    lines = [l.strip() for l in (text or "").strip().splitlines() if l.strip()]
+    if len(lines) == 1:
+        lines = [unwrap(lines[0]).strip()]
+    hits = [directive(l) for l in lines]
+    if not hits or not all(verb for verb, _ in hits) or len({i.lower() for _, i in hits}) != len(hits):
+        return []
+    return hits
+
+
 def intent(text: str, item_id: str, action: str, alias: str = "") -> str:
     """'' when the operator's message is a directive to `action` `item_id` (or its shown short id `alias`)."""
     want = "confirm" if action in ("confirm", "promote") else "deny"
     names = {n.lower() for n in (item_id, alias) if n}
     if not any(_mentions(text, n) for n in names):
         return "the operator's words do not name %s" % item_id
-    lines = [l for l in (text or "").splitlines() if l.strip()] or [""]
-    if len(lines) == 1:
-        lines = [unwrap(lines[0])]
-    hits = [directive(l) for l in lines]
-    mine = [(verb, i) for (verb, i), l in zip(hits, lines) if verb and i.lower() in names]
+    mine = [(verb, i) for verb, i in directives(text) if i.lower() in names]
     if len(mine) != 1 or mine[0][0] != want:
-        return ('the operator\'s words about %s are not a plain "%s %s" (a question, condition, quote or '
-                'negation never counts)' % (item_id, "confirm" if want == "confirm" else "reject", alias or item_id))
-    for (verb, _), l in zip(hits, lines):
-        if not verb and (any(_mentions(l, n) for n in names) or (want == "confirm" and DOUBT.search(l))):
-            return "another line of the same message qualifies %s; ask again" % item_id
+        return ('the operator\'s whole message about %s is not a plain "%s %s" (a question, condition, quote, '
+                'code block, list or negation never counts)'
+                % (item_id, "confirm" if want == "confirm" else "reject", alias or item_id))
     return ""
 
 
@@ -229,8 +241,10 @@ def _after(a: str, b: str) -> bool:
         return False
 
 
-def find(cfg: Config, item_id: str, quote: str, action: str, h: str) -> Tuple[Optional[lookup.JLine], str]:
-    """The operator's fresh, authenticated, id-bound words for `action` on `item_id` -> (line, '') or (None, why)."""
+def find(cfg: Config, item_id: str, quote: str, action: str, h: str,
+         except_eid: str = "") -> Tuple[Optional[lookup.JLine], str]:
+    """The operator's fresh, authenticated, id-bound words for `action` on `item_id` -> (line, '') or (None, why).
+    `except_eid`: the queued claim being applied (claims.settle); its own consumption is not a replay."""
     shown = provenance.last_shown(cfg, item_id)
     alias = str((shown or {}).get("short") or "")
     if alias and short_id(cfg, item_id) != alias:
@@ -243,12 +257,14 @@ def find(cfg: Config, item_id: str, quote: str, action: str, h: str) -> Tuple[Op
         return None, "%s has not been shown to the operator: run review, show it with its id, and ask" % item_id
     if shown.get("h") != h:
         return None, "%s changed since it was shown to the operator: show it again and ask" % item_id
+    if shown.get("eid") and provenance.used(cfg, "shown:%s" % shown["eid"], item_id, except_eid):
+        return None, "%s was already answered since it was last shown (replay): show it again and ask" % item_id
     whys: List[Tuple[int, str]] = [(9, "no authenticated operator line contains the quote")]
     for line in lookup.search(cfg, quote):
         if not (line.principal and lookup.trusted(cfg, line)):
             continue
         at, sid = _when(cfg, line)
-        if provenance.used(cfg, line.ref, item_id):
+        if provenance.used(cfg, line.ref, item_id, except_eid):
             whys.append((0, "that operator line was already used for %s (replay)" % item_id))
         elif not _after(at, str(shown.get("at") or "")):
             whys.append((1, "the operator's words predate the latest time %s was shown (%s); show it and ask again"
@@ -264,10 +280,6 @@ def find(cfg: Config, item_id: str, quote: str, action: str, h: str) -> Tuple[Op
                 return line, ""
             whys.append((3, why))
     return None, min(whys)[1]
-
-
-def consume(cfg: Config, line: lookup.JLine, item_id: str) -> None:
-    provenance.consume(cfg, line.ref, item_id)
 
 
 def present_all(cfg: Config, items: List[Dict]) -> None:
