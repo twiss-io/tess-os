@@ -354,7 +354,7 @@ def test_e_a_foreign_dir_needs_the_operator_at_a_terminal(tmp_path, answer, ok):
 def test_f_mcp_key_reads_are_a_documented_known_limit_in_claude_code():
     settings = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
     matchers = [g.get("matcher", "") for g in settings["hooks"]["PreToolUse"]]
-    # test_base_harness_no_telegram forbids any mcp__ matcher in base settings, so the Claude gate
+    # tests/test_base_harness_no_*.py forbids any mcp__ matcher in base settings, so the Claude gate
     # never sees MCP calls; the limit must stay written down while that is true.
     assert not any("mcp" in m for m in matchers)
     sec = (REPO / "SECURITY.md").read_text(encoding="utf-8")
