@@ -24,18 +24,34 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 GATE = REPO / ".claude" / "hooks" / "tess-gate.py"
-CFG = tomllib.loads((REPO / ".codex" / "config.toml").read_text())
-PRE = CFG["hooks"]["PreToolUse"][0]
+
+
+def _pre_tool_use(text: str) -> dict:
+    """The PreToolUse entry of .codex/config.toml. tomllib on Python 3.11+;
+    on 3.9/3.10 (stock macOS, CI py3.9) the one entry's two basic-string keys
+    are read directly, since the gate itself must be tested there too. TOML
+    basic-string escapes (\\" and \\\\) are JSON's, so json.loads decodes them."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        block = text.split("[[hooks.PreToolUse]]", 1)[1]
+        m = re.search(r'^matcher = ("(?:[^"\\]|\\.)*")$', block, re.M)
+        c = re.search(r'^command = ("(?:[^"\\]|\\.)*")$', block.split("[[hooks.PreToolUse.hooks]]", 1)[1], re.M)
+        return {"matcher": json.loads(m.group(1)), "hooks": [{"command": json.loads(c.group(1))}]}
+    return tomllib.loads(text)["hooks"]["PreToolUse"][0]
+
+
+PRE = _pre_tool_use((REPO / ".codex" / "config.toml").read_text())
 HOOK_CMD = PRE["hooks"][0]["command"]
 HAS_GIT = shutil.which("git") is not None
 
