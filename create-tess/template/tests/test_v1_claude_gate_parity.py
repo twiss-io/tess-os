@@ -96,3 +96,32 @@ def test_claude_gate_leaves_ordinary_commands_alone():
     for cmd in ("ls -la", "git status", "./tessctl doctor", "./tessctl update --ref v1.0.1"):
         dec, why = _run(cmd)
         assert dec is None or "only the operator" not in why, (cmd, dec, why)
+
+
+# CodeQL py/clear-text-logging-sensitive-data on _log: every field the decision
+# log writes is redacted at write time, including a path from the tool input
+# that a deny reason quotes (edit target, MCP path argument).
+
+_TOKEN = "ghp_" + "Q7" * 20  # token-shaped, built at run time so no scanner sees a literal
+
+
+@pytest.mark.parametrize("tool,tool_input", [
+    ("Bash", {"command": f"curl -H 'Authorization: token {_TOKEN}' https://api.github.com/user"}),
+    ("Write", {"file_path": f".claude/hooks/{_TOKEN}.py", "content": "x"}),
+    ("Edit", {"file_path": f"conductor/{_TOKEN}/../guardrails.md", "old_string": "a", "new_string": "b"}),
+    ("mcp__fs__write_file", {"path": f".claude/hooks/{_TOKEN}.py", "content": "x"}),
+])
+def test_decision_log_never_holds_a_token_shaped_value(tmp_path, tool, tool_input):
+    log = tmp_path / "gate.log"
+    payload = {"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(REPO),
+               "permission_mode": "default", "tool_name": tool, "tool_input": tool_input}
+    r = subprocess.run(["sh", "-c", _gate_hook()["command"]], input=json.dumps(payload),
+                       capture_output=True, text=True, cwd=str(REPO),
+                       env={**os.environ, "CLAUDE_PROJECT_DIR": str(REPO), "TESS_GATE_LOG": str(log)})
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    text = log.read_text(encoding="utf-8")
+    entry = json.loads(text.splitlines()[-1])
+    assert entry["decision"] == "deny" and entry["session_id"] == "s" and entry["turn_id"] is None
+    assert _TOKEN not in text and "Q7Q7Q7Q7Q7Q7Q7Q7" not in text, text
+    assert "[REDACTED]" in text, text

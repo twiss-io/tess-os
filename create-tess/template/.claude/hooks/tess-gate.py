@@ -159,7 +159,9 @@ def _scanner(root: Path):
     return _load(path, "tess_vault_scan")
 
 
-def _secret_hits(root: Path, text: str, specific_only: bool) -> list:
+def _leak_pattern_names(root: Path, text: str, specific_only: bool) -> list:
+    """Descriptions of the scanner patterns `text` matches (for example
+    "GitHub personal access token (ghp_)"). Never the matched text itself."""
     mod = _scanner(root)
     hits = []
     for pattern, desc in mod._PATTERNS:
@@ -695,13 +697,13 @@ def evaluate(data: dict, root: Path) -> Verdict:
     tin = tin if tin is not None else {}
     cwd = str(data.get("cwd") or root)
     if tool in DISPATCH_TOOLS:
-        hits = _secret_hits(root, json.dumps(tin, ensure_ascii=False), specific_only=False)
+        hits = _leak_pattern_names(root, json.dumps(tin, ensure_ascii=False), specific_only=False)
         if hits:
             v.add(DENY, "the dispatch carries secret-shaped value(s): " + ", ".join(hits)
                   + ". Pass a vault:// reference instead (conductor/vault.md)", "secret")
     elif tool in SHELL_TOOLS:
         cmd = _command_text(tin)
-        hits = _secret_hits(root, cmd, specific_only=True)
+        hits = _leak_pattern_names(root, cmd, specific_only=True)
         if hits:
             v.add(DENY, "the command contains secret-shaped value(s): " + ", ".join(hits)
                   + ". Read the secret from the environment or `tessctl vault exec` instead", "secret")
@@ -760,10 +762,18 @@ def _log(root: Path, data: dict, runtime: str, decision: str, reason: str) -> No
             os.replace(path, str(path) + ".1")
         tool = str(data.get("tool_name") or "")
         cmd = _command_text(data.get("tool_input") or {}) if tool in SHELL_TOOLS else ""
+        # Every free-text field passes through _redact here, at the one place the
+        # log is written, so a reason that quotes a path or value from the tool
+        # input (an edit target, an MCP path argument) cannot carry a
+        # credential into the log even if its builder did not redact it.
+        def _clean(val):
+            return _redact(root, val) if isinstance(val, str) else None
+
         entry = {"ts": __import__("time").strftime("%Y-%m-%dT%H:%M:%S%z"), "runtime": runtime,
-                 "codex": "turn_id" in data, "session_id": data.get("session_id"),
-                 "turn_id": data.get("turn_id"), "project": str(root), "tool": tool,
-                 "decision": decision, "reason": reason[:600], "command": _short(root, cmd)}
+                 "codex": "turn_id" in data, "session_id": _clean(data.get("session_id")),
+                 "turn_id": _clean(data.get("turn_id")), "project": str(root),
+                 "tool": _redact(root, tool), "decision": decision,
+                 "reason": _redact(root, reason)[:600], "command": _short(root, cmd)}
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
