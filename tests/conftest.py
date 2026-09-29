@@ -541,8 +541,14 @@ def _brain_key_dir(tmp_path_factory):
 # without the fake OS home (fixtures/os_home.py) record an anchor under the
 # REAL ~/.config/tess/projects for their temp project, and the hooks (which
 # run `python3 -I`) always read that home. Remove, at session end, every
-# anchor and path marker whose project lived under this session's temp dir.
-# Content-addressed blobs in ~/.config/tess/anchor-blobs/ are shared and small.
+# anchor and path marker whose project lived under this session's temp dir,
+# then every approved-file copy (anchor-blobs/, ~20 MB per full run: each holds
+# a whole file, tessctl included) that this session ADDED and no remaining
+# anchor names, and the directories this session created and left empty. A
+# full run leaves ~/.config/tess as it found it. (An install elsewhere that is
+# between writing its copies and writing its anchor.json at that instant could
+# lose a copy; its check still works, only `tessctl restore` of that file would
+# need `anchor accept`.)
 # ---------------------------------------------------------------------------
 
 def _real_anchor_projects() -> Path:
@@ -553,12 +559,24 @@ def _real_anchor_projects() -> Path:
 _REAL_ANCHOR_PROJECTS = _real_anchor_projects()
 
 
+def _anchor_dirs_present() -> dict:
+    blobs = _REAL_ANCHOR_PROJECTS.parent / "anchor-blobs"
+    return {"blobs": set(p.name for p in blobs.iterdir()) if blobs.is_dir() else set(),
+            "dirs": {d for d in (blobs, _REAL_ANCHOR_PROJECTS / "by-path", _REAL_ANCHOR_PROJECTS)
+                     if d.is_dir()}}
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _forget_test_anchors(tmp_path_factory):
+    start = _anchor_dirs_present()
     yield
-    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    _forget_anchors_under(os.path.realpath(str(tmp_path_factory.getbasetemp())), start)
+
+
+def _forget_anchors_under(base: str, start: dict) -> None:
     projects = _REAL_ANCHOR_PROJECTS
-    if not projects.is_dir():
+    blobs = projects.parent / "anchor-blobs"
+    if not projects.is_dir() and not blobs.is_dir():
         return
     for doc_path in list(projects.glob("*/anchor.json")) + list(projects.glob("by-path/*.json")):
         try:
@@ -571,8 +589,8 @@ def _forget_test_anchors(tmp_path_factory):
                 shutil.rmtree(doc_path.parent, ignore_errors=True)
             else:
                 doc_path.unlink(missing_ok=True)
-    # Approved-file copies no remaining anchor names (older than 30 minutes, so
-    # an install running elsewhere keeps the copies it has just written).
+    # Approved-file copies no remaining anchor names: every one this session
+    # added, and older leftovers (30+ minutes old, e.g. from an aborted run).
     import time
     used: set = set()
     for doc_path in projects.glob("*/anchor.json"):
@@ -580,10 +598,16 @@ def _forget_test_anchors(tmp_path_factory):
             used |= {r.get("blob") for r in json.loads(doc_path.read_text(encoding="utf-8"))["files"].values()}
         except (OSError, ValueError, KeyError, AttributeError):
             pass
-    blobs = projects.parent / "anchor-blobs"
     for blob in (blobs.iterdir() if blobs.is_dir() else []):
         try:
-            if blob.name not in used and time.time() - blob.stat().st_mtime > 1800:
+            if blob.name not in used and (blob.name not in start["blobs"]
+                                          or time.time() - blob.stat().st_mtime > 1800):
                 blob.unlink()
         except OSError:
             pass
+    for d in (blobs, projects / "by-path", projects):  # innermost first
+        if d not in start["dirs"]:
+            try:
+                d.rmdir()  # only when empty
+            except OSError:
+                pass

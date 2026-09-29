@@ -22,7 +22,9 @@
   "scripts": {
     "start": "node bin/create-tess.mjs",
     "smoke": "node bin/create-tess.mjs",
+    "pretest": "node test/anchor-cleanup.js snapshot",
     "test": "node --test test/*.test.js",
+    "posttest": "node test/anchor-cleanup.js final",
     "build-template": "node scripts/build-template.mjs",
     "prepack": "node scripts/build-template.mjs"
   },
