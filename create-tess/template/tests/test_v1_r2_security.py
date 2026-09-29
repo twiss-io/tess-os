@@ -162,26 +162,20 @@ def test_forged_tracking_ref_no_longer_hides_published_history(leaked, runtime):
 
 
 @pytest.mark.skipif(not HAS_GIT, reason="git required")
-def test_publish_remote_trusts_only_what_the_remote_advertises(leaked, tmp_path):
+def test_publish_remote_trusts_only_the_push_negotiation(leaked):
     eng = _engine()
     head = _git(leaked, "rev-parse", "HEAD")
     stdin = f"refs/heads/main {head} refs/heads/main {'0' * 40}\n"
     _git(leaked, "update-ref", "refs/remotes/origin/zz", "HEAD~1")
     # tracking refs are ignored: the leaked history is still found
     assert eng._publish_remote_data_paths(leaked, stdin, "origin") == ["brain/decisions/D-1.md"]
-    # a remote URL moved to a new, EMPTY repository advertises nothing
-    empty = tmp_path / "empty.git"
-    _git(tmp_path, "init", "-b", "main", "-q", "--bare", str(empty))
-    assert eng._publish_remote_held(leaked, str(empty)) == []
-    # a remote that really holds the history: that history is not re-published
-    full = tmp_path / "full.git"
-    _git(tmp_path, "init", "-b", "main", "-q", "--bare", str(full))
-    _git(leaked, "push", "-q", "--no-verify", str(full), "HEAD~1:refs/heads/main")
-    held = eng._publish_remote_held(leaked, str(full))
-    assert held == [_git(leaked, "rev-parse", "HEAD~1")]
-    assert eng._publish_remote_data_paths(leaked, stdin, held=held) == []
-    # unreachable remote: nothing is excluded (fail closed)
-    assert eng._publish_remote_held(leaked, "https://tess-review.invalid/x/y.git") is None
+    # the push's own remote_sha (git's receive-pack negotiation) is honoured
+    prev = _git(leaked, "rev-parse", "HEAD~1")
+    assert eng._publish_remote_data_paths(
+        leaked, f"refs/heads/main {head} refs/heads/main {prev}\n") == []
+    # round 3, N2: a separate destination advertisement can no longer waive it
+    # (tests/test_v1_r3_remote_trust.py drives the lying-server scenario)
+    assert not hasattr(eng, "_publish_remote_held")
 
 
 @pytest.mark.parametrize("runtime", RUNTIMES)
