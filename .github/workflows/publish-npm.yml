@@ -56,6 +56,7 @@ jobs:
     environment: npm-publish
     permissions:
       contents: read
+      actions: read     # Gate 0c reads the framework Release workflow's runs
       id-token: write   # required for npm Trusted Publishing (OIDC) — no token
     defaults:
       run:
@@ -138,6 +139,38 @@ jobs:
             echo "::error::${FW} and ${TAG} name different commits. Refusing to publish."
             exit 1
           fi
+
+      # Gate 0c (v1.0.0 security review, L1): the framework release v<version>
+      # must already be PUBLISHED on GitHub (not a draft), and release.yml's run
+      # for that tag and commit must have succeeded: the package never ships
+      # the proof of a release whose own gates failed or never ran.
+      - name: Gate 0c — the framework GitHub Release exists and its release run succeeded
+        working-directory: .
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^create-tess-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'${TAG}' is not a create-tess-v<semver> tag. Refusing to publish."
+            exit 1
+          fi
+          FW="v${TAG#create-tess-v}"
+          SHA="$(git rev-parse "refs/tags/${FW}^{commit}")"
+          PUBLISHED="$(gh release view "$FW" --json tagName,isDraft --jq 'select(.isDraft == false) | .tagName' || true)"
+          if [ "$PUBLISHED" != "$FW" ]; then
+            echo "::error::there is no published GitHub Release for ${FW}. Release the framework (release.yml) first. Refusing to publish."
+            exit 1
+          fi
+          RUNS="$(gh run list --workflow release.yml --event push --limit 100 \
+                   --json headBranch,headSha,conclusion \
+                   --jq "[.[] | select(.headBranch == \"${FW}\" and .headSha == \"${SHA}\" and .conclusion == \"success\")] | length")"
+          if [ "${RUNS:-0}" -lt 1 ]; then
+            echo "::error::release.yml has no successful run for ${FW} at ${SHA}. Refusing to publish."
+            exit 1
+          fi
+          echo "OK: ${FW} is released and its release run succeeded."
 
       - name: Build the release proof the wizard installs
         working-directory: .

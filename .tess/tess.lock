@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-29T01:52:13.774567Z'
+  last_updated: '2026-09-29T02:36:54.445340Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5661,7 +5661,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: security
-    base_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
+    base_sha: sha256:a75813a64ca9e4ebca8edf081bdab68a88fa7843baf8476c524f6dfc73f9cce6
     live_path: .claude/settings.json
     render: rendered
     last_updated: '2026-09-28T17:56:20.991251Z'
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:508d28d9fafa015a4fef8fa9978cad7ea6b834c6a5b7d0147d0aad5b1a6cf6db
+    base_sha: sha256:e6d0c9a2b46dcea51131c4e75c7d41b29282ed2b0c7d2262756e35cdb73a12b2
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
 render_outputs:
@@ -6112,7 +6112,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:f442ced3b1ed7c1b8410606e731daf44e238156c225b361163578e3d9e1c28ba
+    rendered_sha: sha256:a75813a64ca9e4ebca8edf081bdab68a88fa7843baf8476c524f6dfc73f9cce6
   conductor/identity.md:
     target: claude-code
     status: rendered

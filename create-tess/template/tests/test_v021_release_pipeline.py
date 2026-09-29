@@ -49,7 +49,7 @@ def test_publish_runs_in_the_npm_publish_environment_with_a_verified_tag():
     wf = load("publish-npm.yml")
     job = wf["jobs"]["publish"]
     assert job["environment"] == "npm-publish"
-    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert job["permissions"] == {"contents": "read", "actions": "read", "id-token": "write"}
     names = [s.get("name", "") for s in job["steps"]]
     verify = names.index("Gate 0 — tag must be signed by the Twiss release key")
     assert verify < names.index("npm publish (Trusted Publishing / OIDC)")
