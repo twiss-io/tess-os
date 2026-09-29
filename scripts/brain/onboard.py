@@ -123,7 +123,7 @@ def cmd_apply(root: Path, a) -> int:
     if not a.dry_run:  # the create-tess wizard runs this outside any sandbox: make the provenance key now
         from brainlib import provenance
         from brainlib.config import Config
-        provenance.key(Config(root))
+        provenance.prepare(Config(root))
     if a.json:
         _emit(result, True, "")
     else:

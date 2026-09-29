@@ -65,8 +65,19 @@ def cli(root, *args, stdin=None, env=None, timeout=120):
                           input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
 
 
+def add_root(root, path):
+    """What `tessbrain.py roots add <path>` stores once the operator types "yes" at a terminal (roots.py).
+    Written in-process, into the per-project state outside the instance (TESS_BRAIN_PROVENANCE_DIR in tests)."""
+    sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
+    from brainlib import roots
+    from brainlib.config import Config
+    cfg = Config(root)
+    roots.save(cfg, roots.extra(cfg) + [os.path.realpath(path)])
+
+
 def sync_fixture(root, *extra):
-    return cli(root, "sync", "--claude-dir", CLAUDE_DIR, "--codex-home", CODEX_HOME, "--also-cwd", CODEX_CWD, *extra)
+    add_root(root, CODEX_CWD)  # the fixture's Codex rollouts ran in CODEX_CWD (a moved-repo root)
+    return cli(root, "sync", "--claude-dir", CLAUDE_DIR, "--codex-home", CODEX_HOME, *extra)
 
 
 def commit_all(root, msg="probe"):

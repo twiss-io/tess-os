@@ -118,7 +118,9 @@ they keep their own provider memory. Importing their exports is v0.2.1.
   `status`, `brain-save`, and the Claude SessionStart backfill) reads
   `$CODEX_HOME/sessions/**/rollout-*.jsonl` (default `~/.codex/sessions`). It
   keeps the rollouts whose `session_meta.cwd` realpath is inside this repo,
-  or inside a path in `capture.also_cwd`. User text comes from `event_msg`
+  or inside an extra root the operator added with `tessbrain.py roots add
+  <path>` at a terminal (kept outside the repo; `capture.also_cwd` in
+  brain.json is ignored, see LEARNING.md). User text comes from `event_msg`
   `user_message`, and unknown record types are skipped.
 - **Per-turn, after trust.** `.codex/config.toml` (rendered from
   `.tess/core/templates/agents-md/codex-config.toml.tpl`) declares inline

@@ -19,6 +19,7 @@ without the principal's own verbatim words. See docs/brain/LEARNING.md.
   recall      grep-grade search of brain/ with path:line results
   hook        session-start | prompt | stop handlers for Claude Code and Codex
   githooks    install the warn-only git hooks
+  roots       list | add | remove extra transcript roots (add: the operator, at a terminal)
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from brainlib import commands as C  # noqa: E402
 from brainlib import hooks as H  # noqa: E402
+from brainlib import roots as R  # noqa: E402
 from brainlib.config import Config, default_root, log_error  # noqa: E402
 
 
@@ -99,7 +101,6 @@ def _sync_parser(sub):
     s.add_argument("--claude-dir", default=None, help="directory of Claude transcripts (default: this project's)")
     s.add_argument("--codex-home", default=None, help="CODEX_HOME to sweep (default $CODEX_HOME or ~/.codex)")
     s.add_argument("--gemini-home", default=None, help="HOME whose .gemini/ to sweep (default $GEMINI_CLI_HOME or ~)")
-    s.add_argument("--also-cwd", action="append", default=[], help="extra Codex session cwd to accept (moved repo)")
     s.add_argument("--transcript", default=None, help="journal just this transcript file")
     s.add_argument("--days", type=int, default=None, help="only transcripts touched in the last N days")
     s.add_argument("--no-wait", action="store_true", help="skip if another sync holds the lock")
@@ -147,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("githooks", help="git hooks").add_subparsers(dest="githooks_cmd", required=True)
     g.add_parser("install", help="warn-only pre-commit lint + post-merge index").set_defaults(fn=C.cmd_githooks)
     sub.add_parser("distilled", help="mark the turns distilled so far").set_defaults(fn=C.cmd_distilled)
+    ro = sub.add_parser("roots", help="extra folders whose conversations count as this instance's (operator only)")
+    rs = ro.add_subparsers(dest="roots_cmd", required=True)
+    rs.add_parser("list").set_defaults(fn=R.cmd_roots)
+    for name in ("add", "remove"):
+        x = rs.add_parser(name, help="%s an extra root (add: at a real terminal only)" % name)
+        x.add_argument("path")
+        x.set_defaults(fn=R.cmd_roots)
     return ap
 
 

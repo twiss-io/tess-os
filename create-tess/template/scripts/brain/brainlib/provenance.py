@@ -9,15 +9,20 @@ as the operator's own words. Evidence is now authenticated:
 * Trusted transcripts are the runtime's own session logs: a regular file
   OUTSIDE the instance, owned by this user, not group/world-writable, whose
   recorded cwd is inside the instance (transcript_ok).
-* When the journal writes lines from a trusted transcript it appends an
-  attestation per line: HMAC-SHA256 over (ref, kind, speaker, text, time)
-  under a per-machine key kept OUTSIDE the repo (~/.config/tess/brain/key,
-  0600; created by the SessionStart hook, since a sandboxed agent shell may
-  read but not write there). Nothing in the repo can mint one.
-* A journal line is trusted only when its own attestation verifies AND its
-  file is intact: every attested line of that file is present unchanged and
-  no unattested line was added (so a deleted "no wait" cannot settle a
-  decision). Turns captured by the UserPromptSubmit hook carry the same MAC.
+* When the journal writes lines from a trusted transcript it attests each
+  line: HMAC-SHA256 over (project id, ref, kind, speaker, text, time) under a
+  per-machine key kept OUTSIDE the repo (~/.config/tess/brain/key, 0600;
+  created by the SessionStart hook, since a sandboxed agent shell may read but
+  not write there). Nothing in the repo can mint one.
+* GPT-6 review round 2 (R5): the attestations, presentations and consumed
+  confirmations live in a per-project, append-only, hash-chained ledger OUTSIDE
+  the repo (extstate.py), and every MAC names the project id. Deleting a line
+  together with its attestation, rolling a `used` or `shown` row back, or
+  copying another project's evidence leaves the evidence unverified.
+* A journal line is trusted only when its file is intact against that ledger:
+  every attested line of the file is present unchanged and no unattested line
+  was added (so a deleted "no wait" cannot settle a decision). Turns captured
+  by the UserPromptSubmit hook carry a MAC and a ledger row too.
 * Unverified evidence never produces an accepted record (verify V13).
 
 Residual, stated plainly: code running as this user OUTSIDE any sandbox can
@@ -28,7 +33,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import secrets
 import stat
@@ -39,9 +43,8 @@ from .config import Config, log_error
 from .textutil import normalize
 
 KEY_ENV = "TESS_BRAIN_PROVENANCE_DIR"
-STORE = "provenance.jsonl"
 _KEYS: Dict[str, bytes] = {}
-_STORE_CACHE: Dict[str, Tuple[int, int, Dict]] = {}
+_STORE_CACHE: Dict[str, Tuple[int, Dict, object]] = {}
 
 
 def key_dir() -> Path:
@@ -98,10 +101,15 @@ def key(cfg: Config) -> Optional[bytes]:
 
 
 def mac(cfg: Config, *parts: str) -> str:
+    """HMAC over (this project's id, *parts); '' when there is no key or project id (fail closed)."""
     k = key(cfg)
     if k is None:
         return ""
-    msg = "\x1f".join(str(x) for x in parts).encode("utf-8")
+    from . import extstate
+    pid = extstate.project_id(cfg)
+    if not pid:
+        return ""
+    msg = "\x1f".join(str(x) for x in (pid,) + parts).encode("utf-8")
     return hmac.new(k, msg, hashlib.sha256).hexdigest()
 
 
@@ -140,59 +148,55 @@ def transcript_ok(cfg: Config, path: Path, cwd: Optional[str], cwds: List[str],
     return ""
 
 
-# -- the attestation store (append-only, local state) -------------------------------------------------
-
-def _store_path(cfg: Config) -> Path:
-    return cfg.state / STORE
-
+# -- the attestation ledger (outside the repo: extstate.py) -------------------------------------------
 
 def _append(cfg: Config, rows: List[Dict]) -> None:
-    if not rows:
-        return
-    cfg.ensure_state()
-    with open(_store_path(cfg), "a", encoding="utf-8") as fh:
-        for r in rows:
-            fh.write(json.dumps(r, sort_keys=True) + "\n")
+    if rows:
+        from . import extstate
+        extstate.append(cfg, rows)
+
+
+def prepare(cfg: Config) -> None:
+    """Hooks and the installer (outside any sandbox): make the key and project state, drain the outbox."""
+    from . import extstate
+    if key(cfg) is not None and extstate.project_id(cfg):
+        extstate.drain(cfg)
+
+
+def _empty() -> Dict:
+    return {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": set(), "turns": set()}
 
 
 def _load(cfg: Config) -> Dict:
-    """{'lines': {ref: row}, 'files': {path: set(refs)}, 'sessions': {path: row}, 'shown': {id: row},
-    'used': set(refs)}; rows whose MAC does not verify are ignored."""
-    p = _store_path(cfg)
-    try:
-        st = p.stat()
-    except OSError:
-        return {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": set()}
-    hit = _STORE_CACHE.get(str(p))
-    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
-        return hit[2]
-    out: Dict = {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": set()}
-    with open(p, encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            try:
-                r = json.loads(raw)
-            except ValueError:
-                continue
-            if isinstance(r, dict):
-                _ingest(cfg, out, r)
-    _STORE_CACHE[str(p)] = (st.st_mtime_ns, st.st_size, out)
+    """{'lines': {ref: row}, 'files': {path: set(refs)}, 'sessions': {path: row}, 'shown': {id: latest row},
+    'used': set(ref|id), 'turns': set(n|mac)} from the external ledger; a rolled-back ledger yields nothing."""
+    from . import extstate
+    got = extstate.rows(cfg)
+    hit = _STORE_CACHE.get(str(cfg.root))
+    if hit and hit[2] is got:
+        return hit[1]
+    out = _empty()
+    for r in got or []:
+        _ingest(out, r)
+    _STORE_CACHE[str(cfg.root)] = (0, out, got)
     return out
 
 
-def _ingest(cfg: Config, out: Dict, r: Dict) -> None:
+def _ingest(out: Dict, r: Dict) -> None:
     t = r.get("t")
-    if t == "line" and _eq(cfg, r.get("mac"), "line", r.get("ref"), r.get("kind"), r.get("speaker"),
-                           r.get("h"), r.get("at")):
+    if t == "line" and r.get("ref"):
         out["lines"][r["ref"]] = r
         out["files"].setdefault(str(r["ref"]).partition("#")[0], set()).add(r["ref"])
-    elif t == "session" and _eq(cfg, r.get("mac"), "session", r.get("path"), r.get("sid"), r.get("runtime"),
-                                "1" if r.get("external") else "0"):
+    elif t == "session" and r.get("path"):
         out["sessions"][r["path"]] = r
-    elif t == "shown" and _eq(cfg, r.get("mac"), "shown", r.get("id"), r.get("h"), r.get("at"), r.get("sid") or "",
-                              *([r["short"]] if r.get("short") else [])):
-        out["shown"][r["id"]] = r
-    elif t == "used" and _eq(cfg, r.get("mac"), "used", r.get("ref"), r.get("id")):
-        out["used"].add("%s|%s" % (r["ref"], r["id"]))
+    elif t == "shown" and r.get("id"):
+        cur = out["shown"].get(r["id"])
+        if cur is None or int(r.get("seq") or 0) >= int(cur.get("seq") or 0):
+            out["shown"][r["id"]] = r
+    elif t == "used":
+        out["used"].add("%s|%s" % (r.get("ref"), r.get("id")))
+    elif t == "turn":
+        out["turns"].add("%s|%s" % (r.get("n"), r.get("mac")))
 
 
 def attest_journal(cfg: Config, sess, rendered: List[Tuple[str, List]]) -> None:
@@ -205,18 +209,14 @@ def attest_journal(cfg: Config, sess, rendered: List[Tuple[str, List]]) -> None:
         cur = have["sessions"].get(path)
         if cur is None or bool(cur.get("external")) != ext:
             rows.append({"t": "session", "path": path, "sid": sess.session_id, "runtime": sess.runtime,
-                         "external": ext, "mac": mac(cfg, "session", path, sess.session_id, sess.runtime,
-                                                     "1" if ext else "0")})
+                         "external": ext})
         for e in entries:
             h = text_hash(e.text)
             old = have["lines"].get(e.ref)
             if old and old.get("h") == h and old.get("speaker") == e.speaker:
                 continue
-            rows.append({"t": "line", "ref": e.ref, "kind": e.kind, "speaker": e.speaker, "h": h, "at": e.at or "",
-                         "mac": mac(cfg, "line", e.ref, e.kind, e.speaker, h, e.at or "")})
-    if rows and not rows[0]["mac"]:
-        return  # no key: nothing is attested (fail closed)
-    _append(cfg, rows)
+            rows.append({"t": "line", "ref": e.ref, "kind": e.kind, "speaker": e.speaker, "h": h, "at": e.at or ""})
+    _append(cfg, rows)  # no key or project id: nothing is written (fail closed)
 
 
 def _file_intact(cfg: Config, ref_path: str, lines: List) -> bool:
@@ -261,12 +261,19 @@ def turn_mac(cfg: Config, rec: Dict) -> str:
                "1" if rec.get("principal") else "0", text_hash(str(rec.get("text") or "")))
 
 
+def attest_turn(cfg: Config, rec: Dict) -> None:
+    """The capture hook's ledger row for a turn: a turns.jsonl row counts only while the ledger lists it."""
+    if rec.get("mac"):
+        _append(cfg, [{"t": "turn", "n": rec.get("n"), "mac": rec["mac"]}])
+
+
 def turn_ok(cfg: Config, rec: Optional[Dict]) -> bool:
     if not rec:
         return False
     got = str(rec.get("mac") or "")
     want = turn_mac(cfg, rec)
-    return bool(got) and bool(want) and hmac.compare_digest(got, want)
+    return (bool(got) and bool(want) and hmac.compare_digest(got, want)
+            and "%s|%s" % (rec.get("n"), got) in _load(cfg)["turns"])
 
 
 # -- presentation and confirmation --------------------------------------------------------------------
@@ -276,9 +283,6 @@ def shown(cfg: Config, item_id: str, h: str, at: str, sid: str, short: str = "")
     row = {"t": "shown", "id": item_id, "h": h, "at": at, "sid": sid}
     if short:
         row["short"] = short
-        row["mac"] = mac(cfg, "shown", item_id, h, at, sid, short)
-    else:
-        row["mac"] = mac(cfg, "shown", item_id, h, at, sid)
     _append(cfg, [row])
 
 
@@ -291,4 +295,4 @@ def used(cfg: Config, ref: str, item_id: str) -> bool:
 
 
 def consume(cfg: Config, ref: str, item_id: str) -> None:
-    _append(cfg, [{"t": "used", "ref": ref, "id": item_id, "mac": mac(cfg, "used", ref, item_id)}])
+    _append(cfg, [{"t": "used", "ref": ref, "id": item_id}])

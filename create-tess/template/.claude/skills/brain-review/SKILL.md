@@ -19,10 +19,13 @@ description: "Show the operator what the brain learned or holds for confirmation
    were shown to the operator, together with each short id.
 3. Ask the operator to answer with those phrases. An answer is accepted only
    when it comes after this listing, names the item's short id (or full id),
-   and says what to do with it: a list number, an earlier message, or a bare
-   "yes" is not enough (the tool refuses it, and you never type the approval
-   yourself). Several answers in one reply are fine:
-   "confirm D-0929-use-postgres, reject C-0929-01".
+   and is a plain instruction: the reply, or one line of it, is exactly
+   `confirm <short id>` (or `yes, confirm ...`, `accept ...`) or
+   `reject <short id>` (a short reason after a comma is fine). A list number,
+   an earlier message, a bare "yes", a question ("should I confirm ...?"), a
+   condition ("confirm ... after legal approves") or a quote is not enough
+   (the tool refuses it, and you never type the approval yourself). Several
+   answers in one reply go on separate lines, one id per line.
 4. Apply each answer with the operator's exact reply as the quote, and the
    item's FULL id (`id`) as `<id>`:
 

@@ -2,7 +2,8 @@
 
 ws-learn reads only the brain.json fields frozen in spec section 9.1:
 identity, principals, timezone, modes, entity_roots, onboarding.status,
-capture, save, remote, framework_remote_patterns, state_cards, budgets, and the
+capture (never capture.also_cwd: extra transcript roots are operator-only, see
+roots.py), save, remote, framework_remote_patterns, state_cards, budgets, and the
 optional learn block (auto_accept, settle_minutes; see settle.py).
 The one write is onboarding answer re-verification (see sync.py).
 """
@@ -148,11 +149,6 @@ class Config:
         """learn.settle_minutes: quiet time before a clean decision is auto-accepted (default 30)."""
         v = (self.data.get("learn") or {}).get("settle_minutes")
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else 30.0
-
-    @property
-    def also_cwd(self) -> List[str]:
-        """capture.also_cwd (optional): earlier paths of this repo whose Codex/Gemini sessions belong here."""
-        return [str(x) for x in ((self.data.get("capture") or {}).get("also_cwd") or []) if x]
 
     @property
     def entity_roots(self) -> List[str]:
