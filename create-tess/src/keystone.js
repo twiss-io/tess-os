@@ -280,3 +280,17 @@ export function check(targetDir, { doctor = true, verify = true } = {}) {
   }
   return result;
 }
+
+// v1.0.0: `tessctl anchor init` records the sha256 of every Tess safety file
+// (hooks, hook config, pins, lock, policy, engine, git hooks) under the OS
+// user's ~/.config/tess, outside the project. From then on a changed or
+// rolled-back safety file stops Tess's gate until `tessctl restore` or
+// `tessctl anchor accept`. Returns true/false; never throws.
+export function recordAnchor(targetDir) {
+  try {
+    tessctl(targetDir, ['anchor', 'init']);
+    return true;
+  } catch {
+    return false;
+  }
+}

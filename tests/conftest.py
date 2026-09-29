@@ -534,3 +534,56 @@ def _brain_key_dir(tmp_path_factory):
         yield str(d)
     finally:
         os.environ.pop("TESS_BRAIN_PROVENANCE_DIR", None)
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 enforcement anchor: tests that run a real install or `tessctl update`
+# without the fake OS home (fixtures/os_home.py) record an anchor under the
+# REAL ~/.config/tess/projects for their temp project, and the hooks (which
+# run `python3 -I`) always read that home. Remove, at session end, every
+# anchor and path marker whose project lived under this session's temp dir.
+# Content-addressed blobs in ~/.config/tess/anchor-blobs/ are shared and small.
+# ---------------------------------------------------------------------------
+
+def _real_anchor_projects() -> Path:
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "tess" / "projects"
+
+
+_REAL_ANCHOR_PROJECTS = _real_anchor_projects()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forget_test_anchors(tmp_path_factory):
+    yield
+    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    projects = _REAL_ANCHOR_PROJECTS
+    if not projects.is_dir():
+        return
+    for doc_path in list(projects.glob("*/anchor.json")) + list(projects.glob("by-path/*.json")):
+        try:
+            doc = json.loads(doc_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        where = os.path.realpath(str(doc.get("project_path") or doc.get("path") or "/nonexistent"))
+        if where == base or where.startswith(base + os.sep):
+            if doc_path.name == "anchor.json":
+                shutil.rmtree(doc_path.parent, ignore_errors=True)
+            else:
+                doc_path.unlink(missing_ok=True)
+    # Approved-file copies no remaining anchor names (older than 30 minutes, so
+    # an install running elsewhere keeps the copies it has just written).
+    import time
+    used: set = set()
+    for doc_path in projects.glob("*/anchor.json"):
+        try:
+            used |= {r.get("blob") for r in json.loads(doc_path.read_text(encoding="utf-8"))["files"].values()}
+        except (OSError, ValueError, KeyError, AttributeError):
+            pass
+    blobs = projects.parent / "anchor-blobs"
+    for blob in (blobs.iterdir() if blobs.is_dir() else []):
+        try:
+            if blob.name not in used and time.time() - blob.stat().st_mtime > 1800:
+                blob.unlink()
+        except OSError:
+            pass

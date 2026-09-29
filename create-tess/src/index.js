@@ -19,7 +19,7 @@ import {
   resolveTemplateRef,
 } from './scaffold.js';
 import { loadRoster, installSetForPath } from './roster.js';
-import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keystone.js';
+import { writeProfile, bake, check, activateGate, regenPolicyLock, recordAnchor } from './keystone.js';
 import { runJourney } from './journey.js';
 import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
 import { resolveTarget } from './target.js';
@@ -284,6 +284,10 @@ export async function main(argv) {
     // Integrity checks (unless skipped). check() never throws — it returns
     // booleans — so it stays outside the rollback gate.
     checks = check(targetDir, { doctor: !opts.noDoctor, verify: !opts.noVerify });
+    // v1.0.0: record the approved safety files OUTSIDE the project (the
+    // enforcement anchor, SECURITY.md), only once the install is proven to
+    // be the release (verify passed). Best-effort: a failure is reported.
+    checks.anchor = checks.verify === true ? recordAnchor(targetDir) : null;
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }

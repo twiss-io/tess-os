@@ -33,6 +33,7 @@ import {
 import { join, resolve, relative, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 // v1.0 (B4): `tessctl doctor` prints a short summary by default; these tests read
 // its full per-file counts (e.g. "core tamper: 0"), so the tessctl runs here are verbose,

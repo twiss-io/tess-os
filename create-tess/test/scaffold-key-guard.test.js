@@ -43,6 +43,7 @@ import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync, statSync } 
 import { join, resolve, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(TEST_DIR, '..'); // create-tess/

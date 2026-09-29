@@ -15,6 +15,7 @@ import { parseArgs } from '../src/args.js';
 import { NEUTRAL, SIGILS } from '../src/content/sigils.js';
 import { VIBES } from '../src/content/vibes.js';
 import { buildArrival, crewTip } from '../src/content/pathways.js';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = join(PKG_DIR, 'bin', 'create-tess.mjs');

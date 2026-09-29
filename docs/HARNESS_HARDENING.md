@@ -123,3 +123,22 @@ lock files owned by anyone else. `TESS_LOCK_DIR` still overrides the location.
 The dispatch secret scan (`vault-dispatch-scan.py`) now fails closed: if it
 cannot read the tool call or errors while scanning, the dispatch is blocked
 with a plain message instead of going through unscanned.
+
+## Enforcement anchor (v1.0.0)
+
+The pins above live in the tree they check, so a git route that writes an older
+gate together with its own matching pins passed them. Since v1.0.0 the launcher
+first compares every enforcement file with an anchor kept OUTSIDE the project,
+`~/.config/tess/projects/<root commit>/anchor.json` under the home in the OS user
+record (never `$HOME`). Any difference stops Tess: the gate denies every tool
+call with one plain message and the other hooks are skipped with a warning.
+
+| Command | What it does |
+|---|---|
+| `./tessctl anchor status` | Says whether the safety files match the approved record |
+| `./tessctl restore` | Puts the approved copies back, then re-syncs from `.tess/core` |
+| `./tessctl anchor accept` | In your own terminal: shows the diff, records the current files after you type `accept safety changes` |
+
+Only the installer, `tessctl update` / `self-update` (after a verified signed
+release, and never while the files differ) and `anchor accept` write the anchor.
+It is a loud, fail-closed stop, not an OS boundary: see SECURITY.md, Known limits.

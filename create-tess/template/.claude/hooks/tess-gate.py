@@ -133,6 +133,11 @@ PROTECTED_GLOBS = (
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
     ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
+    # v1.0.0 final reviews: what HEAD, the index and history resolve to. A
+    # write here (a replace ref, a grafts or sparse-checkout file, a moved
+    # branch, a crafted index) changes what the "restore from HEAD" undo puts back.
+    ".git/info/**", ".git/refs/**", ".git/HEAD", ".git/packed-refs", ".git/index",
+    ".git/objects/**", ".git/worktrees/**",
 )
 
 DISPATCH_TOOLS = {"Agent", "Task", "spawn_agent"}
@@ -506,12 +511,18 @@ ADVICE = {
 # must not fake that terminal or type the answer for them.
 _PTY_WRAPPER = re.compile(r"(?i)(?<![\w.-])(script|expect|unbuffer|socat|pexpect|ptyprocess|openpty|"
                           r"pty\.spawn|import\s+pty|from\s+pty)(?![\w.-])")
-_TYPED_APPROVAL = re.compile(r"(?i)\baccept\s+v\d")
+_TYPED_APPROVAL = re.compile(r"(?i)\baccept\s+v\d|\baccept\s+safety\s+changes\b")
+# v1.0.0: the enforcement anchor is written only by the operator (accept) or
+# the installer (init); an agent never records its own changes as approved.
+_ANCHOR_WRITE = re.compile(r"(?i)\banchor\s+(accept|init)\b")
 
 
 def _check_operator_only(cmd: str, v) -> None:
     if not re.search(r"(?i)tessctl", cmd):
         return
+    if _ANCHOR_WRITE.search(cmd):
+        v.add(DENY, "only the operator can record Tess's safety files as approved "
+                    "(`tessctl anchor accept`, in their own terminal)", "operator")
     if _PTY_WRAPPER.search(cmd) or _TYPED_APPROVAL.search(cmd):
         v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
                     "fake a terminal or type the approval for them", "operator")
@@ -588,6 +599,7 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
     opts = rest[:rest.index("--")] if "--" in rest else rest
     if sub == "config":
         _check_git_config(rest, v)
+    _check_git_history_views(root, gcwd, sub, rest, cfg, v, raw, depth)
     if sub in _NO_VERIFY_SUBS and any(_abbrev(a, "--no-verify") for a in opts):
         v.add(DENY, "--no-verify skips Tess's git hooks (secret scan and ship gate)", "noverify")
     if sub == "commit" and _commit_no_verify(rest):
@@ -610,6 +622,48 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
                 v.add(DENY, f"it removes or moves {a}, a protected Tess path ({hit})", "protected")
     if sub == "push":
         _check_push(root, gcwd, rest, v)
+
+
+_HISTORY_ADVICE = ("git replace refs, sparse checkouts and fetching into the checked-out branch "
+                   "change which files git writes without naming them")
+
+
+def _has_replace_refs(cwd: str) -> bool | None:
+    out = _git_ro(cwd, "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/")
+    return None if out is None else bool(out.strip())
+
+
+def _check_git_history_views(root: Path, cwd: str, sub: str, rest: list, cfg: list,
+                             v: Verdict, raw: str, depth: int):
+    """v1.0.0 final reviews (GPT-6 + Cyra): git routes that change what HEAD,
+    a branch or the working tree resolve to without naming a protected path."""
+    if sub == "replace":
+        v.add(DENY, "`git replace` makes git read one commit or file as another, so a later "
+                    "restore from HEAD could put back a different copy of Tess's gate", "rollback")
+    if sub == "update-ref" and any(a.startswith(("refs/replace/", "replace/")) for a in rest):
+        v.add(DENY, "it writes a git replace ref (refs/replace/...), which makes git read one "
+                    "commit or file as another", "rollback")
+    if sub == "update-ref" and "--stdin" in rest:
+        v.add(DENY, "`git update-ref --stdin` writes refs Tess cannot see (replace refs "
+                    "included)", "rollback")
+    if sub in ("fetch", "push", "pull") and any(
+            not a.startswith("-") and ":" in a and a.lstrip("+").split(":", 1)[1].startswith(
+                ("refs/replace/", "replace/")) for a in rest):
+        v.add(DENY, "its refspec writes git replace refs (refs/replace/...), which make git read "
+                    "one commit or file as another", "rollback")
+    if sub == "fetch" and any(_abbrev(a, "--update-head-ok") or (
+            re.match(r"^-[A-Za-z0-9]*u", a) and not a.startswith("--")) for a in rest):
+        v.add(DENY, "`git fetch --update-head-ok` (-u) can move the checked-out branch without "
+                    "touching the files; a reset or restore from HEAD would then bring in that "
+                    "commit's copy of Tess's gate", "rollback")
+    if sub == "sparse-checkout" and rest[:1] != ["list"] and "-h" not in rest:
+        v.add(DENY, "`git sparse-checkout` can delete Tess's hook configuration from the working "
+                    "tree, so the next session would run with no Tess hook at all", "rollback")
+    if any(c.split("=", 1)[0].lower().startswith("core.sparsecheckout") for c in cfg):
+        v.add(DENY, "it turns on a sparse checkout (-c core.sparseCheckout), which lets git delete "
+                    "Tess's hook configuration from the working tree", "rollback")
+    if sub == "bisect" and cwd:
+        _git_bisect(root, cwd, rest, v, depth)
 
 
 def _abbrev(arg: str, *targets: str) -> str | None:
@@ -649,6 +703,9 @@ def _check_git_config(rest: list, v: Verdict):
         return
     if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys):
         v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
+    if any(re.match(r"^core\.sparsecheckout", k) for k in keys):
+        v.add(DENY, "it turns on a sparse checkout (core.sparseCheckout), which lets git delete "
+                    "Tess's hook configuration from the working tree", "rollback")
     if any(re.match(r"^core\.(worktree|bare)(=|$)", k) for k in keys):
         v.add(DENY, "it changes core.worktree / core.bare, which points git's file writes at "
                     "another directory (Tess's git hooks included)", "protected")
@@ -716,6 +773,7 @@ def _git_ro(cwd: str, *args) -> str | None:
     """Read-only git for the gate's own questions: no shell, no GIT_* from the
     runtime, fsmonitor off. None when git fails (the caller fails closed)."""
     env = {k: val for k, val in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"  # the gate reads the real objects
     try:
         r = subprocess.run(["git", "-C", cwd, "-c", "core.fsmonitor=false", *args],
                            capture_output=True, text=True, timeout=20, env=env)
@@ -1021,11 +1079,111 @@ def _git_merge_like(root, cwd, sub, rest, v, raw, depth):
             else:
                 _move_to(root, cwd, c, v, "git cherry-pick", base=c + "^")
         return
-    targets = pos[:1] if sub == "rebase" else pos
-    if isinstance(opts.get("--onto"), str):
-        targets = [opts["--onto"]]
-    for t in targets or ["@{upstream}"]:
+    if sub == "rebase":
+        return _git_rebase(root, cwd, opts, pos, v)
+    for t in pos or ["@{upstream}"]:
         _move_to(root, cwd, _rev(t), v, f"git {sub}", base="merge-base")
+
+
+def _git_rebase(root, cwd, opts, pos, v):
+    """v1.0.0 final reviews: judge the tree the rebase PRODUCES against HEAD.
+    `git rebase --onto <old> HEAD` replays nothing onto <old>, so comparing
+    <old> with its merge-base (the round-3 rule) saw an empty change."""
+    onto = opts.get("--onto") if isinstance(opts.get("--onto"), str) else None
+    branch = _rev(pos[1]) if len(pos) > 1 else "HEAD"
+    if "--root" in opts:
+        if onto is None:
+            return None  # rewrites the same commits in place
+        base = _EMPTY_TREE
+        upstream = None
+    else:
+        upstream = _rev(pos[0]) if pos else "@{upstream}"
+        mb = _git_ro(cwd, "merge-base", upstream, branch) if not upstream.startswith("-") else None
+        base = mb.strip() if mb else None
+    newbase = onto or upstream
+    what = "git rebase" + (" --onto" if onto else "")
+    out = None
+    if base and newbase and not newbase.startswith("-") and not branch.startswith("-"):
+        out = _git_ro(cwd, "merge-tree", "--write-tree", "--no-messages",
+                      f"--merge-base={base}", newbase, branch)
+    result = out.split()[0] if out and out.split() else None
+    changed = _changed_protected(root, cwd, "HEAD", result) if result else None
+    if changed is None:
+        return v.add(ASK, f"`{what}` rewrites the branch onto {newbase}, and Tess cannot work out "
+                          "the result; it may replace Tess's own gate or rules")
+    if changed:
+        return v.add(ASK, f"`{what}` would change protected Tess files ({', '.join(changed[:5])}) "
+                          "relative to HEAD: that copy of the gate and rules would run from then on")
+    if any(k in opts for k in ("-i", "--interactive", "--edit-todo")) and base:
+        touched = _changed_protected(root, cwd, base, branch)
+        if touched is None or touched:
+            v.add(ASK, "an interactive rebase can drop or edit the commits that changed protected "
+                       f"Tess files ({', '.join((touched or ['unknown'])[:5])})")
+    return None
+
+
+def _bisect_terms(cwd: str) -> tuple:
+    path = _git_ro(cwd, "rev-parse", "--git-path", "BISECT_TERMS")
+    try:
+        with open(os.path.join(cwd, path.strip()) if path else "", encoding="utf-8") as fh:
+            words = fh.read().split()
+        return (words[0], words[1]) if len(words) >= 2 else ("bad", "good")
+    except OSError:
+        return "bad", "good"
+
+
+def _git_bisect(root, cwd, rest, v, depth):
+    """v1.0.0 final reviews: `git bisect` checks out commits in a range; each
+    one must not change protected files relative to HEAD."""
+    if not rest or rest[0] in ("help", "log", "visualize", "view", "terms", "-h", "--help"):
+        return None
+    op, args = rest[0], rest[1:]
+    if op == "replay":
+        return v.add(ASK, "`git bisect replay` checks out commits from a log Tess cannot read")
+    if op == "reset":
+        pos = [a for a in args if not a.startswith("-")]
+        target = pos[0] if pos else None
+        if target is None:
+            path = _git_ro(cwd, "rev-parse", "--git-path", "BISECT_START")
+            try:
+                with open(os.path.join(cwd, path.strip()) if path else "", encoding="utf-8") as fh:
+                    target = fh.read().strip() or None
+            except OSError:
+                target = None
+        return target and _move_to(root, cwd, target, v, "git bisect reset")
+    new_t, old_t = _bisect_terms(cwd)
+    refs = [r for r in (_git_ro(cwd, "for-each-ref", "--format=%(refname)", "refs/bisect/")
+                        or "").split("\n") if r]
+    bads = [r for r in refs if r == f"refs/bisect/{new_t}"]
+    goods = [r for r in refs if r.startswith(f"refs/bisect/{old_t}-")]
+    if op == "run":
+        if depth < 4 and args:
+            check_command(root, cwd, shlex.join(args), v, depth + 1)
+    elif op == "start":
+        if "--no-checkout" in args:
+            return None
+        _, pos, _, _ = _parse(args, "", ("--term-new", "--term-bad", "--term-old", "--term-good"))
+        bads, goods = pos[:1], pos[1:]
+    elif op in ("bad", "new", new_t):
+        bads = [a for a in args if not a.startswith("-")][:1] or ["HEAD"]
+    elif op in ("good", "old", old_t):
+        goods = goods + ([a for a in args if not a.startswith("-")] or ["HEAD"])
+    if not bads or not goods:
+        return None  # git needs both ends before it checks anything out
+    for b in bads:
+        _move_to(root, cwd, b, v, f"git bisect {op}")
+    names = _git_ro(cwd, "log", "--format=", "--name-only", "-m", "--no-renames",
+                    "--max-count=20000", *bads, "--not", *goods, "--")
+    if names is None:
+        return v.add(ASK, f"`git bisect {op}` checks out commits Tess cannot list")
+    top = (_git_ro(cwd, "rev-parse", "--show-toplevel") or str(root)).strip()
+    globs = _protected_globs(root)
+    hits = sorted({rel for n in names.split("\n") if n
+                   for rel in [_rel_to_root(root, top, n)] if rel and _glob_hit(rel, globs)})
+    if hits:
+        v.add(ASK, f"`git bisect {op}` would check out commits that change protected Tess files "
+                   f"({', '.join(hits[:5])}); those copies of the gate and rules would run")
+    return None
 
 
 _PATCH_PATHS = re.compile(r"^(?:diff --git a/(\S+) b/(\S+)|(?:\+\+\+|---) (\S+)|"
@@ -1084,6 +1242,14 @@ def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v:
     if cwd is None:
         return v.add(DENY, f"`git {sub}` runs in a directory known only at run time (-C), so Tess "
                            "cannot check what it writes", "rollback")
+    if sub != "clone" and _has_replace_refs(cwd):
+        # v1.0.0: with replace refs, HEAD and the index no longer mean what they
+        # say, so even the "restore from HEAD" undo is not the same source.
+        # (No answer = not a repository: the git command fails on its own.)
+        return v.add(DENY, f"`git {sub}` would read commits through git replace refs "
+                           "(refs/replace/ is not empty), so HEAD may not be what it looks "
+                           "like. Remove them yourself (`git replace -d`) outside the agent",
+                     "rollback")
     if sub == "checkout-index":
         if any(a.startswith("--prefix") for a in rest) or any(
                 a in ("-a", "--all", "--stdin") or re.match(r"^-[a-z]*a", a) for a in rest):
@@ -1293,6 +1459,90 @@ def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
                     "could point Tess's verifiers at a key the agent made", "envhome")
 
 
+EXTRACTORS = {"tar", "gtar", "bsdtar", "unzip", "ditto", "cpio", "pax"}
+_TAR_VALS = ("--file", "--directory", "--exclude", "--files-from", "--transform", "--xform",
+             "--strip-components", "--use-compress-program", "--to-command", "--format",
+             "--owner", "--group", "--mode", "--newer", "--label", "--volno-file",
+             "--info-script", "--new-volume-script", "--checkpoint-action")
+
+
+def _extract_plan(argv: list, cwd: str) -> tuple | None:
+    """(destination dir, archive file | None, names unknowable) for an
+    extractor segment that writes files; None when it only lists or prints."""
+    name = os.path.basename(argv[0])
+    args = [a for a in argv[1:] if a not in REDIRECTS]
+    join = lambda d: d if os.path.isabs(os.path.expanduser(d)) else os.path.join(cwd, d)  # noqa: E731
+    if name in ("tar", "gtar", "bsdtar"):
+        if args and not args[0].startswith("-"):
+            args = ["-" + args[0]] + args[1:]  # old-style `tar xzf file`
+        opts, pos, _, _ = _parse(args, "fCTXs", _TAR_VALS)
+        flags = "".join(k[1:] for k in opts if re.fullmatch(r"-[A-Za-z]", k))
+        if not ("x" in flags or any(str(k).startswith(("--extract", "--get")) for k in opts)):
+            return None
+        if "O" in flags or "--to-stdout" in opts:
+            return None
+        dest = opts.get("-C") or opts.get("--directory") or "."
+        src = opts.get("-f") or opts.get("--file")
+        odd = any(k in opts for k in ("-s", "-P", "--transform", "--xform", "--strip-components",
+                                      "--absolute-names", "--to-command", "-T", "--files-from"))
+        return join(str(dest)), (None if src in (None, True, "-") else join(str(src))), odd
+    if name == "unzip":
+        opts, pos, _, _ = _parse(args, "dx")
+        if any(k in opts for k in ("-l", "-t", "-Z", "-z", "-p", "-v", "-c")):
+            return None
+        return join(str(opts.get("-d") or ".")), (join(pos[0]) if pos else None), False
+    if name == "ditto":
+        pos = [a for a in args if not a.startswith("-")]
+        if "-x" in args or any(re.fullmatch(r"-[a-z]*x[a-z]*", a) for a in args):
+            src = pos[0] if pos and "-k" in args else None
+            return join(pos[-1] if pos else "."), (join(src) if src else None), not src
+        return join(pos[-1] if pos else "."), None, True
+    if name in ("cpio", "pax"):
+        flags = "".join(a[1:] for a in args if re.match(r"^-[A-Za-z]+$", a))
+        writes = ("i" in flags or "p" in flags or "--extract" in args or "--pass-through" in args
+                  ) if name == "cpio" else "r" in flags
+        if not writes:
+            return None
+        pos = [a for a in args if not a.startswith("-")]
+        copy = ("p" in flags) if name == "cpio" else ("w" in flags)
+        return join(pos[-1] if copy and pos else "."), None, True
+    return None
+
+
+def _archive_members(archive: str, tool: str) -> list | None:
+    cmd = ["unzip", "-Z1", archive] if tool in ("unzip", "ditto") else ["tar", "-tf", archive]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return [ln for ln in r.stdout.splitlines() if ln] if r.returncode == 0 else None
+
+
+def _check_extract(root: Path, cwd: str, argv: list, v: Verdict):
+    """v1.0.0 final reviews: an archive extractor writes files the command
+    text does not name (`git archive <old> .claude/hooks | tar -x`)."""
+    plan = _extract_plan(argv, cwd)
+    if plan is None:
+        return
+    dest, archive, odd = plan
+    rel = _rel_to_root(root, cwd, dest)
+    if rel is None:
+        return  # outside the project
+    tool = os.path.basename(argv[0])
+    members = None if odd or archive is None else _archive_members(archive, tool)
+    if members is None:
+        if rel == "." or _glob_hit(rel, _protected_globs(root)) or rel.split("/")[0] in {
+                r.split("/")[0] for r in PROTECTED_DIR_ROOTS}:
+            v.add(DENY, f"`{tool}` extracts files Tess cannot list into {dest}, which holds "
+                        "protected Tess files", "protected")
+        return
+    for m in members:
+        hit = protected_hit(root, dest, m.lstrip("/") if not m.startswith("/") else m)
+        if hit:
+            v.add(DENY, f"`{tool}` extracts {m} ({hit}), a protected Tess path", "protected")
+            return
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int):
     env, argv = _strip_prefix(argv)
     for k, val in env.items():
@@ -1334,6 +1584,12 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
                     "environment, where later git commands can replace Tess's hooks or gate",
               "rollback")
     _check_key_text(cwd, argv, " ".join(argv), v)
+    if name in EXTRACTORS:
+        _check_extract(root, cwd, argv, v)
+    if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(
+            a.split("=", 1)[0] == "GIT_REPLACE_REF_BASE" for a in argv[1:])):
+        v.add(DENY, "GIT_REPLACE_REF_BASE makes git read commits through another set of replace "
+                    "refs, so HEAD may not be what it looks like", "rollback")
     if name == "git":
         _check_git(root, cwd, env, argv, v, raw, depth)
     elif name == "gh":
@@ -1344,7 +1600,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
             v.add(DENY, f"it writes to {target}, a protected Tess path ({hit})", "protected")
     if name not in READERS_OK_FOR_GIT_DIR and name != "git":
         for a in argv[1:]:
-            if re.search(r"(^|/)\.git/(hooks(/|$)|config$)", a):
+            if re.search(r"(^|/)\.git/(hooks(/|$)|config$|info(/|$)|refs/replace(/|$))", a):
                 v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
 
 
@@ -1391,10 +1647,31 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
         for argv in segs:
             _check_segment(root, cwd, argv, v, cmd, depth)
         return
+    _check_archive_pipe(segs, v)
     cur = cwd or str(root)
     for argv in segs:
         _check_segment(root, cur, argv, v, cmd, depth)
         cur = _next_cwd(root, cur, argv)
+
+
+def _check_archive_pipe(segs: list, v: Verdict) -> None:
+    """`git archive <rev> <paths> | tar -x`: an old copy of any file, written
+    by a tool that never names it."""
+    seen_archive = False
+    for seg in segs:
+        _, argv = _strip_prefix(seg)
+        if not argv:
+            continue
+        name = os.path.basename(argv[0])
+        if name == "git":
+            words = [a for a in argv[1:] if not a.startswith("-")]
+            if "archive" in words[:3] and not any(a in ("-l", "--list") for a in argv):
+                seen_archive = True
+        elif seen_archive and name in EXTRACTORS:
+            v.add(DENY, "it unpacks `git archive` output with an extractor, which writes older "
+                        "copies of files without naming them (Tess's gate and pins included)",
+                  "rollback")
+            return
 
 
 def _next_cwd(root: Path, cur: str | None, argv: list) -> str | None:

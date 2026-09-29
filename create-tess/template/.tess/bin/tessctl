@@ -8,7 +8,10 @@ Runtime: Python 3 (stdlib + pyyaml). No Node. Self-contained single file.
 
 Implemented commands (Phase 1 + Phase 2 core + security hardening):
   init        scaffold operator/ stubs, run restore + render
-  restore     re-sync live tree from .tess/core at locked version (no network, idempotent)
+  restore     put safety files back to the approved record (anchor), then re-sync the live
+              tree from .tess/core at locked version (no network, idempotent)
+  anchor      status | accept | init: the record of Tess's approved safety files kept
+              outside the project (~/.config/tess/projects/<id>/anchor.json)
   doctor      SHA-integrity check every core-managed file; flag security-tier drift + core tamper
   update      snapshot → doctor gate → git subtree pull → per-file resolution → render → re-pin
   publish     copy core→live, status→user-published, stamp @published-from
@@ -2281,6 +2284,42 @@ def _enforcement_lock_fingerprint(lock: dict) -> str:
         default=str)
 
 
+# v1.0.0: the runtime config files that load Tess's hooks, and the text of the
+# gate hook each must carry. Deleting one (or a sparse checkout that drops it)
+# means the next session runs no Tess hook at all, so doctor / verify /
+# `scripts/tess hooks-status` report it; the anchor covers their exact bytes.
+_HOOK_CONFIG_GATE = {
+    ".claude/settings.json": "tess-gate.py --runtime claude",
+    ".codex/config.toml": "tess-gate.py --runtime codex",
+}
+
+
+def _hook_config_missing(root: Path) -> list:
+    """[(rel, why)] for each ENABLED runtime's hook config that is missing or
+    no longer runs the gate. Only in a project that ships Tess's hooks."""
+    if not (root / ".claude" / "hooks" / "run-pinned.py").is_file():
+        return []
+    try:
+        enabled = render_generated_live_paths(root)
+    except (SystemExit, Exception):  # noqa: BLE001 — unreadable manifest: check both
+        enabled = set(_HOOK_CONFIG_GATE)
+    out = []
+    for rel, needle in sorted(_HOOK_CONFIG_GATE.items()):
+        if rel not in enabled:
+            continue
+        path = root / rel
+        if not path.is_file():
+            out.append((rel, "is missing, so the runtime loads none of Tess's hooks"))
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        if needle not in text:
+            out.append((rel, "no longer runs Tess's safety gate"))
+    return out
+
+
 def _enforcement_hook_findings(root: Path, lock: dict) -> list:
     """doctor: [(rel, problem)] for every enforcement render output of an
     enabled target that carries a capture/override/held status, and for a
@@ -2294,6 +2333,11 @@ def _enforcement_hook_findings(root: Path, lock: dict) -> list:
             out.append((rel, f"carries a {'/'.join(stale)} status (capture/override/hold); "
                              f"Tess ignores it on runtime-enforcement config"))
         live = root / rel
+        if (rel in _HOOK_CONFIG_GATE and not live.is_file()
+                and (root / ".claude" / "hooks" / "run-pinned.py").is_file()):
+            out.append((rel, "is missing, so the runtime loads none of Tess's hooks and no "
+                             "safety check runs"))
+            continue
         if rel != ".claude/settings.json" or not live.is_file():
             continue
         try:
@@ -4293,6 +4337,8 @@ def cmd_restore(args, root: Path) -> None:
     force = bool(getattr(args, "force", False))
     if dry_run:
         print("tessctl restore --dry-run: showing what would change")
+        for _line in _anchor_restore(root, dry_run=True):
+            print(f"  CANNOT RESTORE  {_line}")
         counts = _do_restore(root, verbose=True, dry_run=True, force=force)
         blocked = list(counts["drift_paths"])
         for name, rels in sorted(_render_output_drift(root, load_lock(root)).items()):
@@ -4308,11 +4354,34 @@ def cmd_restore(args, root: Path) -> None:
               f"{'overwrite' if force else 'refuse to overwrite'}")
         return
 
+    _anchor_restore_step(root)
     print("tessctl restore: syncing live tree from .tess/core …")
     blocked = _lifecycle_sync(root, op="restore", force=force)
     if blocked:
         _exit_blocked_by_drift("restore", blocked)
     print("restore: complete.")
+
+
+def _anchor_restore_step(root: Path) -> None:
+    """v1.0.0: first put Tess's safety files back to the approved record
+    (the enforcement anchor), so the gate works again."""
+    st = _anchor_state(root)
+    if st.state == "lost":
+        sys.exit("tessctl restore: STOPPED — " + "\n".join(_anchor_findings(root)))
+    if st.state != "mismatch":
+        return
+    print("tessctl restore: putting Tess's safety files back to the approved copies …")
+    failed = _anchor_restore(root)
+    if failed:
+        sys.exit("tessctl restore: STOPPED — some safety files could not be put back:\n"
+                 + "\n".join(f"  - {f}" for f in failed)
+                 + "\n  Reinstall Tess OS, or run `tessctl anchor accept` if the current "
+                   "files are the ones you want.")
+    after = _anchor_state(root)
+    if after.state != "ok":
+        sys.exit("tessctl restore: STOPPED — the safety files still differ after restoring:\n"
+                 + "\n".join(f"  - {p}" for p in after.problems))
+    print("  safety files: back to the approved copies; Tess's gate works again")
 
 
 def _lifecycle_sync(root: Path, op: str, force: bool = False) -> list:
@@ -6368,6 +6437,11 @@ def cmd_doctor(args, root: Path) -> None:
     lock = load_lock(root)
     as_json = getattr(args, "json_out", False)
     fix = getattr(args, "fix", False)
+    # v1.0.0 enforcement anchor: said FIRST, before any other check can stop
+    # doctor, because while it fails Tess's gate stops every tool call.
+    _anchor_lines = [] if getattr(args, "path", None) else _anchor_findings(root)
+    if _anchor_lines and not as_json:
+        print("doctor: FAIL — " + "\n".join(_anchor_lines) + "\n")
     path_filter = getattr(args, "path", None)
     # v1.0 (B4): by default doctor prints only what needs attention plus one
     # plain summary line; --verbose (or TESS_VERBOSE=1) lists every file.
@@ -6509,6 +6583,11 @@ def cmd_doctor(args, root: Path) -> None:
     integrity_count = sum(1 for r in results if r.get("lock_status") == "integrity")
 
     errors += _doctor_engb_findings(root, lock, results, as_json, path_filter, fix)  # v0.2 eng-b
+    if _anchor_lines:   # v1.0.0 enforcement anchor (computed at the top)
+        results.append({"core_key": None, "live_path": "<enforcement-anchor>",
+                        "lock_status": "anchor", "drift": False, "core_tamper": False,
+                        "issues": _anchor_lines})
+        errors += 1
     if as_json:
         print(json.dumps(results, indent=2, default=str))
         sys.exit(1 if errors else 0)
@@ -6734,6 +6813,9 @@ def cmd_doctor(args, root: Path) -> None:
     if blocking and not verbose:
         print(f"\n{len(results):,} files checked. Only the problems are listed above; "
               f"`tessctl doctor --verbose` lists every file.")
+    if _anchor_lines:
+        print("\ndoctor: FAIL — " + "\n".join(_anchor_lines))
+        sys.exit(1)
     if core_tamper_count > 0:
         print(f"\ndoctor: FAIL — {core_tamper_count} core tamper(s) detected. "
               f"Restore .tess/core from git or run `tessctl rollback`.")
@@ -8891,6 +8973,8 @@ def _cmd_update_run(args, root: Path) -> None:
 def _cmd_update_body(args, root: Path) -> None:
     dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
     to_version = getattr(args, "to", None)
+    if not dry_run:
+        _anchor_refuse_unless_clean(root, "update")   # v1.0.0: never re-bless changed safety files
 
     lock = load_lock(root)
     fw = lock.get("framework", {})
@@ -9416,6 +9500,8 @@ def _cmd_update_body(args, root: Path) -> None:
         if dry_run:
             print("\nupdate check: complete — " + UPDATE_CHECK_RESULT)
         else:
+            if _RELEASE_PROOF_STATE.get("proof"):
+                _anchor_after_release(root, "update")   # v1.0.0: verified signed release applied
             print("\nupdate: complete")
 
     except BaseException as exc:
@@ -10361,6 +10447,15 @@ def cmd_verify(args, root: Path) -> None:
     render_generated = render_generated_live_paths(root)
 
     print("\ntessctl verify — checking core integrity and security-tier status\n")
+    # v1.0.0: said first, before any later check can stop verify. While the
+    # anchor fails, Tess's gate stops every tool call; without its hook
+    # config a runtime runs no Tess hook at all.
+    anchor_lines = _anchor_findings(root)
+    for _line in anchor_lines:
+        print(f"  ANCHOR  {_line.strip()}")
+    hook_config = _hook_config_missing(root)
+    for _rel, _why in hook_config:
+        print(f"  HOOK CONFIG  {_rel}  — {_why}")
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
@@ -10631,8 +10726,13 @@ def cmd_verify(args, root: Path) -> None:
 
     if (core_tampers or security_drifts or normal_drifts or missing_live_files
             or quarantined_files or doctrine_leaks or untracked_core or unknown_targets
-            or security_symlinks):
+            or security_symlinks or anchor_lines or hook_config):
         print("\nverify: FAIL")
+        if anchor_lines:
+            print("  " + anchor_lines[0])
+        if hook_config:
+            print(f"  {len(hook_config)} runtime hook config file(s) missing or without Tess's "
+                  f"gate — no Tess hook runs there; run `tessctl restore` (or `tessctl render`)")
         if security_symlinks:
             print(f"  {len(security_symlinks)} security-tier symlink(s) — restore the regular "
                   f"file(s) from git (`git checkout -- <path>`)")
@@ -11597,6 +11697,8 @@ def cmd_self_update(args, root: Path) -> None:
         save_lock(root, lock)
         print(f"\n  tess.lock: upstream_ref updated to {ref}")
 
+    if _su_proof is not None:
+        _anchor_after_release(root, "self-update")   # v1.0.0: verified signed release applied
     print(f"\ntessctl self-update: complete — engine updated to {ref}")
     if backup_path.exists():
         print(f"  Previous engine retained at: {backup_path}")
@@ -17395,6 +17497,440 @@ def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
     return "git-root:" + roots[0]
 
 
+# ---------------------------------------------------------------------------
+# ENFORCEMENT ANCHOR (v1.0.0, final reviews GPT-6 + Cyra: "gate rollback")
+#
+# The gate decides from command text and its pins (.tess/core/pinned-scripts
+# .sha256, .tess/tess.lock) live in the working tree, so a git route the gate
+# did not enumerate could install an older or stubbed gate WITH valid pins.
+# The anchor moves the source of truth out of the repository:
+#   <OS user home>/.config/tess/projects/<project id>/anchor.json   (0600, dir 0700)
+# holds the sha256 of every enforcement file (ANCHOR_FILES, the Tess git hooks,
+# and tess.lock's enforcement fields), and a content-addressed copy of each
+# anchored file's bytes sits in <home>/.config/tess/anchor-blobs/ so
+# `tessctl restore` can put them back. .claude/hooks/run-pinned.py checks the
+# anchor BEFORE running any hook: a mismatch makes the gate deny every call
+# and skips every other hook with a warning.
+#
+# Written ONLY by: the create-tess wizard (`tessctl anchor init`, after its
+# verify, refused once an anchor exists), `tessctl update` / `self-update`
+# after a verified signed release was applied (refused while the files
+# differ from the anchor), and `tessctl anchor accept` (a person at a real
+# terminal, shown the diff, typing the confirmation). The same lists and
+# checks live in run-pinned.py; tests/test_v1_enforcement_anchor.py keeps
+# the two in step.
+#
+# Not an OS boundary: a process running as the same OS user can rewrite the
+# anchor. The gate denies that to the agent's tools; a program assembled at
+# run time is not seen. What the anchor buys is that a silent rollback of the
+# gate becomes a loud, fail-closed stop.
+# ---------------------------------------------------------------------------
+
+ANCHOR_FORMAT = "tess-enforcement-anchor/1"
+ANCHOR_FILES = (
+    ".claude/hooks/run-pinned.py", ".claude/hooks/tess-gate.py",
+    ".claude/hooks/vault-dispatch-scan.py", ".claude/hooks/dispatch-guard.sh",
+    ".claude/hooks/task-lock-set.sh", ".claude/hooks/task-lock-clear.sh",
+    ".claude/hooks/utc-local-context.sh", "scripts/brain/onboard.py", "scripts/brain/tessbrain.py",
+    ".tess/core/pinned-scripts.sha256", ".tess/tess.lock", ".claude/settings.json",
+    ".codex/config.toml", ".codex/rules/tess.rules", "core/policy/policy.yaml",
+    ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
+)
+ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
+ANCHOR_GIT_PREFIX = "git-hooks/"
+ANCHOR_GIT_MARKER = "# tess-"
+ANCHOR_CONFIRM = "accept safety changes"
+ANCHOR_STOP = ("Tess's safety files have changed since the last approved install or update, "
+               "so Tess has stopped all actions. Run `tessctl restore` to put them back, or "
+               "`tessctl anchor accept` if you changed them on purpose.")
+_ANCHOR_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}|path-[0-9a-f]{64}")
+
+
+class AnchorState:
+    """state: none (never anchored) | ok | mismatch | lost; problems: plain lines."""
+
+    def __init__(self, state: str, doc=None, problems=None, where: str = ""):
+        self.state, self.doc, self.problems, self.where = state, doc, problems or [], where
+
+
+def _anchor_tess_dir() -> Path:
+    return _os_user_home() / ".config" / "tess"
+
+
+def _anchor_path_key(root: Path) -> str:
+    return hashlib.sha256(os.path.realpath(str(root)).encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def _anchor_project_id(root: Path) -> str | None:
+    """Root commit of HEAD's first-parent history, replace refs and GIT_*
+    overrides ignored (run-pinned.py computes the same)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        r = subprocess.run(["git", "-C", str(root), "-c", "core.fsmonitor=false", "rev-list",
+                            "--first-parent", "--max-parents=0", "HEAD", "--"],
+                           capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    roots = r.stdout.split() if r.returncode == 0 else []
+    if len(roots) != 1 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", roots[0]):
+        return None
+    return roots[0]
+
+
+def _anchor_git_hooks_dir(root: Path) -> Path | None:
+    dot = root / ".git"
+    if dot.is_dir():
+        return dot / "hooks"
+    try:
+        text = dot.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.match(r"^gitdir:\s*(.+?)\s*$", text, re.M)
+    if not m:
+        return None
+    gitdir = Path(m.group(1)) if os.path.isabs(m.group(1)) else root / m.group(1)
+    common = gitdir
+    try:
+        c = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+        common = Path(c) if os.path.isabs(c) else gitdir / c
+    except OSError:
+        pass
+    return common / "hooks"
+
+
+def _anchor_file_path(root: Path, rel: str) -> Path | None:
+    if rel.startswith(ANCHOR_GIT_PREFIX):
+        hooks = _anchor_git_hooks_dir(root)
+        return hooks / rel[len(ANCHOR_GIT_PREFIX):] if hooks else None
+    return root / rel
+
+
+def _anchor_lock_projection(text: str) -> str:
+    """Byte-for-byte the digest run-pinned.py's lock_projection computes."""
+    files: dict = {}
+    fw: dict = {}
+    section = key = None
+    for raw in text.splitlines():
+        if raw and not raw.startswith((" ", "#")):
+            section, key = raw.split(":", 1)[0].strip(), None
+            continue
+        if section == "framework":
+            m = re.match(r"^  (trusted_key_fingerprint|trusted_ssh_key_fingerprint):\s*(.*?)\s*$", raw)
+            if m:
+                fw[m.group(1)] = m.group(2).strip("'\"")
+            continue
+        if section != "files":
+            continue
+        m = re.match(r"^  (\S[^:]*):\s*$", raw)
+        if m:
+            key = m.group(1).strip().strip("'\"")
+            files[key] = {}
+            continue
+        m = re.match(r"^    (base_sha|live_path|tier):\s*(.*?)\s*$", raw)
+        if m and key is not None:
+            files[key][m.group(1)] = m.group(2).strip("'\"")
+    canon = json.dumps({"files": files, "framework": fw}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _anchor_digest(rel: str, data: bytes) -> str:
+    if rel == LOCK_FILE:
+        return _anchor_lock_projection(data.decode("utf-8", "replace"))
+    return hashlib.sha256(data).hexdigest()
+
+
+def _anchor_read(path: Path | None) -> bytes | None:
+    try:
+        if path is None or path.is_symlink() or not path.is_file():
+            return None
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _anchor_current(root: Path) -> dict:
+    """{rel: bytes} of every enforcement file present now (Tess git hooks
+    only when they carry a Tess marker)."""
+    out = {}
+    for rel in ANCHOR_FILES:
+        data = _anchor_read(root / rel)
+        if data is not None:
+            out[rel] = data
+    for name in ANCHOR_GIT_HOOKS:
+        rel = ANCHOR_GIT_PREFIX + name
+        data = _anchor_read(_anchor_file_path(root, rel))
+        if data is not None and ANCHOR_GIT_MARKER.encode() in data:
+            out[rel] = data
+    return out
+
+
+def _anchor_private_json(path: Path) -> dict | None:
+    """None when absent; raises ValueError (a plain reason) when present but
+    not a private regular JSON file of this user's."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise ValueError(f"{path} is not a regular file")
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        raise ValueError(f"{path} is not owned by this user")
+    if os.name == "posix" and st.st_mode & 0o022:
+        raise ValueError(f"{path} is writable by other users")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{path} is unreadable ({type(e).__name__})")
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    return doc
+
+
+def _anchor_state(root: Path) -> AnchorState:
+    """Where this checkout stands against its anchor (same rules as run-pinned.py)."""
+    base = _anchor_tess_dir() / "projects"
+    try:
+        marker = _anchor_private_json(base / "by-path" / (_anchor_path_key(root) + ".json"))
+        if marker is not None:
+            pid = str(marker.get("project_id") or "")
+            if not _ANCHOR_ID.fullmatch(pid):
+                return AnchorState("lost", problems=["the anchor's path marker names no project"])
+        else:
+            pid = _anchor_project_id(root) or ""
+            if not pid:
+                return AnchorState("none")
+        pdir = base / pid
+        doc = _anchor_private_json(pdir / "anchor.json")
+        if doc is None:
+            if marker is not None or _anchor_private_json(pdir / "expected.json") is not None:
+                return AnchorState("lost", problems=[f"{pdir / 'anchor.json'} is missing"])
+            return AnchorState("none")
+    except ValueError as e:
+        return AnchorState("lost", problems=[str(e)])
+    if doc.get("format") != ANCHOR_FORMAT or not isinstance(doc.get("files"), dict):
+        return AnchorState("lost", problems=["the anchor has an unknown format"])
+    problems = []
+    for rel, rec in sorted(doc["files"].items()):
+        want = rec.get("sha256") if isinstance(rec, dict) else None
+        data = _anchor_read(_anchor_file_path(root, rel))
+        if data is None:
+            problems.append(f"{rel} is missing")
+        elif not want or _anchor_digest(rel, data) != want:
+            problems.append(f"{rel} has changed")
+    return AnchorState("mismatch" if problems else "ok", doc, problems, str(pdir / "anchor.json"))
+
+
+def _anchor_mkdir_private(path: Path, root: Path) -> None:
+    if _path_within(str(path), str(root)):
+        raise ValueError(f"{path} is inside this project")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise ValueError(f"{path} is not a directory")
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        raise ValueError(f"{path} is not owned by this user")
+    if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(path, 0o700)
+
+
+def _anchor_write_private(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    nofollow = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | nofollow, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
+
+
+def _anchor_write(root: Path, source: str) -> Path:
+    """Record the current enforcement files as approved. Raises ValueError."""
+    pid = _anchor_project_id(root) or ("path-" + _anchor_path_key(root))
+    tess_dir = _anchor_tess_dir()
+    projects, blobs = tess_dir / "projects", tess_dir / "anchor-blobs"
+    pdir = projects / pid
+    for d in (tess_dir, projects, projects / "by-path", pdir, blobs):
+        _anchor_mkdir_private(d, root)
+    files = {}
+    for rel, data in sorted(_anchor_current(root).items()):
+        raw = hashlib.sha256(data).hexdigest()
+        blob = blobs / raw
+        if _anchor_read(blob) is None or hashlib.sha256(blob.read_bytes()).hexdigest() != raw:
+            _anchor_write_private(blob, data)
+        path = _anchor_file_path(root, rel)
+        mode = stat.S_IMODE(os.stat(path).st_mode) if path else 0o644
+        files[rel] = {"sha256": _anchor_digest(rel, data), "blob": raw,
+                      "mode": 0o755 if mode & 0o111 else 0o644}
+    try:
+        version = str((load_lock(root).get("framework") or {}).get("version") or "")
+    except (SystemExit, Exception):  # noqa: BLE001 — the version is a label only
+        version = ""
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    doc = {"format": ANCHOR_FORMAT, "project_id": pid, "project_path": os.path.realpath(str(root)),
+           "release": version, "source": source, "written_at": now, "files": files}
+    _anchor_write_private(pdir / "anchor.json", (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode())
+    _anchor_write_private(pdir / "expected.json",
+                          (json.dumps({"format": ANCHOR_FORMAT, "project_id": pid}) + "\n").encode())
+    marker = {"format": ANCHOR_FORMAT, "project_id": pid, "path": os.path.realpath(str(root))}
+    _anchor_write_private(projects / "by-path" / (_anchor_path_key(root) + ".json"),
+                          (json.dumps(marker) + "\n").encode())
+    return pdir / "anchor.json"
+
+
+def _anchor_findings(root: Path) -> list:
+    """doctor / verify: plain lines, empty when the anchor matches or there is none."""
+    st = _anchor_state(root)
+    if st.state in ("none", "ok"):
+        return []
+    head = ANCHOR_STOP if st.state == "mismatch" else (
+        "Tess's record of its approved safety files is missing or unreadable, so Tess has "
+        "stopped all actions. Run `tessctl anchor accept` in your own terminal.")
+    return [head] + [f"  - {p}" for p in st.problems]
+
+
+def _anchor_refuse_unless_clean(root: Path, verb: str) -> None:
+    """update / self-update never re-bless changed safety files."""
+    st = _anchor_state(root)
+    if st.state in ("mismatch", "lost"):
+        sys.exit(f"tessctl {verb}: STOPPED — " + "\n".join(_anchor_findings(root))
+                 + "\n  Nothing was changed.")
+
+
+def _anchor_after_release(root: Path, verb: str) -> None:
+    try:
+        where = _anchor_write(root, verb)
+    except (OSError, ValueError) as e:
+        print(f"  WARN  could not record Tess's safety files outside the project ({e}); "
+              f"run `tessctl anchor accept` in your own terminal")
+        return
+    print(f"  recorded Tess's safety files (enforcement anchor) → {where}")
+
+
+def _anchor_restore(root: Path, dry_run: bool = False) -> list:
+    """Put back every anchored file that differs, from the anchored bytes.
+    Returns the plain lines of files it could not restore."""
+    st = _anchor_state(root)
+    if st.state != "mismatch":
+        return []
+    blobs, failed = _anchor_tess_dir() / "anchor-blobs", []
+    for rel, rec in sorted(st.doc["files"].items()):
+        path = _anchor_file_path(root, rel)
+        data = _anchor_read(path)
+        if data is not None and _anchor_digest(rel, data) == rec.get("sha256"):
+            continue
+        blob = _anchor_read(blobs / str(rec.get("blob") or "-")) if re.fullmatch(
+            r"[0-9a-f]{64}", str(rec.get("blob") or "")) else None
+        if blob is None or hashlib.sha256(blob).hexdigest() != rec.get("blob") or path is None:
+            failed.append(f"{rel}: the approved copy is not available")
+            continue
+        if dry_run:
+            print(f"  WOULD RESTORE  {rel}  (the approved copy)")
+            continue
+        if path.is_symlink() or path.is_dir():
+            failed.append(f"{rel}: something other than a file is in the way")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_bytes(path, blob, mode=int(rec.get("mode") or 0o644))
+        print(f"  restored {rel}  (the approved copy)")
+    return failed
+
+
+def _anchor_tty() -> bool:
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty()
+                    and sys.stdout is not None and sys.stdout.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _anchor_show_changes(root: Path, st: AnchorState) -> None:
+    import difflib
+    blobs = _anchor_tess_dir() / "anchor-blobs"
+    anchored = (st.doc or {}).get("files") or {}
+    current = _anchor_current(root)
+    for rel in sorted(set(anchored) | set(current)):
+        rec, now = anchored.get(rel), current.get(rel)
+        if rec is not None and now is not None and _anchor_digest(rel, now) == rec.get("sha256"):
+            continue
+        if rec is None:
+            print(f"\n  NEW   {rel} (will be recorded)")
+            continue
+        if now is None:
+            print(f"\n  GONE  {rel} (will no longer be checked)")
+            continue
+        print(f"\n  CHANGED  {rel}")
+        old = _anchor_read(blobs / str(rec.get("blob") or "-"))
+        try:
+            a, b = (old or b"").decode("utf-8").splitlines(), now.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            print("    (binary content)")
+            continue
+        lines = list(difflib.unified_diff(a, b, "approved", "now", lineterm="", n=2))
+        for ln in lines[:200]:
+            print("    " + ln)
+        if len(lines) > 200:
+            print(f"    ... {len(lines) - 200} more diff line(s)")
+
+
+def cmd_anchor(args, root: Path) -> None:
+    """tessctl anchor status | accept | init — the out-of-repo record of Tess's
+    approved safety files (see the ENFORCEMENT ANCHOR block above)."""
+    sub = getattr(args, "anchor_sub", None) or "status"
+    st = _anchor_state(root)
+    if sub == "status":
+        if st.state == "none":
+            print("anchor: none — this checkout has no record of approved safety files "
+                  "(installs and updates from v1.0.0 create one)")
+            return
+        if st.state == "ok":
+            print(f"anchor: OK — every safety file matches the approved record ({st.where})")
+            return
+        print("anchor: FAIL\n" + "\n".join(_anchor_findings(root)))
+        sys.exit(1)
+    if sub == "init":
+        if st.state != "none":
+            sys.exit("tessctl anchor init: refused — this checkout already has a record of "
+                     "approved safety files. Use `tessctl anchor accept` in your own terminal.")
+        engine = Path(__file__).resolve()
+        r = subprocess.run([sys.executable, "-I", "-B", str(engine), "verify"], cwd=str(root),
+                           capture_output=True, text=True, env={**os.environ, "TESS_ROOT": str(root)})
+        if r.returncode != 0:
+            sys.exit("tessctl anchor init: refused — `tessctl verify` does not pass, so the "
+                     "files are not the release's. Nothing was recorded.")
+        try:
+            where = _anchor_write(root, "install")
+        except (OSError, ValueError) as e:
+            sys.exit(f"tessctl anchor init: could not record the safety files ({e})")
+        print(f"anchor: recorded Tess's safety files → {where}")
+        return
+    if sub != "accept":
+        sys.exit("tessctl anchor: choose status | accept | init")
+    if not _anchor_tty():
+        sys.exit("tessctl anchor accept: REFUSED — accepting changed safety files needs a person "
+                 "at an interactive terminal (stdin and stdout must both be a terminal). "
+                 "Nothing was recorded.")
+    if st.state == "ok":
+        print("anchor: every safety file already matches the approved record; nothing to accept.")
+        return
+    print("tessctl anchor accept: these safety files differ from the approved record"
+          + ("" if st.state != "lost" else " (the record itself is missing or unreadable: "
+             + "; ".join(st.problems) + ")") + ":")
+    _anchor_show_changes(root, st)
+    print(f"\nIf you made these changes on purpose, type exactly:  {ANCHOR_CONFIRM}\n"
+          "To stop without recording anything, press Enter.")
+    try:
+        typed = input("  accept> ")
+    except EOFError:
+        typed = ""
+    if typed.strip() != ANCHOR_CONFIRM:
+        sys.exit("tessctl anchor accept: stopped — nothing was recorded.")
+    try:
+        where = _anchor_write(root, "accept")
+    except (OSError, ValueError) as e:
+        sys.exit(f"tessctl anchor accept: could not record the safety files ({e})")
+    print(f"anchor: recorded → {where}. Tess's hooks run again from the next tool call.")
+
+
 def _policy_approval_mac(key: bytes, project_id, tag, release_commit, old_digest, new_digest,
                          approved_at) -> str:
     msg = json.dumps({"format": POLICY_APPROVAL_FORMAT, "project_id": project_id, "tag": tag,
@@ -18022,8 +18558,18 @@ def _gate_trace_reasons_and_counts(result: dict) -> tuple[list, dict]:
 # Subcommand entrypoints
 # ---------------------------------------------------------------------------
 
+def _anchor_git_hook_check(root: Path, what: str) -> None:
+    """v1.0.0: the git hooks refuse while Tess's safety files differ from the
+    approved record, so a tampered enforcement set cannot be committed or pushed."""
+    lines = _anchor_findings(root)
+    if lines:
+        print(f"tess-gate-guard: {what} BLOCKED — " + "\n".join(lines), file=sys.stderr)
+        sys.exit(1)
+
+
 def _cmd_gate_pre_commit(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
+    _anchor_git_hook_check(root, "commit")
     _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     try:
         changed = _gate_changed_paths_staged(root)
@@ -18054,6 +18600,7 @@ def _cmd_gate_pre_commit(args, root: Path) -> None:
 
 def _cmd_gate_pre_push(args, root: Path) -> None:
     as_json = getattr(args, "json_out", False)
+    _anchor_git_hook_check(root, "push")
     verdict_dirs = getattr(args, "verdict_dirs", None)
     _trace_t0 = time.perf_counter()  # Goal #8: mission trace log
     base = getattr(args, "base", None)
@@ -26964,6 +27511,12 @@ def build_parser() -> argparse.ArgumentParser:
                            help="overwrite uncaptured drift (pre-images kept in the snapshot; "
                                 "security-tier copy files are still refused)")
 
+    # anchor (v1.0.0): the out-of-repo record of Tess's approved safety files
+    p_anchor = sub.add_parser("anchor", help="status | accept | init: the record of Tess's "
+                                             "approved safety files, kept outside the project")
+    p_anchor.add_argument("anchor_sub", nargs="?", default="status",
+                          choices=["status", "accept", "init"])
+
     # doctor
     p_doctor = sub.add_parser("doctor", help="SHA-integrity check; flag security-tier drift")
     p_doctor.add_argument("--fix", action="store_true", help="auto-capture uncaptured drift")
@@ -28049,6 +28602,7 @@ def main() -> None:
     dispatch = {
         "init":         cmd_init,
         "restore":      cmd_restore,
+        "anchor":       cmd_anchor,
         "doctor":       cmd_doctor,
         "update":       cmd_update,
         "self-update":  cmd_self_update,

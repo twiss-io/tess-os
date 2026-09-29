@@ -62,6 +62,10 @@ export function printChecks(checks) {
     checkLine(checks.verify, 'Checked the install matches the release (tessctl verify OK)',
       'Checked the install matches the release: it does not (tessctl verify ISSUES)');
   }
+  if (checks.anchor !== null && checks.anchor !== undefined) {
+    checkLine(checks.anchor, 'Recorded your safety files outside the folder (tessctl anchor OK)',
+      'Could not record your safety files outside the folder (run `./tessctl anchor accept`)');
+  }
 }
 
 // Report whether the ship-gate is actually live after scaffold. Prints a

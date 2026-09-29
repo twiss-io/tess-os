@@ -138,16 +138,49 @@ security reviews; they are stated so nobody relies on a check that is not there.
   shell with `write_stdin` never reaches the gate, and a hook that times out or
   crashes in the host fails open for that call. Details:
   [adapters/CONFORMANCE.md](adapters/CONFORMANCE.md), Codex row.
-- **A deliberate whole-tree rollback runs that commit's gate.** The gates refuse
-  git commands that put back other copies of Tess's enforcement files (a checkout
-  or restore from another commit, `checkout-index --prefix`, `--work-tree` /
-  `GIT_WORK_TREE` / `core.worktree`, `update-index` into a protected path), and
-  ask (Claude Code) or refuse (Codex) before a switch, reset, merge or rebase that
-  changes them. If you check out an old commit yourself, its own older gate, pins
-  and lock run from then on, because the pins live in the same tree they check.
-  `git pull` is not checked (what it merges is known only after the fetch), and a
-  patch read from a pipe is checked only when its text is in the command. An
-  anti-rollback anchor kept outside the repository is planned for 1.0.1.
+- **Tess's safety files are anchored outside the repository; the anchor is not an
+  OS boundary.** The gate decides from command text, and its pins
+  (`.tess/core/pinned-scripts.sha256`, `.tess/tess.lock`) live in the working tree
+  they check, so git routes the gate did not list (`git rebase --onto <older>
+  HEAD`, `git replace` then a restore from HEAD, `git fetch --update-head-ok`,
+  `git bisect`, `git archive | tar -x`, a sparse checkout that deletes the hook
+  configuration) could once put an older or stubbed gate in place WITH valid
+  pins. Since v1.0.0 the sha256 of every enforcement file (the hook scripts and
+  launcher, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/tess.rules`,
+  both copies of `policy.yaml`, the pins, the enforcement fields of `tess.lock`,
+  `tessctl`, and the git hooks Tess installs) is kept in
+  `~/.config/tess/projects/<project id>/anchor.json` under the home directory in
+  your OS user record, with a copy of each approved file beside it. It is written
+  only by the installer (after `tessctl verify` passes), by `tessctl update` /
+  `self-update` after a verified signed release (they refuse to run while the
+  files differ), and by `tessctl anchor accept` (a person at a real terminal,
+  shown the diff, typing `accept safety changes`). Before any hook runs, the
+  launcher compares the files with the anchor; on any difference, a missing file,
+  or a missing anchor where one was recorded, Tess's gate **stops every tool call**
+  with one plain message, the other hooks are skipped with a warning, and the git
+  pre-commit / pre-push hooks refuse. `tessctl restore` puts the approved copies
+  back; `tessctl doctor` / `verify` / `anchor status` and `scripts/tess
+  hooks-status` report the difference. The gate also refuses the routes above
+  directly (defence in depth), and denies writes, not only reads, under
+  `~/.config/tess`. What this does not stop: a process running as the same OS
+  user can still rewrite the anchor itself (the gate refuses that to the agent's
+  tools, but a program built at run time is not seen), so the anchor turns a
+  silent rollback into a loud, fail-closed stop; it is not an operating-system
+  boundary. Maintainers who edit enforcement files on purpose (or run `tessctl
+  verdict keygen`, `approve`, `vault init` or `gate install-hooks`, which change
+  anchored files) confirm the change with `tessctl anchor accept`. A git worktree
+  of an anchored project shares its anchor, so enforcement files that differ in
+  another worktree stop Tess there too. `git pull` is still not checked by the
+  gate (what it merges is known only after the fetch); the anchor catches what it
+  changes.
+- **The hooks heartbeat is a detection aid, not proof.** SessionStart and
+  UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
+  hooks-status` reads it to say whether the hooks ran in this session. It is an
+  ordinary file an agent could write. `hooks-status` therefore also reports OFF
+  when the runtime's hook configuration is missing or no longer runs the gate, or
+  when the safety files differ from the anchor; a deleted `.claude/settings.json`
+  or `.codex/config.toml` means the next session loads no Tess hook at all, which
+  `tessctl doctor` / `verify` also report as a failure.
 - **The operator key and the brain key are found from your OS user record.** `tessctl`
   reads `~/.config/tess/operator/key`, and the brain reads `~/.config/tess/brain/key` and
   its per-project ledger, under the home directory in the user database; both ignore
