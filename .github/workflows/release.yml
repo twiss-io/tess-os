@@ -132,12 +132,12 @@ jobs:
       - name: Gate 2b — tessctl doctor
         env:
           TESS_ROOT: ${{ github.workspace }}
-        run: python3 .tess/bin/tessctl doctor
+        run: python3 -I -B .tess/bin/tessctl doctor
 
       - name: Gate 2c — tessctl verify
         env:
           TESS_ROOT: ${{ github.workspace }}
-        run: python3 .tess/bin/tessctl verify
+        run: python3 -I -B .tess/bin/tessctl verify
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

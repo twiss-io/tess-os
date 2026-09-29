@@ -107,7 +107,7 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor, sa
   if (existsSync(join(targetDir, 'brain', 'brain.json'))) return { status: 'kept', commit: null, detail: '' };
   const env = { ...process.env, ...gitIdentityEnv(targetDir, operator) };
   const run = (args) =>
-    execFileSync('python3', [script, ...args], { cwd: targetDir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('python3', ['-I', '-B', script, ...args], { cwd: targetDir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   let init;
   let answersDir = null;
   if (said) {

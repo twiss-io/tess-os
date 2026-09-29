@@ -30,7 +30,7 @@ export function oldPythonMessage(version) {
 
 // Returns { ok, version, message }. Never throws.
 export function checkPython({ cmd = 'python3', env = process.env, platform = process.platform } = {}) {
-  const probe = spawnSync(cmd, ['-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], {
+  const probe = spawnSync(cmd, ['-I', '-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], {
     env,
     encoding: 'utf8',
     timeout: 60000,

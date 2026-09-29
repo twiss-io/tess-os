@@ -105,12 +105,12 @@ jobs:
       - name: tessctl doctor (SHA-integrity gate)
         env:
           TESS_ROOT: ${{ github.workspace }}
-        run: python3 .tess/bin/tessctl doctor
+        run: python3 -I -B .tess/bin/tessctl doctor
 
       - name: tessctl verify (security-tier gate)
         env:
           TESS_ROOT: ${{ github.workspace }}
-        run: python3 .tess/bin/tessctl verify
+        run: python3 -I -B .tess/bin/tessctl verify
 
   create-tess:
     name: create-tess tests (node ${{ matrix.node-version }}${{ matrix.npm-version && format(', npm {0}', matrix.npm-version) || '' }})

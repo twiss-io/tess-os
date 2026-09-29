@@ -21,7 +21,7 @@ export function tessctl(targetDir, argsArr, { capture = true } = {}) {
   }
   const env = { ...process.env, TESS_ROOT: targetDir };
   try {
-    const out = execFileSync('python3', [py, ...argsArr], {
+    const out = execFileSync('python3', ['-I', '-B', py, ...argsArr], {
       cwd: targetDir,
       env,
       encoding: 'utf8',

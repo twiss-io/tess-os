@@ -95,6 +95,7 @@ unreviewed-by-a-human code. That is why `main` is not a release.
 - Create, move or delete a `v*` / `create-tess-v*` tag. Creation is admin-only, and nobody can update or delete these tags.
 - Publish `create-tess` to npm. That needs a job in the `npm-publish` environment, which only runs on `create-tess-v*` tags.
 - Get a tag accepted by `tessctl update` on a machine that pins the release fingerprint without the release key and the maintainer's approval.
+- Approve a release's safety-rule changes for an installed project. The approval in `.tess/gate/policy-approvals/<tag>.json` carries an HMAC under a per-machine operator key kept outside the repository (`~/.config/tess/operator/key`, mode 0600), bound to the project's root commit, the release tag and commit, and the old and new rule digests. A pushed, copied or hand-written approval does not verify, and the directory is itself a protected path. This does not protect against a process running as the same OS user on the operator's machine, which can read the key just as it can run `tessctl approve`. A gate running without the key (a CI runner) cannot verify any approval and blocks the rule change.
 
 **Limits, stated plainly:**
 - The build automation's GitHub credentials have **admin** rights. Someone holding those credentials can create release tags and edit workflows, so the CI gates are not the last line against them. For `tessctl update` with a pinned fingerprint, the check on the user's machine still holds, because no repository change can forge the release signature.

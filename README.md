@@ -95,6 +95,15 @@ a terminal and type `accept <version>` when asked (for example
 your current version, which keeps working. Your AI assistant cannot give
 this approval for you; it has to be typed in a terminal.
 
+The approval is signed with a key kept on your computer, outside the project
+(`~/.config/tess/operator/key`, created the first time you accept). A copied
+or hand-written approval file does not count, so a collaborator or a CI job
+that can push to your repository cannot approve rule changes for you. The
+limit: a program running as you on your own computer can read that key, just
+as it could run `tessctl` as you. Because the key never leaves your
+computer, a CI check cannot confirm the approval; push the update from the
+computer where you typed `accept`.
+
 ## More detail
 
 - **How it works, its limits, runtimes and the roster:**
