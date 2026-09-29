@@ -9,13 +9,16 @@ journal), body_sha256 at acceptance, confirmed_by/at.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import frontmatter
 from .config import Config, iso, parse_iso
 from .textutil import sha256_text, slugify
+from oobe.state import atomic_write  # scripts/brain is on sys.path wherever brainlib loads
 
 PREFIX = {"decision": "D", "preference": "P", "correction": "C", "fact": "F", "open_loop": "L"}
 TYPE_OF = {v: k for k, v in PREFIX.items()}
@@ -149,11 +152,30 @@ def write(cfg: Config, kind: str, directory: Path, meta: Dict, body_fields: Dict
         meta["body_sha256"] = body_hash(body)
     meta["meta_sha256"] = meta_hash(meta)
     path = Path(directory) / ("%s.md" % meta["id"])
-    if path.exists():
-        raise FileExistsError("record exists: %s" % path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(frontmatter.dump(meta, body, ORDER.get(kind)), encoding="utf-8")
+    _create_new(path, frontmatter.dump(meta, body, ORDER.get(kind)))
     return load(path)
+
+
+def _create_new(path: Path, text: str) -> None:
+    """Create `path` with `text`, atomically, only if it does not exist yet.
+
+    The full text goes to a temp file in the same directory first; os.link()
+    then publishes it under the final name and fails with EEXIST if a record
+    is already there -- the O_EXCL guarantee (no check-then-write race, no
+    clobbering a concurrent writer) without O_EXCL's window where a crash
+    leaves a half-written record behind.
+    """
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        try:
+            os.link(tmp, str(path))
+        except FileExistsError:
+            raise FileExistsError("record exists: %s" % path) from None
+    finally:
+        os.unlink(tmp)
 
 
 def update_fields(rec: Record, updates: Dict) -> Record:
@@ -163,7 +185,7 @@ def update_fields(rec: Record, updates: Dict) -> Record:
     if meta.get("status") in ("accepted", "active") and not meta.get("body_sha256"):
         meta["body_sha256"] = body_hash(rec.body)
     meta["meta_sha256"] = meta_hash(meta)
-    rec.path.write_text(frontmatter.dump(meta, rec.body, ORDER.get(rec.kind)), encoding="utf-8")
+    atomic_write(rec.path, frontmatter.dump(meta, rec.body, ORDER.get(rec.kind)))
     return load(rec.path)
 
 

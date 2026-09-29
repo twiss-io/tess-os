@@ -106,7 +106,7 @@ def _upstream(path: Path, tag: str, key: Path | None, *, gpg=None, sign_for: str
 
     def g(*a):
         return _git(path, *a, env=env)
-    g("init", "-q")
+    g("init", "-b", "main", "-q")
     g("config", "user.email", "release@tess.test")
     g("config", "user.name", "Release")
     g("config", "commit.gpgsign", "false")

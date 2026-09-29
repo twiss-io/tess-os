@@ -16,6 +16,7 @@ routine.
 
 ## What you need
 
+- **macOS or Linux; Windows via WSL.**
 - **Node.js 18 or newer** — [download](https://nodejs.org/en/download). This
   runs the one-time setup.
 - **git** — keeps the history of your folder. On a Mac, if it is missing, open

@@ -90,13 +90,28 @@ SIGNED_SHA=$(git rev-parse HEAD)
 gh pr merge <pr-number> --merge --match-head-commit "$SIGNED_SHA"
 git fetch origin && M=$(git rev-parse origin/main)
 
-# 8. Signed annotated tag on the merge commit M, tagger = the release key's identity
-export GPG_TTY=$(tty)
-git -c user.name='Twiss Release Signing Key' -c user.email=legal@twiss.io \
-  tag -s v<new-semver> -u EBEABC618C11B6A7340A7D1601DD637667B8CC89 \
-  -m "Tess OS v<new-semver>" "$M"
-git cat-file -t v<new-semver>          # must print: tag
-git verify-tag --raw v<new-semver>     # must show VALIDSIG EBEABC618C11B6A7340A7D1601DD637667B8CC89
+# 8. Sign BOTH release tags on the SAME merge commit M, in YOUR terminal, with
+#    the maintainer tool scripts/release/sign-release-tag.sh (tess-os only; it
+#    is not shipped to installs). Each run builds one annotated tag carrying
+#    two signatures from the release key: the SSH signature in the tag message
+#    (checked by .github/scripts/verify_release_ssh_sig.sh and by installs
+#    without gpg) and the OpenPGP signature on the tag (Gate 1). release.yml
+#    refuses a v<new-semver> tag lacking either; publish-npm.yml checks the
+#    OpenPGP signature on create-tess-v<new-semver> and both signatures on
+#    v<new-semver>. Do not use `git tag -s`: it makes the OpenPGP signature only.
+#    Each run shows two Keychain prompts (SSH, then gpg): click "Allow",
+#    never "Always Allow".
+export TESS_RELEASE_SSH_KEY=<path to the SSH release private key, outside any repo>
+scripts/release/sign-release-tag.sh v<new-semver> "$M"
+scripts/release/sign-release-tag.sh create-tess-v<new-semver> "$M"
+for t in v<new-semver> create-tess-v<new-semver>; do
+  git cat-file -t "$t"                          # must print: tag
+  test "$(git rev-parse "$t^{commit}")" = "$M"  # both tags on M
+  git verify-tag --raw "$t" 2>&1 | grep VALIDSIG # must show EBEABC618C11B6A7340A7D1601DD637667B8CC89
+  bash .github/scripts/verify_release_ssh_sig.sh "$t"  # the SSH release signature
+done
+# Push the framework tag only. create-tess-v<new-semver> stays local until the
+# pre-publish gate below is green.
 git push origin v<new-semver>
 
 # 9. release.yml runs on the tag push: restores the annotated tag, verifies the
@@ -119,12 +134,17 @@ tag only after all three of these pass against the real GitHub tag:
    rejected.
 2. **Fresh install:** `npm pack` at M, then scaffold from that tarball; `doctor` and
    `verify` report OK and `tess.lock` pins the new version.
-3. **Tag check:** `git verify-tag --raw v<new-semver>` shows the pinned VALIDSIG.
+3. **Tag check:** for both `v<new-semver>` and `create-tess-v<new-semver>`,
+   `git verify-tag --raw` shows the pinned VALIDSIG and
+   `.github/scripts/verify_release_ssh_sig.sh` accepts the SSH signature, and both
+   tags point at M.
 
-Then configure the npm trusted publisher if needed, and push the npm tag on M:
+Then configure the npm trusted publisher if needed, and push the npm tag you
+signed on M in step 8 (never cut a new, unsigned one here: publish-npm.yml
+refuses it):
 
 ```bash
-git tag create-tess-v<new-semver> "$M" && git push origin create-tess-v<new-semver>
+git push origin create-tess-v<new-semver>
 ```
 
 If the gate is not green, do not publish; the GitHub release stands on its own and the
@@ -142,8 +162,10 @@ management runbook (never committed to the repository).
 **Verifier-key custody (v0.2.0):** the v0.2.0 approvals were signed with an
 agent-held verifier key: the registered Cyra key (`F9321F92…76E8`)
 has no passphrase and is reachable by automated agents on the maintainer's machine, so
-"an independent verifier signed it" was process, not enforcement. Custody hardening
-(passphrase or hardware key, human sign-off, the #76 topology) is the first v0.2.1 item.
+"an independent verifier signed it" was process, not enforcement. From v1.0.0,
+SECURITY.md states the trust model plainly: a verifier signature is an automated
+review attestation, not a human approval, and the release signing key is the single
+root of trust.
 
 ---
 

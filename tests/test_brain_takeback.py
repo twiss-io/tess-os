@@ -122,10 +122,10 @@ def test_push_url_is_what_gets_checked(tmp_path):
     p.write_text(json.dumps(bj))
     inst = Path(fxlib.make(str(tmp_path / "fx"), brain_json=str(p)))
     bare = tmp_path / "bare.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q", "--bare", str(bare)], check=True)
     fxlib.run(str(inst), "remote", "add", "origin", str(bare))
     fw = tmp_path / "github.com" / "twiss-io" / "tess-os.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(fw)], check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q", "--bare", str(fw)], check=True)
     fxlib.run(str(inst), "config", "remote.origin.pushurl", str(fw))
     fxlib.sync_fixture(inst)
     r = fxlib.cli(inst, "--json", "save", "-m", "probe")

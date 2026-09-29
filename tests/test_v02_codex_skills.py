@@ -204,7 +204,7 @@ def test_second_render_leaves_git_status_clean(project, run_cli):
     r = run_cli(project.root, "render", "--target", "codex")
     assert r.returncode == 0, r.stdout + r.stderr
     g = ["git", "-C", str(project.root), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-    subprocess.run(g + ["init", "-q"], check=True)
+    subprocess.run(g + ["init", "-q", "-b", "main"], check=True)
     subprocess.run(g + ["add", "-A"], check=True)
     subprocess.run(g + ["commit", "-q", "-m", "first render"], check=True)
     r2 = run_cli(project.root, "render", "--target", "codex")

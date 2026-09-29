@@ -17,7 +17,7 @@
 // scaffold.js's own fetchTemplate() local-vs-git branch), independently
 // unit-testable without a real clone or the network — see
 // test/units.test.js's "clone pin" / arg-injection coverage.
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 
 // The canonical git URL — used ONLY when a caller explicitly opts into a
 // live git fetch (passes this URL, or any other URL/path, as
@@ -34,12 +34,19 @@ export const DEFAULT_TEMPLATE_SOURCE = 'https://github.com/twiss-io/tess-os.git'
 // a given create-tess version's opt-in git fetch reproduce the same released
 // tess-os tree its bundled template was built from.
 //
-// The old value, `create-tess-v0.1.2`, named a tag that was never cut, so an
-// opt-in git fetch without --template-ref failed. v0.2.0 pins the framework's
-// own release tag, cut by the same release as this package.
+// The framework tag is `v<version>` and every release cuts it on the same
+// commit as `create-tess-v<version>`, with both package.json versions equal
+// (.github/scripts/release_version_gate.py enforces that). So the pin is
+// DERIVED from this package's own version rather than hand-maintained: a
+// literal here was left at 'v0.2.0' through the 1.0.0 release (v1.0 code
+// review, HIGH), silently pinning an opt-in git fetch to an old framework.
+// Earlier still it named `create-tess-v0.1.2`, a tag that was never cut.
 // `--template-ref`/`TESS_TEMPLATE_REF` still overrides it (for example `main`
 // or a commit SHA).
-export const DEFAULT_TEMPLATE_REF = 'v0.2.0';
+const PACKAGE_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
+export const DEFAULT_TEMPLATE_REF = `v${PACKAGE_VERSION}`;
 
 export function isLocalSource(source) {
   try {

@@ -150,6 +150,8 @@ export const EXCLUDE_REL_PATHS = new Set([
   '.github/scripts/release_version_gate.py',
   '.github/scripts/verify_release_tag.sh',
   '.github/scripts/verify_release_ssh_sig.sh',
+  // Maintainer-only: signs tess-os release tags with the Twiss release key.
+  'scripts/release/sign-release-tag.sh',
   'operator/profile.json',
 ]);
 

@@ -164,7 +164,7 @@ def real_workflow_root(tmp_path):
             raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}\n{r.stdout}")
         return r
 
-    git("init", "-q")
+    git("init", "-b", "main", "-q")
     git("config", "user.email", "test@tess.test")
     git("config", "user.name", "Test")
     git("config", "commit.gpgsign", "false")
@@ -311,7 +311,7 @@ def test_workflow_rule_is_satisfiable_with_a_valid_covering_signed_verdict(proje
             raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}\n{r.stdout}")
         return r
 
-    git("init", "-q")
+    git("init", "-b", "main", "-q")
     git("config", "user.email", "test@tess.test")
     git("config", "user.name", "Test")
     git("config", "commit.gpgsign", "false")

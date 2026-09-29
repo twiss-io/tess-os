@@ -104,7 +104,7 @@ def test_rendered_codex_hook_command_runs_from_a_subdirectory(engine, tmp_path):
     for rel in (".claude/hooks/run-pinned.py", ".tess/tess.lock", ".tess/core/pinned-scripts.sha256"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(REPO / rel), str(root / rel))
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q", str(root)], check=True)
     sub = root / "docs" / "deep"
     sub.mkdir(parents=True)
     done = subprocess.run(["sh", "-c", cmd], cwd=str(sub), input="{}", capture_output=True,
@@ -132,7 +132,7 @@ def test_rendered_codex_onboarding_hook_refuses_an_edited_script(engine, tmp_pat
     for rel in (".claude/hooks/run-pinned.py", ".tess/tess.lock", ".tess/core/pinned-scripts.sha256"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(REPO / rel), str(root / rel))
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "init", "-b", "main", "-q", str(root)], check=True)
     marker = tmp_path / "tampered-code-ran"
     script = root / "scripts" / "brain" / "onboard.py"
     script.write_text(script.read_text() + f"\nopen({str(marker)!r}, 'w').write('x')\n")

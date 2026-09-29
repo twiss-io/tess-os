@@ -75,7 +75,7 @@ def proj(tmp_path):
     (root / "src").mkdir()
     (root / "src" / "app.py").write_text("print('hi')\n")
     if HAS_GIT:
-        _git(tmp_path, "init", "-q", str(root))
+        _git(tmp_path, "init", "-b", "main", "-q", str(root))
         _git(root, "add", "-A")
         _git(root, "-c", "user.email=t@tess.test", "-c", "user.name=T", "-c",
              "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "init")
@@ -314,7 +314,7 @@ def test_push_of_brain_data_to_unverifiable_github_remote_is_denied(data_repo, t
 @pytest.mark.skipif(not HAS_GIT, reason="git required")
 def test_push_of_brain_data_to_a_local_remote_is_allowed(data_repo, tmp_path):
     bare = tmp_path / "bare.git"
-    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(tmp_path, "init", "-b", "main", "-q", "--bare", str(bare))
     _git(data_repo, "remote", "add", "backup", str(bare))
     assert _bash(data_repo, "git push backup HEAD", path=_nogh_path(tmp_path)) is None
 
@@ -390,3 +390,47 @@ def test_denies_are_logged_redacted(proj):
     entry = json.loads(lines[-1])
     assert entry["decision"] == "deny" and entry["turn_id"] == "t9" and entry["codex"] is True
     assert tok not in lines[-1]
+
+
+# ------------------------------------------------------------------ unparseable shell (v1.0 review, HIGH)
+# A quote inside a shell comment breaks shlex but not the shell, so the command
+# still runs. The ValueError branch used to return ALLOW unless the text named a
+# hook bypass: `rm .claude/hooks/tess-gate.py # it's` deleted the gate itself.
+
+@pytest.mark.parametrize("cmd", [
+    "rm .claude/hooks/tess-gate.py # it's",
+    "echo a#; rm .claude/hooks/tess-gate.py # it's",
+    "git commit --no-verify -m x # it's",
+    "git push origin main # it's",
+    "gh auth token # it's",
+])
+def test_unparseable_command_that_touches_the_gate_is_denied_in_both_runtimes(proj, cmd):
+    g = _gate()
+    base = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(proj)}
+    assert g.decide(dict(base), proj, "claude")[0] == "deny", cmd
+    assert g.decide(dict(base), proj, "codex")[0] == "deny", cmd
+
+
+def test_unparseable_protected_delete_is_denied_end_to_end_under_codex(proj):
+    dec, why = _bash(proj, "rm .claude/hooks/tess-gate.py # it's")
+    assert dec == "deny" and "protected" in why
+    assert (proj / ".claude/hooks/tess-gate.py").exists()
+
+
+@pytest.mark.parametrize("cmd", [
+    "git remote set-url origin https://example.com/x.git # it's",
+    "echo 'unterminated",
+])
+def test_unparseable_undecidable_command_asks_claude_and_denies_codex(proj, cmd):
+    g = _gate()
+    base = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(proj)}
+    assert g.decide(dict(base), proj, "claude")[0] == "ask", cmd
+    assert g.decide(dict(base), proj, "codex")[0] == "deny", cmd
+    assert g.decide(dict(base, turn_id="t"), proj, "claude")[0] == "deny", cmd
+
+
+def test_unparseable_only_because_of_a_comment_is_still_allowed_when_harmless(proj):
+    g = _gate()
+    base = {"tool_name": "Bash", "tool_input": {"command": "ls src # what's here"}, "cwd": str(proj)}
+    assert g.decide(dict(base), proj, "claude")[0] is None
+    assert g.decide(dict(base), proj, "codex")[0] is None

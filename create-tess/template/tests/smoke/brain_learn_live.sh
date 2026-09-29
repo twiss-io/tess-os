@@ -162,7 +162,7 @@ run_probe() {  # L11, after run_claude: can a zero-context agent answer from fil
   if ! git -C "$D" diff --cached --quiet; then  # gate hooks run on this commit
     git -C "$D" -c user.name=p -c user.email=p@example.invalid commit -q -m probe || no "(L11) gate refused the probe commit"
   fi
-  rm -rf "$S/p.git" "$S/zc" "$S/zc0"; git init -q --bare "$S/p.git"
+  rm -rf "$S/p.git" "$S/zc" "$S/zc0"; git init -q -b main --bare "$S/p.git"
   git -C "$D" push -q --no-verify "$S/p.git" HEAD:main
   git clone -q "$S/p.git" "$S/zc"; git clone -q "$S/p.git" "$S/zc0" && git -C "$S/zc0" checkout -q HEAD~1
   local Q1="What did the operator decide about the ledger database? Quote it and give the file path."

@@ -422,7 +422,7 @@ def make_upstream(path: Path, gpg, tag, *, sign="signed",
             raise RuntimeError(f"git {' '.join(a)} failed: {r.stderr}")
         return r
 
-    git("init", "-q")
+    git("init", "-b", "main", "-q")
     git("config", "user.email", gpg.email)
     git("config", "user.name", "Tess Test Signer")
     git("config", "user.signingkey", gpg.fpr)

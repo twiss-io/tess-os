@@ -504,10 +504,43 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
     try:
         segs = _segments(cmd)
     except ValueError:
-        # Unparseable (unbalanced quotes): fall back to conservative text checks.
+        # Unparseable (unbalanced quotes). The shell may still run it: a quote
+        # inside a `# comment` (`rm .claude/hooks/tess-gate.py # it's`) breaks
+        # shlex but not bash. Never fail open here (v1.0 code review, HIGH):
+        # check the raw text, then re-parse with shell comments, and if the
+        # command is still undecidable ask (Claude) -- decide() turns that ask
+        # into a deny for Codex and the no-prompt modes.
         low = cmd.lower()
-        if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/hooks", low):
+        if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/(hooks|config\b)", low):
             v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
+        for word in re.findall(r"[^\s;&|()<>'\"`]+", cmd):
+            hit = protected_hit(root, cwd, word)
+            if hit:
+                v.add(DENY, f"the command could not be parsed and names {word}, a protected "
+                            f"Tess path ({hit})", "protected")
+        if re.search(r"\bgit\b[^\n;&|]*\bpush\b", low):
+            v.add(DENY, "the command could not be parsed, so Tess cannot check what this push "
+                        "would publish", "error")
+        if re.search(r"\bgit\b[^\n;&|]*\bremote\s+(add|set-url|rename|remove|rm)\b", low):
+            v.add(ASK, "the command could not be parsed and changes where this repository pushes")
+        if re.search(r"\bgh\b[^\n;&|]*\b(auth\s+token|--show-token)", low):
+            v.add(DENY, "the command could not be parsed and prints your GitHub token", "token")
+        if re.search(r"\bgh\b[^\n;&|]*\b(repo\s+(edit|create)|api)\b", low):
+            v.add(ASK, "the command could not be parsed and may change a repository's visibility")
+        try:
+            lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
+            lx.whitespace, lx.whitespace_split, lx.commenters = " \t\r", True, "#"
+            toks, cur, segs = list(lx), [], []
+        except ValueError:
+            v.add(ASK, "the command could not be parsed (unbalanced quotes), so Tess cannot check it")
+            return
+        for tok in toks + [";"]:
+            if tok in OPERATORS:
+                segs, cur = (segs + [cur] if cur else segs), []
+            else:
+                cur.append(tok)
+        for argv in segs:
+            _check_segment(root, cwd, argv, v, cmd, depth)
         return
     for argv in segs:
         _check_segment(root, cwd, argv, v, cmd, depth)
