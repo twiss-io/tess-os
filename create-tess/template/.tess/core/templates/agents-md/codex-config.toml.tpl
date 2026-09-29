@@ -48,13 +48,13 @@ matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime codex || exit 0'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 -I -B \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime codex || exit 0'"
 timeout = 5
 statusMessage = "Tess: checking onboarding"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook session-start --runtime codex || exit 0'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 -I -B \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook session-start --runtime codex || exit 0'"
 timeout = 5
 statusMessage = "Tess: loading the brain"
 
@@ -62,21 +62,21 @@ statusMessage = "Tess: loading the brain"
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook prompt --runtime codex || exit 0'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 -I -B \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook prompt --runtime codex || exit 0'"
 timeout = 5
 
 [[hooks.Stop]]
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 -I -B \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
 timeout = 30
 
 [[hooks.SessionEnd]]
 
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
+command = "sh -c 'r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); l=\"$r/.claude/hooks/run-pinned.py\"; [ -f \"$l\" ] && command -v python3 >/dev/null 2>&1 && exec python3 -I -B \"$l\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime codex || { echo {}; exit 0; }'"
 timeout = 3
 
 # Tess safety gate (v1.0) — the Codex twin of the Claude Code PreToolUse hooks.
@@ -101,6 +101,6 @@ matcher = "^(Bash|apply_patch|Edit|Write|Agent|spawn_agent|mcp__.*)$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "sh -c 'd=$(pwd -P); while [ \"$d\" != / ] && [ ! -f \"$d/.tess/tess.lock\" ]; do d=$(dirname \"$d\"); done; command -v python3 >/dev/null 2>&1 || { echo \"TESS GATE NOT RUN: python3 was not found, so the Tess safety check cannot run; this tool call is blocked.\" >&2; exit 2; }; [ -f \"$d/.claude/hooks/run-pinned.py\" ] || { echo \"TESS GATE NOT RUN: no Tess project (.tess/tess.lock with .claude/hooks/run-pinned.py) was found above $(pwd); this tool call is blocked. Start Codex inside your Tess project.\" >&2; exit 2; }; CLAUDE_PROJECT_DIR=\"$d\" exec python3 \"$d/.claude/hooks/run-pinned.py\" --on-fail block -- .claude/hooks/tess-gate.py --runtime codex'"
+command = "sh -c 'd=$(pwd -P); while [ \"$d\" != / ] && [ ! -f \"$d/.tess/tess.lock\" ]; do d=$(dirname \"$d\"); done; command -v python3 >/dev/null 2>&1 || { echo \"TESS GATE NOT RUN: python3 was not found, so the Tess safety check cannot run; this tool call is blocked.\" >&2; exit 2; }; [ -f \"$d/.claude/hooks/run-pinned.py\" ] || { echo \"TESS GATE NOT RUN: no Tess project (.tess/tess.lock with .claude/hooks/run-pinned.py) was found above $(pwd); this tool call is blocked. Start Codex inside your Tess project.\" >&2; exit 2; }; CLAUDE_PROJECT_DIR=\"$d\" exec python3 -I -B \"$d/.claude/hooks/run-pinned.py\" --on-fail block -- .claude/hooks/tess-gate.py --runtime codex'"
 timeout = 120
 statusMessage = "Tess: safety check"

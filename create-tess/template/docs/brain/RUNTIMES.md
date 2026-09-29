@@ -125,7 +125,7 @@ they keep their own provider memory. Importing their exports is v0.2.1.
   hooks for SessionStart (onboarding, then the brain snapshot),
   UserPromptSubmit, Stop and SessionEnd (codex-cli 0.158 supports all four).
   Each is `sh -c` that finds the repository root and runs
-  `python3 .claude/hooks/run-pinned.py --on-fail warn --closure scripts/brain
+  `python3 -I -B .claude/hooks/run-pinned.py --on-fail warn --closure scripts/brain
   -- scripts/brain/<script> ...`: the launcher runs a script only when it and
   every module under `scripts/brain/` match the sha256 pins that
   `.tess/tess.lock` pins (see docs/HARNESS_HARDENING.md); otherwise it skips

@@ -15,3 +15,7 @@ optionally and PyYAML falls back to its pure-Python loader and dumper.
 
 To upgrade: download the sdist from PyPI, check its sha256 against the PyPI
 JSON API, copy `lib/yaml/` over `yaml/` unmodified, and update this table.
+Then update `_VENDORED_YAML_SHA256` in `.tess/bin/tessctl` and re-pin these
+files in `.tess/tess.lock`: the engine refuses to load a vendored file whose
+sha256 is not in that table, or any extra module in `yaml/`
+(docs/HARNESS_HARDENING.md).

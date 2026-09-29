@@ -137,7 +137,7 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v3" in text
+    assert "# tess-gate-ci v4" in text
     assert "workflow_dispatch" in text
     assert "tessctl gate ci" in text
     import yaml
@@ -195,7 +195,7 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v4" in upgraded
     assert "# tess-gate-ci v1" not in upgraded
     assert "push:" in upgraded
     assert "pull_request:" in upgraded
@@ -230,7 +230,7 @@ def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert "# tess-gate-ci v4" in upgraded
     assert "# tess-gate-ci v2" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 

@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 CORE = REPO / ".tess" / "core" / "settings-core.json"
 LIVE = REPO / ".claude" / "settings.json"
 
-LAUNCH = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn --closure scripts/brain -- '
+LAUNCH = 'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn --closure scripts/brain -- '
 ONBOARD_START = LAUNCH + "scripts/brain/onboard.py hook session-start --runtime claude"
 LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
@@ -66,7 +66,7 @@ def test_session_start_runs_onboarding_then_the_brain_snapshot(settings):
 def test_prompt_hooks_are_the_utc_context_then_capture(settings):
     hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]
     assert [h["command"] for h in hooks] == [
-        'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn -- '
+        'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn -- '
         '.claude/hooks/utc-local-context.sh', LEARN % "prompt"]
 
 

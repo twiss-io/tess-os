@@ -84,7 +84,7 @@ def test_tessbrain_ships_and_is_wired_only_through_the_launcher():
             if "tessbrain" in h["command"]]
     assert len(cmds) == 4
     for cmd in cmds:
-        assert cmd.startswith('python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn '
+        assert cmd.startswith('python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn '
                               '--closure scripts/brain -- scripts/brain/tessbrain.py hook '), cmd
 
 
