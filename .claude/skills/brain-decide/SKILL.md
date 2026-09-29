@@ -45,9 +45,10 @@ a decision as recorded; tell the operator it awaits review.
      Leaving out `--statement` uses the quote itself. A rewording goes to
      `review` and is not accepted until the operator approves it.
 5. Read the result. `accepted` = recorded. `proposed` (material) or `review`
-   (held) = waiting for the operator: say so, with the reason and the id from
-   the result (`record` or `candidate`), and tell them to approve it by
-   replying with the id, for example "confirm D-..." or "approve C-...".
+   (held) = waiting for the operator: say so in one line with the reason,
+   then give them the result's `reply` line word for word, for example
+   `Reply "confirm D-0929-pricing" to accept, or "reject D-0929-pricing" to drop it`.
+   Never ask for a bare "yes": the tool only accepts their words naming the id.
    Apply their reply with skill `brain-review` step 4. `fail` lists the rule that refused
    it: fix the quote (it must be their words) or tell the operator plainly
    that it was not recorded and why.

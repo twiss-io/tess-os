@@ -8719,6 +8719,7 @@ def _cmd_update_body(args, root: Path) -> None:
             )
         if not dry_run:
             _update_carry_policy_registries(root)   # v1.0.0 security review (H2)
+            _update_confirm_policy_rule_changes(root, target_ref)   # v1.0.0 item a
 
         # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
@@ -16496,13 +16497,18 @@ def _gate_release_lock_from_proof(resolve):
 
 
 def _gate_release_policy_ok(base_text: str | None, head_data: bytes | None,
-                            release_data: bytes | None) -> bool:
+                            release_data: bytes | None, approval=None,
+                            tag: str | None = None) -> bool:
     """v1.0.0 security review (H2): a policy.yaml copy changed by an update is
     accepted only when its bytes are the release policy with the BASE's own
     verifier_keys/signoff_keys carried over (what `tessctl update` writes —
     see _policy_carry_registries) AND its rules, hard_floor_rules,
     verifier_keys and signoff_keys all equal the base's. A proof can never
-    restore a registry the user removed, or loosen a rule."""
+    restore a registry the user removed, or loosen a rule.
+
+    v1.0.0 (item a): the rules / hard_floor_rules may differ only when the
+    committed operator approval for `tag` names exactly this base -> head
+    rule change (_policy_approval_covers); the registries never may."""
     if base_text is None or head_data is None or release_data is None:
         return False
     try:
@@ -16517,7 +16523,9 @@ def _gate_release_policy_ok(base_text: str | None, head_data: bytes | None,
     bp, hp = base_doc.get("policy"), head_doc.get("policy")
     if not (isinstance(bp, dict) and isinstance(hp, dict)):
         return False
-    return all(bp.get(k) == hp.get(k) for k in _RELEASE_POLICY_TRUST_KEYS)
+    if all(bp.get(k) == hp.get(k) for k in _RELEASE_POLICY_TRUST_KEYS):
+        return True
+    return tag is not None and _policy_approval_covers(approval, tag, base_doc, head_doc)
 
 
 def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: list,
@@ -16603,7 +16611,8 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
                 continue
         if rel in _FIRST_INSTALL_POLICY_PATHS:
             if _gate_release_policy_ok(_gate_git_show_at_ref(root, base, rel), head_bytes(rel),
-                                       resolve.release_bytes(rel)):
+                                       resolve.release_bytes(rel),
+                                       _gate_policy_approval_at(root, head, tag_name), tag_name):
                 accepted.add(rel)
                 got = resolve(rel)
                 if got is None or head_index.get(rel) != got[1]:
@@ -16774,6 +16783,212 @@ def _update_carry_policy_registries(root: Path) -> None:
     if carried != new_text:
         staged.write_text(carried, encoding="utf-8")
         print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0 (release integration, item a): operator-approved policy rule changes.
+#
+# The gate accepts a signed release's policy.yaml only when its rules and
+# hard-floor rules equal the installed ones (_gate_release_policy_ok), because
+# a release proof must never loosen a rule on its own. Users have no verifier
+# key, so a future release that changes a rule would otherwise dead-end.
+# `tessctl update` now shows every rule the release adds, removes or changes,
+# in plain English, and asks the person at the terminal to type
+# `accept <tag>`. The answer is written to .tess/gate/policy-approvals/<tag>.json,
+# bound to digests of the old and new rule sets. The gate then accepts the
+# policy change only when ALL of these hold:
+#   * the policy bytes are still exactly the signed release policy (with the
+#     user's own key registries carried over), so only rules a signed Tess OS
+#     release ships can ever be approved this way;
+#   * verifier_keys and signoff_keys are unchanged (never approvable);
+#   * the committed approval names the proven tag and the exact old -> new
+#     rule digests.
+# An agent cannot produce the approval: `tessctl update` refuses unless stdin
+# AND stdout are a terminal (no flag or environment variable skips that), and
+# the Claude Code / Codex gate hooks deny agent writes under .tess/gate/**.
+# Like `tessctl approve`, the terminal check is a presence check, not a
+# cryptographic boundary (a process that allocates its own pseudo-terminal can
+# satisfy it); the digests and the signed-release-bytes rule bound what an
+# approval can ever let through.
+# ---------------------------------------------------------------------------
+
+POLICY_APPROVALS_DIR = ".tess/gate/policy-approvals"
+POLICY_APPROVAL_FORMAT = "tess-policy-approval/1"
+_POLICY_RULE_KEYS = ("rules", "hard_floor_rules")
+_POLICY_REGISTRY_KEYS = ("verifier_keys", "signoff_keys")
+
+
+def _policy_section(doc) -> dict | None:
+    p = doc.get("policy") if isinstance(doc, dict) else None
+    return p if isinstance(p, dict) else None
+
+
+def _policy_rules_digest(doc) -> str | None:
+    """sha256 of the canonical JSON of a policy's rules + hard_floor_rules."""
+    p = _policy_section(doc)
+    if p is None:
+        return None
+    canon = json.dumps({k: p.get(k) for k in _POLICY_RULE_KEYS}, sort_keys=True,
+                       separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _policy_rules_by_id(doc, key: str) -> dict:
+    p = _policy_section(doc) or {}
+    out = {}
+    for i, rule in enumerate(p.get(key) or []):
+        rid = rule.get("id") if isinstance(rule, dict) else None
+        out[str(rid) if rid else f"#{i + 1}"] = rule
+    return out
+
+
+def _policy_glob_list(rule) -> list:
+    globs = rule.get("globs") if isinstance(rule, dict) else None
+    return [str(g) for g in globs] if isinstance(globs, list) else []
+
+
+def _policy_rule_change_lines(old_doc, new_doc) -> list:
+    """One plain-English line per rule a release adds, removes or changes."""
+    lines = []
+    for key, label in (("rules", "rule"), ("hard_floor_rules", "hard-floor rule")):
+        old, new = _policy_rules_by_id(old_doc, key), _policy_rules_by_id(new_doc, key)
+        for rid in sorted(set(old) | set(new)):
+            if rid not in old:
+                globs = _policy_glob_list(new[rid])
+                lines.append(f"NEW {label} '{rid}'"
+                             + (f": protects {', '.join(globs)}" if globs else ""))
+            elif rid not in new:
+                lines.append(f"REMOVED {label} '{rid}': the files it protected lose "
+                             f"that protection")
+            elif old[rid] != new[rid]:
+                o, n = old[rid], new[rid]
+                og, ng = _policy_glob_list(o), _policy_glob_list(n)
+                parts = []
+                added = [g for g in ng if g not in og]
+                dropped = [g for g in og if g not in ng]
+                if added:
+                    parts.append(f"now also protects {', '.join(added)}")
+                if dropped:
+                    parts.append(f"no longer protects {', '.join(dropped)}")
+                fields = sorted(k for k in set(o if isinstance(o, dict) else {})
+                                | set(n if isinstance(n, dict) else {})
+                                if k not in ("globs", "description")
+                                and (o.get(k) if isinstance(o, dict) else None)
+                                != (n.get(k) if isinstance(n, dict) else None))
+                for k in fields:
+                    parts.append(f"{k}: {o.get(k)!r} -> {n.get(k)!r}")
+                if not parts:
+                    parts.append("wording of its description changed")
+                lines.append(f"CHANGED {label} '{rid}': " + "; ".join(parts))
+    return lines
+
+
+def _policy_approval_rel(tag: str) -> str:
+    return f"{POLICY_APPROVALS_DIR}/{tag}.json"
+
+
+def _policy_approval_covers(approval, tag: str, base_doc, head_doc) -> bool:
+    """True when `approval` (a parsed approval record) accepts exactly the
+    base -> head rule change for `tag`, and the key registries are unchanged."""
+    bp, hp = _policy_section(base_doc), _policy_section(head_doc)
+    if not (isinstance(approval, dict) and bp is not None and hp is not None):
+        return False
+    if any(bp.get(k) != hp.get(k) for k in _POLICY_REGISTRY_KEYS):
+        return False
+    return (approval.get("format") == POLICY_APPROVAL_FORMAT
+            and approval.get("tag") == tag
+            and approval.get("old_rules_sha256") == _policy_rules_digest(base_doc)
+            and approval.get("new_rules_sha256") == _policy_rules_digest(head_doc)
+            and approval.get("approved_by_typing") == f"accept {tag}")
+
+
+def _gate_policy_approval_at(root: Path, ref: str, tag: str):
+    """The committed operator approval for `tag` at `ref`, parsed, or None."""
+    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9A-Za-z.+-]{1,63}", tag):
+        return None
+    data = _gate_git_regular_blob_bytes(root, ref, _policy_approval_rel(tag))
+    if data is None or len(data) > 256 * 1024:
+        return None
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _update_confirm_policy_rule_changes(root: Path, tag: str) -> None:
+    """Before the core advance: when the staged release changes policy rules,
+    show each change and require the person at the terminal to type
+    `accept <tag>`; record the answer for the gate. Refuses (nothing changed)
+    without a terminal or without the exact answer."""
+    rel = ".tess/core/policy/policy.yaml"
+    staged, current = root / STAGING_DIR / rel, root / rel
+    if not (staged.is_file() and current.is_file()):
+        return
+    try:
+        old_doc = yaml.safe_load(current.read_text(encoding="utf-8"))
+        new_doc = yaml.safe_load(staged.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as e:
+        sys.exit(f"tessctl update: cannot read the policy files to compare them ({e}); "
+                 f"nothing was changed.")
+    if _policy_rules_digest(old_doc) == _policy_rules_digest(new_doc):
+        return
+    lines = _policy_rule_change_lines(old_doc, new_doc) or ["(the rule list was reordered)"]
+    out = sys.__stdout__ or sys.stdout
+    msg = (
+        f"\nTess OS {tag} changes the safety rules that decide which changes need a review:\n"
+        + "".join(f"  - {ln}\n" for ln in lines)
+        + "Nothing has been changed yet.\n"
+    )
+
+    def _tty(stream) -> bool:
+        try:
+            return bool(stream is not None and stream.isatty())
+        except (AttributeError, ValueError, OSError):
+            return False
+
+    if not (_tty(sys.stdin) and _tty(out)):
+        sys.exit(
+            msg
+            + "tessctl update: STOPPED — a person has to approve new safety rules, and this "
+              "was not run from a terminal.\n"
+            + f"  To approve: open a terminal in this project, run `./tessctl update --ref {tag}`, "
+              f"read the list, and type `accept {tag}`.\n"
+            + "  To wait: do nothing. You stay on your current version, which keeps working."
+        )
+    out.write(msg + f"To accept these rules, type exactly:  accept {tag}\n"
+                    "To stop without changing anything, press Enter.\n  accept> ")
+    out.flush()
+    typed = sys.stdin.readline()
+    if typed.strip() != f"accept {tag}":
+        sys.exit(f"tessctl update: stopped — you did not type `accept {tag}`. Nothing was "
+                 f"changed; you stay on your current version.")
+    record = {
+        "format": POLICY_APPROVAL_FORMAT,
+        "tag": tag,
+        "old_rules_sha256": _policy_rules_digest(old_doc),
+        "new_rules_sha256": _policy_rules_digest(new_doc),
+        "changes": lines,
+        "approved_by_typing": f"accept {tag}",
+        "approved_at": datetime.datetime.now(datetime.timezone.utc)
+                       .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "approved_by": _operator_display_name(root),
+    }
+    dest = root / _policy_approval_rel(tag)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(dest, (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    print(f"  you approved the new safety rules; recorded in {_policy_approval_rel(tag)} "
+          f"(commit it with this update)")
+    out.write(f"  approved. Commit {_policy_approval_rel(tag)} together with this update.\n")
+    out.flush()
+
+
+def _operator_display_name(root: Path) -> str:
+    try:
+        name = str(_load_operator_profile(root).get("operator_name") or "").strip()
+    except (OSError, ValueError, TypeError, yaml.YAMLError):  # display name only
+        name = ""
+    return name or "Operator"
 
 
 def _first_install_lock_change_ok(rel_lock: dict, head_lock: dict, tag_name: str,

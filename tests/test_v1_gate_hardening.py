@@ -139,7 +139,8 @@ NEW = OLD + "Rule 2: verify before shipping.\n"
 RELEASE_POLICY = (REPO_ROOT / "core" / "policy" / "policy.yaml").read_text(encoding="utf-8")
 
 
-def _installed(project, gpg_key, tmp_path, run_cli, engine, policy_extra: str = "") -> str:
+def _installed(project, gpg_key, tmp_path, run_cli, engine, policy_extra: str = "",
+               release_policy: str | None = None) -> str:
     """An install at v2.0.0 whose policy is the release policy with the
     wizard's registry reset, core-managed in the lock, and a signed upstream
     v2.1.0 that changes guardrails and ships the maintainers' policy (with
@@ -155,8 +156,9 @@ def _installed(project, gpg_key, tmp_path, run_cli, engine, policy_extra: str = 
                 render_live=False)
     up = make_upstream(
         tmp_path / "upstream", gpg_key, "v2.1.0", sign="signed",
-        core_files={GUARD_KEY: NEW, GUARD_LIVE: NEW, POL_KEY: RELEASE_POLICY + policy_extra,
-                    POL_LIVE: RELEASE_POLICY + policy_extra, EXTRA_WF: "on: push\njobs: {}\n",
+        core_files={GUARD_KEY: NEW, GUARD_LIVE: NEW,
+                    POL_KEY: (release_policy or RELEASE_POLICY) + policy_extra,
+                    POL_LIVE: (release_policy or RELEASE_POLICY) + policy_extra, EXTRA_WF: "on: push\njobs: {}\n",
                     EXTRA_WF_KEY: "on: push\njobs: {}\n", NEW_KEY: "# New rule\n",
                     NEW_LIVE: "# New rule\n",
                     ".tess/core/templates/CLAUDE.md.tpl": "# Tess OS\n\nRoot: {{TESS_ROOT}}\n",

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { printFinalScreen, FIRST_OPEN_CLAUDE, FIRST_OPEN_CODEX } from '../src/brain.js';
-import { installReleaseProof, INSTALLED_RELEASE_PROOF } from '../src/release-proof.js';
+import { installReleaseProof, INSTALLED_RELEASE_PROOF, MISSING_PROOF_WARNING } from '../src/release-proof.js';
 
 const temps = [];
 after(() => temps.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -42,7 +42,16 @@ test('release proof: written for the bundled template, never for another source'
   assert.equal(installReleaseProof(a, { bundled: false, source: src }), false);
   assert.equal(existsSync(join(a, INSTALLED_RELEASE_PROOF)), false);
   const b = mkTemp();
-  assert.equal(installReleaseProof(b, { bundled: true, source: join(b, 'missing.json') }), false);
+  let warned = '';
+  assert.equal(installReleaseProof(b, { bundled: true, source: join(b, 'missing.json'),
+    warn: (l) => { warned += l; } }), false);
+  assert.equal(warned, MISSING_PROOF_WARNING);
+  assert.match(warned, /^Note: .*first push .* will need a review.*\n$/);
+  assert.equal(warned.trim().split('\n').length, 1);
+  // the default warning goes to stdout, one line; a non-bundled install says nothing
+  assert.equal(capture(() => installReleaseProof(b, { bundled: true, source: join(b, 'x.json') })),
+    MISSING_PROOF_WARNING);
+  assert.equal(capture(() => installReleaseProof(b, { bundled: false, source: join(b, 'x.json') })), '');
   assert.equal(installReleaseProof(b, { bundled: true, source: src }), true);
   assert.equal(readFileSync(join(b, INSTALLED_RELEASE_PROOF), 'utf8'), readFileSync(src, 'utf8'));
 });

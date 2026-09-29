@@ -309,7 +309,24 @@ ADVICE = {
     "push": "Push to a private remote, or follow the steps above.",
     "error": "Try a simpler command. If it keeps failing, run `./tessctl doctor`, or run the "
              "command yourself outside the agent.",
+    "operator": "Ask the operator to run it in their own terminal and type the answer "
+                "themselves (for an update: `./tessctl update`, then `accept <version>`).",
 }
+
+# v1.0.0 (release integration, item a): `tessctl update` (new safety rules) and
+# `tessctl approve` ask a person at a terminal to type the answer. An agent
+# must not fake that terminal or type the answer for them.
+_PTY_WRAPPER = re.compile(r"(?i)(?<![\w.-])(script|expect|unbuffer|socat|pexpect|ptyprocess|openpty|"
+                          r"pty\.spawn|import\s+pty|from\s+pty)(?![\w.-])")
+_TYPED_APPROVAL = re.compile(r"(?i)\baccept\s+v\d")
+
+
+def _check_operator_only(cmd: str, v) -> None:
+    if not re.search(r"(?i)tessctl", cmd):
+        return
+    if _PTY_WRAPPER.search(cmd) or _TYPED_APPROVAL.search(cmd):
+        v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
+                    "fake a terminal or type the approval for them", "operator")
 
 
 class Verdict:
@@ -585,6 +602,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
 
 
 def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
+    _check_operator_only(cmd, v)
     try:
         segs = _segments(cmd)
     except ValueError:

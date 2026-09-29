@@ -110,7 +110,8 @@ def _shown(cfg: Config, a, res: Out) -> Out:
         confirm.present_outcome(cfg, out)
         held = [c for c in inbox.pending(cfg) if c["id"] == out.get("candidate")]
         if held:
-            confirm.present(cfg, held[0]["id"], confirm.candidate_hash(held[0]))
+            short = confirm.present(cfg, held[0]["id"], confirm.candidate_hash(held[0]))
+            out["short_id"], out["reply"] = short, confirm.reply_phrase(short)
     return res
 
 

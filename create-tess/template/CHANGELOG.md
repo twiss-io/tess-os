@@ -12,12 +12,12 @@ All notable changes to Tess OS are documented here. This project adheres to
 - **Claude Code: Enforced. Codex: Enforced once the project is trusted and Tess hooks are approved in `/hooks`.** Tess's safety gate runs as a hook in both. Gemini CLI and other `AGENTS.md` tools stay Advisory (`adapters/CONFORMANCE.md`).
 - **It learns:** the learning loop captures what you decide and prefer from Claude Code and Codex sessions, with your exact words, and `brain-decide`, `brain-remember` and `brain-save` record and save it.
 - **Your first push works:** a new install carries the proof of the signed release it came from, so its first push passes the review gate with no reviewer keys. Any file that differs from that release still needs a verdict.
-- **Updates are signed and checked on your machine,** with an OpenPGP and an SSH signature on every release tag, so a stock Mac without gpg can verify them.
+- **Updates are signed and checked on your machine,** with an OpenPGP and an SSH signature on every release tag, so a stock Mac without gpg can verify them. If an update changes Tess's safety rules, `./tessctl update` lists each change in plain words and applies it only after you type `accept <version>`.
 
 Full details below. Trust model: SECURITY.md.
 <!-- release-notes:end -->
 
-Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity), #208 (SSH release signature), B4 (first run), #210 (Codex safety gate), #211 (learning loop) and the release-candidate fixes that make them work together.
+Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity), #208 (SSH release signature), B4 (first run), #210 (Codex safety gate), #211 (learning loop), the four review-fix PRs (#212 CI and release hygiene, #213 gate hardening, #214 engine hardening, #215 learning-loop provenance) and the release-candidate fixes that make them work together.
 
 **Release candidate (v1.0.0)**
 - Blocker fixed — first push: a fresh install's first push was refused (`COVERING_APPROVAL_MISSING`) because the seed commit adds security-tier files and a new user has no verifier keys. publish-npm.yml now also requires the framework tag `v<version>` to carry both release signatures and name the published commit, and builds `create-tess/release-proof.json` from it (`create-tess/scripts/build-release-proof.py`: the tag object with both signatures, the commit, every tree object of the release, so every template file's git blob id, and the raw bytes of `tess.lock` and both `policy.yaml` copies). The wizard writes it to `.tess/release-proof.json` before the first commit. For a push with no base commit, the gate verifies the proof offline against the release keys the engine pins (`RELEASE_ANCHOR_*`, equal to the shipped `tess.lock` pins, and the engine is itself a protected file the proof must match) and accepts protected files only when they are that release byte for byte; the two `policy.yaml` copies must equal the release policy with the wizard's verifier/sign-off key reset applied (a byte-exact Python port, checked against the JS); `tess.lock` may differ only by that re-pin, render records of committed files and timestamps. A hand-edited protected file, a lock tier change, a widened policy, and a proof re-signed with another key (also with the key file swapped) are refused (`tests/test_v1_first_push_release_proof.py`, end to end from a packed tarball with throwaway keys). A packed tarball that is stale for HEAD refuses to build.
@@ -34,9 +34,37 @@ Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #
 **Learning loop (#211)**
 - `scripts/brain/tessbrain.py` capture hooks for Claude Code and Codex (SessionStart snapshot, prompt notes, Stop/SessionEnd sync), `recall`, and the `brain-decide`, `brain-remember` and `brain-save` skills, with adversarial tests. Reads codex-cli 0.158 rollouts.
 
+**CI and release hygiene (#212)**
+- Every test fixture's `git init` pins `-b main` (a new test fails on any unpinned one), so CI no longer depends on the runner's default branch.
+- create-tess's `DEFAULT_TEMPLATE_REF` comes from its own `package.json` version; `release_version_gate.py` also checks `pyproject.toml` (bumped to 1.0.0 with `uv.lock`) and that the template ref names the tag.
+- `tess-gate.py` no longer fails open on a command shlex cannot parse: it checks the raw text for protected paths, pushes, remote changes and token calls, re-parses with shell comments, and asks (Claude) or denies (Codex) when still undecidable.
+- ci.yml and release.yml run `npm ci --prefix create-tess` before pytest and fail if the first-push release-proof test is skipped.
+- Release runbook: one run of `scripts/release/sign-release-tag.sh` signs `v<ver>` and `create-tess-v<ver>` on the same commit with OpenPGP and SSH. `records.write` publishes atomically. Platform support stated once: macOS and Linux; Windows via WSL.
+
+**Gate hardening (#213)**
+- Path listings are NUL-separated, so a file name with a quote, non-ASCII letter or newline cannot slip past the gate.
+- A release proof exempts files only for a genuine `tessctl update` that advances `tess.lock` to exactly the proven tag; the policy's verifier and sign-off key registries are never restored from the release, and the update carries the user's own registries into the new policy.
+- The pre-push guard scans every commit being pushed. The Codex gate denies hook and gate bypasses, and `git diff/log/show` forms that could print protected data.
+- `tess-gate.yml`: dispatch inputs reach the script only through `env`, the dispatch base must be an ancestor of the default branch, actions are pinned by SHA, pyyaml is pinned, credentials are not persisted. `release.yml` is split into a read-only `gates` job and a `release` job; `publish-npm.yml` Gate 0c waits for the published GitHub Release and a successful `release.yml` run; the gitleaks download is checksum-verified.
+
+**Engine hardening (#214)**
+- The vendored PyYAML is hash-verified and loaded in memory; `.tess/vendor/**` is security tier and pinned in `tess.lock`.
+- `run-pinned.py` runs scripts with `python3 -I -B` at every call site, re-executes itself isolated, and refuses extra `.py` arguments; the `./tessctl` wrapper and the git-hook bodies use `python3 -I -B`.
+- First push in CI: a push with no base commit reads the tag its `.tess/release-proof.json` names, fetches that tag from the Tess OS repository, verifies its OpenPGP and SSH signatures against fingerprints written into the workflow, and runs that signed release's engine, never the pushed tree's. No proof, or a tag that does not verify, fails closed.
+
+**Learning-loop provenance (#215)**
+- Privileged fields on a candidate written into the repo are stripped, so a planted file cannot approve itself.
+- Confirmations must be the operator's authenticated words naming the exact id, said after the item was last shown, about unchanged content, and each used once (`scripts/brain/brainlib/confirm.py`).
+- Journal lines, captured turns and presentations are HMAC-signed with a per-machine key at `~/.config/tess/brain/key` (`provenance.py`); transcripts must belong to this user; private-read detection looks at the whole tool input, and a withheld reply stays withheld.
+
+**Release integration (v1.0.0)**
+- Merge: #213 and #214 each shipped a "v4" `tess-gate.yml`. v5 is one workflow with #213's hardening and #214's verified first-push bootstrap; `tessctl gate install-hooks` upgrades either v4. `pinned-scripts.sha256`, `tess.lock` and `create-tess/template/` were regenerated rather than hand-merged.
+- Safety-rule changes in future releases never dead-end: #213 made a release that changes `rules` or `hard_floor_rules` unappliable without a verdict, and users have no verifier key. `tessctl update` now lists each added, removed or changed rule in plain words and asks the person at the terminal to type `accept <tag>`; the answer goes to `.tess/gate/policy-approvals/<tag>.json`, bound to digests of the old and new rules. The gate accepts the new policy only when it is still exactly the signed release policy (with the user's own key registries), the registries are unchanged, and the approval names this tag and these digests. Without a terminal (an agent, CI, a pipe) the update stops and changes nothing; the Claude Code and Codex hooks deny agent writes under `.tess/gate/**`. Like `tessctl approve`, the terminal check is a presence check, not cryptography (`tests/test_v1_policy_update_approval.py`).
+- Friendly confirmations: `review`, `decide` and `remember` results carry a short id and a ready-to-say line, for example `Reply "confirm D-0929-pricing" to accept, or "reject D-0929-pricing" to drop it`, and the `brain-review`, `brain-decide` and `brain-remember` skills relay it word for word. The short id is the shortest spelling that names one live item; it is recorded (HMAC-signed) with the presentation, and counts only while it still names that item alone. Content, freshness, authentication and no-replay checks are unchanged (`tests/test_brain_short_confirm.py`).
+- The wizard prints one plain line when the bundled template is used but the package has no `release-proof.json`: the first push will need a review (`create-tess/test/v1-first-open.test.js`).
+
 **Known issues (1.0.x follow-up)**
 - The legacy top-level `clients/_template/` still ships beside `brain/`; it is unused by onboarding and will be removed in 1.0.x.
-- The installed `tess-gate.yml` CI workflow runs the gate engine from the push's base commit. A repository's very first push has no base, so that one CI run fails closed ("no gate engine found at base ref"); the local pre-push gate checks the first push, and CI checks every push after it.
 
 **First run for non-technical users (B4)**
 - README leads with what Tess OS is, what you need (Node 18+, git, Python 3.9+, Claude Code or Codex) and a three-step quickstart; the technical detail moved to `docs/TECHNICAL_OVERVIEW.md`, and `docs/STATUS.md` states the v1.0.0 trust facts.

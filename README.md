@@ -65,6 +65,15 @@ Updates only come from a release signed by the Tess OS release key, and are
 checked on your computer before anything changes. Changes you made to your
 own files are kept.
 
+If a new version changes Tess's safety rules (which changes need a review
+before they can be pushed), the update stops before changing anything and
+lists each rule change in plain words. To accept, run the update yourself in
+a terminal and type `accept <version>` when asked (for example
+`accept v1.1.0`), then commit the update together with the file it names in
+`.tess/gate/policy-approvals/`. To wait instead, press Enter: you stay on
+your current version, which keeps working. Your AI assistant cannot give
+this approval for you; it has to be typed in a terminal.
+
 ## More detail
 
 - **How it works, its limits, runtimes and the roster:**

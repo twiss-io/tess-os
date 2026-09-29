@@ -188,7 +188,8 @@ def _ingest(cfg: Config, out: Dict, r: Dict) -> None:
     elif t == "session" and _eq(cfg, r.get("mac"), "session", r.get("path"), r.get("sid"), r.get("runtime"),
                                 "1" if r.get("external") else "0"):
         out["sessions"][r["path"]] = r
-    elif t == "shown" and _eq(cfg, r.get("mac"), "shown", r.get("id"), r.get("h"), r.get("at"), r.get("sid") or ""):
+    elif t == "shown" and _eq(cfg, r.get("mac"), "shown", r.get("id"), r.get("h"), r.get("at"), r.get("sid") or "",
+                              *([r["short"]] if r.get("short") else [])):
         out["shown"][r["id"]] = r
     elif t == "used" and _eq(cfg, r.get("mac"), "used", r.get("ref"), r.get("id")):
         out["used"].add("%s|%s" % (r["ref"], r["id"]))
@@ -270,9 +271,15 @@ def turn_ok(cfg: Config, rec: Optional[Dict]) -> bool:
 
 # -- presentation and confirmation --------------------------------------------------------------------
 
-def shown(cfg: Config, item_id: str, h: str, at: str, sid: str) -> None:
-    _append(cfg, [{"t": "shown", "id": item_id, "h": h, "at": at, "sid": sid,
-                   "mac": mac(cfg, "shown", item_id, h, at, sid)}])
+def shown(cfg: Config, item_id: str, h: str, at: str, sid: str, short: str = "") -> None:
+    """`short`: the short id the operator was shown for `item_id` (confirm.short_id); MAC'd with the rest."""
+    row = {"t": "shown", "id": item_id, "h": h, "at": at, "sid": sid}
+    if short:
+        row["short"] = short
+        row["mac"] = mac(cfg, "shown", item_id, h, at, sid, short)
+    else:
+        row["mac"] = mac(cfg, "shown", item_id, h, at, sid)
+    _append(cfg, [row])
 
 
 def last_shown(cfg: Config, item_id: str) -> Optional[Dict]:

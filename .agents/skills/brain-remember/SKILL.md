@@ -20,7 +20,9 @@ description: "Record what the operator wants remembered: a standing preference (
 
 4. Report what the result says: `active` (preference/correction/fact),
    `proposed` (open loops wait for the principal's confirmation), `review`,
-   or `fail` with the rule that refused it.
+   or `fail` with the rule that refused it. For `proposed` or `review`, give
+   the operator the result's `reply` line word for word, for example
+   `Reply "confirm L-0929-send-invoice" to accept, or "reject L-0929-send-invoice" to drop it`.
 
 ## Rules
 
