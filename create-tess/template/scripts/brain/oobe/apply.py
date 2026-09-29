@@ -219,7 +219,7 @@ def run_learn(root: Path) -> None:
         return
     for args in (["index", "--quiet"], ["githooks", "install"]):
         try:
-            done = subprocess.run([sys.executable, str(tool)] + args, cwd=str(root),
+            done = subprocess.run([sys.executable, "-I", "-B", str(tool)] + args, cwd=str(root),
                                   capture_output=True, text=True, timeout=120)
             if done.returncode != 0:
                 state.log_error(root, "tessbrain.py %s exited %d" % (" ".join(args), done.returncode),

@@ -53,14 +53,42 @@ def record_hash(rec: records.Record) -> str:
 
 
 
+# Words that never make a useful short id on their own ("D-0929-we", "D-0929-the"): pronouns, articles,
+# auxiliaries, prepositions, conjunctions and filler verbs. v1.0.0 item c.
+STOPWORDS = frozenset("""
+a an the this that these those it its i me my mine we us our ours you your yours he him his she her hers they
+them their theirs one ones
+am is are was were be been being do does did done have has had having will would shall should can could may
+might must let lets use uses used using go going get gets got make makes made need needs want wants going
+to of in on at by for from with without into onto over under about as than then so and or but nor not no yes
+if because while also just only very really all any some each every more most other such own same too
+""".split())
+
+
+def _meaningful(words: List[str]) -> List[str]:
+    return [w for w in words if w.lower() not in STOPWORDS and not w.isdigit() and len(w) > 1]
+
+
 def _short_forms(item_id: str) -> List[str]:
-    """Short spellings of a full id, shortest first; the full id itself last.
-    D-20260929-1412-use-postgres -> D-0929-use, D-0929-use-postgres, D-0929-1412-use-postgres, ..."""
+    """Short spellings of a full id, most readable first; the full id itself last.
+
+    D-20260929-1412-we-use-postgres-for-pricing -> D-0929-postgres, D-0929-pricing, D-0929-postgres-pricing,
+    D-0929-we, D-0929-we-use, ..., D-0929-1412-we-use-postgres-for-pricing, the full id.
+    Single meaningful words come first (stopwords and pronouns skipped), then growing meaningful
+    phrases, then the literal slug prefixes, then the time-qualified slug. short_id() picks the first
+    form no other live item could also mean, so uniqueness rules are unchanged."""
     m = re.fullmatch(r"([A-Za-z])-(\d{8})-(\d{4})-(.+)", item_id or "")
     if not m:
         return [item_id] if item_id else []
     pre, day, hhmm, rest = m.group(1).upper(), m.group(2)[4:], m.group(3), m.group(4).split("-")
-    forms = ["%s-%s-%s" % (pre, day, "-".join(rest[:k])) for k in range(1, len(rest) + 1)]
+    key = _meaningful(rest)
+    tails = [[w] for w in key] + [key[:k] for k in range(2, len(key) + 1)] + \
+        [rest[:k] for k in range(1, len(rest) + 1)]
+    forms: List[str] = []
+    for tail in tails:
+        form = "%s-%s-%s" % (pre, day, "-".join(tail))
+        if form not in forms:
+            forms.append(form)
     forms.append("%s-%s-%s-%s" % (pre, day, hhmm, "-".join(rest)))
     return forms + [item_id]
 
@@ -134,6 +162,25 @@ HEDGE = re.compile(r"(?i)[?\"`\u201c\u201d]|\b(if|only|after|unless|when|once|pe
 DOUBT = re.compile(r"(?i)\b(wait|hold on|hold off|not yet|don'?t|do not|never|cancel|scratch that|actually)\b|n't\b")
 
 
+# v1.0.0 item c (friendly confirms): users copy the phrase shown in 'Reply "confirm D-0929-pricing" ...'
+# together with its quotes. A message that is EXACTLY one directive wrapped in one pair of matching quotes
+# (straight or curly, optional full stop after the closing quote) is that directive. A quote inside a longer
+# sentence ('He said "confirm D-..."'), nested or mismatched quotes, and multi-line messages are never unwrapped.
+_WRAPPED = re.compile(r'^(?:"(?P<a>[^"\u201c\u201d]+)"|\u201c(?P<b>[^"\u201c\u201d]+)\u201d'
+                      r"|'(?P<c>[^'\u2018\u2019\"\u201c\u201d]+)'|\u2018(?P<d>[^'\u2018\u2019\"\u201c\u201d]+)\u2019)"
+                      r"\s*\.?$")
+
+
+def unwrap(message: str) -> str:
+    """The directive inside a whole message that is exactly one quoted phrase; else the message unchanged."""
+    t = (message or "").strip()
+    m = _WRAPPED.match(t)
+    if not m:
+        return message
+    inner = next(g for g in m.groups() if g is not None).strip()
+    return inner if (CONFIRM_LINE.match(inner) or DENY_LINE.match(inner)) else message
+
+
 def directive(line: str) -> Tuple[str, str]:
     """('confirm' | 'deny', id as typed) when one line is a directive, else ('', '')."""
     t = (line or "").strip()
@@ -153,6 +200,8 @@ def intent(text: str, item_id: str, action: str, alias: str = "") -> str:
     if not any(_mentions(text, n) for n in names):
         return "the operator's words do not name %s" % item_id
     lines = [l for l in (text or "").splitlines() if l.strip()] or [""]
+    if len(lines) == 1:
+        lines = [unwrap(lines[0])]
     hits = [directive(l) for l in lines]
     mine = [(verb, i) for (verb, i), l in zip(hits, lines) if verb and i.lower() in names]
     if len(mine) != 1 or mine[0][0] != want:

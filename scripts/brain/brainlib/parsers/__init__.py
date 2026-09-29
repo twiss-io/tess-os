@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Tuple
 
+from .. import privacy
+
 EXTERNAL_TOOLS = {"WebFetch", "WebSearch", "web_search", "web_fetch", "google_web_search"}
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "write_file", "replace"}
 # Paths whose content must never reach a committed (shared) conversation note:
@@ -61,6 +63,10 @@ class Session:
         self.external_context = False
         self.tool_inputs: List[str] = []  # every place a tool input names a private-path marker (bounded)
         self.inspection_incomplete = False  # the bound was hit: the journal withholds replies
+        # v1.0.0 item d: reads that reach private content without naming it (see brainlib/privacy.py).
+        self.broad_shell = False  # a shell glob, variable, substitution or recursive read/search ran
+        self.cd_targets: List[str] = []  # every `cd`/`pushd` target and shell workdir (bounded)
+        self.search_paths: List[str] = []  # every Grep/Glob-style search path ('' = the cwd) (bounded)
         self.last_ordinal = 0
         self.prefix_sha256 = ""
         self._seen: set = set()
@@ -88,6 +94,29 @@ class Session:
                 return
             self._seen.add(window)
             self.tool_inputs.append(window)
+
+    def note_tool_call(self, name: str, payload: Any) -> None:
+        """Record what brainlib/privacy.py needs to judge a call that could read private content without
+        naming it. Past MAX_WINDOWS kept targets, inspection_incomplete withholds the replies."""
+        kind, det = privacy.classify_call(name, payload)
+        if kind == "broad":
+            self.broad_shell = True
+            return
+        if kind == "shell" and det is not None:
+            broad, targets = privacy.scan_shell(det["command"])
+            self.broad_shell = self.broad_shell or broad
+            self._keep(self.cd_targets, targets + ([det["workdir"]] if det["workdir"] else []))
+        elif kind == "search" and det is not None:
+            self._keep(self.search_paths, [det["path"]])
+
+    def _keep(self, into: List[str], items: List[str]) -> None:
+        for item in items:
+            if item in into:
+                continue
+            if len(self.cd_targets) + len(self.search_paths) >= MAX_WINDOWS:
+                self.inspection_incomplete = True
+                return
+            into.append(item)
 
     def add_file(self, path: Any) -> None:
         if isinstance(path, str) and path and path not in self.files:

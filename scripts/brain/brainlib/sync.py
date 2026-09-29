@@ -72,6 +72,23 @@ def _claude_store(claude_dir: Optional[str]) -> List[Path]:
     return [base] + ([Path(claude_dir)] if claude_dir else [])
 
 
+def claude_dir_problem(cfg: Config, claude_dir: Optional[str]) -> str:
+    """'' when `--claude-dir` is Claude's own transcript folder for THIS instance, else the reason.
+
+    v1.0.0 item e: every *.jsonl in a --claude-dir was journaled, and attested as the operator's own
+    words, with no check of where it came from, so an agent could write a folder of made-up
+    conversations (with "confirm D-...") and sync it. Now only the runtime's own store for this project
+    counts; any other folder needs the operator at a terminal (tessbrain sync asks, like `roots add`)."""
+    if not claude_dir:
+        return ""
+    real = os.path.realpath(claude_dir)
+    own = [os.path.realpath(str(d)) for d in claude.default_dirs(cfg.root)]
+    if real in own:
+        return ""
+    return ("%s is not Claude's own transcript folder for this project (%s)"
+            % (claude_dir, own[0] if own else "~/.claude/projects/<project>"))
+
+
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
             days: Optional[int], deadline: Optional[float] = None, gemini_home: Optional[str] = None):
     out = []
@@ -191,9 +208,13 @@ class Lock:
 
 def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
         transcript: Optional[str] = None, days: Optional[int] = None,
-        wait: bool = True, gemini_home: Optional[str] = None) -> Dict:
+        wait: bool = True, gemini_home: Optional[str] = None, claude_dir_confirmed: bool = False) -> Dict:
     if not cfg.active():
         return {"skipped": "source repo" if cfg.is_source_repo() else "no brain/brain.json"}
+    why = "" if claude_dir_confirmed else claude_dir_problem(cfg, claude_dir)
+    if why:
+        log_error(cfg, "sync: refusing --claude-dir: %s" % why)
+        return {"error": "refused --claude-dir: " + why}
     with Lock(cfg, "sync") as lock:
         if not lock.ok and not wait:
             return {"skipped": "another sync is running"}

@@ -98,7 +98,9 @@ def _inbox_parsers(sub):
 def _sync_parser(sub):
     s = sub.add_parser("sync", help="journal + cue pass + verify + promote + index")
     s.add_argument("--runtime", choices=["all", "claude", "codex", "gemini"], default="all")
-    s.add_argument("--claude-dir", default=None, help="directory of Claude transcripts (default: this project's)")
+    s.add_argument("--claude-dir", default=None,
+                   help="Claude transcript folder (default: this project's; any other folder only "
+                        "when you run it yourself at a terminal and type yes)")
     s.add_argument("--codex-home", default=None, help="CODEX_HOME to sweep (default $CODEX_HOME or ~/.codex)")
     s.add_argument("--gemini-home", default=None, help="HOME whose .gemini/ to sweep (default $GEMINI_CLI_HOME or ~)")
     s.add_argument("--transcript", default=None, help="journal just this transcript file")

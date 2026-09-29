@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -17,8 +18,11 @@ from . import state
 
 
 def has_pyyaml() -> bool:
+    # -I -B: isolated, so a `yaml.py` (or .pth/sitecustomize) in the instance
+    # cwd can neither answer this probe nor run code; no .pyc is written.
     try:
-        done = subprocess.run(["python3", "-c", "import yaml"], capture_output=True, timeout=20)
+        done = subprocess.run([sys.executable, "-I", "-B", "-c", "import yaml"],
+                              capture_output=True, timeout=20)
         return done.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False

@@ -82,6 +82,7 @@ def _item_completed(p: Dict, ordinal: int, at: str, sess: Session, users: List[M
     kind = item.get("type")
     if kind == "CommandExecution":
         sess.note_tool_input(item.get("command"))
+        sess.note_tool_call("shell", {"command": item.get("command"), "cwd": item.get("cwd") or ""})
         return
     text = "\n".join(iter_text_blocks(item.get("content"), ("text", "Text", "input_text", "output_text"))).strip()
     if not text:
@@ -101,6 +102,7 @@ def _response_item(p: Dict, ordinal: int, at: str, sess: Session, fallback: List
             sess.external_context = True
         body = p.get("input") if isinstance(p.get("input"), str) else str(p.get("arguments") or "")
         sess.note_tool_input(body)
+        sess.note_tool_call(name, body)
         for f in _PATCH_FILE.findall(body or ""):
             sess.add_file(f.strip())
     elif kind == "web_search_call":

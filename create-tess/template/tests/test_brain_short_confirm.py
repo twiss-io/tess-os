@@ -74,7 +74,8 @@ def test_a_short_id_that_became_ambiguous_no_longer_counts(tmp_path):
 def test_short_forms_pick_the_shortest_unique_spelling():
     a, b = "D-20260929-1412-pricing", "D-20260929-1500-pricing-model"
     assert confirm.short_id(None, a, [a, b]) == "D-0929-1412-pricing"
-    assert confirm.short_id(None, b, [a, b]) == "D-0929-pricing-model"
+    # v1.0.0 item c: a single meaningful word first; "pricing" names both, so b is known by "model"
+    assert confirm.short_id(None, b, [a, b]) == "D-0929-model"
     assert confirm.short_id(None, a, [a]) == "D-0929-pricing"
     assert confirm.short_id(None, "C-20260929-1200-01", ["C-20260929-1200-01"]) == "C-0929-01"
     # slug words inside a short id are never read as the operator's intent

@@ -256,7 +256,8 @@ REFUSED = [
     "don't confirm D-0929-pricing",
     "never confirm D-0929-pricing",
     'He said "confirm D-0929-pricing"',
-    '"confirm D-0929-pricing"',
+    # v1.0.0 item b: the exact reply wrapped in quotes is now a confirmation (users copy the shown
+    # phrase with its quotes); a quote inside a longer sentence, above, still is not.
     "> confirm D-0929-pricing",
     "confirm D-0929-pricing and D-0929-other",
     "confirm D-0929-pricing\nactually wait, not yet",
@@ -271,6 +272,7 @@ ACCEPTED = [
     "accept D-0929-pricing",
     "confirm D-20260929-1412-pricing",
     "Looks right to me.\nconfirm D-0929-pricing",
+    '"confirm D-0929-pricing"',
 ]
 
 

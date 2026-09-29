@@ -61,8 +61,29 @@ def cli(root, *args, stdin=None, env=None, timeout=120):
     e.setdefault("GEMINI_CLI_HOME", none)
     e.setdefault("CLAUDE_CONFIG_DIR", none)
     e.update(env or {})
-    return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + [str(a) for a in args],
+    args = [str(a) for a in args]
+    if "--claude-dir" in args and "CLAUDE_CONFIG_DIR" not in (env or {}):
+        e["CLAUDE_CONFIG_DIR"] = claude_store_for(root, args[args.index("--claude-dir") + 1])
+    return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + args,
                           input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
+
+
+def claude_store_for(root, claude_dir):
+    """A CLAUDE_CONFIG_DIR whose projects/<this instance> IS `claude_dir` (a symlink to it).
+
+    v1.0.0 item e: `sync --claude-dir` only accepts Claude's own transcript folder for the instance, so a
+    fixture folder is made that folder the way an operator's CLAUDE_CONFIG_DIR would, never by a bypass."""
+    import hashlib
+    sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
+    from brainlib.parsers.claude import project_slug
+    real = os.path.realpath(str(claude_dir))
+    home = os.path.realpath(str(root)) + ".claude-cfg-" + hashlib.sha256(real.encode()).hexdigest()[:10]
+    for p in {str(root), os.path.realpath(str(root))}:
+        link = os.path.join(home, "projects", project_slug(p))
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.lexists(link):
+            os.symlink(real, link)
+    return home
 
 
 def add_root(root, path):

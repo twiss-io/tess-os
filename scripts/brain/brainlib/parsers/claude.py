@@ -86,6 +86,7 @@ def _assistant(rec: Dict, ordinal: int, sess: Session) -> Optional[Msg]:
                 continue
             name = str(item.get("name") or "")
             sess.note_tool_input(item.get("input"))
+            sess.note_tool_call(name, item.get("input"))
             if name in EXTERNAL_TOOLS or name.startswith("mcp__"):
                 sess.external_context = True
             if name in FILE_TOOLS:

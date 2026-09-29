@@ -104,6 +104,43 @@ unreviewed-by-a-human code. That is why `main` is not a release.
 - If the release key or the maintainer's machine is compromised, this model is compromised. Report suspected misuse privately (see above).
 - **Multi-push policy reduction on `main` (A14, the #181 lineage) is out of scope.** Someone with write access can weaken `policy.yaml` in one merge and use the weaker policy in a later one; the gate only stops a relaxation from applying to the push that introduces it. This is accepted: `main` protections are best-effort, `main` is not a release, and users are protected by the signed release tag and the pinned key when they install or update. Reports of this pattern alone are not treated as vulnerabilities; a way to get unsigned code accepted by `tessctl update` with a pinned fingerprint is.
 
+## Known limits
+
+Tess OS runs as you, on your machine. These limits are residual after the v1.0.0
+security reviews; they are stated so nobody relies on a check that is not there.
+
+- **An agent running as the same OS user as you can ultimately read your local
+  keys and run arbitrary programs.** The gates deny the direct paths to the key
+  directory (`~/.config/tess`: the brain key and the operator key) from the shell,
+  Read/Grep/Glob, edits and (in Codex) MCP tools, and they deny the common ways to
+  run hidden code. They are checks on what an agent asks to do, not an operating
+  system boundary. A process running as you can read any file you can read,
+  including the keys, write into Claude's and Codex's transcript folders, and fake
+  a terminal for the "only at a terminal" steps (`roots add`, `sync --claude-dir`
+  with another folder, `accept <version>`), which are presence checks, not
+  cryptography. For a real boundary, run agents in the runtime's sandbox or as
+  another OS user.
+- **Hooks read command text; they cannot see commands built at run time.** A
+  script that assembles a path or a command while it runs, decodes one, reads its
+  program from a file, or starts another program is judged only by what its own
+  command line says. The shared-note privacy check has the same limit: it
+  withholds replies for sessions whose tool calls name a private path or read
+  broadly (a `cd` into the instance, a glob, a recursive search, a variable), but
+  a program that reads private files by itself is not seen.
+- **In Claude Code, MCP tools are not routed through the Tess gate.** The base
+  settings must not target MCP tools (they can be external chat channels), so an
+  MCP server with filesystem access can read `~/.config/tess` in Claude Code. The
+  gate denies such reads when it runs (Codex routes MCP calls through it). Do not
+  give an MCP server access to your home folder.
+- **Protections on the `tess-os` `main` branch are best-effort.** `main` is not a
+  release. Users are protected by the signed release tag and the pinned release
+  key that `tessctl update` checks on their own machine.
+- **An agent on the maintainer's machine that holds an admin GitHub token can
+  change the release workflows** (and anything else an admin can). The
+  maintainer's mitigation is to give agents a scoped non-admin token and keep the
+  admin token out of agent sessions. A changed workflow still cannot forge the
+  release signature that users' machines verify.
+
 ## Scope and threat model
 
 Tess OS is a local governance framework with a doctrine/roster scaffold,

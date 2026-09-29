@@ -75,6 +75,7 @@ def _tools(rec: Dict, sess: Session) -> None:
             continue
         name = str(call.get("name") or "")
         sess.note_tool_input(call.get("args"))
+        sess.note_tool_call(name, call.get("args"))
         if name in EXTERNAL_TOOLS or name.startswith("mcp_"):
             sess.external_context = True
         if name in FILE_TOOLS:

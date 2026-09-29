@@ -11,12 +11,13 @@ from __future__ import annotations
 import os
 from typing import Dict, List
 
-from . import cues
+from . import cues, privacy
 from .config import Config
 from .parsers import Session, is_private_path
 from .textutil import clip
 
-WITHHELD = "[reply withheld: this session read a private path; see the local transcript]"
+WITHHELD = ("[reply withheld: this session read a private path or searched broadly; "
+            "see the local transcript]")
 
 
 def _local(cfg: Config, sess: Session, text: str) -> str:
@@ -33,7 +34,12 @@ def private_read(cfg: Config, sess: Session) -> bool:
     parser could not keep every place a tool input named one (then the replies are withheld to be safe)."""
     if getattr(sess, "inspection_incomplete", False):
         return True
-    return any(is_private_path(_local(cfg, sess, t)) for t in getattr(sess, "tool_inputs", []))
+    if any(is_private_path(_local(cfg, sess, t)) for t in getattr(sess, "tool_inputs", [])):
+        return True
+    # v1.0.0 item d (Cyra M-3): a cd into the instance, a glob, a recursive search, a variable-expanded
+    # path, or a Grep/Glob over the root or a private dir can read private content without naming it.
+    return privacy.broad_access(str(cfg.root), sess.cwd or "", getattr(sess, "broad_shell", False),
+                                getattr(sess, "cd_targets", []), getattr(sess, "search_paths", []))
 
 
 def private_file(cfg: Config, sess: Session, path: str) -> bool:

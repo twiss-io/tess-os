@@ -23,10 +23,32 @@ def cmd_sync(cfg: Config, a) -> Out:
     why = _need(cfg)
     if why:
         return (0 if cfg.is_source_repo() else 1), {"skipped": why}
+    ok = False
+    why = sync.claude_dir_problem(cfg, a.claude_dir)
+    if why:
+        ok = _operator_allows_claude_dir(cfg, a.claude_dir, why)
+        if not ok:
+            return 1, {"error": "refused --claude-dir: %s. Only you, at a terminal, can journal another folder "
+                                "of Claude conversations as your own words; an agent or a pipe cannot" % why}
     res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
-                   gemini_home=a.gemini_home)
+                   gemini_home=a.gemini_home, claude_dir_confirmed=ok)
+    if isinstance(res, dict) and res.get("error"):
+        return 1, res
     over = any(o.get("status") == inbox.OVER_CAP for o in res.get("outcomes", [])) if isinstance(res, dict) else False
     return (3 if over else (res.get("index", {}).get("rc", 0) if isinstance(res, dict) else 0)), res
+
+
+def _operator_allows_claude_dir(cfg: Config, path: str, why: str) -> bool:
+    """TTY-only, typed "yes" (the same bar as `roots add`)."""
+    import sys
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    print("%s.\nSyncing it journals every conversation in it into THIS brain (%s) as your own words, and they "
+          "can count as your decisions and confirmations." % (why, cfg.root))
+    try:
+        return input('Type "yes" to sync it: ').strip().lower() == "yes"
+    except EOFError:
+        return False
 
 
 def cmd_journal_note(cfg: Config, a) -> Out:
