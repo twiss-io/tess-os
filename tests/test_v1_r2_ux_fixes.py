@@ -148,8 +148,7 @@ def _codex_home(tmp_path, engine, *, trusted=True, approve=None):
     if trusted:
         lines += ['[projects."%s"]' % REPO, 'trust_level = "trusted"', ""]
     if approve is not None:
-        import tomllib
-        hooks = tomllib.loads((REPO / ".codex/config.toml").read_text())["hooks"]
+        hooks = engine._toml_loads((REPO / ".codex/config.toml").read_text())["hooks"]
         for ev, groups in hooks.items():
             for gi, g in enumerate(groups):
                 for hi, h in enumerate(g["hooks"]):

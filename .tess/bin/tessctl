@@ -6828,6 +6828,184 @@ CODEX_HOOKS_OFF_WARNING = ("Codex: Tess's safety hooks are not approved yet \u20
                            "and type /hooks")
 
 
+_TOML_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+_TOML_ESCAPES = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+
+
+def _toml_loads(text: str) -> dict:
+    """tomllib.loads on Python 3.11+. Stock macOS python3 is 3.9, which has no
+    tomllib, and the Codex hook-trust check must work there too, so older
+    Pythons use _toml_subset_loads. Both raise ValueError on bad input."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        return _toml_subset_loads(text)
+    return tomllib.loads(text)
+
+
+def _toml_string(s: str, i: int) -> tuple:
+    """A basic ("...") or literal ('...') one-line string starting at s[i]."""
+    q, i, out = s[i], i + 1, []
+    while i < len(s) and s[i] != "\n":
+        c = s[i]
+        if c == q:
+            return "".join(out), i + 1
+        if q == '"' and c == "\\":
+            e = s[i + 1:i + 2]
+            if e in _TOML_ESCAPES:
+                out.append(_TOML_ESCAPES[e])
+                i += 2
+                continue
+            width = {"u": 4, "U": 8}.get(e)
+            if not width:
+                raise ValueError("TOML: bad escape")
+            out.append(chr(int(s[i + 2:i + 2 + width], 16)))
+            i += 2 + width
+            continue
+        out.append(c)
+        i += 1
+    raise ValueError("TOML: unterminated string")
+
+
+def _toml_key(s: str, i: int) -> tuple:
+    """A dotted key (bare or quoted parts) starting at s[i]: ([parts], next index)."""
+    parts = []
+    while True:
+        while i < len(s) and s[i] in " \t":
+            i += 1
+        if i < len(s) and s[i] in "\"'":
+            part, i = _toml_string(s, i)
+        else:
+            m = _TOML_BARE_KEY.match(s, i)
+            if not m:
+                raise ValueError("TOML: bad key")
+            part, i = m.group(0), m.end()
+        parts.append(part)
+        while i < len(s) and s[i] in " \t":
+            i += 1
+        if i < len(s) and s[i] == ".":
+            i += 1
+            continue
+        return parts, i
+
+
+def _toml_skip(s: str, i: int) -> int:
+    """Skip a value this reader does not need (array, inline table, multi-line
+    string, number, date): the index just past it. Strings and comments inside
+    brackets are honoured, so a ']' or '#' in a string does not end it."""
+    if s.startswith(('"""', "'''"), i):
+        q, i = s[i:i + 3], i + 3
+        while i < len(s):
+            if q == '"""' and s[i] == "\\":
+                i += 2
+                continue
+            if s.startswith(q, i):
+                i += 3
+                while i < len(s) and s[i] == q[0]:
+                    i += 1
+                return i
+            i += 1
+        raise ValueError("TOML: unterminated multi-line string")
+    if s[i] not in "[{":
+        m = re.compile(r"[^\s,#\]}]+").match(s, i)
+        if not m:
+            raise ValueError("TOML: bad value")
+        return m.end()
+    depth = 0
+    while i < len(s):
+        c = s[i]
+        if c in "\"'":
+            i = _toml_skip(s, i) if s.startswith(c * 3, i) else _toml_string(s, i)[1]
+            continue
+        if c == "#":
+            while i < len(s) and s[i] != "\n":
+                i += 1
+            continue
+        depth += (c in "[{") - (c in "]}")
+        i += 1
+        if depth == 0:
+            return i
+    raise ValueError("TOML: unterminated array or table")
+
+
+def _toml_table(root: dict, parts: list, array: bool) -> dict:
+    d = root
+    for part in parts[:-1]:
+        d = d.setdefault(part, {})
+        d = d[-1] if isinstance(d, list) and d else d
+        if not isinstance(d, dict):
+            raise ValueError("TOML: key is not a table")
+    if array:
+        items = d.setdefault(parts[-1], [])
+        if not isinstance(items, list):
+            raise ValueError("TOML: key is not an array of tables")
+        items.append({})
+        return items[-1]
+    table = d.setdefault(parts[-1], {})
+    if not isinstance(table, dict):
+        raise ValueError("TOML: key is not a table")
+    return table
+
+
+def _toml_subset_loads(text: str) -> dict:
+    """The part of TOML the Codex hook-trust check reads, for Python < 3.11:
+    [table] and [[array]] headers with bare or quoted dotted keys, and key =
+    one-line string, true/false or integer. Anything else (arrays, inline
+    tables, multi-line strings, floats, dates) is skipped and read as None, so
+    a user's ~/.codex/config.toml with those still parses. Raises ValueError on
+    text it cannot follow; the caller then reports nothing, never a guess."""
+    root, i, n = {}, 0, len(text)
+    cur = root
+    while i < n:
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if text[i] == "#":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if text[i] == "[":
+            array = text.startswith("[[", i)
+            parts, i = _toml_key(text, i + (2 if array else 1))
+            close = "]]" if array else "]"
+            if not text.startswith(close, i):
+                raise ValueError("TOML: bad table header")
+            cur, i = _toml_table(root, parts, array), i + len(close)
+        else:
+            parts, i = _toml_key(text, i)
+            if not text.startswith("=", i):
+                raise ValueError("TOML: expected '='")
+            i += 1
+            while i < n and text[i] in " \t":
+                i += 1
+            if i >= n:
+                raise ValueError("TOML: missing value")
+            if text[i] in "\"'" and not text.startswith(text[i] * 3, i):
+                value, i = _toml_string(text, i)
+            elif re.match(r"(true|false)(?![\w-])", text[i:i + 6]):
+                value = text.startswith("true", i)
+                i += 4 if value else 5
+            else:
+                start, i = i, _toml_skip(text, i)
+                raw = text[start:i].replace("_", "")
+                value = int(raw) if re.fullmatch(r"[+-]?\d+", raw) else None
+            table = cur
+            for part in parts[:-1]:
+                table = table.setdefault(part, {})
+                if not isinstance(table, dict):
+                    raise ValueError("TOML: key is not a table")
+            table[parts[-1]] = value
+        while i < n and text[i] in " \t":
+            i += 1
+        if i < n and text[i] == "#":
+            while i < n and text[i] != "\n":
+                i += 1
+        if i < n and text[i] not in "\r\n":
+            raise ValueError("TOML: unexpected text after a value")
+    return root
+
+
 def _codex_hook_hash(event: str, group: dict, handler: dict) -> str:
     timeout = handler.get("timeout")
     if event in ("SessionEnd", "Interrupt"):
@@ -6852,23 +7030,19 @@ def _codex_hook_hash(event: str, group: dict, handler: dict) -> str:
 def _codex_hook_trust_findings(root: Path, codex_home: Path | None = None) -> list | None:
     """[(key, "missing"|"changed"|"disabled"|"untrusted-folder")] for every Tess
     hook in <root>/.codex/config.toml that Codex will not run; [] when all are
-    approved; None when it cannot be told (no Codex, no tomllib, no hooks)."""
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:
-        return None
+    approved; None when it cannot be told (no Codex, unreadable config, no hooks)."""
     home = Path(codex_home or os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
     project_cfg = root / ".codex" / "config.toml"
     if not home.is_dir() or not project_cfg.is_file():
         return None
     try:
-        hooks = tomllib.loads(project_cfg.read_text(encoding="utf-8")).get("hooks") or {}
+        hooks = _toml_loads(project_cfg.read_text(encoding="utf-8")).get("hooks") or {}
     except (OSError, ValueError):
         return None
     if not hooks:
         return None
     try:
-        user = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+        user = _toml_loads((home / "config.toml").read_text(encoding="utf-8"))
     except FileNotFoundError:
         user = {}
     except (OSError, ValueError):
