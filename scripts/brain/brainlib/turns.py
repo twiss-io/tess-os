@@ -37,6 +37,7 @@ def append(cfg: Config, runtime: str, session: str, text: str, raw_speaker: str 
     rec["mac"] = provenance.turn_mac(cfg, rec)
     with open(_path(cfg), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+    provenance.attest_turn(cfg, rec)  # the ledger row outside the repo (extstate.py)
     return rec
 
 

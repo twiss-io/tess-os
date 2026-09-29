@@ -87,9 +87,8 @@ def spawn(args: List[str]) -> None:
 
 def session_start(cfg: Config, runtime: str, data: Dict) -> None:
     budget = cfg.budgets["session_start_kib"] * 1024
-    if cfg.active():  # create the provenance key here: Codex runs the agent's shell in a sandbox that can
-        from . import provenance  # read ~/.config/tess but not create files there
-        provenance.key(cfg)
+    # the provenance key and the external project state were made in dispatch (provenance.prepare): Codex runs
+    # the agent's shell in a sandbox that can read ~/.config/tess but not create files there
     text = status.snapshot(cfg, runtime)
     nonce = os.environ.get("TESS_BRAIN_TEST_NONCE")
     if nonce:
@@ -154,6 +153,8 @@ def dispatch(root, event: str, runtime: str) -> int:
                 print("{}")
             return 0
         data = read_stdin(cfg)
+        from . import provenance  # hooks run outside the agent's sandbox: drain what a sandboxed shell queued
+        provenance.prepare(cfg)
         {"session-start": session_start, "prompt": prompt, "stop": stop}[event](cfg, runtime, data)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
         log_error(cfg, "hook %s (%s) failed" % (event, runtime), exc)

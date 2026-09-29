@@ -6,10 +6,12 @@ material proposal. A confirmation now has to be:
 
 1. the operator's AUTHENTICATED words (lookup.trusted: an attested journal line
    or a MAC-checked captured turn), never a repo-written file;
-2. naming the exact id, with the action's intent in the clause that names it
-   ("confirm D-...", "approve C-..., reject D-...");
+2. a narrow directive naming the exact id: the whole message, or one standalone
+   line of it, is "confirm D-..." / "yes, confirm D-..." / "accept D-..." (or
+   "reject D-..." with an optional plain reason); never a question, quote,
+   condition, hypothetical or negation (GPT-6 review round 2, R7);
 3. about the content that was SHOWN: every listing (review, decide/remember
-   outcomes) records a MAC'd presentation of (id, content hash, time, session),
+   outcomes) records a presentation in the external ledger (extstate.py) of (id, content hash, time, session),
    and the item must be unchanged since;
 4. fresh: said after the latest presentation, in the session it was shown in
    when both are known, and each (line, id) pair is used once (no replays).
@@ -31,15 +33,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import lookup, provenance, records, turns
 from .config import Config, iso, parse_iso
-from .textutil import BRAIN_ID
 
-AFFIRM = re.compile(r"(?i)\b(confirm(?:ed|s)?|approve[ds]?|accept(?:ed|s)?|promote|yes|yep|yeah|ok(?:ay)?|"
-                    r"go ahead|lgtm|agreed?|correct|keep|sounds good)\b")
-DENY = re.compile(r"(?i)\b(reject(?:ed|s)?|retract(?:ed|s)?|cancel|drop|scrap|remove|forget|wrong|no|nope|not|never|"
-                  r"don'?t|do not)\b|n't\b")
-REJECT = re.compile(r"(?i)\b(reject(?:ed|s)?|retract(?:ed|s)?|forget|wrong|drop|remove|cancel|scrap|withdraw|undo|"
-                    r"not (?:a|my) decision|never said)\b")
-CLAUSE = re.compile(r"[.;,!?\n]+|\bbut\b", re.I)
 CAND_FIELDS = ("kind", "statement", "quote", "title", "entity", "target", "tier", "supersedes", "approves_quote",
                "also_quoted", "decision_kind")
 REC_FIELDS = ("type", "kind", "title", "statement", "source_quote", "tier", "entity", "supersedes",
@@ -57,8 +51,6 @@ def candidate_hash(cand: Dict) -> str:
 def record_hash(rec: records.Record) -> str:
     return _digest({k: rec.meta.get(k) for k in REC_FIELDS})
 
-
-SHORT_ID = re.compile(r"(?<![\w-])[A-Z]-\d{4}-[\w-]+", re.I)
 
 
 def _short_forms(item_id: str) -> List[str]:
@@ -126,28 +118,49 @@ def _mentions(text: str, item_id: str) -> bool:
     return bool(item_id) and bool(re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(item_id), text or "", re.I))
 
 
-def _strip_ids(text: str) -> str:
-    # ids carry slug words ("do-not-use-redis"), full or short
-    return SHORT_ID.sub(" ", BRAIN_ID.sub(" ", text or ""))
+# GPT-6 review round 2, R7: "Should I confirm D-...?" and "Confirm D-... only after legal approval" were read as
+# approvals because an approval verb and the id appeared in the same clause. A confirmation is now a narrow
+# directive: the whole message, or one standalone line of it, is exactly `[yes,] confirm|accept|approve <id>`
+# (optional trailing "please" and full stop). A rejection is `[no,] reject|retract|drop|withdraw <id>`, optionally
+# followed by a plain reason after a comma, colon, dash or full stop. Anything else (a question, a quote, a
+# condition, a hypothetical, a negation, two ids) is not a directive.
+_ID = r"(?P<id>[A-Za-z]-[A-Za-z0-9][\w-]*)"
+CONFIRM_LINE = re.compile(r"(?i)^(?:(?:yes|ok|okay)\s*,?\s+)?(?:confirm|accept|approve)\s+%s(?:\s*,?\s*please)?\s*\.?$"
+                          % _ID)
+DENY_LINE = re.compile(r"(?i)^(?:no\s*,?\s+)?(?:reject|retract|drop|withdraw)\s+%s"
+                       r"(?:\s*(?:[,:.;]|\s[-\u2013\u2014])\s*(?P<why>.*))?\s*\.?$" % _ID)
+HEDGE = re.compile(r"(?i)[?\"`\u201c\u201d]|\b(if|only|after|unless|when|once|pending|until|should|would|could|"
+                   r"might|maybe|perhaps|wait|hold|later|yet|confirm|accept|approve|keep)\b")
+DOUBT = re.compile(r"(?i)\b(wait|hold on|hold off|not yet|don'?t|do not|never|cancel|scratch that|actually)\b|n't\b")
+
+
+def directive(line: str) -> Tuple[str, str]:
+    """('confirm' | 'deny', id as typed) when one line is a directive, else ('', '')."""
+    t = (line or "").strip()
+    m = CONFIRM_LINE.match(t)
+    if m:
+        return "confirm", m.group("id")
+    m = DENY_LINE.match(t)
+    if m and not HEDGE.search(m.group("why") or ""):
+        return "deny", m.group("id")
+    return "", ""
 
 
 def intent(text: str, item_id: str, action: str, alias: str = "") -> str:
-    """'' when every clause naming `item_id` (or its short id `alias`) says `action`; else why not."""
+    """'' when the operator's message is a directive to `action` `item_id` (or its shown short id `alias`)."""
     want = "confirm" if action in ("confirm", "promote") else "deny"
-    names = [n for n in (item_id, alias) if n]
-    clauses = [_strip_ids(c) for c in CLAUSE.split(text or "") if c and any(_mentions(c, n) for n in names)]
-    if not clauses:
+    names = {n.lower() for n in (item_id, alias) if n}
+    if not any(_mentions(text, n) for n in names):
         return "the operator's words do not name %s" % item_id
-    bare = _strip_ids(text or "")
-    line_aff, line_deny, line_rej = bool(AFFIRM.search(bare)), bool(DENY.search(bare)), bool(REJECT.search(bare))
-    for c in clauses:
-        aff, deny, rej = bool(AFFIRM.search(c)), bool(DENY.search(c)), bool(REJECT.search(c))
-        if not aff and not deny:  # "approve D-a, D-b": the verb is elsewhere in the line; only if unambiguous
-            aff, deny, rej = line_aff, line_deny, line_rej
-        if want == "confirm" and (deny or not aff):
-            return "the operator's words about %s are not a plain approval" % item_id
-        if want == "deny" and (aff or not rej):  # "don't confirm it yet" is not a rejection either
-            return "the operator's words about %s do not reject or retract it" % item_id
+    lines = [l for l in (text or "").splitlines() if l.strip()] or [""]
+    hits = [directive(l) for l in lines]
+    mine = [(verb, i) for (verb, i), l in zip(hits, lines) if verb and i.lower() in names]
+    if len(mine) != 1 or mine[0][0] != want:
+        return ('the operator\'s words about %s are not a plain "%s %s" (a question, condition, quote or '
+                'negation never counts)' % (item_id, "confirm" if want == "confirm" else "reject", alias or item_id))
+    for (verb, _), l in zip(hits, lines):
+        if not verb and (any(_mentions(l, n) for n in names) or (want == "confirm" and DOUBT.search(l))):
+            return "another line of the same message qualifies %s; ask again" % item_id
     return ""
 
 

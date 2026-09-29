@@ -23,7 +23,7 @@ def cmd_sync(cfg: Config, a) -> Out:
     why = _need(cfg)
     if why:
         return (0 if cfg.is_source_repo() else 1), {"skipped": why}
-    res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.also_cwd, a.transcript, a.days, wait=not a.no_wait,
+    res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
                    gemini_home=a.gemini_home)
     over = any(o.get("status") == inbox.OVER_CAP for o in res.get("outcomes", [])) if isinstance(res, dict) else False
     return (3 if over else (res.get("index", {}).get("rc", 0) if isinstance(res, dict) else 0)), res

@@ -344,6 +344,57 @@ reason and points to section 8 of the onboarding guide.
 - `promote <C-id> --quote "..."` approves an inbox candidate that was held for
   review.
 
+### What counts as a confirmation
+
+The operator's words must be a plain instruction naming the id they were
+shown: the whole message, or one line of it, is `confirm <id>`,
+`yes, confirm <id>` or `accept <id>` (case does not matter; a trailing
+"please" or full stop is fine), or `reject <id>` / `retract <id>` with an
+optional short reason after a comma, colon or dash. Refused, whatever else
+the message says: a question (`Should I confirm D-0929-pricing?`), a
+condition or a delay (`if`, `only`, `after`, `unless`, `when`, `once`,
+`pending`), a hypothetical (`would`, `could`, `maybe`), a negation
+(`don't confirm ...`), a quote (`he said "confirm ..."`), two ids on one
+line, and a directive with another line that qualifies it (`actually wait`).
+The short id counts only as it was shown in the recorded presentation, and
+only while it still names exactly one item.
+
+### Where the evidence state lives
+
+Which journal lines are the operator's authenticated words, what was shown to
+them, and which confirmations were already used, is kept OUTSIDE the repo in
+`~/.config/tess/brain/projects/<folder>/` (folder 0700, files 0600): a random
+project id, an append-only, hash-chained ledger (`ledger.jsonl`, one sequence
+number per row) and its signed head (`head.json`). Every MAC names the
+project id. So a repo writer cannot delete a line together with its
+attestation, roll a used confirmation back, or copy another project's
+evidence: the evidence stops verifying and the item waits in review.
+
+- **First run, new machine, or a moved folder:** there is no state for this
+  path yet, so journal lines already in the repo are unverified (review
+  only, never an error). Lines are attested again when `sync` journals them
+  from the runtime's own transcripts.
+- **Rolled back:** if the ledger is shorter than its head, nothing in it is
+  trusted and `errors.log` says so. Move that project folder aside to start
+  again; earlier evidence then waits in review.
+- **Codex sandbox:** the agent's shell can read `~/.config/tess` but not
+  write it, so its rows wait, signed, in `.tess/state/brain/outbox.jsonl`
+  until the next hook moves them into the ledger.
+- The old `.tess/state/brain/provenance.jsonl` is ignored.
+
+### Extra transcript roots
+
+Conversations count as this instance's only when their session folder is
+inside the instance, or inside an extra root the operator added with
+`python3 scripts/brain/tessbrain.py roots add <path>` at a real terminal. It
+shows what the root grants and asks for "yes"; an agent's shell or a pipe
+cannot run it. Roots live in the same private folder (`roots.json`).
+Refused: `/`, the home folder or above, anything outside the home folder, a
+folder containing this instance, and a folder that holds or sits inside
+another Tess instance. `capture.also_cwd` in `brain.json` is ignored: the
+repo cannot widen whose conversations count. `roots list` and
+`roots remove <path>` manage them.
+
 Every one of these commands checks that the quote is really a principal's
 words, in the journal or the current turn.
 
@@ -392,6 +443,7 @@ Delegated decisions carry `authority: delegated` and a `delegation_ref`.
 | `journal note --text "..."` | note a turn by hand, for runtimes without capture; held for review |
 | `decide`, `remember`, `inbox add` | record through the verifier |
 | `confirm`, `reject`, `retract`, `promote`, `review` | operator review, in the operator's own words |
+| `roots list\|add <path>\|remove <path>` | extra transcript roots, outside the repo (`add`: the operator, at a terminal) |
 | `index`, `lint`, `status`, `save`, `recall` | indexes, integrity, "saved", search |
 | `hook session-start\|prompt\|stop --runtime claude\|codex` | runtime hooks, run through `.claude/hooks/run-pinned.py` (SessionStart, UserPromptSubmit, Stop and SessionEnd in both `.claude/settings.json` and `.codex/config.toml`); they always exit 0 |
 | `githooks install` | warn-only pre-commit lint and post-merge index regeneration |

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, switch
+from . import cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, roots, switch
 from .config import Config, iso, log_error, read_json, write_json
 from .parsers import claude, codex, gemini
 
@@ -73,10 +73,9 @@ def _claude_store(claude_dir: Optional[str]) -> List[Path]:
 
 
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
-            also_cwd: List[str], days: Optional[int], deadline: Optional[float] = None,
-            gemini_home: Optional[str] = None):
+            days: Optional[int], deadline: Optional[float] = None, gemini_home: Optional[str] = None):
     out = []
-    also_cwd = list(also_cwd) + cfg.also_cwd
+    also_cwd = roots.extra(cfg)  # operator-added, outside the repo; never brain.json (GPT-6 round 2, R6)
     cutoff = time.time() - days * 86400 if days else None
     if runtime in ("all", "claude"):
         known = [str(p) for p in vetted(cfg, "claude", _known(cfg, "claude"), also_cwd, _claude_store(claude_dir))]
@@ -191,7 +190,7 @@ class Lock:
 
 
 def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
-        also_cwd: Optional[List[str]] = None, transcript: Optional[str] = None, days: Optional[int] = None,
+        transcript: Optional[str] = None, days: Optional[int] = None,
         wait: bool = True, gemini_home: Optional[str] = None) -> Dict:
     if not cfg.active():
         return {"skipped": "source repo" if cfg.is_source_repo() else "no brain/brain.json"}
@@ -207,17 +206,18 @@ def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, cod
                     break
                 except OSError:
                     continue
-        return _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd or [], transcript, days, gemini_home)
+        return _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_home)
 
 
-def _run_locked(cfg, runtime, claude_dir, codex_home, also_cwd, transcript, days, gemini_home=None) -> Dict:
+def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_home=None) -> Dict:
+    provenance.prepare(cfg)
     ents = entities.names(cfg)
     if transcript:
         parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
         rt = runtime if runtime in ("codex", "gemini") else "claude"
-        srcs = [(p, parser) for p in vetted(cfg, rt, [transcript], list(also_cwd) + cfg.also_cwd, None)]
+        srcs = [(p, parser) for p in vetted(cfg, rt, [transcript], roots.extra(cfg), None)]
     else:
-        srcs = sources(cfg, runtime, claude_dir, codex_home, also_cwd, days, gemini_home=gemini_home)
+        srcs = sources(cfg, runtime, claude_dir, codex_home, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
     cands: List[Dict] = []
     taken_back: List[str] = []
