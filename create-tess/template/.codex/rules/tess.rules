@@ -68,3 +68,46 @@ prefix_rule(
     justification = "A force push can overwrite commits on the remote.",
     match = ["git push --force origin main", "git push -f"],
 )
+
+# Security review round 2 (M-2, H-A, H-B). git accepts any unique prefix of a
+# long option, so the common abbreviations are listed too. A prefix rule
+# matches whole words only: `--output=x` is not the word `--output`, which is
+# why the PreToolUse hook (which parses every option) stays the main guard.
+prefix_rule(
+    pattern = ["git", ["commit", "push", "merge", "rebase", "am", "cherry-pick", "revert", "pull"], ["--no-verif", "--no-veri", "--no-ver"]],
+    decision = "forbidden",
+    justification = "An abbreviation of --no-verify still skips Tess's git hooks.",
+    match = ["git commit --no-veri -m wip", "git push --no-ver origin main"],
+    not_match = ["git commit -m wip"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--forc", "--for", "--mirro", "--mirr", "--mir", "--delete", "--delet", "--dele", "--del", "-d", "--prune"]],
+    decision = "prompt",
+    justification = "A force push, mirror or remote delete can overwrite or remove commits on the remote.",
+    match = ["git push --forc origin main", "git push --delete origin old"],
+    not_match = ["git push origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", ["diff", "log", "show", "format-patch", "whatchanged", "archive"], ["--output", "--outp", "--out", "--output-directory", "-o", "--no-index", "--ext-diff", "--textconv"]],
+    decision = "forbidden",
+    justification = "These git options write the output to a file (any file, Tess's hooks included) or run an external program. Let git print to the terminal instead.",
+    match = ["git log --output .git/hooks/pre-push", "git diff --no-index a b", "git format-patch -o out"],
+    not_match = ["git log --oneline", "git diff --stat"],
+)
+
+prefix_rule(
+    pattern = ["git", "update-ref"],
+    decision = "prompt",
+    justification = "update-ref can forge a remote-tracking ref (refs/remotes/...), which records what a remote already holds.",
+    match = ["git update-ref refs/remotes/origin/x HEAD"],
+)
+
+prefix_rule(
+    pattern = ["git", "config", ["tess.privateRemote", "tess.privateremote", "set"]],
+    decision = "prompt",
+    justification = "tess.privateRemote tells the public-remote guard a remote is private; only the operator should set it.",
+    match = ["git config tess.privateRemote https://github.com/x/y.git"],
+    not_match = ["git config --get user.email"],
+)

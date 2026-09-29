@@ -6151,15 +6151,26 @@ def _publish_remote_git(root: Path, *args: str) -> subprocess.CompletedProcess:
                            "-c", "log.showRoot=true", *args], capture_output=True)
 
 
-def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None) -> list:
+def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None,
+                               held: list | None = None) -> list:
     """Data paths ADDED or MODIFIED by ANY commit this push publishes — not
     just the pushed tip's tree (v1.0.0 security review, H3: a data file
     committed and then `git rm`-ed is absent at the tip but still published
     in history). The pushed commits are `<local_sha> --not <remote_sha>
-    --remotes=<remote>`: everything the remote does not already hold. Every
+    <held...>`: `remote_sha` is the destination ref's value that git read
+    from the remote for this push, and `held` are commits the remote itself
+    advertised just now (`_publish_remote_held`, `git ls-remote`). Every
     commit's own changes are listed (`-m`: a merge against each parent, so an
     evil merge counts; the root commit against the empty tree). Deletions are
-    not data being published — removing a leaked file must stay pushable."""
+    not data being published — removing a leaked file must stay pushable.
+
+    Remote-tracking refs (`--remotes=<remote>`) are NOT trusted any more
+    (security review round 2, H-B): they are plain local refs that any
+    process can write (`git update-ref refs/remotes/origin/x HEAD~1`) and
+    they go stale when a remote's URL is pointed at a new, empty repository,
+    so excluding them hid published history from this check. `remote` is
+    kept for callers and ignored."""
+    del remote
     found: list = []
     for line in stdin_text.splitlines():
         parts = line.split()
@@ -6170,19 +6181,47 @@ def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None =
         if (not _PUBLISH_REMOTE_ZERO.match(remote_sha)
                 and _publish_remote_git(root, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode == 0):
             excludes.append(remote_sha)
-        if remote and not remote.startswith("-") and "/" not in remote and ":" not in remote:
-            excludes.append(f"--remotes={remote}")
+        excludes += [h for h in (held or []) if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", h)]
         args = ["log", "-z", "--format=", "--name-only", "--no-renames", "-m",
-                GATE_DIFF_FILTER_NO_DELETE, local_sha]
-        if excludes:
-            args += ["--not", *excludes]
-        r = _publish_remote_git(root, *args)
+                GATE_DIFF_FILTER_NO_DELETE, "--stdin"]
+        revs = local_sha + "\n" + ("--not\n" + "\n".join(excludes) + "\n" if excludes else "")
+        r = subprocess.run(["git", "-C", str(root), "-c", "core.quotePath=false",
+                            "-c", "log.showRoot=true", *args], input=revs.encode(),
+                           capture_output=True)
         if r.returncode != 0:
             raise RuntimeError(f"`git log {local_sha}` failed: "
                                f"{r.stderr.decode('utf-8', 'replace').strip()}")
         found += [p for p in _gate_split_nul(r.stdout.decode("utf-8", "surrogateescape"))
                   if _publish_remote_is_data_path(p)]
     return sorted(set(found))
+
+
+def _publish_remote_held(root: Path, url: str) -> list | None:
+    """Commits the destination itself says it holds: every ref `git ls-remote`
+    advertises for `url`, peeled to a commit this repository also has. None
+    when the remote cannot be asked (offline, no access, timeout): the caller
+    then excludes nothing and checks the whole pushed history (fail closed).
+    Never prompts: no terminal prompt, no credential dialog, and a new session
+    so ssh cannot open the terminal to ask for a passphrase."""
+    if not url or url.startswith("-"):
+        return None
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-remote", "--", url],
+                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+                           timeout=30, start_new_session=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    shas = sorted({ln.split()[0] for ln in r.stdout.splitlines()
+                   if ln.split() and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ln.split()[0])})
+    if not shas:
+        return []
+    b = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+                       input="".join(f"{s}^{{commit}}\n" for s in shas), capture_output=True, text=True)
+    return sorted({ln.split()[0] for ln in b.stdout.splitlines()
+                   if ln.endswith(" commit") and ln.split()[0] != "missing"})
 
 
 def _publish_remote_visibility(url: str) -> str:
@@ -6227,6 +6266,18 @@ def _cmd_doctor_publish_remote(root: Path, remote: str, url: str, stdin_text: st
     visibility = _publish_remote_visibility(url)
     if visibility in ("local", "private"):
         return
+    # Round 2, H-B: history the destination ITSELF advertises is already
+    # there, so it is not published by this push. Asked only now, when the
+    # push would otherwise be refused; unreachable -> nothing is excluded.
+    held = _publish_remote_held(root, url)
+    if held:
+        try:
+            data = _publish_remote_data_paths(root, stdin_text, held=held)
+        except RuntimeError as e:
+            sys.exit(f"tess-remote-guard: REFUSED — could not inspect the push ({e}). "
+                     f"Nothing was pushed.")
+        if not data:
+            return
     shown = "\n".join(f"    {p}" for p in data[:10]) + (
         f"\n    ... and {len(data) - 10} more" if len(data) > 10 else "")
     if visibility == "public":
@@ -12544,18 +12595,19 @@ def _vault_install_git_hooks(root: Path) -> None:
         print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
         return
 
-    _HOOK_MARKER_V2  = "# tess-vault-guard v2"   # current version — safe to skip
+    _HOOK_MARKER_V2  = "# tess-vault-guard v3"   # current version — safe to skip
     _HOOK_MARKER_ANY = "# tess-vault-guard"        # catches v1 or unversioned → must upgrade
 
     # Shared secret-scan body (used in both hooks; operates on a file list in $STAGED).
     _SCAN_BODY = r"""
-[ -z "$STAGED" ] && exit 0
+[ "${#FILES[@]}" -eq 0 ] && exit 0
 
 VIOLATIONS=""
 
-# Forbidden path shapes (vault/secret material)
-while IFS= read -r file; do
-  [ -z "$file" ] && continue
+# Forbidden path shapes (vault/secret material). FILES was filled from a
+# NUL-separated listing (`git ... --name-only -z`), so a name that contains a
+# newline is one name here, never two harmless-looking halves.
+for file in "${FILES[@]}"; do
   case "$file" in
     *.age|*vault.age|*identity.age)
       VIOLATIONS="${VIOLATIONS}\n  VAULT/AGE FILE: $file" ;;
@@ -12568,21 +12620,26 @@ while IFS= read -r file; do
     .claude/tess-secrets/*)
       VIOLATIONS="${VIOLATIONS}\n  LEGACY SECRET FILE: $file" ;;
   esac
-  case "$(basename "$file")" in
+  case "${file##*/}" in
     id_rsa|id_ed25519|id_ecdsa|id_dsa|*.pem|*.key)
       VIOLATIONS="${VIOLATIONS}\n  PRIVATE KEY FILE: $file" ;;
   esac
-done <<< "$STAGED"
+done
 
-# Content scan for secret patterns — read the VERSIONED blob via `git show`,
-# never the working tree. A secret that is staged-then-scrubbed (pre-commit) or
-# present in a pushed commit but altered/removed locally (pre-push) is invisible
-# to a working-tree grep; scanning the committed/pushed content closes that
-# bypass. BLOBS holds `<rev>:<path>` specs (empty rev = the staged index).
-while IFS= read -r blob; do
-  [ -z "$blob" ] && continue
+# Content scan for secret patterns — read the VERSIONED blob (`git cat-file
+# blob`: no textconv, no working tree). A secret that is staged-then-scrubbed
+# (pre-commit) or present in a pushed commit but altered/removed locally
+# (pre-push) is invisible to a working-tree grep; scanning the committed/pushed
+# content closes that bypass. BLOBS holds `<rev>:<path>` specs (empty rev = the
+# staged index). A blob that cannot be read is a VIOLATION, never skipped
+# (security review round 2, L-d): skipping it is how an odd name carried a
+# secret past the scan.
+for blob in "${BLOBS[@]}"; do
   file="${blob#*:}"
-  content="$(git show "$blob" 2>/dev/null)" || continue
+  if ! content="$(git cat-file blob "$blob" 2>/dev/null)"; then
+    VIOLATIONS="${VIOLATIONS}\n  UNREADABLE, so not scanned: $file"
+    continue
+  fi
   [ -z "$content" ] && continue
   if printf '%s' "$content" | grep -qE -e 'AGE-SECRET-KEY-[A-Z0-9]{50,}'; then
     VIOLATIONS="${VIOLATIONS}\n  AGE PRIVATE KEY in $file"
@@ -12605,7 +12662,7 @@ while IFS= read -r blob; do
   if printf '%s' "$content" | grep -qEi -e '(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*["\x27][A-Za-z0-9+/=_-]{20,}'; then
     VIOLATIONS="${VIOLATIONS}\n  POSSIBLE SECRET in $file"
   fi
-done <<< "$BLOBS"
+done
 
 if [ -n "$VIOLATIONS" ]; then
   printf 'TESS VAULT GUARD — BLOCKED:\n%b\n\nReview files. Use vault:// refs, not raw values.\n' "$VIOLATIONS" >&2
@@ -12614,7 +12671,7 @@ fi
 """
 
     pre_commit_script = r"""#!/usr/bin/env bash
-# tess-vault-guard v2
+# tess-vault-guard v3
 # Pre-commit hook: scan staged files for secrets and vault material.
 # Installed by `tessctl vault init`.
 
@@ -12624,15 +12681,26 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
   exit 0
 fi
 
-STAGED="$(git -c core.quotePath=false diff --cached --name-only 2>/dev/null || true)"
+_TESS_LIST="$(mktemp "${TMPDIR:-/tmp}/tess-vault.XXXXXX")" || {
+  echo "TESS VAULT GUARD — BLOCKED: could not create a temporary file, so nothing was scanned." >&2
+  exit 1
+}
+trap 'rm -f "$_TESS_LIST"' EXIT
+# Staged names, NUL-separated (-z); deletions carry no content to scan and a
+# submodule entry has no blob here. A listing that fails blocks the commit.
+if ! git -c core.quotePath=false diff --cached --name-only -z --no-renames --diff-filter=d \
+    --ignore-submodules=all > "$_TESS_LIST"; then
+  echo "TESS VAULT GUARD — BLOCKED: could not list the staged files, so nothing was scanned." >&2
+  exit 1
+fi
 # Blob specs for the content scan: the STAGED INDEX copy of each file
-# (`git show ":path"`), so a secret staged then scrubbed in the working tree is
-# still caught.
-BLOBS=""
-while IFS= read -r _f; do
-  [ -z "$_f" ] && continue
-  BLOBS="${BLOBS}:${_f}"$'\n'
-done <<< "$STAGED"
+# (":path"), so a secret staged then scrubbed in the working tree is still caught.
+FILES=()
+BLOBS=()
+while IFS= read -r -d '' _f; do
+  FILES+=("$_f")
+  BLOBS+=(":$_f")
+done < "$_TESS_LIST"
 """ + _SCAN_BODY + "exit 0\n"
 
     # Pre-push hook: reads stdin per git protocol.
@@ -12640,7 +12708,7 @@ done <<< "$STAGED"
     # Stdin lines: <local-ref> <local-sha> <remote-ref> <remote-sha>
     # We collect all files changed between remotesha..localsha across all pushed refs.
     pre_push_script = r"""#!/usr/bin/env bash
-# tess-vault-guard v2
+# tess-vault-guard v3
 # Pre-push hook: scan commits being pushed for secrets and vault material.
 # Installed by `tessctl vault init`.
 # Git passes: $1=<remote-name> $2=<remote-url>; ref ranges on stdin.
@@ -12651,36 +12719,37 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
   exit 0
 fi
 
+_TESS_LIST="$(mktemp "${TMPDIR:-/tmp}/tess-vault.XXXXXX")" || {
+  echo "TESS VAULT GUARD — BLOCKED: could not create a temporary file, so nothing was scanned." >&2
+  exit 1
+}
+trap 'rm -f "$_TESS_LIST"' EXIT
 # Read ref lines from stdin: <localref> <localsha> <remoteref> <remotesha>
-# Accumulate unique changed file names across all pushed ranges.
-STAGED=""
-BLOBS=""
+# and collect every changed name (NUL-separated, -z) with the PUSHED sha, so the
+# content scan reads the pushed blob ("<sha>:path"), not the working tree.
+FILES=()
+BLOBS=()
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "$local_sha" ] && continue
-  # All-zeros remote sha means the ref is new (no prior remote commits).
-  if echo "$remote_sha" | grep -qE '^0+$'; then
-    # New branch/tag: scan ALL commits including the very first by diffing against
-    # git's empty-tree object (4b825dc6...).  Using rev-list --max-parents=0 gives
-    # the root commit SHA, but root..local produces an empty diff — the root commit's
-    # own files are silently skipped.  The empty-tree diff covers every file ever added.
-    files="$(git -c core.quotePath=false diff --name-only 4b825dc642cb6eb9a060e54bf8d69288fbee4904.."$local_sha" 2>/dev/null || true)"
-  else
-    files="$(git -c core.quotePath=false diff --name-only "${remote_sha}..${local_sha}" 2>/dev/null || true)"
+  # An all-zeros local sha is a ref deletion: it pushes no content.
+  echo "$local_sha" | grep -qE '^0+$' && continue
+  # New ref (all-zeros remote sha), or a remote commit this clone does not
+  # have: diff against git's empty tree so every file in the pushed tree is
+  # scanned (root..local would skip the root commit's own files).
+  base=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  if ! echo "$remote_sha" | grep -qE '^0+$' && git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    base="$remote_sha"
   fi
-  if [ -n "$files" ]; then
-    STAGED="${STAGED}${files}"$'\n'
-    # Pair each file with the PUSHED local sha so the content scan reads the
-    # pushed blob (`git show "<sha>:path"`), not the working tree.
-    while IFS= read -r _f; do
-      [ -z "$_f" ] && continue
-      BLOBS="${BLOBS}${local_sha}:${_f}"$'\n'
-    done <<< "$files"
+  if ! git -c core.quotePath=false diff --name-only -z --no-renames --diff-filter=d \
+      --ignore-submodules=all "$base" "$local_sha" > "$_TESS_LIST"; then
+    echo "TESS VAULT GUARD — BLOCKED: could not list the files pushed by $local_ref, so nothing was scanned." >&2
+    exit 1
   fi
+  while IFS= read -r -d '' _f; do
+    FILES+=("$_f")
+    BLOBS+=("${local_sha}:${_f}")
+  done < "$_TESS_LIST"
 done
-
-# Deduplicate
-STAGED="$(printf '%s' "$STAGED" | sort -u)"
-BLOBS="$(printf '%s' "$BLOBS" | sort -u)"
 """ + _SCAN_BODY + "exit 0\n"
 
     import re as _re
@@ -12719,7 +12788,7 @@ BLOBS="$(printf '%s' "$BLOBS" | sort -u)"
             lines.pop(0)
         inner = "\n".join(lines).rstrip("\n")
         header = (
-            "# tess-vault-guard v2\n"
+            "# tess-vault-guard v3\n"
             "# Spliced above a pre-existing hook by `tessctl vault init`.\n"
             "# Guard runs first inside a containment subshell: it BLOCKS on a\n"
             "# secret/vault violation and FALLS THROUGH on a clean result so the\n"
@@ -12824,12 +12893,12 @@ BLOBS="$(printf '%s' "$BLOBS" | sort -u)"
 
             if _HOOK_MARKER_V2 in existing:
                 # Already current — nothing to do
-                print(f"  git hook {hook_name}: already v2 (skipped)")
+                print(f"  git hook {hook_name}: already v3 (skipped)")
                 continue
 
             if _HOOK_MARKER_ANY in existing:
-                # Stale v1 / unversioned marker — self-upgrade to v2
-                print(f"  git hook {hook_name}: upgrading stale guard to v2 ...")
+                # Stale v1 / unversioned marker — self-upgrade to v3
+                print(f"  git hook {hook_name}: upgrading stale guard to v3 ...")
                 pre_shebang, pre_existing_rest = _strip_guard_block(existing)
 
                 if pre_existing_rest.strip():
@@ -13181,9 +13250,9 @@ def _vault_cmd_doctor(args, root: Path) -> None:
                 f"{_GLOBAL_IDENTITY_FILE}  (fix: chmod 600)"
             )
 
-    # 4. Check git hooks installed (version-aware: v2 marker required)
+    # 4. Check git hooks installed (version-aware: v3 marker required)
     git_hooks_dir = root / ".git" / "hooks"
-    _HOOK_MARKER_V2  = "# tess-vault-guard v2"
+    _HOOK_MARKER_V2  = "# tess-vault-guard v3"
     _HOOK_MARKER_ANY = "# tess-vault-guard"
     if git_hooks_dir.exists():
         for hook_name in ("pre-commit", "pre-push"):
@@ -13195,11 +13264,11 @@ def _vault_cmd_doctor(args, root: Path) -> None:
             else:
                 content = hook_path.read_text(encoding="utf-8", errors="replace")
                 if _HOOK_MARKER_V2 in content:
-                    pass  # current v2 marker present — OK
+                    pass  # current v3 marker present — OK
                 elif _HOOK_MARKER_ANY in content:
                     warnings_list.append(
-                        f"git {hook_name} hook has a stale guard (v1/unversioned) — "
-                        f"run `tessctl vault init` to upgrade to v2"
+                        f"git {hook_name} hook has a stale guard (v1/v2/unversioned) — "
+                        f"run `tessctl vault init` to upgrade to v3"
                     )
                 else:
                     warnings_list.append(

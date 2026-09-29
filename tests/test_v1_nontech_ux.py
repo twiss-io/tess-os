@@ -176,7 +176,7 @@ def _claude_gate_hook(settings: dict) -> dict:
 @pytest.mark.parametrize("rel", [".tess/core/settings-core.json", ".claude/settings.json"])
 def test_claude_settings_wire_the_gate_for_every_write_tool(rel):
     hook = _claude_gate_hook(json.loads((REPO / rel).read_text(encoding="utf-8")))
-    assert hook["matcher"] == "^(Bash|Edit|Write|MultiEdit|NotebookEdit)$"
+    assert hook["matcher"] == "^(Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|NotebookRead)$"
     assert ('run-pinned.py" --on-fail block -- .claude/hooks/tess-gate.py --runtime claude'
             in hook["command"])
     assert "exit 2" in hook["command"]  # no python3: the call is blocked, not waved through

@@ -146,7 +146,10 @@ def test_ask_becomes_deny_for_codex_by_flag_and_by_turn_id(proj):
     g = _gate()
     base = {"tool_name": "Bash", "tool_input": {"command": "git remote add pub https://github.com/a/b.git"},
             "cwd": str(proj)}
-    assert g.decide(dict(base), proj, "claude")[0] == "ask"
+    assert g.decide(dict(base, permission_mode="default"), proj, "claude")[0] == "ask"
+    # L-c (round 2): no permission_mode, or one Tess does not know, cannot ask
+    assert g.decide(dict(base), proj, "claude")[0] == "deny"
+    assert g.decide(dict(base, permission_mode="yolo"), proj, "claude")[0] == "deny"
     dec, why = g.decide(dict(base), proj, "codex")
     assert dec == "deny" and "run it yourself" in why and "git remote add pub" in why
     assert g.decide(dict(base, turn_id="x"), proj, "claude")[0] == "deny"
@@ -424,7 +427,8 @@ def test_unparseable_protected_delete_is_denied_end_to_end_under_codex(proj):
 def test_unparseable_undecidable_command_asks_claude_and_denies_codex(proj, cmd):
     g = _gate()
     base = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(proj)}
-    assert g.decide(dict(base), proj, "claude")[0] == "ask", cmd
+    assert g.decide(dict(base, permission_mode="default"), proj, "claude")[0] == "ask", cmd
+    assert g.decide(dict(base), proj, "claude")[0] == "deny", cmd
     assert g.decide(dict(base), proj, "codex")[0] == "deny", cmd
     assert g.decide(dict(base, turn_id="t"), proj, "claude")[0] == "deny", cmd
 

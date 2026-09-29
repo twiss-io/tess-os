@@ -2,9 +2,6 @@
   "permissions": {
     "allow": [
       "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git show:*)",
       "Bash(git branch --list:*)",
       "Bash(python3 scripts/brain/onboard.py:*)",
       "Bash(python3 scripts/brain/tessbrain.py recall:*)",
@@ -29,7 +26,11 @@
       "Bash(git log *--textconv*)",
       "Bash(git show *--output*)",
       "Bash(git show *--ext-diff*)",
-      "Bash(git show *--textconv*)"
+      "Bash(git show *--textconv*)",
+      "Bash(git format-patch *--output*)",
+      "Bash(git whatchanged *--output*)",
+      "Read(~/.config/tess/**)",
+      "Edit(~/.config/tess/**)"
     ]
   },
   "autoMemoryEnabled": true,
@@ -73,7 +74,7 @@
         ]
       },
       {
-        "matcher": "^(Bash|Edit|Write|MultiEdit|NotebookEdit)$",
+        "matcher": "^(Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|NotebookRead)$",
         "hooks": [
           {
             "type": "command",

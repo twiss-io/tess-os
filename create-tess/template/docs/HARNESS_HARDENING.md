@@ -87,7 +87,7 @@ repository somewhere no remote names).
 The shipped allow list now covers read-only inspection only:
 
 ```
-Bash(git status:*)  Bash(git diff:*)  Bash(git log:*)  Bash(git show:*)  Bash(git branch --list:*)
+Bash(git status:*)  Bash(git branch --list:*)
 ```
 
 Every other git command (commit, push, fetch, config, checkout, reset, ...)
@@ -95,9 +95,18 @@ goes through Claude Code's normal permission prompt, so the operator sees it
 first. If you want broader rules on your own machine, put them in
 `.claude/settings.local.json`, which is yours and never shipped.
 
-Residual: `git diff`, `git log` and `git show` accept `--output=<file>`,
-which writes the command's output to a file. It cannot run code or skip a
-hook, but it can overwrite a file with diff text.
+`git diff`, `git log` and `git show` were removed from the allow list in the
+v1.0 security review, round 2 (H-A). They accept `--output=<file>`, which
+writes the command's output to ANY file: `git log -1
+--format='#!/bin/sh%nexit 0' --output=.git/hooks/pre-push` wrote a working
+hook that switched off the pre-push checks. Claude Code's `*` does match
+mid-argument (`Bash(git log *)` matches `git log --output=x main`, per the
+permissions docs), so the `deny` rules for `--output`, `--no-index`,
+`--ext-diff` and `--textconv` are kept, but they cannot match git's
+abbreviations (`--outp=x`), a `-C dir` or `--no-pager` before the
+subcommand, or `format-patch -o`. The in-session gate (`tess-gate.py`)
+parses the options and denies all of those; without the allow rules these
+commands also go through the normal permission flow.
 
 ## 3. Dispatch locks live in a per-user directory
 
