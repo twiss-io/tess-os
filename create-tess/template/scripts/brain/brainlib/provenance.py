@@ -18,16 +18,14 @@ as the operator's own words. Evidence is now authenticated:
   confirmations live in a per-project, append-only, hash-chained ledger OUTSIDE
   the repo (extstate.py), and every MAC names the project id. Deleting a line
   together with its attestation, rolling a `used` or `shown` row back, or
-  copying another project's evidence leaves the evidence unverified.
+  copying another project's evidence leaves the evidence unverified (round 3:
+  events.py, claims.py).
 * A journal line is trusted only when its file is intact against that ledger:
   every attested line of the file is present unchanged and no unattested line
   was added (so a deleted "no wait" cannot settle a decision). Turns captured
   by the UserPromptSubmit hook carry a MAC and a ledger row too.
 * Unverified evidence never produces an accepted record (verify V13).
-
-Residual, stated plainly: code running as this user OUTSIDE any sandbox can
-read the key, like it can read anything else the operator can. The defence
-is against repo-level writers, not a compromised account.
+Residual: code running as this user OUTSIDE any sandbox can read the key (defence: repo writers).
 """
 from __future__ import annotations
 
@@ -151,9 +149,8 @@ def transcript_ok(cfg: Config, path: Path, cwd: Optional[str], cwds: List[str],
 # -- the attestation ledger (outside the repo: extstate.py) -------------------------------------------
 
 def _append(cfg: Config, rows: List[Dict]) -> None:
-    if rows:
-        from . import extstate
-        extstate.append(cfg, rows)
+    from . import extstate
+    extstate.append(cfg, rows) if rows else None
 
 
 def prepare(cfg: Config) -> None:
@@ -164,12 +161,13 @@ def prepare(cfg: Config) -> None:
 
 
 def _empty() -> Dict:
-    return {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": set(), "turns": set()}
+    return {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": {}, "turns": set(), "claims": [],
+            "applied": set()}
 
 
 def _load(cfg: Config) -> Dict:
-    """{'lines': {ref: row}, 'files': {path: set(refs)}, 'sessions': {path: row}, 'shown': {id: latest row},
-    'used': set(ref|id), 'turns': set(n|mac)} from the external ledger; a rolled-back ledger yields nothing."""
+    """lines/files/sessions/shown (latest per item), used {ref|id: eids}, turns, claims (durable queued
+    confirmations), applied (claim eids), from the external ledger; a rolled-back ledger yields nothing."""
     from . import extstate
     got = extstate.rows(cfg)
     hit = _STORE_CACHE.get(str(cfg.root))
@@ -183,18 +181,25 @@ def _load(cfg: Config) -> Dict:
 
 
 def _ingest(out: Dict, r: Dict) -> None:
+    from .events import newer
     t = r.get("t")
     if t == "line" and r.get("ref"):
-        out["lines"][r["ref"]] = r
+        if newer(r, out["lines"].get(r["ref"])):
+            out["lines"][r["ref"]] = r
         out["files"].setdefault(str(r["ref"]).partition("#")[0], set()).add(r["ref"])
     elif t == "session" and r.get("path"):
-        out["sessions"][r["path"]] = r
+        if newer(r, out["sessions"].get(r["path"])):
+            out["sessions"][r["path"]] = r
     elif t == "shown" and r.get("id"):
-        cur = out["shown"].get(r["id"])
-        if cur is None or int(r.get("seq") or 0) >= int(cur.get("seq") or 0):
+        if newer(r, out["shown"].get(r["id"])):
             out["shown"][r["id"]] = r
     elif t == "used":
-        out["used"].add("%s|%s" % (r.get("ref"), r.get("id")))
+        for k in [r.get("ref")] + (["shown:%s" % r["shown"]] if r.get("shown") else []):  # the line; the presentation
+            out["used"].setdefault("%s|%s" % (k, r.get("id")), set()).add(str(r.get("eid") or ""))
+        if isinstance(r.get("claim"), dict) and not r.get("pending"):
+            out["claims"].append(r)
+    elif t == "applied" and not r.get("pending"):
+        out["applied"].add(str(r.get("claim") or ""))
     elif t == "turn":
         out["turns"].add("%s|%s" % (r.get("n"), r.get("mac")))
 
@@ -279,20 +284,17 @@ def turn_ok(cfg: Config, rec: Optional[Dict]) -> bool:
 # -- presentation and confirmation --------------------------------------------------------------------
 
 def shown(cfg: Config, item_id: str, h: str, at: str, sid: str, short: str = "") -> None:
-    """`short`: the short id the operator was shown for `item_id` (confirm.short_id); MAC'd with the rest."""
     row = {"t": "shown", "id": item_id, "h": h, "at": at, "sid": sid}
     if short:
         row["short"] = short
     _append(cfg, [row])
 
 
-def last_shown(cfg: Config, item_id: str) -> Optional[Dict]:
+def last_shown(cfg: Config, item_id: str) -> Optional[Dict]:  # the latest MADE presentation (events.newer)
     return _load(cfg)["shown"].get(item_id)
 
 
-def used(cfg: Config, ref: str, item_id: str) -> bool:
-    return "%s|%s" % (ref, item_id) in _load(cfg)["used"]
+def used(cfg: Config, ref: str, item_id: str, except_eid: str = "") -> bool:
+    """(line, item) already consumed; `except_eid`: ignore that one (the claim claims.settle applies)."""
+    return bool(_load(cfg)["used"].get("%s|%s" % (ref, item_id), set()) - {except_eid or None})
 
-
-def consume(cfg: Config, ref: str, item_id: str) -> None:
-    _append(cfg, [{"t": "used", "ref": ref, "id": item_id}])

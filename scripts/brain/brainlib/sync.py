@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, roots, switch
+from . import claims, cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, roots, switch
 from .config import Config, iso, log_error, read_json, write_json
 from .parsers import claude, codex, gemini
 
@@ -232,6 +232,7 @@ def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, cod
 
 def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_home=None) -> Dict:
     provenance.prepare(cfg)
+    settled = claims.settle(cfg)  # confirmations a sandboxed shell queued are durable now: apply them
     ents = entities.names(cfg)
     if transcript:
         parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
@@ -240,6 +241,7 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_h
     else:
         srcs = sources(cfg, runtime, claude_dir, codex_home, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
+    summary.update({"settled": settled} if settled else {})
     cands: List[Dict] = []
     taken_back: List[str] = []
     for path, parser in srcs:

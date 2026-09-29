@@ -21,10 +21,14 @@ the repo are unverified (review only, never an error) until sync journals them
 again from the runtime's own transcripts. The old repo-local provenance.jsonl is
 ignored on purpose. A sandboxed shell (Codex: ~/.config is read-only to the agent)
 writes MAC'd rows to .tess/state/brain/outbox.jsonl; the next hook or sync moves
-them into the ledger. Residual: a repo writer can delete an undrained outbox row;
-for a line or shown row that fails closed, for a `used` row it re-opens that one
-confirmation of the same unchanged presentation until the next hook. Code running
-as this user outside any sandbox can read the key and write here, as before.
+them into the ledger. Each row carries a one-use event id and the ledger position
+it was made against (events.py): a kept copy of a row put back later is dropped,
+and a pending row never overrides a newer durable row for its item (round 3, N1).
+The outbox window, stated plainly: until the next hook, a repo writer can DELETE
+a pending row (a presentation or journal line then fails closed; nothing is
+accepted from a pending row, since a confirmation is accepted only once its
+consumption is durable here, claims.py). Code running as this user
+outside any sandbox can read the key and write here, as before.
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ import secrets
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from . import events, outbox
 from .config import Config, log_error
 
 try:
@@ -43,9 +48,10 @@ except ImportError:  # pragma: no cover - Windows: locking degrades to a no-op
     fcntl = None
 
 GENESIS = "0" * 64
-LEDGER, HEAD, OUTBOX = "ledger.jsonl", "head.json", "outbox.jsonl"
+LEDGER, HEAD = "ledger.jsonl", "head.json"
+OUTBOX = outbox.OUTBOX
 _CACHE: Dict[str, Tuple[Tuple, Optional[List[Dict]]]] = {}
-_LEDGER: Dict[str, Tuple[Tuple, Tuple[Optional[List[Dict]], int, str]]] = {}
+_LEDGER: Dict[str, Tuple[Tuple, Tuple[Optional[List[Dict]], int, str, List[str]]]] = {}
 _PIDS: Dict[str, str] = {}
 
 
@@ -108,8 +114,8 @@ def project_id(cfg: Config) -> str:
 
 # -- reading ------------------------------------------------------------------------------------------
 
-def _read_ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str]:
-    """(rows, last seq, chain head); rows is None when the ledger was rolled back or corrupted."""
+def _read_ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str, List[str]]:
+    """(rows, last seq, chain head, chain head after each seq); rows is None when rolled back or corrupted."""
     from .provenance import _eq
     rows: List[Dict] = []
     seq, chain, chains = 0, GENESIS, [GENESIS]
@@ -133,18 +139,18 @@ def _read_ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str]:
     except (OSError, ValueError):
         head = {}
     if head is None:
-        return rows, seq, chain  # never written, or the very first append died before its head
+        return rows, seq, chain, chains  # never written, or the very first append died before its head
     hs = head.get("seq") if isinstance(head, dict) else None
     if not (isinstance(hs, int) and _eq(cfg, head.get("mac"), "head", str(hs), str(head.get("chain")))):
         log_error(cfg, "brain state: head.json does not verify; evidence is unverified (review only)")
-        return None, seq, chain
+        return None, seq, chain, chains
     if hs > seq or chains[hs] != head.get("chain"):
         log_error(cfg, "brain state: the ledger was rolled back (%d of %d rows); evidence is unverified" % (seq, hs))
-        return None, seq, chain
-    return rows, seq, chain
+        return None, seq, chain, chains
+    return rows, seq, chain, chains
 
 
-def _ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str]:
+def _ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str, List[str]]:
     """_read_ledger, re-verified only when the ledger or its head changed on disk."""
     stamp = _stamp([d / LEDGER, d / HEAD])
     hit = _LEDGER.get(str(d))
@@ -153,29 +159,6 @@ def _ledger(cfg: Config, d: Path) -> Tuple[Optional[List[Dict]], int, str]:
     got = _read_ledger(cfg, d)
     _LEDGER[str(d)] = (stamp, got)
     return got
-
-
-def _outbox_rows(cfg: Config, paths: List[Path]) -> List[Dict]:
-    from .provenance import _eq
-    out: List[Dict] = []
-    for p in paths:
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for raw in lines:
-            try:
-                r = json.loads(raw)
-            except ValueError:
-                continue
-            if isinstance(r, dict) and isinstance(r.get("row"), dict) and _eq(cfg, r.get("mac"), "outbox",
-                                                                               _body(r["row"])):
-                out.append(r["row"])
-    return out
-
-
-def _outbox_paths(cfg: Config) -> List[Path]:
-    return sorted(cfg.state.glob(OUTBOX + "*")) if cfg.state.is_dir() else []
 
 
 def _stamp(paths: List[Path]) -> Tuple:
@@ -194,51 +177,27 @@ def rows(cfg: Config) -> Optional[List[Dict]]:
     d = project_dir(cfg)
     if d is None or not project_id(cfg):
         return []
-    box = _outbox_paths(cfg)
+    box = outbox.paths(cfg)
     stamp = _stamp([d / LEDGER, d / HEAD, d / "id"] + box)
     hit = _CACHE.get(str(d))
     if hit and hit[0] == stamp:
         return hit[1]
-    got, seq, _ = _ledger(cfg, d)
-    if got is not None:
-        got = got + [dict(r, seq=seq + i + 1, pending=True) for i, r in enumerate(_outbox_rows(cfg, box))]
+    got, seq, _, chains = _ledger(cfg, d)
+    if got is not None:  # a kept copy of an old row, or one older than the ledger's state for its item, never reads
+        ok, _n = events.admit(got, outbox.rows(cfg, box), chains)
+        got = got + [dict(r, seq=seq + i + 1, pending=True) for i, r in enumerate(ok)]
     _CACHE[str(d)] = (stamp, got)
     return got
 
 
 # -- writing ------------------------------------------------------------------------------------------
 
-def _to_outbox(cfg: Config, new: List[Dict]) -> None:
-    from .provenance import mac
-    signed = [{"row": r, "mac": mac(cfg, "outbox", _body(r))} for r in new]
-    if not signed or not signed[0]["mac"]:
-        return  # no key or project id: nothing can be attested (fail closed)
-    cfg.ensure_state()
-    with open(cfg.state / OUTBOX, "a", encoding="utf-8") as fh:
-        for s in signed:
-            fh.write(json.dumps(s, sort_keys=True) + "\n")
-
-
-def _take_outbox(cfg: Config) -> Tuple[List[Dict], List[Path]]:
-    """Claim the pending outbox rows (renamed first, so a concurrent writer starts a fresh file)."""
-    taken: List[Path] = []
-    for p in _outbox_paths(cfg):
-        dst = p if p.name != OUTBOX else p.with_name("%s.draining-%d-%s" % (OUTBOX, os.getpid(), secrets.token_hex(4)))
-        try:
-            if dst != p:
-                os.replace(str(p), str(dst))
-            taken.append(dst)
-        except OSError:
-            continue
-    return _outbox_rows(cfg, taken), taken
-
-
 def _write_ledger(cfg: Config, d: Path, new: List[Dict]) -> None:
     from .provenance import mac
-    got, seq, chain = _ledger(cfg, d)
+    got, seq, chain, chains = _ledger(cfg, d)
     if got is None:
         raise RuntimeError("the external ledger was rolled back; refusing to extend it")
-    lines, added = [], []
+    lines, added, chains = [], [], list(chains)
     for r in new:
         seq += 1
         m = mac(cfg, "ledger", str(seq), chain, _body(r))
@@ -246,6 +205,7 @@ def _write_ledger(cfg: Config, d: Path, new: List[Dict]) -> None:
             raise RuntimeError("no key or project id")
         lines.append(json.dumps({"seq": seq, "prev": chain, "row": r, "mac": m}, sort_keys=True) + "\n")
         chain = _chain(chain, m)
+        chains.append(chain)
         added.append(dict(r, seq=seq))
     fd = os.open(str(d / LEDGER), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
@@ -260,38 +220,73 @@ def _write_ledger(cfg: Config, d: Path, new: List[Dict]) -> None:
         os.replace(str(tmp), str(d / HEAD))
     except OSError as exc:
         log_error(cfg, "brain state: could not update %s" % (d / HEAD), exc)
-    _LEDGER[str(d)] = (_stamp([d / LEDGER, d / HEAD]), (list(got) + added, seq, chain))  # we hold the lock
+    _LEDGER[str(d)] = (_stamp([d / LEDGER, d / HEAD]), (list(got) + added, seq, chain, chains))  # we hold the lock
 
 
-def append(cfg: Config, new: List[Dict]) -> None:
-    """Append rows to the ledger (draining any outbox first); a sandboxed shell falls back to the outbox."""
+def _fallback(cfg: Config, new: List[Dict], d: Optional[Path], durable: bool) -> bool:
+    """No ledger write here: queue `new` in the outbox against the ledger state this shell can read (never a
+    row the caller needs durable now). Always False: nothing reached the ledger."""
+    if new and not durable:
+        seq, chain = _ledger(cfg, d)[1:3] if d is not None else (0, GENESIS)
+        outbox.to_outbox(cfg, new, seq, chain)
+    return False
+
+
+def append(cfg: Config, new: List[Dict], durable: bool = False) -> bool:
+    """Append rows to the ledger (draining admissible outbox rows first). True when `new` is durable in the
+    ledger. A sandboxed shell cannot write here: `new` then waits in the outbox, unless `durable` (the caller
+    needs the row in the ledger now, e.g. a consumed confirmation) in which case nothing is written."""
     d = project_dir(cfg)
     if d is None or not project_id(cfg):
-        return _to_outbox(cfg, new) if new else None
+        return _fallback(cfg, new, d, durable)
     try:
         lock = os.open(str(d / "lock"), os.O_WRONLY | os.O_CREAT, 0o600)
-    except OSError:
-        return _to_outbox(cfg, new) if new else None  # read-only here (sandbox)
+    except OSError:  # read-only here (sandbox)
+        return _fallback(cfg, new, d, durable)
     try:
         if fcntl is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        pending, taken = _take_outbox(cfg)
-        try:
-            if pending or new:
-                _write_ledger(cfg, d, pending + list(new))
-        except (OSError, RuntimeError) as exc:
-            log_error(cfg, "brain state: could not append to %s" % d, exc)
-            _to_outbox(cfg, pending + list(new))
-        for p in taken:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        return _append_locked(cfg, d, new, durable)
     finally:
         os.close(lock)
 
 
+def _append_locked(cfg: Config, d: Path, new: List[Dict], durable: bool) -> bool:
+    pending, taken = outbox.take(cfg)
+    got, seq, chain, chains = _ledger(cfg, d)
+    ok, dropped = events.admit(got or [], pending, chains) if got is not None else (pending, 0)
+    if dropped:
+        log_error(cfg, "brain state: dropped %d outbox row(s): replayed, or older than the ledger" % dropped)
+    new = events.stamp(list(new), seq, chain)
+    done = False
+    try:
+        if ok or new:
+            _write_ledger(cfg, d, ok + new)
+        done = True
+    except (OSError, RuntimeError) as exc:
+        log_error(cfg, "brain state: could not append to %s" % d, exc)
+        outbox.to_outbox(cfg, ok + ([] if durable else new), seq, chain)
+    for p in taken:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    return done and bool(new)
+
+
+def writable(cfg: Config) -> bool:
+    """Whether this process can extend the external ledger (False in a sandboxed shell)."""
+    d = project_dir(cfg)
+    if d is None or not project_id(cfg):
+        return False
+    try:
+        os.close(os.open(str(d / "lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+        return True
+    except OSError:
+        return False
+
+
 def drain(cfg: Config) -> None:
     """Move outbox rows a sandboxed shell left behind into the ledger (hooks and sync call this)."""
-    if _outbox_paths(cfg):
+    if outbox.paths(cfg):
         append(cfg, [])
