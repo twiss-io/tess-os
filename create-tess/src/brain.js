@@ -23,6 +23,9 @@ export const MODE_OPTIONS = [
   { value: 'agency', label: 'My business, with clients', hint: 'a firm or freelancer serving clients' },
   { value: 'organisation', label: 'A team or company', hint: 'several people, each with a role' },
 ];
+// The plain name the wizard summary shows for a preset (never the preset id).
+export const PRESET_LABELS = { 'solo-consultant': 'working on your own', startup: 'a small startup' };
+export const presetLabel = (preset) => PRESET_LABELS[preset] || preset;
 const PRESET_QUESTIONS = {
   agency: 'Do you work on your own? (adds a proposals folder, a pipeline and a rate card)',
   organisation: 'Is it a small startup of 1 to 10 people? (adds founder, product, growth and operations roles)',
@@ -142,7 +145,7 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor, sa
 // Codex runs Tess's safety hooks only in a trusted project, after the hooks
 // are approved (again after each Tess update: approval is pinned to a hash).
 export const FIRST_OPEN_CLAUDE = '  In Claude Code: when it asks whether you trust this folder, say yes.';
-export const FIRST_OPEN_CODEX = "  In Codex: trust this folder and approve Tess's hooks when asked (/hooks).";
+export const FIRST_OPEN_CODEX = "  In Codex (required for Tess's safety checks): trust this folder, then type /hooks and approve Tess's hooks. Codex asks again after each Tess update.";
 
 // A path as one shell word: plain names stay as typed, anything else is quoted.
 function shellWord(p) {

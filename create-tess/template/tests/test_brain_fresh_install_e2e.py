@@ -76,7 +76,7 @@ def test_wizard_runs_onboarding_itself(mode, preset, tmp_path, python_dir):
                {"HOME": str(tmp_path / "home")}, python_dir)
     assert made.returncode == 0, made.stdout[-3000:] + made.stderr[-3000:]
     assert "What to do next:" in made.stdout and "in Claude Code or Codex and say hi" in made.stdout  # B4 wording
-    assert "In Codex: trust this folder and approve Tess's hooks when asked (/hooks)." in made.stdout
+    assert "In Codex (required for Tess's safety checks): trust this folder, then type /hooks and approve Tess's hooks. Codex asks again after each Tess update." in made.stdout
     assert '"status": "complete"' in onboard(dest, "status", "--json").stdout
     assert (dest / ".gitignore").is_file()
     assert h.git(dest, "log", "--format=%s").stdout.strip() == "tess: seed instance + second brain (onboarding)"

@@ -64,9 +64,10 @@ routine.
    `my-os` in Claude Code or Codex and say hi from the app. Your assistant
    takes it from there: tell it what you are working on, or give it a first
    task. The first time, Claude Code asks whether you trust the folder: say
-   yes. In Codex, trust the folder and approve Tess's hooks when asked (or
-   type `/hooks`); Tess's safety checks run in Codex only after that, and
-   Codex asks again after each Tess update.
+   yes. **In Codex this step is required:** trust the folder, then type
+   `/hooks` and approve Tess's hooks. Tess's safety checks run in Codex only
+   after that, and Codex asks again after each Tess update. Until you do,
+   Tess starts its first reply with a warning that the checks are OFF.
 
 To check your install later, run `./tessctl doctor` inside the folder
 ("All good" means nothing is broken). `./tessctl help` lists the everyday
@@ -81,6 +82,16 @@ Inside your folder:
 ./tessctl self-update --ref v1.0.0
 ./tessctl update --ref v1.0.0
 ```
+
+`--ref v1.0.0` names the version to move to; use the version number from the
+release notes. `self-update` first updates the `tessctl` tool itself, then
+`update` updates the rest of Tess.
+
+After an update, Codex users type `/hooks` in Codex once more and approve
+Tess's hooks again. Hooks are the small checks Tess runs automatically before
+and after each action your assistant takes (for example, stopping a secret
+from being saved); Codex turns them off after any change until you approve
+them. Claude Code needs nothing extra.
 
 Updates only come from a release signed by the Tess OS release key, and are
 checked on your computer before anything changes. Changes you made to your

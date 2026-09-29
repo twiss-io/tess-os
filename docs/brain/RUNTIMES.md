@@ -135,14 +135,21 @@ they keep their own provider memory. Importing their exports is v0.2.1.
   as Codex requires for Stop. Outside a work tree, or without the launcher
   or python3, each line is a no-op. No hook blocks a turn.
   Codex runs project hooks only in a trusted project, after the operator
-  approves them in `/hooks` (5 hooks). The approval is pinned to each hook's
+  approves them in `/hooks` (six Tess hooks, including the safety gate). The approval is pinned to each hook's
   hash, so a release that changes a hook line asks again. Codex does not
   support `permissionDecision: "ask"`; no brain hook uses it.
 - **What a real user does once:** trust the project (Codex asks on the first
   interactive run in the folder, or add `[projects."<abs path>"]
   trust_level = "trusted"` to `~/.codex/config.toml`), then open `/hooks` and
-  trust the five Tess hooks. Until then capture still happens by the sweep
-  above whenever `sync`, `status` or `brain-save` runs.
+  approve Tess's hooks. This is REQUIRED: without it Tess's safety checks do
+  not run in Codex. The SessionStart and UserPromptSubmit hooks write
+  `.tess/state/hooks-alive.json`; at its first reply the assistant runs
+  `python3 scripts/tess hooks-status` and, when the hooks did not run in this
+  session, starts with "Tess's safety checks are OFF in this Codex session —
+  type /hooks and approve Tess's hooks, then start a new session."
+  `tessctl doctor` also warns when Codex has not approved the current hook
+  text. Capture still happens by the sweep above whenever `sync`, `status` or
+  `brain-save` runs.
 - **Verified live on 2026-09-24:**
   - `smoke codex`: `codex exec -m gpt-5.5 -s read-only` with a scratch
     `CODEX_HOME`, then `sync --runtime codex`. All capture checks passed.
@@ -180,7 +187,7 @@ operator confirms it in review.
 | Runtime | Step | What it enables | What works without it |
 |---|---|---|---|
 | Claude Code | One workspace-trust click | project hooks and `permissions.allow` | CLAUDE.md + BOOT, commands, skills |
-| Codex CLI | Optional: trust the project, then approve 5 hooks in `/hooks`; re-approve after any hook change | per-turn capture and the SessionStart snapshot | AGENTS.md + BOOT, skills; capture by sweep |
+| Codex CLI | REQUIRED for the safety checks: trust the project, then type `/hooks` in Codex and approve Tess's hooks; Codex asks again after each Tess update | the safety gate, per-turn capture and the SessionStart snapshot | AGENTS.md + BOOT, skills; capture by sweep; no safety checks (the first reply says so) |
 | Gemini CLI | One folder-trust click | GEMINI.md and `/tess:*` | `.agents/skills`; capture by sweep |
 
 ## Hermetic test recipes (no global config written)

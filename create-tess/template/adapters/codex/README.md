@@ -43,11 +43,13 @@ one-time setup below).
 1. Trust the project when Codex asks (or set `trust_level = "trusted"` for it
    in your own `~/.codex/config.toml`). Codex ignores a project's
    `.codex/config.toml`, hooks and rules until you do.
-2. Start `codex` in the project, type `/hooks`, and approve the Tess hooks
+2. **Required:** start `codex` in the project, type `/hooks`, and approve the Tess hooks
    (`Tess: safety check`, `Tess: checking onboarding`, `Tess: loading the
    brain` and the three learning-loop hooks). Codex pins your approval to
    each hook's hash, so after a Tess update that changes a hook, `/hooks`
-   asks again; until you re-approve, that hook does not run.
+   asks again; until you re-approve, that hook does not run. Without this
+   step Tess's safety checks are off: the assistant's first reply says so
+   (`python3 scripts/tess hooks-status`) and `./tessctl doctor` warns.
 3. The first time Tess saves your brain, Codex asks to run
    `python3 scripts/brain/tessbrain.py save` outside its sandbox (the
    default sandbox keeps `.git` read-only, so a commit cannot run inside it).
