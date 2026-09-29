@@ -149,6 +149,11 @@ policy:
         - .tess/core/settings-core.json
         - .tess/core/pinned-scripts.sha256
         - scripts/brain/**
+        # v1.0.1 (2026-09-29 Codex review, HIGH): third-party code the engine
+        # imports from the working tree (the vendored PyYAML). The engine also
+        # refuses to load it unless every file matches hashes embedded in
+        # .tess/bin/tessctl, and tess.lock pins each file.
+        - .tess/vendor/**
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]

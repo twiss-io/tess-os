@@ -46,11 +46,29 @@ change made between the hash check and the interpreter reading the file
 both a script and tess.lock and pass the gate can re-pin.
 """
 
-from __future__ import annotations
+# Isolation first (v1.0.1, 2026-09-29 Codex review, HIGH "launcher startup
+# imports planted modules"): run un-isolated, Python puts this file's own
+# directory first on sys.path, so a planted `.claude/hooks/hashlib.py` or
+# `json.py` would run the moment the imports below execute, before any pin
+# is checked. Every shipped hook command already starts this launcher as
+# `python3 -I -B` (no script directory or user site on sys.path, PYTHON*
+# variables ignored, no .pyc written); a caller that forgets is re-executed
+# that way here. Only `os` and `sys`, which the interpreter has loaded before
+# any user code runs, are touched until then. (No `from __future__` import:
+# it is a real import too.)
+import os
+import sys
+
+if __name__ == "__main__" and not (sys.flags.isolated and sys.flags.dont_write_bytecode):
+    try:
+        os.execv(sys.executable, [sys.executable, "-I", "-B", os.path.abspath(__file__), *sys.argv[1:]])
+    except OSError as _exc:
+        sys.stderr.write("TESS HOOK NOT RUN: could not restart the hook launcher in isolated "
+                         "mode (%s).\n" % _exc)
+        sys.exit(2)
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -71,6 +89,12 @@ PINS_HEADER = (
     "#   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256\n"
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# The only Python files allowed beside this launcher. Anything else importable
+# there (a planted `hashlib.py`, a sourceless `.pyc`, a native module, a
+# package directory) would shadow the standard library for any interpreter
+# started without -I, so the launcher refuses to run while one exists.
+BESIDE_ALLOWED = frozenset({"run-pinned.py", "vault-dispatch-scan.py", "tess-gate.py"})
+_IMPORTABLE_SUFFIXES = (".py", ".pyc", ".pyo", ".pyw", ".so", ".pyd", ".dylib")
 
 
 class PinError(Exception):
@@ -190,8 +214,28 @@ def _tree_py(root: Path, tree: str) -> list:
     return out
 
 
-def verify(root: Path, target: str, closure: str | None) -> Path:
+def _check_beside_launcher(here: Path) -> None:
+    """Refuse when anything importable other than the pinned hook scripts
+    sits in the launcher's own directory (see BESIDE_ALLOWED)."""
+    extra = []
+    for name in sorted(os.listdir(here)):
+        path = here / name
+        if name in BESIDE_ALLOWED:
+            continue
+        if name == "__pycache__" and path.is_dir() and not path.is_symlink():
+            continue  # never read: every interpreter here runs with -I -B
+        if path.is_dir() or name.lower().endswith(_IMPORTABLE_SUFFIXES):
+            extra.append(name)
+    if extra:
+        raise PinError(
+            "unexpected Python code sits beside the hook launcher in .claude/hooks/ ("
+            + ", ".join(extra[:5]) + ("" if len(extra) <= 5 else ", ...")
+            + "); it could replace standard modules the launcher loads. Move or delete it")
+
+
+def verify(root: Path, target: str, closure: "str | None") -> Path:
     """Return the verified target path, or raise PinError."""
+    _check_beside_launcher(Path(__file__).resolve().parent)
     entries = _lock_entries(root)
     pins = _pins(root, entries)
     _check(root, SELF_REL, entries, pins)

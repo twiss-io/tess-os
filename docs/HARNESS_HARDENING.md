@@ -27,6 +27,23 @@ only `onboard.py`: it imports its siblings, and an extra file such as
 run with `-I -B` and an empty bytecode cache, so a planted `.pyc` is never
 loaded.
 
+The launcher itself is started the same way (v1.0.1, 2026-09-29 Codex review).
+Every hook command in `.claude/settings.json` and `.codex/config.toml` runs
+`python3 -I -B .../run-pinned.py`, so `.claude/hooks/` is not on `sys.path`
+and a planted `.claude/hooks/hashlib.py` or `json.py` cannot run while the
+launcher loads. A caller that omits the flags is re-executed with them before
+anything but `os` and `sys` is imported, and the launcher refuses to run while
+any importable file other than `run-pinned.py`, `vault-dispatch-scan.py` and
+`tess-gate.py` sits in `.claude/hooks/`. The root `./tessctl` wrapper and the
+git hooks start the engine with `-I -B` for the same reason.
+
+The engine's own fallback YAML reader, `.tess/vendor/yaml` (used when PyYAML
+is not installed), loads only after every file matches a sha256 table written
+into `.tess/bin/tessctl`. It is compiled in memory from the verified bytes,
+`.tess/vendor` is never put on `sys.path`, and no `.pyc` is read or written.
+`.tess/vendor/**` is in the security tier and every file there is pinned in
+`tess.lock`.
+
 If a check fails, the script does not run. Most hooks then show a warning and
 let the session continue. The dispatch secret scan blocks the dispatch instead,
 because its job is to block.

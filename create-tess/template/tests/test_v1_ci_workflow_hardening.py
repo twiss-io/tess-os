@@ -48,8 +48,32 @@ def _template(engine) -> str:
 
 def test_repo_workflow_is_the_engine_template(engine):
     assert (WF / "tess-gate.yml").read_text(encoding="utf-8") == _template(engine)
-    assert engine._GATE_CI_WORKFLOW_MARKER == "# tess-gate-ci v4"
+    assert engine._GATE_CI_WORKFLOW_MARKER == "# tess-gate-ci v5"
     assert "# tess-gate-ci v3" in engine._GATE_CI_WORKFLOW_KNOWN_MARKERS  # v3 installs upgrade
+    assert "# tess-gate-ci v4" in engine._GATE_CI_WORKFLOW_KNOWN_MARKERS  # both v4s upgrade
+
+
+def test_v5_carries_both_v4_hardenings_and_upgrades_a_v4_install(engine, tmp_path):
+    """Two v1.0 fixes each shipped a "v4" (security-review hardening; Codex
+    first-push bootstrap). v5 is the single workflow with both, and an install
+    holding either v4 is upgraded in place by `gate install-hooks`."""
+    text = _template(engine)
+    wf = yaml.safe_load(text)
+    steps = _steps(wf)
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
+    refs = next(s for s in steps if s.get("id") == "refs")
+    assert "merge-base --is-ancestor" in refs["run"]
+    extract = next(s for s in steps if s.get("id") == "trusted_engine")
+    assert "<<'TESS_BOOTSTRAP_PY'" in extract["run"] and "ssh-keygen" in extract["run"]
+    assert extract["env"]["HEAD_SHA"] == "${{ steps.refs.outputs.head }}"
+    for v4_hardening_only in ("# tess-gate-ci v4\n# old security-review v4\n",
+                              "# tess-gate-ci v4\n# old first-push v4\n"):
+        d = tmp_path / v4_hardening_only.split("\n")[1][6:].replace(" ", "_")
+        (d / ".github" / "workflows").mkdir(parents=True)
+        (d / ".github" / "workflows" / "tess-gate.yml").write_text(v4_hardening_only)
+        engine._gate_install_ci_workflow(d)
+        assert (d / ".github" / "workflows" / "tess-gate.yml").read_text() == text
 
 
 def test_gate_workflow_never_interpolates_dispatch_inputs_into_a_script(engine):

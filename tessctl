@@ -19,4 +19,4 @@ if [ ! -f "${TESSCTL_PY}" ]; then
   exit 1
 fi
 
-exec python3 "${TESSCTL_PY}" "$@"
+exec python3 -I -B "${TESSCTL_PY}" "$@"

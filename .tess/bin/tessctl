@@ -158,24 +158,155 @@ except ImportError:  # pragma: no cover — POSIX-only (Linux/macOS CI + darwin 
     # correctness gap on the platforms this repo actually ships/tests on.
     fcntl = None
 
+# v1.0.1 (2026-09-29 Codex review, HIGH "vendored PyYAML runs before any
+# signature check"): the vendored PyYAML is the one piece of third-party code
+# the engine executes from the working tree. It is loaded ONLY after every
+# file of its import closure matches a sha256 embedded here, in the engine
+# itself — never a hash read from a repo-writable file such as tess.lock. The
+# verified bytes are compiled in memory and served by a meta-path finder that
+# knows no other modules: `.tess/vendor` is never put on sys.path, no
+# `__pycache__/*.pyc` beside the sources is ever read, and nothing is written
+# (sys.dont_write_bytecode). Any mismatch, missing file, symlink, or extra
+# importable file (a planted `yaml/evil.py`, a sourceless `.pyc`, a native
+# `.so`, a subpackage) refuses the import with a plain-English error.
+# Upgrading PyYAML: replace .tess/vendor/yaml/ (see .tess/vendor/README.md)
+# and update this table in the same reviewed change.
+import importlib.abc  # noqa: E402 — the verified PyYAML loader below
+import importlib.util  # noqa: E402
+
+_VENDORED_YAML_DIR_REL = ".tess/vendor/yaml"
+_VENDORED_YAML_SHA256 = {
+    "__init__.py": "b19dfcc333d6a75dfd73073901164507252f271b41d3b5f7d85510033a0547a7",
+    "composer.py": "fcaa37d16afa783594794a5ab94193dcb720f503c19ce3d59539c8311189f453",
+    "constructor.py": "90d8247da78b524c10618fd0e857f54f3d97570fe91b5c5513d024ef3faf88b0",
+    "cyaml.py": "e99ac01bd7c062f7557b614aff0d21997a06ed962ca185306a91bc0a20bbd87d",
+    "dumper.py": "3cb72d66563064ba7b5e679477046ebf89d8399d940670c8532f3e94a7cb17ea",
+    "emitter.py": "8e086d694ede170837d5b1b407b45979aff6f40762f422a65eafd08e04290a44",
+    "error.py": "021f73fada072546c4f63f8cf18a7181244ce4280b09cc15cc980b2d1176171a",
+    "events.py": "e74fd392c810884e2ea7e94aa3f57e9c1cbeb402319083d0c58e6a0e1282787c",
+    "loader.py": "5156becc8aa6905482218abf3e04869b835226db4763645fff3438fdbd5f1cdd",
+    "nodes.py": "80f28d8fca4a09d87677882bde021820d9cf39a3b11a12405226211919cf13ce",
+    "parser.py": "8a55a9e6fbe0a07146cef3990c8b45a068c3e83e369e1959ad9ca30306b4a09a",
+    "reader.py": "d1d9b38ab3a20c6e17a38d519ee412ecaf6b918df18c78956ac7c330d4ea08dc",
+    "representer.py": "22e58ff9c016f6c1ca1274b4802a926bcf78935060e1c813c5a0f021c6d143e6",
+    "resolver.py": "f4bf9561f9b89961f1503d558385fbae30d12bfed565de9bf76c33abb63620a6",
+    "scanner.py": "60433788b652690c17710460da5d91e0c753d3318fd85f5e1e42862a71f25906",
+    "serializer.py": "0a1b85826854d35863e31808f0668abfabdf33606e8f06bd8bb7761401e3edc0",
+    "tokens.py": "953408cd2570f0c83dc2fe39f7e4e388e41eeb05738aa69196a5f6ffcf6ba79e",  # gitleaks:allow (a file hash, not a secret)
+}
+_VENDORED_YAML_DATA_FILES = frozenset({"LICENSE"})
+_IMPORTABLE_SUFFIXES = (".py", ".pyc", ".pyo", ".pyw", ".so", ".pyd", ".dylib")
+
+
+class _VendoredYamlError(Exception):
+    """The vendored PyYAML failed verification; the message is shown as is."""
+
+
+def _vendored_yaml_sources(base: Path) -> dict:
+    """{module file name: verified source bytes}, or raise _VendoredYamlError."""
+    import hashlib as _hashlib
+
+    where = _VENDORED_YAML_DIR_REL
+    if os.path.islink(base) or os.path.islink(base.parent):
+        raise _VendoredYamlError(f"{where} is a symlink")
+    if not base.is_dir():
+        raise _VendoredYamlError(f"{where} is missing")
+    for name in sorted(os.listdir(base)):
+        path = base / name
+        if name == "__pycache__" and path.is_dir() and not path.is_symlink():
+            continue  # never read: the verified sources are compiled in memory
+        if name in _VENDORED_YAML_SHA256 or name in _VENDORED_YAML_DATA_FILES:
+            continue
+        if path.is_dir() or name.lower().endswith(_IMPORTABLE_SUFFIXES):
+            raise _VendoredYamlError(f"{where}/{name} is not part of the bundled PyYAML")
+    sources = {}
+    for name, want in _VENDORED_YAML_SHA256.items():
+        path = base / name
+        if path.is_symlink() or not path.is_file():
+            raise _VendoredYamlError(f"{where}/{name} is missing (or is a symlink)")
+        data = path.read_bytes()
+        if _hashlib.sha256(data).hexdigest() != want:
+            raise _VendoredYamlError(f"{where}/{name} has been changed")
+        sources[name] = data
+    return sources
+
+
+class _VerifiedYamlFinder(importlib.abc.MetaPathFinder, importlib.abc.SourceLoader):
+    """Meta-path finder + source loader serving ONLY the verified in-memory
+    PyYAML sources. get_data() returns the verified bytes and nothing else;
+    path_stats() is left unimplemented, so no .pyc is ever looked up or
+    written. Unknown `yaml.*` names are not found (the package has an empty
+    __path__), so no file outside the verified set can ever be imported."""
+
+    def __init__(self, base: Path, sources: dict) -> None:
+        self._base = base
+        self._by_path = {str(base / name): data for name, data in sources.items()}
+
+    def _file_for(self, fullname: str):
+        if fullname == "yaml":
+            return str(self._base / "__init__.py")
+        if fullname.startswith("yaml.") and fullname.count(".") == 1:
+            return str(self._base / (fullname[5:] + ".py"))
+        return None
+
+    def find_spec(self, fullname, path=None, target=None):
+        origin = self._file_for(fullname)
+        if origin is None or origin not in self._by_path:
+            return None
+        is_pkg = fullname == "yaml"
+        spec = importlib.util.spec_from_loader(fullname, self, origin=origin, is_package=is_pkg)
+        spec.has_location = True
+        if is_pkg:
+            spec.submodule_search_locations = []
+        return spec
+
+    def get_filename(self, fullname):
+        origin = self._file_for(fullname)
+        if origin is None or origin not in self._by_path:
+            raise ImportError(f"{fullname} is not part of the bundled PyYAML", name=fullname)
+        return origin
+
+    def get_data(self, path):
+        data = self._by_path.get(str(path))
+        if data is None:
+            raise OSError(f"{path} is not a verified bundled PyYAML file")
+        return data
+
+
+def _import_vendored_yaml():
+    base = Path(__file__).resolve().parent.parent / "vendor" / "yaml"
+    try:
+        sources = _vendored_yaml_sources(base)
+    except (_VendoredYamlError, OSError) as exc:
+        sys.exit(
+            "tessctl stopped before running anything: the bundled YAML reader at "
+            f"{_VENDORED_YAML_DIR_REL} does not match this Tess OS release ({exc}). "
+            "Tess will not run code it cannot verify. If you did not change it, restore it "
+            "with `git checkout -- .tess/vendor` or re-run the installer "
+            "(npx create-tess@latest). Or install PyYAML itself with: "
+            "python3 -m pip install pyyaml"
+        )
+    finder = _VerifiedYamlFinder(base, sources)
+    sys.meta_path.insert(0, finder)
+    prior = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        for stale in [m for m in sys.modules if m == "yaml" or m.startswith("yaml.")]:
+            del sys.modules[stale]
+        import yaml as _yaml
+    finally:
+        sys.dont_write_bytecode = prior
+    return _yaml
+
+
 try:
     import yaml
 except ImportError:
     # Stock macOS /usr/bin/python3 has no PyYAML. Fall back to the unmodified
     # PyYAML copy vendored at .tess/vendor/yaml (see .tess/vendor/README.md)
-    # so a fresh install works with zero pip steps. Appended, not prepended:
-    # an installed PyYAML always wins when present.
-    sys.path.append(str(Path(__file__).resolve().parent.parent / "vendor"))
-    try:
-        import yaml
-    except ImportError:
-        sys.exit(
-            "tessctl could not load its YAML reader. The bundled copy at "
-            ".tess/vendor/yaml is missing. Re-run the installer "
-            "(npx create-tess@latest), or install it yourself with: "
-            "python3 -m pip install pyyaml"
-        )
-
+    # so a fresh install works with zero pip steps — but only after every file
+    # matches the hashes above. An installed PyYAML always wins when present.
+    yaml = _import_vendored_yaml()
 
 class GateError(Exception):
     """Raised by check_manifest_write_gate on any write-gate violation.
@@ -6132,7 +6263,7 @@ if [ -z "$PYTHON_BIN" ]; then
   echo "tess-remote-guard: no python3/python on PATH — fail-closed, refusing the push." >&2
   exit 1
 fi
-TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" doctor --publish-remote "${1:-}" "${2:-}"
+TESS_ROOT="$ROOT" "$PYTHON_BIN" -I -B "$TESSCTL" doctor --publish-remote "${1:-}" "${2:-}"
 """
 
 
@@ -17119,7 +17250,7 @@ if [ -z "$PYTHON_BIN" ]; then
   echo "tess-gate-guard: no python3/python on PATH — fail-closed, refusing." >&2
   exit 1
 fi
-TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" gate {subcommand}
+TESS_ROOT="$ROOT" "$PYTHON_BIN" -I -B "$TESSCTL" gate {subcommand}
 """
 
 
@@ -17229,7 +17360,13 @@ def _gate_install_git_hooks(root: Path) -> None:
         print(f"  installed git {hook_name} hook at {hook_path}")
 
 
-_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v4"
+_GATE_CI_WORKFLOW_MARKER = "# tess-gate-ci v5"
+
+# v4 (2026-09-29 Codex review, MEDIUM "first push always fails CI"): where a
+# base-less push fetches its trusted gate engine from — the signed release tag
+# its release proof names — and the oldest release accepted for that.
+_GATE_CI_RELEASE_REPO = "https://github.com/twiss-io/tess-os.git"
+_GATE_CI_BOOTSTRAP_MIN_VERSION = "1, 0, 0"
 
 # Prior template version(s) this installer recognizes as "a tess-gate-ci file,
 # just outdated" — an install-hooks run UPGRADES these in place (overwrites
@@ -17271,11 +17408,28 @@ _GATE_CI_WORKFLOW = f"""\
 # engine) and `.tess/gate/signoffs/**` (§3-d) as a second, independent layer:
 # even setting the trusted-engine fix aside, an edit to the engine itself is
 # `prod_touching` and needs its own covering, signed Reid/Cyra verdict.
-# BOOTSTRAP NOTE: if the base ref predates the gate's adoption (no
-# `.tess/bin/tessctl` at BASE — e.g. this is the very first commit
-# introducing the gate), there is no trusted engine to extract and this job
-# FAILS CLOSED (refuses) rather than falling back to trusting the pushed
-# tree's own engine — see the "Extract trusted gate engine" step below.
+# v4 FIRST PUSH (2026-09-29 Codex review): a push with NO base commit (a new
+# repository's first push) has no earlier engine to extract, so v3 failed
+# every fresh install's first CI run. v4 still never runs the pushed tree's
+# engine: it reads the tag name from the pushed `.tess/release-proof.json`,
+# fetches THAT tag from the Tess OS release repository below, and checks the
+# tag's OpenPGP AND SSH signatures against release-key fingerprints written
+# into this file (it came from the signed release, and the gate itself
+# requires .github/workflows/** to equal the release bytes on a first push).
+# Only then does it run the signed release's engine against the push. A push
+# with no base and no release proof, or whose tag does not verify, FAILS
+# CLOSED. If the base ref exists but has no `.tess/bin/tessctl` (the gate is
+# being adopted into an existing history), the job also fails closed.
+# v5 (v1.0.0 release integration): two separate v1.0 fixes each shipped a
+# "v4" — the security review's hardening (SHA-pinned actions, pinned
+# pyyaml, no persisted credentials, dispatch inputs only via env, dispatch
+# base must be an ancestor of the default branch) and the Codex review's
+# verified first-push bootstrap above. v5 is the one workflow carrying both;
+# the new marker makes `tessctl gate install-hooks` upgrade either v4.
+# RESIDUAL RISK: GitHub runs the workflow file from the pushed commit, so a
+# push that rewrites this file can skip the check entirely. That is true of
+# every push, not just the first; a required status check does not stop it —
+# review .github/workflows/** changes (they are security-tier).
 #
 # BOOTSTRAP WARNING for a fresh adopter: if your project's core/policy/
 # policy.yaml rules already have real (non-placeholder) globs but no
@@ -17363,11 +17517,132 @@ jobs:
 
       - name: Extract trusted gate engine (base ref only — never the pushed tree)
         id: trusted_engine
+        env:
+          HEAD_SHA: ${{{{ steps.refs.outputs.head }}}}
         run: |
           set -euo pipefail
           BASE="${{{{ steps.refs.outputs.base }}}}"
+          EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
           TRUSTED_DIR="$(mktemp -d)"
-          if git cat-file -e "$BASE:.tess/bin/tessctl" 2>/dev/null; then
+          if [ "$BASE" = "$EMPTY_TREE" ]; then
+            # Base-less push: take the engine from the signed release tag the
+            # pushed release proof names — never from the pushed tree.
+            TESS_RELEASE_REPO="{_GATE_CI_RELEASE_REPO}"
+            python3 -I -B - "$TESS_RELEASE_REPO" "$HEAD_SHA" "$TRUSTED_DIR" <<'TESS_BOOTSTRAP_PY'
+          import base64, hashlib, json, os, re, subprocess, sys, tempfile
+          REPO, HEAD, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+          PGP_FP = "{RELEASE_ANCHOR_OPENPGP_FP}"
+          SSH_FP = "{RELEASE_ANCHOR_SSH_FP}"
+          MIN_VERSION = ({_GATE_CI_BOOTSTRAP_MIN_VERSION})
+          FORMAT = "{RELEASE_MANIFEST_FORMAT}"
+          MARKER = "{RELEASE_SSH_MARKER}"
+          PRINCIPAL, NAMESPACE = "{RELEASE_SSH_PRINCIPAL}", "{RELEASE_SSH_NAMESPACE}"
+          PGP_BEGIN = b"-----BEGIN PGP SIGNATURE-----"
+
+
+          def die(msg):
+              print("::error::tess-gate-ci (first push): " + msg)
+              sys.exit(1)
+
+
+          def git(*args):
+              r = subprocess.run(["git"] + list(args), capture_output=True)
+              if r.returncode != 0:
+                  die("git %s failed: %s" % (args[0] if args[0] != "-C" else args[2],
+                                             r.stderr.decode("utf-8", "replace").strip()[:300]))
+              return r.stdout
+
+
+          def scratch():
+              return tempfile.mkdtemp(prefix="tg", dir="/tmp" if os.path.isdir("/tmp") else None)
+
+
+          if not re.fullmatch("[0-9a-f]+", HEAD) or len(HEAD) not in (40, 64):
+              die("the pushed head commit id is missing or malformed")
+          r = subprocess.run(["git", "show", HEAD + ":.tess/release-proof.json"], capture_output=True)
+          if r.returncode != 0:
+              die("this push has no base commit and no .tess/release-proof.json, so there is no "
+                  "trusted gate engine to run it with. The pushed tree's own engine is never trusted "
+                  "to judge itself. Push the commit Tess OS's installer created first, or push onto "
+                  "an existing branch.")
+          try:
+              tag = json.loads(r.stdout.decode("utf-8"))["tag_name"]
+          except (ValueError, KeyError, TypeError):
+              die(".tess/release-proof.json is unreadable")
+          m = re.fullmatch(r"v([0-9]+)[.]([0-9]+)[.]([0-9]+)([-+.][0-9A-Za-z.+-]*)?", tag if isinstance(tag, str) else "")
+          if not m or len(tag) > 64:
+              die("the release proof names a tag that is not a Tess OS release version")
+          if tuple(int(x) for x in m.groups()[:3]) < MIN_VERSION:
+              die("the release proof names %s, older than the oldest release this workflow accepts" % tag)
+          rel = os.path.join(OUT, "release")
+          git("init", "-q", rel)
+          git("-C", rel, "fetch", "-q", "--depth=1", "--no-tags", REPO, "+refs/tags/%s:refs/tags/%s" % (tag, tag))
+          tag_bytes = git("-C", rel, "cat-file", "tag", "refs/tags/" + tag)
+          headers = dict(ln.split(" ", 1) for ln in tag_bytes.split(b"\\n\\n", 1)[0].decode("utf-8").split("\\n") if " " in ln)
+          commit = headers.get("object", "")
+          if headers.get("type") != "commit" or headers.get("tag") != tag or not re.fullmatch("[0-9a-f]+", commit):
+              die("release tag %s does not name a commit" % tag)
+          commit_bytes = git("-C", rel, "cat-file", "commit", commit)
+          tree = dict(ln.split(" ", 1) for ln in commit_bytes.split(b"\\n\\n", 1)[0].decode("utf-8").split("\\n") if " " in ln).get("tree", "")
+          # 1. OpenPGP: exactly one signature, made by the pinned release key.
+          cut = tag_bytes.find(b"\\n" + PGP_BEGIN) + 1
+          if cut <= 0 or tag_bytes.find(PGP_BEGIN, cut + 1) >= 0:
+              die("release tag %s has no single OpenPGP signature" % tag)
+          payload = tag_bytes[:cut]
+          home = scratch()
+          os.chmod(home, 0o700)
+          env = dict(os.environ, GNUPGHOME=home)
+          with open(os.path.join(home, "p"), "wb") as fh:
+              fh.write(payload)
+          with open(os.path.join(home, "s"), "wb") as fh:
+              fh.write(tag_bytes[cut:])
+          subprocess.run(["gpg", "--batch", "--quiet", "--import"], env=env, capture_output=True,
+                         input=git("-C", rel, "cat-file", "blob", commit + ":.tess/keys/twiss-release-key.asc"))
+          v = subprocess.run(["gpg", "--batch", "--status-fd", "1", "--verify", os.path.join(home, "s"),
+                              os.path.join(home, "p")], env=env, capture_output=True)
+          status = [ln.split() for ln in v.stdout.decode("utf-8", "replace").splitlines() if ln.startswith("[GNUPG:] ")]
+          kinds = [st[1] for st in status if len(st) > 1]
+          valid = [st for st in status if len(st) > 2 and st[1] == "VALIDSIG"]
+          if (v.returncode != 0 or "GOODSIG" not in kinds or len(valid) != 1 or valid[0][-1].upper() != PGP_FP
+                  or any(k in kinds for k in ("BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG"))):
+              die("the OpenPGP signature on release tag %s is not by the pinned Tess OS release key" % tag)
+          # 2. SSH: the release manifest signed by the pinned SSH release key.
+          entries = [ln.strip() for ln in git("-C", rel, "cat-file", "blob", commit + ":.tess/keys/twiss-release-allowed-signers").decode("utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+          words = entries[0].split() if len(entries) == 1 else []
+          if "ssh-ed25519" not in words[:-1]:
+              die("release tag %s ships no single ssh-ed25519 release key" % tag)
+          key_b64 = words[words.index("ssh-ed25519") + 1]
+          if "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(key_b64)).digest()).decode("ascii").rstrip("=") != SSH_FP:
+              die("the SSH release key in %s is not the pinned Tess OS release key" % tag)
+          lines = payload.split(b"\\n\\n", 1)[-1].decode("utf-8", "replace").split("\\n")
+          at = [i for i, ln in enumerate(lines) if ln == MARKER]
+          if len(at) != 1 or sum("Tess-Release-SSH-Signature" in ln for ln in lines) != 1:
+              die("release tag %s has no single SSH release signature" % tag)
+          block = []
+          for ln in lines[at[0] + 1:]:
+              if not ln.startswith("    "):
+                  break
+              block.append(ln[4:])
+          if len(block) < 3 or block[0] != "-----BEGIN SSH SIGNATURE-----" or block[-1] != "-----END SSH SIGNATURE-----":
+              die("the SSH release signature on %s is malformed" % tag)
+          with open(os.path.join(home, "signers"), "w") as fh:
+              fh.write('%s namespaces="%s" ssh-ed25519 %s\\n' % (PRINCIPAL, NAMESPACE, key_b64))
+          with open(os.path.join(home, "ssh.sig"), "w") as fh:
+              fh.write("\\n".join(block) + "\\n")
+          v = subprocess.run(["ssh-keygen", "-Y", "verify", "-f", os.path.join(home, "signers"), "-I", PRINCIPAL,
+                              "-n", NAMESPACE, "-s", os.path.join(home, "ssh.sig")], capture_output=True,
+                             input=("%s\\ntag %s\\nobject %s\\ntree %s\\n" % (FORMAT, tag, commit, tree)).encode("ascii"))
+          if v.returncode != 0 or SSH_FP not in v.stdout.decode("utf-8", "replace"):
+              die("the SSH signature on release tag %s is not by the pinned Tess OS release key" % tag)
+          # 3. Only now: the signed release's engine.
+          with open(os.path.join(OUT, "tessctl"), "wb") as fh:
+              fh.write(git("-C", rel, "cat-file", "blob", commit + ":.tess/bin/tessctl"))
+          print("tess-gate-ci: first push, so the gate runs the engine from signed Tess OS release "
+                "%s (commit %s, OpenPGP + SSH verified), never the pushed tree's own engine." % (tag, commit))
+          TESS_BOOTSTRAP_PY
+            chmod +x "$TRUSTED_DIR/tessctl"
+            echo "engine_path=$TRUSTED_DIR/tessctl" >> "$GITHUB_OUTPUT"
+          elif git cat-file -e "$BASE:.tess/bin/tessctl" 2>/dev/null; then
             git show "$BASE:.tess/bin/tessctl" > "$TRUSTED_DIR/tessctl"
             chmod +x "$TRUSTED_DIR/tessctl"
             echo "engine_path=$TRUSTED_DIR/tessctl" >> "$GITHUB_OUTPUT"
@@ -17380,7 +17655,7 @@ jobs:
         env:
           TESS_ROOT: ${{{{ github.workspace }}}}
         run: |
-          python3 "${{{{ steps.trusted_engine.outputs.engine_path }}}}" gate ci \\
+          python3 -I -B "${{{{ steps.trusted_engine.outputs.engine_path }}}}" gate ci \\
             --base "${{{{ steps.refs.outputs.base }}}}" \\
             --head "${{{{ steps.refs.outputs.head }}}}"
 """
@@ -17441,7 +17716,7 @@ if [ -z "$PYTHON_BIN" ]; then
   echo "tess-publish-guard: no python3/python on PATH — fail-closed, refusing." >&2
   exit 1
 fi
-TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" doctor --publish-clean
+TESS_ROOT="$ROOT" "$PYTHON_BIN" -I -B "$TESSCTL" doctor --publish-clean
 """
 
 
