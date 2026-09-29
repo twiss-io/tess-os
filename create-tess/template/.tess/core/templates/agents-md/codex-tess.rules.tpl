@@ -111,3 +111,49 @@ prefix_rule(
     match = ["git config tess.privateRemote https://github.com/x/y.git"],
     not_match = ["git config --get user.email"],
 )
+
+# v1.0.0 final reviews (#224). Git routes that can put an older or different
+# copy of Tess's safety files in place. The PreToolUse hook judges most of
+# these by what they would change and is the main guard; these rules catch
+# the plain spellings before the hook runs. Env-var forms
+# (GIT_REPLACE_REF_BASE=...) and `--onto=x` are not separate words, so only
+# the hook and the enforcement anchor cover them.
+prefix_rule(
+    pattern = ["git", "replace"],
+    decision = "forbidden",
+    justification = "git replace makes git show a different commit in place of the real one, so a check or undo can read old safety files. Tess never needs it.",
+    match = ["git replace HEAD evil", "git replace --graft HEAD", "git replace -d 0123456"],
+    not_match = ["git rebase main"],
+)
+
+prefix_rule(
+    pattern = ["git", "sparse-checkout", ["set", "add", "init", "reapply", "disable"]],
+    decision = "forbidden",
+    justification = "A sparse checkout can hide Tess's safety files from the working tree. `git sparse-checkout list` is fine.",
+    match = ["git sparse-checkout set --no-cone /*", "git sparse-checkout init --no-cone", "git sparse-checkout add x", "git sparse-checkout disable"],
+    not_match = ["git sparse-checkout list"],
+)
+
+prefix_rule(
+    pattern = ["git", "fetch", ["--update-head-ok", "--update-head-o", "--update-head-", "--update-head", "--update-hea", "--update-he", "--update-h", "-u"]],
+    decision = "forbidden",
+    justification = "fetch --update-head-ok lets a fetch overwrite the checked-out branch, replacing the files under you without a checkout.",
+    match = ["git fetch --update-head-ok . +evil:main", "git fetch -u . +evil:main", "git fetch --update-he . evil:main"],
+    not_match = ["git fetch origin", "git fetch --all --prune"],
+)
+
+prefix_rule(
+    pattern = ["git", "bisect", ["start", "good", "bad", "new", "old", "skip", "reset", "run", "replay"]],
+    decision = "prompt",
+    justification = "git bisect checks out other commits, which can put older safety files in place. `git bisect log` and `view` are fine.",
+    match = ["git bisect start evil main", "git bisect reset evil", "git bisect run make test"],
+    not_match = ["git bisect log"],
+)
+
+prefix_rule(
+    pattern = ["git", "rebase", ["--onto", "--ont"]],
+    decision = "prompt",
+    justification = "rebase --onto can rebuild your branch on an old commit and drop the changes that set up Tess's safety files.",
+    match = ["git rebase --onto evil main", "git rebase --onto 0123456 HEAD"],
+    not_match = ["git rebase main", "git rebase --continue"],
+)

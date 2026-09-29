@@ -166,7 +166,14 @@ security reviews; they are stated so nobody relies on a check that is not there.
   user can still rewrite the anchor itself (the gate refuses that to the agent's
   tools, but a program built at run time is not seen), so the anchor turns a
   silent rollback into a loud, fail-closed stop; it is not an operating-system
-  boundary. Maintainers who edit enforcement files on purpose (or run `tessctl
+  boundary. A checkout that was never anchored gets none of this: installs made
+  before v1.0.0 stay unanchored until a `tessctl update` or `self-update` run by
+  a v1.0.0-or-later `tessctl` records one (an older engine's update does not
+  know about the anchor), or until the operator runs `tessctl anchor init`,
+  which records only when `tessctl verify` passes; and a plain `git clone` of the source repository is not anchored
+  unless someone runs `anchor init` in it. `tessctl anchor status` says `anchor: none` for
+  such a checkout, and the gate's own route checks are then the only guard.
+  Maintainers who edit enforcement files on purpose (or run `tessctl
   verdict keygen`, `approve`, `vault init` or `gate install-hooks`, which change
   anchored files) confirm the change with `tessctl anchor accept`. A git worktree
   of an anchored project shares its anchor, so enforcement files that differ in
