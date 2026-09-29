@@ -6128,6 +6128,9 @@ def _cmd_doctor_publish_clean(root: Path, scope: str = "staged") -> None:
 #          (repo-local .git/config — never committed, never shipped).
 # The hook reads git's pre-push stdin (<local ref> <local sha> <remote ref>
 # <remote sha> per line). A push that only deletes refs carries no data.
+# The only history excluded from the scan is each ref's <remote sha> from that
+# stdin (git's own push negotiation); nothing a destination advertises to a
+# separate query (`git ls-remote`) or a local remote-tracking ref can waive it.
 # ---------------------------------------------------------------------------
 
 _PUBLISH_REMOTE_ZERO = re.compile(r"^0+$")
@@ -6151,25 +6154,28 @@ def _publish_remote_git(root: Path, *args: str) -> subprocess.CompletedProcess:
                            "-c", "log.showRoot=true", *args], capture_output=True)
 
 
-def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None,
-                               held: list | None = None) -> list:
+def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None) -> list:
     """Data paths ADDED or MODIFIED by ANY commit this push publishes — not
     just the pushed tip's tree (v1.0.0 security review, H3: a data file
     committed and then `git rm`-ed is absent at the tip but still published
-    in history). The pushed commits are `<local_sha> --not <remote_sha>
-    <held...>`: `remote_sha` is the destination ref's value that git read
-    from the remote for this push, and `held` are commits the remote itself
-    advertised just now (`_publish_remote_held`, `git ls-remote`). Every
-    commit's own changes are listed (`-m`: a merge against each parent, so an
-    evil merge counts; the root commit against the empty tree). Deletions are
-    not data being published — removing a leaked file must stay pushable.
+    in history). The pushed commits are `<local_sha> --not <remote_sha>`,
+    where `remote_sha` is the destination ref's value that git read from the
+    remote IN THIS PUSH'S OWN negotiation (the pre-push stdin). Every commit's
+    own changes are listed (`-m`: a merge against each parent, so an evil
+    merge counts; the root commit against the empty tree). Deletions are not
+    data being published — removing a leaked file must stay pushable.
 
-    Remote-tracking refs (`--remotes=<remote>`) are NOT trusted any more
-    (security review round 2, H-B): they are plain local refs that any
-    process can write (`git update-ref refs/remotes/origin/x HEAD~1`) and
-    they go stale when a remote's URL is pointed at a new, empty repository,
-    so excluding them hid published history from this check. `remote` is
-    kept for callers and ignored."""
+    Nothing else is excluded:
+      * remote-tracking refs (`--remotes=<remote>`) are plain local refs any
+        process can write (`git update-ref refs/remotes/origin/x HEAD~1`) and
+        go stale when a remote's URL is repointed (security review round 2,
+        H-B);
+      * what the destination advertises to a SEPARATE query (`git ls-remote`)
+        is not trusted either (round 3, N2): that is its own upload-pack
+        conversation, so a malicious server can advertise nothing to the push
+        (git then uploads the whole history) while advertising the pushed SHA
+        to the separate query. Only the push's own remote_sha reflects what
+        the push actually skips. `remote` is kept for callers and ignored."""
     del remote
     found: list = []
     for line in stdin_text.splitlines():
@@ -6181,7 +6187,6 @@ def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None =
         if (not _PUBLISH_REMOTE_ZERO.match(remote_sha)
                 and _publish_remote_git(root, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode == 0):
             excludes.append(remote_sha)
-        excludes += [h for h in (held or []) if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", h)]
         args = ["log", "-z", "--format=", "--name-only", "--no-renames", "-m",
                 GATE_DIFF_FILTER_NO_DELETE, "--stdin"]
         revs = local_sha + "\n" + ("--not\n" + "\n".join(excludes) + "\n" if excludes else "")
@@ -6194,34 +6199,6 @@ def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None =
         found += [p for p in _gate_split_nul(r.stdout.decode("utf-8", "surrogateescape"))
                   if _publish_remote_is_data_path(p)]
     return sorted(set(found))
-
-
-def _publish_remote_held(root: Path, url: str) -> list | None:
-    """Commits the destination itself says it holds: every ref `git ls-remote`
-    advertises for `url`, peeled to a commit this repository also has. None
-    when the remote cannot be asked (offline, no access, timeout): the caller
-    then excludes nothing and checks the whole pushed history (fail closed).
-    Never prompts: no terminal prompt, no credential dialog, and a new session
-    so ssh cannot open the terminal to ask for a passphrase."""
-    if not url or url.startswith("-"):
-        return None
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
-    try:
-        r = subprocess.run(["git", "-C", str(root), "ls-remote", "--", url],
-                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
-                           timeout=30, start_new_session=True)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
-        return None
-    shas = sorted({ln.split()[0] for ln in r.stdout.splitlines()
-                   if ln.split() and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ln.split()[0])})
-    if not shas:
-        return []
-    b = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check=%(objectname) %(objecttype)"],
-                       input="".join(f"{s}^{{commit}}\n" for s in shas), capture_output=True, text=True)
-    return sorted({ln.split()[0] for ln in b.stdout.splitlines()
-                   if ln.endswith(" commit") and ln.split()[0] != "missing"})
 
 
 def _publish_remote_visibility(url: str) -> str:
@@ -6263,21 +6240,12 @@ def _cmd_doctor_publish_remote(root: Path, remote: str, url: str, stdin_text: st
                  f"Nothing was pushed.")
     if not data:
         return
+    # Trust comes only from the destination's identity (a local path, `gh`
+    # confirming private, or the operator's tess.privateRemote allowlist),
+    # never from anything an untrusted destination advertises (round 3, N2).
     visibility = _publish_remote_visibility(url)
     if visibility in ("local", "private"):
         return
-    # Round 2, H-B: history the destination ITSELF advertises is already
-    # there, so it is not published by this push. Asked only now, when the
-    # push would otherwise be refused; unreachable -> nothing is excluded.
-    held = _publish_remote_held(root, url)
-    if held:
-        try:
-            data = _publish_remote_data_paths(root, stdin_text, held=held)
-        except RuntimeError as e:
-            sys.exit(f"tess-remote-guard: REFUSED — could not inspect the push ({e}). "
-                     f"Nothing was pushed.")
-        if not data:
-            return
     shown = "\n".join(f"    {p}" for p in data[:10]) + (
         f"\n    ... and {len(data) - 10} more" if len(data) > 10 else "")
     if visibility == "public":
