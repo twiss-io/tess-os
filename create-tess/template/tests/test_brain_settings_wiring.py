@@ -25,8 +25,8 @@ LAUNCH = 'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-f
 ONBOARD_START = LAUNCH + "scripts/brain/onboard.py hook session-start --runtime claude"
 LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
-               for c in ("recall", "status", "review", "sync", "index", "lint", "decide", "remember", "inbox",
-                         "journal note")]
+               for c in ("recall", "status", "review", "sync", "save", "index", "lint", "decide", "remember",
+                         "inbox", "journal note")]
 READ_ONLY_GIT = [
     "Bash(git status:*)",
     "Bash(git diff:*)",
@@ -49,7 +49,10 @@ def test_auto_memory_on_and_permissions(settings):
     assert settings["autoMemoryEnabled"] is True
     allow = settings["permissions"]["allow"]
     assert "Bash(python3 scripts/brain/onboard.py:*)" in allow
-    assert [e for e in allow if "tessbrain.py" in e] == LEARN_ALLOW, "save (a git commit) is never pre-approved"
+    # v1.0 e2e review (S6, owner decision): `save` is pre-approved so saving does not
+    # prompt every time. It is the one path-scoped commit of brain/; the git hooks and
+    # the pre-push ship gate still run on it. Every other write verb stays unapproved.
+    assert [e for e in allow if "tessbrain.py" in e] == LEARN_ALLOW
     assert allow[:5] == READ_ONLY_GIT, "read-only git first, in this order"
     git_rules = [e for e in allow if e.startswith("Bash(git")]
     assert git_rules == READ_ONLY_GIT, "no write git command may be pre-approved"

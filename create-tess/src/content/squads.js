@@ -38,6 +38,11 @@ export function displayOrch(key) {
 // same crew of 9 specialists plus your assistant; the path only changes the suggested default lenses
 // (roster-paths.json `default_lenses`), surfaced honestly in PATH_NOTES.
 export const PATH_FRAMING = {
+  plain: {
+    founders: { label: 'Running a business', hint: 'strategy, money and customers first' },
+    builders: { label: 'Building a product or software', hint: 'product and engineering first' },
+    operators: { label: 'Day-to-day operations', hint: 'operations and customer care first' },
+  },
   rpg: {
     founders: { label: "FOUNDER'S PATH", hint: 'Same crew of 9 plus your assistant · strategy and commercial lenses first' },
     builders: { label: "BUILDER'S PATH", hint: 'Same crew of 9 plus your assistant · product and engineering lenses first' },

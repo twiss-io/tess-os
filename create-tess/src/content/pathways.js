@@ -25,6 +25,7 @@ export const PATHWAY_SET_LINE = {
 };
 
 function header(conductor, vibeKey, pathway) {
+  if (vibeKey === 'plain') return `${conductor}, your assistant, is ready.`;
   if (vibeKey === 'command') return `${conductor.toUpperCase()} // ACTIVE`;
   if (vibeKey === 'studio') return `${conductor} · ${pathwayLabel(pathway)}`;
   return `${conductor} — intelligence conductor — online.`;
@@ -39,6 +40,10 @@ function orchLine(orchNames) {
 // ctx = { operator, conductor, vibeKey, squadNoun, squadNames[], orchNames[] }
 export function buildArrival(pathway, ctx) {
   const { operator, conductor, vibeKey, squadNoun, squadNames, orchNames } = ctx;
+  if (vibeKey === 'plain') {
+    return `${header(conductor, vibeKey, pathway)}\nHi ${operator}. Your team of ${squadNames.length} ` +
+      'specialists is set up and waiting for your first request.';
+  }
   const squad = squadNames.join(' · ');
   const head = header(conductor, vibeKey, pathway);
   const orch = orchLine(orchNames);

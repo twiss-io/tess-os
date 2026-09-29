@@ -80,7 +80,9 @@ test('v0.2.1: npm-packed tarball installs on a Python without PyYAML, restores .
   assert.match(run.stdout, /Checked the install matches the release \(tessctl verify OK\)/);
   const folder = target.split(/[\\/]/).pop();
   assert.ok(
-    run.stdout.includes(`What to do next:\n  Open the folder "${folder}" in Claude Code or Codex and say hi`),
+    run.stdout.includes('What to do next:\n  In this terminal, type these two lines, pressing Return after each:\n      cd ') &&
+      run.stdout.includes(`\n      claude            (or: codex, if you use Codex)\n`) &&
+      run.stdout.includes(`(Or open the folder "${folder}" in Claude Code or Codex and say hi.)`),
     'the final screen must name the folder and the one next step',
   );
 });

@@ -47,12 +47,12 @@ export function checkConductorName(name, operatorName, installedAgents) {
   if (installedAgents && installedAgents.has(lower)) {
     return {
       block: true,
-      reason: `"${name}" is the name of an agent in your squad — a conductor and an agent sharing a name is confusing in dispatch. Choose another name.`,
+      reason: `"${name}" is already the name of someone on your AI team — pick a different name for your assistant so it is clear who you mean.`,
     };
   }
   if (operatorName && lower === operatorName.toLowerCase()) {
     warnings.push(
-      `Your conductor and you share the name "${name}" — addressing may be ambiguous.`,
+      `Your assistant and you share the name "${name}" — addressing may be ambiguous.`,
     );
   }
   if (name.length === 1) {

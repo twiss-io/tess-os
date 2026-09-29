@@ -19,7 +19,7 @@ not a symlink, and its sha256 matches `.tess/tess.lock`:
 | Script | Pinned by |
 |---|---|
 | `.claude/hooks/dispatch-guard.sh`, `task-lock-set.sh`, `task-lock-clear.sh`, `utc-local-context.sh` | their own tess.lock entries (`.tess/core/hooks/*`, tier security) |
-| `.claude/hooks/run-pinned.py`, `.claude/hooks/vault-dispatch-scan.py`, `.claude/hooks/tess-gate.py` (the Codex PreToolUse gate, v1.0), every `scripts/brain/**/*.py` | `.tess/core/pinned-scripts.sha256`, which tess.lock pins (tier security) |
+| `.claude/hooks/run-pinned.py`, `.claude/hooks/vault-dispatch-scan.py`, `.claude/hooks/tess-gate.py` (the PreToolUse safety gate for Claude Code and Codex, v1.0), every `scripts/brain/**/*.py` | `.tess/core/pinned-scripts.sha256`, which tess.lock pins (tier security) |
 
 For the onboarding hook the whole `scripts/brain` Python tree is checked, not
 only `onboard.py`: it imports its siblings, and an extra file such as

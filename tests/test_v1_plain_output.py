@@ -228,8 +228,8 @@ def test_readme_leads_with_plain_quickstart():
         assert stale not in text, stale
     for need in ("## What you need", "Node.js 18", "git", "Python 3.9", "macOS already has it",
                  "Claude Code", "Codex", "npm create tess@latest my-os",
-                 "Open the folder `my-os` in Claude Code or Codex and say hi", "SECURITY.md"):
-        assert need in text, need
+                 "open the folder `my-os` in Claude Code or Codex and say hi", "SECURITY.md"):
+        assert need.lower() in " ".join(text.split()).lower(), need
     assert text.index("## What you need") < text.index("## Quickstart") < text.index("## More detail")
     status = (REPO / "docs" / "STATUS.md").read_text(encoding="utf-8")
     assert "## v1.0.0 trust facts" in status and "deferred to v0.2.1" not in status

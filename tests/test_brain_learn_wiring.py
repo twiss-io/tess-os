@@ -82,9 +82,15 @@ def test_live_codex_config_is_the_core_template_and_both_are_locked():
     assert digest in "\n".join(rendered[:3])
 
 
-def test_save_is_never_pre_approved():
+def test_only_save_is_pre_approved_among_the_write_verbs():
+    """v1.0 e2e review (S6, owner decision): `tessbrain.py save` is pre-approved in
+    Claude Code so saving does not ask every time; it is a path-scoped commit of
+    brain/ that still runs the git hooks and the pre-push gate. The verbs that change
+    what the brain believes (confirm, promote, reject, retract) and githooks stay
+    unapproved, and there is no blanket tessbrain.py rule."""
     allow = SETTINGS["permissions"]["allow"]
-    for verb in ("save", "confirm", "promote", "reject", "retract", "githooks"):
+    assert "Bash(python3 scripts/brain/tessbrain.py save:*)" in allow
+    for verb in ("confirm", "promote", "reject", "retract", "githooks"):
         assert not any("tessbrain.py %s" % verb in a for a in allow), verb
     assert "Bash(python3 scripts/brain/tessbrain.py:*)" not in allow
 

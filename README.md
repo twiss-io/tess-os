@@ -31,26 +31,47 @@ routine.
 
 ## Quickstart
 
-1. **Run one command** in a terminal:
+1. **Open a terminal.** A terminal is a window where you type commands.
+   - **Mac:** press Command (⌘) and Space, type `Terminal`, press Return.
+   - **Windows:** Tess OS is tested on macOS and Linux only. On Windows, use
+     WSL (Windows Subsystem for Linux) and type the commands below in its
+     terminal (for example "Ubuntu" in the Start menu).
+   - **Linux:** open your Terminal app.
+
+2. **Run one command.** Type or paste this and press Return:
 
    ```bash
    npm create tess@latest my-os
    ```
 
-2. **Answer the questions.** Your name, your assistant's name, and how you
-   want it to work with you. Enter keeps the suggested answer. The setup
+   `my-os` is the name of the folder it makes; you can pick another name.
+
+3. **Answer the questions.** Your name first: type it and press Return (there
+   is no default, so it waits for you). Then your assistant's name (Return
+   keeps "Tess"), how it should talk to you, and who it is for. The setup
    checks every file and ends with a screen that says what to do next. If
    something is missing (git or Python), it says so and installs nothing.
 
-3. **Open the folder `my-os` in Claude Code or Codex and say hi.** Your
-   assistant takes it from there: tell it what you are working on, or give it
-   a first task. The first time, Claude Code asks whether you trust the
-   folder: say yes. In Codex, trust the folder and approve Tess's hooks when
-   asked (or type `/hooks`); Tess's safety checks run in Codex only after
-   that, and Codex asks again after each Tess update.
+4. **Start your assistant in that folder.** In the same terminal, type:
+
+   ```bash
+   cd my-os
+   claude
+   ```
+
+   `cd my-os` moves into the folder; `claude` starts Claude Code. If you use
+   Codex, type `codex` instead of `claude`. You can also open the folder
+   `my-os` in Claude Code or Codex and say hi from the app. Your assistant
+   takes it from there: tell it what you are working on, or give it a first
+   task. The first time, Claude Code asks whether you trust the folder: say
+   yes. In Codex, trust the folder and approve Tess's hooks when asked (or
+   type `/hooks`); Tess's safety checks run in Codex only after that, and
+   Codex asks again after each Tess update.
 
 To check your install later, run `./tessctl doctor` inside the folder
-("All good" means nothing is broken). `./tessctl help` lists every command.
+("All good" means nothing is broken). `./tessctl help` lists the everyday
+commands. If Tess ever stops a push, see
+[When Tess stops a push](docs/WHEN_TESS_STOPS_A_PUSH.md).
 
 ## Updating
 

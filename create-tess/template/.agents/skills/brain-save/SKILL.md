@@ -25,14 +25,17 @@ pushed. Only the tool's output proves it.
      `clients/acme/kb/...` -> `brain/clients/acme/kb/...`) and link it.
 4. `python3 scripts/brain/tessbrain.py save -m "brain: <what changed>"`
    In Codex: its default sandbox keeps `.git` read-only, so a save run inside
-   the sandbox fails with `index.lock: Operation not permitted`. Run this
-   command with escalated permissions from the start (shell tool
-   `sandbox_permissions: "require_escalated"`, justification "save the
-   brain: git commit"), so Codex asks the operator to approve it. Tell them
-   it is one click: "Yes, proceed", or "Yes, and don't ask again for
-   commands that start with" it to skip the question next time. If they
-   decline, report the work as not saved; never report a sandbox failure as
-   saved and never retry it silently.
+   the sandbox always fails with `index.lock: Operation not permitted`.
+   Therefore, in Codex, the FIRST and only way you run this command is with
+   escalated permissions: set `sandbox_permissions: "require_escalated"` on
+   that very shell call, with the justification "save the brain: git
+   commit". Do not try it inside the sandbox first to see whether it works;
+   it does not, and a failed attempt costs the operator a second prompt.
+   Codex then asks the operator to approve it. Tell them it is one click:
+   "Yes, proceed", or "Yes, and don't ask again for commands that start
+   with" it to skip the question next time. If they decline, report the
+   work as not saved; never report a sandbox failure as saved and never
+   retry it silently.
 5. Report the result honestly: committed (hash), pushed or not, and why not.
 
 ## Never

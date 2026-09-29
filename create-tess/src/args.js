@@ -27,12 +27,12 @@
 export const DEFAULTS = {
   operator: 'Operator',
   conductor: 'Tess',
-  vibe: 'rpg',
+  vibe: 'plain',
   path: 'founders',
   pathway: 'chief-of-staff',
 };
 
-export const VIBES = ['rpg', 'command', 'studio'];
+export const VIBES = ['plain', 'rpg', 'command', 'studio'];
 export const PATHS = ['founders', 'builders', 'operators'];
 export const PATHWAYS = [
   'chief-of-staff',
@@ -143,14 +143,15 @@ export function isNonInteractive(opts) {
 }
 
 export const HELP = `
-create-tess — the gamified first-run wizard for Tess OS
+create-tess — the setup wizard for Tess OS
 
 USAGE
   npm create tess [target] [options]
   npx create-tess [target] [options]
 
 INTERACTIVE
-  Run with no flags inside a TTY for the full gamified journey.
+  Run with no flags inside a terminal: a few plain questions, then setup.
+  Prefer a themed setup? Add --vibe rpg, --vibe command or --vibe studio.
 
 NON-INTERACTIVE (CI / power users)
   npm create tess my-os -- --yes \\
@@ -160,7 +161,8 @@ NON-INTERACTIVE (CI / power users)
 OPTIONS
   --operator, --name <text>      operator name (default: Operator)
   --conductor, --assistant <t>   conductor name (default: Tess)
-  --vibe <rpg|command|studio>    narrative skin (default: rpg)
+  --vibe <plain|rpg|command|studio>  wording of the setup (default: plain;
+                                 the others are opt-in themes)
   --path <founders|builders|operators>   starter path: same crew of 9 on every path,
                                  only the suggested lenses differ (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)

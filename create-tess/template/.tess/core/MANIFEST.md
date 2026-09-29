@@ -248,9 +248,10 @@ v0.2.1: every hook command in `settings-core.json` runs through
 tess.lock (directly for the four hooks above; via `pinned-scripts.sha256` for
 `run-pinned.py`, `vault-dispatch-scan.py`, `tess-gate.py` and
 `scripts/brain/**/*.py`, which have no core master). v1.0: `tess-gate.py` is the
-Codex PreToolUse safety gate, wired by `.codex/config.toml` (rendered from
-`templates/agents-md/codex-config.toml.tpl`) through `run-pinned.py --on-fail
-block`. See docs/HARNESS_HARDENING.md and adapters/codex/README.md.
+PreToolUse safety gate for both runtimes: Claude Code runs it from
+`settings-core.json` (`--runtime claude`) and Codex from `.codex/config.toml`
+(rendered from `templates/agents-md/codex-config.toml.tpl`), each through
+`run-pinned.py --on-fail block`. See docs/HARNESS_HARDENING.md and adapters/codex/README.md.
 
 ## skills/ — framework skills
 

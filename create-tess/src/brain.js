@@ -8,9 +8,11 @@
 // installed gate. Onboarding is best-effort: a failure never undoes the
 // install, it is reported in plain words with the one next step.
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { plain, dim, accent } from './ui.js';
+import { relTargetHint } from './output.js';
 
 export const BRAIN_MODES = ['personal', 'agency', 'organisation'];
 // One optional preset per mode (scripts/brain/presets/*.json base_mode).
@@ -51,14 +53,32 @@ export function resolveBrainFlags(opts) {
 }
 
 // Interactive: two plain questions. `p` is @clack/prompts, `bail` its cancel guard.
+// Also returns what the person chose ON SCREEN (`said`), so onboarding records
+// their answer, not a command-line flag they never typed (v1.0 e2e review, S3).
 export async function askWhoFor(p, bail) {
   const mode = bail(await p.select({ message: 'Who is this for?', options: MODE_OPTIONS }));
+  const said = { mode: MODE_OPTIONS.find((o) => o.value === mode).label, preset: null };
   let preset = null;
   if (BRAIN_PRESETS[mode]) {
     const yes = bail(await p.confirm({ message: PRESET_QUESTIONS[mode], initialValue: true }));
     if (yes) preset = BRAIN_PRESETS[mode];
+    said.preset = yes ? 'Yes' : 'No';
   }
-  return { mode, preset };
+  return { mode, preset, said };
+}
+
+// The answers file `onboard.py init --answers` reads for a wizard run where the
+// person answered on screen. Each quote is exactly what they chose or typed
+// (the option text, "Yes"/"No", or the name they typed). A name they did not
+// type (Enter kept "Tess") is recorded as a default with no quote, never as
+// words they said. Flag runs never come here: their quotes stay the flag text.
+export function onScreenAnswers({ mode, preset, operator, conductor, said }) {
+  const answers = [{ step: 1, field: 'mode', value: mode, quote: said.mode }];
+  if (said.preset) answers.push({ step: 2, field: 'preset', value: preset || 'none', quote: said.preset });
+  answers.push({ step: 3, field: 'operator_name', value: operator, quote: said.operator || operator });
+  if (said.conductor) answers.push({ step: 3, field: 'assistant_name', value: conductor, quote: said.conductor });
+  else answers.push({ step: 3, field: 'assistant_name', value: conductor, quote: '', runtime: 'default' });
+  return { schema: 1, runtime: 'setup-wizard', session: '', answers };
 }
 
 function gitIdentityEnv(targetDir, operator) {
@@ -80,7 +100,7 @@ function lastLines(err) {
 }
 
 // Returns { status: 'done'|'kept'|'skipped'|'failed', commit, detail }.
-export function runOnboarding(targetDir, { mode, preset, operator, conductor }, onStep = () => {}) {
+export function runOnboarding(targetDir, { mode, preset, operator, conductor, said }, onStep = () => {}) {
   const script = join(targetDir, 'scripts', 'brain', 'onboard.py');
   if (!existsSync(script)) return { status: 'skipped', commit: null, detail: 'onboarding tool not in template' };
   // A --force re-scaffold keeps the operator's existing brain; never re-onboard it.
@@ -88,11 +108,24 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor }, 
   const env = { ...process.env, ...gitIdentityEnv(targetDir, operator) };
   const run = (args) =>
     execFileSync('python3', [script, ...args], { cwd: targetDir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const init = ['init', '--non-interactive', '--mode', mode, '--operator', operator, '--assistant', conductor];
-  if (preset) init.push('--preset', preset);
+  let init;
+  let answersDir = null;
+  if (said) {
+    answersDir = mkdtempSync(join(tmpdir(), 'create-tess-answers-'));
+    const file = join(answersDir, 'answers.json');
+    writeFileSync(file, JSON.stringify(onScreenAnswers({ mode, preset, operator, conductor, said })), { mode: 0o600 });
+    init = ['init', '--non-interactive', '--answers', file];
+  } else {
+    init = ['init', '--non-interactive', '--mode', mode, '--operator', operator, '--assistant', conductor];
+    if (preset) init.push('--preset', preset);
+  }
   try {
     onStep('Setting up your second brain', 'start');
-    run(init);
+    try {
+      run(init);
+    } finally {
+      if (answersDir) rmSync(answersDir, { recursive: true, force: true });
+    }
     const out = run(['apply']);
     onStep('Setting up your second brain', 'done');
     const m = /committed: ([0-9a-f]{4,40})/.exec(out);
@@ -110,6 +143,11 @@ export function runOnboarding(targetDir, { mode, preset, operator, conductor }, 
 // are approved (again after each Tess update: approval is pinned to a hash).
 export const FIRST_OPEN_CLAUDE = '  In Claude Code: when it asks whether you trust this folder, say yes.';
 export const FIRST_OPEN_CODEX = "  In Codex: trust this folder and approve Tess's hooks when asked (/hooks).";
+
+// A path as one shell word: plain names stay as typed, anything else is quoted.
+function shellWord(p) {
+  return /^[\w.\/-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`;
+}
 
 export function printFinalScreen(targetDir, opts) {
   const { mode, brain, checks, conductor = 'Tess', crew = 9, productionNote = '' } = opts;
@@ -133,9 +171,11 @@ export function printFinalScreen(targetDir, opts) {
   w(`  ${bullet} Safety checks: ${safe ? 'passed' : 'found a problem (see the lines above)'}.`);
   w();
   w('What to do next:');
-  w(`  Open the folder "${folder}" in Claude Code or Codex and say hi —`);
-  w(`  ${conductor}, your assistant, will take it from there.`);
-  w(dim(`  (From a terminal: cd "${targetDir}" && claude   — or codex instead of claude.)`));
+  w('  In this terminal, type these two lines, pressing Return after each:');
+  w(`      cd ${shellWord(relTargetHint(targetDir))}`);
+  w('      claude            (or: codex, if you use Codex)');
+  w(`  Then say hi. ${conductor}, your assistant, will take it from there.`);
+  w(dim(`  (Or open the folder "${folder}" in Claude Code or Codex and say hi.)`));
   w(FIRST_OPEN_CLAUDE);
   w(FIRST_OPEN_CODEX);
   if (brain.status === 'failed') {
