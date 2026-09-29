@@ -37,12 +37,33 @@ VENDOR_LINE = "        - .tess/vendor/**\n"
 RULES_CHANGED = RELEASE_POLICY.replace(VENDOR_LINE, VENDOR_LINE + f"        - {NEW_GLOB}\n", 1)
 
 
+FAKE_OS_HOME_SITE = Path(__file__).resolve().parent / "fixtures" / "fake_os_home"
+
+
+def _use_os_home(monkeypatch, home: Path) -> None:
+    """Point the OS user record's home at `home` for this process and for every
+    tessctl subprocess (tests/fixtures/fake_os_home/sitecustomize.py). Round 3
+    (N-2): tessctl ignores $HOME / $XDG_CONFIG_HOME for the operator key, so an
+    environment variable no longer moves it."""
+    import pwd
+    monkeypatch.setenv("TESS_TEST_OS_HOME", str(home))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        [str(FAKE_OS_HOME_SITE)] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
+    real = pwd.getpwuid
+
+    def fake(uid):
+        rec = real(uid)
+        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid,
+                                  rec.pw_gecos, os.environ["TESS_TEST_OS_HOME"], rec.pw_shell))
+    monkeypatch.setattr(pwd, "getpwuid", fake)
+
+
 @pytest.fixture(autouse=True)
 def _operator_home(tmp_path_factory, monkeypatch):
     """Every test gets its own operator key location, never the real ~/.config."""
-    xdg = tmp_path_factory.mktemp("xdg-config")  # outside every test project
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-    return xdg
+    home = tmp_path_factory.mktemp("os-home")  # outside every test project
+    _use_os_home(monkeypatch, home)
+    return home / ".config"
 
 
 def _write_approval(root: Path, record: dict) -> None:
@@ -130,7 +151,7 @@ def test_typed_acceptance_updates_and_the_gate_accepts_exactly_that(
     assert record["format"] == engine.POLICY_APPROVAL_FORMAT
     assert record["mac"].startswith("hmac-sha256:") and record["release_commit"]
     assert record["project_id"] == engine._project_identity(project.root, base)
-    key_file = Path(os.environ["XDG_CONFIG_HOME"]) / "tess" / "operator" / "key"
+    key_file = Path(os.environ["TESS_TEST_OS_HOME"]) / ".config" / "tess" / "operator" / "key"
     assert key_file.is_file() and (key_file.stat().st_mode & 0o777) == 0o600
     assert not str(key_file.resolve()).startswith(str(project.root.resolve()))
     genuine = dict(record)
@@ -183,7 +204,7 @@ def test_typed_acceptance_updates_and_the_gate_accepts_exactly_that(
     again = _recommit_update(project.root, base, "genuine again")
     r, res = _gate_ci(project.root, base, again)
     assert r.returncode == 0 and res["blocked"] is False, res
-    os.environ["XDG_CONFIG_HOME"] = str(Path(os.environ["XDG_CONFIG_HOME"]).parent / "no-key-here")
+    os.environ["TESS_TEST_OS_HOME"] = str(Path(os.environ["TESS_TEST_OS_HOME"]).parent / "no-key-here")
     r, res = _gate_ci(project.root, base, again)
     assert r.returncode == 1 and res["blocked"] is True, res
 
@@ -210,17 +231,17 @@ def test_signed_approval_checks_project_release_and_key(engine):
 def test_operator_key_lives_outside_the_project_and_is_private(engine, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(proj / ".config"))
+    _use_os_home(monkeypatch, proj)
     key, why = engine._operator_key(proj, create=True)
     assert key is None and "inside this project" in why
     assert not (proj / ".config").exists()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    _use_os_home(monkeypatch, tmp_path / "cfg")
     assert engine._operator_key(proj, create=False) == (None, "there is no operator key on this machine")
     key, why = engine._operator_key(proj, create=True)
     assert key is not None and len(key) == 32 and why == ""
     assert engine._operator_key(proj, create=True)[0] == key       # stable, not re-created
     if os.name == "posix":
-        (tmp_path / "cfg" / "tess" / "operator" / "key").chmod(0o644)
+        (tmp_path / "cfg" / ".config" / "tess" / "operator" / "key").chmod(0o644)
         key, why = engine._operator_key(proj, create=False)
         assert key is None and "accessible to other users" in why
 
@@ -292,3 +313,40 @@ def test_plain_update_and_normal_commands_stay_allowed(proj):
                          "tool_input": {"command": cmd}})
         dec = _decision(r)
         assert dec is None or "only the operator" not in dec[1], (cmd, dec)
+
+
+def test_operator_key_ignores_home_and_xdg_config_home(engine, tmp_path, monkeypatch):
+    """Round 3, N-2: `XDG_CONFIG_HOME=/tmp/x tessctl ...` (or a moved HOME) must
+    not make tessctl read a key the agent planted. The key directory comes from
+    the OS user record; the planted key is never read and nothing is created there."""
+    proj, planted = tmp_path / "proj", tmp_path / "agent-cfg"
+    proj.mkdir()
+    (planted / "tess" / "operator").mkdir(parents=True, mode=0o700)
+    (planted / "tess" / "operator" / "key").write_bytes(b"p" * 32)
+    (planted / "tess" / "operator" / "key").chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(planted))
+    monkeypatch.setenv("HOME", str(planted))
+    real_home = Path(os.environ["TESS_TEST_OS_HOME"])
+    assert engine._operator_key_dir() == real_home / ".config" / "tess" / "operator"
+    assert engine._operator_key(proj, create=False) == (None, "there is no operator key on this machine")
+    key, why = engine._operator_key(proj, create=True)
+    assert key is not None and key != b"p" * 32 and why == ""
+    assert (real_home / ".config" / "tess" / "operator" / "key").read_bytes() == key
+    assert (planted / "tess" / "operator" / "key").read_bytes() == b"p" * 32
+
+
+def test_tessctl_subprocess_ignores_xdg_config_home(engine, tmp_path, monkeypatch):
+    """The same through a real tessctl process (the pre-push gate path)."""
+    planted = tmp_path / "agent-cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(planted))
+    code = ("import importlib.machinery, importlib.util, sys; "
+            "l = importlib.machinery.SourceFileLoader('t', sys.argv[1]); "
+            "s = importlib.util.spec_from_loader('t', l); m = importlib.util.module_from_spec(s); "
+            "l.exec_module(m); print(m._operator_key_dir())")
+    from conftest import REPO_ROOT
+    r = subprocess.run([sys.executable, "-c", code, str(REPO_ROOT / ".tess" / "bin" / "tessctl")],
+                       capture_output=True, text=True, env=dict(os.environ))
+    assert r.returncode == 0, r.stderr
+    out = Path(r.stdout.strip())
+    assert out == Path(os.environ["TESS_TEST_OS_HOME"]) / ".config" / "tess" / "operator"
+    assert str(planted) not in r.stdout

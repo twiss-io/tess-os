@@ -16901,8 +16901,9 @@ def _update_carry_policy_registries(root: Path) -> None:
 # hook) could write a matching one. It is now signed: format /2 carries an
 # HMAC-SHA256 over (project id, tag, release commit, old and new rule
 # digests, approval time) under a per-machine OPERATOR KEY that lives OUTSIDE
-# the repo ($XDG_CONFIG_HOME/tess/operator/key, else ~/.config/tess/operator/
-# key; directory 0700, key 0600, owned by the user; created on first
+# the repo (~/.config/tess/operator/key under the OS user record's home; round 3
+# N-2: $HOME and $XDG_CONFIG_HOME are ignored; directory 0700, key 0600, owned by
+# the user; created on first
 # interactive `accept`, never by the gate). The project id is the root commit
 # of the first-parent history, so an approval copied from another project on
 # the same machine does not verify. The gate verifies the HMAC with that key
@@ -17013,9 +17014,26 @@ def _policy_approval_covers(approval, tag: str, base_doc, head_doc) -> bool:
             and approval.get("approved_by_typing") == f"accept {tag}")
 
 
+def _os_user_home() -> Path:
+    """The home directory in the OS user record for this process's uid.
+
+    v1.0.0 security review round 3 (N-2): the operator key directory is never
+    taken from $HOME or $XDG_CONFIG_HOME. A command run with either pointed at
+    a directory an agent controls (`XDG_CONFIG_HOME=/tmp/x tessctl gate ...`,
+    or exported for a `git push` whose pre-push hook runs the gate) would
+    otherwise verify an approval against a key the agent made. Where the OS
+    has no user database (Windows), Path.home() is the only answer."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, AttributeError):
+        return Path.home()
+
+
 def _operator_key_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "tess" / "operator"
+    """~/.config/tess/operator under the OS user record's home. $XDG_CONFIG_HOME
+    and $HOME are ignored for the key, even when set (N-2)."""
+    return _os_user_home() / ".config" / "tess" / "operator"
 
 
 def _path_within(child: str, parent: str) -> bool:

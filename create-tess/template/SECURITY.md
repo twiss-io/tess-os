@@ -110,7 +110,7 @@ Tess OS runs as you, on your machine. These limits are residual after the v1.0.0
 security reviews; they are stated so nobody relies on a check that is not there.
 
 - **An agent running as the same OS user as you can ultimately read your local
-  keys and run arbitrary programs.** The gates deny the direct paths to the key
+  keys and run arbitrary programs.** The gates deny common direct paths to the key
   directory (`~/.config/tess`: the brain key and the operator key) from the shell,
   Read/Grep/Glob, edits and (in Codex) MCP tools, and they deny the common ways to
   run hidden code. They are checks on what an agent asks to do, not an operating
@@ -126,7 +126,32 @@ security reviews; they are stated so nobody relies on a check that is not there.
   command line says. The shared-note privacy check has the same limit: it
   withholds replies for sessions whose tool calls name a private path or read
   broadly (a `cd` into the instance, a glob, a recursive search, a variable), but
-  a program that reads private files by itself is not seen.
+  a program that reads private files by itself is not seen. The privacy check
+  reads the command as the shell would split it, so unusual quoting or escaping
+  (a path split across quotes, backslash-escaped characters) and a tool's own
+  directory switch (`git -C`, `make -C`, `npm --prefix`, `--chdir`) can hide a
+  private path from it.
+- **Codex runs Tess's gate only when it runs project hooks at all.** In an
+  untrusted project, or before the operator approves the Tess hooks in `/hooks`
+  (and again after an update changes their hash), Codex runs no Tess hook and only
+  its own sandbox and approval settings apply. Input typed into an already-open
+  shell with `write_stdin` never reaches the gate, and a hook that times out or
+  crashes in the host fails open for that call. Details:
+  [adapters/CONFORMANCE.md](adapters/CONFORMANCE.md), Codex row.
+- **A deliberate whole-tree rollback runs that commit's gate.** The gates refuse
+  git commands that put back other copies of Tess's enforcement files (a checkout
+  or restore from another commit, `checkout-index --prefix`, `--work-tree` /
+  `GIT_WORK_TREE` / `core.worktree`, `update-index` into a protected path), and
+  ask (Claude Code) or refuse (Codex) before a switch, reset, merge or rebase that
+  changes them. If you check out an old commit yourself, its own older gate, pins
+  and lock run from then on, because the pins live in the same tree they check.
+  `git pull` is not checked (what it merges is known only after the fetch), and a
+  patch read from a pipe is checked only when its text is in the command. An
+  anti-rollback anchor kept outside the repository is planned for 1.0.1.
+- **The operator key is found from your OS user record.** `tessctl` reads it from
+  `~/.config/tess/operator/key` under the home directory in the user database and
+  ignores `$HOME` and `$XDG_CONFIG_HOME`, so a command run with those pointed
+  elsewhere cannot verify against a key an agent made.
 - **In Claude Code, MCP tools are not routed through the Tess gate.** The base
   settings must not target MCP tools (they can be external chat channels), so an
   MCP server with filesystem access can read `~/.config/tess` in Claude Code. The
