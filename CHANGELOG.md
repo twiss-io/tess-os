@@ -21,15 +21,60 @@ Full details below. Trust model: SECURITY.md.
 
 Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #205 trust model, #206 Codex parity), #208 (SSH release signature), B4 (first run), #210 (Codex safety gate), #211 (learning loop), the four review-fix PRs (#212 CI and release hygiene, #213 gate hardening, #214 engine hardening, #215 learning-loop provenance), #216 (non-technical end-to-end fixes), the three round-2 review-fix PRs (#217 brain state, #218 approvals and isolation, #219 gate flags), the four round-3 review-fix PRs (#220 publishing trust, #221 learning-loop replay, #222 git rollback, #223 non-technical round 2), #224 (enforcement anchor and git route blocks) and the release-candidate fixes that make them work together.
 
-**Security audit run 1 fixes: learning loop and pinned launcher**
-- In plain words: what the brain learns now comes only from your own typed words in a session the runtime recorded, `claude -p` / `codex exec` and other automated runs never count as you, and a record file someone edits or plants waits for your review instead of being treated as accepted. Hiding the folder that holds Tess's approved-files record now stops Tess instead of switching the check off.
-- `sync --transcript` journals only files inside the runtime's own transcript store; `--codex-home` / `--gemini-home` with another folder need you at a terminal (as `--claude-dir` already did). A shell that cannot write the ledger (the Codex sandbox) never mints evidence: turns, journal lines, sessions and accepted-record seals are never taken from the outbox; a sandboxed `sync` journals nothing and a sandboxed decision waits as pending-verification for the next hook.
-- Headless runs are automation: Claude transcripts with entrypoint `sdk-*` or promptSource `sdk`, Codex rollouts from `codex exec` / MCP / sub-agents, a `claude -p` prompt hook, and a runtime started inside another agent session (process ancestry, recorded in the ledger) journal their prompts under the `automation` speaker, which never resolves to a principal.
-- `decide --register` / `inbox add --register` (and any candidate's target) must be a folder inside `brain/`: no absolute path, `..`, hidden part, link, or journal/inbox/index/kb.
-- Record seals: every record file the tool writes is sealed (id, path, sha256 of its text) in the MAC'd ledger; a record whose file does not match reads as `proposed` everywhere (START-HERE, profile, learned, the SessionStart snapshot, confirm) until the operator confirms it. A planted pending record that verifies goes to `proposed`, never straight to accepted. Existing records are sealed once on the first ledger write after the upgrade.
-- Brain git hooks (pre-commit lint, post-merge index) run through `.claude/hooks/run-pinned.py` with the `scripts/brain` closure; `githooks install` replaces the v1 blocks.
-- `run-pinned.py` reads tess.lock pins with `lock_strict_tree` (the anchor's reader), so pin-shaped lines inside a multi-line volatile value are text, not pins. The first hook that finds an anchor writes `.git/info/tess-anchored`; a listed checkout whose anchor store is missing or unreadable stops.
-- Tests: `tests/test_v1_audit_brain_learning.py`, `tests/test_v1_audit_launcher.py`. The suite now runs every interpreter, `-I` included, with a fake OS home (a throwaway virtualenv whose `.pth` patches `pwd`), and `tests/conftest.py` no longer reads or deletes anything under the real `~/.config/tess`. The brain fixture transcripts are regenerated as interactive sessions.
+**Security audit (Cloudflare method) fixes**
+- In plain words: before this release, Tess OS was audited with the Cloudflare security-audit method it now ships (run 1, on `release/v1.0` at `3eba77d`). The audit reported 33 findings, all `needs_validation` (each survived an independent attempt to disprove it; none could be run against a live install), and none rated confirmed. Every one is fixed below, with a regression test that fails on `3eba77d`. `findings.json` sha256: `a30480d1611a6e552a7c8a32e7f2197d3c0e6bbe707786d5c8f738234b6166c5` (the audit files themselves stay off the public repository).
+- **What you will notice:**
+  - In Claude Code's `auto` permission mode, a Tess safety check that would ask you is now refused instead, because in `auto` mode Claude Code may approve a prompt without showing it to you. Run the command yourself, or switch back to default mode (Shift+Tab) and try again.
+  - Agents can no longer edit your user-level Claude Code or Codex settings, your global or system git config (or files it includes), or run `git config --edit` / set `init.templateDir`. Change those yourself.
+  - `tessctl vault get --reveal` prints a secret only at your own terminal, and `tessctl vault exec` refuses to hand a secret to a program that would print it. On macOS every use of the vault asks for your permission (the keychain item no longer pre-authorises any app).
+  - Verifier verdicts and hard-floor sign-offs are signed by you: `tessctl verdict sign` and `tessctl gate signoff sign` show the verdict, ask you to type `sign as <name>` and need the registered key's passphrase. The Cyra role drafts the verdict; it cannot sign it. The shipped Cyra key had no passphrase and needs one (`gpg --passwd`) before it can sign again.
+  - What you type into `claude -p` or `codex exec` (and other automated or nested runs) is no longer learned as your own words.
+  - A brain record that was written or changed outside Tess, for example on another machine and pulled in with git, waits for your review (it shows as `proposed`) instead of counting as accepted.
+- **Gate (`tess-gate.py`), both runtimes:**
+  - Reads a shell command the way the shell runs it: the program behind `{ }`, `!`, `if/then`, wrappers and runners with their options (`nice -n 5`, `timeout 600`, `sudo -u`, `xargs`, `uv run`), `bash -Ec`, here-strings, here-documents, `echo ... | sh`, command substitutions and `find -exec`; a program named only at run time asks. (command-word resolution)
+  - Works out what a command writes the way the shell expands it: globs, braces, `~`, `$HOME`/`$PWD`, variables and `for` lists set earlier in the same command, `dd of=`, `--opt=DIR`, `-tDIR`, `curl -o`, `tar -cf` and links made earlier in the command; a target known only at run time asks. (write-target matching)
+  - Resolves relative paths against the tool call's own working directory and follows `cd` through `&&`, `||`, `;`, subshells, pipes and background lists. (tool working directory)
+  - Parses `tess.lock` once per version and stops within 40 seconds (or at 256 KiB of command text) with an ask, never an allow. (unbounded evaluation)
+  - Works out a push's destination and refs as git does (`--repo`, one-command config, every `pushurl`, `insteadOf`/`pushInsteadOf`, push refspecs, mirror, `push.default`, `--all`/`--tags`/`--follow-tags`). (push destination)
+  - Decides "is this a protected file" and "is this the key directory" by file identity, so a case variant of the project or `~/.config/tess` path, a `..` or symlinked spelling, and a rename of a folder above the key directory are caught. (key directory path identity; project root case compare)
+  - Protects `scripts/tess` (run without a prompt at every session start) and the importable modules beside it. (boot launcher)
+  - Refuses writes to out-of-project files that switch enforcement off: user-level Claude Code and Codex settings, global and system git config and their includes. (control files outside the project)
+  - `auto` mode asks become denies (see above). (auto mode)
+  - Refuses `tessctl vault get --reveal` and `vault exec` into a printer, shell or inline interpreter, or with a dangerous `--as` variable (gate half of the vault finding).
+- **Engine (`tessctl`) and installer:**
+  - The ship gate requires every policy rule that matches a path, each met by one of that rule's own verifiers, so a rule added or widened in the same push can no longer let a lower-trust verifier clear a restricted path. (per-rule coverage)
+  - A hard-floor sign-off lists the exact file contents it approves and clears only those. (sign-off bound to the change)
+  - A multi-ref push is checked ref by ref, so approved content in one ref no longer covers another. (multi-ref union)
+  - Verdict and sign-off signing need the operator at a terminal with the registered, passphrase-protected key (see above). (signer role binding)
+  - The publish-clean guard checks private shapes (`.local.md`, `*.age`, vault and `.private/` paths) before the owned-folder exemption. (publish-clean hard tier)
+  - The publish-remote check lists pushed trees and tags of trees, and refuses other object kinds. (non-commit ref targets)
+  - The vault pre-push guard scans every pushed commit, not only the net difference. (per-commit vault scan)
+  - `vault get --reveal` / `vault exec` are terminal-only for printing, and the macOS keychain item has no pre-authorised app. (vault extraction; keychain access list)
+  - `tessctl update` applies and records only the bytes of the verified release, re-checked at every step. (staging bytes)
+  - `update` / `self-update` refuse a release older than the installed one unless you allow the downgrade at your terminal. (version floor)
+  - `tessctl approve` writes exactly the bytes you were shown. (quarantine bytes)
+  - `tessctl rollback` restores only files `tessctl` itself snapshots, never into `.git` or through a link out of the project, and asks you at a terminal before it changes a safety file (update's own crash rollback is unchanged). (snapshot restore source)
+  - `tessctl resolve` on a security-tier file needs the same presence check as `approve`. (resolve presence)
+  - `npm create tess` fetches a git template only over https, only a signed release tag, and verifies both release signatures before running anything from it. (template source)
+- **Brain (learning loop):**
+  - `claude -p`, `codex exec`, MCP and sub-agent runs, and a runtime started inside another agent session, are recorded as automation, never as the operator. (headless attribution)
+  - A shell that cannot write the tamper-evident ledger (the Codex sandbox) can no longer mint "operator said this" evidence through the in-repo outbox. (attestation key in the sandbox)
+  - Every record Tess writes is sealed in the ledger; a record whose file does not match its seal reads as `proposed` until you confirm it. (front-matter status)
+  - `decide --register` / `inbox add --register` targets must be a plain folder inside `brain/`. (register target)
+  - `sync --transcript` attests only files inside the runtime's own transcript store; another `--codex-home` / `--gemini-home` needs you at a terminal. (transcript source)
+- **Launcher (`run-pinned.py`) and git hooks:**
+  - Hiding the folder that holds the enforcement anchor stops Tess instead of switching the check off. (hidden anchor store)
+  - `tess.lock` pins are read with the anchor's strict reader, so pin-shaped lines inside a multi-line value are text. (multi-line pin override)
+  - Brain git hooks run through the hash-pinned launcher. (unpinned git hooks)
+- **Coverage-critic gaps (found by the audit's coverage review, not as findings):**
+  - `.github/scripts/**` (helpers the release and npm-publish workflows run) is protected.
+  - The `tessctl` steps that change the recorded state of the safety files (`override`, `reset`, `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`, `lock --regen`, and security-tier roster changes) need the operator at a terminal, and the gate refuses feeding or faking that terminal.
+- **Found while integrating the fixes:**
+  - A recursive copy of a folder's contents into the project root (`cp -R x/. .`, `rsync -a x/ ./`), or into a folder above it, asks in Claude Code and is refused in Codex; a copy of named files into the root is checked file by file (`cp x/CLAUDE.md .` is refused, `cp notes.txt .` is fine).
+  - Feeding input to, or faking the terminal of, `tessctl verdict sign` and `tessctl gate signoff sign` is refused like `approve`.
+  - Docs now say Cyra drafts the verdict and the operator signs it (`CLAUDE.md`, `conductor/roster.md`, `conductor/verification-routing.md`, `docs/TECHNICAL_OVERVIEW.md`).
+- Residual limits (the gate reads command text, same-user processes can fake a terminal or call `gpg` directly, snapshot manifests are unsigned, include chains deeper than one level) are listed in SECURITY.md, Known limits.
+- Tests: `tests/test_v1_audit_gate_paths.py`, `test_v1_audit_gate_shell.py`, `test_v1_audit_policy_vault.py`, `test_v1_audit_lifecycle.py`, `test_v1_audit_brain_learning.py`, `test_v1_audit_launcher.py`, `test_v1_audit_integration.py`, `create-tess/test/v1-audit-template-source.test.js`. The suite runs every interpreter with a fake OS home and never reads or deletes anything under the real `~/.config/tess`.
 
 **Security audits: Cloudflare's method, shipped and adopted**
 - In plain words: ask Tess to "security audit this project" and it runs Cloudflare's open-source security-audit method (github.com/cloudflare/security-audit-skill, MIT, commit c1c8a8c, 2026-09-14). For a security question or a focused review it uses only the parts that apply and writes no files.
