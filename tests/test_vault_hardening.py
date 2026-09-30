@@ -54,7 +54,7 @@ def test_keychain_store_passes_key_on_stdin_not_argv(engine, monkeypatch):
 
     assert engine._vault_store_identity_keychain(priv) is True
 
-    add_argv, add_kw = calls[0]
+    add_argv, add_kw = next(c for c in calls if "add-generic-password" in c[0])
     assert "add-generic-password" in add_argv
     # The key must NOT appear in ANY argv element.
     assert all(priv not in str(part) for part in add_argv), \
@@ -123,7 +123,8 @@ def test_generated_hooks_scan_with_git_show(engine, tmp_path):
         assert "AGE-SECRET-KEY-" in body
     # pre-commit reads the staged index blob, pre-push the pushed sha blob
     assert 'git cat-file blob "$blob"' in pre_commit
-    assert "${local_sha}:${_f}" in pre_push
+    # v1.0 audit: pre-push reads each PUSHED COMMIT's own blob, not only the tip
+    assert "${c}:${_f}" in pre_push
 
 
 @pytest.mark.skipif(not HAS_GIT, reason="git required")

@@ -103,8 +103,11 @@ operator identity, `kb/**`, `clients/**`, `.env*`, `*.local.md`, vault
 material, `missions/**`. This is deliberately a **curated subset** of
 `never_touch`, not the whole list — see Control 1's explanation of why the
 full list is the wrong tool for a commit gate. `owned_globs` still wins
-(e.g. `clients/_template/**`), and a small allowlist covers the same static
-doc-template stubs `.gitignore` re-includes.
+(e.g. `clients/_template/**`), except for the hard-tier shapes the write
+gate also never lets `owned_globs` override: `*.local.md` shadows (for
+example `conductor/guardrails.local.md`), `*.age` and other vault material,
+and `.private/` folders are blocked wherever they sit. A small allowlist
+covers the same static doc-template stubs `.gitignore` re-includes.
 
 `--publish-clean` (default) checks **staged** changes
 (`git diff --cached --no-renames --diff-filter=ACMRTUXB` — every status except

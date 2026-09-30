@@ -204,6 +204,11 @@
         },
         "rationale": { "type": "string", "minLength": 1 },
         "authorized_at": { "type": "string", "minLength": 1 },
+        "artifact_hashes": {
+          "type": "object",
+          "description": "v1.0 security audit (signoff-not-bound-to-change): every file this sign-off approves, mapped to its git blob id (forty zeros for a deletion). `tessctl gate` requires it and accepts the sign-off only for exactly these contents. Optional here so receipts minted before v1.0 stay valid.",
+          "additionalProperties": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }
+        },
         "signature": { "$ref": "verdict.schema.json#/$defs/VerdictSignature" }
       },
       "required": ["rule_id", "category", "authorized_by", "rationale", "authorized_at", "signature"],

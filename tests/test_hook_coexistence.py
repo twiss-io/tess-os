@@ -75,7 +75,7 @@ def test_precommit_splice_falls_through_on_clean(engine, tmp_path):
     hook_text = (tmp_path / ".git" / "hooks" / "pre-commit").read_text()
     # Guard + user hook coexist; guard is contained in a subshell; end sentinel
     # sits BEFORE the user content so the user hook is reachable (not dead code).
-    assert "# tess-vault-guard v3" in hook_text
+    assert "# tess-vault-guard v4" in hook_text
     assert "if (" in hook_text
     assert "# tess-vault-guard end" in hook_text
     assert USER_SENTINEL in hook_text
@@ -123,7 +123,7 @@ def test_install_is_idempotent_and_preserves_user_hook(engine, tmp_path):
     second = (tmp_path / ".git" / "hooks" / "pre-commit").read_text()
 
     assert first == second, "second install mutated an already-v2 hook"
-    assert second.count("# tess-vault-guard v3") == 1, "guard marker duplicated"
+    assert second.count("# tess-vault-guard v4") == 1, "guard marker duplicated"
     assert USER_SENTINEL in second
 
 
@@ -133,7 +133,7 @@ def test_no_existing_hook_installs_standalone(engine, tmp_path):
     _init_repo(tmp_path)
     engine._vault_install_git_hooks(tmp_path)
     hook_text = (tmp_path / ".git" / "hooks" / "pre-commit").read_text()
-    assert "# tess-vault-guard v3" in hook_text
+    assert "# tess-vault-guard v4" in hook_text
     # Standalone form has no splice subshell / end sentinel.
     assert "# tess-vault-guard end" not in hook_text
     assert subprocess.run(["bash", "-n", str(tmp_path / ".git" / "hooks" / "pre-commit")]).returncode == 0
@@ -169,7 +169,7 @@ def test_legacy_prepend_is_re_spliced_to_fall_through(engine, tmp_path):
     engine._vault_install_git_hooks(tmp_path)
     upgraded = lp.read_text()
 
-    assert "# tess-vault-guard v3" in upgraded
+    assert "# tess-vault-guard v4" in upgraded
     assert "# tess-vault-guard end" in upgraded
     assert USER_SENTINEL in upgraded
     assert upgraded.index("# tess-vault-guard end") < upgraded.index(USER_SENTINEL)
@@ -229,7 +229,7 @@ def test_prepush_splice_feeds_user_hook_stdin(engine, tmp_path):
     hook_path = tmp_path / ".git" / "hooks" / "pre-push"
     hook_text = hook_path.read_text()
     # Structural: stdin captured once, teed to guard and to the operator hook.
-    assert "# tess-vault-guard v3" in hook_text
+    assert "# tess-vault-guard v4" in hook_text
     assert 'GUARD_STDIN="$(cat; printf x)"' in hook_text
     assert 'printf \'%s\' "$GUARD_STDIN" | (' in hook_text       # fed to the guard
     assert 'printf \'%s\' "$GUARD_STDIN" | {' in hook_text       # fed to the operator hook

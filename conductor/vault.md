@@ -59,7 +59,7 @@ around: restructure the prompt to use a `vault://` ref instead.
 |---|---|
 | `tessctl vault init` | Initialise vault (generate identity, create blob) |
 | `tessctl vault set <ref>` | Store a secret (stdin or TTY prompt — never argv) |
-| `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, pipe only) |
+| `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, shown only on your own terminal) |
 | `tessctl vault list` | List all refs (no values shown) |
 | `tessctl vault exec --ref <ref> -- <cmd>` | Inject secret into child env JIT |
 | `tessctl vault rotate <ref>` | Re-encrypt under a new value |
