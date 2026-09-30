@@ -262,3 +262,21 @@ def test_glob_target_matching_uses_path_identity(proj):
     if not alt.exists():
         pytest.skip("case-sensitive file system")
     assert _level(proj, f"rm {alt}/.claude/hooks/not-there-?.py") == "deny"
+
+
+# ------------------------------------------------------------------ doc wording (from C)
+
+STALE = ("signs verdicts via `tessctl verdict sign`", "signs verdicts with `tessctl verdict sign`",
+         "the verdict file it signs with", "(signs the verdict with", "has no passphrase and is used by the review automation")
+
+
+@pytest.mark.parametrize("rel", ["CLAUDE.md", ".tess/core/templates/claude-md/orchestrators.md",
+                                 "conductor/roster.md", ".tess/core/conductor/roster.md",
+                                 "conductor/verification-routing.md",
+                                 ".tess/core/conductor/verification-routing.md",
+                                 "docs/TECHNICAL_OVERVIEW.md"])
+def test_docs_say_the_operator_signs_verdicts(rel):
+    text = (REPO / rel).read_text(encoding="utf-8")
+    for phrase in STALE:
+        assert phrase not in text, (rel, phrase)
+    assert "operator signs" in text or "operator** signs" in text, rel

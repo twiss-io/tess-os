@@ -1,6 +1,6 @@
 ---
 name: cyra
-description: Security reviewer and approval signer. Read-only security review of auth, access control, secrets, data isolation and the gate's own protected paths; signs verdicts with tessctl. Mandatory verifier for security and for protected (Lane B) changes.
+description: Security reviewer and approval signer. Read-only security review of auth, access control, secrets, data isolation and the gate's own protected paths; drafts the verdicts the operator signs with tessctl. Mandatory verifier for security and for protected (Lane B) changes.
 model: opus
 lifecycle_status: core
 tools: Read, Grep, Glob, Bash

@@ -23,10 +23,11 @@ store to trust blindly. And when a change needs a "prove it," Tess OS can
 hand you a real [Agent Receipt](AGENT_RECEIPT_SPEC.md) — signed,
 chain-linked, and designed to be checked by a standalone verifier that
 doesn't take Tess OS's own word for it. That verifier runs today. This
-repository's policy registers one verifier key (Cyra). It belongs to the
-review automation by design, so its signature means the automated review
-passed, not that a person approved. The human root of trust is the release
-signing key; see the [Trust model](../SECURITY.md#trust-model). The sign-off
+repository's policy registers one verifier key (Cyra). The Cyra reviewer
+role drafts the verdict and the operator signs it at their own terminal, so
+its signature means the review of that exact content passed. The human root
+of trust is the release signing key; see the
+[Trust model](../SECURITY.md#trust-model). The sign-off
 registry is still empty. See
 [Important limits today](#important-limits-today) before treating a receipt
 as a production trust guarantee.
@@ -89,11 +90,13 @@ around the gate.
 
 Facts for v1.0.0, as of 2026-09-29:
 
-1. **Verifier approvals are automated attestations.** The Cyra verifier key
-   has no passphrase and is used by the review automation, by design. An
-   agent that did not build the change reviews each protected change and
-   signs the verdict. A Cyra signature means the automated review passed,
-   not that a person approved. The human control is the release signing key.
+1. **Verifier approvals attest a review.** An agent that did not build the
+   change reviews each protected change and drafts the verdict (the Cyra
+   role). Since the v1.0 security audit the operator signs it at their own
+   terminal: `tessctl verdict sign` shows the verdict, asks them to type
+   `sign as <name>`, and needs the registered key's passphrase; it refuses to
+   sign for an assistant. A Cyra signature means the review of that exact
+   content passed. The human control is the release signing key.
    Nothing reaches users unless it comes from a tag signed with that key, and
    since 2026-09-29 every use of the key needs the maintainer's explicit
    approval. (For v0.2.0 the key's passphrase could still be read without a
@@ -301,7 +304,7 @@ expertise.** Every starter path installs all of them.
 | 4 | Researcher | Leah | Read-only plus web; cites every source | strong |
 | 5 | Code reviewer | Reid | Read-only; mandatory verifier for diffs | strong |
 | 6 | QA | Quinn | Runs tests; no source edits, no push or merge | strong |
-| 7 | Security + approval signer | Cyra | Read-only review; signs verdicts with `tessctl verdict sign` | strong |
+| 7 | Security + approval signer | Cyra | Read-only review; drafts the verdict, which the operator signs at their own terminal (`tessctl verdict sign`) | strong |
 | 8 | Scribe | Clio | Writes only to the brain paths; every claim links to its source | default |
 | 9 | Release / devops | Vega | Push, tag, publish — only behind the gate | default |
 | 10 | Designer | Iris | Frontend and design, with the design skills attached | default |
