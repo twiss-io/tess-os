@@ -84,6 +84,10 @@ export function parseArgs(argv) {
     noOnboarding: false,
     help: false,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
+    // v1.0 audit: 'flag' when --template-source was typed on the command line,
+    // 'env' when it only came from TESS_TEMPLATE_SOURCE (index.js refuses a
+    // local folder from the environment alone).
+    templateSourceFrom: process.env.TESS_TEMPLATE_SOURCE ? 'env' : null,
     templateRef: process.env.TESS_TEMPLATE_REF || null,
     target: null,
   };
@@ -122,6 +126,7 @@ export function parseArgs(argv) {
         val = argv[++i];
       }
       opts[key] = val;
+      if (key === 'templateSource') opts.templateSourceFrom = 'flag';
       continue;
     }
     if (token.startsWith('-')) {
