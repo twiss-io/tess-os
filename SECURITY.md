@@ -163,6 +163,27 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (a path split across quotes, backslash-escaped characters) and a tool's own
   directory switch (`git -C`, `make -C`, `npm --prefix`, `--chdir`) can hide a
   private path from it.
+- **What the gate works out from command text, and where it stops.** Since the
+  v1.0 audit the gate reads a command the way the shell will: it finds the
+  program behind grouping, `!`, `if`/`then`, redirections, wrappers and runners
+  (`env`, `nice -n 5`, `timeout`, `xargs`, `sudo`, `uv run`...), follows `bash -c`
+  strings, here-strings, here-documents and `echo ... | sh`, expands `~`, `$HOME`,
+  `$PWD`, `$TMPDIR`, variables and `for` lists set in the same command, braces and
+  globs, tracks `cd` through `&&`, `||`, `;`, subshells and pipes, and uses a
+  Codex call's own `workdir`. It stops at what only exists when the command runs:
+  a program named by a variable or `$(...)`, a write target that is a variable
+  set elsewhere, file names `xargs` reads from another program, a shell fed by
+  a program such as `curl`. Those ask (Claude Code) or are refused (Codex, and
+  Claude Code's no-prompt modes). Two gaps remain: a target whose fixed part is a
+  folder outside the project (`/tmp/build-$ID`) is allowed, although a value
+  holding `../` could climb back into it; and a program the gate has no rules for
+  (a formatter, a build tool) can still write the files its own options name.
+  When `cd dir; <write>` is used and the `cd` could fail, the write is checked
+  in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
+  `find -exec` are checked against the files find would match, up to 20,000
+  entries; beyond that they ask. The whole check has a 40-second budget (inside
+  the 120-second hook timeout, after up to 60 seconds of the launcher's own
+  check); a call it cannot finish in time asks, or is refused in Codex.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only

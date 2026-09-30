@@ -4,7 +4,7 @@
 #   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256
 9e179df11a2f27d802647cdc149aa988b933fccc6d3440667b40858d3277edd9  .claude/hooks/run-pinned.py
 755e3e31bd4630f896472c66c1a1f98ac5118392b0be014f035937b5572d74b2  .claude/hooks/vault-dispatch-scan.py
-e53ddf3468a10efb2e5efafefa3bfe42532347484d16b4db8654432ad6ae0099  .claude/hooks/tess-gate.py
+6777c91b77d1fd3beb20f0e7163232b0a8aa8c79bcbe05d29f067b320bc3793a  .claude/hooks/tess-gate.py
 8a0f410f2009a2272e7648789ee9c347a0b9f83acb454763d7f762be00d3aacf  scripts/brain/onboard.py
 b186ce8679048f3655182a70cea4e21b632057aca11e84f26a7cdecfb5605fe1  scripts/brain/probe.py
 995d0d02c57044a7c775bba0ef74b87bee845b8d0355c45becb2a616a25a44c1  scripts/brain/tessbrain.py
