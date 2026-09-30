@@ -18,6 +18,13 @@
 /.claude/settings.json          @XavierJ21
 /.codex/                        @XavierJ21
 /scripts/brain/                 @XavierJ21
+/scripts/tess                    @XavierJ21
+/scripts/*.py                    @XavierJ21
+/scripts/*.pyc                   @XavierJ21
+/scripts/*.pyw                   @XavierJ21
+/scripts/*.so                    @XavierJ21
+/scripts/*.pth                   @XavierJ21
+/scripts/*/__init__.py           @XavierJ21
 /conductor/guardrails.md        @XavierJ21
 /conductor/verification-routing.md @XavierJ21
 /conductor/channel-guardrails.md   @XavierJ21

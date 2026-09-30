@@ -231,6 +231,43 @@ security reviews; they are stated so nobody relies on a check that is not there.
   launcher outside the repository, registered in the user-level Claude Code and
   Codex settings so that it runs the anchor check before any in-repo file, is
   planned for 1.0.1.
+- **The gate judges paths by the file they name, and some control files live
+  outside the project.** Since the v1.0 security audit the gate decides whether
+  a path is protected (or is the key directory) by file identity: a case
+  variant on macOS or Windows (`/users/me/PROJ/.CLAUDE/settings.json`,
+  `~/.CONFIG/./TESS`), a `..` or symlinked spelling, and a move of a directory
+  above the key directory (`mv ~/.config ~/cfg`) all count. It also refuses agent
+  writes to files outside the project that switch Tess's enforcement off for
+  every repository: `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` (and
+  `~/.config/git/config`), a system `etc/gitconfig`, any file those or the
+  project's `.git/config` include (one level), the user-level Claude Code
+  settings (`~/.claude/settings*.json`, `~/.claude.json`) and the Codex user
+  settings (`~/.codex/config.toml`, `hooks.json`, `rules/`). Set an ordinary git
+  option with `git config --global <key> <value>` (keys that switch off hooks or
+  run commands are refused), and edit your user-level Claude Code or Codex
+  settings yourself. What this does not cover: an include chain deeper than one
+  level, a hard link to a protected file made outside the agent, shell startup
+  files (`~/.zshrc` and similar, which could export a git setting to later
+  terminals), and a path alias a program creates while it runs.
+- **Some approvals cannot be shown to you, so they are refused.** A Tess "ask"
+  (force push, remote change, a merge that changes safety files, a visibility
+  change) needs a person. Codex cannot ask, and Claude Code's `auto` mode can
+  settle a permission prompt with its own classifier, so in both (and in
+  `bypassPermissions` / `dontAsk`) the gate denies instead and says how to run
+  the command yourself; switch back to default mode to be asked. The `tessctl`
+  steps that record Tess's safety files as approved or change their recorded
+  state (`update`, `self-update`, `approve`, `anchor`, `override`, `reset`,
+  `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
+  `lock --regen`) are the operator's: the gate refuses an agent that feeds them
+  input or fakes a terminal for them.
+- **Vault values stay out of agent sessions, for the commands the gate can
+  see.** The gate refuses `tessctl vault get --reveal` (and `--force`) and
+  `tessctl vault exec` into a program that prints what it is given (`printenv`,
+  `env`, `echo`, `cat`, a shell, an interpreter running inline code), or with
+  `--as` naming a variable programs read as a file, command or setting
+  (`BASH_ENV`, `PATH`, `NODE_OPTIONS`, ...). `tessctl vault exec --ref <ref> --
+  <tool>` into a real tool, or a script, stays allowed; a script the agent wrote
+  can still print the value (a program built at run time, the limit above).
 - **The hooks heartbeat is a detection aid, not proof.** SessionStart and
   UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
   hooks-status` reads it to say whether the hooks ran in this session. It is an

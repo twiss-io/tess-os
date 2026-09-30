@@ -157,3 +157,15 @@ prefix_rule(
     match = ["git rebase --onto evil main", "git rebase --onto 0123456 HEAD"],
     not_match = ["git rebase main", "git rebase --continue"],
 )
+
+# v1.0 security audit. The vault's raw values never enter a session
+# (conductor/vault.md); `vault get --reveal` prints one, like `gh auth token`.
+# Only the option-first spelling is a prefix; the hook also catches the ref-
+# first order and `vault exec -- printenv` (a printer, shell or inline code).
+prefix_rule(
+    pattern = [["tessctl", "./tessctl", ".tess/bin/tessctl", "./.tess/bin/tessctl"], "vault", "get", ["--reveal", "--revea", "--reve", "--rev", "--re", "--r", "--force", "--forc", "--for", "--fo", "--f"]],
+    decision = "forbidden",
+    justification = "tessctl vault get --reveal prints a secret's raw value into the session. Use `tessctl vault exec --ref <ref> -- <tool>`, or run it yourself in your own terminal.",
+    match = ["./tessctl vault get --reveal github/token", "tessctl vault get --force github/token"],
+    not_match = ["./tessctl vault get github/token", "./tessctl vault list"],
+)

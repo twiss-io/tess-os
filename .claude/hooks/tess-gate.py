@@ -71,8 +71,9 @@ v1.0.0 security review round 2 also:
   * matches git's unique-prefix abbreviations of long options
     (`--no-veri`, `--forc`, `--mirr`, `--del`, `--outp`) (M-2);
   * asks only in a known interactive `permission_mode` (default,
-    acceptEdits, plan, auto); a missing or unknown mode cannot be trusted to
-    pause for the operator, so its ask becomes a deny (L-c).
+    acceptEdits, plan); a missing or unknown mode cannot be trusted to
+    pause for the operator, so its ask becomes a deny (L-c). Since the v1.0
+    audit `auto` is a deny too: its classifier can settle a prompt unseen.
 
 v1.0.0 security review round 3 also:
   * denies git commands that put back other copies of protected files
@@ -86,6 +87,23 @@ v1.0.0 security review round 3 also:
     the key directory under the OS user record's home as well (N-2).
   Restoring from HEAD or the index stays allowed; that is the undo path.
   A whole-tree rollback the operator makes runs that commit's own gate.
+
+v1.0 security audit also:
+  * decides "is this protected / the key directory" by file identity
+    (st_dev, st_ino of the nearest existing ancestor, the rest compared
+    without case), so case variants on APFS/NTFS, `..` and symlinked
+    spellings, and a move of a directory above the key dir are caught;
+  * denies writes to out-of-project enforcement-control files: the global
+    and system git config (and files they include), the user-level Claude
+    Code and Codex settings; and `git config --edit` / `init.templateDir`;
+  * protects scripts/tess (run without a prompt at every session start),
+    the top-level modules beside it, and .github/scripts/**;
+  * denies `tessctl vault get --reveal|--force` and `tessctl vault exec`
+    into a printer, shell or inline interpreter (or with a dangerous --as);
+  * treats the tessctl steps that change the recorded state of the safety
+    files (override, reset, resolve, rollback, restore --force, publish
+    --force, capture --auto, lock --regen) like the approval prompts: an
+    agent may not feed or fake their terminal.
 
 Known limits (adapters/CONFORMANCE.md, Codex row): the shell checks read the
 command text, so a write assembled at run time (`$(...)`, variables), a
@@ -112,8 +130,12 @@ from pathlib import Path
 ALLOW, ASK, DENY = 0, 1, 2
 NO_PROMPT_MODES = {"bypassPermissions", "dontAsk"}
 # Claude Code modes that pause and show the operator an "ask" (L-c). Any other
-# value, or none, is treated as a mode that cannot ask.
-INTERACTIVE_MODES = {"default", "acceptEdits", "plan", "auto"}
+# value, or none, is treated as a mode that cannot ask. v1.0 audit: "auto" is
+# NOT here. In auto mode Claude Code's own classifier may settle a permission
+# prompt without the operator seeing it, so a Tess ask there becomes a deny.
+INTERACTIVE_MODES = {"default", "acceptEdits", "plan"}
+# Modes where the host approves on the operator's behalf (named in the deny).
+AUTO_APPROVE_MODES = {"auto"}
 SCAN_REL = ".claude/hooks/vault-dispatch-scan.py"
 LAUNCHER_REL = ".claude/hooks/run-pinned.py"
 TESSCTL_REL = ".tess/bin/tessctl"
@@ -130,6 +152,11 @@ PROTECTED_GLOBS = (
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
     ".claude/hooks/**", ".claude/settings.json", ".claude/settings*.json", "scripts/brain/**",
     "scripts/release/**", ".github/CODEOWNERS",
+    # v1.0 audit: release-workflow helpers (run by release.yml and by
+    # publish-npm.yml inside the job that holds id-token: write), and the
+    # boot launcher every session runs without a prompt (settings allow-list
+    # `python3 scripts/tess hooks-status`; CLAUDE.md / AGENTS.md boot line).
+    ".github/scripts/**", "scripts/tess",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
     ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**", ".codex/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
@@ -213,7 +240,11 @@ _GIT_REMOTE_KEYS = re.compile(r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|
                               r"tess\.privateremote)$", re.IGNORECASE)
 # The key directory named in command text (M-1): `~/.config/tess`,
 # `$HOME/.config/tess`, `${XDG_CONFIG_HOME}/tess`, the provenance override.
-_KEY_TEXT = re.compile(r"(?i)\.config[/\\]+tess(?![\w.-])|\$\{?XDG_CONFIG_HOME\}?[/\\]+tess(?![\w.-])"
+# v1.0 audit: `./` and `x/../` segments between the two names still count
+# (`~/.CONFIG/./TESS`), since the file system resolves them to the same place.
+_KEY_DOTSEGS = r"(?:[/\\]+(?:\.|[^/\\\s'\"]+[/\\]+\.\.))*"
+_KEY_TEXT = re.compile(r"(?i)\.config" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
+                       r"|\$\{?XDG_CONFIG_HOME\}?" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
                        r"|TESS_BRAIN_PROVENANCE_DIR")
 PROTECTED_DIR_ROOTS = {".tess", ".git", ".claude", ".codex", ".gemini", ".github",
                        ".git/hooks", ".claude/hooks", ".github/workflows", "core/policy",
@@ -331,6 +362,76 @@ def _glob_hit(rel: str, globs) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- path identity (v1.0 audit)
+# realpath keeps the case the caller typed, and macOS (APFS) and Windows file
+# systems ignore case, so `/users/me/PROJ/.claude/x` names the same file as
+# `/Users/me/proj/.claude/x` while the strings differ. Containment is therefore
+# decided by file identity (st_dev, st_ino) of the nearest existing ancestor,
+# and the not-yet-existing rest of the path is compared without case.
+
+def _stat_id(path: str):
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _split_existing(path: str) -> tuple:
+    """(deepest existing ancestor of `path` (itself when it exists), [the
+    components below it])."""
+    p, tail = path, []
+    while _stat_id(p) is None:
+        parent = os.path.dirname(p)
+        if parent == p:
+            return p, tail
+        tail.insert(0, os.path.basename(p))
+        p = parent
+    return p, tail
+
+
+def _within(real: str, base: str) -> str | None:
+    """`real` relative to `base` ("." for base itself) when `real` is base or
+    lies under it, by identity; else None. Both are absolute, realpath'd."""
+    if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+        return os.path.relpath(real, base).replace(os.sep, "/")
+    anchor, btail = _split_existing(base)
+    aid = _stat_id(anchor)
+    if aid is None:
+        return None
+    want = [c.lower() for c in btail]
+    p, tail = real, []
+    while True:
+        if _stat_id(p) == aid:
+            if [c.lower() for c in tail[:len(want)]] == want and len(tail) >= len(want):
+                return "/".join(tail[len(want):]) or "."
+            return None
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        tail.insert(0, os.path.basename(p))
+        p = parent
+
+
+def _is_above(real: str, base: str, floor: str) -> bool:
+    """`real` is a directory strictly between `floor` and `base` (an ancestor
+    of base below floor), by identity. A search or a move of it reaches base."""
+    rid, fid = _stat_id(real), _stat_id(floor)
+    if rid is None or fid is None:
+        low, b, f = real.lower().rstrip(os.sep), base.lower(), floor.lower().rstrip(os.sep)
+        return b.startswith(low + os.sep) and low.startswith(f + os.sep)
+    between, p = [], os.path.dirname(base)
+    while True:
+        pid = _stat_id(p)
+        if pid == fid:
+            return rid in between
+        if pid is not None:
+            between.append(pid)
+        if p == os.path.dirname(p):
+            return False
+        p = os.path.dirname(p)
+
+
 def _rel_to_root(root: Path, cwd: str, path: str) -> str | None:
     if not path:
         return None
@@ -338,16 +439,135 @@ def _rel_to_root(root: Path, cwd: str, path: str) -> str | None:
     full = path if os.path.isabs(path) else os.path.join(cwd or str(root), path)
     real = os.path.realpath(full)
     base = os.path.realpath(str(root))
-    if real != base and not real.startswith(base + os.sep):
-        return None
-    return os.path.relpath(real, base).replace(os.sep, "/")
+    return _within(real, base)
+
+
+# Top-level modules and packages in scripts/: `python3 scripts/tess` (run at
+# every session start without a prompt) puts scripts/ first on sys.path, so a
+# new scripts/json.py would run in place of the standard library module.
+_SCRIPTS_IMPORTABLE = re.compile(r"^scripts/[^/]+(\.py[cw]?|\.so|\.pth|/__init__\.pyc?)$", re.IGNORECASE)
 
 
 def protected_hit(root: Path, cwd: str, path: str) -> str | None:
     rel = _rel_to_root(root, cwd, path)
-    if rel is None or rel == ".":
+    if rel is None:
+        return control_file_hit(root, cwd, path)
+    if rel == ".":
         return None
-    return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS)
+    if _SCRIPTS_IMPORTABLE.match(rel):
+        return "scripts/<module> (imported by scripts/tess at every session start)"
+    # A home directory inside the project (unusual) still has its control files.
+    return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS) or \
+        control_file_hit(root, cwd, path)
+
+
+# --------------------------------------------------------------------------- control files outside the project (v1.0 audit)
+# Files outside the project that switch Tess's enforcement off for every
+# repository of this user: a global git config can set core.hooksPath (Tess's
+# git hooks stop running), an include, an alias or a command git runs; the
+# user-level Claude Code and Codex settings can turn hooks off. The command
+# routes (`git config --global core.hooksPath`, GIT_CONFIG_GLOBAL=...) were
+# already denied; a direct write of the file itself now is too.
+
+def _homes() -> list:
+    return sorted({os.path.expanduser("~"), _os_home()})
+
+
+def _git_includes(cfg: str) -> list:
+    """Files a git config pulls in with [include] / [includeIf] path = ...
+    (one level). A write to one of them is a write to that config."""
+    out = []
+    try:
+        with open(cfg, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(262144)
+    except OSError:
+        return out
+    section = ""
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"^\[\s*([A-Za-z]+)", s)
+        if m:
+            section = m.group(1).lower()
+            continue
+        if section in ("include", "includeif"):
+            m = re.match(r"(?i)^path\s*=\s*(.+?)\s*$", s)
+            if m:
+                val = m.group(1).strip("\"'")
+                val = os.path.expanduser(val)
+                out.append(val if os.path.isabs(val) else os.path.join(os.path.dirname(cfg), val))
+    return out
+
+
+_CONTROL_CACHE: dict = {}
+
+
+def _control_files(root: Path) -> list:
+    """[(absolute path, real path, label)] of out-of-project enforcement-control
+    files (computed once per hook run)."""
+    key = str(root)
+    if key not in _CONTROL_CACHE:
+        _CONTROL_CACHE[key] = [(f, os.path.realpath(f), label) for f, label in _control_list(root)]
+    return _CONTROL_CACHE[key]
+
+
+def _control_list(root: Path) -> list:
+    files = []
+    for home in _homes():
+        xdg = os.path.join(home, ".config")
+        files += [
+            (os.path.join(home, ".gitconfig"), "your global git config"),
+            (os.path.join(xdg, "git", "config"), "your global git config"),
+            (os.path.join(home, ".claude", "settings.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude", "settings.local.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".codex", "config.toml"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "hooks.json"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "rules"), "your Codex user rules"),
+        ]
+    if os.environ.get("XDG_CONFIG_HOME"):
+        files.append((os.path.join(os.environ["XDG_CONFIG_HOME"], "git", "config"),
+                      "your global git config"))
+    if os.environ.get("CODEX_HOME"):
+        for name in ("config.toml", "hooks.json", "rules"):
+            files.append((os.path.join(os.environ["CODEX_HOME"], name), "your Codex user settings"))
+    files += [("/etc/gitconfig", "the system git config"),
+              ("/Library/Application Support/ClaudeCode", "the managed Claude Code settings"),
+              ("/etc/claude-code", "the managed Claude Code settings"),
+              ("/etc/codex", "the managed Codex settings")]
+    for cfg in [f for f, label in files if label.endswith("git config")] + [
+            os.path.join(str(root), ".git", "config")]:
+        files += [(inc, "a file your git config includes") for inc in _git_includes(cfg)]
+    return files
+
+
+def control_file_hit(root: Path, cwd: str, path: str) -> str | None:
+    """The label of the out-of-project control file `path` writes (itself,
+    inside a control directory, or a directory holding one)."""
+    if not path or not isinstance(path, str):
+        return None
+    full = _expand(path)
+    full = full if os.path.isabs(full) else os.path.join(cwd or str(root), full)
+    real = os.path.realpath(full)
+    if re.search(r"(?i)(^|/)etc/gitconfig$", real.replace(os.sep, "/")):
+        return _control_label(real, "the system git config")
+    homes = [os.path.realpath(h) for h in _homes()]
+    for f, fr, label in _control_files(root):
+        # The file itself, a file inside a control directory, or (below the
+        # home directory) a directory that holds one: `mv ~/.codex x`.
+        if _within(real, fr) is not None or any(_is_above(real, fr, h) for h in homes):
+            return _control_label(f, label)
+    return None
+
+
+def _control_label(f: str, label: str) -> str:
+    for home in _homes():
+        if f.startswith(home.rstrip(os.sep) + os.sep):
+            f = "~" + f[len(home.rstrip(os.sep)):]
+            break
+    if "git config" in label or "includes" in label:
+        return (f"{f}: {label}, which can switch off Tess's git hooks for every repository; "
+                "set one ordinary key with `git config --global <key> <value>` instead")
+    return f"{f}: {label}, which can switch off Tess's safety gate"
 
 
 # --------------------------------------------------------------------------- key directory (M-1)
@@ -393,15 +613,18 @@ def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
     full = _expand(path)
     full = full if os.path.isabs(full) else os.path.join(cwd or os.getcwd(), full)
     cands = {os.path.normpath(full), os.path.realpath(full)}
-    home = os.path.realpath(os.path.expanduser("~")).rstrip(os.sep) + os.sep
+    homes = {os.path.realpath(h) for h in _homes()}
     for d in _key_dirs():
         for c in cands:
-            if c == d or c.startswith(d.rstrip(os.sep) + os.sep):
+            # v1.0 audit: by identity, so a case variant (`~/.CONFIG/TESS`), a
+            # symlinked or `..` spelling, or another path to the same
+            # directory is the key directory too.
+            if _within(c, d) is not None:
                 return d
-            # A search rooted between the home directory and the key dir
-            # (~/.config). A search of the whole home directory or of / is
-            # not refused: that is the stated same-user limit, not a boundary.
-            if ancestors and c.startswith(home) and d.startswith(c.rstrip(os.sep) + os.sep):
+            # A search (or a move) rooted between the home directory and the
+            # key dir (~/.config). A search of the whole home directory or of
+            # / is not refused: that is the stated same-user limit, not a boundary.
+            if ancestors and any(_is_above(c, d, h) for h in homes):
                 return d
     return None
 
@@ -414,7 +637,10 @@ def _check_key_text(cwd: str, argv: list, raw: str, v) -> None:
                     "there are for the operator's own tools, not for an agent", "keys")
         return
     name = os.path.basename(argv[0]) if argv else ""
-    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd") or \
+    # v1.0 audit: mv/ditto too. Renaming a directory above the key dir
+    # (`mv ~/.config ~/cfg`) moves the keys to a path no check names.
+    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd", "mv",
+                         "ditto", "pax", "cpio") or \
         any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
     for a in argv[1:]:
         for part in {a, a.split("=", 1)[-1]}:
@@ -502,6 +728,10 @@ ADVICE = {
                 "older copy on purpose, run the git command yourself outside the agent.",
     "envhome": "Run git and tessctl with your normal HOME and XDG_CONFIG_HOME; Tess finds the "
                "operator's key directory from the OS user record either way.",
+    "vault": "The raw value stays out of this session (conductor/vault.md). Pass the ref to a "
+             "tool that reads the secret from its environment itself: `./tessctl vault exec "
+             "--ref <service/key> -- <tool>` (a provider's CLI or SDK). To see or use the value "
+             "by hand, run the command yourself in your own terminal.",
     "operator": "Ask the operator to run it in their own terminal and type the answer "
                 "themselves (for an update: `./tessctl update`, then `accept <version>`).",
 }
@@ -531,6 +761,144 @@ _PTY_CODE = re.compile(r"(?i)\bimport\s+pty\b|\bfrom\s+pty\b|\bpty\.(spawn|fork|
                        r"\bos\.(openpty|forkpty)\b|\bpexpect\b|\bptyprocess\b|IO::Pty|node-pty")
 # tessctl subcommands that ask the operator to type the answer.
 _PROMPT_SUBS = {"update", "self-update", "approve", "anchor"}
+# v1.0 audit: forms that change the recorded state of Tess's safety files
+# (their tess.lock status or base_sha, or the live copy) on the operator's
+# behalf. tessctl asks a person at a terminal for these; like the prompts
+# above, an agent must not feed or fake that terminal. () = every form of the
+# subcommand; otherwise only with one of these options (argparse also takes a
+# unique prefix, `--reg`). Read-only forms (status, diff, verify, `lock
+# --check`, `restore --dry-run`) are unaffected.
+_STATE_SUBS = {"override": (), "reset": (), "resolve": (), "rollback": (),
+               "restore": ("--force",), "publish": ("--force",), "capture": ("--auto",),
+               "lock": ("--regen",)}
+
+
+def _opt_given(words: list, opts: tuple) -> bool:
+    """One of the long options `opts` is among `words`, spelled out or as a
+    prefix argparse would expand (`--forc`, `--regen=x`)."""
+    for w in words:
+        if w == "--":
+            return False
+        name = w.split("=", 1)[0]
+        if len(name) >= 3 and name.startswith("--") and any(o.startswith(name) for o in opts):
+            return True
+    return False
+
+
+def _operator_form(words: list) -> bool:
+    """These tessctl words ask the operator at a terminal (see _PROMPT_SUBS,
+    _STATE_SUBS)."""
+    sub = next((w.lower() for w in words if not w.startswith("-")), "")
+    if sub in _PROMPT_SUBS:
+        return True
+    if sub in _STATE_SUBS:
+        opts = _STATE_SUBS[sub]
+        return not opts or _opt_given([w.lower() for w in words], opts)
+    return False
+
+
+# --------------------------------------------------------------------------- vault (v1.0 audit)
+# The vault's rule (conductor/vault.md): a secret's raw value never enters an
+# agent transcript; it is decrypted only into the environment of the program
+# that uses it. `vault get --reveal` prints it, and `vault exec -- <printer>`
+# (printenv, echo, a shell, an interpreter running inline code) hands it to a
+# program whose output is the transcript. Denied like `gh auth token`.
+_VAULT_PRINTERS = {"printenv", "env", "echo", "printf", "cat", "tee", "head", "tail", "less", "more",
+                   "od", "xxd", "hexdump", "strings", "base64", "awk", "gawk", "mawk", "nawk", "jq",
+                   "set", "export", "declare", "typeset", "ps", "launchctl", "pbcopy", "xargs",
+                   "logger", "sed", "grep", "rev", "tr", "cut", "fold", "nl", "sort", "uniq",
+                   "osascript", "tmux", "screen", "script", "expect", "vi", "vim", "nano", "emacs"}
+_VAULT_SHELLS = SHELLS | {"fish", "csh", "tcsh", "pwsh", "powershell", "busybox", "eval", "source"}
+# Variables a program reads as a file, a command, an option list or a prompt:
+# a secret placed in one shows up in error output or is run.
+_VAULT_BAD_AS = re.compile(r"(?i)^(BASH_ENV|ENV|PATH|CDPATH|IFS|PS[0-9]|PROMPT_COMMAND|SHELLOPTS|"
+                           r"BASHOPTS|HOME|ZDOTDIR|TMPDIR|SHELL|EDITOR|VISUAL|PAGER|LESS[A-Z_]*|"
+                           r"MANPAGER|LD_[A-Z_]*|DYLD_[A-Z_]*|BASH_FUNC_.*|PYTHON[A-Z_]*|NODE_[A-Z_]*|"
+                           r"NPM_CONFIG_.*|PERL[A-Z0-9_]*|RUBY[A-Z_]*|GEM_[A-Z_]*|JAVA_TOOL_OPTIONS|"
+                           r"_JAVA_OPTIONS|GIT_[A-Z_]*|SSH_ASKPASS|SUDO_ASKPASS|XDG_[A-Z_]*|TESS_[A-Z_]*|"
+                           r"CLAUDE_[A-Z_]*|CODEX_[A-Z_]*|HTTPS?_PROXY|ALL_PROXY)$")
+_VAULT_RUNNERS = {"timeout", "gtimeout", "stdbuf", "caffeinate", "setsid", "arch", "nice", "nohup",
+                  "time", "command", "exec", "builtin", "sudo", "doas"}
+
+
+def _vault_consumer(argv: list) -> list:
+    """The program `vault exec` would run, past assignments and wrappers
+    (`env VAR=x`, `nice`, `timeout 5`, `sudo`)."""
+    i = 0
+    while i < len(argv):
+        name = os.path.basename(_unquote(argv[i])).lower()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+            i += 1
+        elif name == "env":
+            j = i + 1
+            while j < len(argv) and (argv[j].startswith("-") or re.match(r"^[A-Za-z_]\w*=", argv[j])):
+                j += 1
+            if j >= len(argv):
+                return argv[i:]  # a bare `env` prints the whole environment
+            i = j
+        elif name in _VAULT_RUNNERS:
+            i += 1
+            while i < len(argv) and (argv[i].startswith("-") or re.match(r"^[0-9.]+[smhd]?$", argv[i])):
+                i += 1
+        else:
+            break
+    return argv[i:]
+
+
+def _vault_exec_parts(words: list) -> tuple:
+    """(the --as names, the consumer argv) of the words after `vault exec`."""
+    as_names, i = [], 0
+    while i < len(words):
+        w = words[i]
+        if w == "--":
+            return as_names, words[i + 1:]
+        if not w.startswith("-") or w == "-":
+            return as_names, words[i:]
+        name, eq, val = w.partition("=")
+        is_as = len(name) >= 3 and "--as".startswith(name)
+        takes = is_as or (len(name) >= 3 and "--ref".startswith(name))
+        if takes and not eq:
+            val = words[i + 1] if i + 1 < len(words) else ""
+            i += 1
+        if is_as:
+            as_names.append(_unquote(val))
+        i += 1
+    return as_names, []
+
+
+def _check_vault(words: list, v) -> None:
+    """`tessctl vault get --reveal` / `--force`, and `tessctl vault exec` into a
+    program that prints what it is given."""
+    pos = [w for w in words if not w.startswith("-")]
+    if len(pos) < 2 or pos[0].lower() != "vault":
+        return
+    vsub = pos[1].lower()
+    rest = words[words.index(pos[1]) + 1:]
+    if vsub == "get" and _opt_given([w.lower() for w in rest], ("--reveal", "--force")):
+        v.add(DENY, "`tessctl vault get --reveal` prints a secret's raw value into this session "
+                    "and its transcript", "vault")
+        return
+    if vsub != "exec":
+        return
+    as_names, consumer = _vault_exec_parts(rest)
+    bad = [n for n in as_names if _VAULT_BAD_AS.match(n.strip())]
+    if bad:
+        v.add(DENY, f"`tessctl vault exec --as {bad[0]}` puts the secret in a variable that "
+                    "programs read as a file, command or setting, so its value can show up in "
+                    "their output", "vault")
+        return
+    prog = _vault_consumer(consumer)
+    if not prog:
+        return
+    name = os.path.basename(_unquote(prog[0])).lower()
+    args = prog[1:]
+    inline = any(a in ("-c", "-e", "-E", "-p", "-r", "--eval", "--print", "--command", "-")
+                 or re.match(r"^-[A-Za-z]*[ceE]$", a) for a in args)
+    script = [a for a in args if not a.startswith("-")]
+    if name in _VAULT_PRINTERS or name in _VAULT_SHELLS or (
+            INTERPRETERS.match(name) and (inline or not script)):
+        v.add(DENY, f"`tessctl vault exec` would hand the secret to `{name}`, which can print it "
+                    "into this session and its transcript", "vault")
 
 
 def _unquote(text: str) -> str:
@@ -591,6 +959,11 @@ def _check_operator_only(cmd: str, v) -> None:
     flat = _unquote(cmd)
     pipes = _operator_pipelines(cmd)
     calls, fed = [], False
+    if pipes is None:  # unparseable: judge the words after each `tessctl` in the plain text
+        words = re.split(r"[\s;&|()<>]+", flat)
+        for i, w in enumerate(words):
+            if _is_tessctl(w):
+                _check_vault(words[i + 1:], v)
     for pipe in pipes or []:
         for k, seg in enumerate(pipe):
             _, argv = _strip_prefix(seg)
@@ -606,9 +979,9 @@ def _check_operator_only(cmd: str, v) -> None:
             if words is None:
                 continue
             calls.append((name, [w.lower() for w in words]))
-            sub = next((w.lower() for w in words if not w.startswith("-")), "")
+            _check_vault(words, v)
             redirected = any(re.match(r"^\d*<", w) for w in words)
-            if sub in _PROMPT_SUBS and (k > 0 or redirected):
+            if _operator_form(words) and (k > 0 or redirected):
                 fed = True
     tess_text = re.search(r"(?i)tessctl", flat) is not None
     if not calls and not tess_text:
@@ -799,6 +1172,14 @@ def _check_git_config(rest: list, v: Verdict):
         return
     if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys):
         v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
+    # v1.0 audit: an editor session on a config file (any scope) can set any
+    # key, and init.templateDir puts hook scripts into every new clone.
+    if any(k in ("-e", "--edit", "edit") for k in keys):
+        v.add(DENY, "it opens a git config file in an editor, where any setting (core.hooksPath "
+                    "included) can change; set one key with `git config <key> <value>`", "hookspath")
+    if any(k == "init.templatedir" or k.startswith("init.templatedir=") for k in keys):
+        v.add(DENY, "it changes init.templateDir, which copies hook scripts into every new "
+                    "repository", "hookspath")
     if any(re.match(r"^core\.sparsecheckout", k) for k in keys):
         v.add(DENY, "it turns on a sparse checkout (core.sparseCheckout), which lets git delete "
                     "Tess's hook configuration from the working tree", "rollback")
@@ -1771,7 +2152,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
             v.add(DENY, f"it writes to {target}, a protected Tess path ({hit})", "protected")
     if name not in READERS_OK_FOR_GIT_DIR and name != "git":
         for a in argv[1:]:
-            if re.search(r"(^|/)\.git/(hooks(/|$)|config$|info(/|$)|refs/replace(/|$))", a):
+            if re.search(r"(^|/)\.git/(hooks(/|$)|config$|info(/|$)|refs/replace(/|$))", a, re.IGNORECASE):
                 v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
 
 
@@ -1957,10 +2338,15 @@ def decide(data: dict, root: Path, runtime: str) -> tuple:
         # L-c: only a known interactive mode pauses for the operator. A no-prompt
         # mode, a missing mode or one Tess does not recognise gets the deny.
         where = ("Codex" if is_codex else f"{mode} mode" if mode in NO_PROMPT_MODES
+                 else "auto mode (where Claude Code may approve it without showing you)"
+                 if mode in AUTO_APPROVE_MODES
                  else f"an unrecognised permission mode ({str(mode)[:40]!r})")
+        switch = (", or switch Claude Code back to default mode (Shift+Tab changes the mode), "
+                  "which asks you first, and try again"
+                  if mode in AUTO_APPROVE_MODES and not is_codex else "")
         reason = (f"TESS GATE: blocked because this needs your approval and {where} cannot pause "
                   f"to ask: {why}. If you want it, run it yourself in your own terminal"
-                  + (f": {_short(root, cmd)}" if cmd else "") + ".")
+                  + (f": {_short(root, cmd)}" if cmd else "") + switch + ".")
         return "deny", reason
     if v.level == ASK:
         return "ask", f"TESS GATE: {why}. Approve only if you meant to."
