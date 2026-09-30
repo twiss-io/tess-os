@@ -18852,13 +18852,26 @@ ANCHOR_STOP = ("Tess's safety files have changed since the last approved install
                "so Tess has stopped all actions. Run `tessctl restore` to put them back, or "
                "`tessctl anchor accept` if you changed them on purpose.")
 _ANCHOR_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}|path-[0-9a-f]{64}")
+# v1.0 audit (integration, parity with run-pinned.py): the first hook that
+# finds an anchor lists this checkout in <common git dir>/info/tess-anchored.
+# A listed checkout whose anchor store cannot be found (a hidden, moved or
+# locked ~/.config) is a failure here too, with run-pinned's own words.
+ANCHOR_SEEN_REL = ("info", "tess-anchored")
+ANCHOR_HIDDEN = ("Tess's record of its approved safety files (in the .config/tess folder of your home "
+                 "folder) cannot be found, although this project was protected by it before, so Tess has "
+                 "stopped all actions. If you moved, renamed or locked your .config folder, put it back. "
+                 "Otherwise run `tessctl anchor accept` in your own terminal to check and record the "
+                 "current files.")
 
 
 class AnchorState:
-    """state: none (never anchored) | ok | mismatch | lost; problems: plain lines."""
+    """state: none (never anchored) | ok | mismatch | lost; problems: plain lines.
+    hidden: a lost anchor whose store cannot be found although this checkout
+    is listed as anchored (ANCHOR_HIDDEN)."""
 
-    def __init__(self, state: str, doc=None, problems=None, where: str = ""):
+    def __init__(self, state: str, doc=None, problems=None, where: str = "", hidden: bool = False):
         self.state, self.doc, self.problems, self.where = state, doc, problems or [], where
+        self.hidden = hidden
 
 
 def _anchor_tess_dir() -> Path:
@@ -19143,12 +19156,17 @@ def _anchor_current(root: Path) -> dict:
 
 
 def _anchor_private_json(path: Path) -> dict | None:
-    """None when absent; raises ValueError (a plain reason) when present but
-    not a private regular JSON file of this user's."""
+    """None when absent (ENOENT / ENOTDIR); raises ValueError (a plain reason)
+    when present but not a private regular JSON file of this user's, or when
+    it cannot be reached at all (EACCES from a locked ~/.config, ELOOP, ...),
+    as run-pinned.py does."""
     try:
         st = os.lstat(path)
-    except OSError:
-        return None
+    except OSError as e:
+        import errno as _errno
+        if e.errno in (_errno.ENOENT, _errno.ENOTDIR):
+            return None
+        raise ValueError(f"{path} cannot be reached ({e.strerror or type(e).__name__})")
     if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
         raise ValueError(f"{path} is not a regular file")
     if hasattr(os, "getuid") and st.st_uid != os.getuid():
@@ -19164,6 +19182,26 @@ def _anchor_private_json(path: Path) -> dict | None:
     return doc
 
 
+def _anchor_seen_path(root: Path) -> Path | None:
+    hooks = _anchor_git_hooks_dir(root)  # <common git dir>/hooks, read from .git directly
+    return hooks.parent.joinpath(*ANCHOR_SEEN_REL) if hooks else None
+
+
+def _anchor_seen(root: Path) -> bool:
+    """This checkout is listed in <common git dir>/info/tess-anchored."""
+    path = _anchor_seen_path(root)
+    data = _anchor_read(path)
+    return data is not None and _anchor_path_key(root) in data.decode("ascii", "replace").split()
+
+
+def _anchor_none_or_hidden(root: Path) -> AnchorState:
+    if _anchor_seen(root):
+        return AnchorState("lost", hidden=True, problems=[
+            f"no anchor under {_anchor_tess_dir() / 'projects'}, but "
+            f"{_anchor_seen_path(root)} records that this project had one"])
+    return AnchorState("none")
+
+
 def _anchor_state(root: Path) -> AnchorState:
     """Where this checkout stands against its anchor (same rules as run-pinned.py)."""
     base = _anchor_tess_dir() / "projects"
@@ -19176,13 +19214,13 @@ def _anchor_state(root: Path) -> AnchorState:
         else:
             pid = _anchor_project_id(root) or ""
             if not pid:
-                return AnchorState("none")
+                return _anchor_none_or_hidden(root)
         pdir = base / pid
         doc = _anchor_private_json(pdir / "anchor.json")
         if doc is None:
             if marker is not None or _anchor_private_json(pdir / "expected.json") is not None:
                 return AnchorState("lost", problems=[f"{pdir / 'anchor.json'} is missing"])
-            return AnchorState("none")
+            return _anchor_none_or_hidden(root)
     except ValueError as e:
         return AnchorState("lost", problems=[str(e)])
     if doc.get("format") != ANCHOR_FORMAT or not isinstance(doc.get("files"), dict):
@@ -19275,7 +19313,7 @@ def _anchor_findings(root: Path) -> list:
     st = _anchor_state(root)
     if st.state in ("none", "ok"):
         return []
-    head = ANCHOR_STOP if st.state == "mismatch" else (
+    head = ANCHOR_STOP if st.state == "mismatch" else ANCHOR_HIDDEN if st.hidden else (
         "Tess's record of its approved safety files is missing or unreadable, so Tess has "
         "stopped all actions. Run `tessctl anchor accept` in your own terminal.")
     return [head] + [f"  - {p}" for p in st.problems]
@@ -19443,7 +19481,9 @@ def cmd_anchor(args, root: Path) -> None:
     if sub == "init":
         if st.state != "none":
             sys.exit("tessctl anchor init: refused — this checkout already has a record of "
-                     "approved safety files. Use `tessctl anchor accept` in your own terminal.")
+                     "approved safety files" + (" (Tess cannot find it now: " + ANCHOR_HIDDEN + ")"
+                                                if st.hidden else "")
+                     + ". Use `tessctl anchor accept` in your own terminal.")
         engine = Path(__file__).resolve()
         r = subprocess.run([sys.executable, "-I", "-B", str(engine), "verify"], cwd=str(root),
                            capture_output=True, text=True, env={**os.environ, "TESS_ROOT": str(root)})
