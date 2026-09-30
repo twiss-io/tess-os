@@ -68,7 +68,9 @@ or deleted by anyone, including admins. Only repository admins can create them.
 Branches named `v<digit>…` or `create-tess-v…` cannot be created, so a branch can
 never shadow a release tag.
 
-### Verifier signatures are automated attestations
+<a id="verifier-signatures-are-automated-attestations"></a>
+
+### Verifier signatures attest a review, and the operator signs them
 
 The registered verifier key (Cyra, `F9321F92…76E8`) attests a review. A valid
 Cyra verdict means **"the review of this exact content passed"**. It does **not**
@@ -352,8 +354,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   steps that record Tess's safety files as approved or change their recorded
   state (`update`, `self-update`, `approve`, `anchor`, `override`, `reset`,
   `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
-  `lock --regen`) are the operator's: the gate refuses an agent that feeds them
-  input or fakes a terminal for them.
+  `lock --regen`, `recruit`, `bench`, `roster apply`), and signing a verdict or a
+  sign-off (`verdict sign`, `gate signoff sign`), are the operator's: the gate
+  refuses an agent that feeds them input or fakes a terminal for them.
 - **Vault values stay out of agent sessions, for the commands the gate can
   see.** The gate refuses `tessctl vault get --reveal` (and `--force`) and
   `tessctl vault exec` into a program that prints what it is given (`printenv`,

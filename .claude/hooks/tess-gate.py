@@ -1326,7 +1326,11 @@ _STATE_SUBS = {"override": (), "reset": (), "resolve": (), "rollback": (),
 # v1.0 audit (integration): signing a verifier verdict or a hard-floor
 # sign-off needs the operator at their terminal typing `sign as <Name>` and
 # the key's passphrase. The words after `tessctl` (positional words only).
-_SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"))
+_SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"),
+               # recruit / bench / roster apply of a security-tier entry ask the
+               # operator at a terminal too (writer B); the gate cannot tell the
+               # tier from the words, so every form counts.
+               ("recruit",), ("bench",), ("roster", "apply"))
 
 
 def _opt_given(words: list, opts: tuple) -> bool:

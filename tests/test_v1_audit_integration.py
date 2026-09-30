@@ -326,3 +326,20 @@ def test_working_folders_are_protected_in_gate_policy_and_codeowners():
     owners = (REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     for d in WORK_DIRS:
         assert f"/{d}/ " in owners, d
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo recruit | ./tessctl recruit cyra",
+    "./tessctl bench reid <<< bench",
+    "printf 'x\\n' | ./tessctl roster apply",
+])
+def test_fed_roster_changes_are_denied(proj, cmd):
+    """recruit / bench / roster apply ask the operator at a terminal for a
+    security-tier entry (writer B), so their input cannot be fed."""
+    assert _decide(proj, cmd, "claude") == "deny", cmd
+
+
+@pytest.mark.parametrize("cmd", ["./tessctl roster list", "./tessctl roster show cyra | head",
+                                 "./tessctl recruit --help"])
+def test_roster_reads_stay_allowed(proj, cmd):
+    assert _level(proj, cmd) == "allow", cmd
