@@ -280,3 +280,49 @@ def test_docs_say_the_operator_signs_verdicts(rel):
     for phrase in STALE:
         assert phrase not in text, (rel, phrase)
     assert "operator signs" in text or "operator** signs" in text, rel
+
+
+# ------------------------------------------------------------------ tessctl's working folders (from B)
+
+WORK_DIRS = (".tess/staging", ".tess/quarantine", ".tess/conflicts", ".tess/snapshots")
+
+
+@pytest.mark.parametrize("runtime", ["claude", "codex"])
+@pytest.mark.parametrize("cmd", [
+    "echo evil > .tess/staging/.claude/hooks/tess-gate.py",
+    "mkdir -p .tess/quarantine/.claude/hooks && cp /tmp/x .tess/quarantine/.claude/hooks/tess-gate.py",
+    "printf x > .tess/conflicts/CLAUDE.md.theirs",
+    "cp -R /tmp/snap .tess/snapshots/2026-01-01T00-00-00Z-render",
+    "rm -rf .tess/snapshots/2026-01-01T00-00-00Z-render",
+    "sed -i '' s/a/b/ .tess/quarantine/core/policy/policy.yaml",
+])
+def test_agents_cannot_plant_bytes_in_tessctl_working_folders(proj, cmd, runtime):
+    assert _decide(proj, cmd, runtime) == "deny", cmd
+
+
+@pytest.mark.parametrize("rel", [d + "/x/y.txt" for d in WORK_DIRS])
+def test_edit_tools_cannot_write_tessctl_working_folders(proj, rel):
+    v = G.evaluate({"tool_name": "Write", "cwd": str(proj),
+                    "tool_input": {"file_path": str(proj / rel), "content": "x"},
+                    "permission_mode": "default"}, proj)
+    assert v.level == G.DENY and any("protected" in r for r in v.reasons), v.reasons
+
+
+@pytest.mark.parametrize("cmd", ["ls .tess/snapshots", "cat .tess/quarantine/CLAUDE.md",
+                                 "diff .tess/staging/CLAUDE.md CLAUDE.md"])
+def test_reading_tessctl_working_folders_stays_allowed(proj, cmd):
+    assert _level(proj, cmd) == "allow", cmd
+
+
+def test_working_folders_are_protected_in_gate_policy_and_codeowners():
+    for d in WORK_DIRS:
+        assert d + "/**" in G.PROTECTED_GLOBS, d
+    for rel in ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        rule = text[text.index("id: tess-os-security-tier-doctrine"):]
+        rule = rule[:rule.index("\n    - id:")] if "\n    - id:" in rule else rule
+        for d in WORK_DIRS:
+            assert f"- {d}/**" in rule, (rel, d)
+    owners = (REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    for d in WORK_DIRS:
+        assert f"/{d}/ " in owners, d

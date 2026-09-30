@@ -11,6 +11,10 @@
 /.tess/tess.lock                @XavierJ21
 /.tess/keys/                    @XavierJ21
 /.tess/vendor/                  @XavierJ21
+/.tess/staging/                 @XavierJ21
+/.tess/quarantine/              @XavierJ21
+/.tess/conflicts/               @XavierJ21
+/.tess/snapshots/               @XavierJ21
 /tessctl                        @XavierJ21
 /core/policy/                   @XavierJ21
 /core/contracts/                @XavierJ21

@@ -168,6 +168,13 @@ policy:
         # release.yml, and by publish-npm.yml inside the job holding
         # id-token: write), gated like the workflows that call them.
         - .github/scripts/**
+        # v1.0 security audit (integration): tessctl's working folders, read
+        # back as trusted input by update (.tess/staging), approve and resolve
+        # (.tess/quarantine, .tess/conflicts) and rollback (.tess/snapshots).
+        - .tess/staging/**
+        - .tess/quarantine/**
+        - .tess/conflicts/**
+        - .tess/snapshots/**
         # v1.0 security audit: the boot launcher. Every session runs
         # `python3 scripts/tess hooks-status` first, with no prompt (settings
         # allow-list), and that puts scripts/ first on sys.path, so a new

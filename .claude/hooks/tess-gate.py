@@ -179,6 +179,11 @@ PROTECTED_GLOBS = (
     # boot launcher every session runs without a prompt (settings allow-list
     # `python3 scripts/tess hooks-status`; CLAUDE.md / AGENTS.md boot line).
     ".github/scripts/**", "scripts/tess",
+    # v1.0 audit (integration): the working folders tessctl reads back as
+    # trusted input. update applies .tess/staging, approve and resolve write
+    # what .tess/quarantine and .tess/conflicts hold, rollback restores
+    # .tess/snapshots; an agent write there plants the bytes those steps use.
+    ".tess/staging/**", ".tess/quarantine/**", ".tess/conflicts/**", ".tess/snapshots/**",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
     ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**", ".codex/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
