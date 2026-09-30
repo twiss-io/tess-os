@@ -1318,6 +1318,10 @@ _PROMPT_SUBS = {"update", "self-update", "approve", "anchor"}
 _STATE_SUBS = {"override": (), "reset": (), "resolve": (), "rollback": (),
                "restore": ("--force",), "publish": ("--force",), "capture": ("--auto",),
                "lock": ("--regen",)}
+# v1.0 audit (integration): signing a verifier verdict or a hard-floor
+# sign-off needs the operator at their terminal typing `sign as <Name>` and
+# the key's passphrase. The words after `tessctl` (positional words only).
+_SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"))
 
 
 def _opt_given(words: list, opts: tuple) -> bool:
@@ -1337,6 +1341,9 @@ def _operator_form(words: list) -> bool:
     _STATE_SUBS)."""
     sub = next((w.lower() for w in words if not w.startswith("-")), "")
     if sub in _PROMPT_SUBS:
+        return True
+    pos = tuple(w.lower() for w in words if not w.startswith("-"))
+    if any(pos[:len(form)] == form for form in _SIGN_FORMS):
         return True
     if sub in _STATE_SUBS:
         opts = _STATE_SUBS[sub]
@@ -1517,7 +1524,7 @@ def _check_operator_only(cmd: str, v) -> None:
             words = _tessctl_call(argv)
             name = os.path.basename(argv[0]).lower() if argv else ""
             if name in ("tmux", "screen") and any(
-                    re.search(r"(?i)\b(accept|anchor)\b", _unquote(a)) for a in argv[1:]):
+                    re.search(r"(?i)\b(accept|anchor)\b|\bsign\W+as\b", _unquote(a)) for a in argv[1:]):
                 v.add(DENY, "only the operator can answer Tess's approval prompts; this command "
                             "would type the approval into a terminal for them", "operator")
             if (INTERPRETERS.match(name) or name in ("-",)) and _PTY_CODE.search(flat):

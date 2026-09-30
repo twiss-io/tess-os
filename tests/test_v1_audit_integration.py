@@ -173,6 +173,45 @@ def test_ordinary_copies_stay_allowed(proj, cmd):
     assert v.level == G.ALLOW, (cmd, v.reasons)
 
 
+# ------------------------------------------------------------------ verdict / sign-off signing is operator-only
+
+SIGN_FED = [
+    "echo 'sign as Cyra' | ./tessctl verdict sign v.json --key-id K",
+    "./tessctl verdict sign v.json --key-id K <<< 'sign as Cyra'",
+    "./tessctl verdict sign v.json --key-id K < answers.txt",
+    "printf 'sign as Xavier\\n' | ./tessctl gate signoff sign s.yaml --key-id K",
+    "script -q /dev/null ./tessctl verdict sign v.json --key-id K",
+    "expect -c 'spawn ./tessctl gate signoff sign s.yaml'",
+    "unbuffer ./tessctl gate signoff sign s.yaml --key-id K",
+    "tmux send-keys -t 0 'sign as Cyra' Enter",
+    "{ echo 'sign as Cyra'; } | nice ./tessctl verdict sign v.json",
+    "bash -c \"echo 'sign as Cyra' | ./tessctl verdict sign v.json\"",
+    "python3 -c 'import pty; pty.spawn([\"./tessctl\", \"verdict\", \"sign\", \"v.json\"])'",
+]
+
+
+@pytest.mark.parametrize("runtime", ["claude", "codex"])
+@pytest.mark.parametrize("cmd", SIGN_FED)
+def test_feeding_or_faking_the_signing_terminal_is_denied(proj, cmd, runtime):
+    assert _decide(proj, cmd, runtime) == "deny", cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "./tessctl verdict verify v.json",
+    "./tessctl gate signoff verify s.yaml",
+    "./tessctl verdict sign --help | head",
+])
+def test_signing_reads_and_verification_stay_allowed(proj, cmd):
+    assert _level(proj, cmd) == "allow", cmd
+
+
+def test_operator_form_knows_the_signing_commands():
+    assert G._operator_form(["verdict", "sign", "v.json", "--key-id", "K"])
+    assert G._operator_form(["gate", "signoff", "sign", "s.yaml"])
+    assert not G._operator_form(["verdict", "verify", "v.json"])
+    assert not G._operator_form(["gate", "signoff", "verify", "s.yaml"])
+
+
 # ------------------------------------------------------------------ A2 checks inside A1's resolver
 
 VAULT_WRAPPED = [
@@ -196,6 +235,7 @@ def test_vault_rule_reaches_every_resolved_segment(proj, cmd):
     "echo y | nice ./tessctl reset",
     "{ echo y; } | ./tessctl rollback",
     "if true; then ./tessctl override x <<< y; fi",
+    "echo 'sign as Cyra' | timeout 9 ./tessctl verdict sign v.json",
 ])
 def test_resolver_path_applies_a2_checks_without_the_text_pass(proj, cmd, monkeypatch):
     """_check_segment itself applies the vault rule and the operator-only
