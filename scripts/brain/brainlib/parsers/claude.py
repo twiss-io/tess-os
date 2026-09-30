@@ -1,7 +1,9 @@
 """Claude Code transcript parser (~/.claude/projects/<slug>/<session>.jsonl).
 
-Kept: what the operator typed in the session (typed, -p/sdk, queued) and the
-final assistant text per turn. Skipped: tool_result records, isMeta
+Kept: what the operator typed in the session (typed, queued) and the final
+assistant text per turn. A headless run (`claude -p`, the Agent SDK: an
+`entrypoint` of sdk-* or a `promptSource` of sdk) is automation: its prompts
+are journaled under the `automation` speaker, never as the operator. Skipped: tool_result records, isMeta
 injections, system reminders, local command output, task notifications,
 compaction summaries, injected AGENTS.md / CLAUDE.md text, and any message a
 plugin injected through a `<channel>` wrapper (not typed in this session; the
@@ -16,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import EXTERNAL_TOOLS, FILE_TOOLS, Msg, Session, iter_text_blocks, read_lines
+from . import EXTERNAL_TOOLS, FILE_TOOLS, Msg, Session, iter_text_blocks, read_lines, to_automation
 
 _INJECTED_CHANNEL = re.compile(r"<channel\s[^>]*>", re.S)
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
@@ -98,6 +100,33 @@ def _assistant(rec: Dict, ordinal: int, sess: Session) -> Optional[Msg]:
     return Msg(ordinal, rec.get("timestamp") or "", "assistant", "assistant", "reply", text)
 
 
+def automation_marker(rec: Dict) -> str:
+    """Why one transcript record says it belongs to a headless run ('' when it does not)."""
+    ep = str(rec.get("entrypoint") or "")
+    if ep.startswith("sdk"):
+        return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
+    if rec.get("promptSource") == "sdk":
+        return "a prompt sent by claude -p or the Agent SDK"
+    return ""
+
+
+def head_automation(path: Path, limit: int = 200) -> str:
+    import json
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for _ in range(limit):
+            raw = fh.readline()
+            if not raw:
+                break
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            why = automation_marker(rec) if isinstance(rec, dict) else ""
+            if why:
+                return why
+    return ""
+
+
 def parse(path: Path, upto: Optional[int] = None) -> Session:
     sess = Session("claude", path)
     rows, sess.last_ordinal, sess.prefix_sha256 = read_lines(path, upto)
@@ -105,6 +134,7 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
     for ordinal, rec in rows:
         if not isinstance(rec, dict) or rec.get("isSidechain"):
             continue
+        sess.automation = sess.automation or automation_marker(rec)
         sess.session_id = sess.session_id or str(rec.get("sessionId") or "")
         if rec.get("type") in ("user", "assistant"):
             sess.cwd = sess.cwd or str(rec.get("cwd") or "")
@@ -126,7 +156,7 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
         sess.msgs.append(pending_reply)
     if not sess.session_id:
         sess.session_id = Path(path).stem
-    return sess
+    return to_automation(sess, sess.automation) if sess.automation else sess
 
 
 def _first_cwd(path: Path) -> str:

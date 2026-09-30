@@ -22,7 +22,7 @@ def append(cfg: Config, runtime: str, session: str, text: str, raw_speaker: str 
            at: Optional[str] = None) -> Dict:
     """Append one redacted turn; non-principal text is never stored."""
     cfg.ensure_state()
-    slug = cfg.resolve_speaker(raw_speaker)
+    slug = cfg.resolve_speaker(raw_speaker)  # 'automation' (a headless run) never resolves
     principal = bool(slug) and cfg.consents(slug)
     clean, counts = redact.redact(text or "")
     rows = read(cfg, limit=None)

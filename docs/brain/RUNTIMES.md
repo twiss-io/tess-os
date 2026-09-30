@@ -104,6 +104,14 @@ they keep their own provider memory. Importing their exports is v0.2.1.
 - **Trust.** One workspace-trust click. `claude -p` runs project hooks. On
   the test machine, an untrusted `-p` run printed "Ignoring N
   permissions.allow entries" but still ran the hooks.
+- **Headless runs are automation (v1.0.0 audit).** A `claude -p` or Agent SDK
+  run (entrypoint `sdk-*`), a `codex exec` run (originator `codex_exec`), Codex
+  as an MCP server or sub-agent, and a runtime started from inside another
+  agent session are journaled with their prompts omitted under the
+  `automation` speaker: nothing they send is recorded as the operator's
+  decision, preference or confirmation. The live learning checks below
+  (`tests/smoke/brain_learn_live.sh`) drive `claude -p` / `codex exec`, so
+  their record checks (a) to (f) now need an interactive session instead.
 - **Verified live on 2026-09-24** (`tests/smoke/brain_learn_live.sh claude`,
   on a create-tess scaffold with the v0.2 onboarding wiring, `--model haiku`):
   - the Stop hook journaled the session with no manual sync;

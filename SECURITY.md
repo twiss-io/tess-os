@@ -209,7 +209,42 @@ security reviews; they are stated so nobody relies on a check that is not there.
   verdict keygen`, `approve`, `vault init` or `gate install-hooks`, which change
   anchored files) confirm the change with `tessctl anchor accept`. A git worktree
   of an anchored project shares its anchor, so enforcement files that differ in
-  another worktree stop Tess there too.
+  another worktree stop Tess there too. Hiding the anchor store is a stop as
+  well (v1.0.0 audit): the first hook that finds an anchor writes this
+  checkout's path key into `.git/info/tess-anchored` (a path the gate
+  write-protects, which no checkout, reset or rebase touches), and a listed
+  checkout whose anchor is gone, or whose `~/.config` cannot be read, stops
+  every tool call with a message saying to put the folder back or run
+  `tessctl anchor accept`. `tessctl doctor` and `anchor status` read only the
+  store, so in that case they say `anchor: none` while the hooks stop. A
+  process running as you that deletes both the store and that file (outside
+  the agent's gated tools) turns the stop off, as before.
+- **The learning loop authenticates where your words came from; it cannot see
+  who typed them.** A line counts as your own words only when a hook, running
+  outside the agent's sandbox, took it from the runtime's own transcript store
+  (`~/.claude/projects`, `$CODEX_HOME/sessions`, `~/.gemini/tmp`) and signed it
+  into the ledger under `~/.config/tess/brain/`. `sync --transcript` accepts
+  only files inside that store; `--claude-dir`, `--codex-home` and
+  `--gemini-home` with any other folder need you at a terminal typing yes. A
+  shell that cannot write the ledger (the Codex sandbox) can read the brain key
+  but never mints evidence: captured turns, journal lines and accepted-record
+  seals are never taken from the in-repo outbox, a sync there journals nothing
+  (the next hook does), and a decision it records waits as
+  pending-verification until the next hook re-checks it. `claude -p`, the
+  Agent SDK, `codex exec` (and Codex as an MCP server or sub-agent), and a
+  runtime started from inside another agent session (seen in the hook's
+  process ancestry) are automation: their prompts are journaled as
+  `automation` and never count as yours. Limits: an agent running as you
+  OUTSIDE a sandbox can still read the key and write the ledger or the
+  runtime's transcript folders (the first bullet above); a nested run whose
+  process tree hides its parent session (for example one started through a
+  detached service) and a Gemini CLI headless run are not recognised as
+  automation. Record files (`brain/**/[DPCFL]-*.md`) are sealed in the same
+  ledger each time the tool writes them; a record whose file does not match
+  its seal (planted, hand-edited, or pulled from another machine, which has
+  its own ledger) is treated as awaiting your review, never as accepted,
+  confirmed or learned, until you confirm it here. On the first run after an
+  upgrade the records already in the folder are sealed once as they are.
 - **The in-repo launcher and hook configuration are protected by the gate's route
   rules, not by the anchor.** The anchor check runs inside
   `.claude/hooks/run-pinned.py`, which lives in the working tree, and the hook

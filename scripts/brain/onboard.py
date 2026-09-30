@@ -177,6 +177,7 @@ def cmd_add_mode(root: Path, a) -> int:
     records.probe_refresh(plan, brain)
     if not a.dry_run:
         state.save_brain(root, brain)
+        records.seal_created(root, [p for p in plan.created() if p.startswith("brain/decisions/")])
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
     print("mode %s added (decision %s); nothing was moved or renamed" % (mode, rid))

@@ -70,7 +70,15 @@ def _session(cfg: Config, ref: str) -> str:
 
 def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
     kind = cand["kind"]
-    directory = cfg.root / (cand.get("target") or default_target(kind, cand.get("entity") or ""))
+    if not pending and not _can_seal(cfg):
+        # v1.0.0 audit: a shell that cannot write the external ledger (the Codex sandbox) cannot seal an
+        # accepted/active record (outbox.admissible), so it records it as pending-verification; the next
+        # hook, outside the sandbox, re-verifies it against the journal and accepts and seals it.
+        pending = True
+    target, why = records.register_target(cfg, cand.get("target") or default_target(kind, cand.get("entity") or ""))
+    if why:
+        raise ValueError("not recorded: " + why)
+    directory = cfg.root / target
     now = iso(cfg.now())
     quote, statement = cand.get("quote") or "", cand.get("statement") or cand.get("quote") or ""
     at = cand.get("source_at") or now
@@ -162,8 +170,17 @@ def skill_draft(cfg: Config, cand: Dict) -> str:
     return p.relative_to(cfg.root).as_posix()
 
 
+def _can_seal(cfg: Config) -> bool:
+    from . import extstate
+    return extstate.writable(cfg)
+
+
 def recheck_pending(cfg: Config) -> List[Dict]:
-    """Records in pending-verification: journal hit -> promote; 2 failed syncs -> unverified."""
+    """Records in pending-verification: journal hit -> promote; 2 failed syncs -> unverified.
+
+    v1.0.0 audit: a pending record whose file no seal vouches for (planted by a repo writer, or edited
+    since the tool wrote it) is never auto-accepted, even when its quote is found: the tool would bless a
+    body and fields nobody verified. It goes to `proposed` and waits for the operator's review."""
     out = []
     for rec in records.all_records(cfg):
         if rec.status != "pending-verification" or rec.meta.get("detected_by") == "onboarding":
@@ -185,7 +202,7 @@ def recheck_pending(cfg: Config) -> List[Dict]:
                 out.append({"record": rec.id, "status": rec.status, "reason": res.reasons[-1]})
                 continue
             if res.status in ("pass", "noop", "review"):
-                status = _status(kind, cand, False) if res.status != "review" else "proposed"
+                status = _status(kind, cand, False) if res.status != "review" and rec.sealed else "proposed"
                 upd = {"status": status, "source_ref": line.ref, "verified": True, "verified_at": iso(cfg.now()),
                        "source_speaker": line.speaker, "source_session": _session(cfg, line.ref)}
                 if cand.get("confirmed_ref"):

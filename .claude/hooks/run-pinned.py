@@ -145,40 +145,44 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _lock_value(tok) -> "str | None":
+    """The text of one raw lock_strict_tree leaf token (None for no value, a
+    mapping, or a value that runs over several lines: no pin field does)."""
+    if not isinstance(tok, str) or "\n" in tok:
+        return None
+    if tok[:1] == "'" and tok.endswith("'") and len(tok) >= 2:
+        tok = tok[1:-1].replace("''", "'")
+    elif tok[:1] == '"' and tok.endswith('"') and len(tok) >= 2:
+        tok = tok[1:-1]
+    return None if tok in ("", "null", "~") else tok
+
+
 def _lock_entries(root: Path) -> dict:
     """{core_key: {"base_sha": hex, "live_path": str|None}} from tess.lock's files: map.
 
-    A line scanner, not a YAML parser: hooks run under the system python3,
-    which may not have PyYAML. It reads only the two fields it needs and
-    fails closed if the file is missing or yields nothing."""
+    Read with lock_strict_tree, the one reader of tess.lock that the anchor
+    digest (lock_projection) and tessctl's load_lock also use (v1.0.0 audit:
+    a line scanner here took `    base_sha:` / `    live_path:` lines hidden
+    inside a multi-line quoted volatile value as real pin fields, while the
+    anchor digest skipped them, so a planted pin replaced a brain module's
+    pin without changing the anchored digest). Stdlib only: hooks run under
+    the system python3, which may not have PyYAML. Fails closed when the
+    file is missing, outside the strict form, or yields nothing."""
     path = root / LOCK_REL
     if not path.is_file():
         raise PinError(f"{LOCK_REL} not found, so no hook script can be verified")
+    try:
+        tree = lock_strict_tree(path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise PinError(f"{LOCK_REL} is not in the form Tess writes ({exc}), so no hook script can be verified")
+    files = tree.get("files")
     entries: dict = {}
-    section = None
-    key = None
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        if raw and not raw.startswith(" ") and not raw.startswith("#"):
-            section = raw.split(":", 1)[0].strip()
-            key = None
+    for key, attrs in (files.items() if isinstance(files, dict) else ()):
+        if not isinstance(attrs, dict):
             continue
-        if section != "files":
-            continue
-        m = re.match(r"^  (\S[^:]*):\s*$", raw)
-        if m:
-            key = m.group(1).strip().strip("'\"")
-            entries[key] = {"base_sha": None, "live_path": None}
-            continue
-        if key is None:
-            continue
-        m = re.match(r"^    base_sha:\s*'?sha256:([0-9a-f]{64})'?\s*$", raw)
-        if m:
-            entries[key]["base_sha"] = m.group(1)
-            continue
-        m = re.match(r"^    live_path:\s*(.*?)\s*$", raw)
-        if m:
-            val = m.group(1).strip("'\"")
-            entries[key]["live_path"] = None if val in ("", "null", "~") else val
+        sha = _lock_value(attrs.get("base_sha"))
+        m = re.fullmatch(r"sha256:([0-9a-f]{64})", sha or "")
+        entries[key] = {"base_sha": m.group(1) if m else None, "live_path": _lock_value(attrs.get("live_path"))}
     if not entries:
         raise PinError(f"{LOCK_REL} has no files entries, so no hook script can be verified")
     return entries
@@ -402,6 +406,19 @@ ANCHOR_STOP = ("Tess's safety files have changed since the last approved install
 ANCHOR_LOST = ("Tess's record of its approved safety files is missing or unreadable, so Tess "
                "has stopped all actions. Run `tessctl anchor accept` in your own terminal to "
                "check and record the current files.")
+ANCHOR_HIDDEN = ("Tess's record of its approved safety files (in the .config/tess folder of your home "
+                 "folder) cannot be found, although this project was protected by it before, so Tess has "
+                 "stopped all actions. If you moved, renamed or locked your .config folder, put it back. "
+                 "Otherwise run `tessctl anchor accept` in your own terminal to check and record the "
+                 "current files.")
+# v1.0.0 audit (hidden store reads as "never anchored"): the anchor and its path
+# marker both live under ~/.config/tess, so hiding that tree (`mv ~/.config
+# ~/.config.off`) made a recorded anchor read as "never anchored" and the stop
+# turned off without a word. The first hook that finds an anchor also writes
+# this checkout's path key into <common git dir>/info/tess-anchored (a path the
+# gate write-protects, and one no checkout, reset or rebase touches); a checkout
+# listed there whose anchor store is gone is a stop, not a pass.
+ANCHOR_SEEN_REL = ("info", "tess-anchored")
 
 
 class AnchorError(PinError):
@@ -446,11 +463,11 @@ def anchor_project_id(root: Path) -> "str | None":
     return roots[0]
 
 
-def anchor_git_hooks_dir(root: Path) -> "Path | None":
-    """<common git dir>/hooks, read from .git directly (no git call)."""
+def anchor_git_common_dir(root: Path) -> "Path | None":
+    """The common git dir, read from .git directly (no git call)."""
     dot = root / ".git"
     if dot.is_dir():
-        return dot / "hooks"
+        return dot
     try:
         text = dot.read_text(encoding="utf-8")
     except OSError:
@@ -465,7 +482,13 @@ def anchor_git_hooks_dir(root: Path) -> "Path | None":
         common = Path(c) if os.path.isabs(c) else gitdir / c
     except OSError:
         pass
-    return common / "hooks"
+    return common
+
+
+def anchor_git_hooks_dir(root: Path) -> "Path | None":
+    """<common git dir>/hooks, read from .git directly (no git call)."""
+    common = anchor_git_common_dir(root)
+    return common / "hooks" if common else None
 
 
 def anchor_file_path(root: Path, rel: str) -> "Path | None":
@@ -658,11 +681,16 @@ def anchor_read_file(path: Path) -> "bytes | None":
 
 
 def _anchor_json(path: Path) -> "dict | None":
-    """A private JSON file of this user's (0600 or stricter, not a symlink)."""
+    """A private JSON file of this user's (0600 or stricter, not a symlink).
+    None only when it is absent (ENOENT / ENOTDIR); any other error reaching
+    it (EACCES from an unsearchable ~/.config, ELOOP, ...) is a stop."""
     try:
         st = os.lstat(path)
-    except OSError:
-        return None
+    except OSError as exc:
+        import errno as _errno
+        if exc.errno in (_errno.ENOENT, _errno.ENOTDIR):
+            return None
+        raise AnchorError(ANCHOR_LOST, [f"{path} cannot be reached ({exc.strerror or type(exc).__name__})"])
     import stat as _stat
     if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISREG(st.st_mode):
         raise AnchorError(ANCHOR_LOST, [f"{path} is not a regular file"])
@@ -703,6 +731,36 @@ def anchor_locate(root: Path) -> tuple:
     return doc, str(pdir / "anchor.json")
 
 
+def anchor_seen_path(root: Path) -> "Path | None":
+    common = anchor_git_common_dir(root)
+    return common.joinpath(*ANCHOR_SEEN_REL) if common else None
+
+
+def anchor_seen(root: Path) -> bool:
+    """True when this checkout's path key is listed in <common git dir>/info/tess-anchored."""
+    path = anchor_seen_path(root)
+    data = anchor_read_file(path) if path else None
+    if data is None:
+        return False
+    return anchor_path_key(root) in data.decode("ascii", "replace").split()
+
+
+def anchor_mark_seen(root: Path) -> None:
+    """Record, best effort, that this checkout has an anchor (see ANCHOR_SEEN_REL)."""
+    path = anchor_seen_path(root)
+    if path is None or anchor_seen(root):
+        return
+    try:
+        if path.is_symlink():
+            return
+        path.parent.mkdir(exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        with os.fdopen(fd, "a", encoding="ascii") as fh:
+            fh.write(anchor_path_key(root) + "\n")
+    except OSError:
+        pass
+
+
 def anchor_problems(root: Path, doc: dict) -> list:
     """Plain lines, one per anchored file that is missing or changed."""
     out = []
@@ -722,7 +780,11 @@ def anchor_check(root: Path) -> "dict | None":
     None for a checkout that was never anchored)."""
     doc, _where = anchor_locate(root)
     if doc is None:
+        if anchor_seen(root):
+            raise AnchorError(ANCHOR_HIDDEN, [f"no anchor under {anchor_base()}, but "
+                                              f"{anchor_seen_path(root)} records that this project had one"])
         return None
+    anchor_mark_seen(root)
     problems = anchor_problems(root, doc)
     if problems:
         raise AnchorError(ANCHOR_STOP, problems)

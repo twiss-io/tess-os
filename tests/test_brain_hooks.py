@@ -91,13 +91,16 @@ def _errors(inst):
 
 
 def test_stop_returns_fast_and_journals_in_background(inst, tmp_path):
-    src = tmp_path / "store" / "11111111-aaaa-4bbb-8ccc-000000000001.jsonl"  # a session run in this instance
-    src.parent.mkdir()
+    # a session run in this instance, in Claude's own transcript store (v1.0.0 audit: --transcript files
+    # anywhere else are never journaled as the operator's words)
+    store = tmp_path / "claude-cfg"
+    src = store / "projects" / "elsewhere" / "11111111-aaaa-4bbb-8ccc-000000000001.jsonl"
+    src.parent.mkdir(parents=True)
     src.write_text((Path(fxlib.CLAUDE_DIR) / src.name).read_text().replace('"cwd": "/work/fx"',
                                                                         '"cwd": %s' % json.dumps(str(inst))))
     data = json.loads((STDIN / "stop.json").read_text())
     data["transcript_path"] = str(src)
-    r, dt = _hook(inst, "stop", stdin=json.dumps(data))
+    r, dt = _hook(inst, "stop", stdin=json.dumps(data), env={"CLAUDE_CONFIG_DIR": str(store)})
     assert r.returncode == 0 and dt <= 1.0, dt
     target = inst / "brain/journal/2026/09/24/1405-claude-11111111.md"
     for _ in range(100):

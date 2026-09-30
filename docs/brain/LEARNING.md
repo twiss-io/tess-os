@@ -293,6 +293,17 @@ decided_by, entity, quotes, source, confirmed, supersede links) is hashed into
 flipped to accepted) also fails `lint`. The tool edits front matter only: status, `superseded_by`,
 confirmation and verification fields. To change a decision, supersede it.
 
+**Sealed.** Those two hashes are plain sha256 values any writer can recompute,
+so they catch accidents, not tampering. Every record file the tool writes is
+also sealed in the external ledger (below): its id, path and the sha256 of its
+exact text, under the brain key. A record whose file does not match its seal
+(planted by an agent's edit or a pulled commit, hand-edited, or made on another
+machine) is read everywhere as `proposed`: it waits in `review`, is never
+listed as accepted in START-HERE or the profile, never counts as confirmed, and
+never appears as "learned". Confirming it (`confirm <id>`) seals it. The first
+time a project's ledger is written after an upgrade, the records already on
+disk are sealed once, as they are.
+
 ## Caps (errors, never truncation)
 
 | File | Cap | Over the cap |
@@ -384,7 +395,13 @@ evidence: the evidence stops verifying and the item waits in review.
   again; earlier evidence then waits in review.
 - **Codex sandbox:** the agent's shell can read `~/.config/tess` but not
   write it, so its rows wait, signed, in `.tess/state/brain/outbox.jsonl`
-  until the next hook moves them into the ledger. Every row carries a
+  until the next hook moves them into the ledger. Because that shell can read
+  the key, a signature proves nothing about who wrote an outbox row, so rows
+  that are evidence of your words (captured turns, journal lines, sessions)
+  or that seal a record as accepted, active or confirmed are never taken
+  from the outbox: a `sync` in the sandbox journals nothing (the next hook
+  journals and attests it), and a decision or preference recorded there is
+  written `pending-verification` and accepted by the next hook's re-check. Every row carries a
   one-use event id and the ledger position (sequence and chain head) it was
   made against, inside its MAC. A row whose id is already in the ledger, or
   that is older than the ledger's newest row for the same item, is dropped

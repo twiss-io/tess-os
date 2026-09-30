@@ -154,15 +154,18 @@ def _append(cfg: Config, rows: List[Dict]) -> None:
 
 
 def prepare(cfg: Config) -> None:
-    """Hooks and the installer (outside any sandbox): make the key and project state, drain the outbox."""
+    """Hooks and the installer (outside any sandbox): make the key and project state, drain the outbox,
+    and (once per project) seal the records already on disk (records.seal_existing_once)."""
     from . import extstate
     if key(cfg) is not None and extstate.project_id(cfg):
         extstate.drain(cfg)
+        from . import records
+        records.seal_existing_once(cfg)
 
 
 def _empty() -> Dict:
     return {"lines": {}, "files": {}, "sessions": {}, "shown": {}, "used": {}, "turns": set(), "claims": [],
-            "applied": set()}
+            "applied": set(), "recs": {}, "seal_init": False, "automation": set()}
 
 
 def _load(cfg: Config) -> Dict:
@@ -202,6 +205,15 @@ def _ingest(out: Dict, r: Dict) -> None:
         out["applied"].add(str(r.get("claim") or ""))
     elif t == "turn":
         out["turns"].add("%s|%s" % (r.get("n"), r.get("mac")))
+    elif t == "rec" and r.get("id"):
+        if newer(r, out["recs"].get(r["id"])):
+            out["recs"][r["id"]] = r
+    elif t == "seal-init" and not r.get("pending"):
+        out["seal_init"] = True
+    elif t == "automation":
+        out["automation"].add((str(r.get("runtime") or ""), str(r.get("sid") or "")))
+        if r.get("path"):
+            out["automation"].add(("path", os.path.realpath(str(r["path"]))))
 
 
 def attest_journal(cfg: Config, sess, rendered: List[Tuple[str, List]]) -> None:
@@ -252,6 +264,27 @@ def line_trusted(cfg: Config, line) -> bool:
 def line_at(cfg: Config, line) -> str:
     row = _load(cfg)["lines"].get(line.ref) if line is not None else None
     return str((row or {}).get("at") or "")
+
+
+def record_seals(cfg: Config) -> Dict[str, Dict]:
+    """{record id: its latest seal row} (records.py)."""
+    return _load(cfg)["recs"]
+
+
+def seal_init_done(cfg: Config) -> bool:
+    return bool(_load(cfg)["seal_init"])
+
+
+def automation_session(cfg: Config, runtime: str, sid: str, path: str = "") -> bool:
+    """A hook marked this session as run by automation (hooks.automation_reason)."""
+    marks = _load(cfg)["automation"]
+    return bool((sid and (runtime, sid) in marks)
+                or (path and ("path", os.path.realpath(path)) in marks))
+
+
+def mark_automation(cfg: Config, runtime: str, sid: str, path: str, why: str) -> None:
+    if not automation_session(cfg, runtime, sid, path):
+        _append(cfg, [{"t": "automation", "runtime": runtime, "sid": sid, "path": path, "why": why[:200]}])
 
 
 def session_of(cfg: Config, ref_path: str) -> Optional[Dict]:

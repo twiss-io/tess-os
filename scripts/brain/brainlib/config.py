@@ -125,7 +125,10 @@ class Config:
         return self._local_speaker
 
     def resolve_speaker(self, raw: str) -> Optional[str]:
-        """Map a raw speaker id ('operator' = this machine's user, a slug or an alias) to a principal slug."""
+        """Map a raw speaker id ('operator' = this machine's user, a slug or an alias) to a principal slug.
+        'automation' (a headless or agent-started run, parsers.AUTOMATION) is never a principal."""
+        if raw == "automation":
+            return None
         if raw in ("operator", "", None):
             return self.local_speaker()
         if self.principal(raw):

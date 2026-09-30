@@ -5,7 +5,9 @@ User text comes from `event_msg` / `user_message`; the reply from
 `event_msg` / `agent_message` (last one per turn). Rollouts that carry no
 user_message events fall back to `response_item` user messages that are not
 injected context. A rollout belongs to this repo when the realpath of
-`session_meta.cwd` is inside the repo root (or an --also-cwd path).
+`session_meta.cwd` is inside the repo root (or an --also-cwd path). A
+`codex exec` rollout (or Codex as an MCP server / sub-agent) is automation:
+its prompts are journaled under the `automation` speaker, never the operator.
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import EXTERNAL_TOOLS, Msg, Session, iter_text_blocks, read_lines
+from . import EXTERNAL_TOOLS, Msg, Session, iter_text_blocks, read_lines, to_automation
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
 _INJECTED = ("<", "# AGENTS.md instructions")
@@ -42,6 +44,32 @@ def session_cwd(path: Path) -> Optional[str]:
     except OSError:
         return None
     return None
+
+
+def automation_marker(meta: Dict) -> str:
+    """Why a rollout's session_meta says it is a headless run ('' when it does not): `codex exec`
+    (originator codex_exec, source exec), Codex driven as an MCP server, or a sub-agent."""
+    if str(meta.get("originator") or "") == "codex_exec":
+        return "a codex exec run"
+    src = meta.get("source")
+    if isinstance(src, dict) or str(src or "") in ("exec", "mcp"):
+        return "a Codex %s session" % ("sub-agent" if isinstance(src, dict) else str(src))
+    return ""
+
+
+def head_automation(path: Path) -> str:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for _ in range(20):
+            line = fh.readline()
+            if not line:
+                break
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("type") == "session_meta":
+                return automation_marker(rec.get("payload") if isinstance(rec.get("payload"), dict) else {})
+    return ""
 
 
 def _inside(child: str, parents: List[str]) -> bool:
@@ -149,6 +177,7 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
             sess.runtime_version = str(p.get("cli_version") or "")
             sess.started_at = str(p.get("timestamp") or at)
             sess.git_branch = str((p.get("git") or {}).get("branch") or "")
+            sess.automation = automation_marker(p)
         elif kind == "event_msg" and p.get("type") == "item_completed":
             _item_completed(p, ordinal, at, sess, item_users, item_replies)
         elif kind == "event_msg":
@@ -161,7 +190,7 @@ def parse(path: Path, upto: Optional[int] = None) -> Session:
     sess.msgs = _final_replies(humans, replies or item_replies or fallback_replies)
     if not sess.session_id:
         sess.session_id = Path(path).stem[-36:]
-    return sess
+    return to_automation(sess, sess.automation) if sess.automation else sess
 
 
 def _final_replies(humans: List[Msg], replies: List[Msg]) -> List[Msg]:
