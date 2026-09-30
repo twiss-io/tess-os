@@ -808,15 +808,80 @@ def security_tier_symlink_findings(root: Path, lock: dict) -> list:
 # Lock file I/O
 # ---------------------------------------------------------------------------
 
+class LockFormatError(yaml.YAMLError, ValueError):
+    """tess.lock is outside the strict form (a YAMLError, so every existing
+    `except yaml.YAMLError` around a lock read treats it as malformed)."""
+
+
+class _LockLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a repeated key instead of keeping the last one."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _v in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if not isinstance(key, str) or key in seen:
+                raise LockFormatError(f"the key {key!r} is repeated or not text")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _lock_same_tree(tree, data, path: str = "") -> None:
+    """Raise LockFormatError unless YAML's reading `data` has exactly the
+    keys and values of the strict tree (v1.0.0 GPT-6 final F1)."""
+    if isinstance(tree, dict):
+        if not isinstance(data, dict) or set(data) != set(tree):
+            raise LockFormatError(f"YAML reads {path or 'the top level'} differently")
+        for key in tree:
+            _lock_same_tree(tree[key], data[key], f"{path}.{key}" if path else key)
+        return
+    tok = tree
+    if tok == "":
+        ok = data is None
+    elif tok in ("{}", "[]"):
+        ok = data == ({} if tok == "{}" else []) and type(data) is (dict if tok == "{}" else list)
+    elif "\n" in tok or "\\" in tok:   # multi-line or escaped quoted text: YAML reads the token alone
+        ok = isinstance(data, str) and yaml.load("k: " + tok, Loader=_LockLoader) == {"k": data}  # noqa: S506
+    elif tok[0] == "'":
+        ok = data == tok[1:-1].replace("''", "'")
+    elif tok[0] == '"':
+        ok = data == tok[1:-1]
+    else:   # a plain scalar: YAML's type resolution depends on this token alone
+        ok = data == tok if isinstance(data, str) else not isinstance(data, (dict, list))
+    if not ok:
+        raise LockFormatError(f"YAML reads {path} differently")
+
+
+def _lock_load_text(text: str) -> dict:
+    """THE reader of tess.lock text (v1.0.0 GPT-6 final F1): strict form first
+    (the same lock_strict_tree run-pinned.py anchors), then YAML with repeated
+    keys refused, then a check that both readings agree key for key. Raises
+    LockFormatError with a plain reason."""
+    try:
+        tree = lock_strict_tree(text)
+    except ValueError as e:
+        raise LockFormatError(f"{LOCK_FILE} {e}") from None
+    data = yaml.load(text, Loader=_LockLoader)  # noqa: S506 — SafeLoader subclass
+    _lock_same_tree(tree, data)
+    return data
+
+
 def load_lock(root: Path) -> dict:
     lock_path = root / LOCK_FILE
     if not lock_path.exists():
         sys.exit(f"tessctl: {LOCK_FILE} not found. Run `tessctl init` first.")
-    with open(lock_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if data is None:
-        sys.exit(f"tessctl: {LOCK_FILE} is empty or invalid YAML.")
-    return data
+    try:
+        return _lock_load_text(lock_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, UnicodeDecodeError) as e:
+        sys.exit(f"tessctl: STOPPED — {LOCK_FILE} is not in the form Tess writes, so it is not "
+                 f"trusted ({str(e).splitlines()[0] if str(e) else type(e).__name__}).\n"
+                 f"  Put back the approved copy with `tessctl restore` (or "
+                 f"`git checkout -- {LOCK_FILE}`). Nothing was changed.")
+
+
+class _LockDumper(yaml.Dumper):
+    def ignore_aliases(self, data):  # noqa: ARG002 — every value written out in full
+        return True
 
 
 def save_lock(root: Path, data: dict) -> None:
@@ -824,6 +889,7 @@ def save_lock(root: Path, data: dict) -> None:
     lock_path = root / LOCK_FILE
     body = yaml.dump(
         data,
+        Dumper=_LockDumper,      # v1.0.0: no &anchors / *aliases in a new lock
         default_flow_style=False,
         allow_unicode=True,
         sort_keys=False,
@@ -1128,6 +1194,7 @@ def guarded_write(root: Path, live_rel: str, data: bytes, op: str = "write",
             fh.write(data)
         _refuse_symlink_write_target(live_path, norm_rel, op)
         os.replace(tmp_path_str, str(live_path))
+        _release_write_note(live_path, data)
     except Exception:
         try:
             os.unlink(tmp_path_str)
@@ -1230,6 +1297,7 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o644) -> None:
             os.fsync(fh.fileno())   # v0.2.1: bytes durable BEFORE the rename
         os.chmod(tmp_path_str, mode)
         os.replace(tmp_path_str, str(path))
+        _release_write_note(path, data)
     except BaseException:
         try:
             os.unlink(tmp_path_str)
@@ -3039,7 +3107,7 @@ def _captured_render_outputs_with_upstream_changes(root: Path, lock: dict) -> li
     up_path = staging_dir / "upstream-tess.lock"
     if up_path.is_file():
         try:
-            up = yaml.safe_load(up_path.read_text(encoding="utf-8")) or {}
+            up = _lock_load_text(up_path.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001 — A2 reports an unparsable lock itself
             up = {}
         for k, a in ((up.get("files") or {}) if isinstance(up, dict) else {}).items():
@@ -4688,7 +4756,7 @@ def _installed_role_names(root: Path) -> list:
         return []
     try:
         with open(lock_path, "r", encoding="utf-8") as f:
-            lock = yaml.safe_load(f) or {}
+            lock = _lock_load_text(f.read()) or {}
     except yaml.YAMLError:
         return []
     names = []
@@ -7909,7 +7977,7 @@ def _release_ssh_ready(root: Path) -> bool:
     is pinned in tess.lock, the allowed_signers file is installed and
     ssh-keygen is on PATH."""
     try:
-        lock = yaml.safe_load((root / LOCK_FILE).read_text(encoding="utf-8")) or {}
+        lock = _lock_load_text((root / LOCK_FILE).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return False
     return (bool(_release_ssh_pin(lock)) and _release_ssh_signers_bytes(root) is not None
@@ -8975,6 +9043,7 @@ def _cmd_update_body(args, root: Path) -> None:
     to_version = getattr(args, "to", None)
     if not dry_run:
         _anchor_refuse_unless_clean(root, "update")   # v1.0.0: never re-bless changed safety files
+        _RELEASE_WRITES.clear()   # v1.0.0 F2: re-anchor accepts only what this run writes
 
     lock = load_lock(root)
     fw = lock.get("framework", {})
@@ -9184,7 +9253,7 @@ def _cmd_update_body(args, root: Path) -> None:
         upstream_lock_data = None
         if staging_upstream_lock_path.exists():
             try:
-                upstream_lock_data = yaml.safe_load(
+                upstream_lock_data = _lock_load_text(
                     staging_upstream_lock_path.read_text(encoding="utf-8")
                 )
             except Exception as _e:
@@ -9325,6 +9394,7 @@ def _cmd_update_body(args, root: Path) -> None:
                             with os.fdopen(tmp_fd_new, "wb") as fh:
                                 fh.write(staging_bytes)
                             os.replace(tmp_path_new, str(core_path_new))
+                            _release_write_note(core_path_new, staging_bytes)
                         except Exception:
                             try:
                                 os.unlink(tmp_path_new)
@@ -9398,6 +9468,7 @@ def _cmd_update_body(args, root: Path) -> None:
                     with os.fdopen(tmp_fd_adv, "wb") as fh:
                         fh.write(staging_bytes)
                     os.replace(tmp_path_adv, str(core_path))
+                    _release_write_note(core_path, staging_bytes)
                 except Exception:
                     try:
                         os.unlink(tmp_path_adv)
@@ -11543,6 +11614,10 @@ def cmd_self_update(args, root: Path) -> None:
     operator can manually restore it.  It is overwritten on every self-update.
     """
     _check_tools("git")
+    # v1.0.0 (GPT-6 final F2): never start from changed safety files — the
+    # re-anchor at the end would otherwise record them as approved.
+    _anchor_refuse_unless_clean(root, "self-update")
+    _RELEASE_WRITES.clear()
 
     lock = load_lock(root)
     fw = lock.get("framework", {})
@@ -11644,6 +11719,7 @@ def cmd_self_update(args, root: Path) -> None:
             with os.fdopen(tmp_fd, "wb") as fh:
                 fh.write(new_engine_bytes)
             os.replace(tmp_path_str, str(engine_path))
+            _release_write_note(engine_path, new_engine_bytes)   # v1.0.0 F2: from the verified tag
         except Exception as exc:
             try:
                 os.unlink(tmp_path_str)
@@ -11698,7 +11774,10 @@ def cmd_self_update(args, root: Path) -> None:
         print(f"\n  tess.lock: upstream_ref updated to {ref}")
 
     if _su_proof is not None:
-        _anchor_after_release(root, "self-update")   # v1.0.0: verified signed release applied
+        # v1.0.0: verified signed release applied. Only the new engine (and
+        # the lock this command saved) take new hashes; a doctor/anchor finding
+        # on any other safety file stops here without recording anything.
+        _anchor_after_release(root, "self-update", engine=engine_path)
     print(f"\ntessctl self-update: complete — engine updated to {ref}")
     if backup_path.exists():
         print(f"  Previous engine retained at: {backup_path}")
@@ -16655,7 +16734,7 @@ def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: s
     upstream_lock = clone_dir / LOCK_FILE
     if upstream_lock.is_file() and not upstream_lock.is_symlink():
         try:
-            lock_sets.append((yaml.safe_load(upstream_lock.read_text(encoding="utf-8")) or {})
+            lock_sets.append((_lock_load_text(upstream_lock.read_text(encoding="utf-8")) or {})
                              .get("files") or {})
         except (yaml.YAMLError, OSError, AttributeError) as e:
             print(f"  NOTE  release proof: could not read the release's own tess.lock ({e})")
@@ -16970,7 +17049,7 @@ def _gate_release_lock_from_proof(resolve):
     if data is None:
         return None
     try:
-        return yaml.safe_load(data.decode("utf-8"))
+        return _lock_load_text(data.decode("utf-8"))
     except (UnicodeDecodeError, yaml.YAMLError):
         return None
 
@@ -17036,9 +17115,10 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
         info["reason_code"] = "no_base_lock"
         return set(), info
     try:
-        base_lock = yaml.safe_load(_gate_git_show_at_ref(root, base, LOCK_FILE)) or {}
+        _base_text = _gate_git_show_at_ref(root, base, LOCK_FILE)
+        base_lock = (_lock_load_text(_base_text) if _base_text is not None else None) or {}
         head_lock_text = _gate_git_show_at_ref(root, head, LOCK_FILE)
-        head_lock = yaml.safe_load(head_lock_text) if head_lock_text is not None else None
+        head_lock = _lock_load_text(head_lock_text) if head_lock_text is not None else None
     except yaml.YAMLError:
         info["reason_code"] = "lock_unreadable"
         return set(), info
@@ -17505,8 +17585,9 @@ def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
 # did not enumerate could install an older or stubbed gate WITH valid pins.
 # The anchor moves the source of truth out of the repository:
 #   <OS user home>/.config/tess/projects/<project id>/anchor.json   (0600, dir 0700)
-# holds the sha256 of every enforcement file (ANCHOR_FILES, the Tess git hooks,
-# and tess.lock's enforcement fields), and a content-addressed copy of each
+# holds the sha256 of every enforcement file (ANCHOR_FILES — including the
+# release key files —, the Tess git hooks, and tess.lock read in its strict
+# form minus LOCK_VOLATILE bookkeeping), and a content-addressed copy of each
 # anchored file's bytes sits in <home>/.config/tess/anchor-blobs/ so
 # `tessctl restore` can put them back. .claude/hooks/run-pinned.py checks the
 # anchor BEFORE running any hook: a mismatch makes the gate deny every call
@@ -17515,7 +17596,8 @@ def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
 # Written ONLY by: the create-tess wizard (`tessctl anchor init`, after its
 # verify, refused once an anchor exists), `tessctl update` / `self-update`
 # after a verified signed release was applied (refused while the files
-# differ from the anchor), and `tessctl anchor accept` (a person at a real
+# differ from the anchor; only files that run wrote take new hashes, every
+# other record is carried forward), and `tessctl anchor accept` (a person at a real
 # terminal, shown the diff, typing the confirmation). The same lists and
 # checks live in run-pinned.py; tests/test_v1_enforcement_anchor.py keeps
 # the two in step.
@@ -17535,6 +17617,7 @@ ANCHOR_FILES = (
     ".tess/core/pinned-scripts.sha256", ".tess/tess.lock", ".claude/settings.json",
     ".codex/config.toml", ".codex/rules/tess.rules", "core/policy/policy.yaml",
     ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
+    ".tess/keys/twiss-release-key.asc", ".tess/keys/twiss-release-allowed-signers",
 )
 ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
 ANCHOR_GIT_PREFIX = "git-hooks/"
@@ -17635,32 +17718,172 @@ def _anchor_file_path(root: Path, rel: str) -> Path | None:
     return root / rel
 
 
-def _anchor_lock_projection(text: str) -> str:
-    """Byte-for-byte the digest run-pinned.py's lock_projection computes."""
-    files: dict = {}
-    fw: dict = {}
-    section = key = None
-    for raw in text.splitlines():
-        if raw and not raw.startswith((" ", "#")):
-            section, key = raw.split(":", 1)[0].strip(), None
+# --- tess.lock strict form (v1.0.0, GPT-6 final F1) ------------------------
+# This block is BYTE-IDENTICAL in .claude/hooks/run-pinned.py and
+# .tess/bin/tessctl (tests/test_v1_lock_strict.py compares the source).
+# tess.lock is read as a strict subset of YAML: block mappings only, one
+# `key: value` per line, single-line scalars. A duplicate key, a flow or
+# inline mapping, a merge key, an anchor or alias on anything but a scalar,
+# a tag, a block scalar, a continuation line, a sequence, a tab, an unusual
+# line break or a second document is refused, so the tree built here IS the
+# tree YAML builds (tessctl's load_lock checks that on every read). The anchor
+# digest covers every key and raw value except the volatile bookkeeping below,
+# so any change YAML would see in an enforcement field changes the digest.
+LOCK_VOLATILE = (
+    ("framework", "last_updated"), ("render_outputs",),
+    ("files", "*", "status"), ("files", "*", "last_updated"),
+    ("files", "*", "quarantined_at"), ("files", "*", "quarantined_by"),
+    ("files", "*", "resolved_at"), ("files", "*", "resolved_mode"),
+    ("files", "*", "override_diff"), ("files", "*", "override_recorded_at"),
+    ("files", "*", "captured_at"), ("files", "*", "captured_by"),
+    ("files", "*", "approved_at"), ("files", "*", "approved_rationale"),
+    ("files", "*", "published_at"), ("files", "*", "published_from"),
+)
+_LOCK_BAD_CHAR = re.compile("[\x00-\x09\x0b-\x1f\x7f\x85  ﻿�]")
+_LOCK_SQ = re.compile(r"'(?:[^']|'')*'")
+_LOCK_DQ = re.compile(r'"[^"\\]*"')
+_LOCK_PLAIN = re.compile(r"[^\s'\"&*!|>%@`{}\[\],#?:<-][^\n]*")
+_LOCK_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _lock_plain_ok(tok: str) -> bool:
+    return bool(_LOCK_PLAIN.fullmatch(tok)) and " #" not in tok and ": " not in tok \
+        and not tok.endswith(":")
+
+
+def _lock_scalar(tok: str, n: int, anchors: dict) -> str:
+    """The raw token of one single-line scalar value (an alias resolves to
+    the token its anchor names)."""
+    if tok.startswith("*"):
+        if not _LOCK_NAME.fullmatch(tok[1:]) or tok[1:] not in anchors:
+            raise ValueError(f"line {n}: an alias that names no earlier scalar anchor")
+        return anchors[tok[1:]]
+    if tok.startswith("&"):
+        name, _, rest = tok[1:].partition(" ")
+        if not _LOCK_NAME.fullmatch(name) or name in anchors or rest.startswith(("&", "*")):
+            raise ValueError(f"line {n}: an anchor that is repeated or not on a plain value")
+        anchors[name] = _lock_scalar(rest, n, anchors)
+        return anchors[name]
+    if tok in ("{}", "[]") or _LOCK_SQ.fullmatch(tok) or _LOCK_DQ.fullmatch(tok) or _lock_plain_ok(tok):
+        return tok
+    raise ValueError(f"line {n}: a value that is not a single-line scalar "
+                     "(inline mapping or list, tag, block text or comment)")
+
+
+def _lock_quote_end(s: str) -> int:
+    """Index just past the quote closing the quoted value `s` starts with; -1
+    while it is still open ('' in single quotes, \\x in double quotes)."""
+    k = 1
+    while k < len(s):
+        if s[0] == "'" and s[k] == "'":
+            if s[k + 1:k + 2] != "'":
+                return k + 1
+            k += 1
+        elif s[0] == '"' and s[k] == "\\":
+            k += 1
+        elif s[0] == '"' and s[k] == '"':
+            return k + 1
+        k += 1
+    return -1
+
+
+def lock_strict_tree(text: str) -> dict:
+    """tess.lock as nested dicts whose leaves are raw value tokens ("" = no
+    value). Raises ValueError (a plain reason) outside the strict form."""
+    if _LOCK_BAD_CHAR.search(text):
+        raise ValueError("has a tab, a control character or an unusual line break")
+    root: dict = {}
+    stack = [(0, root)]
+    pending = None
+    anchors: dict = {}
+    lines = text.split("\n")
+    i = -1
+    while i + 1 < len(lines):
+        i += 1
+        n, line = i + 1, lines[i]
+        body = line.lstrip(" ")
+        if not body.strip(" ") or body.startswith("#"):
             continue
-        if section == "framework":
-            m = re.match(r"^  (trusted_key_fingerprint|trusted_ssh_key_fingerprint):\s*(.*?)\s*$", raw)
-            if m:
-                fw[m.group(1)] = m.group(2).strip("'\"")
+        indent = len(line) - len(body)
+        if indent == 0 and body.startswith(("---", "...", "%")):
+            raise ValueError(f"line {n}: a second YAML document or a directive")
+        if pending is not None:
+            if indent > pending[0]:
+                pending[1][pending[2]] = {}
+                stack.append((indent, pending[1][pending[2]]))
+            pending = None
+        while indent < stack[-1][0]:
+            stack.pop()
+        if indent != stack[-1][0]:
+            raise ValueError(f"line {n}: unexpected indentation (a continued value?)")
+        if body.startswith("'"):
+            m = re.match(r"('(?:[^']|'')*'):(?: (.*))?$", body)
+            if not m:
+                raise ValueError(f"line {n}: not a `key: value` line")
+            key, tok = m.group(1)[1:-1].replace("''", "'"), m.group(2)
+        else:
+            key, sep, tok = body.partition(": ")
+            if not sep:
+                if not body.rstrip(" ").endswith(":"):
+                    raise ValueError(f"line {n}: not a `key: value` line")
+                key, tok = body.rstrip(" ")[:-1], None
+            if not _lock_plain_ok(key):
+                raise ValueError(f"line {n}: a key that is not plain text "
+                                 "(merge key, anchor, alias, tag or list?)")
+        mapping = stack[-1][1]
+        if key in mapping:
+            raise ValueError(f"line {n}: the key {key!r} appears twice")
+        if tok is not None and tok[:1] in ("'", '"'):
+            # a quoted value (the form save_lock writes long or multi-line text
+            # in) runs to its closing quote, over as many lines as it takes
+            j, end = i, _lock_quote_end(tok)
+            while end < 0:
+                j += 1
+                if j >= len(lines):
+                    raise ValueError(f"line {n}: a quoted value that never ends")
+                tok += "\n" + lines[j]
+                end = _lock_quote_end(tok)
+            if tok[end:].strip(" "):
+                raise ValueError(f"line {j + 1}: text after a quoted value")
+            mapping[key], i = tok[:end], j
             continue
-        if section != "files":
-            continue
-        m = re.match(r"^  (\S[^:]*):\s*$", raw)
-        if m:
-            key = m.group(1).strip().strip("'\"")
-            files[key] = {}
-            continue
-        m = re.match(r"^    (base_sha|live_path|tier):\s*(.*?)\s*$", raw)
-        if m and key is not None:
-            files[key][m.group(1)] = m.group(2).strip("'\"")
-    canon = json.dumps({"files": files, "framework": fw}, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+        tok = None if tok is None else tok.rstrip(" ")
+        if not tok:
+            mapping[key] = ""
+            pending = (indent, mapping, key)
+        else:
+            mapping[key] = _lock_scalar(tok, n, anchors)
+    if not root:
+        raise ValueError("is empty")
+    return root
+
+
+def lock_projection(text: str) -> str:
+    """sha256 over every key and raw value of tess.lock except LOCK_VOLATILE.
+    A file outside the strict form gets a digest no valid file can have."""
+    try:
+        tree = lock_strict_tree(text)
+    except ValueError:
+        return "rejected:" + hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+    rows: list = []
+
+    def walk(node: dict, path: tuple) -> None:
+        for key in sorted(node):
+            p = path + (key,)
+            if any(len(v) <= len(p) and all(a in ("*", b) for a, b in zip(v, p))
+                   for v in LOCK_VOLATILE):
+                continue
+            if isinstance(node[key], dict):
+                rows.append([list(p), None])
+                walk(node[key], p)
+            else:
+                rows.append([list(p), node[key]])
+    walk(tree, ())
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("utf-8")).hexdigest()
+# --- end tess.lock strict form ---------------------------------------------
+
+
+_anchor_lock_projection = lock_projection   # the name tests and callers use
 
 
 def _anchor_digest(rel: str, data: bytes) -> str:
@@ -17772,16 +17995,32 @@ def _anchor_write_private(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _anchor_write(root: Path, source: str) -> Path:
-    """Record the current enforcement files as approved. Raises ValueError."""
+def _anchor_write(root: Path, source: str, carry: dict | None = None,
+                  accept: dict | None = None) -> Path:
+    """Record enforcement files as approved. Raises ValueError.
+
+    Default (install, `anchor accept`): every current enforcement file.
+    After a verified release run (`update` / `self-update`, v1.0.0 GPT-6 final
+    F2): `carry` = the previously approved records kept as they are, `accept`
+    = {rel: bytes} of the files that run wrote; nothing else is recorded."""
     pid = _anchor_project_id(root) or ("path-" + _anchor_path_key(root))
     tess_dir = _anchor_tess_dir()
     projects, blobs = tess_dir / "projects", tess_dir / "anchor-blobs"
     pdir = projects / pid
+    items = _anchor_current(root) if accept is None else accept
+    lock_data = items.get(LOCK_FILE)
+    if lock_data is not None and _anchor_digest(LOCK_FILE, lock_data).startswith("rejected:"):
+        try:
+            lock_strict_tree(lock_data.decode("utf-8"))
+            why = "it is not UTF-8 text"
+        except (ValueError, UnicodeDecodeError) as e:
+            why = str(e)
+        raise ValueError(f"{LOCK_FILE} is not in the form Tess writes ({why})")
     for d in (tess_dir, projects, projects / "by-path", pdir, blobs):
         _anchor_mkdir_private(d, root)
-    files = {}
-    for rel, data in sorted(_anchor_current(root).items()):
+    files = {rel: dict(rec) for rel, rec in (carry or {}).items()
+             if isinstance(rec, dict) and rec.get("sha256")}
+    for rel, data in sorted(items.items()):
         raw = hashlib.sha256(data).hexdigest()
         blob = blobs / raw
         if _anchor_read(blob) is None or hashlib.sha256(blob.read_bytes()).hexdigest() != raw:
@@ -17825,9 +18064,60 @@ def _anchor_refuse_unless_clean(root: Path, verb: str) -> None:
                  + "\n  Nothing was changed.")
 
 
-def _anchor_after_release(root: Path, verb: str) -> None:
+# v1.0.0 (GPT-6 final F2): what a verified release run (`update`,
+# `self-update`) wrote, {realpath: sha256 of the bytes}. Re-anchoring accepts a
+# new hash ONLY for a file whose current bytes are exactly what this process
+# wrote from the verified release; every other file keeps its approved hash.
+_RELEASE_WRITES: dict = {}
+
+
+def _release_write_note(path, data: bytes) -> None:
     try:
-        where = _anchor_write(root, verb)
+        _RELEASE_WRITES[os.path.realpath(str(path))] = hashlib.sha256(data).hexdigest()
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> None:
+    """Re-anchor after a verified signed release was applied. Never re-blesses
+    a change the release did not make: if any anchored file differs from its
+    approved hash and was not written by this run, nothing is recorded and the
+    command stops (Tess's hooks stay stopped until restore / anchor accept)."""
+    st = _anchor_state(root)
+    if st.state == "lost":
+        sys.exit(f"tessctl {verb}: the release was applied, but "
+                 + "\n".join(_anchor_findings(root)) + "\n  Nothing was recorded.")
+    if st.state == "none":
+        # No earlier approval to carry forward: record a first one only when
+        # the installed files pass `verify` (the same rule as `anchor init`).
+        eng = engine or Path(__file__).resolve()
+        r = subprocess.run([sys.executable, "-I", "-B", str(eng), "verify"], cwd=str(root),
+                           capture_output=True, text=True,
+                           env={**os.environ, "TESS_ROOT": str(root)})
+        if r.returncode != 0:
+            print("  WARN  Tess's safety files were NOT recorded: `tessctl verify` does not "
+                  "pass. Fix what it reports, then run `tessctl anchor init`.")
+            return
+        carry, accept = None, None
+    else:
+        old = st.doc["files"]
+        current = _anchor_current(root)
+        accept, changed = {}, []
+        for rel in sorted(set(old) | set(current)):
+            data, rec = current.get(rel), old.get(rel)
+            path = _anchor_file_path(root, rel)
+            wrote = _RELEASE_WRITES.get(os.path.realpath(str(path))) if path is not None else None
+            if data is not None and wrote is not None and hashlib.sha256(data).hexdigest() == wrote:
+                accept[rel] = data
+            elif rec is not None and (data is None or _anchor_digest(rel, data) != rec.get("sha256")):
+                changed.append(rel)
+        if changed:
+            sys.exit(f"tessctl {verb}: STOPPED — the release was applied, but these safety files "
+                     f"changed in a way the release did not, so Tess did NOT record them as "
+                     f"approved:\n" + "".join(f"  - {rel}\n" for rel in changed) + ANCHOR_STOP)
+        carry = {rel: rec for rel, rec in old.items() if rel not in accept}
+    try:
+        where = _anchor_write(root, verb, carry=carry, accept=accept)
     except (OSError, ValueError) as e:
         print(f"  WARN  could not record Tess's safety files outside the project ({e}); "
               f"run `tessctl anchor accept` in your own terminal")
@@ -18219,8 +18509,8 @@ def _gate_first_install_accepted(root: Path, candidate_paths: list, head: str, p
         head_lock_bytes = head_bytes(LOCK_FILE)
         if rel_lock_bytes is not None and head_lock_bytes is not None:
             try:
-                rel_lock = yaml.safe_load(rel_lock_bytes.decode("utf-8"))
-                head_lock = yaml.safe_load(head_lock_bytes.decode("utf-8"))
+                rel_lock = _lock_load_text(rel_lock_bytes.decode("utf-8"))
+                head_lock = _lock_load_text(head_lock_bytes.decode("utf-8"))
                 why = "lock malformed"
                 if isinstance(rel_lock, dict) and isinstance(head_lock, dict):
                     why = _first_install_lock_change_ok(rel_lock, head_lock, tag_name,
