@@ -6718,7 +6718,7 @@ render_outputs:
   .codex/agents/cyra.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:4dd54e50b308c0ee1a169bc1a08bb2c28c3c04582177e6204505cacbc2c8f8f8
+    rendered_sha: sha256:ecc72edeb4fe7ab2f576903ec4642c355146de52205714af356e750a254c5710
   .codex/agents/iris.toml:
     target: codex
     status: rendered
