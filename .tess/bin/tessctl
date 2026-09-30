@@ -17599,6 +17599,35 @@ def _anchor_git_hooks_dir(root: Path) -> Path | None:
     return common / "hooks"
 
 
+def _anchor_restore_hooks_dir(root: Path) -> Path | None:
+    """Where `tessctl restore` may WRITE a git hook (v1.0.0 final review, Cyra
+    A-4): the git dir git itself reports (`git rev-parse --git-dir`, GIT_*
+    ignored, no replace objects, fsmonitor off), and only when that is this
+    project's own `.git` directory, reached without a symlink. A `.git` FILE
+    (`gitdir:` pointer), a git dir outside the project, or a symlinked `.git`
+    or `.git/hooks` gets None: restore never writes a hook somewhere else."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        r = subprocess.run(["git", "-C", str(root), "-c", "core.fsmonitor=false", "rev-parse",
+                            "--git-dir"], capture_output=True, text=True, timeout=30, env=env,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout.strip() if r.returncode == 0 else ""
+    if not out or "\n" in out:
+        return None
+    gitdir = Path(out) if os.path.isabs(out) else Path(root) / out
+    own = Path(os.path.realpath(str(root))) / ".git"
+    dot = Path(root) / ".git"
+    if dot.is_symlink() or not dot.is_dir() or os.path.realpath(str(gitdir)) != str(own):
+        return None
+    hooks = own / "hooks"
+    if hooks.is_symlink() or (hooks.exists() and not hooks.is_dir()):
+        return None
+    return hooks
+
+
 def _anchor_file_path(root: Path, rel: str) -> Path | None:
     if rel.startswith(ANCHOR_GIT_PREFIX):
         hooks = _anchor_git_hooks_dir(root)
@@ -17823,6 +17852,15 @@ def _anchor_restore(root: Path, dry_run: bool = False) -> list:
         if blob is None or hashlib.sha256(blob).hexdigest() != rec.get("blob") or path is None:
             failed.append(f"{rel}: the approved copy is not available")
             continue
+        if rel.startswith(ANCHOR_GIT_PREFIX):
+            hooks = _anchor_restore_hooks_dir(root)
+            name = rel[len(ANCHOR_GIT_PREFIX):]
+            if hooks is None or "/" in name or name in ("", ".", ".."):
+                failed.append(f"{rel}: this project's git hooks folder is not its own .git/hooks "
+                              "(a .git file, a symlink, or a folder outside the project), so "
+                              "restore will not write there")
+                continue
+            path = hooks / name
         if dry_run:
             print(f"  WOULD RESTORE  {rel}  (the approved copy)")
             continue

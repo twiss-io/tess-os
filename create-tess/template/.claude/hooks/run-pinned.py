@@ -378,6 +378,10 @@ def regen_pins(root: Path) -> None:
 # (the gate denies it to the agent, but a program built at run time is not
 # seen): this turns a silent rollback into a loud stop, not an OS boundary.
 ANCHOR_FORMAT = "tess-enforcement-anchor/1"
+# Project ids: a root commit (sha1 or sha256), or `path-<sha256 of the path>`
+# for a repository with no commit yet. Identical to tessctl's _ANCHOR_ID (a test
+# compares them): a narrower pattern here stopped Tess for good on such a repo.
+_ANCHOR_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}|path-[0-9a-f]{64}")
 ANCHOR_FILES = (
     SELF_REL, ".claude/hooks/tess-gate.py", ".claude/hooks/vault-dispatch-scan.py",
     ".claude/hooks/dispatch-guard.sh", ".claude/hooks/task-lock-set.sh",
@@ -547,7 +551,7 @@ def anchor_locate(root: Path) -> tuple:
     marker = _anchor_json(base / "by-path" / (anchor_path_key(root) + ".json"))
     if marker is not None:
         pid = str(marker.get("project_id") or "")
-        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pid):
+        if not _ANCHOR_ID.fullmatch(pid):
             raise AnchorError(ANCHOR_LOST, ["the path marker names no project"])
     else:
         pid = anchor_project_id(root) or ""
