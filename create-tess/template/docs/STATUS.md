@@ -73,11 +73,15 @@ lifecycle evidence exists for an adapter, not how much it enforces.
 Re-verified on 2026-09-29. The full trust model is in
 [SECURITY.md](../SECURITY.md#trust-model).
 
-1. **Verifier approvals are automated attestations.** The registered
-   verifier key is Cyra, fingerprint `F9321F92…76E8`. By design it has no
-   passphrase and is used by the review automation. An agent that did not
-   build a protected change reviews it and signs the verdict, so a Cyra
-   signature means the automated review passed, not that a person approved.
+1. **Verifier approvals attest a review, signed by the operator.** The
+   registered verifier key is Cyra, fingerprint `F9321F92…76E8`. An agent that
+   did not build a protected change reviews it and drafts the verdict; since
+   the v1.0 security audit the operator signs it at their own terminal
+   (`tessctl verdict sign` asks them to type `sign as <name>` and needs the
+   key's passphrase). A Cyra signature means the review of that exact content
+   passed. The key was created without a passphrase and needs one before it
+   can sign again (SECURITY.md,
+   [Trust model](../SECURITY.md#verifier-signatures-attest-a-review-and-the-operator-signs-them)).
 2. **Merges to `main` need no human review, by design.** The `main` ruleset
    requires six status checks (`tests (py3.9)`, `tests (py3.12)`,
    `create-tess tests (node 18)`, `create-tess tests (node 24)`,

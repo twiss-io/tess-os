@@ -103,4 +103,5 @@ def test_githooks_install_is_idempotent_and_keeps_existing_hooks(inst):
     assert first == {"pre-commit": "installed", "post-merge": "installed"}
     assert second == {"pre-commit": "present", "post-merge": "present"}
     text = hook.read_text()
-    assert text.count("# tess-brain-guard v1") == 1 and "# gate block" in text and "lint --staged --warn-only" in text
+    assert text.count("# tess-brain-guard v2") == 1 and "# gate block" in text and "lint --staged --warn-only" in text
+    assert "run-pinned.py" in text and "--closure scripts/brain" in text  # v1.0.0 audit: never unpinned

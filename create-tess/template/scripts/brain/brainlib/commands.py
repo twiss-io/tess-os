@@ -25,15 +25,20 @@ def cmd_sync(cfg: Config, a) -> Out:
     why = _need(cfg)
     if why:
         return (0 if cfg.is_source_repo() else 1), {"skipped": why}
-    ok = False
     why = sync.claude_dir_problem(cfg, a.claude_dir)
-    if why:
-        ok = _operator_allows_claude_dir(cfg, a.claude_dir, why)
-        if not ok:
+    homes = sync.home_problem(cfg, a.codex_home, a.gemini_home)  # v1.0.0 audit: --codex/--gemini-home too
+    ok = False
+    if why or homes:  # one question for every folder that is not the runtime's own
+        ok = _operator_allows_claude_dir(cfg, a.claude_dir, "; ".join(x for x in (why, homes) if x))
+        if not ok and why:
             return 1, {"error": "refused --claude-dir: %s. Only you, at a terminal, can journal another folder "
                                 "of Claude conversations as your own words; an agent or a pipe cannot" % why}
+        if not ok:
+            return 1, {"error": "refused: %s. Only you, at a terminal, can journal another folder of "
+                                "conversations as your own words; an agent or a pipe cannot" % homes}
     res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
-                   gemini_home=a.gemini_home, claude_dir_confirmed=ok)
+                   gemini_home=a.gemini_home, claude_dir_confirmed=ok and bool(why),
+                   homes_confirmed=ok and bool(homes))
     if isinstance(res, dict) and res.get("error"):
         return 1, res
     over = any(o.get("status") == inbox.OVER_CAP for o in res.get("outcomes", [])) if isinstance(res, dict) else False
@@ -104,6 +109,18 @@ def _entity(cfg: Config, a) -> str:
     return ""
 
 
+def _register(cfg: Config, a) -> str:
+    """Normalise --register to a folder inside brain/; '' or the plain reason it is refused."""
+    raw = str(getattr(a, "register", "") or "")
+    if not raw:
+        return ""
+    target, why = records.register_target(cfg, raw)
+    if why:
+        return why
+    a.register = target
+    return ""
+
+
 def _candidate(cfg: Config, a, kind: str, detected: str) -> Dict:
     return inbox.new_candidate(
         cfg, kind, a.statement or a.quote, a.quote, detected_by=detected, source_ref=getattr(a, "source_ref", ""),
@@ -128,7 +145,7 @@ def _shown(cfg: Config, a, res: Out) -> Out:
 
 
 def cmd_decide(cfg: Config, a) -> Out:
-    why = _need(cfg) or _entity(cfg, a)
+    why = _need(cfg) or _entity(cfg, a) or _register(cfg, a)
     if why:
         return 1, {"error": why}
     if not a.no_sync:
@@ -146,7 +163,7 @@ def cmd_remember(cfg: Config, a) -> Out:
 
 
 def cmd_inbox_add(cfg: Config, a) -> Out:
-    why = _need(cfg) or _entity(cfg, a)
+    why = _need(cfg) or _entity(cfg, a) or _register(cfg, a)
     if why:
         return 1, {"error": why}
     return _shown(cfg, a, _run_candidate(cfg, _candidate(cfg, a, a.kind, a.detected_by), a.dry_run))

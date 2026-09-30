@@ -694,7 +694,22 @@ def test_lint_policy_accepts_real_verifier_key_names(engine):
 # `tessctl verdict sign` / `tessctl verdict verify` CLI round-trip
 # ---------------------------------------------------------------------------
 
-def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys):
+def _sign_at_terminal(engine, monkeypatch, root, verdict_path, key, verifier="Reid"):
+    """`tessctl verdict sign` as a person at a terminal would run it (v1.0
+    audit: signing needs a terminal and a typed confirmation). The test keys
+    have no passphrase, which signing now refuses; that refusal is tested in
+    tests/test_v1_audit_policy_vault.py, so here the key counts as protected."""
+    import argparse
+    import io
+    monkeypatch.setattr(engine, "_signer_is_terminal", lambda: True)
+    monkeypatch.setattr(engine, "_signer_key_protection", lambda grip, home: "P")
+    monkeypatch.setattr(engine.sys, "stdin", io.StringIO(f"sign as {verifier}\n"))
+    engine._cmd_verdict_sign(argparse.Namespace(
+        file=str(verdict_path), verifier=verifier, key_id=key.fpr,
+        gnupg_home=str(key.home), output=None), root)
+
+
+def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys, engine, monkeypatch, capsys):
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
@@ -710,12 +725,8 @@ def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys):
         encoding="utf-8",
     )
 
-    r_sign = run_cli(
-        root, "verdict", "sign", str(verdict_path),
-        "--verifier", "Reid", "--key-id", key.fpr, "--gnupg-home", str(key.home),
-    )
-    assert r_sign.returncode == 0, r_sign.stdout + r_sign.stderr
-    assert "signed" in r_sign.stdout.lower()
+    _sign_at_terminal(engine, monkeypatch, root, verdict_path, key)
+    assert "signed" in capsys.readouterr().out.lower()
 
     r_verify = run_cli(root, "verdict", "verify", str(verdict_path), "--json")
     assert r_verify.returncode == 0, r_verify.stdout + r_verify.stderr
@@ -764,20 +775,20 @@ def test_cli_sign_rejects_verifier_mismatch(project, run_cli, verifier_gpg_keys)
     assert "does not match" in (r.stdout + r.stderr)
 
 
-def test_cli_sign_produces_schema_valid_signature_block(project, run_cli, verifier_gpg_keys):
+def test_cli_sign_produces_schema_valid_signature_block(project, run_cli, verifier_gpg_keys, engine, monkeypatch):
     """The `signature` block `tessctl verdict sign` writes must itself pass
     core/contracts/verdict.schema.json's $defs.VerdictSignature shape."""
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     key = verifier_gpg_keys["Reid"]
+    (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+    rel = _bundle_key(root, "Reid", key)
+    policy = _policy_dict(["Reid"], {"Reid": {"fingerprint": key.fpr, "public_key_file": rel}})
+    (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
     verdict_path = root / "prod-src.verdict.json"
     verdict_path.write_text(json.dumps(_base_verdict(["src/prod/**"], {})), encoding="utf-8")
 
-    r = run_cli(
-        root, "verdict", "sign", str(verdict_path),
-        "--verifier", "Reid", "--key-id", key.fpr, "--gnupg-home", str(key.home),
-    )
-    assert r.returncode == 0, r.stdout + r.stderr
+    _sign_at_terminal(engine, monkeypatch, root, verdict_path, key)
 
     signed = json.loads(verdict_path.read_text())
     sig = signed["signature"]

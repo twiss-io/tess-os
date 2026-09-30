@@ -13,6 +13,24 @@ from . import events
 from .config import Config
 
 OUTBOX = "outbox.jsonl"
+# v1.0.0 audit (attestation key usable by the agent): a sandboxed shell (Codex) can READ the brain key, so a
+# MAC on an outbox row proves only that some process of this user wrote it, not that a hook captured the
+# operator. Rows that ARE evidence of the operator's words (captured turns, attested journal lines and
+# sessions) or that seal a record as accepted/active/confirmed are therefore never queued here and never
+# read from here: only a process that can write the external ledger itself (a hook, outside the sandbox)
+# makes them. Presentations, queued confirmations (re-checked by the hook, claims.py), automation markers
+# and seals of records that are still waiting for verification may wait here.
+EVIDENCE_ROWS = ("line", "session", "turn", "seal-init")
+ELEVATED = ("accepted", "active")
+
+
+def admissible(row: Dict) -> bool:
+    t = row.get("t")
+    if t in EVIDENCE_ROWS:
+        return False
+    if t == "rec":
+        return str(row.get("status") or "") not in ELEVATED and not row.get("confirmed")
+    return True
 
 
 def _body(row: Dict) -> str:
@@ -32,8 +50,8 @@ def rows(cfg: Config, paths: List[Path]) -> List[Dict]:
                 r = json.loads(raw)
             except ValueError:
                 continue
-            if isinstance(r, dict) and isinstance(r.get("row"), dict) and _eq(cfg, r.get("mac"), "outbox",
-                                                                               _body(r["row"])):
+            if isinstance(r, dict) and isinstance(r.get("row"), dict) and admissible(r["row"]) and \
+                    _eq(cfg, r.get("mac"), "outbox", _body(r["row"])):
                 out.append(r["row"])
     return out
 
@@ -44,6 +62,9 @@ def paths(cfg: Config) -> List[Path]:
 
 def to_outbox(cfg: Config, new: List[Dict], seq: int, chain: str) -> bool:
     from .provenance import mac
+    new = [r for r in new if admissible(r)]  # evidence waits for the next hook instead (see EVIDENCE_ROWS)
+    if not new:
+        return False
     new = events.stamp(new, seq, chain)
     signed = [{"row": r, "mac": mac(cfg, "outbox", _body(r))} for r in new]
     if not signed or not signed[0]["mac"]:

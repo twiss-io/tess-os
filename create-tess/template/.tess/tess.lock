@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-30T13:11:14.934031Z'
+  last_updated: '2026-09-30T21:23:24.221267Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -70,7 +70,7 @@ files:
   .tess/core/agents-dispatch/cyra.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:14c0fde84360c2aa7f65eb4a7035b94314e77df0ac1b04f6003e8519a3a79cfe
+    base_sha: sha256:70e8f6e9d6543c1f55433204a0ec948144ed81427ec620a1f337f6e104adca68
     live_path: .claude/agents/cyra.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/iris.md:
@@ -4534,7 +4534,7 @@ files:
   .tess/core/conductor/release-process.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:c988b6bb32c58e4ee973ce12774aedf20c36d6e5a3399e65c3739369cafbab6a
+    base_sha: sha256:279ec3bd19f3c5fad12dcfea2f3f23c571398b503133f170e52530cbb6b06f11
     live_path: conductor/release-process.md
     last_updated: '2026-06-29T02:22:00.000000Z'
   .tess/core/conductor/verdict-signing.md:
@@ -4767,7 +4767,7 @@ files:
   .tess/core/conductor/verification-routing.md:
     status: core-managed
     tier: security
-    base_sha: sha256:16888eb3eb008f54e3d2ec9dc127c7c7e51e929034b1025578caa29449e3e093
+    base_sha: sha256:e13c4a2d54a04de580117be98ad3817eebaea4cdd23b99fe4f9df997baf4cc70
     live_path: conductor/verification-routing.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/lenses/README.md:
@@ -5625,7 +5625,7 @@ files:
   .tess/core/conductor/roster.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:465b3cac007faeb78966cd65f430e90eff82cf0ba6a30dec501f9ef7368905e3
+    base_sha: sha256:877678fe8d7bc4114fdeaefca54271995eab33794c5cc44da19fa529a0af528f
     live_path: conductor/roster.md
     last_updated: 2026-09-24 12:00:00+00:00
   .tess/core/hooks/dispatch-guard.sh:
@@ -5738,7 +5738,7 @@ files:
   .tess/core/templates/claude-md/orchestrators.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:d6bd70a13e55109fe8ea9ea9f30cb0c8cac574df034a94980e0daca5d93bd00b
+    base_sha: sha256:1a1abc2e204dcc56d9a09e9cea7b4a2f73fa85af8e52632b925b1654a98e467c
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-06-28 00:00:00+00:00
@@ -5766,7 +5766,7 @@ files:
   .tess/core/templates/agents-md/codex-tess.rules.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:135a4a38f91e42a89f9dbfae73593b9599028c39d2c9ae1b0912c6971402565e
+    base_sha: sha256:d9c32f56ae603cb1499402fa48a75b5e978a9f46449df6f086ed4f422100379e
     live_path: null
     render: template
     last_updated: '2026-09-29T00:00:00Z'
@@ -6083,7 +6083,7 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:c18274b736ea4b04e989bdefcb42dc559a705dc075b60c5e5b543b7bfc6e06b7
+    base_sha: sha256:1e2f2774163298c1acf4c458373b25547f62bbbd8d0a554d77bca9d8ff353bdb
     live_path: core/policy/policy.yaml
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/contracts/task.schema.json:
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:205faffed834bfea6b8212cde120dd93bb6a4ebf6d795ca7186dbd5404047913
+    base_sha: sha256:bd28e2a697543ce582a5ad2c26e62a2aa560dc06311ed723e6a8dd9769c9f2f7
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:
@@ -6366,7 +6366,7 @@ render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:fc7b74d3429ab1e01cdb3c8b385faa7491ee3267ba210c5cdd51b7bcec04d0bc
+    rendered_sha: sha256:83db0413568dcaf21aa83fddc3d00e43cfd75a7f93e1ca084bb37d7213f7518b
   .claude/settings.json:
     target: claude-code
     status: rendered
@@ -6718,7 +6718,7 @@ render_outputs:
   .codex/agents/cyra.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:4dd54e50b308c0ee1a169bc1a08bb2c28c3c04582177e6204505cacbc2c8f8f8
+    rendered_sha: sha256:9e56a3fea9c41857f5f38b46811b101dd5ef00c04a26ee121add86770e0beb4e
   .codex/agents/iris.toml:
     target: codex
     status: rendered
@@ -6746,7 +6746,7 @@ render_outputs:
   .codex/rules/tess.rules:
     target: codex
     status: rendered
-    rendered_sha: sha256:135a4a38f91e42a89f9dbfae73593b9599028c39d2c9ae1b0912c6971402565e
+    rendered_sha: sha256:d9c32f56ae603cb1499402fa48a75b5e978a9f46449df6f086ed4f422100379e
   .agents/skills/security-audit/AI-AND-LLM.md:
     target: codex
     status: rendered

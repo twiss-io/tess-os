@@ -352,7 +352,7 @@ def test_decision_log_redacts_whole_pem_blocks_and_key_blobs(proj, runtime):
 # ------------------------------------------------------------------ L-c: permission modes
 
 @pytest.mark.parametrize("mode,want", [("default", "ask"), ("acceptEdits", "ask"), ("plan", "ask"),
-                                       ("auto", "ask"), ("bypassPermissions", "deny"),
+                                       ("auto", "deny"), ("bypassPermissions", "deny"),
                                        ("dontAsk", "deny"), ("", "deny"), ("yolo", "deny")])
 def test_ask_only_in_known_interactive_modes(proj, mode, want):
     assert bash(proj, "claude", "git remote add pub https://github.com/a/b.git", mode=mode) == want

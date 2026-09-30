@@ -540,77 +540,99 @@ def _brain_key_dir(tmp_path_factory):
 
 
 # ---------------------------------------------------------------------------
-# v1.0.0 enforcement anchor: tests that run a real install or `tessctl update`
-# without the fake OS home (fixtures/os_home.py) record an anchor under the
-# REAL ~/.config/tess/projects for their temp project, and the hooks (which
-# run `python3 -I`) always read that home. Remove, at session end, every
-# anchor and path marker whose project lived under this session's temp dir,
-# then every approved-file copy (anchor-blobs/, ~20 MB per full run: each holds
-# a whole file, tessctl included) that this session ADDED and no remaining
-# anchor names, and the directories this session created and left empty. A
-# full run leaves ~/.config/tess as it found it. (An install elsewhere that is
-# between writing its copies and writing its anchor.json at that instant could
-# lose a copy; its check still works, only `tessctl restore` of that file would
-# need `anchor accept`.)
+# One fake OS home for the WHOLE suite (v1.0.0 audit). tessctl, the brain and
+# the hook launcher find ~/.config/tess under pwd.getpwuid(os.getuid()).pw_dir
+# and ignore $HOME (security review round 3, N-2), and the hooks run
+# `python3 -I`, which ignores PYTHONPATH, so tests/fixtures/fake_os_home could
+# not reach them: tests that ran a real install, `tessctl update` or a hook
+# recorded anchors under the REAL ~/.config/tess/projects, and this file then
+# read and deleted there at session end. Now, before any test is collected:
+#
+#   * a throwaway virtualenv (system site-packages, so PyYAML and pytest are
+#     there) carries a .pth file that points pwd.getpwuid's home at a temp
+#     folder in every interpreter it starts, `-I` included (-I skips the user
+#     site, never the interpreter's own site-packages .pth files);
+#   * sys.executable and the front of PATH name that interpreter, so
+#     `sys.executable ...`, `python3 ...` in hook commands and git hooks all
+#     use it; and this process's own pwd.getpwuid is patched the same way.
+#
+# TESS_TEST_OS_HOME (fixtures/os_home.py's per-test homes) still wins; with it
+# unset (a test that scrubs the environment) the suite home applies. Nothing
+# under the real ~/.config/tess is read, written or deleted by this file, and
+# production code has no test switch.
 # ---------------------------------------------------------------------------
 
-def _real_anchor_projects() -> Path:
-    import pwd
-    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "tess" / "projects"
+_OS_HOME_PATCH = '''\
+"""Test-only (tests/conftest.py): the OS user record's home is a temp folder."""
+import os
 
 
-_REAL_ANCHOR_PROJECTS = _real_anchor_projects()
-
-
-def _anchor_dirs_present() -> dict:
-    blobs = _REAL_ANCHOR_PROJECTS.parent / "anchor-blobs"
-    return {"blobs": set(p.name for p in blobs.iterdir()) if blobs.is_dir() else set(),
-            "dirs": {d for d in (blobs, _REAL_ANCHOR_PROJECTS / "by-path", _REAL_ANCHOR_PROJECTS)
-                     if d.is_dir()}}
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _forget_test_anchors(tmp_path_factory):
-    start = _anchor_dirs_present()
-    yield
-    _forget_anchors_under(os.path.realpath(str(tmp_path_factory.getbasetemp())), start)
-
-
-def _forget_anchors_under(base: str, start: dict) -> None:
-    projects = _REAL_ANCHOR_PROJECTS
-    blobs = projects.parent / "anchor-blobs"
-    if not projects.is_dir() and not blobs.is_dir():
+def _install():
+    try:
+        import pwd
+    except ImportError:
         return
-    for doc_path in list(projects.glob("*/anchor.json")) + list(projects.glob("by-path/*.json")):
-        try:
-            doc = json.loads(doc_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        where = os.path.realpath(str(doc.get("project_path") or doc.get("path") or "/nonexistent"))
-        if where == base or where.startswith(base + os.sep):
-            if doc_path.name == "anchor.json":
-                shutil.rmtree(doc_path.parent, ignore_errors=True)
-            else:
-                doc_path.unlink(missing_ok=True)
-    # Approved-file copies no remaining anchor names: every one this session
-    # added, and older leftovers (30+ minutes old, e.g. from an aborted run).
-    import time
-    used: set = set()
-    for doc_path in projects.glob("*/anchor.json"):
-        try:
-            used |= {r.get("blob") for r in json.loads(doc_path.read_text(encoding="utf-8"))["files"].values()}
-        except (OSError, ValueError, KeyError, AttributeError):
-            pass
-    for blob in (blobs.iterdir() if blobs.is_dir() else []):
-        try:
-            if blob.name not in used and (blob.name not in start["blobs"]
-                                          or time.time() - blob.stat().st_mtime > 1800):
-                blob.unlink()
-        except OSError:
-            pass
-    for d in (blobs, projects / "by-path", projects):  # innermost first
-        if d not in start["dirs"]:
-            try:
-                d.rmdir()  # only when empty
-            except OSError:
-                pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(here, "tess_test_os_home.txt"), encoding="utf-8") as fh:
+            suite_home = fh.read().strip()
+    except OSError:
+        suite_home = ""
+    real = pwd.getpwuid
+
+    def fake(uid):
+        rec = real(uid)
+        home = os.environ.get("TESS_TEST_OS_HOME") or suite_home or rec.pw_dir
+        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid,
+                                  rec.pw_gecos, home, rec.pw_shell))
+
+    pwd.getpwuid = fake
+
+
+_install()
+'''
+
+
+def _suite_os_home() -> None:
+    import atexit
+    import pwd
+    import tempfile
+
+    if os.environ.get("TESS_TEST_SUITE_VENV") and \
+            os.path.realpath(sys.executable).startswith(os.path.realpath(os.environ["TESS_TEST_SUITE_VENV"])):
+        return  # a pytest run started by a test of this suite: already inside the fake home
+    home = tempfile.mkdtemp(prefix="tess-os-home-")
+    venv = tempfile.mkdtemp(prefix="tess-py-")
+    os.chmod(home, 0o700)
+    subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", "--without-pip", venv],
+                   check=True, capture_output=True)
+    bindir = os.path.join(venv, "Scripts" if os.name == "nt" else "bin")
+    py = os.path.join(bindir, "python3" if os.name != "nt" else "python.exe")
+    purelib = subprocess.run([py, "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+    with open(os.path.join(purelib, "tess_test_os_home.py"), "w", encoding="utf-8") as fh:
+        fh.write(_OS_HOME_PATCH)
+    with open(os.path.join(purelib, "tess_test_os_home.txt"), "w", encoding="utf-8") as fh:
+        fh.write(home + "\n")
+    with open(os.path.join(purelib, "tess_test_os_home.pth"), "w", encoding="utf-8") as fh:
+        fh.write("import tess_test_os_home\n")
+    os.environ["TESS_TEST_SUITE_VENV"] = venv
+    os.environ.setdefault("TESS_TEST_OS_HOME", home)
+    os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+    sys.executable = py
+    real = pwd.getpwuid
+
+    def fake(uid):
+        rec = real(uid)
+        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid, rec.pw_gecos,
+                                  os.environ.get("TESS_TEST_OS_HOME") or home, rec.pw_shell))
+    pwd.getpwuid = fake
+    atexit.register(shutil.rmtree, venv, True)
+    atexit.register(shutil.rmtree, home, True)
+
+
+_suite_os_home()
+
+# v1.0.0 audit: a Claude Code hook treats a session whose entrypoint is sdk-* (claude -p, the Agent SDK) as
+# automation. A suite started from such a session must not pass that on to the hooks its tests run.
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)

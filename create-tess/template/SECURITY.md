@@ -68,14 +68,24 @@ or deleted by anyone, including admins. Only repository admins can create them.
 Branches named `v<digit>…` or `create-tess-v…` cannot be created, so a branch can
 never shadow a release tag.
 
-### Verifier signatures are automated attestations
+<a id="verifier-signatures-are-automated-attestations"></a>
 
-The registered verifier key (Cyra, `F9321F92…76E8`) belongs to an automated
-reviewer. By design it has no passphrase and is used by the review automation
-without a human in the loop. A valid Cyra verdict attests **"the automated
-review of this exact content passed"**. It does **not** mean a human approved the
-change. Earlier Reid verifier keys are retired, and no Reid key is registered in
-`policy.yaml`'s `verifier_keys`.
+### Verifier signatures attest a review, and the operator signs them
+
+The registered verifier key (Cyra, `F9321F92…76E8`) attests a review. A valid
+Cyra verdict means **"the review of this exact content passed"**. It does **not**
+mean a human approved the change. Earlier Reid verifier keys are retired, and no
+Reid key is registered in `policy.yaml`'s `verifier_keys`.
+
+Since the v1.0 security audit, `tessctl verdict sign` (and `tessctl gate signoff
+sign` for hard-floor sign-offs) no longer signs for whoever runs it. It needs a
+person at a terminal who is shown the verdict and types `sign as <name>`; the
+key must be the one the committed `policy.yaml` registers for that name, kept
+outside the project and protected by a passphrase (or on a hardware token); and
+the passphrase gpg-agent cached is forgotten right after signing. The Cyra
+reviewer role drafts the verdict; the maintainer signs it. The Cyra key was
+created without a passphrase, so it needs one (`gpg --passwd`) before it can
+sign again. What this does not stop is in Known limits.
 
 ### No required human PR review, by design
 
@@ -152,6 +162,36 @@ security reviews; they are stated so nobody relies on a check that is not there.
   with another folder, `accept <version>`), which are presence checks, not
   cryptography. For a real boundary, run agents in the runtime's sandbox or as
   another OS user.
+- **Signing an approval is a presence and custody check, not an OS boundary.**
+  `tessctl verdict sign` and `tessctl gate signoff sign` refuse to run without a
+  terminal, refuse a key with no passphrase or one that is not the registered
+  key, and forget the cached passphrase after signing. A program running as you
+  can still fake a terminal, or call `gpg` itself with a key it can use, and the
+  gate cannot tell who produced a valid signature. The control that holds is the
+  key's passphrase (or a hardware token): type it only for a signing command you
+  started yourself. For a real separation, keep verifier and sign-off keys on a
+  hardware token or under another OS user.
+- **Sign-offs approve exact content.** A hard-floor sign-off lists every file it
+  approves with its content id (`artifact_hashes`), and the gate accepts it only
+  for those exact contents at the pushed commit. A later change to the same file
+  needs a new sign-off.
+- **The vault shows secrets only to a person, and only by reference to
+  programs.** `tessctl vault get --reveal` prints a value only when both input
+  and output are a terminal; `vault exec` outside a terminal refuses programs
+  that print or evaluate their environment (`printenv`, `env`, a shell or
+  interpreter given code on its command line), refuses variables programs run or
+  load (`BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `LD_PRELOAD`, …), and masks the
+  exact value in the program's output. What remains: a script file or any other
+  program can still send the value somewhere or print it transformed (encoded,
+  split), and a process running as you can fake a terminal. On macOS the vault
+  identity is stored in the keychain with no pre-authorised application, so
+  every read (by `tessctl` too) shows a macOS prompt: click "Allow", never
+  "Always Allow". An item created before v1.0 keeps its old, open access list:
+  in Keychain Access, open `tess-vault-identity`, choose Access Control, select
+  "Confirm before allowing access" and remove every listed application. Linux
+  secret-service and
+  the `~/.config/tess/vault/identity.age` file have no per-application control:
+  any program running as you can read them.
 - **Hooks read command text; they cannot see commands built at run time.** A
   script that assembles a path or a command while it runs, decodes one, reads its
   program from a file, or starts another program is judged only by what its own
@@ -163,6 +203,27 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (a path split across quotes, backslash-escaped characters) and a tool's own
   directory switch (`git -C`, `make -C`, `npm --prefix`, `--chdir`) can hide a
   private path from it.
+- **What the gate works out from command text, and where it stops.** Since the
+  v1.0 audit the gate reads a command the way the shell will: it finds the
+  program behind grouping, `!`, `if`/`then`, redirections, wrappers and runners
+  (`env`, `nice -n 5`, `timeout`, `xargs`, `sudo`, `uv run`...), follows `bash -c`
+  strings, here-strings, here-documents and `echo ... | sh`, expands `~`, `$HOME`,
+  `$PWD`, `$TMPDIR`, variables and `for` lists set in the same command, braces and
+  globs, tracks `cd` through `&&`, `||`, `;`, subshells and pipes, and uses a
+  Codex call's own `workdir`. It stops at what only exists when the command runs:
+  a program named by a variable or `$(...)`, a write target that is a variable
+  set elsewhere, file names `xargs` reads from another program, a shell fed by
+  a program such as `curl`. Those ask (Claude Code) or are refused (Codex, and
+  Claude Code's no-prompt modes). Two gaps remain: a target whose fixed part is a
+  folder outside the project (`/tmp/build-$ID`) is allowed, although a value
+  holding `../` could climb back into it; and a program the gate has no rules for
+  (a formatter, a build tool) can still write the files its own options name.
+  When `cd dir; <write>` is used and the `cd` could fail, the write is checked
+  in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
+  `find -exec` are checked against the files find would match, up to 20,000
+  entries; beyond that they ask. The whole check has a 40-second budget (inside
+  the 120-second hook timeout, after up to 60 seconds of the launcher's own
+  check); a call it cannot finish in time asks, or is refused in Codex.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
@@ -209,7 +270,42 @@ security reviews; they are stated so nobody relies on a check that is not there.
   verdict keygen`, `approve`, `vault init` or `gate install-hooks`, which change
   anchored files) confirm the change with `tessctl anchor accept`. A git worktree
   of an anchored project shares its anchor, so enforcement files that differ in
-  another worktree stop Tess there too.
+  another worktree stop Tess there too. Hiding the anchor store is a stop as
+  well (v1.0.0 audit): the first hook that finds an anchor writes this
+  checkout's path key into `.git/info/tess-anchored` (a path the gate
+  write-protects, which no checkout, reset or rebase touches), and a listed
+  checkout whose anchor is gone, or whose `~/.config` cannot be read, stops
+  every tool call with a message saying to put the folder back or run
+  `tessctl anchor accept`. `tessctl doctor` and `anchor status` read only the
+  store, so in that case they say `anchor: none` while the hooks stop. A
+  process running as you that deletes both the store and that file (outside
+  the agent's gated tools) turns the stop off, as before.
+- **The learning loop authenticates where your words came from; it cannot see
+  who typed them.** A line counts as your own words only when a hook, running
+  outside the agent's sandbox, took it from the runtime's own transcript store
+  (`~/.claude/projects`, `$CODEX_HOME/sessions`, `~/.gemini/tmp`) and signed it
+  into the ledger under `~/.config/tess/brain/`. `sync --transcript` accepts
+  only files inside that store; `--claude-dir`, `--codex-home` and
+  `--gemini-home` with any other folder need you at a terminal typing yes. A
+  shell that cannot write the ledger (the Codex sandbox) can read the brain key
+  but never mints evidence: captured turns, journal lines and accepted-record
+  seals are never taken from the in-repo outbox, a sync there journals nothing
+  (the next hook does), and a decision it records waits as
+  pending-verification until the next hook re-checks it. `claude -p`, the
+  Agent SDK, `codex exec` (and Codex as an MCP server or sub-agent), and a
+  runtime started from inside another agent session (seen in the hook's
+  process ancestry) are automation: their prompts are journaled as
+  `automation` and never count as yours. Limits: an agent running as you
+  OUTSIDE a sandbox can still read the key and write the ledger or the
+  runtime's transcript folders (the first bullet above); a nested run whose
+  process tree hides its parent session (for example one started through a
+  detached service) and a Gemini CLI headless run are not recognised as
+  automation. Record files (`brain/**/[DPCFL]-*.md`) are sealed in the same
+  ledger each time the tool writes them; a record whose file does not match
+  its seal (planted, hand-edited, or pulled from another machine, which has
+  its own ledger) is treated as awaiting your review, never as accepted,
+  confirmed or learned, until you confirm it here. On the first run after an
+  upgrade the records already in the folder are sealed once as they are.
 - **The in-repo launcher and hook configuration are protected by the gate's route
   rules, not by the anchor.** The anchor check runs inside
   `.claude/hooks/run-pinned.py`, which lives in the working tree, and the hook
@@ -231,6 +327,66 @@ security reviews; they are stated so nobody relies on a check that is not there.
   launcher outside the repository, registered in the user-level Claude Code and
   Codex settings so that it runs the anchor check before any in-repo file, is
   planned for 1.0.1.
+- **The gate judges paths by the file they name, and some control files live
+  outside the project.** Since the v1.0 security audit the gate decides whether
+  a path is protected (or is the key directory) by file identity: a case
+  variant on macOS or Windows (`/users/me/PROJ/.CLAUDE/settings.json`,
+  `~/.CONFIG/./TESS`), a `..` or symlinked spelling, and a move of a directory
+  above the key directory (`mv ~/.config ~/cfg`) all count. It also refuses agent
+  writes to files outside the project that switch Tess's enforcement off for
+  every repository: `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` (and
+  `~/.config/git/config`), a system `etc/gitconfig`, any file those or the
+  project's `.git/config` include (one level), the user-level Claude Code
+  settings (`~/.claude/settings*.json`, `~/.claude.json`) and the Codex user
+  settings (`~/.codex/config.toml`, `hooks.json`, `rules/`). Set an ordinary git
+  option with `git config --global <key> <value>` (keys that switch off hooks or
+  run commands are refused), and edit your user-level Claude Code or Codex
+  settings yourself. What this does not cover: an include chain deeper than one
+  level, a hard link to a protected file made outside the agent, shell startup
+  files (`~/.zshrc` and similar, which could export a git setting to later
+  terminals), and a path alias a program creates while it runs.
+- **Some approvals cannot be shown to you, so they are refused.** A Tess "ask"
+  (force push, remote change, a merge that changes safety files, a visibility
+  change) needs a person. Codex cannot ask, and Claude Code's `auto` mode can
+  settle a permission prompt with its own classifier, so in both (and in
+  `bypassPermissions` / `dontAsk`) the gate denies instead and says how to run
+  the command yourself; switch back to default mode to be asked. The `tessctl`
+  steps that record Tess's safety files as approved or change their recorded
+  state (`update`, `self-update`, `approve`, `anchor`, `override`, `reset`,
+  `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
+  `lock --regen`, `recruit`, `bench`, `roster apply`), and signing a verdict or a
+  sign-off (`verdict sign`, `gate signoff sign`), are the operator's: the gate
+  refuses an agent that feeds them input or fakes a terminal for them.
+- **Vault values stay out of agent sessions, for the commands the gate can
+  see.** The gate refuses `tessctl vault get --reveal` (and `--force`) and
+  `tessctl vault exec` into a program that prints what it is given (`printenv`,
+  `env`, `echo`, `cat`, a shell, an interpreter running inline code), or with
+  `--as` naming a variable programs read as a file, command or setting
+  (`BASH_ENV`, `PATH`, `NODE_OPTIONS`, ...). `tessctl vault exec --ref <ref> --
+  <tool>` into a real tool, or a script, stays allowed; a script the agent wrote
+  can still print the value (a program built at run time, the limit above).
+- **Security-tier lifecycle steps are presence checks, and snapshots are not
+  signed.** Every `tessctl` command that makes a security-tier file's content
+  accepted, or restores one, needs a person at a real terminal who types a
+  confirmation, exactly like `approve`: `approve` itself (it shows the sha256
+  and diff of the exact set-aside bytes, checks them against the digest capture
+  recorded in `tess.lock`, re-checks them after you type, and writes that same
+  buffer), `resolve` (every mode), `override`, `reset` when it would re-pin a
+  changed core file, `recruit` / `bench` / `roster apply` of a security-tier
+  entry, `rollback` that changes `tess.lock` or a safety file, and
+  `update --allow-downgrade`. Like `approve`, these are presence checks, not
+  cryptography: a process that fakes a terminal can pass them. Rollback
+  snapshots in `.tess/snapshots` are ordinary project files and carry no
+  signature; only the automatic rollback inside a failed `tessctl update`
+  trusts one (the snapshot that same run wrote, byte for byte). A snapshot
+  restored by `tessctl rollback` is limited to files a tessctl command
+  snapshots (never `.git`, never a link out of the project) and is listed for
+  the person to confirm before any safety file changes, but the confirmation
+  cannot tell a planted snapshot from a real one: confirm only a rollback you
+  expect. During `tessctl update` a staged file is checked right before each
+  read, but the renderer then reads it by path, so a change made in that
+  instant and undone before the next check would not be seen; the next check
+  catches any change that persists.
 - **The hooks heartbeat is a detection aid, not proof.** SessionStart and
   UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
   hooks-status` reads it to say whether the hooks ran in this session. It is an
@@ -324,6 +480,35 @@ Without gpg, the SSH signature alone decides. A missing, malformed or
 wrong-key signature fails closed before any file is written. The ship gate
 applies the same rule to `.tess/release-proof.json`, reading both pins and
 both public keys from the base commit, never from the candidate.
+
+After the signature check, `tessctl update` writes `.tess/staging` from the
+verified commit's git objects and keeps the sha256 of every staged file in
+memory; every later read of staging in that run (the policy-rule prompt, new
+file adoption, the per-file apply, the core advance, the `base_sha` re-pin) is
+checked against it, and the whole staging tree is re-checked before the apply
+and before the lock is saved. A staged file that changed after the check stops
+the update (rolling it back if the core advance had begun), so only the signed
+release's bytes are applied and anchored. `self-update` reads the new engine
+from the verified commit's git object the same way.
+
+**No silent downgrade.** `update` and `self-update` refuse a release tag older
+than the installed version (the newer of `framework.version` and
+`framework.upstream_ref`, semver order, so `v1.0.0-rc.1` is older than
+`v1.0.0`), a tag that is not a Tess OS release (`vX.Y.Z`), and a
+`create-tess-v*` package tag. Going back on purpose takes `--allow-downgrade`
+and typing `downgrade to <tag>` at a real terminal.
+
+**create-tess and a git template.** The wizard installs the template bundled
+in the npm package by default. An explicit `--template-source` git URL must be
+`https://`, and must name a release tag (`--template-ref v1.2.3`): the wizard
+fetches only that tag, verifies its OpenPGP and SSH signatures with the keys
+the package ships (the bundled template's `.tess/keys` and `tess.lock` pins,
+never keys from the fetched tree) by the same rule as `tessctl update`, and
+checks out and runs nothing before both pass. `git://`, `ssh://` and
+`user@host:path` sources are refused. A local template folder is run as
+trusted code, so it is accepted only when named on the command line with
+`--template-source`, not from the `TESS_TEMPLATE_SOURCE` environment variable
+alone.
 
 **The first push of a fresh install** has no base commit, so no earlier
 `tess.lock` pins a key. The npm package ships the proof of the signed release

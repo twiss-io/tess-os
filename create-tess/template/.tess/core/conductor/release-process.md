@@ -84,7 +84,9 @@ git push -u origin release/v<new-semver>
 gh pr create -R twiss-io/tess-os --base main --title "Tess OS v<new-semver>" --body "..."
 
 # 6. If the gate reports protected paths: the independent verifier drafts
-#    reviews/verdicts/<date>-<slug>.cyra.verdict.md; then, in YOUR terminal:
+#    reviews/verdicts/<date>-<slug>.cyra.verdict.md; then, in YOUR terminal (it
+#    shows the verdict and asks you to type `sign as Cyra`; it refuses a key
+#    with no passphrase and any key not registered for Cyra in policy.yaml):
 export GPG_TTY=$(tty)
 python3 .tess/bin/tessctl verdict sign reviews/verdicts/<date>-<slug>.cyra.verdict.md \
   --key-id <registered verifier fingerprint>
@@ -223,7 +225,10 @@ has no passphrase and is reachable by automated agents on the maintainer's machi
 "an independent verifier signed it" was process, not enforcement. From v1.0.0,
 SECURITY.md states the trust model plainly: a verifier signature is an automated
 review attestation, not a human approval, and the release signing key is the single
-root of trust.
+root of trust. Since the v1.0 security audit, `tessctl verdict sign` also needs the
+maintainer at a terminal (typing `sign as Cyra`) and refuses a key with no
+passphrase, so an agent cannot sign through it: give the Cyra key a passphrase with
+`gpg --passwd <fingerprint>` before the first signature.
 
 ---
 

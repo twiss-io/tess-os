@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 # the item a row speaks for: a newer durable row for the same item wins over any pending row made before it
 KEYS = {"shown": ("id",), "line": ("ref",), "session": ("path",), "used": ("ref", "id"), "turn": ("n", "mac"),
-        "applied": ("claim",)}
+        "applied": ("claim",), "rec": ("id",), "automation": ("runtime", "sid"), "seal-init": ()}
 
 
 def item_key(r: Dict) -> Optional[Tuple]:

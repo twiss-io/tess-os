@@ -69,6 +69,7 @@ class Session:
         self.search_paths: List[str] = []  # every Grep/Glob-style search path ('' = the cwd) (bounded)
         self.last_ordinal = 0
         self.prefix_sha256 = ""
+        self.automation = ""  # why this session was run by automation (headless / agent-started), else ""
         self._seen: set = set()
 
     def note_tool_input(self, payload: Any) -> None:
@@ -160,3 +161,29 @@ def iter_text_blocks(content: Any, kinds=("text", "input_text", "output_text")) 
         for item in content:
             if isinstance(item, dict) and item.get("type") in kinds and isinstance(item.get("text"), str):
                 yield item["text"]
+
+
+# v1.0.0 audit (headless prompts attributed to the operator): a `claude -p` / SDK run or a `codex exec`
+# (the heartbeat, the GUI, `tessctl run`, an agent's own shell call) sends a prompt that a program or an
+# agent chose. Its "user" turns are journaled under this raw speaker, which never resolves to a principal
+# (config.resolve_speaker), so they are never the operator's words: no quote, cue, confirmation or V13.
+AUTOMATION = "automation"
+
+
+def to_automation(sess: Session, why: str) -> Session:
+    sess.automation = why or sess.automation or "automation"
+    for m in sess.msgs:
+        if m.role == "human":
+            m.raw_speaker = AUTOMATION
+            m.channel = "headless"
+    return sess
+
+
+def transcript_automation(runtime: str, path: str) -> str:
+    """Why the transcript at `path` is an automation run, read from its first records ('' when not)."""
+    from . import claude, codex
+    reader = codex.head_automation if runtime == "codex" else claude.head_automation
+    try:
+        return reader(Path(path))
+    except (OSError, ValueError):
+        return ""

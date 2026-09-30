@@ -167,10 +167,14 @@ def test_set_get_list_rm_roundtrip(vault, run_cli):
     assert SECRET not in r.stdout
     assert "•" in r.stdout
 
-    # reveal (captured stdout is a pipe, not a TTY → allowed) returns raw value
+    # v1.0 audit: reveal goes only to a person's terminal. Captured output (a
+    # pipe — exactly how an assistant's tool call reads it) is REFUSED, and
+    # the value appears nowhere in what was captured.
     r = run_cli(root, "vault", "get", "test/secret", "--reveal", extra_env=vault.env)
-    assert r.returncode == 0, r.stderr
-    assert r.stdout == SECRET
+    assert r.returncode != 0
+    assert SECRET not in r.stdout + r.stderr
+    assert "not shown" in r.stderr
+    assert "vault exec --ref test/secret" in r.stderr
 
     # list shows the ref + service but never the value
     r = run_cli(root, "vault", "list", extra_env=vault.env)
@@ -244,11 +248,20 @@ _CHILD_WRITE = (
 )
 
 
+def _child(vault, code: str) -> str:
+    """A consumer PROGRAM (not an interpreter given code on its command line,
+    which `vault exec` refuses outside a terminal — v1.0 audit)."""
+    path = vault.root / f"child_{abs(hash(code)) % 10**8}.py"
+    path.write_text(f"#!{sys.executable}\n{code}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
 def test_exec_injects_secret_into_child_env(vault, run_cli):
     _set(run_cli, vault, "test/secret", SECRET)
     # default env var name: service/key -> SERVICE_KEY uppercase
     r = run_cli(vault.root, "vault", "exec", "--ref", "test/secret", "--",
-                sys.executable, "-c", _CHILD_WRITE.format(var="TEST_SECRET"),
+                _child(vault, _CHILD_WRITE.format(var="TEST_SECRET")),
                 extra_env=vault.env)
     assert r.returncode == 0, r.stderr
     assert (vault.root / "child_out.txt").read_text() == SECRET
@@ -258,7 +271,7 @@ def test_exec_custom_env_var_name(vault, run_cli):
     _set(run_cli, vault, "test/secret", SECRET)
     r = run_cli(vault.root, "vault", "exec", "--ref", "test/secret",
                 "--as", "MYTOKEN", "--",
-                sys.executable, "-c", _CHILD_WRITE.format(var="MYTOKEN"),
+                _child(vault, _CHILD_WRITE.format(var="MYTOKEN")),
                 extra_env=vault.env)
     assert r.returncode == 0, r.stderr
     assert (vault.root / "child_out.txt").read_text() == SECRET
@@ -269,7 +282,7 @@ def test_exec_no_plaintext_leak_in_tessctl_output(vault, run_cli):
     itself emits NO plaintext to stdout/stderr."""
     _set(run_cli, vault, "test/secret", SECRET)
     r = run_cli(vault.root, "vault", "exec", "--ref", "test/secret", "--",
-                sys.executable, "-c", _CHILD_WRITE.format(var="TEST_SECRET"),
+                _child(vault, _CHILD_WRITE.format(var="TEST_SECRET")),
                 extra_env=vault.env)
     assert r.returncode == 0, r.stderr
     assert "DONE" in r.stdout                       # child ran
@@ -281,14 +294,14 @@ def test_exec_no_plaintext_leak_in_tessctl_output(vault, run_cli):
 def test_exec_exit_code_propagates(vault, run_cli):
     _set(run_cli, vault, "test/secret", SECRET)
     r = run_cli(vault.root, "vault", "exec", "--ref", "test/secret", "--",
-                sys.executable, "-c", "import sys; sys.exit(7)",
+                _child(vault, "import sys; sys.exit(7)"),
                 extra_env=vault.env)
     assert r.returncode == 7
 
 
 def test_exec_missing_ref_errors_without_value(vault, run_cli):
     r = run_cli(vault.root, "vault", "exec", "--ref", "absent/ref", "--",
-                sys.executable, "-c", "print('x')", extra_env=vault.env)
+                _child(vault, "print('x')"), extra_env=vault.env)
     assert r.returncode != 0
     out = r.stdout + r.stderr
     assert "not found" in out.lower()
@@ -311,10 +324,8 @@ def test_rotate_reencrypts_new_value(vault, run_cli, engine):
     assert "rotated" in r.stdout
     assert v2 not in r.stdout  # never echoes the new value
 
-    # new value retrievable, old value gone from ciphertext
-    r = run_cli(root, "vault", "get", "test/secret", "--reveal", extra_env=vault.env)
-    assert r.stdout == v2
-
+    # new value retrievable (read in-process: a piped --reveal is refused),
+    # old value gone from ciphertext
     raw = (root / ".claude" / "vault" / "vault.age").read_bytes()
     assert v1.encode() not in raw
     assert v2.encode() not in raw  # still encrypted

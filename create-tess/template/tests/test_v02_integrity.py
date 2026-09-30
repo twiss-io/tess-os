@@ -29,6 +29,7 @@ import pytest
 import yaml
 
 from conftest import REPO_ROOT, ns
+from _presence_pty import run_tessctl_in_pty
 
 
 def _snaps(root):
@@ -246,8 +247,15 @@ def test_init_refuses_to_clobber_uncaptured_drift_then_force_and_rollback(real_t
     doc = _cli(real_tree, "doctor")
     assert f"pre-image in snapshot {new[0]}" in doc.stdout
 
+    # v1.0 audit: this rollback puts security-tier text (the guardrails and
+    # CLAUDE.md markers) back, so headless it is refused and changes nothing;
+    # the person at a terminal types the confirmation.
     r = _cli(real_tree, "rollback", "--to", new[0])
-    assert r.returncode == 0, r.stdout[-3000:] + r.stderr
+    assert r.returncode != 0 and "interactive terminal" in (r.stdout + r.stderr), r.stdout[-3000:]
+    assert not _marker_present(real_tree, "CLAUDE.md")
+    rc, out = run_tessctl_in_pty(real_tree, "rollback", "--to", new[0], answer="roll back",
+                                 prompt=b"rollback> ")
+    assert rc == 0, out[-3000:]
     for rel, data in pre_images.items():
         assert (real_tree / rel).read_bytes() == data, rel
 
@@ -523,8 +531,14 @@ def test_security_tier_patch_override_is_refused_not_kept(project, run_cli):
     project.write()
     _set_enabled(project.root, [])
     project.write_live("conductor/guardrails.md", weak)
+    # v1.0 audit: overriding a security-tier file needs the person at the
+    # terminal; headless it is refused and changes nothing.
     r = run_cli(project.root, "override", "conductor/guardrails.md")
-    assert r.returncode == 0, r.stdout + r.stderr  # override's tier check: v0.2.1
+    assert r.returncode != 0 and "interactive terminal" in r.stdout + r.stderr
+    assert project.lock()["files"][".tess/core/conductor/guardrails.md"]["status"] == "core-managed"
+    rc, out = run_tessctl_in_pty(project.root, "override", "conductor/guardrails.md",
+                                 answer="conductor/guardrails.md", prompt=b"path> ")
+    assert rc == 0, out
     assert project.lock()["files"][".tess/core/conductor/guardrails.md"]["status"] == "patch-override"
 
     for argv in (("restore",), ("restore", "--force"), ("init",)):

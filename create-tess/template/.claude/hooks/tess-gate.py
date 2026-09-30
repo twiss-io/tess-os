@@ -71,8 +71,9 @@ v1.0.0 security review round 2 also:
   * matches git's unique-prefix abbreviations of long options
     (`--no-veri`, `--forc`, `--mirr`, `--del`, `--outp`) (M-2);
   * asks only in a known interactive `permission_mode` (default,
-    acceptEdits, plan, auto); a missing or unknown mode cannot be trusted to
-    pause for the operator, so its ask becomes a deny (L-c).
+    acceptEdits, plan); a missing or unknown mode cannot be trusted to
+    pause for the operator, so its ask becomes a deny (L-c). Since the v1.0
+    audit `auto` is a deny too: its classifier can settle a prompt unseen.
 
 v1.0.0 security review round 3 also:
   * denies git commands that put back other copies of protected files
@@ -86,6 +87,43 @@ v1.0.0 security review round 3 also:
     the key directory under the OS user record's home as well (N-2).
   Restoring from HEAD or the index stays allowed; that is the undo path.
   A whole-tree rollback the operator makes runs that commit's own gate.
+
+v1.0 security audit (gate paths) also:
+  * decides "is this protected / the key directory" by file identity
+    (st_dev, st_ino of the nearest existing ancestor, the rest compared
+    without case), so case variants on APFS/NTFS, `..` and symlinked
+    spellings, and a move of a directory above the key dir are caught;
+  * denies writes to out-of-project enforcement-control files: the global
+    and system git config (and files they include), the user-level Claude
+    Code and Codex settings; and `git config --edit` / `init.templateDir`;
+  * protects scripts/tess (run without a prompt at every session start),
+    the top-level modules beside it, and .github/scripts/**;
+  * denies `tessctl vault get --reveal|--force` and `tessctl vault exec`
+    into a printer, shell or inline interpreter (or with a dangerous --as);
+  * treats the tessctl steps that change the recorded state of the safety
+    files (override, reset, resolve, rollback, restore --force, publish
+    --force, capture --auto, lock --regen) like the approval prompts: an
+    agent may not feed or fake their terminal.
+
+v1.0 security audit (gate shell parsing) also:
+  * finds the program a segment runs the way the shell does: through `{ }`,
+    `!`, `if/then/do`, glued operators, leading redirections, wrappers and
+    runners with their option values (env, nice -n, timeout, xargs, sudo,
+    uv run...), any letter case, `$'..'` quoting, `git-<sub>`, shell `-c`
+    clusters, here-strings, here-documents and `echo ... | sh`, command
+    substitutions and `find -exec/-delete`; a program named only at run time
+    asks;
+  * expands write targets as the shell will (globs, braces, ~, $HOME/$PWD,
+    variables and `for` lists set in the same command, dd of=, --opt=DIR,
+    -tDIR, curl -o, tar -cf, links made earlier in the command); a target
+    known only at run time asks;
+  * resolves relative paths against a tool call's own `workdir` and tracks
+    `cd` through `&&`, `||`, `;`, subshells, pipes and background lists;
+  * works out a push's destination and refs as git does (--repo, one-command
+    config, every pushurl, insteadOf/pushInsteadOf, push refspecs, mirror,
+    push.default, --all/--tags/--follow-tags, `tag <name>`);
+  * parses tess.lock once per file version and stops within GATE_BUDGET
+    seconds (or at MAX_COMMAND characters) with an ask, never an allow.
 
 Known limits (adapters/CONFORMANCE.md, Codex row): the shell checks read the
 command text, so a write assembled at run time (`$(...)`, variables), a
@@ -107,13 +145,19 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ALLOW, ASK, DENY = 0, 1, 2
 NO_PROMPT_MODES = {"bypassPermissions", "dontAsk"}
 # Claude Code modes that pause and show the operator an "ask" (L-c). Any other
-# value, or none, is treated as a mode that cannot ask.
-INTERACTIVE_MODES = {"default", "acceptEdits", "plan", "auto"}
+# value, or none, is treated as a mode that cannot ask. v1.0 audit: "auto" is
+# NOT here. In auto mode Claude Code's own classifier may settle a permission
+# prompt without the operator seeing it, so a Tess ask there becomes a deny.
+INTERACTIVE_MODES = {"default", "acceptEdits", "plan"}
+# Modes where the host approves on the operator's behalf (named in the deny).
+AUTO_APPROVE_MODES = {"auto"}
 SCAN_REL = ".claude/hooks/vault-dispatch-scan.py"
 LAUNCHER_REL = ".claude/hooks/run-pinned.py"
 TESSCTL_REL = ".tess/bin/tessctl"
@@ -130,6 +174,16 @@ PROTECTED_GLOBS = (
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
     ".claude/hooks/**", ".claude/settings.json", ".claude/settings*.json", "scripts/brain/**",
     "scripts/release/**", ".github/CODEOWNERS",
+    # v1.0 audit: release-workflow helpers (run by release.yml and by
+    # publish-npm.yml inside the job that holds id-token: write), and the
+    # boot launcher every session runs without a prompt (settings allow-list
+    # `python3 scripts/tess hooks-status`; CLAUDE.md / AGENTS.md boot line).
+    ".github/scripts/**", "scripts/tess",
+    # v1.0 audit (integration): the working folders tessctl reads back as
+    # trusted input. update applies .tess/staging, approve and resolve write
+    # what .tess/quarantine and .tess/conflicts hold, rollback restores
+    # .tess/snapshots; an agent write there plants the bytes those steps use.
+    ".tess/staging/**", ".tess/quarantine/**", ".tess/conflicts/**", ".tess/snapshots/**",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
     ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**", ".codex/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
@@ -156,7 +210,7 @@ WRITERS = {"rm", "mv", "cp", "tee", "truncate", "chmod", "chown", "chflags", "ln
 INPLACE = {"sed", "gsed", "perl"}
 READERS_OK_FOR_GIT_DIR = {"ls", "cat", "head", "tail", "stat", "file", "test", "[",
                           "grep", "rg", "wc", "shasum", "sha256sum", "diff", "less"}
-OPERATORS = {";", "&&", "||", "|", "&", "(", ")", "\n", "|&", ";;"}
+OPERATORS = {";", "&&", "||", "|", "&", "(", ")", "\n", "|&", ";;", ";&", ";;&"}
 REDIRECTS = {">", ">>", ">|", "&>", "&>>", "<>"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env", "--super-prefix", "--list-cmds"}
@@ -213,7 +267,11 @@ _GIT_REMOTE_KEYS = re.compile(r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|
                               r"tess\.privateremote)$", re.IGNORECASE)
 # The key directory named in command text (M-1): `~/.config/tess`,
 # `$HOME/.config/tess`, `${XDG_CONFIG_HOME}/tess`, the provenance override.
-_KEY_TEXT = re.compile(r"(?i)\.config[/\\]+tess(?![\w.-])|\$\{?XDG_CONFIG_HOME\}?[/\\]+tess(?![\w.-])"
+# v1.0 audit: `./` and `x/../` segments between the two names still count
+# (`~/.CONFIG/./TESS`), since the file system resolves them to the same place.
+_KEY_DOTSEGS = r"(?:[/\\]+(?:\.|[^/\\\s'\"]+[/\\]+\.\.))*"
+_KEY_TEXT = re.compile(r"(?i)\.config" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
+                       r"|\$\{?XDG_CONFIG_HOME\}?" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
                        r"|TESS_BRAIN_PROVENANCE_DIR")
 PROTECTED_DIR_ROOTS = {".tess", ".git", ".claude", ".codex", ".gemini", ".github",
                        ".git/hooks", ".claude/hooks", ".github/workflows", "core/policy",
@@ -289,11 +347,28 @@ def _security_tier_paths(root: Path) -> set:
     """live_path of every tess.lock `files:` entry tagged tier: security.
 
     A line scanner, not a YAML parser (hooks run under the system python3,
-    which may not have PyYAML); same approach as run-pinned.py."""
+    which may not have PyYAML); same approach as run-pinned.py. v1.0 audit:
+    parsed once per file version (path, inode, mtime, size), not per path checked."""
+    path = root / ".tess" / "tess.lock"
     try:
-        text = (root / ".tess" / "tess.lock").read_text(encoding="utf-8")
+        st = os.stat(str(path))
+        key = (os.path.realpath(str(path)), st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns,
+               st.st_size)
+        if key in _LOCK_CACHE:
+            return set(_LOCK_CACHE[key])
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return set()
+    found = _parse_security_tier(text)
+    _LOCK_CACHE.clear()
+    _LOCK_CACHE[key] = frozenset(found)
+    return set(found)
+
+
+_LOCK_CACHE: dict = {}
+
+
+def _parse_security_tier(text: str) -> set:
     entries: dict = {}
     section = key = None
     for raw in text.splitlines():
@@ -331,6 +406,76 @@ def _glob_hit(rel: str, globs) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- path identity (v1.0 audit)
+# realpath keeps the case the caller typed, and macOS (APFS) and Windows file
+# systems ignore case, so `/users/me/PROJ/.claude/x` names the same file as
+# `/Users/me/proj/.claude/x` while the strings differ. Containment is therefore
+# decided by file identity (st_dev, st_ino) of the nearest existing ancestor,
+# and the not-yet-existing rest of the path is compared without case.
+
+def _stat_id(path: str):
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _split_existing(path: str) -> tuple:
+    """(deepest existing ancestor of `path` (itself when it exists), [the
+    components below it])."""
+    p, tail = path, []
+    while _stat_id(p) is None:
+        parent = os.path.dirname(p)
+        if parent == p:
+            return p, tail
+        tail.insert(0, os.path.basename(p))
+        p = parent
+    return p, tail
+
+
+def _within(real: str, base: str) -> str | None:
+    """`real` relative to `base` ("." for base itself) when `real` is base or
+    lies under it, by identity; else None. Both are absolute, realpath'd."""
+    if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+        return os.path.relpath(real, base).replace(os.sep, "/")
+    anchor, btail = _split_existing(base)
+    aid = _stat_id(anchor)
+    if aid is None:
+        return None
+    want = [c.lower() for c in btail]
+    p, tail = real, []
+    while True:
+        if _stat_id(p) == aid:
+            if [c.lower() for c in tail[:len(want)]] == want and len(tail) >= len(want):
+                return "/".join(tail[len(want):]) or "."
+            return None
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        tail.insert(0, os.path.basename(p))
+        p = parent
+
+
+def _is_above(real: str, base: str, floor: str) -> bool:
+    """`real` is a directory strictly between `floor` and `base` (an ancestor
+    of base below floor), by identity. A search or a move of it reaches base."""
+    rid, fid = _stat_id(real), _stat_id(floor)
+    if rid is None or fid is None:
+        low, b, f = real.lower().rstrip(os.sep), base.lower(), floor.lower().rstrip(os.sep)
+        return b.startswith(low + os.sep) and low.startswith(f + os.sep)
+    between, p = [], os.path.dirname(base)
+    while True:
+        pid = _stat_id(p)
+        if pid == fid:
+            return rid in between
+        if pid is not None:
+            between.append(pid)
+        if p == os.path.dirname(p):
+            return False
+        p = os.path.dirname(p)
+
+
 def _rel_to_root(root: Path, cwd: str, path: str) -> str | None:
     if not path:
         return None
@@ -338,16 +483,135 @@ def _rel_to_root(root: Path, cwd: str, path: str) -> str | None:
     full = path if os.path.isabs(path) else os.path.join(cwd or str(root), path)
     real = os.path.realpath(full)
     base = os.path.realpath(str(root))
-    if real != base and not real.startswith(base + os.sep):
-        return None
-    return os.path.relpath(real, base).replace(os.sep, "/")
+    return _within(real, base)
+
+
+# Top-level modules and packages in scripts/: `python3 scripts/tess` (run at
+# every session start without a prompt) puts scripts/ first on sys.path, so a
+# new scripts/json.py would run in place of the standard library module.
+_SCRIPTS_IMPORTABLE = re.compile(r"^scripts/[^/]+(\.py[cw]?|\.so|\.pth|/__init__\.pyc?)$", re.IGNORECASE)
 
 
 def protected_hit(root: Path, cwd: str, path: str) -> str | None:
     rel = _rel_to_root(root, cwd, path)
-    if rel is None or rel == ".":
+    if rel is None:
+        return control_file_hit(root, cwd, path)
+    if rel == ".":
         return None
-    return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS)
+    if _SCRIPTS_IMPORTABLE.match(rel):
+        return "scripts/<module> (imported by scripts/tess at every session start)"
+    # A home directory inside the project (unusual) still has its control files.
+    return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS) or \
+        control_file_hit(root, cwd, path)
+
+
+# --------------------------------------------------------------------------- control files outside the project (v1.0 audit)
+# Files outside the project that switch Tess's enforcement off for every
+# repository of this user: a global git config can set core.hooksPath (Tess's
+# git hooks stop running), an include, an alias or a command git runs; the
+# user-level Claude Code and Codex settings can turn hooks off. The command
+# routes (`git config --global core.hooksPath`, GIT_CONFIG_GLOBAL=...) were
+# already denied; a direct write of the file itself now is too.
+
+def _homes() -> list:
+    return sorted({os.path.expanduser("~"), _os_home()})
+
+
+def _git_includes(cfg: str) -> list:
+    """Files a git config pulls in with [include] / [includeIf] path = ...
+    (one level). A write to one of them is a write to that config."""
+    out = []
+    try:
+        with open(cfg, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(262144)
+    except OSError:
+        return out
+    section = ""
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"^\[\s*([A-Za-z]+)", s)
+        if m:
+            section = m.group(1).lower()
+            continue
+        if section in ("include", "includeif"):
+            m = re.match(r"(?i)^path\s*=\s*(.+?)\s*$", s)
+            if m:
+                val = m.group(1).strip("\"'")
+                val = os.path.expanduser(val)
+                out.append(val if os.path.isabs(val) else os.path.join(os.path.dirname(cfg), val))
+    return out
+
+
+_CONTROL_CACHE: dict = {}
+
+
+def _control_files(root: Path) -> list:
+    """[(absolute path, real path, label)] of out-of-project enforcement-control
+    files (computed once per hook run)."""
+    key = str(root)
+    if key not in _CONTROL_CACHE:
+        _CONTROL_CACHE[key] = [(f, os.path.realpath(f), label) for f, label in _control_list(root)]
+    return _CONTROL_CACHE[key]
+
+
+def _control_list(root: Path) -> list:
+    files = []
+    for home in _homes():
+        xdg = os.path.join(home, ".config")
+        files += [
+            (os.path.join(home, ".gitconfig"), "your global git config"),
+            (os.path.join(xdg, "git", "config"), "your global git config"),
+            (os.path.join(home, ".claude", "settings.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude", "settings.local.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".codex", "config.toml"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "hooks.json"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "rules"), "your Codex user rules"),
+        ]
+    if os.environ.get("XDG_CONFIG_HOME"):
+        files.append((os.path.join(os.environ["XDG_CONFIG_HOME"], "git", "config"),
+                      "your global git config"))
+    if os.environ.get("CODEX_HOME"):
+        for name in ("config.toml", "hooks.json", "rules"):
+            files.append((os.path.join(os.environ["CODEX_HOME"], name), "your Codex user settings"))
+    files += [("/etc/gitconfig", "the system git config"),
+              ("/Library/Application Support/ClaudeCode", "the managed Claude Code settings"),
+              ("/etc/claude-code", "the managed Claude Code settings"),
+              ("/etc/codex", "the managed Codex settings")]
+    for cfg in [f for f, label in files if label.endswith("git config")] + [
+            os.path.join(str(root), ".git", "config")]:
+        files += [(inc, "a file your git config includes") for inc in _git_includes(cfg)]
+    return files
+
+
+def control_file_hit(root: Path, cwd: str, path: str) -> str | None:
+    """The label of the out-of-project control file `path` writes (itself,
+    inside a control directory, or a directory holding one)."""
+    if not path or not isinstance(path, str):
+        return None
+    full = _expand(path)
+    full = full if os.path.isabs(full) else os.path.join(cwd or str(root), full)
+    real = os.path.realpath(full)
+    if re.search(r"(?i)(^|/)etc/gitconfig$", real.replace(os.sep, "/")):
+        return _control_label(real, "the system git config")
+    homes = [os.path.realpath(h) for h in _homes()]
+    for f, fr, label in _control_files(root):
+        # The file itself, a file inside a control directory, or (below the
+        # home directory) a directory that holds one: `mv ~/.codex x`.
+        if _within(real, fr) is not None or any(_is_above(real, fr, h) for h in homes):
+            return _control_label(f, label)
+    return None
+
+
+def _control_label(f: str, label: str) -> str:
+    for home in _homes():
+        if f.startswith(home.rstrip(os.sep) + os.sep):
+            f = "~" + f[len(home.rstrip(os.sep)):]
+            break
+    if "git config" in label or "includes" in label:
+        return (f"{f}: {label}, which can switch off Tess's git hooks for every repository; "
+                "set one ordinary key with `git config --global <key> <value>` instead")
+    return f"{f}: {label}, which can switch off Tess's safety gate"
 
 
 # --------------------------------------------------------------------------- key directory (M-1)
@@ -393,15 +657,18 @@ def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
     full = _expand(path)
     full = full if os.path.isabs(full) else os.path.join(cwd or os.getcwd(), full)
     cands = {os.path.normpath(full), os.path.realpath(full)}
-    home = os.path.realpath(os.path.expanduser("~")).rstrip(os.sep) + os.sep
+    homes = {os.path.realpath(h) for h in _homes()}
     for d in _key_dirs():
         for c in cands:
-            if c == d or c.startswith(d.rstrip(os.sep) + os.sep):
+            # v1.0 audit: by identity, so a case variant (`~/.CONFIG/TESS`), a
+            # symlinked or `..` spelling, or another path to the same
+            # directory is the key directory too.
+            if _within(c, d) is not None:
                 return d
-            # A search rooted between the home directory and the key dir
-            # (~/.config). A search of the whole home directory or of / is
-            # not refused: that is the stated same-user limit, not a boundary.
-            if ancestors and c.startswith(home) and d.startswith(c.rstrip(os.sep) + os.sep):
+            # A search (or a move) rooted between the home directory and the
+            # key dir (~/.config). A search of the whole home directory or of
+            # / is not refused: that is the stated same-user limit, not a boundary.
+            if ancestors and any(_is_above(c, d, h) for h in homes):
                 return d
     return None
 
@@ -414,7 +681,10 @@ def _check_key_text(cwd: str, argv: list, raw: str, v) -> None:
                     "there are for the operator's own tools, not for an agent", "keys")
         return
     name = os.path.basename(argv[0]) if argv else ""
-    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd") or \
+    # v1.0 audit: mv/ditto too. Renaming a directory above the key dir
+    # (`mv ~/.config ~/cfg`) moves the keys to a path no check names.
+    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd", "mv",
+                         "ditto", "pax", "cpio") or \
         any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
     for a in argv[1:]:
         for part in {a, a.split("=", 1)[-1]}:
@@ -436,47 +706,553 @@ def _glob(cwd: str, pattern: str) -> list:
 
 
 # --------------------------------------------------------------------------- shell parsing
+# v1.0 security audit (command-word resolution, literal operands): the gate
+# reads a command the way the shell does. Words keep how they were written
+# (quoted, a $variable, a glob, a command substitution), operators glued to
+# each other (`true&&(cp ...)`) are split, a here-document body is data (and
+# a program only for a shell reading it), and the program a segment runs is
+# found through reserved words, redirections, wrappers and runners.
 
-def _tokens(cmd: str) -> list:
-    lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
-    lx.whitespace = " \t\r"
-    lx.whitespace_split = True
-    lx.commenters = ""
-    return list(lx)
+_PUNCT = ";&|()<>\n"
+# Longest first: what the shell reads as one operator or redirection.
+_OPS = (";;&", ";;", ";&", "&&", "||", "|&", "&>>", "&>", ">>", "<<<", "<<-", "<<", ">|", "<>",
+        ">&", "<&", ";", "&", "|", "(", ")", "<", ">", "\n")
+_REDIR_OPS = {">", ">>", ">|", "&>", "&>>", "<>", ">&", "<&", "<", "<<", "<<-", "<<<"}
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ANSI_C = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b",
+           "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
 
-def _segments(cmd: str) -> list:
-    """[[argv...], ...] split on shell operators. Redirection tokens stay in argv."""
-    segs, cur = [], []
-    for tok in _tokens(cmd):
-        if tok in OPERATORS:
+class _Word(str):
+    """One shell word: its text with quoting removed (what shlex gives), plus
+    how it was written. `parts` holds (kind, text) pieces: "lit" quoted or
+    escaped text, "raw" unquoted text (globs, braces and a leading ~ expand
+    there), "var" a $NAME, "sub" a command substitution, "proc" a process
+    substitution, "dyn" any other expansion. `op` marks an unquoted operator
+    or redirection, `fd` a file-descriptor number glued to one (`2>`), and
+    `body` a here-document's text (on the word after << / <<-)."""
+    op = False
+    fd = False
+    parts: tuple = ()
+    body = None
+
+
+def _mkword(parts, op: bool = False) -> "_Word":
+    show = {"var": "${}", "sub": "$()", "proc": "<()", "dyn": "${}", "fallback": ""}
+    text = "".join(t if k in ("lit", "raw", "fallback", "arith") else
+                   show[k][:-1] + t + show[k][-1] if k != "var" else "$" + t for k, t in parts)
+    w = _Word(text)
+    w.parts, w.op = tuple((k, t) for k, t in parts), op
+    return w
+
+
+def _plain(text: str) -> "_Word":
+    """A word the gate made itself (a stand-in program name, a split value)."""
+    return _mkword([("lit", text)])
+
+
+def _close_quote(s: str, i: int) -> int:
+    """Index of the `"` closing a double-quoted string whose text starts at i."""
+    while i < len(s):
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == '"':
+            return i
+        if c == "`":
+            i = _close_backtick(s, i)
+        elif s.startswith("$(", i):
+            i = _close_paren(s, i + 1)
+        i += 1
+    raise ValueError("No closing quotation")
+
+
+def _close_backtick(s: str, i: int) -> int:
+    j = i + 1
+    while j < len(s):
+        if s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == "`":
+            return j
+        j += 1
+    raise ValueError("No closing backquote")
+
+
+def _close_paren(s: str, i: int) -> int:
+    """Index of the `)` closing the `(` at s[i] (quotes and nesting respected)."""
+    depth, j = 0, i
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            if k < 0:
+                raise ValueError("No closing quotation")
+            j = k
+        elif c == '"':
+            j = _close_quote(s, j + 1)
+        elif c == "`":
+            j = _close_backtick(s, j)
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    raise ValueError("No closing parenthesis")
+
+
+def _close_brace(s: str, i: int) -> int:
+    depth, j = 0, i
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            j = k if k >= 0 else len(s)
+        elif c == '"':
+            j = _close_quote(s, j + 1)
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    raise ValueError("No closing brace")
+
+
+def _ansi_c(s: str, i: int) -> tuple:
+    """(index after the closing quote, decoded text) of a $'...' string."""
+    out = []
+    while i < len(s):
+        c = s[i]
+        if c == "'":
+            return i + 1, "".join(out)
+        if c == "\\" and i + 1 < len(s):
+            d = s[i + 1]
+            m = re.match(r"x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|c(.)",
+                         s[i + 1:])
+            if d in _ANSI_C:
+                out.append(_ANSI_C[d])
+                i += 2
+                continue
+            if m:
+                num = m.group(1) or m.group(2) or m.group(3)
+                out.append(chr(int(num, 16)) if num else chr(int(m.group(4), 8)) if m.group(4)
+                           else chr(ord(m.group(5)) & 0x1f))
+                i += 1 + m.end()
+                continue
+            out.append("\\" + d)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    raise ValueError("No closing quotation")
+
+
+def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
+    nxt = s[i + 1] if i + 1 < len(s) else ""
+    if nxt == "(":
+        # $(cmd), and $((...)): bash runs $((cmd) ) as a command when it is
+        # not arithmetic, so both are checked as a command.
+        j = _close_paren(s, i + 1)
+        add("sub", s[i + 2:j])
+        return j + 1
+    if nxt == "[":
+        j = s.find("]", i)
+        if j < 0:
+            raise ValueError("No closing bracket")
+        add("dyn", s[i + 1:j + 1])
+        return j + 1
+    if nxt == "{":
+        j = _close_brace(s, i + 1)
+        inner = s[i + 2:j]
+        add("var" if _NAME.fullmatch(inner) or inner.isdigit() else "dyn", inner)
+        return j + 1
+    if nxt == "'" and not quoted:
+        j, text = _ansi_c(s, i + 2)
+        add("lit", text)
+        return j
+    if nxt == '"' and not quoted:
+        return _scan_dquote(s, i + 2, add)
+    m = _NAME.match(s, i + 1)
+    if m:
+        add("var", m.group(0))
+        return m.end()
+    if nxt.isdigit():
+        add("var", nxt)
+        return i + 2
+    if nxt and nxt in "@*#?$!-":
+        add("dyn", nxt)
+        return i + 2
+    add("lit" if quoted else "raw", "$")
+    return i + 1
+
+
+def _scan_dquote(s: str, i: int, add) -> int:
+    add("lit", "")  # "" is still a word
+    while i < len(s):
+        c = s[i]
+        if c == '"':
+            return i + 1
+        if c == "\\" and i + 1 < len(s) and s[i + 1] in '$`"\\\n':
+            if s[i + 1] != "\n":
+                add("lit", s[i + 1])
+            i += 2
+        elif c == "$":
+            i = _scan_dollar(s, i, add, True)
+        elif c == "`":
+            j = _close_backtick(s, i)
+            add("sub", s[i + 1:j])
+            i = j + 1
+        else:
+            add("lit", c)
+            i += 1
+    raise ValueError("No closing quotation")
+
+
+def _read_heredocs(s: str, i: int, toks: list, docs: list) -> int:
+    """Attach each pending here-document body (the lines after the newline at
+    i, up to its delimiter) to its delimiter word; returns where commands resume."""
+    for idx, strip in docs:
+        if idx >= len(toks) or toks[idx].op:
+            continue  # `<<` with no delimiter word: a syntax error, nothing runs
+        delim, lines = str(toks[idx]), []
+        while i < len(s):
+            j = s.find("\n", i)
+            j = len(s) if j < 0 else j
+            line, i = s[i:j], min(j + 1, len(s))
+            if (line.lstrip("\t") if strip else line) == delim:
+                break
+            lines.append(line)
+        toks[idx].body = "\n".join(lines)
+    return i
+
+
+def _scan(cmd: str) -> list:
+    """The words and operators of `cmd` (see _Word). Raises ValueError on
+    unbalanced quotes, as shlex does."""
+    toks, docs, state = [], [], {"parts": None}
+
+    def add(kind, text):
+        parts = state["parts"]
+        if parts is None:
+            parts = state["parts"] = []
+        if parts and parts[-1][0] == kind and kind in ("lit", "raw"):
+            parts[-1][1] += text
+        else:
+            parts.append([kind, text])
+
+    def end():
+        if state["parts"] is not None:
+            toks.append(_mkword(state["parts"]))
+        state["parts"] = None
+
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c in " \t\r":
+            end()
+            i += 1
+        elif c == "\\":
+            if i + 1 >= len(cmd):
+                raise ValueError("No escaped character")
+            if cmd[i + 1] != "\n":
+                add("lit", cmd[i + 1])
+            i += 2
+        elif c == "'":
+            j = cmd.find("'", i + 1)
+            if j < 0:
+                raise ValueError("No closing quotation")
+            add("lit", cmd[i + 1:j])
+            i = j + 1
+        elif c == '"':
+            i = _scan_dquote(cmd, i + 1, add)
+        elif c == "$":
+            i = _scan_dollar(cmd, i, add, False)
+        elif c == "`":
+            j = _close_backtick(cmd, i)
+            add("sub", cmd[i + 1:j])
+            i = j + 1
+        elif c in "<>" and cmd.startswith("(", i + 1):
+            end()
+            j = _close_paren(cmd, i + 1)
+            add("proc", cmd[i + 2:j])
+            end()
+            i = j + 1
+        elif c == "(" and cmd.startswith("((", i) and state["parts"] is None and (
+                not toks or (toks[-1].op and toks[-1] not in _REDIR_OPS)):
+            j = _close_paren(cmd, i)  # (( arithmetic )): one word, not a subshell
+            add("arith", cmd[i:j + 1])
+            end()
+            i = j + 1
+        elif c in _PUNCT:
+            parts = state["parts"]
+            fd = c in "<>" and parts is not None and len(parts) == 1 and parts[0][0] == "raw" \
+                and parts[0][1].isdigit()
+            end()
+            if fd:
+                toks[-1].fd = True
+            op = next(o for o in _OPS if cmd.startswith(o, i))
+            toks.append(_mkword([("raw", op)], op=True))
+            i += len(op)
+            if op in ("<<", "<<-"):
+                docs.append((len(toks), op == "<<-"))
+            elif op == "\n" and docs:
+                i, docs = _read_heredocs(cmd, i, toks, docs), []
+        else:
+            add("raw", c)
+            i += 1
+    end()
+    return toks
+
+
+def _is_op(tok) -> bool:
+    return tok.op if isinstance(tok, _Word) else (tok in OPERATORS or tok in _REDIR_OPS)
+
+
+def _events(cmd: str) -> list:
+    """[("seg", [word, ...]) | ("op", operator), ...] in order. Redirections
+    stay inside their segment."""
+    out, cur = [], []
+    for tok in _scan(cmd):
+        if tok.op and tok in OPERATORS:
             if cur:
-                segs.append(cur)
+                out.append(("seg", cur))
+            out.append(("op", str(tok)))
             cur = []
         else:
             cur.append(tok)
     if cur:
-        segs.append(cur)
-    return segs
+        out.append(("seg", cur))
+    return out
+
+
+def _segments(cmd: str) -> list:
+    """[[argv...], ...] split on shell operators. Redirection tokens stay in argv."""
+    return [x for kind, x in _events(cmd) if kind == "seg"]
+
+
+def _dynamic(word) -> bool:
+    """The word holds a value only known when the command runs."""
+    if isinstance(word, _Word) and word.parts:
+        return any(k in ("var", "sub", "dyn", "proc") or (k == "fallback" and re.search(r"[$`]", t))
+                   for k, t in word.parts)
+    return bool(re.search(r"[$`]", str(word)))
+
+
+# Words the shell reads before the program itself: `{ git ...; }`, `! git ...`,
+# `if true; then git ...; fi`, `while x; do git ...; done`.
+_KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+             "esac", "coproc"}
+# Wrappers and runners: the command they run follows their own options.
+# name: (short options taking a value, long options taking a value, operands before the command)
+_WRAP = {
+    "env": ("uCSP", ("--unset", "--chdir", "--split-string", "--block-signal", "--default-signal",
+                     "--ignore-signal"), 0),
+    "command": ("", (), 0), "builtin": ("", (), 0), "exec": ("a", (), 0), "nohup": ("", (), 0),
+    "time": ("fo", ("--format", "--output"), 0), "nice": ("n", ("--adjustment",), 0),
+    "sudo": ("ugChDprtTU", ("--user", "--group", "--close-from", "--host", "--chdir", "--prompt",
+                            "--role", "--type", "--command-timeout", "--other-user"), 0),
+    "doas": ("uC", (), 0), "nocorrect": ("", (), 0), "noglob": ("", (), 0),
+    "timeout": ("sk", ("--signal", "--kill-after"), 1), "gtimeout": ("sk", ("--signal", "--kill-after"), 1),
+    "xargs": ("adEIJLnPRSs", ("--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
+                              "--process-slot-var"), 0),
+    "stdbuf": ("ioe", ("--input", "--output", "--error"), 0),
+    "gstdbuf": ("ioe", ("--input", "--output", "--error"), 0),
+    "setsid": ("", (), 0), "caffeinate": ("tw", (), 0), "chronic": ("", (), 0),
+    "unbuffer": ("", (), 0), "ionice": ("cnp", ("--class", "--classdata", "--pid"), 0),
+    "taskset": ("", (), 1), "flock": ("wE", ("--wait", "--timeout", "--conflict-exit-code"), 1),
+    "chroot": ("", ("--userspec", "--groups"), 1), "sandbox-exec": ("fpnD", (), 0),
+    "arch": ("", ("-arch", "-e", "-d"), 0), "busybox": ("", (), 0), "toybox": ("", (), 0),
+    "faketime": ("f", (), 1), "firejail": ("", (), 0), "proxychains": ("f", (), 0),
+    "proxychains4": ("f", (), 0), "torsocks": ("", (), 0), "strace": ("eoOpPsSuEIXb", (), 0),
+    "ltrace": ("eoOpPsSuEIXbn", (), 0), "dtruss": ("pnt", (), 0), "valgrind": ("", (), 0),
+    "catchsegv": ("", (), 0), "pkexec": ("", ("--user",), 0), "runuser": ("ugG", ("--user",), 0),
+    "nsenter": ("tSG", (), 0), "unshare": ("", (), 0), "entr": ("", (), 0), "script": ("tT", (), 0),
+}
+# `tool sub` pairs that run the rest of the line: `uv run git ...`, `bundle exec ...`.
+_SUB_RUNNERS = {"uv": ("run", "tool"), "uvx": None, "poetry": ("run",), "pipenv": ("run",),
+                "pdm": ("run",), "hatch": ("run",), "rye": ("run",), "conda": ("run",),
+                "mamba": ("run",), "micromamba": ("run",), "bundle": ("exec",), "npm": ("exec",),
+                "pnpm": ("exec", "dlx"), "yarn": ("exec", "dlx"), "npx": None, "bunx": None,
+                "pnpx": None, "direnv": ("exec",), "mise": ("exec", "x"), "asdf": ("exec",),
+                "op": ("run",), "doppler": ("run",), "aws-vault": ("exec",), "devbox": ("run",),
+                "nix": ("develop", "shell"), "dotenv": None, "infisical": ("run",)}
+# Programs that run a command string: `watch 'git ...'`, `su -c '...'`, `flock f -c '...'`.
+_STRING_RUNNERS = {"watch": None, "hyperfine": None, "parallel": None, "su": "-c", "flock": "-c",
+                   "nix-shell": "--run", "script": "-c", "sudo": None}
+_READONLY_PROGRAMS = {"cd", "pushd", "popd", "echo", "printf", "true", "false", ":", "pwd", "ls",
+                      "cat", "test", "[", "export", "set", "unset", "read", "for", "local",
+                      "declare", "typeset", "readonly", "grep", "rg", "head", "tail", "wc",
+                      "stat", "which", "type", "sleep", "date", "whoami", "hostname", "uname"}
+
+
+class _Cmd:
+    """The program a segment runs, found through the words in front of it."""
+    __slots__ = ("env", "argv", "chdir", "inner", "via_xargs", "prefix")
+
+    def __init__(self):
+        self.env, self.argv, self.chdir, self.inner = {}, [], None, []
+        self.via_xargs, self.prefix = False, []
+
+
+def _interesting(word) -> bool:
+    """A word that can be the program the gate has rules for."""
+    low = os.path.basename(str(word)).lower()
+    return (_dynamic(word) or low in _NAMED or low in WRITERS or low in INPLACE or low in SHELLS
+            or low in EXTRACTORS or low in _WRAP or low in _SUB_RUNNERS or low in _STRING_RUNNERS
+            or _writer_name(low) or bool(INTERPRETERS.match(low)) or low.startswith("git-"))
+
+
+def _skip_options(argv: list, i: int, prog: str) -> tuple:
+    """(index of the command word, chdir, split string) after the wrapper
+    `prog` at argv[i-1]."""
+    shorts, longs, operands = _WRAP[prog]
+    cdflag = {"env": "C", "sudo": "D"}.get(prog, "")
+    chdir = split = None
+    while i < len(argv):
+        a = str(argv[i])
+        if a == "--":
+            i += 1
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            takes = name in longs
+            word = _sub_word(argv[i], len(name) + 1) if eq else None
+            if takes and not eq:
+                word = argv[i + 1] if i + 1 < len(argv) else _plain("")
+                val, i = str(word), i + 1
+            if name == "--chdir":
+                chdir = word
+            if name == "--split-string":
+                split = val
+            i += 1
+            continue
+        if a in longs:  # single-dash long options (`arch -arch x86_64`)
+            i += 2
+            continue
+        if a.startswith("-") and len(a) > 1 and not a[1:].isdigit():
+            for k, ch in enumerate(a[1:], 1):
+                if ch in shorts:
+                    val, word = a[k + 1:], _sub_word(argv[i], k + 1)
+                    if not val:
+                        word = argv[i + 1] if i + 1 < len(argv) else _plain("")
+                        val, i = str(word), i + 1
+                    if ch == cdflag:
+                        chdir = word
+                    if ch == "S":
+                        split = val
+                    break
+            i += 1
+            continue
+        if a.startswith("-") and a[1:].isdigit():  # nice -5
+            i += 1
+            continue
+        break
+    return i + operands, chdir, split
+
+
+def _resolve(argv: list) -> "_Cmd":
+    """Find the program a segment runs: past VAR=value assignments, reserved
+    words (`{`, `!`, `then`...), redirections, wrappers and runners (env,
+    nice -n 5, timeout 600, xargs -I{}, uv run...). The resolved argv starts
+    at that program; `env` holds the assignments met on the way."""
+    res, i, guard = _Cmd(), 0, 0
+    argv = list(argv)
+    while i < len(argv) and guard < 64:
+        guard += 1
+        tok = argv[i]
+        low = os.path.basename(str(tok)).lower()
+        if _is_op(tok) and str(tok) in _REDIR_OPS:
+            i += 2
+            continue
+        if isinstance(tok, _Word) and tok.fd and i + 1 < len(argv) and _is_op(argv[i + 1]):
+            i += 1
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(tok)) and not _is_op(tok):
+            k, val = str(tok).split("=", 1)
+            res.env[k] = val
+            i += 1
+            continue
+        if (str(tok) in _KEYWORDS and not (isinstance(tok, _Word) and any(k != "raw" for k, _ in tok.parts))) \
+                or (isinstance(tok, _Word) and [k for k, _ in tok.parts] == ["arith"]):
+            i += 1  # a reserved word, or a (( arithmetic )) command
+            continue
+        if str(tok) == "function":
+            i += 2
+            continue
+        if low in _STRING_RUNNERS and _string_runner(argv, i, low, res):
+            return res
+        if low in _WRAP:
+            j, chdir, split = _skip_options(argv, i + 1, low)
+            res.chdir = chdir if chdir is not None else res.chdir
+            res.via_xargs = res.via_xargs or low == "xargs"
+            if split is not None:
+                argv = argv[:j] + [_plain(w) for w in split.split()] + argv[j:]
+            i = _next_program(argv, j)
+            continue
+        if low in _SUB_RUNNERS:
+            subs = _SUB_RUNNERS[low]
+            if subs is None or (i + 1 < len(argv) and str(argv[i + 1]) in subs):
+                i = _next_program(argv, i + (1 if subs is None else 2))
+                continue
+        break
+    res.argv = argv[i:]
+    res.prefix = argv[:i]
+    return res
+
+
+def _next_program(argv: list, j: int) -> int:
+    """Index of the command word from j: j itself when the rule tables know it,
+    else the first later word they know (a runner's unknown option values sit
+    in between), else j."""
+    if j >= len(argv) or _interesting(argv[j]) or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(argv[j])):
+        return j
+    for k in range(j + 1, len(argv)):
+        if _interesting(argv[k]) and not _is_op(argv[k]):
+            return k
+    return j
+
+
+def _string_runner(argv: list, i: int, low: str, res: "_Cmd") -> bool:
+    """Runners whose command is one string: the string is checked as a command."""
+    flag = _STRING_RUNNERS[low]
+    rest = [str(a) for a in argv[i + 1:] if not _is_op(a)]
+    if low == "sudo":
+        if not any(a in ("-s", "-i", "--shell", "--login") for a in rest):
+            return False
+        cmd = [a for a in rest if not a.startswith("-")]
+        res.inner.append(" ".join(cmd))
+        return True
+    if flag is not None:
+        for k, a in enumerate(rest):
+            if (a == flag or (flag == "-c" and re.fullmatch(r"-[A-Za-z]*c", a))) and k + 1 < len(rest):
+                res.inner.append(rest[k + 1])
+                return True
+        return False
+    if low == "parallel":
+        cut = rest.index(":::") if ":::" in rest else len(rest)
+        words = [a for a in rest[:cut] if not a.startswith("-")]
+    else:
+        words = [a for a in rest if not a.startswith("-") and not a.isdigit()]
+    if words:
+        res.inner.append(" ".join(words))
+    return True
 
 
 def _strip_prefix(argv: list) -> tuple:
-    """Drop VAR=val assignments and wrappers (env, command, sudo...). Returns (env, argv)."""
-    env = {}
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
-            k, v = tok.split("=", 1)
-            env[k] = v
-            i += 1
-        elif os.path.basename(tok) in WRAPPERS:
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 1
-        else:
-            break
-    return env, argv[i:]
+    """(env, argv from the program on): see _resolve."""
+    res = _resolve(argv)
+    return res.env, res.argv
 
 
 ADVICE = {
@@ -502,8 +1278,14 @@ ADVICE = {
                 "older copy on purpose, run the git command yourself outside the agent.",
     "envhome": "Run git and tessctl with your normal HOME and XDG_CONFIG_HOME; Tess finds the "
                "operator's key directory from the OS user record either way.",
+    "vault": "The raw value stays out of this session (conductor/vault.md). Pass the ref to a "
+             "tool that reads the secret from its environment itself: `./tessctl vault exec "
+             "--ref <service/key> -- <tool>` (a provider's CLI or SDK). To see or use the value "
+             "by hand, run the command yourself in your own terminal.",
     "operator": "Ask the operator to run it in their own terminal and type the answer "
                 "themselves (for an update: `./tessctl update`, then `accept <version>`).",
+    "cdfail": "If a `cd` in this command fails, the shell stays where it was and runs the rest "
+              "there. Write `cd <folder> && <command>` so the command runs only after the `cd` works.",
 }
 
 # v1.0.0 (release integration, item a): `tessctl update` (new safety rules) and
@@ -531,6 +1313,155 @@ _PTY_CODE = re.compile(r"(?i)\bimport\s+pty\b|\bfrom\s+pty\b|\bpty\.(spawn|fork|
                        r"\bos\.(openpty|forkpty)\b|\bpexpect\b|\bptyprocess\b|IO::Pty|node-pty")
 # tessctl subcommands that ask the operator to type the answer.
 _PROMPT_SUBS = {"update", "self-update", "approve", "anchor"}
+# v1.0 audit: forms that change the recorded state of Tess's safety files
+# (their tess.lock status or base_sha, or the live copy) on the operator's
+# behalf. tessctl asks a person at a terminal for these; like the prompts
+# above, an agent must not feed or fake that terminal. () = every form of the
+# subcommand; otherwise only with one of these options (argparse also takes a
+# unique prefix, `--reg`). Read-only forms (status, diff, verify, `lock
+# --check`, `restore --dry-run`) are unaffected.
+_STATE_SUBS = {"override": (), "reset": (), "resolve": (), "rollback": (),
+               "restore": ("--force",), "publish": ("--force",), "capture": ("--auto",),
+               "lock": ("--regen",)}
+# v1.0 audit (integration): signing a verifier verdict or a hard-floor
+# sign-off needs the operator at their terminal typing `sign as <Name>` and
+# the key's passphrase. The words after `tessctl` (positional words only).
+_SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"),
+               # recruit / bench / roster apply of a security-tier entry ask the
+               # operator at a terminal too (writer B); the gate cannot tell the
+               # tier from the words, so every form counts.
+               ("recruit",), ("bench",), ("roster", "apply"))
+
+
+def _opt_given(words: list, opts: tuple) -> bool:
+    """One of the long options `opts` is among `words`, spelled out or as a
+    prefix argparse would expand (`--forc`, `--regen=x`)."""
+    for w in words:
+        if w == "--":
+            return False
+        name = w.split("=", 1)[0]
+        if len(name) >= 3 and name.startswith("--") and any(o.startswith(name) for o in opts):
+            return True
+    return False
+
+
+def _operator_form(words: list) -> bool:
+    """These tessctl words ask the operator at a terminal (see _PROMPT_SUBS,
+    _STATE_SUBS)."""
+    sub = next((w.lower() for w in words if not w.startswith("-")), "")
+    if sub in _PROMPT_SUBS:
+        return True
+    pos = tuple(w.lower() for w in words if not w.startswith("-"))
+    if any(pos[:len(form)] == form for form in _SIGN_FORMS):
+        return True
+    if sub in _STATE_SUBS:
+        opts = _STATE_SUBS[sub]
+        return not opts or _opt_given([w.lower() for w in words], opts)
+    return False
+
+
+# --------------------------------------------------------------------------- vault (v1.0 audit)
+# The vault's rule (conductor/vault.md): a secret's raw value never enters an
+# agent transcript; it is decrypted only into the environment of the program
+# that uses it. `vault get --reveal` prints it, and `vault exec -- <printer>`
+# (printenv, echo, a shell, an interpreter running inline code) hands it to a
+# program whose output is the transcript. Denied like `gh auth token`.
+_VAULT_PRINTERS = {"printenv", "env", "echo", "printf", "cat", "tee", "head", "tail", "less", "more",
+                   "od", "xxd", "hexdump", "strings", "base64", "awk", "gawk", "mawk", "nawk", "jq",
+                   "set", "export", "declare", "typeset", "ps", "launchctl", "pbcopy", "xargs",
+                   "logger", "sed", "grep", "rev", "tr", "cut", "fold", "nl", "sort", "uniq",
+                   "osascript", "tmux", "screen", "script", "expect", "vi", "vim", "nano", "emacs"}
+_VAULT_SHELLS = SHELLS | {"fish", "csh", "tcsh", "pwsh", "powershell", "busybox", "eval", "source"}
+# Variables a program reads as a file, a command, an option list or a prompt:
+# a secret placed in one shows up in error output or is run.
+_VAULT_BAD_AS = re.compile(r"(?i)^(BASH_ENV|ENV|PATH|CDPATH|IFS|PS[0-9]|PROMPT_COMMAND|SHELLOPTS|"
+                           r"BASHOPTS|HOME|ZDOTDIR|TMPDIR|SHELL|EDITOR|VISUAL|PAGER|LESS[A-Z_]*|"
+                           r"MANPAGER|LD_[A-Z_]*|DYLD_[A-Z_]*|BASH_FUNC_.*|PYTHON[A-Z_]*|NODE_[A-Z_]*|"
+                           r"NPM_CONFIG_.*|PERL[A-Z0-9_]*|RUBY[A-Z_]*|GEM_[A-Z_]*|JAVA_TOOL_OPTIONS|"
+                           r"_JAVA_OPTIONS|GIT_[A-Z_]*|SSH_ASKPASS|SUDO_ASKPASS|XDG_[A-Z_]*|TESS_[A-Z_]*|"
+                           r"CLAUDE_[A-Z_]*|CODEX_[A-Z_]*|HTTPS?_PROXY|ALL_PROXY)$")
+_VAULT_RUNNERS = {"timeout", "gtimeout", "stdbuf", "caffeinate", "setsid", "arch", "nice", "nohup",
+                  "time", "command", "exec", "builtin", "sudo", "doas"}
+
+
+def _vault_consumer(argv: list) -> list:
+    """The program `vault exec` would run, past assignments and wrappers
+    (`env VAR=x`, `nice`, `timeout 5`, `sudo`)."""
+    i = 0
+    while i < len(argv):
+        name = os.path.basename(_unquote(argv[i])).lower()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+            i += 1
+        elif name == "env":
+            j = i + 1
+            while j < len(argv) and (argv[j].startswith("-") or re.match(r"^[A-Za-z_]\w*=", argv[j])):
+                j += 1
+            if j >= len(argv):
+                return argv[i:]  # a bare `env` prints the whole environment
+            i = j
+        elif name in _VAULT_RUNNERS:
+            i += 1
+            while i < len(argv) and (argv[i].startswith("-") or re.match(r"^[0-9.]+[smhd]?$", argv[i])):
+                i += 1
+        else:
+            break
+    return argv[i:]
+
+
+def _vault_exec_parts(words: list) -> tuple:
+    """(the --as names, the consumer argv) of the words after `vault exec`."""
+    as_names, i = [], 0
+    while i < len(words):
+        w = words[i]
+        if w == "--":
+            return as_names, words[i + 1:]
+        if not w.startswith("-") or w == "-":
+            return as_names, words[i:]
+        name, eq, val = w.partition("=")
+        is_as = len(name) >= 3 and "--as".startswith(name)
+        takes = is_as or (len(name) >= 3 and "--ref".startswith(name))
+        if takes and not eq:
+            val = words[i + 1] if i + 1 < len(words) else ""
+            i += 1
+        if is_as:
+            as_names.append(_unquote(val))
+        i += 1
+    return as_names, []
+
+
+def _check_vault(words: list, v) -> None:
+    """`tessctl vault get --reveal` / `--force`, and `tessctl vault exec` into a
+    program that prints what it is given."""
+    pos = [w for w in words if not w.startswith("-")]
+    if len(pos) < 2 or pos[0].lower() != "vault":
+        return
+    vsub = pos[1].lower()
+    rest = words[words.index(pos[1]) + 1:]
+    if vsub == "get" and _opt_given([w.lower() for w in rest], ("--reveal", "--force")):
+        v.add(DENY, "`tessctl vault get --reveal` prints a secret's raw value into this session "
+                    "and its transcript", "vault")
+        return
+    if vsub != "exec":
+        return
+    as_names, consumer = _vault_exec_parts(rest)
+    bad = [n for n in as_names if _VAULT_BAD_AS.match(n.strip())]
+    if bad:
+        v.add(DENY, f"`tessctl vault exec --as {bad[0]}` puts the secret in a variable that "
+                    "programs read as a file, command or setting, so its value can show up in "
+                    "their output", "vault")
+        return
+    prog = _vault_consumer(consumer)
+    if not prog:
+        return
+    name = os.path.basename(_unquote(prog[0])).lower()
+    args = prog[1:]
+    inline = any(a in ("-c", "-e", "-E", "-p", "-r", "--eval", "--print", "--command", "-")
+                 or re.match(r"^-[A-Za-z]*[ceE]$", a) for a in args)
+    script = [a for a in args if not a.startswith("-")]
+    if name in _VAULT_PRINTERS or name in _VAULT_SHELLS or (
+            INTERPRETERS.match(name) and (inline or not script)):
+        v.add(DENY, f"`tessctl vault exec` would hand the secret to `{name}`, which can print it "
+                    "into this session and its transcript", "vault")
 
 
 def _unquote(text: str) -> str:
@@ -591,13 +1522,18 @@ def _check_operator_only(cmd: str, v) -> None:
     flat = _unquote(cmd)
     pipes = _operator_pipelines(cmd)
     calls, fed = [], False
+    if pipes is None:  # unparseable: judge the words after each `tessctl` in the plain text
+        words = re.split(r"[\s;&|()<>]+", flat)
+        for i, w in enumerate(words):
+            if _is_tessctl(w):
+                _check_vault(words[i + 1:], v)
     for pipe in pipes or []:
         for k, seg in enumerate(pipe):
             _, argv = _strip_prefix(seg)
             words = _tessctl_call(argv)
             name = os.path.basename(argv[0]).lower() if argv else ""
             if name in ("tmux", "screen") and any(
-                    re.search(r"(?i)\b(accept|anchor)\b", _unquote(a)) for a in argv[1:]):
+                    re.search(r"(?i)\b(accept|anchor)\b|\bsign\W+as\b", _unquote(a)) for a in argv[1:]):
                 v.add(DENY, "only the operator can answer Tess's approval prompts; this command "
                             "would type the approval into a terminal for them", "operator")
             if (INTERPRETERS.match(name) or name in ("-",)) and _PTY_CODE.search(flat):
@@ -606,9 +1542,9 @@ def _check_operator_only(cmd: str, v) -> None:
             if words is None:
                 continue
             calls.append((name, [w.lower() for w in words]))
-            sub = next((w.lower() for w in words if not w.startswith("-")), "")
+            _check_vault(words, v)
             redirected = any(re.match(r"^\d*<", w) for w in words)
-            if sub in _PROMPT_SUBS and (k > 0 or redirected):
+            if _operator_form(words) and (k > 0 or redirected):
                 fed = True
     tess_text = re.search(r"(?i)tessctl", flat) is not None
     if not calls and not tess_text:
@@ -657,7 +1593,7 @@ def _commit_no_verify(args: list) -> bool:
 
 def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str, depth: int = 0):
     args = argv[1:]
-    cfg, i, gcwd, redirect = [], 0, cwd, None
+    cfg, i, gcwd, redirect, cenv = [], 0, cwd, None, []
     while i < len(args) and args[i].startswith("-"):
         a = args[i]
         if a.split("=", 1)[0] in ("--work-tree", "--git-dir"):
@@ -665,6 +1601,8 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
         if a in GIT_VALUE_OPTS and i + 1 < len(args):
             if a == "-c" or a == "--config-env":
                 cfg.append(args[i + 1])
+            if a == "--config-env":
+                cenv.append(args[i + 1])
             if a == "-C":
                 # A -C target known only at run time: later path checks cannot resolve it.
                 gcwd = None if gcwd is None or any(c in args[i + 1] for c in "$`*?[") else \
@@ -673,7 +1611,10 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
             continue
         if a.startswith("--config-env=") or a.startswith("-c") and len(a) > 2:
             cfg.append(a.split("=", 1)[1] if a.startswith("--config-env=") else a[2:])
+            if a.startswith("--config-env="):
+                cenv.append(cfg[-1])
         i += 1
+    cfg += _env_config(env)  # GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>
     sub = args[i] if i < len(args) else ""
     rest = args[i + 1:]
     redirect = redirect or next((k for k in env if k in _REDIRECT_ENV), None) or next(
@@ -717,7 +1658,17 @@ def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str
             if hit:
                 v.add(DENY, f"it removes or moves {a}, a protected Tess path ({hit})", "protected")
     if sub == "push":
-        _check_push(root, gcwd, rest, v)
+        _check_push(root, gcwd, rest, v, cfg, cenv)
+
+
+def _env_config(env: dict) -> list:
+    """Config git reads from GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / _VALUE_<n>."""
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    return [f"{env[f'GIT_CONFIG_KEY_{k}']}={env.get(f'GIT_CONFIG_VALUE_{k}', '')}"
+            for k in range(min(count, 64)) if f"GIT_CONFIG_KEY_{k}" in env]
 
 
 _HISTORY_ADVICE = ("git replace refs, sparse checkouts and fetching into the checked-out branch "
@@ -799,6 +1750,14 @@ def _check_git_config(rest: list, v: Verdict):
         return
     if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys):
         v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
+    # v1.0 audit: an editor session on a config file (any scope) can set any
+    # key, and init.templateDir puts hook scripts into every new clone.
+    if any(k in ("-e", "--edit", "edit") for k in keys):
+        v.add(DENY, "it opens a git config file in an editor, where any setting (core.hooksPath "
+                    "included) can change; set one key with `git config <key> <value>`", "hookspath")
+    if any(k == "init.templatedir" or k.startswith("init.templatedir=") for k in keys):
+        v.add(DENY, "it changes init.templateDir, which copies hook scripts into every new "
+                    "repository", "hookspath")
     if any(re.match(r"^core\.sparsecheckout", k) for k in keys):
         v.add(DENY, "it turns on a sparse checkout (core.sparseCheckout), which lets git delete "
                     "Tess's hook configuration from the working tree", "rollback")
@@ -870,9 +1829,10 @@ def _git_ro(cwd: str, *args) -> str | None:
     runtime, fsmonitor off. None when git fails (the caller fails closed)."""
     env = {k: val for k, val in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_NO_REPLACE_OBJECTS"] = "1"  # the gate reads the real objects
+    timeout = _budget(20)
     try:
         r = subprocess.run(["git", "-C", cwd, "-c", "core.fsmonitor=false", *args],
-                           capture_output=True, text=True, timeout=20, env=env)
+                           capture_output=True, text=True, timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return r.stdout if r.returncode == 0 else None
@@ -1459,10 +2419,23 @@ def _git_pull(root, cwd, rest, v):
     return None
 
 
-def _check_push(root: Path, cwd: str, rest: list, v: Verdict):
+# v1.0 audit: the push check works out the destination and the refs the way
+# git will: --repo, one-command config (-c, GIT_CONFIG_COUNT) for remotes,
+# branches, url.*.insteadOf / pushInsteadOf and push.*, every pushurl,
+# configured push refspecs, remote.<name>.mirror, push.default=matching,
+# --all / --mirror / --tags / --follow-tags and `tag <name>`. What it cannot
+# work out is refused, never guessed.
+_PUSH_CFG = re.compile(r"(?i)^(remote|branch|url|push)\.")
+
+
+def _push_config_key(key: str) -> bool:
+    return bool(_PUSH_CFG.match(str(key).strip()))
+
+
+def _check_push(root: Path, cwd: str, rest: list, v: Verdict, cfg=(), cenv=()):
     flags = _short_flags(rest)
     opts = [a for a in rest if a.startswith("--")]
-    if "--dry-run" in opts or "n" in flags:
+    if any(_abbrev(o, "--dry-run") for o in opts) or "n" in flags:
         return
     if ("f" in flags or any(_abbrev(o, "--force", "--force-with-lease", "--force-if-includes",
                                     "--mirror", "--prune") for o in opts)
@@ -1473,23 +2446,42 @@ def _check_push(root: Path, cwd: str, rest: list, v: Verdict):
         v.add(ASK, "it deletes a branch or tag on the remote")
         if "d" in flags or any(_abbrev(o, "--delete") for o in opts):
             return  # every refspec names a ref to delete: no data is published
-    pos, i = [], 0
+    pos, repo, i = [], None, 0
     while i < len(rest):
-        a = rest[i]
-        if a in PUSH_VALUE_OPTS:
-            i += 2
-            continue
-        if not a.startswith("-") or a == "-":
+        a = str(rest[i])
+        if a == "--":
+            pos += [str(x) for x in rest[i + 1:]]
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            full = _abbrev(name, "--repo", "--receive-pack", "--exec", "--push-option")
+            if full and not eq:
+                val, i = (str(rest[i + 1]) if i + 1 < len(rest) else ""), i + 1
+            if full == "--repo":
+                repo = val
+            elif full in ("--receive-pack", "--exec"):
+                v.add(ASK, f"`git push {full}` runs a program of its own choosing ({val}) to "
+                           "receive the push, which Tess cannot check")
+        elif re.fullmatch(r"-[A-Za-z]*o", a):
+            i += 1  # -o <push option>
+        elif not a.startswith("-") or a == "-":
             pos.append(a)
         i += 1
+    if any(_push_config_key(str(c).split("=", 1)[0]) for c in cenv):
+        v.add(DENY, "it takes push settings from an environment variable (--config-env), so Tess "
+                    "cannot tell where the push goes or what it sends", "push")
+        return
+    pre = [x for c in cfg if _push_config_key(str(c).split("=", 1)[0]) for x in ("-c", str(c))]
     try:
-        _publish_remote_check(root, cwd, pos, opts, v)
+        _publish_remote_check(root, cwd, pos, opts, v, pre, repo)
+    except _GateTimeout:
+        raise
     except Exception as exc:  # fail closed
         v.add(DENY, f"Tess could not check what this push would publish ({type(exc).__name__})", "error")
 
 
 def _git(cwd: str, *args, check=False) -> str | None:
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=20)
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=_budget(20))
     if r.returncode != 0:
         if check:
             raise RuntimeError(f"git {' '.join(args[:2])} failed")
@@ -1497,56 +2489,123 @@ def _git(cwd: str, *args, check=False) -> str | None:
     return r.stdout.strip()
 
 
-def _publish_remote_check(root: Path, cwd: str, pos: list, opts: list, v: Verdict):
-    top = _git(cwd or str(root), "rev-parse", "--show-toplevel")
-    if not top:
-        return  # not a repository: the push itself will fail
-    branch = _git(top, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
-    if pos:
-        remote = pos[0]
+def _url_rules(top: str, pre: list, kind: str) -> list:
+    """[(prefix, replacement), ...] from url.<base>.insteadOf / pushInsteadOf."""
+    out = _git(top, *pre, "config", "--get-regexp", r"^url\..*\." + kind + "$") or ""
+    rules = []
+    for line in out.splitlines():
+        key, _, val = line.partition(" ")
+        rules.append((val, key[4:-(len(kind) + 1)]))
+    return rules
+
+
+def _rewrite(url: str, rules: list) -> str | None:
+    """`url` rewritten by the longest matching rule, as git does; None if none match."""
+    best = max((r for r in rules if url.startswith(r[0])), key=lambda r: len(r[0]), default=None)
+    return best[1] + url[len(best[0]):] if best else None
+
+
+def _push_destination(top: str, pre: list, dest: str | None, branch: str) -> tuple:
+    """(remote name or URL, is a configured remote, [push URLs]), worked out the
+    way git's remote.c does: every pushurl (with insteadOf), else every url
+    (with pushInsteadOf, or failing that insteadOf); a URL or path given on the
+    command line is rewritten the same way."""
+    if dest is None:
+        dest = ((branch and _git(top, *pre, "config", "--get", f"branch.{branch}.pushRemote"))
+                or _git(top, *pre, "config", "--get", "remote.pushDefault")
+                or (branch and _git(top, *pre, "config", "--get", f"branch.{branch}.remote"))
+                or "origin")
+    pushurls = (_git(top, *pre, "config", "--get-all", f"remote.{dest}.pushurl") or "").splitlines()
+    urls = (_git(top, *pre, "config", "--get-all", f"remote.{dest}.url") or "").splitlines()
+    named = bool(pushurls or urls)
+    if not named and re.fullmatch(r"[\w.-]+", dest):
+        common = _git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common and any(os.path.exists(os.path.join(common, d, dest)) for d in ("remotes", "branches")):
+            raise RuntimeError("remote defined in .git/remotes or .git/branches")
+    instead = _url_rules(top, pre, "insteadof")
+    if pushurls:
+        out = [_rewrite(u, instead) or u for u in pushurls]
     else:
-        remote = ((branch and _git(top, "config", "--get", f"branch.{branch}.pushRemote"))
-                  or _git(top, "config", "--get", "remote.pushDefault")
-                  or (branch and _git(top, "config", "--get", f"branch.{branch}.remote"))
-                  or "origin")
-    looks_url = "://" in remote or remote.startswith(("/", ".", "~")) or re.match(r"^[^/]+@[^:]+:", remote)
-    url = remote if looks_url else (_git(top, "remote", "get-url", "--push", remote) or remote)
-    refs = []
-    if any(o in ("--all", "--branches", "--mirror") for o in opts) or any("*" in p for p in pos[1:]):
-        out = _git(top, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", check=True)
-        refs += [ln.split() for ln in out.splitlines() if ln.strip()]
-    if any(o in ("--tags", "--mirror", "--follow-tags") for o in opts):
-        out = _git(top, "for-each-ref", "--format=%(refname) %(objectname)", "refs/tags", check=True)
-        refs += [ln.split() for ln in out.splitlines() if ln.strip()]
-    for spec in pos[1:]:
-        if "*" in spec:
-            continue
+        push_rules = _url_rules(top, pre, "pushinsteadof")
+        out = [_rewrite(u, push_rules) or _rewrite(u, instead) or u for u in (urls or [dest])]
+    return dest, named, [u for u in out if u.strip()] or [dest]
+
+
+def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list) -> list:
+    """[[ref, sha], ...] the push sends, from its refspecs or git's defaults."""
+    def has(*names):
+        return any(_abbrev(o.split("=", 1)[0], *names) for o in opts)
+
+    def each(pattern):
+        out = _git(top, "for-each-ref", "--format=%(refname) %(objectname)", pattern, check=True)
+        return [ln.split() for ln in out.splitlines() if ln.strip()]
+
+    def conf(*args):
+        return (_git(top, *pre, "config", *args) or "").strip()
+
+    mirror = has("--mirror") or bool(remote and conf("--type=bool", "--get", f"remote.{remote}.mirror") == "true")
+    all_, tags = has("--all", "--branches"), has("--tags")
+    refs = each("refs/") if mirror else []
+    refs += each("refs/heads/") if all_ else []
+    if tags or has("--follow-tags") or conf("--type=bool", "--get", "push.followTags") == "true":
+        refs += each("refs/tags/")
+    specs = list(specs)
+    if not specs and not (mirror or all_ or tags):
+        configured = remote and conf("--get-all", f"remote.{remote}.push")
+        if configured:
+            specs = configured.splitlines()
+        elif (conf("--get", "push.default") or "simple").lower() == "matching":
+            refs += each("refs/heads/")
+        else:
+            sha = _git(top, "rev-parse", "--verify", "--quiet", "HEAD")
+            refs += [["HEAD", sha]] if sha else []
+    k = 0
+    while k < len(specs):
+        spec, k = specs[k], k + 1
+        if spec == "tag" and k < len(specs):
+            spec, k = "refs/tags/" + specs[k], k + 1
         src = spec.lstrip("+").split(":", 1)[0]
         if not src:
             continue  # a deletion carries no data
+        if "*" in src:
+            for pat in ({src} if src.startswith("refs/") else {src, "refs/heads/" + src, "refs/tags/" + src}):
+                refs += each(pat)
+            continue
         sha = _git(top, "rev-parse", "--verify", "--quiet", src)
         if not sha:
             raise RuntimeError("unresolvable ref")
         refs.append([src, sha])
+    return refs
+
+
+def _publish_remote_check(root: Path, cwd: str, pos: list, opts: list, v: Verdict,
+                          pre: list = (), repo: str | None = None):
+    top = _git(cwd or str(root), "rev-parse", "--show-toplevel")
+    if not top:
+        return  # not a repository: the push itself will fail
+    pre = list(pre)
+    branch = _git(top, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
+    remote, named, urls = _push_destination(top, pre, pos[0] if pos else repo, branch)
+    refs = _push_refs(top, pre, remote if named else None, pos[1:], opts)
     if not refs:
-        sha = _git(top, "rev-parse", "--verify", "--quiet", "HEAD")
-        if not sha:
-            return
-        refs.append(["HEAD", sha])
+        return
     stdin = "".join(f"{r} {s} {r} {ZERO}\n" for r, s in refs)
     tessctl = root / TESSCTL_REL
     if not tessctl.is_file():
         v.add(DENY, f"{TESSCTL_REL} is missing, so Tess cannot check what this push would publish", "error")
         return
     env = dict(os.environ, TESS_ROOT=top)
-    # -I -B: the engine lives in the working tree, and a planted
-    # .tess/bin/argparse.py (or yaml.py) beside it must never run inside this hook.
-    r = subprocess.run([sys.executable, "-I", "-B", str(tessctl), "doctor", "--publish-remote",
-                        remote, url],
-                       input=stdin, capture_output=True, text=True, cwd=top, env=env, timeout=90)
-    if r.returncode != 0:
-        detail = (r.stderr.strip() or r.stdout.strip() or "tess-remote-guard refused the push")
-        v.add(DENY, "the public-remote guard refused it: " + _redact(root, detail), "push")
+    for url in urls:  # git pushes to every pushurl of a remote
+        # -I -B: the engine lives in the working tree, and a planted
+        # .tess/bin/argparse.py (or yaml.py) beside it must never run inside this hook.
+        r = subprocess.run([sys.executable, "-I", "-B", str(tessctl), "doctor", "--publish-remote",
+                            remote, url],
+                           input=stdin, capture_output=True, text=True, cwd=top, env=env,
+                           timeout=_budget(90))
+        if r.returncode != 0:
+            detail = (r.stderr.strip() or r.stdout.strip() or "tess-remote-guard refused the push")
+            v.add(DENY, "the public-remote guard refused it: " + _redact(root, detail), "push")
+            return
 
 
 def _check_gh(argv: list, v: Verdict):
@@ -1563,20 +2622,768 @@ def _check_gh(argv: list, v: Verdict):
         v.add(ASK, "it changes a repository's visibility through the GitHub API")
 
 
-def _write_targets(argv: list) -> list:
-    """Paths a shell segment writes (redirect targets, writer args)."""
+# --------------------------------------------------------------------------- operands (v1.0 audit)
+# A write target is compared with the protected list the way the shell will
+# expand it: ~, $HOME / $PWD / $TMPDIR, variables set earlier in the same
+# command, `for` loop lists, braces and globs (against the files on disk and
+# against the protected names themselves), `$(pwd)` / `$(mktemp)`, and
+# symlinks the command makes before it writes. A target that is still only
+# known at run time asks, unless the text in front of it fixes a directory
+# outside the project.
+
+_NAMED = {"git", "gh", "hub", "tessctl", "tessctl.py", "eval", "find", "cd", "pushd", "popd",
+          "chdir", "export", "declare", "typeset", "setenv", "local", "readonly"}
+# Writers outside WRITERS: every operand, or the one noted in _write_targets.
+_EXTRA_WRITERS = {"scp", "rename", "trash", "srm", "link", "mktemp", "chgrp", "mkfifo", "zip"}
+# Programs that write the file an option names.
+_OUTPUT_OPTS = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document", "-P", "--directory-prefix"),
+                "sort": ("-o", "--output"), "base64": ("-o", "--output"), "openssl": ("-out",),
+                "gpg": ("-o", "--output"), "ssh-keygen": ("-f",), "uudecode": ("-o",),
+                "iconv": ("-o", "--output"), "plutil": ("-o",), "pandoc": ("-o", "--output")}
+_GIT_TOOLS = {"git-lfs", "git-receive-pack", "git-upload-pack", "git-upload-archive", "git-shell",
+              "git-credential-osxkeychain", "git-credential-manager", "git-filter-repo"}
+_STABLE_VARS = ("HOME", "TMPDIR", "USER", "LOGNAME")
+_GLOB_CHARS = re.compile(r"[*?[]")
+_MAX_DEPTH = 4
+_FIND_LIMIT = 20000
+_UNSET = object()
+# Filled per evaluate(): the deadline and what this call already checked.
+_STATE: dict = {"deadline": None, "interp": set()}
+
+
+class _GateTimeout(Exception):
+    """The gate's time budget ran out (see GATE_BUDGET)."""
+
+
+def _tick() -> None:
+    d = _STATE.get("deadline")
+    if d is not None and time.monotonic() > d:
+        raise _GateTimeout()
+
+
+def _budget(seconds: float) -> float:
+    """A subprocess timeout that ends inside the gate's own budget."""
+    d = _STATE.get("deadline")
+    if d is None:
+        return seconds
+    left = d - time.monotonic()
+    if left <= 0.5:
+        raise _GateTimeout()
+    return min(seconds, left)
+
+
+class _Ctx:
+    """What one command has set up for the words after it: variables, the
+    symlinks it creates, and whether it has changed files yet."""
+
+    def __init__(self, raw: str, parent: "_Ctx | None" = None, env: dict | None = None):
+        self.raw = raw if parent is None else parent.raw
+        self.vars = dict(parent.vars) if parent is not None else {}
+        self.links = parent.links if parent is not None else {}
+        self.mutated = parent.mutated if parent is not None else False
+        for k, val in (env or {}).items():
+            self.vars[k] = None if re.search(r"[$`]", str(val)) else [str(val)]
+
+    def assign(self, name: str, vals, cond: bool) -> None:
+        if cond:
+            old = self.vars.get(name, _UNSET)
+            old = None if old is _UNSET else old
+            vals = None if old is None or vals is None else list(dict.fromkeys(old + vals))[:64]
+        self.vars[name] = vals
+
+
+def _writer_name(low: str) -> str | None:
+    if low in WRITERS or low in _EXTRA_WRITERS:
+        return low
+    if low.startswith("g") and low[1:] in WRITERS:
+        return low[1:]  # GNU coreutils as installed by Homebrew: gcp, gmv, grm...
+    return None
+
+
+def _var_values(name: str, cwd: str | None, ctx: "_Ctx"):
+    if name in ctx.vars:
+        return ctx.vars[name]
+    if name == "PWD":
+        return [cwd] if cwd else None
+    if name in _STABLE_VARS and not re.search(r"(?<![\w$])" + name + r"=", ctx.raw):
+        val = os.path.expanduser("~") if name == "HOME" else os.environ.get(name)
+        return [val] if val else None
+    return None
+
+
+def _sub_values(text: str, cwd: str | None):
+    """What a command substitution prints, for the few Tess can know: $(pwd), $(mktemp ...)."""
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    if words in (["pwd"], ["pwd", "-P"], ["pwd", "-L"]):
+        return [cwd] if cwd else None
+    if not words or words[0] != "mktemp" or any(re.search(r"[$`]", w) for w in words):
+        return None
+    where, k = None, 1
+    while k < len(words):
+        w = words[k]
+        if w in ("-p", "--tmpdir") and k + 1 < len(words):
+            where, k = words[k + 1], k + 2
+            continue
+        if w.startswith("--tmpdir="):
+            where = w.split("=", 1)[1]
+        elif not w.startswith("-") and "/" in w:
+            where = os.path.dirname(w)
+        k += 1
+    base = os.path.expanduser(where) if where else (os.environ.get("TMPDIR") or tempfile.gettempdir())
+    return [os.path.join(base if os.path.isabs(base) else os.path.join(cwd or ".", base),
+                         "tess-mktemp.XXXXXX")]
+
+
+def _braces(text: str, limit: int = 64) -> list:
+    """Brace expansion of unquoted text: {a,b} and {1..3}."""
+    start = 0
+    while True:
+        i = text.find("{", start)
+        if i < 0:
+            return [text]
+        depth, j, commas = 0, i, []
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif text[j] == "," and depth == 1:
+                commas.append(j)
+            j += 1
+        if j >= len(text):
+            return [text]
+        inner = text[i + 1:j]
+        if commas:
+            alts, prev = [], i + 1
+            for c in commas + [j]:
+                alts.append(text[prev:c])
+                prev = c + 1
+        else:
+            m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)|([A-Za-z])\.\.([A-Za-z])", inner)
+            if not m:
+                start = i + 1
+                continue
+            a, b = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(3)), ord(m.group(4)))
+            step = 1 if b >= a else -1
+            alts = [str(x) if m.group(1) else chr(x) for x in range(a, b + step, step)][:limit]
+        out = []
+        for alt in alts:
+            out += _braces(text[:i] + alt + text[j + 1:], limit)
+            if len(out) >= limit:
+                return out[:limit]
+        return out
+
+
+def _tilde(text: str, cwd: str | None, ctx: "_Ctx"):
+    m = re.match(r"~([^/]*)", text)
+    user = m.group(1)
+    if user == "":
+        home = _var_values("HOME", cwd, ctx)
+        return home[0] + text[1:] if home else None
+    if user == "+":
+        return cwd + text[2:] if cwd else None
+    if user == "-":
+        return None
+    exp = os.path.expanduser("~" + user)
+    return text if exp.startswith("~") else exp + text[m.end():]
+
+
+def _gescape(text: str) -> str:
+    return re.sub(r"([*?[])", r"[\1]", text)
+
+
+def _word_values(word, cwd: str | None, ctx: "_Ctx | None", limit: int = 64) -> tuple:
+    """([(text, glob pattern or None), ...], None) for the strings `word` can
+    become; (None, prefix) when part of it is only known at run time, with the
+    text in front of that part."""
+    ctx = ctx if ctx is not None else _Ctx("")
+    parts = word.parts if isinstance(word, _Word) and word.parts else (("fallback", str(word)),)
+    cands = [("", "", False)]
+    for n, (kind, t) in enumerate(parts):
+        alts = None
+        if kind == "lit":
+            alts = [(t, _gescape(t), False)]
+        elif kind in ("raw", "fallback") and not (kind == "fallback" and re.search(r"[$`]", t)):
+            if n == 0 and t.startswith("~"):
+                t = _tilde(t, cwd, ctx)
+            if t is not None:
+                alts = [(b, b, bool(_GLOB_CHARS.search(b))) for b in _braces(t)]
+        elif kind == "var":
+            vals = _var_values(t, cwd, ctx)
+            alts = None if vals is None else [(x, x, bool(_GLOB_CHARS.search(x))) for x in vals]
+        elif kind == "sub":
+            vals = _sub_values(t, cwd)
+            alts = None if vals is None else [(x, _gescape(x), False) for x in vals]
+        if alts is None:
+            return None, cands[0][0]
+        cands = [(a + x, p + y, g or h) for a, p, g in cands for x, y, h in alts][:limit]
+    return [(text, pat if glob else None) for text, pat, glob in cands], None
+
+
+def _may_reach(root: Path, cwd: str | None, prefix: str) -> bool:
+    """False only when the text in front of a run-time part fixes a directory
+    outside the project and not above it (`/tmp/build-$ID`)."""
+    base = os.path.realpath(str(root))
+    if "/" in prefix:
+        head = prefix.rsplit("/", 1)[0] or "/"
+        real = os.path.realpath(os.path.join(cwd or base, os.path.expanduser(head)))
+    else:
+        real = os.path.realpath(cwd or base)
+    return (_within(real, base) is not None or _within(base, real) is not None
+            or control_file_hit(root, real, real) is not None)
+
+
+def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
+    """`path` with the symlinks this command creates earlier followed; None
+    when one points somewhere only known at run time."""
+    full = os.path.normpath(os.path.join(cwd, path))
+    for _ in range(8):
+        for link, target in ctx.links.items():
+            if full == link or full.startswith(link + os.sep):
+                if target is None:
+                    return None
+                full = os.path.normpath(target + full[len(link):])
+                break
+        else:
+            return full
+    return full
+
+
+def _seg_match(name: str, pat: str) -> bool:
+    if name.startswith(".") and not pat.startswith("."):
+        return False  # a glob does not match a dot file unless it starts with a dot
+    return fnmatch.fnmatchcase(name.lower(), pat.lower())
+
+
+def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
+    """The protected path a glob pattern can name, whether or not that file
+    exists when the gate runs (`CLAUDE.m?`, `.claude/hook[s]/*`, `*`)."""
+    full = pat if os.path.isabs(pat) else os.path.join(cwd, pat)
+    parts = full.split(os.sep)
+    k = next((i for i, p in enumerate(parts) if _GLOB_CHARS.search(p)), len(parts))
+    head = os.path.realpath(os.sep.join(parts[:k]) or os.sep)
+    base = os.path.realpath(str(root))
+    rel = _within(head, base)  # v1.0 audit: by identity (case variants on APFS)
+    if rel is None:
+        return None
+    pparts = ([] if rel == "." else rel.split("/")) + [p for p in parts[k:] if p]
+    for g in _protected_globs(root):
+        entry = g[:-3] if g.endswith("/**") else g
+        if _GLOB_CHARS.search(entry):
+            continue
+        eparts = entry.split("/")
+        if len(pparts) <= len(eparts) and all(_seg_match(e, p) for e, p in zip(eparts, pparts)):
+            return g  # the entry, or a directory holding it
+        if g.endswith("/**") and len(pparts) > len(eparts) and all(
+                _seg_match(e, p) for e, p in zip(eparts, pparts)):
+            return g  # a file inside a protected directory
+    return None
+
+
+def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None:
+    if isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts):
+        return  # >(cmd): a pipe to a command checked on its own
+    cands, prefix = _word_values(word, cwd, ctx)
+    if cands is None:
+        if _may_reach(root, cwd, prefix):
+            v.add(ASK, f"it writes to {word}, a path that is only known when the command runs, "
+                       "so Tess cannot check it against its protected files")
+        return
+    for text, pat in cands:
+        for p in (_glob(cwd, pat) if pat else []) or [text]:
+            full = _through_links(p, cwd, ctx)
+            if full is None:
+                v.add(ASK, f"it writes to {word} through a link this command makes to a place "
+                           "Tess cannot work out")
+                return
+            hit = protected_hit(root, cwd, full)
+            if hit:
+                v.add(DENY, f"it writes to {word}, a protected Tess path ({hit})", "protected")
+                return
+        hit = pat and _pattern_hit(root, cwd, pat)
+        if hit:
+            v.add(DENY, f"it writes to {word}, which matches a protected Tess path ({hit})", "protected")
+            return
+
+
+def _sub_word(word, k: int):
+    """`word` without its first k characters, keeping how the rest was written."""
+    if not isinstance(word, _Word) or not word.parts:
+        return str(word)[k:]
+    out, left = [], k
+    for kind, t in word.parts:
+        if left and kind in ("lit", "raw", "fallback"):
+            take = min(left, len(t))
+            t, left = t[take:], left - take
+            if not t:
+                continue
+        elif left:
+            return _mkword([("dyn", "")])
+        out.append((kind, t))
+    return _mkword(out or [("lit", "")])
+
+
+def _redirect_targets(argv: list) -> list:
     out = []
     for i, tok in enumerate(argv):
-        if tok in REDIRECTS or re.match(r"^\d*>{1,2}\|?$", tok):
-            if i + 1 < len(argv) and argv[i + 1] not in REDIRECTS and argv[i + 1] != "&":
-                out.append(argv[i + 1])
-    name = os.path.basename(argv[0]) if argv else ""
-    args = [a for a in argv[1:] if a not in REDIRECTS]
-    if name in WRITERS:
-        out += [a for a in args if not a.startswith("-")]
-    elif name in INPLACE and any(re.match(r"^-[A-Za-z]*i", a) or a.startswith("--in-place") for a in args):
-        out += [a for a in args if not a.startswith("-")]
+        s = str(tok)
+        red = (tok.op and s in _REDIR_OPS) if isinstance(tok, _Word) else (
+            s in REDIRECTS or s == ">&" or re.match(r"^\d*>{1,2}\|?$", s))
+        if not red or s in ("<", "<<", "<<-", "<<<", "<&") or i + 1 >= len(argv) or _is_op(argv[i + 1]):
+            continue
+        if s == ">&" and re.fullmatch(r"\d+-?|-", str(argv[i + 1])):
+            continue  # 2>&1: a descriptor, not a file
+        out.append(argv[i + 1])
     return out
+
+
+def _output_targets(name: str, args: list) -> list:
+    out = []
+    for i, a in enumerate(args):
+        s = str(a)
+        for o in _OUTPUT_OPTS.get(name, ()):
+            if s == o and i + 1 < len(args):
+                out.append(args[i + 1])
+            elif o.startswith("--") and s.startswith(o + "="):
+                out.append(_sub_word(a, len(o) + 1))
+            elif len(o) == 2 and s.startswith(o) and len(s) > 2:
+                out.append(_sub_word(a, 2))
+    if name == "curl" and any(str(a) in ("--remote-name", "--remote-name-all") or
+                              re.fullmatch(r"-[A-Za-z]*O[A-Za-z]*", str(a)) for a in args):
+        for a in args:
+            m = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/(?:[^?#]*/)?([^/?#]+)", str(a))
+            if m:
+                out.append(_plain(m.group(1)))
+    if name in ("tar", "gtar", "bsdtar"):
+        words = [str(a) for a in args]
+        if words and not words[0].startswith("-"):
+            words[0] = "-" + words[0]  # old-style `tar czf out.tgz ...`
+        clusters = [w for w in words if re.fullmatch(r"-[A-Za-z]+", w)]
+        if any(set("cruA") & set(c[1:]) for c in clusters) or any(
+                w in ("--create", "--append", "--update") for w in words):
+            for i, w in enumerate(words):
+                if w.startswith("--file="):
+                    out.append(_sub_word(args[i], 7))
+                elif w == "--file" and i + 1 < len(args):
+                    out.append(args[i + 1])
+                elif re.fullmatch(r"-[A-Za-z]+", w) and "f" in w:
+                    rest = w[w.index("f") + 1:]
+                    out.append(_plain(rest) if rest else (args[i + 1] if i + 1 < len(args) else _plain("")))
+    return out
+
+
+def _write_targets(argv: list, orig: list | None = None) -> list:
+    """Words naming what a segment writes: redirect targets (in `orig`, the
+    whole segment when given) and the operands the program writes (`argv`,
+    from the program on)."""
+    out = _redirect_targets(orig if orig is not None else argv)
+    if not argv:
+        return out
+    name = os.path.basename(str(argv[0])).lower()
+    args = [a for a in argv[1:] if not (_is_op(a) and str(a) in _REDIR_OPS)]
+    w = _writer_name(name)
+    ops = [a for a in args if not str(a).startswith("-")]
+    if w == "dd":
+        out += [_sub_word(a, 3) for a in args if str(a).startswith("of=")]
+    elif w == "scp":
+        out += ops[-1:]
+    elif w == "zip":
+        out += ops[:1]
+    elif w:
+        out += ops
+        for a in args:
+            s = str(a)
+            if s.startswith("--") and "=" in s:
+                out.append(_sub_word(a, s.index("=") + 1))  # --target-directory=DIR
+            elif w in ("cp", "mv", "install", "ln") and re.match(r"^-[A-Za-z]*t.", s):
+                out.append(_sub_word(a, s.index("t") + 1))  # -tDIR
+    elif name in INPLACE and any(re.match(r"^-[A-Za-z]*i", str(a)) or str(a).startswith("--in-place")
+                                 for a in args):
+        out += ops
+    return out + _output_targets(name, args)
+
+
+def _check_targets(root: Path, cwd: str, targets: list, v: "Verdict", ctx: "_Ctx") -> None:
+    for t in targets:
+        _tick()
+        _check_target(root, cwd, t, v, ctx)
+
+
+def _operands(words: list) -> list:
+    """Words that are not redirections (nor their targets)."""
+    out, skip = [], False
+    for w in words:
+        if skip:
+            skip = False
+        elif _is_op(w) and str(w) in _REDIR_OPS:
+            skip = True
+        elif not (isinstance(w, _Word) and w.fd):
+            out.append(w)
+    return out
+
+
+def _stdin_source(orig: list):
+    """('herestring', word) | ('heredoc', body) | ('file', word) | None: the
+    last input redirection of a segment."""
+    src = None
+    for i, tok in enumerate(orig):
+        if _is_op(tok) and i + 1 < len(orig):
+            s = str(tok)
+            if s == "<<<":
+                src = ("herestring", orig[i + 1])
+            elif s in ("<<", "<<-"):
+                src = ("heredoc", getattr(orig[i + 1], "body", None) or "")
+            elif s == "<":
+                src = ("file", orig[i + 1])
+    return src
+
+
+def _upstream_words(upstream) -> list | None:
+    """The text a pipeline's previous command prints, when Tess can read it
+    from the command line (echo, printf, cat of a here-document); None if not."""
+    if upstream is None:
+        return None
+    argv = _resolve(upstream).argv
+    name = os.path.basename(str(argv[0])).lower() if argv else ""
+    if name in ("echo", "printf"):
+        return [str(a) for a in _operands(argv[1:]) if not re.fullmatch(r"-[neE]+", str(a))]
+    if name == "cat" and not [a for a in _operands(argv[1:]) if not str(a).startswith("-")]:
+        src = _stdin_source(upstream)
+        if src and src[0] in ("heredoc", "herestring"):
+            return [str(src[1])]
+    return None
+
+
+def _recurse(root: Path, cwd: str, text: str, v: "Verdict", depth: int, ctx: "_Ctx",
+             env: dict | None = None) -> None:
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`) more deeply than Tess checks")
+        return
+    check_command(root, cwd, text, v, depth + 1, ctx=_Ctx(ctx.raw, ctx, env))
+
+
+def _body_subs(body: str) -> list:
+    """Command substitutions a here-document with an unquoted delimiter runs."""
+    out, i = [], 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\":
+            i += 2
+            continue
+        try:
+            if body.startswith("$(", i):
+                j = _close_paren(body, i + 1)
+                out.append(body[i + 2:j])
+                i = j
+            elif c == "`":
+                j = _close_backtick(body, i)
+                out.append(body[i + 1:j])
+                i = j
+        except ValueError:
+            out.append(body[i:])
+            break
+        i += 1
+    return out
+
+
+def _check_subs(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
+    """Command and process substitutions in a word run first, in this directory."""
+    if not isinstance(word, _Word):
+        return
+    for kind, t in word.parts:
+        if kind in ("sub", "proc") and t.strip():
+            _recurse(root, cwd, t, v, depth, ctx)
+        if kind == "arith":
+            for inner in _body_subs(t):
+                _recurse(root, cwd, inner, v, depth, ctx)
+    if word.body and all(k == "raw" for k, _ in word.parts):
+        for t in _body_subs(word.body):
+            _recurse(root, cwd, t, v, depth, ctx)
+
+
+def _check_shell(root: Path, cwd: str, argv: list, orig: list, v: "Verdict", depth: int,
+                 ctx: "_Ctx", upstream) -> bool:
+    """A shell's program: `-c` string (any option cluster holding c: -c, -Ec,
+    -xc; `--` allowed), a here-string or here-document, or the text a pipe
+    feeds it. A script file is not read (documented limit). True when the
+    segment was a shell running a program Tess checked or refused."""
+    words, i, has_c, has_s = [str(a) for a in argv[1:]], 0, False, False
+    while i < len(words):
+        a = words[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if re.fullmatch(r"[-+][A-Za-z]+", a):
+            has_c = has_c or (a[0] == "-" and "c" in a[1:])
+            has_s = has_s or (a[0] == "-" and "s" in a[1:])
+            i += 1
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        break
+    operands = _operands(argv[1 + i:])
+    if has_c:
+        if operands:  # `sh -c 'rm "$1"' _ file`: $0, $1... are the words after the string
+            _recurse(root, cwd, str(operands[0]), v, depth, ctx,
+                     {str(k): str(w) for k, w in enumerate(operands[1:10])})
+        return True
+    if operands and not has_s and str(operands[0]) not in ("-", "/dev/stdin", "/dev/fd/0"):
+        if _program_from(root, cwd, operands[0], v, depth, ctx):
+            return True
+        return False  # a script file: see SECURITY.md "Hooks read command text"
+    src = _stdin_source(orig)
+    if src and src[0] in ("herestring", "heredoc"):
+        _recurse(root, cwd, str(src[1]), v, depth, ctx)
+    elif src is None and upstream is not None:
+        texts = _upstream_words(upstream)
+        if texts is None:
+            prog = _resolve(upstream).argv
+            v.add(ASK, f"it runs shell commands that another program "
+                       f"({os.path.basename(str(prog[0])) if prog else 'a pipe'}) prints, which "
+                       "Tess cannot read before they run")
+        for t in texts or []:
+            _recurse(root, cwd, t, v, depth, ctx)
+        if texts:
+            _recurse(root, cwd, " ".join(texts), v, depth, ctx)
+    return True
+
+
+def _program_from(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx") -> bool:
+    """`bash <(cmd)`, `source <(cmd)`: the program is what another command
+    prints. Checked when that is echo/printf/cat of a here-document, asked
+    otherwise. False when `word` is a plain file (a script: documented limit)."""
+    if not (isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts)):
+        return False
+    try:
+        segs = _segments(word.parts[0][1])
+    except ValueError:
+        segs = []
+    texts = _upstream_words(segs[-1]) if segs else None
+    if texts is None:
+        v.add(ASK, "it runs shell commands that another program prints, which Tess cannot read "
+                   "before they run")
+    for t in texts or []:
+        _recurse(root, cwd, t, v, depth, ctx)
+    return True
+
+
+def _check_stdin_operands(root: Path, cwd: str, name: str, orig: list, v: "Verdict",
+                          ctx: "_Ctx", upstream) -> None:
+    """`xargs <writer>`: the file names come from its input."""
+    src = _stdin_source(orig)
+    words = None
+    if src and src[0] in ("heredoc", "herestring"):
+        words = str(src[1]).split()
+    elif src is None and upstream is not None:
+        up = _upstream_words(upstream)
+        words = None if up is None else " ".join(up).split()
+    if words is None:
+        v.add(ASK, f"it hands {name} file names that it reads from its input, which Tess cannot "
+                   "check against its protected files")
+        return
+    for w in words:
+        _check_target(root, cwd, _plain(w), v, ctx)
+
+
+def _check_patch_input(root: Path, cwd: str, argv: list, orig: list, v: "Verdict") -> None:
+    """`patch` writes the files its diff names (from -i FILE, `<`, or a here-document)."""
+    texts, args = [], [str(a) for a in argv[1:]]
+    src = _stdin_source(orig)
+    files = [args[k + 1] for k, a in enumerate(args[:-1]) if a == "-i"] + [
+        a.split("=", 1)[1] for a in args if a.startswith("--input=")]
+    if src and src[0] == "file":
+        files.append(str(src[1]))
+    elif src:
+        texts.append(str(src[1]))
+    for f in files:
+        try:
+            with open(os.path.join(cwd, os.path.expanduser(f)), encoding="utf-8", errors="replace") as fh:
+                texts.append(fh.read(5_000_000))
+        except OSError:
+            v.add(ASK, f"`patch` applies {f}, which Tess cannot read")
+    for n in {n for t in texts for m in _PATCH_PATHS.finditer(t) for n in m.groups() if n}:
+        for cand in {n, n.split("/", 1)[-1]}:
+            hit = cand != "/dev/null" and protected_hit(root, cwd, cand)
+            if hit:
+                v.add(DENY, f"`patch` changes {cand} ({hit}), a protected Tess path", "protected")
+                return
+
+
+def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
+    """Remember the links `ln` makes, so a later write through one in the same
+    command (`ln -s . x && cp y x/CLAUDE.md`) is checked where it lands."""
+    args, tdir, ops, i = _operands(argv[1:]), None, [], 0
+    sym = any(re.match(r"^-[A-Za-z]*s", str(a)) or str(a) == "--symbolic" for a in args)
+    while i < len(args):
+        s = str(args[i])
+        if s in ("-t", "-S", "--suffix") and i + 1 < len(args):
+            tdir = args[i + 1] if s == "-t" else tdir
+            i += 2
+            continue
+        if s.startswith("--target-directory="):
+            tdir = _sub_word(args[i], 19)
+        elif not s.startswith("-") or s == "-":
+            ops.append(args[i])
+        i += 1
+
+    def val(w):
+        cands, _ = _word_values(w, cwd, ctx)
+        return cands[0][0] if cands and len(cands) == 1 else None
+
+    if tdir is not None:
+        pairs = [(t, os.path.join(val(tdir) or "\0", os.path.basename(val(t) or "\0"))) for t in ops]
+    elif len(ops) == 1:
+        pairs = [(ops[0], os.path.basename(val(ops[0]) or "\0"))]
+    elif len(ops) >= 2:
+        dest = val(ops[-1])
+        dest_abs = os.path.join(cwd, dest) if dest else None
+        many = len(ops) > 2 or (dest_abs and os.path.isdir(dest_abs) and not os.path.islink(dest_abs))
+        pairs = [(t, os.path.join(dest_abs, os.path.basename(val(t) or "\0")) if many else dest_abs)
+                 for t in ops[:-1]] if dest_abs else []
+    else:
+        pairs = []
+    for t, link in pairs:
+        if not link or "\0" in link:
+            continue
+        link = os.path.normpath(os.path.join(cwd, link))
+        tv = val(t)
+        target = None if tv is None else os.path.normpath(
+            os.path.join(os.path.dirname(link) if sym else cwd, os.path.expanduser(tv)))
+        ctx.links[link] = target
+
+
+def _find_match(path: str, shown: str, preds: list, ftype: str | None) -> bool:
+    name = os.path.basename(path.rstrip(os.sep)) or path
+    for op, pat in preds:
+        low = op in ("-iname", "-ipath", "-iwholename", "-iregex")
+        subject = name if op in ("-name", "-iname") else shown
+        if op.endswith("regex"):
+            try:
+                if not re.fullmatch(pat, subject, re.I if low else 0):
+                    return False
+            except re.error:
+                continue
+        elif not fnmatch.fnmatchcase(subject.lower() if low else subject, pat.lower() if low else pat):
+            return False
+    if ftype == "f" and not os.path.isfile(path):
+        return False
+    if ftype == "d" and not os.path.isdir(path):
+        return False
+    return True
+
+
+def _find_plan(argv: list) -> tuple:
+    """(start paths, expression) of a find command."""
+    args, i, starts = argv[1:], 0, []
+    while i < len(args):
+        a = str(args[i])
+        if a in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x") or re.fullmatch(r"-O\d*", a):
+            i += 1
+        elif a == "-D":
+            i += 2
+        elif a == "-f" and i + 1 < len(args):
+            starts.append(args[i + 1])
+            i += 2
+        else:
+            break
+    while i < len(args) and not str(args[i]).startswith("-") and str(args[i]) not in ("(", "!", ","):
+        starts.append(args[i])
+        i += 1
+    return starts or [_plain(".")], args[i:]
+
+
+def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth: int,
+                ctx: "_Ctx") -> None:
+    """`find -delete`, `find -exec <cmd> {} ;` and `-fprint FILE` change files
+    the command line does not name: the files find would match are listed
+    (up to _FIND_LIMIT) and checked."""
+    starts, expr = _find_plan(argv)
+    changes, j = False, 0
+    while j < len(expr):
+        a = str(expr[j])
+        if a in ("-exec", "-execdir", "-ok", "-okdir"):
+            k = j + 1
+            while k < len(expr) and str(expr[k]) not in (";", "+"):
+                k += 1
+            inner = list(expr[j + 1:k])  # {} stays: a plain name, the matches are walked below
+            if inner:
+                _check_segment(root, cwd, inner, v, raw, depth + 1, _Ctx(raw, ctx))
+                prog = _resolve(inner).argv
+                low = os.path.basename(str(prog[0])).lower() if prog else ""
+                changes = changes or bool(prog) and low not in _READONLY_PROGRAMS and low not in (
+                    "git", "gh", "file", "shasum", "sha256sum", "md5", "md5sum", "basename", "dirname")
+            j = k + 1
+            continue
+        if a == "-delete":
+            changes = True
+        if a in ("-fprint", "-fprint0", "-fls", "-fprintf") and j + 1 < len(expr):
+            _check_target(root, cwd, expr[j + 1], v, ctx)
+        j += 1
+    if changes:
+        _find_protected(root, cwd, starts, expr, v, ctx)
+
+
+def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict", ctx: "_Ctx") -> None:
+    words = [str(w) for w in expr]
+    simple = not any(w in ("-o", "-or", "!", "-not", ",", "(", ")") for w in words)
+    preds, maxdepth, mindepth, ftype = [], None, 0, None
+    for k, w in enumerate(words[:-1]):
+        nxt = words[k + 1]
+        if w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex"):
+            preds.append((w, nxt))
+        elif w in ("-maxdepth", "-mindepth") and nxt.isdigit():
+            maxdepth, mindepth = (int(nxt), mindepth) if w == "-maxdepth" else (maxdepth, int(nxt))
+        elif w == "-type":
+            ftype = nxt
+    if not simple:
+        preds, ftype = [], None  # an expression with -o / ! / ( ): every file counts
+    seen = 0
+    for s in starts:
+        cands, prefix = _word_values(s, cwd, ctx)
+        if cands is None:
+            if _may_reach(root, cwd, prefix):
+                v.add(ASK, f"`find` changes files under {s}, a directory only known when the command "
+                           "runs, so Tess cannot check them")
+            continue
+        for text, pat in cands:
+            for start in (_glob(cwd, pat) if pat else []) or [text]:
+                top = os.path.normpath(os.path.join(cwd, start))
+                base = os.path.realpath(str(root))
+                real = os.path.realpath(top)
+                if real != base and not real.startswith(base + os.sep) and not base.startswith(real + os.sep):
+                    continue  # nowhere near the project
+                entries = [(top, start, 0)]
+                for dirpath, dirnames, filenames in os.walk(top):
+                    rel = os.path.relpath(dirpath, top)
+                    d = 0 if rel == "." else rel.count(os.sep) + 1
+                    if maxdepth is not None and d + 1 > maxdepth:
+                        dirnames[:] = []
+                        continue
+                    shown_dir = start if rel == "." else os.path.join(start, rel)
+                    entries += [(os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)
+                                for n in dirnames + filenames]
+                    seen += len(dirnames) + len(filenames)
+                    if seen > _FIND_LIMIT:
+                        v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
+                                   "check them against its protected files")
+                        return
+                    _tick()
+                for path, shown, d in entries:
+                    if d < mindepth or not _find_match(path, shown, preds, ftype):
+                        continue
+                    hit = protected_hit(root, cwd, path)
+                    if hit:
+                        v.add(DENY, f"`find` would change {shown}, a protected Tess path ({hit})", "protected")
+                        return
 
 
 def _interp_code(argv: list, raw: str) -> str:
@@ -1594,18 +3401,30 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
     """Best effort (M1): an inline program that names a protected path and
     calls a write-shaped API. A script FILE is not read; the ship gate stays
     the wall."""
-    code = _interp_code(argv, raw)
+    code = str(_interp_code(argv, raw))
     if not _INTERP_WRITE.search(code):
         return
-    for tok in _INTERP_TOKEN.findall(code):
-        t = tok[2:] if tok.startswith("./") else tok
-        hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/"))
-        if not hit and ("/" in t or "." in t):
-            hit = protected_hit(root, cwd, t)
-        if hit:
-            v.add(DENY, f"an inline {os.path.basename(argv[0])} program writes near {tok}, a "
-                        f"protected Tess path ({hit})", "protected")
-            return
+    # v1.0 audit: each distinct token is checked once, and one evaluation
+    # checks a program text once (a heredoc program is the whole command, which
+    # every interpreter segment of that command would otherwise rescan).
+    memo = _STATE["interp"] if _STATE.get("deadline") is not None else {}
+    key = (str(root), cwd, code)
+    if key not in memo:
+        memo[key] = None
+        for n, tok in enumerate(dict.fromkeys(_INTERP_TOKEN.findall(code))):
+            if n % 256 == 0:
+                _tick()
+            t = tok[2:] if tok.startswith("./") else tok
+            hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/"))
+            if not hit and ("/" in t or "." in t):
+                hit = protected_hit(root, cwd, t)
+            if hit:
+                memo[key] = (tok, hit)
+                break
+    if memo[key]:
+        tok, hit = memo[key]
+        v.add(DENY, f"an inline {os.path.basename(str(argv[0]))} program writes near {tok}, a "
+                    f"protected Tess path ({hit})", "protected")
 
 
 _HOME_ENV = ("HOME", "XDG_CONFIG_HOME")
@@ -1682,8 +3501,9 @@ def _extract_plan(argv: list, cwd: str) -> tuple | None:
 
 def _archive_members(archive: str, tool: str) -> list | None:
     cmd = ["unzip", "-Z1", archive] if tool in ("unzip", "ditto") else ["tar", "-tf", archive]
+    timeout = _budget(20)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     return [ln for ln in r.stdout.splitlines() if ln] if r.returncode == 0 else None
@@ -1714,32 +3534,190 @@ def _check_extract(root: Path, cwd: str, argv: list, v: Verdict):
             return
 
 
-def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int):
-    env, argv = _strip_prefix(argv)
+# --------------------------------------------------------------------------- copies into the project root (v1.0 audit, integration)
+# `cp -R x/. .` or `rsync -a x/ ./` writes into the project root files the
+# command text never names, so none of them reach the protected list (the
+# root itself is not protected: `cp file .` is ordinary). A recursive copy of
+# a directory's CONTENTS into the root, or into a folder above it, is
+# therefore treated as touching every protected path: it asks (Claude) and is
+# refused where nothing can ask (Codex, no-prompt modes). A copy of named
+# files into the root is checked file by file: `cp x/CLAUDE.md .` writes
+# ./CLAUDE.md.
+# tool: (short options taking a value, long options taking a value)
+_COPY_INTO = {
+    "cp": ("tS", ("--target-directory", "--suffix")),
+    "mv": ("tS", ("--target-directory", "--suffix")),
+    "install": ("tmogSB", ("--target-directory", "--suffix", "--mode", "--owner", "--group")),
+    "ln": ("tS", ("--target-directory", "--suffix")),
+    "scp": ("iFPoclSJDX", ()),
+    "rsync": ("efBTM", ("--exclude", "--include", "--filter", "--rsh", "--rsync-path",
+                        "--temp-dir", "--files-from", "--exclude-from", "--include-from",
+                        "--chmod", "--password-file", "--log-file", "--partial-dir",
+                        "--backup-dir", "--suffix", "--compare-dest", "--copy-dest",
+                        "--link-dest", "--remote-option", "--out-format", "--usermap",
+                        "--groupmap", "--chown", "--timeout", "--contimeout", "--max-size",
+                        "--min-size", "--bwlimit", "--port", "--sockopts", "--iconv",
+                        "--info", "--debug", "--protocol", "--checksum-choice",
+                        "--compress-choice", "--skip-compress", "--max-delete",
+                        "--modify-window", "--block-size", "--log-file-format")),
+    "ditto": ("", ("--arch", "--bom", "--zlibCompressionLevel", "--password")),
+}
+
+
+def _copy_plan(name: str, args: list) -> tuple:
+    """(recursive, target dir word | None, [operand words]) of a copy command."""
+    shorts, longs = _COPY_INTO[name]
+    flags, target, ops, i, rest = "", None, [], 0, False
+    while i < len(args):
+        a, s = args[i], str(args[i])
+        if rest or not s.startswith("-") or s == "-":
+            ops.append(a)
+        elif s == "--":
+            rest = True
+        elif s.startswith("--"):
+            opt, eq, _val = s.partition("=")
+            flags += {"--recursive": "r", "--archive": "a", "--keepParent": "K"}.get(opt, "")
+            if opt == "--target-directory":
+                target = _sub_word(a, len(opt) + 1) if eq else (args[i + 1] if i + 1 < len(args) else None)
+            if opt in longs and not eq:
+                i += 1
+        else:
+            for k, ch in enumerate(s[1:], 1):
+                flags += ch
+                if ch in shorts:
+                    val = s[k + 1:]
+                    if ch == "t":
+                        target = _sub_word(a, k + 1) if val else (args[i + 1] if i + 1 < len(args) else None)
+                    if not val:
+                        i += 1
+                    break
+        i += 1
+    if name in ("cp", "scp"):
+        recursive = bool(set(flags) & set("rRa"))
+    elif name == "ditto":
+        recursive = not (set(flags) & set("cxk"))
+    else:
+        recursive = name in ("mv", "rsync")
+    if target is None:
+        if len(ops) < 2:
+            return recursive, None, []
+        target, ops = ops[-1], ops[:-1]
+    return recursive, target, ops
+
+
+def _remote(text: str) -> bool:
+    return bool(re.match(r"^[^/]*[^/\\]:", text)) and not text.startswith(("./", "/", "~"))
+
+
+def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx",
+                     via_xargs: bool) -> None:
+    if name == "ditto" and any(re.fullmatch(r"-[A-Za-z]*[cxk][A-Za-z]*", str(a)) for a in argv[1:]):
+        return  # an archive, handled by _check_extract
+    recursive, target, ops = _copy_plan(name, _operands(argv[1:]))
+    keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
+    if target is None:
+        return
+    cands, _ = _word_values(target, cwd, ctx)
+    if not cands:
+        return  # a target known only at run time: _check_target asks
+    base = os.path.realpath(str(root))
+    dests = []
+    for text, _pat in cands:
+        if _remote(text):
+            continue
+        real = os.path.realpath(os.path.join(cwd, os.path.expanduser(text)))
+        if _within(base, real) is not None:  # the project root, or a folder above it
+            dests.append((text, real))
+    if not dests:
+        return
+    here = "the project folder" if any(_within(r, base) == "." for _t, r in dests) else \
+        "a folder that holds the project"
+    why = (f"it copies the contents of \0SRC into {dests[0][0]}, {here}, so it can overwrite any "
+           "protected Tess file there (hooks, gate, CLAUDE.md, AGENTS.md...) without naming it; "
+           "copy into a sub-folder instead, or copy the files you need by name")
+    if via_xargs or not ops:
+        v.add(ASK, why.replace("\0SRC", "the paths it reads from its input"))
+        return
+    for op in ops:
+        vals, _ = _word_values(op, cwd, ctx)
+        texts = []
+        for text, pat in vals or []:
+            texts += (_glob(cwd, pat) if pat else []) or [text]
+        for text in (texts if vals else [None]):
+            if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
+                v.add(ASK, why.replace("\0SRC", str(op)))  # which files is only known at run time
+                return
+            full = os.path.join(cwd, os.path.expanduser(text))
+            leaf = os.path.basename(text.rstrip("/"))
+            if name == "ditto":  # ditto copies a folder's contents unless --keepParent
+                contents = not keep_parent and not os.path.isfile(full)
+            else:
+                contents = text.endswith("/") or leaf in (".", "..", "")
+            if recursive and contents:
+                v.add(ASK, why.replace("\0SRC", str(op)))
+                return
+            for _t, real in dests:
+                written = os.path.join(real, leaf) if leaf not in (".", "..", "") else real
+                if _within(base, os.path.realpath(written)) is not None:
+                    if recursive:
+                        v.add(ASK, why.replace("\0SRC", str(op)))
+                        return
+                    continue
+                hit = protected_hit(root, cwd, written)
+                if hit:
+                    v.add(DENY, f"it copies {op} to {os.path.relpath(written, real) if real == base else written}, "
+                                f"a protected Tess path ({hit})", "protected")
+                    return
+
+
+def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
+                   ctx: "_Ctx | None" = None, upstream=None):
+    ctx = ctx if ctx is not None else _Ctx(raw)
+    _tick()
+    orig = list(argv)
+    res = _resolve(orig)
+    env, argv = res.env, res.argv
     for k, val in env.items():
         if k in GIT_CONFIG_FILE_ENV and val not in _EMPTY_CONFIG:
             v.add(DENY, f"it sets {k}, which makes git read another config file (that file can "
                         "switch off Tess's git hooks)", "hookspath")
-    if not argv:
-        return
-    name = os.path.basename(argv[0])
-    _check_home_env(env, argv, raw, v)
+    if res.chdir is not None and cwd is not None:
+        cands, _ = _word_values(res.chdir, cwd, ctx)
+        cwd = os.path.normpath(os.path.join(cwd, cands[0][0])) if cands and len(cands) == 1 else None
+    targets = _write_targets(argv, orig)
     if cwd is None:
-        # a `cd` earlier in this command went somewhere Tess cannot resolve
-        if any(not os.path.isabs(os.path.expanduser(t)) for t in _write_targets(argv)):
+        # a `cd` earlier in this command (or the tool's working directory) went
+        # somewhere Tess cannot resolve
+        if any(not os.path.isabs(os.path.expanduser(str(t))) for t in targets):
             v.add(DENY, "it writes to a relative path after a `cd` whose target is only known "
                         "at run time, so Tess cannot check it against the protected list", "protected")
         cwd = str(root)
+    for w in orig:  # command and process substitutions run first, in this directory
+        _check_subs(root, cwd, w, v, depth, ctx)
+    for text in res.inner:
+        _recurse(root, cwd, text, v, depth, ctx, env)
+    _check_targets(root, cwd, targets, v, ctx)
+    if not argv:
+        return
+    if _dynamic(argv[0]):
+        return _check_dynamic_program(root, cwd, argv, v, raw, depth, ctx)
+    name = os.path.basename(str(argv[0])).lower()  # macOS finds `GIT` as git
+    if name == "hub" or (name.startswith("git-") and name not in _GIT_TOOLS):
+        argv = [_plain("git")] + ([_plain(name[4:])] if name.startswith("git-") else []) + list(argv[1:])
+        name = "git"
+    _check_home_env(env, argv, raw, v)
+    copier = name if name == "ditto" else _writer_name(name)
+    if copier in _COPY_INTO:
+        _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
     if INTERPRETERS.match(name):
         _check_interpreter(root, cwd, argv, v, raw)
-    if name in SHELLS and depth < 4:
-        for j, a in enumerate(argv[1:], 1):
-            if re.match(r"^-[a-z]*c[a-z]*$", a) and j + 1 < len(argv):
-                check_command(root, cwd, argv[j + 1], v, depth + 1)
-                return
-    if name == "eval" and depth < 4:
-        check_command(root, cwd, " ".join(argv[1:]), v, depth + 1)
+    if name in SHELLS and _check_shell(root, cwd, argv, orig, v, depth, ctx, upstream):
         return
+    if name == "eval":
+        _recurse(root, cwd, " ".join(str(a) for a in _operands(argv[1:])), v, depth, ctx)
+        return
+    if name in ("source", ".") and len(argv) > 1:
+        _program_from(root, cwd, argv[1], v, depth, ctx)
     if name in ("export", "declare", "typeset", "setenv") and any(
             "hookspath" in a.lower() for a in argv[1:]):
         v.add(DENY, "it sets core.hooksPath through the environment, which switches off "
@@ -1754,7 +3732,22 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
         v.add(DENY, "it points git at another work tree, git directory or index through the "
                     "environment, where later git commands can replace Tess's hooks or gate",
               "rollback")
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            re.match(r"GIT_CONFIG_KEY_\d+=", a) and _push_config_key(a.partition("=")[2])
+            for a in argv[1:]):
+        v.add(ASK, "it sets git configuration through the environment that changes where a push "
+                   "goes or what it sends")
     _check_key_text(cwd, argv, " ".join(argv), v)
+    # v1.0 audit (A2 inside A1's resolver): every segment the resolver yields
+    # that runs tessctl -- through `{ }`, `if/then`, wrappers, runners, `sh -c`,
+    # substitutions or the unparseable fallback -- gets the vault rule and the
+    # operator-only forms, not only the pipelines _check_operator_only reads.
+    tess_words = _tessctl_call([str(a) for a in _operands(argv)])
+    if tess_words is not None:
+        _check_vault(tess_words, v)
+        if _operator_form(tess_words) and (upstream is not None or _stdin_source(orig) is not None):
+            v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
+                        "type the answer for them", "operator")
     if name in EXTRACTORS:
         _check_extract(root, cwd, argv, v)
     if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(
@@ -1765,20 +3758,52 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
         _check_git(root, cwd, env, argv, v, raw, depth)
     elif name == "gh":
         _check_gh(argv, v)
-    for target in _write_targets(argv):
-        hit = protected_hit(root, cwd, target)
-        if hit:
-            v.add(DENY, f"it writes to {target}, a protected Tess path ({hit})", "protected")
+    elif name == "find":
+        _check_find(root, cwd, argv, v, raw, depth, ctx)
+    elif name == "patch":
+        _check_patch_input(root, cwd, argv, orig, v)
+    if res.via_xargs and (_writer_name(name) or name in INPLACE):
+        _check_stdin_operands(root, cwd, name, orig, v, ctx, upstream)
+    if name == "ln":
+        _record_links(cwd, argv, ctx)
     if name not in READERS_OK_FOR_GIT_DIR and name != "git":
         for a in argv[1:]:
-            if re.search(r"(^|/)\.git/(hooks(/|$)|config$|info(/|$)|refs/replace(/|$))", a):
+            if re.search(r"(^|/)\.git/(hooks(/|$)|config$|info(/|$)|refs/replace(/|$))", a, re.IGNORECASE):
                 v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
 
 
-def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
+def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth: int,
+                           ctx: "_Ctx") -> None:
+    """The program is a variable or command substitution. A value set earlier
+    in the command is checked as that program; otherwise the command is
+    checked as if it were git, gh, a shell, python and a file writer, and
+    asks if any of those would be stopped (or if it has no arguments at all)."""
+    cands, _ = _word_values(argv[0], cwd, ctx)
+    if cands and depth < _MAX_DEPTH:
+        for text, _pat in cands:
+            words = [_plain(w) for w in text.split()]
+            if words:
+                _check_segment(root, cwd, words + list(argv[1:]), v, raw, depth + 1, ctx)
+        return
+    probe = Verdict()
+    if depth < _MAX_DEPTH:
+        for stand_in in ("git", "gh", "sh", "python3", "cp"):
+            _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), probe, raw, depth + 1,
+                           _Ctx(raw, ctx))
+    why = f"it runs a program whose name is only known when the command runs ({argv[0]})"
+    if probe.level > ALLOW:
+        v.add(ASK, why + "; if that is git, gh, a shell, python or a file writer, Tess would stop "
+                         "it: " + "; ".join(probe.reasons))
+    elif len(argv) == 1 or depth >= _MAX_DEPTH:
+        v.add(ASK, why + ", so Tess cannot check what it does")
+
+
+def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ctx: "_Ctx | None" = None):
+    ctx = ctx if ctx is not None else _Ctx(cmd)
+    _tick()
     _check_operator_only(cmd, v)
     try:
-        segs = _segments(cmd)
+        events = _events(cmd)
     except ValueError:
         # Unparseable (unbalanced quotes). The shell may still run it: a quote
         # inside a `# comment` (`rm .claude/hooks/tess-gate.py # it's`) breaks
@@ -1786,6 +3811,7 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
         # check the raw text, then re-parse with shell comments, and if the
         # command is still undecidable ask (Claude) -- decide() turns that ask
         # into a deny for Codex and the no-prompt modes.
+        cwd = str(root) if cwd is _NOWHERE else cwd
         low = cmd.lower()
         if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/(hooks|config\b)", low):
             v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
@@ -1814,15 +3840,143 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0):
             if tok in OPERATORS:
                 segs, cur = (segs + [cur] if cur else segs), []
             else:
-                cur.append(tok)
+                cur.append(_mkword([("fallback", tok)]))
         for argv in segs:
-            _check_segment(root, cwd, argv, v, cmd, depth)
+            _check_segment(root, cwd, argv, v, cmd, depth, ctx)
         return
-    _check_archive_pipe(segs, v)
-    cur = cwd or str(root)
-    for argv in segs:
-        _check_segment(root, cur, argv, v, cmd, depth)
-        cur = _next_cwd(root, cur, argv)
+    _check_archive_pipe([x for k, x in events if k == "seg"], v)
+    start = None if cwd is _NOWHERE else (cwd or str(root))
+    _walk(root, events, 0, frozenset([start]), v, cmd, depth, ctx)
+
+
+def _run_in(state, S, F, pending, last_run):
+    if S is None:
+        return state
+    return {"&&": S, "||": F, "|": last_run}.get(pending, S | F)
+
+
+def _and_or(S, F, pending, s, f):
+    if S is None:
+        return s, f
+    if pending == "&&":
+        return s, F | f
+    if pending == "||":
+        return S | s, f
+    return S | s, F | f
+
+
+def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: str, depth: int,
+          ctx: "_Ctx", nested: bool = False) -> tuple:
+    """Check events[i:] up to the matching `)` (or the end), starting in the
+    set of possible working directories `start` (None: only known at run
+    time). A `cd` moves the commands that can only run after it (`&&`); a
+    command that runs whether or not the `cd` worked (`;`, `||`) is checked in
+    both places, a subshell's `cd` and variables stay inside it, and a
+    background list's `cd` never reaches the next command. A `)` with no
+    open subshell (a `case` pattern) only separates commands.
+    Returns (index after, directories after)."""
+    state = list_start = start
+    S = F = None
+    pending, last_run, prev = None, start, None
+    while i < len(events):
+        kind, x = events[i]
+        if kind == "op":
+            if x == ")" and nested:
+                return i + 1, (state if S is None else S | F)
+            if x in ("&&", "||"):
+                pending = x
+            elif x in ("|", "|&"):
+                pending = "|"
+            elif x == "(":
+                run = _run_in(state, S, F, pending, last_run)
+                saved = dict(ctx.vars)
+                i, _ = _walk(root, events, i + 1, run, v, cmd, depth, ctx, True)
+                ctx.vars = saved
+                S, F = _and_or(S, F, pending, run, run)
+                last_run, pending, prev = run, None, None
+                continue
+            else:  # ; newline & ;; ;& ;;&
+                end = state if S is None else S | F
+                state = list_start if x == "&" else end
+                list_start, S, F, pending, prev = state, None, None, None, None
+            i += 1
+            continue
+        run = _run_in(state, S, F, pending, last_run)
+        nxt = events[i + 1][1] if i + 1 < len(events) and events[i + 1][0] == "op" else None
+        piped = pending == "|" or nxt in ("|", "|&")
+        cond = pending in ("&&", "||") or piped or nxt == "&"
+        s, f = _run_segment(root, x, run, v, cmd, depth, ctx, prev if pending == "|" else None,
+                            piped, cond)
+        S, F = _and_or(S, F, pending, s, f)
+        last_run, pending, prev = run, None, x
+        i += 1
+    return i, (state if S is None else S | F)
+
+
+def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, depth: int,
+                 ctx: "_Ctx", upstream, piped: bool, cond: bool) -> tuple:
+    """Check one simple command in every directory it can run in; returns the
+    directories after it succeeds and after it fails."""
+    if len(run) == 1:
+        _check_segment(root, next(iter(run)), argv, v, cmd, depth, ctx, upstream)
+    else:
+        verdicts = []
+        for c in sorted(run, key=lambda d: (d is None, d or "")):
+            sub = Verdict()
+            _check_segment(root, c, argv, sub, cmd, depth, ctx, upstream)
+            verdicts.append(sub)
+        for sub in verdicts:
+            for r in sub.reasons:
+                v.add(sub.level, r)
+            for a in sub.advice:
+                if a not in v.advice:
+                    v.advice.append(a)
+        if len({sub.level for sub in verdicts}) > 1 and ADVICE["cdfail"] not in v.advice:
+            v.advice.append(ADVICE["cdfail"])
+    res = _resolve(argv)
+    one = next(iter(run)) if len(run) == 1 else None
+    _track_vars(argv, res, one, ctx, cond)
+    name = os.path.basename(str(res.argv[0])).lower() if res.argv else ""
+    if res.argv and name not in _READONLY_PROGRAMS:
+        ctx.mutated = True
+    if name in ("cd", "pushd", "chdir", "popd"):
+        after = frozenset(None if name == "popd" else _next_cwd(root, c, argv, ctx) for c in run)
+        return (after | run if piped else after), run
+    return run, run
+
+
+def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: bool) -> None:
+    """Variables the command sets for the words after it."""
+    argv = res.argv
+    name = os.path.basename(str(argv[0])).lower() if argv else ""
+    if not argv:
+        assigns = [w for w in orig if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(w)) and not _is_op(w)]
+    elif name in ("export", "declare", "typeset", "local", "readonly"):
+        assigns = [w for w in argv[1:] if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(w))]
+    else:
+        assigns = []
+    for w in assigns:
+        n = str(w).split("=", 1)[0]
+        cands, _ = _word_values(_sub_word(w, len(n) + 1), cwd, ctx)
+        ctx.assign(n, None if cands is None else [t for t, _p in cands], cond)
+    if name == "for" and len(argv) >= 2 and _NAME.fullmatch(str(argv[1])):
+        vals = [] if len(argv) > 2 and str(argv[2]) == "in" else None
+        for w in (argv[3:] if vals is not None else []):
+            cands, _ = _word_values(w, cwd, ctx)
+            if cands is None:
+                vals = None
+                break
+            for t, pat in cands:
+                vals += (_glob(cwd or ".", pat) if pat else []) or [t]
+        ctx.assign(str(argv[1]), vals, False)
+    if name in ("read", "mapfile", "readarray", "getopts", "select"):
+        for w in argv[1:]:
+            if _NAME.fullmatch(str(w)):
+                ctx.assign(str(w), None, False)
+    if name == "unset":
+        for w in argv[1:]:
+            if _NAME.fullmatch(str(w)):
+                ctx.assign(str(w), [""], cond)
 
 
 def _check_archive_pipe(segs: list, v: Verdict) -> None:
@@ -1845,21 +3999,30 @@ def _check_archive_pipe(segs: list, v: Verdict) -> None:
             return
 
 
-def _next_cwd(root: Path, cur: str | None, argv: list) -> str | None:
+def _next_cwd(root: Path, cur: str | None, argv: list, ctx: "_Ctx | None" = None) -> str | None:
     """Track `cd` / `pushd` across the segments of one command (M1), so
     `cd .git/hooks && echo x > pre-commit` is checked as a write to
     .git/hooks/pre-commit. None = moved somewhere only known at run time."""
     _, argv = _strip_prefix(argv)
-    if not argv or os.path.basename(argv[0]) not in ("cd", "pushd", "chdir"):
+    if not argv or os.path.basename(str(argv[0])).lower() not in ("cd", "pushd", "chdir"):
         return cur
-    args = [a for a in argv[1:] if a not in ("-L", "-P", "-e", "--")]
-    if not args or args[0] in ("~",):
+    args = [a for a in _operands(argv[1:]) if str(a) not in ("-L", "-P", "-e", "-@", "--")]
+    if not args:
         return os.path.expanduser("~")
     target = args[0]
-    if target == "-" or any(c in target for c in "$`*?[") or cur is None:
+    if cur is None or str(target) == "-" or re.fullmatch(r"[+-]\d+", str(target)):
         return None
-    target = os.path.expanduser(target)
-    return target if os.path.isabs(target) else os.path.join(cur, target)
+    cands, _ = _word_values(target, cur, ctx)
+    if not cands or len(cands) != 1:
+        return None
+    text, pat = cands[0]
+    if pat is not None:
+        found = _glob(cur, pat)
+        if len(found) != 1:
+            return None
+        text = found[0]
+    full = os.path.normpath(os.path.join(cur, text))
+    return _through_links(full, cur, ctx) if ctx is not None else full
 
 
 def _command_text(tool_input) -> str:
@@ -1883,8 +4046,45 @@ def _strings(obj) -> list:
 
 # --------------------------------------------------------------------------- evaluate
 
+# v1.0 audit: the whole evaluation, git and tessctl subprocesses included,
+# ends well inside the host hook timeout (120 s, of which run-pinned's anchor
+# lookup may take up to 60 s before the gate starts). Out of time is an ask
+# (a deny for Codex and the no-prompt modes), never an unchecked allow.
+GATE_BUDGET = 40.0
+MAX_COMMAND = 256 * 1024
+_NOWHERE = "\0a working directory Tess cannot resolve"
+
+
+def _tool_cwd(tin, cwd: str) -> str:
+    """The directory a shell call runs in: the tool input's own working
+    directory (Codex shell/exec `workdir`) when it names one, else the
+    payload's cwd; _NOWHERE when it names one Tess cannot resolve."""
+    if not isinstance(tin, dict):
+        return cwd
+    for k in ("workdir", "cwd", "directory", "working_directory"):
+        val = tin.get(k)
+        if val in (None, ""):
+            continue
+        if not isinstance(val, str) or re.search(r"[$`]", val):
+            return _NOWHERE
+        return os.path.normpath(os.path.join(cwd, os.path.expanduser(val)))
+    return cwd
+
+
 def evaluate(data: dict, root: Path) -> Verdict:
     v = Verdict()
+    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={})
+    try:
+        _evaluate(data, root, v)
+    except _GateTimeout:
+        v.add(ASK, f"Tess could not finish checking this call within {int(GATE_BUDGET)} seconds "
+                   "(a very long command, or git answering slowly), so it cannot say it is safe")
+    finally:
+        _STATE.update(deadline=None, interp={})
+    return v
+
+
+def _evaluate(data: dict, root: Path, v: Verdict) -> None:
     tool = str(data.get("tool_name") or "")
     tin = data.get("tool_input")
     tin = tin if tin is not None else {}
@@ -1903,7 +4103,11 @@ def evaluate(data: dict, root: Path) -> Verdict:
         if _KEY_TEXT.search(cmd):
             v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing "
                         "keys there are for the operator's own tools, not for an agent", "keys")
-        check_command(root, cwd, cmd, v)
+        if len(cmd) > MAX_COMMAND:
+            v.add(ASK, f"the command is {len(cmd)} characters long, more than Tess checks; split it "
+                       "into smaller commands, or run it yourself")
+        else:
+            check_command(root, _tool_cwd(tin, cwd), cmd, v)
     elif tool in READ_TOOLS:
         if isinstance(tin, dict):
             for k in ("file_path", "path", "notebook_path"):
@@ -1940,7 +4144,6 @@ def evaluate(data: dict, root: Path) -> Verdict:
                     hit = protected_hit(root, cwd, val)
                     if hit:
                         v.add(DENY, f"it writes to {val}, a protected Tess path ({hit})", "protected")
-    return v
 
 
 def decide(data: dict, root: Path, runtime: str) -> tuple:
@@ -1957,10 +4160,15 @@ def decide(data: dict, root: Path, runtime: str) -> tuple:
         # L-c: only a known interactive mode pauses for the operator. A no-prompt
         # mode, a missing mode or one Tess does not recognise gets the deny.
         where = ("Codex" if is_codex else f"{mode} mode" if mode in NO_PROMPT_MODES
+                 else "auto mode (where Claude Code may approve it without showing you)"
+                 if mode in AUTO_APPROVE_MODES
                  else f"an unrecognised permission mode ({str(mode)[:40]!r})")
+        switch = (", or switch Claude Code back to default mode (Shift+Tab changes the mode), "
+                  "which asks you first, and try again"
+                  if mode in AUTO_APPROVE_MODES and not is_codex else "")
         reason = (f"TESS GATE: blocked because this needs your approval and {where} cannot pause "
                   f"to ask: {why}. If you want it, run it yourself in your own terminal"
-                  + (f": {_short(root, cmd)}" if cmd else "") + ".")
+                  + (f": {_short(root, cmd)}" if cmd else "") + switch + ".")
         return "deny", reason
     if v.level == ASK:
         return "ask", f"TESS GATE: {why}. Approve only if you meant to."

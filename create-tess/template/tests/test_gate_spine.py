@@ -22,6 +22,7 @@ for the vault guard).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -157,17 +158,29 @@ def gate_repo(project, verifier_gpg_keys):
     return root
 
 
+def _git_blob_id(content: bytes) -> str:
+    """git's blob id for `content` (what `git hash-object` prints)."""
+    return hashlib.sha1(b"blob %d\0" % len(content) + content).hexdigest()
+
+
+# The payments change every hard-floor test in this suite makes.
+REFUND_HASHES = {"payments/charge.py": _git_blob_id(b"refund()\n")}
+
+
 def _signed_signoff(engine, key, *, rule_id="money", category="money_movement",
                      authorized_by="Xavier", rationale="Reviewed out-of-band; approved.",
-                     authorized_at="2026-07-08T00:00:00Z"):
+                     authorized_at="2026-07-08T00:00:00Z", artifact_hashes=None):
     """A hard-floor sign-off dict, cryptographically signed by `key` under
-    `authorized_by`'s name — honesty-capstone-audit-2026-07-08 §3-d."""
+    `authorized_by`'s name — honesty-capstone-audit-2026-07-08 §3-d. v1.0
+    audit: it names the exact content it approves (`artifact_hashes`,
+    default: the suite's `payments/charge.py` = "refund()\\n" change)."""
     signoff = {
         "rule_id": rule_id,
         "category": category,
         "authorized_by": authorized_by,
         "rationale": rationale,
         "authorized_at": authorized_at,
+        "artifact_hashes": dict(REFUND_HASHES if artifact_hashes is None else artifact_hashes),
     }
     signoff["signature"] = sign_signoff_for_test(engine, signoff, key)
     return signoff
@@ -652,6 +665,7 @@ def test_signoff_rule_id_mismatch_is_rejected(engine, tmp_path):
         "authorized_by": "Xavier",
         "rationale": "x",
         "authorized_at": "2026-07-07T00:00:00Z",
+        "artifact_hashes": dict(REFUND_HASHES),
     }))
     ok, reason, data = engine._gate_validate_signoff(signoff, "money", tmp_path, {"policy": {}})
     assert ok is False

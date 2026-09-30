@@ -30,6 +30,7 @@ import pytest
 import yaml
 
 from test_v02_integrity import _cli, real_tree  # noqa: F401  (fixture re-export)
+from _presence_pty import run_tessctl_in_pty
 
 HARD_FLOOR_MARK = "**Clarification hard floor**"
 
@@ -157,8 +158,12 @@ def test_override_on_claude_md_then_restore_is_not_kept(real_tree):
     weakened hard floor, then restore and init exit non-zero and never report
     'skip [patch-override]'. 91a0aa0: both exit 0 and keep the weakened text."""
     _weaken(real_tree)
+    # v1.0 audit: a security-tier override needs the person at the terminal.
     r = _cli(real_tree, "override", "CLAUDE.md")
-    assert r.returncode == 0, r.stdout + r.stderr   # override's tier check: v0.2.1
+    assert r.returncode != 0 and "interactive terminal" in r.stdout + r.stderr
+    rc, out = run_tessctl_in_pty(real_tree, "override", "CLAUDE.md", answer="CLAUDE.md",
+                                 prompt=b"path> ")
+    assert rc == 0, out[-3000:]
     assert set(_claude_statuses(real_tree).values()) == {"patch-override"}
 
     for argv in (("restore",), ("init",)):

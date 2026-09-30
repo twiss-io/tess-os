@@ -64,6 +64,11 @@ def cli(root, *args, stdin=None, env=None, timeout=120):
     args = [str(a) for a in args]
     if "--claude-dir" in args and "CLAUDE_CONFIG_DIR" not in (env or {}):
         e["CLAUDE_CONFIG_DIR"] = claude_store_for(root, args[args.index("--claude-dir") + 1])
+    # v1.0.0 audit: --codex-home / --gemini-home must name this machine's own runtime home (CODEX_HOME /
+    # GEMINI_CLI_HOME), like --claude-dir: a fixture folder is made that home, never a bypass
+    for opt, var in (("--codex-home", "CODEX_HOME"), ("--gemini-home", "GEMINI_CLI_HOME")):
+        if opt in args and var not in (env or {}):
+            e[var] = args[args.index(opt) + 1]
     return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + args,
                           input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
 

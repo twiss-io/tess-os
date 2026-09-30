@@ -138,6 +138,7 @@ import base64
 import contextlib
 import copy
 import datetime
+import difflib
 import getpass
 import glob
 import hashlib
@@ -758,6 +759,27 @@ def find_tess_root() -> Path:
 
 def sha256_bytes(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _read_regular_nofollow(path: Path):
+    """(bytes, "") for a regular file read without following a symlink at
+    `path`; (None, plain reason) otherwise. v1.0 audit: callers that hash
+    bytes and then write them use this buffer, never a second read."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None, "is missing"
+    if stat.S_ISLNK(st.st_mode):
+        return None, "is a symbolic link"
+    if not stat.S_ISREG(st.st_mode):
+        return None, "is not a regular file"
+    nofollow = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+    try:
+        fd = os.open(str(path), os.O_RDONLY | nofollow)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(), ""
+    except OSError as e:
+        return None, f"cannot be read ({type(e).__name__})"
 
 
 def sha256_file(path: Path) -> str:
@@ -3459,12 +3481,137 @@ def snapshot_paths(root: Path, rels, label: str) -> str:
             entry["sha256"] = sha256_file(dst)
         manifest[rel] = entry
 
-    _atomic_write_bytes(
-        snap_dir / SNAPSHOT_MANIFEST,
-        (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    _manifest_bytes = (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    _atomic_write_bytes(snap_dir / SNAPSHOT_MANIFEST, _manifest_bytes)
+    _SNAPSHOTS_MADE[snap_id] = sha256_bytes(_manifest_bytes)   # v1.0 audit
     _prune_snapshots(root, keep=(snap_id,))
     return snap_id
+
+
+# ---------------------------------------------------------------------------
+# v1.0 audit (tessctl:_rollback_from_manifest:self-attested-snapshot-restore-
+# source): .tess/snapshots is ordinary, gitignored project space, so a
+# snapshot on disk proves nothing about who made it. Rollback therefore
+#   * trusts a snapshot's manifest only when THIS process wrote it
+#     (_SNAPSHOTS_MADE: update's automatic crash rollback);
+#   * otherwise restores only paths a tessctl operation snapshots (tess.lock,
+#     tess.lock live paths, render-target outputs), never a '.git' path or a
+#     symlink that points out of the project, and refuses the whole snapshot
+#     if it names anything else;
+#   * asks the person at the terminal before it changes tess.lock or any
+#     safety file (security-tier doctrine, runtime enforcement config, the
+#     anchored engine/hook files), listing each one.
+# ---------------------------------------------------------------------------
+
+_SNAPSHOTS_MADE: dict = {}
+ROLLBACK_CONFIRM = "roll back"
+
+
+def _snapshot_made_here(snap_dir: Path) -> bool:
+    """True when `snap_dir`'s manifest is byte-for-byte the one this process
+    wrote for that snapshot id."""
+    want = _SNAPSHOTS_MADE.get(snap_dir.name)
+    if not want:
+        return False
+    data, _why = _read_regular_nofollow(snap_dir / SNAPSHOT_MANIFEST)
+    return data is not None and sha256_bytes(data) == want
+
+
+def _rel_has_git_component(rel: str) -> bool:
+    return any(p.lower().rstrip(". ") == ".git" for p in Path(str(rel)).parts)
+
+
+def _rollback_allowed_rels(root: Path) -> set:
+    """Every path a tessctl operation snapshots: tess.lock, every tess.lock
+    live path and every render target's outputs (enabled or not)."""
+    return set(_operation_snapshot_rels(root, extra_targets=sorted(RENDER_TARGETS)))
+
+
+def _rollback_symlink_target_ok(root: Path, rel: str, target) -> bool:
+    if not isinstance(target, str) or not target or os.path.isabs(target):
+        return False
+    joined = os.path.normpath(os.path.join(os.path.dirname(rel), target))
+    if joined == ".." or joined.startswith(".." + os.sep) or os.path.isabs(joined):
+        return False
+    return not _rel_has_git_component(joined)
+
+
+def _rollback_problems(root: Path, rels_entries, trusted: bool) -> list:
+    """Plain reasons this snapshot must not be restored (empty = fine).
+    `rels_entries` is [(rel, manifest entry or None for a legacy copy)]."""
+    allowed = None if trusted else _rollback_allowed_rels(root)
+    out = []
+    for rel, entry in rels_entries:
+        entry = entry or {}
+        if _rel_has_git_component(rel):
+            out.append(f"{rel} (inside .git — rollback never writes there)")
+        elif allowed is not None and rel not in allowed and not entry.get("out_of_tree"):
+            out.append(f"{rel} (not a file any tessctl command snapshots)")
+        elif entry.get("is_symlink") and not _rollback_symlink_target_ok(
+                root, rel, entry.get("link_target")):
+            out.append(f"{rel} (a link that points outside the project or into .git)")
+    return out
+
+
+def _rollback_is_safety_rel(lock: dict, rel: str) -> bool:
+    return (rel == LOCK_FILE or rel in ANCHOR_FILES or rel.startswith(".claude/hooks/")
+            or is_enforcement_render_output(rel) or _live_path_is_security(lock, rel))
+
+
+def _rollback_guard(root: Path, snap: Path, manifest) -> None:
+    """Refuse (exit, nothing changed) a snapshot that names paths rollback
+    must not write, and ask the person at the terminal before a snapshot not
+    made by this process changes tess.lock or a safety file."""
+    trusted = manifest is not None and _snapshot_made_here(snap)
+    if manifest is not None:
+        bad = sorted(str(rel) for rel in manifest
+                     if manifest[rel] is not None and not isinstance(manifest[rel], dict))
+        if bad:
+            sys.exit(f"tessctl rollback: REFUSED — snapshot {snap.name} has a damaged "
+                     f"manifest ({bad[0]}). Nothing was changed.")
+        rels_entries = [(str(rel), manifest[rel] or {}) for rel in sorted(manifest)]
+    else:
+        rels_entries = [(str(p.relative_to(snap)).replace(os.sep, "/"), None)
+                        for p in sorted(snap.rglob("*"))
+                        if not p.is_dir() and p.name not in ("tess.lock.snapshot", ".kind")]
+        if (snap / "tess.lock.snapshot").exists():
+            rels_entries.append((LOCK_FILE, None))
+    problems = _rollback_problems(root, rels_entries, trusted)
+    if problems:
+        sys.exit(
+            f"tessctl rollback: REFUSED — snapshot {snap.name} names files that Tess never "
+            f"snapshots, so it was not made by tessctl:\n"
+            + "".join(f"  - {p}\n" for p in problems)
+            + f"  Nothing was changed. Delete it (`rm -r {SNAPSHOTS_DIR}/{snap.name}`) and "
+              f"pick another snapshot (`ls {SNAPSHOTS_DIR}`).")
+    if trusted:
+        return
+    try:
+        lock = load_lock(root)
+    except SystemExit:
+        lock = {}
+    changing = []
+    for rel, entry in rels_entries:
+        if not _rollback_is_safety_rel(lock, rel):
+            continue
+        if entry is not None:
+            if entry.get("out_of_tree") or _live_matches_snapshot_entry(root, rel, entry):
+                continue
+        else:
+            src = snap / ("tess.lock.snapshot" if rel == LOCK_FILE else rel)
+            live = root / rel
+            if (live.is_file() and not live.is_symlink() and src.is_file()
+                    and live.read_bytes() == src.read_bytes()):
+                continue
+        changing.append(rel)
+    if changing:
+        _require_human_presence(
+            "rollback", f"rolling back Tess's safety files from snapshot {snap.name}",
+            "no file was restored.", ROLLBACK_CONFIRM, prompt="rollback> ",
+            lines=[f"  Snapshot {snap.name} would change these safety files:"]
+                  + [f"    {r}" for r in changing]
+                  + ["  Only continue if you made this snapshot (for example by running "
+                     "`tessctl update`) and want those files back as they were."])
 
 
 def _rel_parent_inside(root_resolved: Path, path: Path) -> bool:
@@ -3557,8 +3704,13 @@ def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
     root_resolved = root.resolve()
     for rel in sorted(manifest):
         entry = manifest[rel] or {}
-        if not _snapshot_rel_ok(rel):
-            print(f"  WARN  rollback: skipping unsafe path {rel!r} (absolute or '..' traversal)")
+        if not _snapshot_rel_ok(rel) or _rel_has_git_component(rel):
+            print(f"  WARN  rollback: skipping unsafe path {rel!r} (absolute, '..' or .git)")
+            counts["failed"] += 1
+            continue
+        if entry.get("is_symlink") and not _rollback_symlink_target_ok(
+                root, rel, entry.get("link_target")):   # v1.0 audit
+            print(f"  WARN  rollback: skipping {rel!r} (link points outside the project)")
             counts["failed"] += 1
             continue
         if entry.get("out_of_tree"):
@@ -6152,6 +6304,22 @@ _PUBLISH_CLEAN_PRIVATE_GLOBS = [
     "**/.private/**",
 ]
 
+# v1.0 audit (publish-clean-owned-globs-exempt-hard-tier-private-paths): the
+# HARD-TIER private shapes. The write gate refuses these whatever owned_globs
+# says (.local.md shadows, vault material, .private/ folders), so publish-clean
+# must too: a shadow such as conductor/guardrails.local.md sits inside the
+# framework-owned conductor/** glob, and the owned_globs exemption below (meant
+# for scaffold like clients/_template/**) used to wave it through.
+_PUBLISH_CLEAN_HARD_TIER_GLOBS = [
+    "*.local.md",
+    "**/*.local.md",
+    "**/*.age",
+    ".claude/vault/**",
+    "clients/*/.vault/**",
+    "brain/**/.private/**",
+    "**/.private/**",
+]
+
 # Paths that would otherwise match a glob above but are deliberately shipped,
 # tracked framework scaffold — mirrors the explicit `!` re-includes in
 # .gitignore (this PR's reconciliation) for the exact same reason: no
@@ -6221,7 +6389,9 @@ def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged")
     """
     Returns a list of (path, matched_glob) for every path (see
     `_publish_clean_tracked_paths` for what `scope` selects) that matches
-    `_PUBLISH_CLEAN_PRIVATE_GLOBS` and is NOT exempted — by `owned_globs`
+    `_PUBLISH_CLEAN_PRIVATE_GLOBS` and is NOT exempted — hard-tier shapes
+    (`_PUBLISH_CLEAN_HARD_TIER_GLOBS`: .local.md shadows, vault material,
+    .private/ folders) are never exempted by `owned_globs`; others by `owned_globs`
     (owned_globs > never_touch, same precedence `check_manifest_write_gate`
     enforces — e.g. clients/_template/**), by `_PUBLISH_CLEAN_ALLOWLIST`, or
     by being a `.gitkeep` placeholder (the universal "shipped empty scaffold"
@@ -6237,6 +6407,11 @@ def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged")
         if os.path.basename(norm) == ".gitkeep":
             continue
         if norm in _PUBLISH_CLEAN_ALLOWLIST:
+            continue
+        hard = next((g for g in _PUBLISH_CLEAN_HARD_TIER_GLOBS if path_matches_globs(norm, [g])), None)
+        if hard:
+            # Hard tier: checked BEFORE owned_globs, like the write gate.
+            violations.append((norm, hard))
             continue
         if path_matches_globs(norm, owned):
             continue  # owned_globs wins (e.g. clients/_template/**)
@@ -6349,6 +6524,20 @@ def _publish_remote_git(root: Path, *args: str) -> subprocess.CompletedProcess:
                            "-c", "log.showRoot=true", *args], capture_output=True)
 
 
+def _publish_remote_object_kind(root: Path, sha: str) -> tuple:
+    """(type, peeled_sha) for a pushed object: annotated tags are peeled to
+    what they point at. Raises RuntimeError when the object cannot be read."""
+    r = _publish_remote_git(root, "rev-parse", "--verify", "--quiet", f"{sha}^{{}}")
+    peeled = r.stdout.decode("utf-8", "replace").strip() if r.returncode == 0 else ""
+    if not peeled:
+        raise RuntimeError(f"the pushed object {sha[:12]} cannot be read here")
+    t = _publish_remote_git(root, "cat-file", "-t", peeled)
+    kind = t.stdout.decode("utf-8", "replace").strip() if t.returncode == 0 else ""
+    if not kind:
+        raise RuntimeError(f"the pushed object {sha[:12]} cannot be read here")
+    return kind, peeled
+
+
 def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None = None) -> list:
     """Data paths ADDED or MODIFIED by ANY commit this push publishes — not
     just the pushed tip's tree (v1.0.0 security review, H3: a data file
@@ -6378,6 +6567,23 @@ def _publish_remote_data_paths(root: Path, stdin_text: str, remote: str | None =
         if len(parts) < 4 or _PUBLISH_REMOTE_ZERO.match(parts[1]):
             continue  # malformed line, or a ref deletion (no data pushed)
         local_sha, remote_sha = parts[1], parts[3]
+        # v1.0 audit (publish-remote-log-skips-non-commit-ref-targets): `git
+        # log` silently lists NOTHING for a ref that points at a tree (or a
+        # tag of one), so such a push used to skip this check. Peel tags and
+        # branch on the object type; anything but a commit or tree is refused.
+        kind, peeled = _publish_remote_object_kind(root, local_sha)
+        if kind == "tree":
+            r = _publish_remote_git(root, "ls-tree", "-r", "-z", "--full-tree", "--name-only", peeled)
+            if r.returncode != 0:
+                raise RuntimeError(f"`git ls-tree {peeled}` failed: "
+                                   f"{r.stderr.decode('utf-8', 'replace').strip()}")
+            found += [p for p in _gate_split_nul(r.stdout.decode("utf-8", "surrogateescape"))
+                      if _publish_remote_is_data_path(p)]
+            continue
+        if kind != "commit":
+            raise RuntimeError(
+                f"the push sends {local_sha[:12]}, which is a {kind}, not a commit or a "
+                f"folder, so Tess cannot tell which files it holds")
         excludes: list = []
         if (not _PUBLISH_REMOTE_ZERO.match(remote_sha)
                 and _publish_remote_git(root, "cat-file", "-e", f"{remote_sha}^{{commit}}").returncode == 0):
@@ -7454,10 +7660,16 @@ def _quarantine_file(core_key: str, live_rel: str, root: Path, lock: dict,
     live_path = root / live_rel
     q_path = root / QUARANTINE_DIR / live_rel
 
-    # Save attempted edit to quarantine directory
+    # Save attempted edit to quarantine directory. v1.0 audit
+    # (quarantine-bytes-unbound-to-confirmation): written from one read of
+    # the live file, and its sha256 recorded in tess.lock below, so approve
+    # can refuse a parked copy that changed after it was set aside.
     q_path.parent.mkdir(parents=True, exist_ok=True)
+    q_sha = None
     if live_path.exists():
-        shutil.copy2(live_path, q_path)
+        _q_bytes = live_path.read_bytes()
+        _atomic_write_bytes(q_path, _q_bytes)
+        q_sha = sha256_bytes(_q_bytes)
 
     # Pin the authoritative version back to live (H2/M3: manifest-gated + atomic)
     if core_path.exists():
@@ -7482,6 +7694,10 @@ def _quarantine_file(core_key: str, live_rel: str, root: Path, lock: dict,
         lock["files"][_qk]["status"] = "quarantined"
         lock["files"][_qk]["quarantined_at"] = _q_at
         lock["files"][_qk]["quarantined_by"] = source
+        if q_sha:
+            lock["files"][_qk]["quarantined_sha256"] = q_sha
+        else:
+            lock["files"][_qk].pop("quarantined_sha256", None)
 
     # Record provenance
     record_capture_event(root, core_key, live_rel, source, diff_text,
@@ -8671,6 +8887,109 @@ def _clone_verified_signed_tag(upstream: str, ref: str, clone_dir: Path, label: 
     return commit
 
 
+# v1.0 audit (tessctl:update:staging-bytes-not-rebound-to-verified-tag):
+# sha256 of every file fetch_to_staging wrote, keyed by its path under
+# .tess/staging (".tess/core/<rel>" or "upstream-tess.lock"). None until a
+# verified fetch ran in THIS process (dry-run / check never fetch).
+_STAGING_STATE: dict = {"verified": None, "root": None}
+
+
+def _staging_verified_table(root: Path):
+    """The verified hash table when it belongs to THIS project's staging
+    (the fetch that wrote it ran for `root` in this process), else None."""
+    if _STAGING_STATE.get("root") != os.path.realpath(str(root)):
+        return None
+    return _STAGING_STATE.get("verified")
+
+STAGING_TAMPER_MESSAGE = (
+    "tessctl update: STOPPED — {what} in .tess/staging changed after the release "
+    "signature was checked, so it is no longer the signed release. Something other "
+    "than tessctl wrote there.\n"
+    "  Nothing from that file was applied. Close any agent session that is running in "
+    "this project, then run `tessctl update` again (it fetches and checks the release "
+    "afresh)."
+)
+
+
+def _release_tree_entries(clone_dir: Path, commit: str, prefix: str) -> dict:
+    """{path relative to `prefix`: (git mode, object id)} for every entry
+    under `prefix` in the tree of `commit` (a single file: key "")."""
+    r = subprocess.run(["git", "-C", str(clone_dir), "ls-tree", "-r", "-z", "--full-tree",
+                        commit, "--", prefix], capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"tessctl fetch: SECURITY REJECT — cannot list {prefix!r} in the verified "
+                 f"release commit. No files were extracted.")
+    out: dict = {}
+    for rec in r.stdout.split(b"\0"):
+        if not rec:
+            continue
+        meta, _tab, path = rec.partition(b"\t")
+        parts = meta.decode("ascii", "replace").split()
+        name = path.decode("utf-8", "surrogateescape")
+        if len(parts) != 3:
+            continue
+        if name == prefix:
+            out[""] = (parts[0], parts[2])
+        elif name.startswith(prefix + "/"):
+            out[name[len(prefix) + 1:]] = (parts[0], parts[2])
+    return out
+
+
+def _staging_write_new(path: Path, data: bytes, mode: int) -> None:
+    """Create a NEW staging file (O_EXCL, never through a symlink planted in
+    the fresh staging tree)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0)
+    try:
+        fd = os.open(str(path), flags, mode)
+    except FileExistsError:
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=str(path.name) + " (appeared while staging)"))
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.chmod(str(path), mode)
+
+
+def _staging_verified_bytes(root: Path, rel: str) -> bytes:
+    """The bytes of .tess/staging/<rel>, refused unless they are exactly the
+    bytes fetch_to_staging took from the verified release commit. Without a
+    verified fetch in this process (dry-run) the file is read as it is."""
+    path = root / STAGING_DIR / rel
+    verified = _staging_verified_table(root)
+    if verified is None:
+        return path.read_bytes()
+    data, why = _read_regular_nofollow(path)
+    if data is None or verified.get(rel) != sha256_bytes(data):
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=rel))
+    return data
+
+
+def _staging_verified_sha(root: Path, rel: str):
+    """The verified sha256 of staged `rel`, or None (not staged / no fetch)."""
+    verified = _staging_verified_table(root)
+    return None if verified is None else verified.get(rel)
+
+
+def _staging_verify_all(root: Path) -> None:
+    """Refuse (exit) unless .tess/staging holds exactly the files the verified
+    fetch wrote, byte for byte. No-op without a verified fetch."""
+    verified = _staging_verified_table(root)
+    if verified is None:
+        return
+    staging_dir = root / STAGING_DIR
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(staging_dir):
+        for name in list(filenames) + [d for d in dirnames
+                                       if os.path.islink(os.path.join(dirpath, d))]:
+            rel = os.path.relpath(os.path.join(dirpath, name), staging_dir).replace(os.sep, "/")
+            if rel not in verified:
+                sys.exit(STAGING_TAMPER_MESSAGE.format(what=rel + " (not in the release)"))
+            seen.add(rel)
+    for rel in verified:
+        _staging_verified_bytes(root, rel)
+    missing = sorted(set(verified) - seen)
+    if missing:
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=missing[0] + " (removed)"))
+
+
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     """
     Fetch the framework version at `ref` from upstream into .tess/staging/.
@@ -8748,77 +9067,69 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
         if _tofu_state["tofu"]:
             trusted_fingerprint = _tofu_state["fp"]
 
-        # -- F5: extract .tess/core/ from clone → .tess/staging/ with traversal hardening --
-        core_src = clone_dir / ".tess" / "core"
-        if not core_src.exists():
+        # -- F5: extract .tess/core/ → .tess/staging/ with traversal hardening --
+        # v1.0 audit (staging-bytes-not-rebound-to-verified-tag): the files
+        # are written from the VERIFIED COMMIT'S git objects (never the
+        # clone's working tree), and the sha256 of every staged file is kept
+        # in memory (_STAGING_STATE). Every later read of .tess/staging in
+        # this run is checked against it, so bytes written there after the
+        # signature check are refused instead of applied and re-anchored.
+        entries = _release_tree_entries(clone_dir, _verified_commit, ".tess/core")
+        if not entries:
             sys.exit(
                 f"tessctl fetch: .tess/core/ not found in upstream at ref {ref!r}.\n"
                 f"  The upstream may not be a valid Tess OS framework repository."
             )
 
         # Clear old staging content before populating (clean slate)
+        _STAGING_STATE["verified"] = None
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
         staging_dir_resolved = staging_dir.resolve()
 
+        blobs = _git_cat_file_batch(clone_dir, sorted({oid for _m, oid in entries.values()}))
+        verified: dict = {}
         extracted = 0
-        for src_file in core_src.rglob("*"):
-            if src_file.is_dir():
-                continue
-
-            # C2: reject symlinks before any write (TOCTOU + symlink-escape prevention)
-            if src_file.is_symlink():
+        for rel_str, (mode, oid) in sorted(entries.items()):
+            # C2: reject symlinks (and submodules) before any write
+            if mode not in ("100644", "100755"):
                 sys.exit(
-                    f"tessctl fetch: SECURITY REJECT — upstream entry "
-                    f"{str(src_file.relative_to(core_src))!r} is a symlink (C2).\n"
+                    f"tessctl fetch: SECURITY REJECT — upstream entry {rel_str!r} is not a "
+                    f"regular file (git mode {mode}; C2).\n"
                     f"  Extraction aborted — no files were written."
                 )
-
-            # rel is relative to core_src, e.g. "conductor/guardrails.md"
-            rel = src_file.relative_to(core_src)
-            rel_str = str(rel).replace(os.sep, "/")
-
             # Hard-reject absolute paths or '..' traversal in source filename
-            if os.path.isabs(rel_str) or ".." in Path(rel_str).parts:
+            if not rel_str or os.path.isabs(rel_str) or ".." in Path(rel_str).parts:
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL in upstream archive entry {rel_str!r}.\n"
                     f"  Extraction aborted — no files were written."
                 )
-
             # C4: reject any '.git' path component (case-insensitive, trailing-dot-aware)
-            _rel_parts = Path(rel_str).parts
-            if any(p.lower().rstrip(". ") == ".git" for p in _rel_parts):
+            if any(p.lower().rstrip(". ") == ".git" for p in Path(rel_str).parts):
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL — upstream entry {rel_str!r} contains "
                     f"'.git' path component (C4). Extraction aborted — no files written."
                 )
-
+            kind, data = blobs.get(oid, (None, None))
+            if kind != "blob":
+                sys.exit(f"tessctl fetch: SECURITY REJECT — cannot read {rel_str!r} from the "
+                         f"verified release commit. No files were applied.")
             # Mirror the core_key structure: staging/.tess/core/<rel>
-            # This matches the staging_path = staging_dir / core_key pattern in
-            # _apply_per_file_resolution (core_key = ".tess/core/<rel>").
-            dst = staging_dir / ".tess" / "core" / rel
-
+            # (core_key = ".tess/core/<rel>", as in _apply_per_file_resolution).
+            dst = staging_dir / ".tess" / "core" / rel_str
             # Resolve and containment-check BEFORE writing
             try:
-                dst_resolved = dst.resolve()
-                dst_resolved.relative_to(staging_dir_resolved)
+                dst.resolve().relative_to(staging_dir_resolved)
             except ValueError:
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL — entry {rel_str!r} resolves outside "
                     f".tess/staging/.  Extraction aborted — no files were written."
                 )
-
             dst.parent.mkdir(parents=True, exist_ok=True)
-            # C2: follow_symlinks=False as defense-in-depth (symlinks already rejected above)
-            shutil.copy2(src_file, dst, follow_symlinks=False)
+            _staging_write_new(dst, data, 0o755 if mode == "100755" else 0o644)
+            verified[".tess/core/" + rel_str] = sha256_bytes(data)
             extracted += 1
-
-        # Also copy upstream tess.lock to staging for new-file adoption (A2)
-        upstream_lock_src = clone_dir / ".tess" / "tess.lock"
-        if upstream_lock_src.exists():
-            shutil.copy2(upstream_lock_src, staging_dir / "upstream-tess.lock", follow_symlinks=False)
-            print(f"  extracted upstream tess.lock to staging")
 
         if extracted == 0:
             sys.exit(
@@ -8826,6 +9137,18 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                 f"  Nothing extracted."
             )
 
+        # Also copy upstream tess.lock to staging for new-file adoption (A2)
+        lock_entry = _release_tree_entries(clone_dir, _verified_commit, ".tess/tess.lock")
+        if lock_entry.get("") and lock_entry[""][0] in ("100644", "100755"):
+            kind, data = _git_cat_file_batch(clone_dir, [lock_entry[""][1]]).get(
+                lock_entry[""][1], (None, None))
+            if kind == "blob":
+                _staging_write_new(staging_dir / "upstream-tess.lock", data, 0o644)
+                verified["upstream-tess.lock"] = sha256_bytes(data)
+                print(f"  extracted upstream tess.lock to staging")
+
+        _STAGING_STATE["verified"] = verified
+        _STAGING_STATE["root"] = os.path.realpath(str(root))
         print(f"  extracted {extracted} file(s) to .tess/staging/")
 
 
@@ -8848,6 +9171,78 @@ def _resolve_update_ref(args, lock: dict) -> str:
             "  Specify the signed release tag to fetch: --ref v2.0.0"
         )
     return ref
+
+
+# ---------------------------------------------------------------------------
+# v1.0 audit (tessctl:update-ref:no-version-floor-signed-rollback): update
+# and self-update never move to an OLDER signed release unless the person at
+# the terminal asks for it (--allow-downgrade) and confirms it. A signed old
+# release is still an old release: it can bring back fixed security holes,
+# and the re-anchor after it would record the older safety files as approved.
+# ---------------------------------------------------------------------------
+
+_RELEASE_SEMVER_RE = re.compile(
+    r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
+
+
+def _release_semver_key(text):
+    """A sort key for a release version ('v1.2.3', '1.2.3-rc.1'); None when
+    `text` is not one. Semver order: 1.0.0-rc.1 < 1.0.0 < 1.0.1."""
+    m = _RELEASE_SEMVER_RE.fullmatch(str(text or "").strip())
+    if not m:
+        return None
+    pre = m.group(4)
+    if pre is None:
+        pre_key = (1,)
+    else:
+        pre_key = (0,) + tuple((0, int(p), "") if p.isdigit() else (1, 0, p)
+                               for p in pre.split("."))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), pre_key)
+
+
+def _installed_release_floor(lock: dict):
+    """(version text, key) of the newest release this install is on:
+    framework.version, or framework.upstream_ref when that is newer (a
+    self-update moves the engine and upstream_ref but not version)."""
+    fw = lock.get("framework") or {}
+    best = (None, None)
+    for text in (fw.get("version"), fw.get("upstream_ref")):
+        key = _release_semver_key(text)
+        if key is not None and (best[1] is None or key > best[1]):
+            best = (str(text).lstrip("v"), key)
+    return best
+
+
+def _update_version_floor(args, lock: dict, ref: str, label: str, dry_run: bool = False) -> None:
+    """Refuse (exit) a target release older than the installed one, or one
+    that is not a Tess OS release tag at all, unless --allow-downgrade was
+    given AND the person at the terminal confirms. Nothing is fetched first."""
+    if str(ref).startswith("create-tess-v"):
+        sys.exit(f"tessctl {label}: REFUSED — {ref!r} is the tag of the create-tess setup "
+                 f"package, not a Tess OS release. Use the matching Tess OS tag instead: "
+                 f"--ref {ref[len('create-tess-'):]}\n  Nothing was changed.")
+    target = _release_semver_key(ref)
+    if target is None or not str(ref).startswith("v"):
+        sys.exit(f"tessctl {label}: REFUSED — {ref!r} is not a Tess OS release tag "
+                 f"(they look like v1.2.3).\n  Nothing was changed.")
+    installed, floor = _installed_release_floor(lock)
+    if floor is None or target >= floor:
+        return
+    if dry_run:
+        print(f"  NOTE  {ref} is OLDER than the installed version {installed}; a real "
+              f"{label} refuses it unless you pass --allow-downgrade and confirm.")
+        return
+    if not getattr(args, "allow_downgrade", False):
+        sys.exit(f"tessctl {label}: REFUSED — {ref} is older than the version you have "
+                 f"({installed}). Going back to an older release can bring back problems "
+                 f"that were already fixed, so Tess does not do it on its own.\n"
+                 f"  Nothing was changed. To go back on purpose, run this yourself in a "
+                 f"terminal:  ./tessctl {label} --ref {ref} --allow-downgrade")
+    _require_human_presence(
+        label, f"going back from {installed} to the older release {ref}",
+        f"you stay on {installed}.", f"downgrade to {ref}", prompt="downgrade> ",
+        lines=[f"  {ref} is OLDER than the version you have ({installed}). Only continue "
+               f"if you meant to go back."])
 
 
 # ---------------------------------------------------------------------------
@@ -9037,6 +9432,8 @@ def _update_auto_rollback(root: Path, snapshot_id: str | None, core_journal: dic
     if snapshot_id:
         snap = root / SNAPSHOTS_DIR / snapshot_id
         try:
+            if not _snapshot_made_here(snap):   # v1.0 audit: never a changed snapshot
+                raise RuntimeError(f"snapshot {snapshot_id} changed after update made it")
             _rollback_apply(root, snap, _load_snapshot_manifest(snap))
             snap_ok = True
         except BaseException as e:  # noqa: BLE001 — incl. SystemExit from an INCOMPLETE restore
@@ -9078,11 +9475,16 @@ def cmd_update(args, root: Path) -> None:
     A dry run changes nothing and takes no lock.
     """
     dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
-    if dry_run:
-        _cmd_update_run(args, root)
-        return
-    with tess_update_lock(root, "update"):
-        _cmd_update_run(args, root)
+    # v1.0 audit: the verified staging hashes belong to ONE update run.
+    _STAGING_STATE["verified"] = None
+    try:
+        if dry_run:
+            _cmd_update_run(args, root)
+            return
+        with tess_update_lock(root, "update"):
+            _cmd_update_run(args, root)
+    finally:
+        _STAGING_STATE["verified"] = None
 
 
 def _cmd_update_run(args, root: Path) -> None:
@@ -9256,6 +9658,7 @@ def _cmd_update_body(args, root: Path) -> None:
             )
 
         target_ref = _resolve_update_ref(args, lock)
+        _update_version_floor(args, lock, target_ref, "update", dry_run=dry_run)   # v1.0 audit
         _allow_tofu = getattr(args, "trust_on_first_use", False)
         if not dry_run:
             fetch_to_staging(root, target_ref, allow_tofu=_allow_tofu)
@@ -9283,8 +9686,14 @@ def _cmd_update_body(args, root: Path) -> None:
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
         if not dry_run:
+            # v1.0 audit: staging must still be the verified release before
+            # and after the (operator-paced) policy prompt; every later read
+            # of staging is checked again (_staging_verified_bytes).
+            _staging_verify_all(root)
             _update_carry_policy_registries(root)   # v1.0.0 security review (H2)
+            _staging_verify_all(root)
             _update_confirm_policy_rule_changes(root, target_ref)   # v1.0.0 item a
+            _staging_verify_all(root)
 
         # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
@@ -9312,7 +9721,7 @@ def _cmd_update_body(args, root: Path) -> None:
         if staging_upstream_lock_path.exists():
             try:
                 upstream_lock_data = _lock_load_text(
-                    staging_upstream_lock_path.read_text(encoding="utf-8")
+                    _staging_verified_bytes(root, "upstream-tess.lock").decode("utf-8")
                 )
             except Exception as _e:
                 print(f"  WARN  A2: could not parse upstream tess.lock: {_e}")
@@ -9362,7 +9771,7 @@ def _cmd_update_body(args, root: Path) -> None:
                 if staging_src.is_symlink() or not staging_src.is_file():
                     _a2_skip(upstream_key, "no regular file for it in .tess/staging/")
                     continue
-                staging_bytes = staging_src.read_bytes()
+                staging_bytes = _staging_verified_bytes(root, upstream_key)
                 new_sha = sha256_bytes(staging_bytes)
                 up_sha = upstream_attrs.get("base_sha")
                 if up_sha and up_sha != new_sha:
@@ -9488,6 +9897,7 @@ def _cmd_update_body(args, root: Path) -> None:
                   f"above); `tessctl doctor` reports what is left untracked")
 
         _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
+        _staging_verify_all(root)   # v1.0 audit: still the verified release
         # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
         print("\nStep 5-6: plan and apply …")
         _apply_per_file_resolution(root, lock, dry_run=dry_run,
@@ -9510,7 +9920,7 @@ def _cmd_update_body(args, root: Path) -> None:
                     print(f"  WARN  advance core: skip symlink in staging: {core_key}")
                     continue
                 core_path = root / core_key
-                staging_bytes = staging_src.read_bytes()
+                staging_bytes = _staging_verified_bytes(root, core_key)   # v1.0 audit
                 if core_path.exists() and core_path.read_bytes() == staging_bytes:
                     continue
                 if core_key not in core_journal:   # v0.2.1: pre-image for rollback
@@ -9557,6 +9967,9 @@ def _cmd_update_body(args, root: Path) -> None:
         # Re-pin base_sha from the NOW-CURRENT core (after A1 advance) so that
         # verify/doctor see them as pristine instead of reporting CORE TAMPER.
         if not dry_run:
+            # v1.0 audit: staging unchanged through apply/render (inside the
+            # transaction, so a change rolls the whole update back).
+            _staging_verify_all(root)
             print("\nStep 8: update lock …")
             repinned = 0
             not_repinned: list[str] = []
@@ -9570,8 +9983,10 @@ def _cmd_update_body(args, root: Path) -> None:
                         # advanced core to). Any other drift is left pinned at
                         # the old base_sha so verify keeps reporting it.
                         _stg = root / STAGING_DIR / core_key
-                        if (_stg.is_file() and not _stg.is_symlink()
-                                and sha256_file(_stg) == new_sha):
+                        _vsha = _staging_verified_sha(root, core_key)   # v1.0 audit
+                        if (_vsha == new_sha if _staging_verified_table(root) is not None
+                                else (_stg.is_file() and not _stg.is_symlink()
+                                      and sha256_file(_stg) == new_sha)):
                             lock["files"][core_key]["base_sha"] = new_sha
                             repinned += 1
                         else:
@@ -9746,6 +10161,8 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
             src = staging_path if staging_path.exists() else core_path
             if not src.exists():
                 continue
+            if src is staging_path:
+                _staging_verified_bytes(root, core_key)   # v1.0 audit
 
             rendered = render_core_to_live(src, live_path, root)
             attrs = lock.get("files", {}).get(core_key, {})
@@ -9839,6 +10256,8 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
                 live_path = root / item["live_rel"]
                 src = staging_path if staging_path.exists() else core_path
                 if src.exists():
+                    if src is staging_path:
+                        _staging_verified_bytes(root, item["core_key"])   # v1.0 audit
                     rendered = render_core_to_live(src, live_path, root)
                     # H2/M3: manifest-gated atomic write
                     try:
@@ -9855,6 +10274,7 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
 
             if not staging_path.exists() or not core_path.exists() or not live_path.exists():
                 continue
+            _staging_verified_bytes(root, item["core_key"])   # v1.0 audit
 
             # 3-way merge: base=core, ours=live, theirs=staging
             with tempfile.NamedTemporaryFile(suffix=".base", delete=False) as fb:
@@ -10291,6 +10711,16 @@ def cmd_override(args, root: Path) -> None:
     manifest = load_manifest(root)
     check_manifest_write_gate(root, manifest, live_rel, op="override")
 
+    # v1.0 audit (coverage critic): an override on a security-tier file stores
+    # a diff that `tessctl update` re-applies to that file, and re-pins
+    # base_sha: the same person at the terminal as `tessctl approve`.
+    if _live_path_is_security(lock, live_rel):
+        _require_human_presence(
+            "override", f"recording an override of the security-tier file {live_rel}",
+            f"{live_rel} and tess.lock are as they were.", live_rel, prompt="path> ",
+            lines=[f"  This diff would be kept and re-applied to {live_rel} on every update:"]
+                  + ["    " + ln for ln in diff_text.splitlines()[:200]])
+
     # Store in lock — v0.2 eng-b (bug 8): on EVERY entry that shares this
     # live_path, so restore/render cannot overwrite the live file through a
     # sibling entry. Each entry carries the same live-file diff; update's
@@ -10382,6 +10812,7 @@ def cmd_rollback(args, root: Path) -> None:
     _ACTIVE_SNAPSHOTS.add(snap.name)
     try:
         manifest = _load_snapshot_manifest(snap)
+        _rollback_guard(root, snap, manifest)   # v1.0 audit: before anything changes
         if manifest is not None:
             undo_rels = list(manifest)
         else:
@@ -10902,7 +11333,71 @@ def cmd_verify(args, root: Path) -> None:
 # Command: approve (defect #1)
 # ---------------------------------------------------------------------------
 
-def _approve_require_human_presence(live_rel: str) -> None:
+def _presence_isatty(stream) -> bool:
+    try:
+        return bool(stream is not None and stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str,
+                            prompt: str = "confirm> ", lines=(), how: str = "") -> None:
+    """v1.0 audit: the presence check `tessctl approve` uses, for every
+    other command that makes a security-tier file (or an older release)
+    accepted. stdin AND stdout must be a TTY and the person must type
+    `confirm` exactly; otherwise exit non-zero before anything is written.
+    No flag or environment variable skips it. Like approve's, it is a
+    presence check, not a cryptographic boundary."""
+    stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
+    if not (stdin_tty and stdout_tty):
+        sys.exit(
+            f"tessctl {cmd}: REFUSED — {subject} needs a human at an interactive terminal.\n"
+            f"  stdin is {'a TTY' if stdin_tty else 'not a TTY'}; "
+            f"stdout is {'a TTY' if stdout_tty else 'not a TTY'}. Both must be a TTY.\n"
+            f"  Nothing was changed: {unchanged}\n"
+            + (f"  {how}" if how else f"  Run the same `tessctl {cmd}` command yourself, in a terminal.")
+        )
+    print(f"tessctl {cmd}: human confirmation required — {subject}")
+    for ln in lines:
+        print(ln)
+    print(f"  To continue, type exactly:  {confirm}")
+    print("  To stop without changing anything, press Enter.")
+    try:
+        typed = input(f"  {prompt}")
+    except EOFError:
+        typed = None
+    if typed is None or typed.strip() != confirm:
+        sys.exit(f"tessctl {cmd}: REFUSED — what you typed did not match {confirm!r}.\n"
+                 f"  Nothing was changed: {unchanged}")
+
+
+def _bytes_review_lines(label_old: str, old: bytes, label_new: str, new: bytes,
+                        max_lines: int = 200) -> list:
+    """Plain lines showing the exact bytes an operator is asked to accept:
+    their sha256 and a unified diff against what is live now (truncated
+    after max_lines; the digest still names the full content)."""
+    out = [f"  The exact content you are accepting ({label_new}) has "
+           f"{sha256_bytes(new)} ({len(new)} bytes)."]
+    try:
+        a = old.decode("utf-8").splitlines(keepends=True)
+        b = new.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        out.append("  (binary content — no line diff shown)")
+        return out
+    diff = list(difflib.unified_diff(a, b, fromfile=label_old, tofile=label_new))
+    if not diff:
+        out.append("  (no difference from what is live now)")
+        return out
+    out.append("  Changes compared with what is live now:")
+    for ln in diff[:max_lines]:
+        out.append("    " + ln.rstrip("\n"))
+    if len(diff) > max_lines:
+        out.append(f"    … {len(diff) - max_lines} more diff line(s) not shown — review "
+                   f"the whole file before you continue.")
+    return out
+
+
+def _approve_require_human_presence(live_rel: str, review_lines=None) -> None:
     """
     v0.2: approving a quarantined or security-tier file needs a human at an
     interactive terminal. stdin AND stdout must both be a TTY, and the
@@ -10933,7 +11428,11 @@ def _approve_require_human_presence(live_rel: str) -> None:
             "  Run `tessctl approve <path> --rationale \"...\"` yourself, in a terminal."
         )
     print(f"tessctl approve: human confirmation required for {live_rel}")
-    print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
+    if review_lines:
+        for ln in review_lines:
+            print(ln)
+    else:
+        print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
     print(f"  Type the path exactly as shown to approve it: {live_rel}")
     try:
         typed = input("  path> ")
@@ -11025,15 +11524,44 @@ def cmd_approve(args, root: Path) -> None:
             f"  The quarantine directory may have been deleted.  Cannot approve without it."
         )
 
+    # v1.0 audit (quarantine-bytes-unbound-to-confirmation): read the parked
+    # copy ONCE (never through a symlink), check it is the copy capture set
+    # aside, show the operator exactly those bytes, re-check them after the
+    # confirmation, and write that same buffer.
+    q_bytes, q_why = _read_regular_nofollow(q_path)
+    if q_bytes is None:
+        sys.exit(f"tessctl approve: REFUSED — {QUARANTINE_DIR}/{live_rel} {q_why}.\n"
+                 f"  Nothing was changed: {live_rel} stays quarantined.")
+    q_sha = sha256_bytes(q_bytes)
+    recorded = {files[k].get("quarantined_sha256") for k in entry_keys} - {None, ""}
+    if recorded and recorded != {q_sha}:
+        sys.exit(
+            f"tessctl approve: REFUSED — the set-aside copy {QUARANTINE_DIR}/{live_rel} "
+            f"changed after Tess set it aside, so it is not the edit that was captured.\n"
+            f"  Nothing was changed: {live_rel} stays quarantined.\n"
+            f"  To approve an edit: put the text you want in {live_rel}, run "
+            f"`tessctl capture {live_rel}` to set it aside again, then run approve."
+        )
+    live_now = live_path.read_bytes() if live_path.is_file() else b""
+
     # v0.2: human presence — before ANY write or lock change.
     if any(
         files[k].get("status") == "quarantined" or is_security_tier(k, files[k])
         for k in entry_keys
     ):
-        _approve_require_human_presence(live_rel)
+        _approve_require_human_presence(
+            live_rel,
+            review_lines=_bytes_review_lines(f"{live_rel} (live now)", live_now,
+                                             f"{QUARANTINE_DIR}/{live_rel}", q_bytes))
+        again, _why = _read_regular_nofollow(q_path)
+        if again is None or sha256_bytes(again) != q_sha:
+            sys.exit(f"tessctl approve: REFUSED — {QUARANTINE_DIR}/{live_rel} changed while "
+                     f"you were reviewing it, so what you confirmed is not what would go "
+                     f"live.\n  Nothing was changed: {live_rel} stays quarantined. Run "
+                     f"`tessctl approve` again.")
 
     # Apply the quarantined edit to live (H2/M3: manifest-gated + atomic)
-    guarded_write(root, live_rel, q_path.read_bytes(), op="approve")
+    guarded_write(root, live_rel, q_bytes, op="approve")
 
     # Flip status to locally-modified (normal merge candidate going forward)
     approved_at = datetime.datetime.now(
@@ -11043,8 +11571,10 @@ def cmd_approve(args, root: Path) -> None:
         lock["files"][k]["status"] = "locally-modified"
         lock["files"][k]["approved_at"] = approved_at
         lock["files"][k]["approved_rationale"] = rationale
+        lock["files"][k]["approved_sha256"] = q_sha
         lock["files"][k].pop("quarantined_at", None)
         lock["files"][k].pop("quarantined_by", None)
+        lock["files"][k].pop("quarantined_sha256", None)
 
     # Record approval in modified.json
     diff_text = ""
@@ -11124,6 +11654,24 @@ def cmd_resolve(args, root: Path) -> None:
     live_path = root / live_rel
     conflict_dir = root / ".tess" / "conflicts"
     conflict_file = conflict_dir / live_rel.replace("/", "_")
+    # v1.0 audit (cmd_resolve:security-tier-write-without-presence): every
+    # resolve mode makes a live file's content accepted (locally-modified) or
+    # writes the parked incoming bytes live. For a security-tier or
+    # quarantined file that needs the same person at the terminal as
+    # `tessctl approve`, shown the exact bytes. Other files are unchanged.
+    _res_keys = _approve_entry_keys(lock, core_key, live_rel)
+    _res_security = any(files[k].get("status") == "quarantined" or is_security_tier(k, files[k])
+                        for k in _res_keys)
+
+    def _res_presence(new_bytes: bytes, label: str) -> None:
+        core_p = root / core_key
+        base = (render_core_to_live(core_p, live_path, root) if core_p.exists()
+                else (live_path.read_bytes() if live_path.is_file() else b""))
+        _require_human_presence(
+            "resolve", f"resolving the security-tier file {live_rel}",
+            f"{live_rel} and its tess.lock status are as they were.", live_rel,
+            prompt="path> ",
+            lines=_bytes_review_lines(f"{live_rel} (Tess's version)", base, label, new_bytes))
 
     if accept_ours:
         # Keep the live file as-is; just mark as locally-modified
@@ -11134,6 +11682,15 @@ def cmd_resolve(args, root: Path) -> None:
             if re.search(r'^<{7} |^={7}\s*$|^>{7} ', content, re.MULTILINE):
                 print(f"  WARN  {live_rel} still contains conflict markers — edit first.")
                 sys.exit(1)
+        if _res_security:
+            _ours, _why = _read_regular_nofollow(live_path)
+            if _ours is None:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} {_why}. Nothing was changed.")
+            _res_presence(_ours, f"{live_rel} (your version)")
+            _again, _why = _read_regular_nofollow(live_path)
+            if _again != _ours:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} changed while you were "
+                         f"reviewing it. Nothing was changed; run resolve again.")
         lock["files"][core_key]["status"] = "locally-modified"
         lock["files"][core_key]["resolved_at"] = datetime.datetime.now(
             datetime.timezone.utc
@@ -11151,8 +11708,19 @@ def cmd_resolve(args, root: Path) -> None:
                 f"tessctl resolve: conflict file not found at {conflict_file}.\n"
                 f"  Cannot accept theirs without the incoming version."
             )
+        # v1.0 audit: one read of the parked incoming bytes, shown and
+        # re-checked for a security-tier file, and that buffer is written.
+        _theirs, _why = _read_regular_nofollow(conflict_file)
+        if _theirs is None:
+            sys.exit(f"tessctl resolve: REFUSED — {conflict_file} {_why}. Nothing was changed.")
+        if _res_security:
+            _res_presence(_theirs, f"{conflict_file.name} (incoming)")
+            _again, _why = _read_regular_nofollow(conflict_file)
+            if _again != _theirs:
+                sys.exit(f"tessctl resolve: REFUSED — {conflict_file.name} changed while you "
+                         f"were reviewing it. Nothing was changed; run resolve again.")
         # Overwrite live with the conflict/incoming version (H2/M3: gated + atomic)
-        guarded_write(root, live_rel, conflict_file.read_bytes(), op="resolve-theirs")
+        guarded_write(root, live_rel, _theirs, op="resolve-theirs")
         lock["files"][core_key]["status"] = "core-managed"
         lock["files"][core_key]["resolved_at"] = datetime.datetime.now(
             datetime.timezone.utc
@@ -11187,9 +11755,25 @@ def cmd_resolve(args, root: Path) -> None:
         ret = subprocess.call([editor, edit_target])
         if ret != 0:
             sys.exit(f"tessctl resolve: editor exited with code {ret}")
-        # H1 fix: replace ungated shutil.copy2 with manifest-gated atomic write
+        # v1.0 audit: a security-tier file's edited result is shown and
+        # confirmed before it is written or its status changes.
+        _edited = None
         if conflict_file.exists():
-            guarded_write(root, live_rel, conflict_file.read_bytes(),
+            _edited, _why = _read_regular_nofollow(conflict_file)
+            if _edited is None:
+                sys.exit(f"tessctl resolve: REFUSED — {conflict_file} {_why}. Nothing was changed.")
+        if _res_security:
+            _shown = _edited if _edited is not None else _read_regular_nofollow(live_path)[0]
+            if _shown is None:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} cannot be read. Nothing was changed.")
+            _res_presence(_shown, f"{live_rel} (your edited version)")
+            _src = conflict_file if _edited is not None else live_path
+            if _read_regular_nofollow(_src)[0] != _shown:
+                sys.exit(f"tessctl resolve: REFUSED — {_src.name} changed while you were "
+                         f"reviewing it. Nothing was changed; run resolve again.")
+        # H1 fix: replace ungated shutil.copy2 with manifest-gated atomic write
+        if _edited is not None:
+            guarded_write(root, live_rel, _edited,
                           op="resolve-edit", manifest=manifest)
         # Verify no remaining markers (LOW: anchored regex)
         if live_path.exists():
@@ -11273,6 +11857,24 @@ def cmd_reset(args, root: Path) -> None:
         sys.exit(f"tessctl reset: core file not found: {core_key}")
 
     rendered = render_core_to_live(core_path, live_path, root)
+
+    # v1.0 audit (coverage critic): reset re-pins base_sha to the core bytes
+    # on disk. When a security-tier file's core no longer matches its pinned
+    # base_sha, that re-pin would accept the changed core as pristine (and
+    # silence verify's CORE TAMPER), so it needs a person at the terminal.
+    # The usual reset (core unchanged) stays prompt-free.
+    _repin_changes = [
+        _rk for _rk in _reset_keys
+        if (root / _rk).exists() and files.get(_rk, {}).get("base_sha")
+        and sha256_file(root / _rk) != files[_rk]["base_sha"]]
+    if _repin_changes and any(is_security_tier(_rk, files[_rk]) for _rk in _reset_keys):
+        _require_human_presence(
+            "reset", f"resetting the security-tier file {live_rel}",
+            f"{live_rel} and tess.lock are as they were.", live_rel, prompt="path> ",
+            lines=[f"  These Tess core files no longer match the release they were "
+                   f"installed from, and reset would record them as the new original:"]
+                  + [f"    {k}" for k in _repin_changes]
+                  + ["  If you did not change them yourself, stop and run `tessctl verify`."])
 
     # Snapshot the current live file before discarding (always recoverable).
     # v0.2: a labelled snapshot with a manifest (snapshot_paths) that also
@@ -11689,6 +12291,7 @@ def cmd_self_update(args, root: Path) -> None:
         )
 
     ref = _resolve_update_ref(args, lock)
+    _update_version_floor(args, lock, ref, "self-update")   # v1.0 audit
     engine_path = root / ".tess" / "bin" / "tessctl"
     backup_path = engine_path.with_suffix(".bak")
 
@@ -11735,16 +12338,27 @@ def cmd_self_update(args, root: Path) -> None:
                 f"  The upstream may not have a compatible engine layout.\n"
                 f"  Current engine is unchanged."
             )
-        new_engine_bytes = new_engine_path.read_bytes()
+        # v1.0 audit: the engine bytes come from the verified commit's git
+        # object, never from the clone's working tree.
+        _eng = _release_tree_entries(clone_dir, _su_commit, ".tess/bin/tessctl").get("")
+        _eng_obj = (_git_cat_file_batch(clone_dir, [_eng[1]]).get(_eng[1], (None, None))
+                    if _eng and _eng[0] in ("100644", "100755") else (None, None))
+        if _eng_obj[0] != "blob":
+            sys.exit(f"tessctl self-update: .tess/bin/tessctl is not a regular file in the "
+                     f"verified release {ref!r}.\n  Current engine is unchanged.")
+        new_engine_bytes = _eng_obj[1]
 
         # -- Step 3: AST parse-check before touching the live engine --
         print("\nStep 2: parse-check new engine …")
         parse_result = subprocess.run(
             [sys.executable, "-I", "-B", "-c",
-             "import ast, sys; ast.parse(open(sys.argv[1]).read()); print('parse OK')",
-             str(new_engine_path)],
-            capture_output=True, text=True
+             "import ast, sys; ast.parse(sys.stdin.buffer.read()); print('parse OK')"],
+            input=new_engine_bytes, capture_output=True
         )
+        parse_result = subprocess.CompletedProcess(
+            parse_result.args, parse_result.returncode,
+            parse_result.stdout.decode("utf-8", "replace"),
+            parse_result.stderr.decode("utf-8", "replace"))
         if parse_result.returncode != 0:
             sys.exit(
                 f"tessctl self-update: ABORT — new engine fails AST parse:\n"
@@ -11886,6 +12500,21 @@ def _agent_keys_by_name(lock: dict) -> dict:
     return mapping
 
 
+def _roster_security_presence(cmd: str, lock: dict, core_keys) -> None:
+    """v1.0 audit (coverage critic): recruit / bench / roster apply change
+    agent-file statuses without a prompt. Should a tess.lock ever mark one of
+    those entries security-tier, the change needs the person at the terminal
+    (as `tessctl approve` does). Shipped agent files are normal tier, so this
+    never prompts in a normal install."""
+    files = lock.get("files") or {}
+    sec = sorted({(files[k].get("live_path") or k) for k in core_keys
+                  if k in files and is_security_tier(k, files[k])})
+    if sec:
+        _require_human_presence(
+            cmd, f"changing the security-tier file(s) {', '.join(sec)}",
+            "no file or tess.lock status was changed.", sec[0], prompt="path> ")
+
+
 def _roster_install_set(roster_data: dict, path_name: str) -> set:
     """
     Build the complete install set for a given STARTER_PATH.
@@ -12003,6 +12632,7 @@ def _roster_apply(args, root: Path) -> None:
     installed: list[str] = []
     staged_list: list[str] = []
     gate_skipped: list[str] = []
+    _roster_security_presence("roster", lock, by_name.values())   # v1.0 audit
 
     for agent_name in sorted(by_name.keys()):
         core_key = by_name[agent_name]
@@ -12141,6 +12771,7 @@ def cmd_recruit(args, root: Path) -> None:
     recruited: list[str] = []
     already_installed: list[str] = []
     gate_skipped: list[str] = []
+    _roster_security_presence("recruit", lock, [by_name[n] for n in to_recruit if n in by_name])
 
     for agent_name in sorted(to_recruit):
         core_key = by_name.get(agent_name)
@@ -12221,6 +12852,7 @@ def cmd_bench(args, root: Path) -> None:
 
     benched: list[str] = []
     already_staged: list[str] = []
+    _roster_security_presence("bench", lock, [by_name[n] for n in to_bench if n in by_name])
 
     for agent_name in sorted(to_bench):
         core_key = by_name.get(agent_name)
@@ -12675,11 +13307,30 @@ def _vault_store_identity_keychain(private_key_str: str) -> bool:
         # protocol ever changes, so the store is read back and verified; a
         # mismatch returns False and lets the caller fall back to the 0600
         # identity file rather than persisting an unusable key.
+        #
+        # v1.0 audit (vault-identity-keychain-item-no-app-acl): `-T ""` gives
+        # the item an EMPTY list of trusted applications. Without it, the app
+        # that created the item (/usr/bin/security) is trusted, so any program
+        # running as you, including an assistant's shell, could read the vault
+        # master key silently with `security find-generic-password -w`. Now
+        # every read asks you to approve a macOS prompt. An existing item is
+        # deleted first so it cannot keep an older, open access list (-U only
+        # updates the password, not the list).
+        print("  macOS will ask you to allow access to 'tess-vault-identity' when the vault "
+              "is used. Click \"Allow\" (not \"Always Allow\", which would let any program "
+              "read it without asking).")
+        subprocess.run(
+            ["security", "delete-generic-password",
+             "-s", _KEYCHAIN_SERVICE,
+             "-a", _KEYCHAIN_ACCOUNT],
+            capture_output=True
+        )
         r = subprocess.run(
             ["security", "add-generic-password",
              "-U",                      # update if exists
              "-s", _KEYCHAIN_SERVICE,
              "-a", _KEYCHAIN_ACCOUNT,
+             "-T", "",                  # no pre-authorised app: every read prompts
              "-w"],                     # value read from stdin, NOT argv
             input=(private_key_str + "\n" + private_key_str + "\n").encode(),
             capture_output=True
@@ -13104,7 +13755,7 @@ def _vault_install_git_hooks(root: Path) -> None:
         print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
         return
 
-    _HOOK_MARKER_V2  = "# tess-vault-guard v3"   # current version — safe to skip
+    _HOOK_MARKER_V2  = "# tess-vault-guard v4"   # current version — safe to skip
     _HOOK_MARKER_ANY = "# tess-vault-guard"        # catches v1 or unversioned → must upgrade
 
     # Shared secret-scan body (used in both hooks; operates on a file list in $STAGED).
@@ -13180,7 +13831,7 @@ fi
 """
 
     pre_commit_script = r"""#!/usr/bin/env bash
-# tess-vault-guard v3
+# tess-vault-guard v4
 # Pre-commit hook: scan staged files for secrets and vault material.
 # Installed by `tessctl vault init`.
 
@@ -13217,7 +13868,7 @@ done < "$_TESS_LIST"
     # Stdin lines: <local-ref> <local-sha> <remote-ref> <remote-sha>
     # We collect all files changed between remotesha..localsha across all pushed refs.
     pre_push_script = r"""#!/usr/bin/env bash
-# tess-vault-guard v3
+# tess-vault-guard v4
 # Pre-push hook: scan commits being pushed for secrets and vault material.
 # Installed by `tessctl vault init`.
 # Git passes: $1=<remote-name> $2=<remote-url>; ref ranges on stdin.
@@ -13234,30 +13885,60 @@ _TESS_LIST="$(mktemp "${TMPDIR:-/tmp}/tess-vault.XXXXXX")" || {
 }
 trap 'rm -f "$_TESS_LIST"' EXIT
 # Read ref lines from stdin: <localref> <localsha> <remoteref> <remotesha>
-# and collect every changed name (NUL-separated, -z) with the PUSHED sha, so the
-# content scan reads the pushed blob ("<sha>:path"), not the working tree.
+# and collect every name (NUL-separated, -z) that ANY pushed commit adds or
+# changes, with THAT commit's sha, so the content scan reads each pushed blob
+# ("<commit>:path"), not the working tree and not only the tip (v1.0 audit:
+# a secret added in one pushed commit and removed in a later one is still
+# uploaded with the history, so every commit is scanned on its own).
 FILES=()
 BLOBS=()
+_tess_block() {
+  echo "TESS VAULT GUARD — BLOCKED: $1, so nothing was scanned." >&2
+  exit 1
+}
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "$local_sha" ] && continue
   # An all-zeros local sha is a ref deletion: it pushes no content.
   echo "$local_sha" | grep -qE '^0+$' && continue
-  # New ref (all-zeros remote sha), or a remote commit this clone does not
-  # have: diff against git's empty tree so every file in the pushed tree is
-  # scanned (root..local would skip the root commit's own files).
-  base=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  # Peel an annotated tag to what it points at; a ref may also point at a
+  # folder (tree) or a single file (blob), which `git rev-list` would skip.
+  obj="$(git rev-parse --verify --quiet "${local_sha}^{}")" || _tess_block "could not read what $local_ref pushes"
+  kind="$(git cat-file -t "$obj")" || _tess_block "could not read what $local_ref pushes"
+  case "$kind" in
+    tree)
+      git -c core.quotePath=false ls-tree -r -z --full-tree --name-only "$obj" > "$_TESS_LIST" \
+        || _tess_block "could not list the files pushed by $local_ref"
+      while IFS= read -r -d '' _f; do
+        FILES+=("$_f")
+        BLOBS+=("${obj}:${_f}")
+      done < "$_TESS_LIST"
+      continue ;;
+    blob)
+      FILES+=("$obj")
+      BLOBS+=("$obj")
+      continue ;;
+    commit) ;;
+    *) _tess_block "$local_ref pushes a $kind, which this guard cannot scan" ;;
+  esac
+  # Every commit being pushed: reachable from the pushed commit, minus what
+  # the remote already has (its sha from this push's own stdin, when this
+  # clone has it). A new ref, or a remote commit this clone lacks, scans the
+  # whole history. Merges are listed against EACH parent (-m) and a root
+  # commit against the empty tree (--root).
   if ! echo "$remote_sha" | grep -qE '^0+$' && git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
-    base="$remote_sha"
+    commits="$(git rev-list "$obj" --not "$remote_sha")" || _tess_block "could not list the commits pushed by $local_ref"
+  else
+    commits="$(git rev-list "$obj")" || _tess_block "could not list the commits pushed by $local_ref"
   fi
-  if ! git -c core.quotePath=false diff --name-only -z --no-renames --diff-filter=d \
-      --ignore-submodules=all "$base" "$local_sha" > "$_TESS_LIST"; then
-    echo "TESS VAULT GUARD — BLOCKED: could not list the files pushed by $local_ref, so nothing was scanned." >&2
-    exit 1
-  fi
-  while IFS= read -r -d '' _f; do
-    FILES+=("$_f")
-    BLOBS+=("${local_sha}:${_f}")
-  done < "$_TESS_LIST"
+  for c in $commits; do
+    git -c core.quotePath=false diff-tree -r -m --root --no-commit-id --name-only -z \
+        --no-renames --diff-filter=d --ignore-submodules=all "$c" > "$_TESS_LIST" \
+      || _tess_block "could not list the files in commit $c pushed by $local_ref"
+    while IFS= read -r -d '' _f; do
+      FILES+=("$_f")
+      BLOBS+=("${c}:${_f}")
+    done < "$_TESS_LIST"
+  done
 done
 """ + _SCAN_BODY + "exit 0\n"
 
@@ -13297,7 +13978,7 @@ done
             lines.pop(0)
         inner = "\n".join(lines).rstrip("\n")
         header = (
-            "# tess-vault-guard v3\n"
+            "# tess-vault-guard v4\n"
             "# Spliced above a pre-existing hook by `tessctl vault init`.\n"
             "# Guard runs first inside a containment subshell: it BLOCKS on a\n"
             "# secret/vault violation and FALLS THROUGH on a clean result so the\n"
@@ -13402,12 +14083,12 @@ done
 
             if _HOOK_MARKER_V2 in existing:
                 # Already current — nothing to do
-                print(f"  git hook {hook_name}: already v3 (skipped)")
+                print(f"  git hook {hook_name}: already v4 (skipped)")
                 continue
 
             if _HOOK_MARKER_ANY in existing:
                 # Stale v1 / unversioned marker — self-upgrade to v3
-                print(f"  git hook {hook_name}: upgrading stale guard to v3 ...")
+                print(f"  git hook {hook_name}: upgrading stale guard to v4 ...")
                 pre_shebang, pre_existing_rest = _strip_guard_block(existing)
 
                 if pre_existing_rest.strip():
@@ -13498,11 +14179,27 @@ def _vault_cmd_set(args, root: Path) -> None:
     print(f"tessctl vault: {verb} {ref}  (value masked — use `tessctl vault get {ref}` to verify)")
 
 
+def _vault_interactive_terminal() -> bool:
+    """True only when stdin AND stdout are a terminal: a person typing at a
+    shell. An assistant's tool call reads output through a pipe or a file."""
+    def _tty(stream) -> bool:
+        try:
+            return bool(stream is not None and stream.isatty())
+        except (AttributeError, ValueError, OSError):
+            return False
+    return _tty(sys.stdin) and _tty(sys.stdout)
+
+
 def _vault_cmd_get(args, root: Path) -> None:
     """
     tess vault get <ref> — show masked value by default.
-    --reveal prints the full value to stdout only if stdout is NOT a terminal.
-    --force allows reveal to a terminal (for scripting).
+    --reveal prints the full value ONLY to a person's terminal (stdin and
+    stdout both a TTY). v1.0 audit (vault-reveal-exec-agent-shell-extraction):
+    the old rule was the reverse (refuse a terminal, allow a pipe), and a pipe
+    is exactly how an assistant's tool call reads output, so a raw secret went
+    straight into the model context and the session transcript. A program that
+    needs the value gets it with `tessctl vault exec --ref <ref> -- <cmd>`.
+    --force is accepted for compatibility and changes nothing.
     """
     ref = getattr(args, "ref", None)
     if not ref:
@@ -13510,7 +14207,17 @@ def _vault_cmd_get(args, root: Path) -> None:
     _vault_parse_ref(ref)  # validate format
 
     reveal = getattr(args, "reveal", False)
-    force = getattr(args, "force", False)
+    # --force is accepted for compatibility; a reveal never goes to a pipe.
+    # Checked BEFORE the vault is opened, so a refused reveal decrypts nothing.
+    if reveal and not _vault_interactive_terminal():
+        sys.exit(
+            f"tessctl vault get --reveal: not shown. Its output is going to a program or "
+            f"a file, not to your own screen (that is how an assistant would read it), "
+            f"so the secret was not printed.\n"
+            f"  To use the secret in a command: tessctl vault exec --ref {ref} -- <command>\n"
+            f"  To see it yourself: run `tessctl vault get --reveal {ref}` in your own "
+            f"terminal window."
+        )
 
     data = _vault_read_blob(root)
     entry = data.get("entries", {}).get(ref)
@@ -13521,16 +14228,6 @@ def _vault_cmd_get(args, root: Path) -> None:
     meta = entry.get("meta", {})
 
     if reveal:
-        if sys.stdout.isatty() and not force:
-            sys.exit(
-                "tessctl vault get --reveal: stdout is a terminal. "
-                "Raw values are not printed to TTY to prevent shoulder-surfing and shell history.\n"
-                "  Pipe the output: tessctl vault get --reveal github/token | <cmd>\n"
-                "  Or use: tessctl vault exec --ref github/token -- <cmd>\n"
-                "  Force TTY output (scripting): tessctl vault get --reveal --force github/token"
-            )
-        # Machine-readable: print raw value, nothing else
-        # This is the apiKeyHelper path
         sys.stdout.write(value)
         sys.stdout.flush()
     else:
@@ -13636,6 +14333,98 @@ def _vault_cmd_rotate(args, root: Path) -> None:
     print(f"tessctl vault: rotated {ref}  (new value stored; value masked)")
 
 
+# v1.0 audit (vault-reveal-exec-agent-shell-extraction): `vault exec` puts the
+# secret in the child's environment, so a child that PRINTS or EVALUATES its
+# environment (printenv, env, a shell or an interpreter given code on its
+# command line) hands the value to whoever reads its output. Outside a
+# person's terminal those consumers are refused, and whatever the child writes
+# is relayed with the value masked.
+_VAULT_EXEC_PRINTERS = frozenset({
+    # print or dump the environment / arguments
+    "printenv", "env", "echo", "printf", "cat", "tee", "set", "export", "declare",
+    "strings", "od", "xxd", "hexdump", "base64", "jq", "yq",
+    # wrappers that just run another command (would hide the real consumer)
+    "xargs", "nohup", "time", "timeout", "nice", "sudo", "doas", "stdbuf", "script",
+    "command", "exec", "watch", "parallel", "setsid", "caffeinate",
+})
+# Shells and interpreters: allowed only as `<interpreter> <script file> ...`
+# (a script file is no different from any other program here: not judged, but
+# its output is masked); code on the command line (-c, -e, -m, ...) or on stdin
+# is refused.
+_VAULT_EXEC_INTERPRETERS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "ash", "busybox",
+    "pwsh", "powershell",
+    "python", "python2", "python3", "pypy", "pypy3", "perl", "ruby", "node", "nodejs",
+    "deno", "bun", "php", "lua", "luajit", "tclsh", "osascript", "awk", "gawk", "mawk",
+    "nawk", "sed", "gsed", "expect", "rscript",
+})
+_VAULT_EXEC_INTERPRETER_RE = re.compile(
+    r"^(?:python|pypy|perl|ruby|node|php|lua)[0-9][0-9.]*$")
+
+# Variables whose VALUE a program runs, sources, or echoes back in an error:
+# a secret placed there is executed or printed rather than used.
+_VAULT_EXEC_FORBIDDEN_VARS = frozenset({
+    "BASH_ENV", "ENV", "PROMPT_COMMAND", "PS0", "PS1", "PS2", "PS3", "PS4",
+    "SHELLOPTS", "BASHOPTS", "IFS", "PATH", "CDPATH", "HOME", "SHELL", "ZDOTDIR",
+    "PYTHONSTARTUP", "PYTHONPATH", "PYTHONHOME", "PYTHONINSPECT", "PERL5OPT", "PERL5LIB",
+    "PERLLIB", "PERL5DB", "RUBYOPT", "RUBYLIB", "NODE_OPTIONS", "NODE_PATH",
+    "EDITOR", "VISUAL", "PAGER", "MANPAGER", "GIT_PAGER", "GIT_EDITOR", "GIT_SSH",
+    "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "SUDO_ASKPASS",
+    "LESSOPEN", "LESSCLOSE", "TERM", "TMPDIR", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+})
+_VAULT_EXEC_FORBIDDEN_VAR_PREFIXES = ("LD_", "DYLD_", "BASH_FUNC_", "GIT_CONFIG", "GIT_TRACE")
+_VAULT_EXEC_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _vault_exec_is_printer(cmd_list: list) -> bool:
+    """True for a consumer that would print or evaluate its environment:
+    a printer or wrapper, or a shell/interpreter not given a script file as
+    its first argument."""
+    name = os.path.basename(cmd_list[0]).lower()
+    if name in _VAULT_EXEC_PRINTERS:
+        return True
+    if name in _VAULT_EXEC_INTERPRETERS or _VAULT_EXEC_INTERPRETER_RE.match(name):
+        return len(cmd_list) < 2 or not os.path.isfile(cmd_list[1])
+    return False
+
+
+def _vault_exec_forbidden_var(name: str) -> bool:
+    return (name in _VAULT_EXEC_FORBIDDEN_VARS
+            or any(name.startswith(p) for p in _VAULT_EXEC_FORBIDDEN_VAR_PREFIXES))
+
+
+def _vault_exec_relay(src, dst, secret: bytes, mask: bytes) -> None:
+    """Copy `src` to `dst` with every occurrence of `secret` replaced by
+    `mask`. Holds back len(secret)-1 bytes so a value split across two reads
+    is still caught."""
+    keep = max(len(secret) - 1, 0)
+    pending = b""
+    sink_ok = True
+
+    def _emit(data: bytes) -> None:
+        nonlocal sink_ok
+        if not sink_ok or not data:
+            return
+        try:
+            dst.write(data)
+            dst.flush()
+        except (OSError, ValueError):
+            sink_ok = False  # reader went away: keep draining so the child never blocks
+
+    while True:
+        try:
+            chunk = os.read(src.fileno(), 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        pending = (pending + chunk).replace(secret, mask)
+        if len(pending) > keep:
+            out, pending = pending[:len(pending) - keep], pending[len(pending) - keep:]
+            _emit(out)
+    _emit(pending.replace(secret, mask))
+
+
 def _vault_cmd_exec(args, root: Path) -> None:
     """
     tess vault exec --ref <ref> [--as ENVVAR] -- <command...>
@@ -13643,7 +14432,14 @@ def _vault_cmd_exec(args, root: Path) -> None:
     Just-in-time injection: decrypts ONLY the requested ref, injects it as an
     env var into the child process environment, runs the command. The secret
     value NEVER appears in tessctl's stdout/stderr — only in the child's env.
-    Child stdout/stderr are connected directly to the terminal (not captured).
+
+    At a person's terminal the child's stdout/stderr are the terminal. Anywhere
+    else (an assistant's tool call, a pipe): a command that prints or evaluates
+    its environment (printenv, env, a shell or interpreter given code on its
+    command line) is refused, and the
+    child's stdout/stderr are relayed with the secret value masked. The secret
+    may never be placed in a variable a program executes or sources
+    (BASH_ENV, ENV, PROMPT_COMMAND, LD_PRELOAD, ...).
 
     This is the §3.2 injection wrapper — the vault → child-process-env path.
     """
@@ -13669,6 +14465,22 @@ def _vault_cmd_exec(args, root: Path) -> None:
     else:
         # Default: SERVICE_KEY in upper snake_case
         env_var = ref.replace("/", "_").replace("-", "_").upper()
+    if not _VAULT_EXEC_VAR_RE.match(env_var) or _vault_exec_forbidden_var(env_var):
+        sys.exit(
+            f"tessctl vault exec: refused — {env_var!r} is a variable that programs run, "
+            f"load or print, so a secret placed there would leak. Nothing was run.\n"
+            f"  Pick a plain name instead, e.g. --as {ref.split('/')[0].upper().replace('-', '_')}_TOKEN"
+        )
+
+    interactive = _vault_interactive_terminal()
+    if not interactive and _vault_exec_is_printer(cmd_list):
+        sys.exit(
+            f"tessctl vault exec: refused — {os.path.basename(cmd_list[0])!r} would print or run "
+            f"whatever it is given on its command line, and this is not a person's terminal, so "
+            f"the secret could end up in the output. Nothing was run.\n"
+            f"  Run the real program directly (e.g. tessctl vault exec --ref {ref} -- gh pr list),"
+            f" or a script file (e.g. -- python3 run.py)."
+        )
 
     # Decrypt just the requested ref
     data = _vault_read_blob(root)
@@ -13684,24 +14496,48 @@ def _vault_cmd_exec(args, root: Path) -> None:
     child_env = dict(os.environ)
     child_env[env_var] = value
 
-    # Clear the value from Python's memory as soon as it's in child_env
-    # (best-effort; Python GC is not deterministic, but we don't hold extra refs)
-    del value
+    if interactive:
+        # A person's terminal: the child's output goes straight to it.
+        del value
+        try:
+            result = subprocess.run(cmd_list, env=child_env)
+        except FileNotFoundError:
+            sys.exit(f"tessctl vault exec: command not found: {cmd_list[0]!r}")
+        except Exception as e:
+            sys.exit(f"tessctl vault exec: failed to run command: {e}")
+        finally:
+            del child_env
+        sys.exit(result.returncode)
 
-    # Run child with stdout/stderr connected directly to terminal.
-    # tessctl never captures child output — the secret value goes only into
-    # the child's env, never into tessctl's own output stream.
+    # Not a terminal: relay the child's output with the value masked, so a
+    # program that echoes its credentials (a verbose HTTP client, an error
+    # message) does not hand the secret to whoever reads this output.
+    secret = value.encode("utf-8")
+    mask = f"[vault:{ref} hidden]".encode("utf-8")
+    del value
+    import threading
     try:
-        result = subprocess.run(cmd_list, env=child_env)
+        proc = subprocess.Popen(cmd_list, env=child_env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError:
         sys.exit(f"tessctl vault exec: command not found: {cmd_list[0]!r}")
     except Exception as e:
         sys.exit(f"tessctl vault exec: failed to run command: {e}")
     finally:
-        # Explicitly delete child_env to minimize window where secret is in memory
         del child_env
-
-    sys.exit(result.returncode)
+    relays = [
+        threading.Thread(target=_vault_exec_relay,
+                         args=(proc.stdout, sys.stdout.buffer, secret, mask), daemon=True),
+        threading.Thread(target=_vault_exec_relay,
+                         args=(proc.stderr, sys.stderr.buffer, secret, mask), daemon=True),
+    ]
+    for t in relays:
+        t.start()
+    rc = proc.wait()
+    for t in relays:
+        t.join()
+    del secret
+    sys.exit(rc)
 
 
 def _vault_cmd_doctor(args, root: Path) -> None:
@@ -13759,9 +14595,9 @@ def _vault_cmd_doctor(args, root: Path) -> None:
                 f"{_GLOBAL_IDENTITY_FILE}  (fix: chmod 600)"
             )
 
-    # 4. Check git hooks installed (version-aware: v3 marker required)
+    # 4. Check git hooks installed (version-aware: v4 marker required)
     git_hooks_dir = root / ".git" / "hooks"
-    _HOOK_MARKER_V2  = "# tess-vault-guard v3"
+    _HOOK_MARKER_V2  = "# tess-vault-guard v4"
     _HOOK_MARKER_ANY = "# tess-vault-guard"
     if git_hooks_dir.exists():
         for hook_name in ("pre-commit", "pre-push"):
@@ -13773,11 +14609,11 @@ def _vault_cmd_doctor(args, root: Path) -> None:
             else:
                 content = hook_path.read_text(encoding="utf-8", errors="replace")
                 if _HOOK_MARKER_V2 in content:
-                    pass  # current v3 marker present — OK
+                    pass  # current v4 marker present — OK
                 elif _HOOK_MARKER_ANY in content:
                     warnings_list.append(
-                        f"git {hook_name} hook has a stale guard (v1/v2/unversioned) — "
-                        f"run `tessctl vault init` to upgrade to v3"
+                        f"git {hook_name} hook has a stale guard (v1/v2/v3/unversioned) — "
+                        f"run `tessctl vault init` to upgrade to v4"
                     )
                 else:
                     warnings_list.append(
@@ -13922,7 +14758,7 @@ def cmd_vault(args, root: Path) -> None:
             "  Subcommands:\n"
             "    init                  create vault, generate identity, store in keychain\n"
             "    set <ref>             store secret (prompt or stdin, NEVER argv)\n"
-            "    get <ref>             show masked value (--reveal for raw; refused on TTY)\n"
+            "    get <ref>             show masked value (--reveal for raw; your own terminal only)\n"
             "    list [--scope <s>]    list refs + metadata (never values)\n"
             "    rm <ref>              remove an entry\n"
             "    rotate <ref>          re-encrypt a new value, show rotation URL\n"
@@ -14746,6 +15582,167 @@ def _verdict_sign_load_file(file_arg: str) -> Path:
     return file_path
 
 
+# ---------------------------------------------------------------------------
+# v1.0 audit (_cmd_verdict_sign:no-signer-role-binding): who may sign.
+# A verifier verdict or a hard-floor sign-off is what lets a protected change
+# through the ship gate, so producing one must not be something the agent that
+# wrote the change can do by itself. `verdict sign` and `gate signoff sign`
+# therefore need, all of:
+#   * a person at a real terminal who types a confirmation (no flag or
+#     environment variable skips it);
+#   * the key registered for that verifier (or sign-off name) in this
+#     project's committed policy — the one the gate will check against;
+#   * a key kept outside this project folder and protected by a passphrase
+#     (or on a hardware token): a key with no passphrase can be used silently
+#     by any program running as you, including an assistant.
+# After signing, the passphrase gpg-agent cached for the key is forgotten so
+# it cannot be reused without the person.
+# These are presence and custody checks, not an operating-system boundary: a
+# program running as you can call gpg itself or fake a terminal (SECURITY.md,
+# Known limits).
+# ---------------------------------------------------------------------------
+
+def _signer_is_terminal() -> bool:
+    def _tty(stream) -> bool:
+        try:
+            return bool(stream is not None and stream.isatty())
+        except (AttributeError, ValueError, OSError):
+            return False
+    return _tty(sys.stdin) and _tty(sys.stdout)
+
+
+def _signer_require_terminal(cmd: str) -> None:
+    if not _signer_is_terminal():
+        sys.exit(
+            f"{cmd}: STOPPED — signing an approval needs a person at a terminal, and this was "
+            f"not run from one (an assistant or a script cannot sign an approval by itself).\n"
+            f"  To sign: open a terminal in this project, run the same command yourself, read "
+            f"what it shows and type the confirmation."
+        )
+
+
+def _signer_confirm(cmd: str, summary: list, phrase: str) -> None:
+    out = sys.stdout
+    out.write("\n".join(summary) + f"\nTo sign this, type exactly:  {phrase}\n"
+              "To stop without signing, press Enter.\n  sign> ")
+    out.flush()
+    typed = sys.stdin.readline()
+    if typed.strip() != phrase:
+        sys.exit(f"{cmd}: stopped — you did not type `{phrase}`. Nothing was signed.")
+
+
+def _signer_gpg_env(gnupg_home) -> tuple:
+    env = dict(os.environ)
+    home_args: list = []
+    if gnupg_home:
+        home_args = ["--homedir", str(gnupg_home)]
+        env["GNUPGHOME"] = str(gnupg_home)
+    return env, home_args
+
+
+def _signer_resolve_key(cmd: str, root: Path, key_id: str, gnupg_home) -> tuple:
+    """(fingerprint, [keygrips of signing-capable secret keys]) for exactly
+    one secret key matching `key_id`, refusing a keyring inside the project."""
+    home = gnupg_home or os.environ.get("GNUPGHOME")
+    if home:
+        try:
+            Path(home).resolve().relative_to(Path(root).resolve())
+            sys.exit(
+                f"{cmd}: refused — the signing keyring {home} is inside this project folder, "
+                f"where any program working here (an assistant too) can read it. Keep signing "
+                f"keys outside the project. Nothing was signed."
+            )
+        except ValueError:
+            pass
+    env, home_args = _signer_gpg_env(gnupg_home)
+    r = subprocess.run(["gpg", *home_args, "--batch", "--with-colons", "--with-keygrip",
+                        "--list-secret-keys", "--", key_id], capture_output=True, env=env)
+    if r.returncode != 0:
+        sys.exit(f"{cmd}: no secret key {key_id!r} was found in the signing keyring. "
+                 f"Nothing was signed.")
+    fingerprints: list = []
+    grips: list = []
+    record = None
+    caps = ""
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        f = line.split(":")
+        if f[0] in ("sec", "ssb"):
+            record, caps = f[0], (f[11] if len(f) > 11 else "")
+        elif f[0] == "fpr" and record == "sec" and len(f) > 9:
+            fingerprints.append(f[9].upper())
+            record = "sec-done"
+        elif f[0] == "grp" and len(f) > 9 and "s" in caps:
+            grips.append(f[9])
+    if len(fingerprints) != 1:
+        sys.exit(f"{cmd}: {key_id!r} matches {len(fingerprints)} secret keys; pass the full "
+                 f"fingerprint of the one to sign with. Nothing was signed.")
+    return fingerprints[0], grips
+
+
+def _signer_registered_fingerprint(root: Path, registry: str, name: str):
+    """The fingerprint this project's COMMITTED policy registers for `name`
+    in `registry` (verifier_keys / signoff_keys); the working-tree policy only
+    when nothing is committed yet."""
+    instance, _ref = _gate_load_policy_at_base_with_ref(root, ["HEAD"])
+    if instance is None:
+        instance, _errors = _gate_load_policy(root)
+    entry = (((instance or {}).get("policy") or {}).get(registry) or {}).get(name) or {}
+    fpr = entry.get("fingerprint") if isinstance(entry, dict) else None
+    return re.sub(r"\s+", "", fpr).upper() if isinstance(fpr, str) and fpr.strip() else None
+
+
+def _signer_key_protection(grip: str, gnupg_home) -> str:
+    """gpg-agent's protection flag for a key: 'P' passphrase, 'C' clear (no
+    passphrase), 'T' hardware token, '-' unknown."""
+    env, home_args = _signer_gpg_env(gnupg_home)
+    try:
+        r = subprocess.run(["gpg-connect-agent", *home_args, f"KEYINFO {grip}", "/bye"],
+                           capture_output=True, env=env, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "-"
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        f = line.split()
+        if len(f) >= 8 and f[0] == "S" and f[1] == "KEYINFO" and f[2] == grip:
+            return "T" if f[3] == "T" else f[7]
+    return "-"
+
+
+def _signer_check_custody(cmd: str, root: Path, registry: str, name: str,
+                          key_id: str, gnupg_home) -> tuple:
+    fpr, grips = _signer_resolve_key(cmd, root, key_id, gnupg_home)
+    registered = _signer_registered_fingerprint(root, registry, name)
+    if registered is None:
+        sys.exit(
+            f"{cmd}: refused — core/policy/policy.yaml (as committed) registers no key for "
+            f"{name!r} under {registry}, so a signature for it would not count. Nothing was signed."
+        )
+    if registered != fpr:
+        sys.exit(
+            f"{cmd}: refused — key {fpr} is not the key registered for {name!r} in "
+            f"core/policy/policy.yaml ({registered}). Sign with the registered key. "
+            f"Nothing was signed."
+        )
+    if any(_signer_key_protection(g, gnupg_home) == "C" for g in grips):
+        sys.exit(
+            f"{cmd}: refused — key {fpr} has no passphrase, so any program running as you "
+            f"(an assistant too) could sign with it silently. Add a passphrase with "
+            f"`gpg --passwd {fpr}` (or move the key to a hardware token), then sign again. "
+            f"Nothing was signed."
+        )
+    return fpr, grips
+
+
+def _signer_forget_passphrase(grips: list, gnupg_home) -> None:
+    env, home_args = _signer_gpg_env(gnupg_home)
+    for grip in grips:
+        try:
+            subprocess.run(["gpg-connect-agent", *home_args,
+                            f"CLEAR_PASSPHRASE --mode=normal {grip}", "/bye"],
+                           capture_output=True, env=env, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def _cmd_verdict_sign(args, root: Path) -> None:
     """
     tessctl verdict sign <file> --key-id <KEYID> [--verifier <Name>]
@@ -14770,6 +15767,11 @@ def _cmd_verdict_sign(args, root: Path) -> None:
     fingerprint must match the CLAIMED verifier's registered key in
     policy.verifier_keys) — this is a fail-fast sanity check for the
     signer, not the security boundary itself.
+
+    v1.0 audit (no-signer-role-binding): signing also needs a person at a
+    terminal who types `sign as <Verifier>`, the key registered for that
+    verifier in the committed policy, kept outside the project and protected
+    by a passphrase (see the "who may sign" block above).
     """
     file_path = _verdict_sign_load_file(args.file)
     try:
@@ -14798,39 +15800,41 @@ def _cmd_verdict_sign(args, root: Path) -> None:
             f"{list(VERIFIER_NAMES)}."
         )
 
+    # v1.0 audit: a person at a terminal, the registered key, kept protected.
+    cmd = "tessctl verdict sign"
+    gnupg_home = getattr(args, "gnupg_home", None)
+    _signer_require_terminal(cmd)
+    signing_fingerprint, grips = _signer_check_custody(
+        cmd, root, "verifier_keys", verifier, args.key_id, gnupg_home)
+    covers = instance.get("covers_paths") or []
+    _signer_confirm(cmd, [
+        f"You are signing a review verdict as {verifier}:",
+        f"  file:        {file_path}",
+        f"  disposition: {instance.get('disposition')}",
+        f"  covers:      {', '.join(str(c) for c in covers[:5])}"
+        + (f" ... ({len(covers)} patterns)" if len(covers) > 5 else ""),
+        f"  files bound: {len(instance.get('artifact_hashes') or {})}",
+        f"  key:         {signing_fingerprint}",
+        f"Sign only if {verifier}'s review of this exact content passed.",
+    ], f"sign as {verifier}")
+
     canonical = verdict_canonical_bytes(instance)
     content_hash = hashlib.sha256(canonical).hexdigest()
 
-    gpg_cmd = ["gpg"]
-    env = dict(os.environ)
-    if getattr(args, "gnupg_home", None):
-        gpg_cmd += ["--homedir", args.gnupg_home]
-        env["GNUPGHOME"] = args.gnupg_home
-    gpg_cmd += [
-        "--batch", "--yes", "--local-user", args.key_id,
-        "--detach-sign", "--armor", "--output", "-",
-    ]
-    sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    env, home_args = _signer_gpg_env(gnupg_home)
+    gpg_cmd = ["gpg", *home_args,
+               "--batch", "--yes", "--local-user", signing_fingerprint,
+               "--detach-sign", "--armor", "--output", "-"]
+    try:
+        sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    finally:
+        _signer_forget_passphrase(grips, gnupg_home)
     if sign_r.returncode != 0:
         sys.exit(
             f"tessctl verdict sign: gpg signing failed for --key-id {args.key_id!r}:\n"
             f"  {sign_r.stderr.decode('utf-8', errors='replace').strip()}"
         )
     signature_armored = sign_r.stdout.decode("utf-8")
-
-    # Report the ACTUAL signing key's full fingerprint, so the operator can
-    # cross-check/register it in core/policy/policy.yaml's verifier_keys —
-    # never trust args.key_id's own spelling (could be a short id/email/uid).
-    fp_cmd = ["gpg"]
-    if getattr(args, "gnupg_home", None):
-        fp_cmd += ["--homedir", args.gnupg_home]
-    fp_cmd += ["--list-secret-keys", "--with-colons", args.key_id]
-    fp_r = subprocess.run(fp_cmd, capture_output=True, env=env)
-    signing_fingerprint = ""
-    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
-        if line.startswith("fpr:"):
-            signing_fingerprint = line.split(":")[9]
-            break
 
     instance["signature"] = {
         "algorithm": VERDICT_SIGNATURE_ALGORITHM,
@@ -15261,6 +16265,59 @@ def _gate_git_all_paths(root: Path, head_shas: list) -> set:
         out = _gate_run_git(root, "ls-tree", "-r", "-z", "--full-tree", "--name-only", sha)
         paths.update(_gate_split_nul(out))
     return paths
+
+
+def _gate_ref_pairs_from_stdin(root: Path) -> list:
+    """git's pre-push stdin as one (changed_paths, head_sha, base_sha) entry
+    per pushed ref (ref deletions carry no content and are skipped). v1.0
+    audit (_gate_git_tree_index:multi-ref-union-coverage): the ship check runs
+    on each entry ON ITS OWN, so an approved copy of a file in one pushed ref
+    can neither clear nor hide an unapproved change to it in another."""
+    pairs = []
+    for line in sys.stdin.read().splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        _local_ref, local_sha, _remote_ref, remote_sha = parts
+        if not local_sha or set(local_sha) == {"0"}:
+            continue  # deleting the ref — nothing pushed
+        base = EMPTY_TREE_SHA if set(remote_sha) == {"0"} else remote_sha
+        pairs.append((sorted(set(_gate_diff_paths(root, base, local_sha))), local_sha, base))
+    return pairs
+
+
+def _gate_run_ship_check_per_ref(root: Path, pairs: list, verdict_dirs: list = None) -> dict:
+    """v1.0 audit (multi-ref-union-coverage): a multi-ref push passes only if
+    EVERY ref passes the ship check alone, exactly as if it were pushed by
+    itself (its own base policy, keys, committed verdicts and content).
+    Receipts are emitted only once the whole push has passed."""
+    results = [
+        _gate_run_ship_check(root, changed, verdict_dirs, [head], [base], emit_receipts=False)
+        for changed, head, base in pairs
+    ]
+    reasons: list = []
+    for r in results:
+        for reason in r.get("reasons") or []:
+            if reason not in reasons:
+                reasons.append(reason)
+    merged = {
+        "blocked": any(r.get("blocked") for r in results),
+        "reasons": reasons,
+        "changed_paths": sorted({p for changed, _h, _b in pairs for p in changed}),
+    }
+    proofs = [r["release_proof"] for r in results if r.get("release_proof") is not None]
+    if proofs:
+        merged["release_proof"] = proofs[0]
+    if not merged["blocked"]:
+        emitted: list = []
+        gaps: list = []
+        for changed, head, base in pairs:
+            r = _gate_run_ship_check(root, changed, verdict_dirs, [head], [base])
+            emitted += r.get("receipts_emitted") or []
+            gaps += r.get("receipt_gaps") or []
+        merged["receipts_emitted"] = emitted
+        merged["receipt_gaps"] = gaps
+    return merged
 
 
 def _gate_changed_paths_from_stdin(root: Path):
@@ -15825,10 +16882,10 @@ def _gate_git_tree_index(root: Path, head_shas: list) -> dict:
     the single source of truth both for (1) which verdict-shaped paths are
     actually COMMITTED and reachable from what's being pushed (HIGH-1(c)),
     and (2) each changed path's CURRENT content identity (HIGH-1(a)). A
-    multi-ref push (git's pre-push stdin protocol can update more than one
-    ref per invocation) accumulates the UNION across refs — the same
-    fidelity `_gate_changed_paths_from_stdin` already uses for changed
-    paths, kept consistent here rather than tracking per-ref provenance."""
+    multi-ref pre-push no longer reaches here with several heads: v1.0 audit
+    (multi-ref-union-coverage) runs the ship check once per pushed ref
+    (`_gate_run_ship_check_per_ref`), so each index is built from ONE head.
+    Given several heads it still returns their union."""
     index: dict = {}
     for sha in head_shas:
         for rel, blob in _gate_git_ls_tree(root, sha).items():
@@ -15914,8 +16971,11 @@ def _gate_path_covering_status(
          in `sig_cache` — this is a property of the VERDICT, not of which
          changed path is being checked, so it is computed once regardless of
          how many paths a single verdict's `covers_paths` glob matches.
-      3. the verdict's `verifier` is in AT LEAST ONE of the matched rules'
-         `allowed_verifiers` (M1 — previously unchecked).
+      3. the verdict's `verifier` is in the rule's `allowed_verifiers` (M1 —
+         previously unchecked). v1.0 audit: EVERY matched rule must be met
+         this way, each by a verdict from one of ITS allowed verifiers (see
+         `_gate_path_covering_by_rule`); one rule accepting the verifier is
+         no longer enough.
       4. the verdict's `artifact_hashes` records THIS path's CURRENT blob
          SHA (HIGH-1(a) — binds coverage to the reviewed content, not just
          the path shape; `current_shas` is the set of blob SHAs `rel_path`
@@ -15937,6 +16997,23 @@ def _gate_path_covering_status(
     parallel bookkeeping pass; returning it from the one loop that already
     computes it is simpler and cannot disagree with the coverage decision
     itself by construction."""
+    covered, reason, per_rule = _gate_path_covering_by_rule(
+        rel_path, rules, approved_verdicts, current_shas, root, policy_instance, sig_cache,
+        trusted_verifier_key_blobs, trusted_verifier_key_errors,
+    )
+    if not covered:
+        return False, reason, None
+    return True, None, (per_rule[0][1] if per_rule else None)
+
+
+def _gate_rule_covering_status(
+    rel_path: str, rule: dict, approved_verdicts: list, current_shas: set,
+    root: Path, policy_instance: dict, sig_cache: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
+):
+    """The four-condition check of `_gate_path_covering_status` for ONE
+    matched rule: (covered, reason, (verdict_rel, instance) | None)."""
     reason = "no-glob-match"
     for verdict_rel, instance in approved_verdicts:
         if not path_matches_globs(rel_path, instance.get("covers_paths") or []):
@@ -15955,7 +17032,7 @@ def _gate_path_covering_status(
         if reason == "unsigned":
             reason = "wrong-verifier"
         verifier = instance.get("verifier")
-        if not any(verifier in (rule.get("allowed_verifiers") or []) for rule in rules):
+        if verifier not in (rule.get("allowed_verifiers") or []):
             continue
         if reason == "wrong-verifier":
             reason = "stale-content"
@@ -15963,6 +17040,45 @@ def _gate_path_covering_status(
         if reviewed_sha is not None and reviewed_sha in current_shas:
             return True, None, (verdict_rel, instance)
     return False, reason, None
+
+
+def _gate_path_covering_by_rule(
+    rel_path: str, rules: list, approved_verdicts: list, current_shas: set,
+    root: Path, policy_instance: dict, sig_cache: dict,
+    trusted_verifier_key_blobs: dict[str, bytes] | None = None,
+    trusted_verifier_key_errors: dict[str, str] | None = None,
+):
+    """v1.0 audit (_gate_path_covering_status:any-matched-rule-allowed-verifiers):
+    EVERY rule matched for `rel_path` must be satisfied, each by a verdict
+    from one of THAT rule's allowed verifiers. It used to be enough for ANY
+    matched rule to accept the verifier, so a push could add (or widen the
+    globs of) a rule naming a lower-trust verifier and let that verifier clear
+    a security-tier path whose base-ref rule excludes it. Because the base
+    policy's rules are always unioned in (`_gate_union_baseline_matches`,
+    same-id rules narrowed to the base's verifiers), a rule added or widened
+    in the same push can now only ADD a requirement, never widen who may
+    clear a path the base policy already protects.
+
+    Returns (covered, reason, [(rule, (verdict_rel, instance)), ...]); on a
+    block, `reason` is the first unmet rule's reason and the list holds the
+    UNMET rules as (rule, None)."""
+    met: list = []
+    unmet: list = []
+    first_reason = None
+    for rule in rules:
+        ok, why, covering = _gate_rule_covering_status(
+            rel_path, rule, approved_verdicts, current_shas, root, policy_instance, sig_cache,
+            trusted_verifier_key_blobs, trusted_verifier_key_errors,
+        )
+        if ok:
+            met.append((rule, covering))
+        else:
+            unmet.append((rule, None))
+            if first_reason is None:
+                first_reason = why
+    if unmet:
+        return False, first_reason, unmet
+    return True, None, met
 
 
 def _gate_covering_gap_report(
@@ -15979,32 +17095,30 @@ def _gate_covering_gap_report(
     SAME verdict under the SAME rule become ONE entry (one governance
     decision, one receipt — not one per file). Deliberately mirrors the
     gate's OWN existing pass/fail granularity exactly: `_gate_path_covering_
-    status` is a per-(rel_path, matched-rules) check, not a per-single-rule
-    check (a path matching two rules is cleared as a whole once ANY matched
-    rule's allowed_verifiers accepts the covering verdict's verifier — see
-    that function's own docstring) — every rule_id in `rules` for a covered
-    rel_path is credited here for exactly the same reason `reasons` charges
-    NONE of them on a block; this is not new semantics, just a faithful,
-    consistent extension of what 'cleared' already means in this engine."""
+    status` requires EVERY matched rule to be met (v1.0 audit), each by a
+    verdict from one of that rule's allowed verifiers — so each rule_id is
+    credited with the verdict that met IT, and a block names only the
+    rule(s) still unmet."""
     reasons = []
     cleared: dict = {}
     sig_cache: dict = {}
     for rel_path in sorted(path_rule_matches):
         rules = path_rule_matches[rel_path]
         current_shas = tree_index.get(rel_path) or set()
-        covered, why, covering = _gate_path_covering_status(
+        covered, why, per_rule = _gate_path_covering_by_rule(
             rel_path, rules, approved_verdicts, current_shas, root, policy_instance, sig_cache,
             trusted_verifier_key_blobs, trusted_verifier_key_errors,
         )
         if covered:
-            verdict_rel, instance = covering
-            for rule in rules:
+            for rule, (verdict_rel, instance) in per_rule:
                 rule_id = rule.get("id")
                 cleared.setdefault(
                     (rule_id, verdict_rel),
                     {"rule_id": rule_id, "decision_kind": "verdict", "verdict_rel": verdict_rel, "decision": instance},
                 )
             continue
+        # Name only the rule(s) still unmet (every matched rule must be met).
+        rules = [rule for rule, _none in per_rule] or rules
         rule_ids = ", ".join(sorted({r.get("id", "?") for r in rules}))
         classes = sorted({c for r in rules for c in (r.get("classification") or [])})
         allowed = sorted({v for r in rules for v in (r.get("allowed_verifiers") or [])})
@@ -16120,10 +17234,13 @@ def _gate_validate_signoff(
         return False, f"sign-off artifact at {path} is unreadable/invalid JSON: {e}", None
     if not isinstance(data, dict):
         return False, f"sign-off artifact at {path} is not a JSON object", None
-    required = ("rule_id", "category", "authorized_by", "rationale", "authorized_at")
+    required = ("rule_id", "category", "authorized_by", "rationale", "authorized_at", "artifact_hashes")
     missing = [k for k in required if not data.get(k)]
     if missing:
         return False, f"sign-off artifact at {path} missing required field(s): {missing}", None
+    hashes_err = _gate_signoff_hashes_error(data.get("artifact_hashes"))
+    if hashes_err:
+        return False, f"sign-off artifact at {path}: {hashes_err}", None
     if data.get("rule_id") != rule_id:
         return False, (
             f"sign-off artifact at {path} rule_id {data.get('rule_id')!r} does not match "
@@ -16144,21 +17261,59 @@ def _gate_validate_signoff(
     return True, "ok", data
 
 
+_GATE_SIGNOFF_HASH_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _gate_signoff_hashes_error(hashes) -> str | None:
+    """Shape of a sign-off's `artifact_hashes`: {changed path: git blob id}
+    (the all-zero id for a deletion). None when well formed."""
+    if not isinstance(hashes, dict) or not hashes:
+        return "`artifact_hashes` must map each changed file to its content id"
+    for k, v in hashes.items():
+        if not isinstance(k, str) or not k or not isinstance(v, str) or not _GATE_SIGNOFF_HASH_RE.match(v):
+            return f"`artifact_hashes` entry {k!r} is not a file path mapped to a git blob id"
+    return None
+
+
+def _gate_signoff_uncovered_paths(data: dict, paths: list, content_index: dict | None) -> list:
+    """v1.0 audit (_gate_validate_signoff:signoff-not-bound-to-change): the
+    changed hard-floor paths this sign-off does NOT name with their CURRENT
+    content. A sign-off approves exactly the file contents it lists; a later
+    change to the same file has a different content id, so it needs a new
+    sign-off. With no content index (no pushed head to read) nothing is
+    covered: fail closed."""
+    hashes = data.get("artifact_hashes") or {}
+    uncovered = []
+    for rel in sorted(paths):
+        current = (content_index or {}).get(rel) or set()
+        if hashes.get(rel) not in current:
+            uncovered.append(rel)
+    return uncovered
+
+
 def _gate_hard_floor_gap_report(
     root: Path, hard_floor_matches: dict, policy_instance: dict,
     trusted_signoff_key_blobs: dict[str, bytes] | None = None,
     trusted_signoff_key_errors: dict[str, str] | None = None,
+    content_index: dict | None = None,
 ) -> tuple[list, list]:
     """Returns (reasons, cleared). `cleared` (PR-2, Agent Receipt EMIT
     wiring) is one entry per hard-floor rule_id whose sign-off validated —
     `{"rule_id", "decision_kind": "signoff", "signoff_path", "decision"}` —
-    for `_gate_run_ship_check` to hand to `tools/receipt-emit/`."""
+    for `_gate_run_ship_check` to hand to `tools/receipt-emit/`.
+
+    `content_index` ({path: {blob id, ...}} at the pushed head, the all-zero
+    id for a deleted path) binds each sign-off to the change: every changed
+    path a floor matched must appear in the sign-off's `artifact_hashes` with
+    its current content id."""
     reasons = []
     cleared = []
     rule_by_id = {}
-    for rules in hard_floor_matches.values():
+    paths_by_rule: dict = {}
+    for rel_path, rules in hard_floor_matches.items():
         for rule in rules:
             rule_by_id[rule.get("id")] = rule
+            paths_by_rule.setdefault(rule.get("id"), []).append(rel_path)
     signoffs_dir = root / GATE_SIGNOFF_DIR
     for rule_id in sorted(rule_by_id):
         rule = rule_by_id[rule_id]
@@ -16167,6 +17322,16 @@ def _gate_hard_floor_gap_report(
             signoff_path, rule_id, root, policy_instance,
             trusted_signoff_key_blobs, trusted_signoff_key_errors,
         )
+        if ok:
+            uncovered = _gate_signoff_uncovered_paths(data, paths_by_rule.get(rule_id, []), content_index)
+            if uncovered:
+                ok = False
+                reason = (
+                    f"the sign-off at {signoff_path} does not approve this exact change "
+                    f"({', '.join(uncovered[:5])}{' ...' if len(uncovered) > 5 else ''}: "
+                    f"content not listed in its artifact_hashes) — a sign-off covers only the "
+                    f"file contents it names, so this change needs a new sign-off"
+                )
         if not ok:
             # A3 fix: this hard-floor rule only still applies because the
             # pre-push baseline policy required it (removed/narrowed by the
@@ -17401,13 +18566,15 @@ def _update_carry_policy_registries(root: Path) -> None:
             and current.is_file() and not current.is_symlink()):
         return
     try:
-        new_text = staged.read_text(encoding="utf-8")
+        new_text = _staging_verified_bytes(root, rel).decode("utf-8")   # v1.0 audit
         carried = _policy_carry_registries(new_text, current.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, ValueError) as e:
         sys.exit(f"tessctl update: cannot carry your policy key registries into the new "
                  f"release policy ({e}); nothing was changed.")
     if carried != new_text:
-        staged.write_text(carried, encoding="utf-8")
+        _atomic_write_bytes(staged, carried.encode("utf-8"))
+        if _staging_verified_table(root) is not None:   # v1.0 audit: tessctl's own write
+            _STAGING_STATE["verified"][rel] = sha256_bytes(carried.encode("utf-8"))
         print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
 
 
@@ -17685,13 +18852,26 @@ ANCHOR_STOP = ("Tess's safety files have changed since the last approved install
                "so Tess has stopped all actions. Run `tessctl restore` to put them back, or "
                "`tessctl anchor accept` if you changed them on purpose.")
 _ANCHOR_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}|path-[0-9a-f]{64}")
+# v1.0 audit (integration, parity with run-pinned.py): the first hook that
+# finds an anchor lists this checkout in <common git dir>/info/tess-anchored.
+# A listed checkout whose anchor store cannot be found (a hidden, moved or
+# locked ~/.config) is a failure here too, with run-pinned's own words.
+ANCHOR_SEEN_REL = ("info", "tess-anchored")
+ANCHOR_HIDDEN = ("Tess's record of its approved safety files (in the .config/tess folder of your home "
+                 "folder) cannot be found, although this project was protected by it before, so Tess has "
+                 "stopped all actions. If you moved, renamed or locked your .config folder, put it back. "
+                 "Otherwise run `tessctl anchor accept` in your own terminal to check and record the "
+                 "current files.")
 
 
 class AnchorState:
-    """state: none (never anchored) | ok | mismatch | lost; problems: plain lines."""
+    """state: none (never anchored) | ok | mismatch | lost; problems: plain lines.
+    hidden: a lost anchor whose store cannot be found although this checkout
+    is listed as anchored (ANCHOR_HIDDEN)."""
 
-    def __init__(self, state: str, doc=None, problems=None, where: str = ""):
+    def __init__(self, state: str, doc=None, problems=None, where: str = "", hidden: bool = False):
         self.state, self.doc, self.problems, self.where = state, doc, problems or [], where
+        self.hidden = hidden
 
 
 def _anchor_tess_dir() -> Path:
@@ -17976,12 +19156,17 @@ def _anchor_current(root: Path) -> dict:
 
 
 def _anchor_private_json(path: Path) -> dict | None:
-    """None when absent; raises ValueError (a plain reason) when present but
-    not a private regular JSON file of this user's."""
+    """None when absent (ENOENT / ENOTDIR); raises ValueError (a plain reason)
+    when present but not a private regular JSON file of this user's, or when
+    it cannot be reached at all (EACCES from a locked ~/.config, ELOOP, ...),
+    as run-pinned.py does."""
     try:
         st = os.lstat(path)
-    except OSError:
-        return None
+    except OSError as e:
+        import errno as _errno
+        if e.errno in (_errno.ENOENT, _errno.ENOTDIR):
+            return None
+        raise ValueError(f"{path} cannot be reached ({e.strerror or type(e).__name__})")
     if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
         raise ValueError(f"{path} is not a regular file")
     if hasattr(os, "getuid") and st.st_uid != os.getuid():
@@ -17997,6 +19182,26 @@ def _anchor_private_json(path: Path) -> dict | None:
     return doc
 
 
+def _anchor_seen_path(root: Path) -> Path | None:
+    hooks = _anchor_git_hooks_dir(root)  # <common git dir>/hooks, read from .git directly
+    return hooks.parent.joinpath(*ANCHOR_SEEN_REL) if hooks else None
+
+
+def _anchor_seen(root: Path) -> bool:
+    """This checkout is listed in <common git dir>/info/tess-anchored."""
+    path = _anchor_seen_path(root)
+    data = _anchor_read(path)
+    return data is not None and _anchor_path_key(root) in data.decode("ascii", "replace").split()
+
+
+def _anchor_none_or_hidden(root: Path) -> AnchorState:
+    if _anchor_seen(root):
+        return AnchorState("lost", hidden=True, problems=[
+            f"no anchor under {_anchor_tess_dir() / 'projects'}, but "
+            f"{_anchor_seen_path(root)} records that this project had one"])
+    return AnchorState("none")
+
+
 def _anchor_state(root: Path) -> AnchorState:
     """Where this checkout stands against its anchor (same rules as run-pinned.py)."""
     base = _anchor_tess_dir() / "projects"
@@ -18009,13 +19214,13 @@ def _anchor_state(root: Path) -> AnchorState:
         else:
             pid = _anchor_project_id(root) or ""
             if not pid:
-                return AnchorState("none")
+                return _anchor_none_or_hidden(root)
         pdir = base / pid
         doc = _anchor_private_json(pdir / "anchor.json")
         if doc is None:
             if marker is not None or _anchor_private_json(pdir / "expected.json") is not None:
                 return AnchorState("lost", problems=[f"{pdir / 'anchor.json'} is missing"])
-            return AnchorState("none")
+            return _anchor_none_or_hidden(root)
     except ValueError as e:
         return AnchorState("lost", problems=[str(e)])
     if doc.get("format") != ANCHOR_FORMAT or not isinstance(doc.get("files"), dict):
@@ -18108,7 +19313,7 @@ def _anchor_findings(root: Path) -> list:
     st = _anchor_state(root)
     if st.state in ("none", "ok"):
         return []
-    head = ANCHOR_STOP if st.state == "mismatch" else (
+    head = ANCHOR_STOP if st.state == "mismatch" else ANCHOR_HIDDEN if st.hidden else (
         "Tess's record of its approved safety files is missing or unreadable, so Tess has "
         "stopped all actions. Run `tessctl anchor accept` in your own terminal.")
     return [head] + [f"  - {p}" for p in st.problems]
@@ -18276,7 +19481,9 @@ def cmd_anchor(args, root: Path) -> None:
     if sub == "init":
         if st.state != "none":
             sys.exit("tessctl anchor init: refused — this checkout already has a record of "
-                     "approved safety files. Use `tessctl anchor accept` in your own terminal.")
+                     "approved safety files" + (" (Tess cannot find it now: " + ANCHOR_HIDDEN + ")"
+                                                if st.hidden else "")
+                     + ". Use `tessctl anchor accept` in your own terminal.")
         engine = Path(__file__).resolve()
         r = subprocess.run([sys.executable, "-I", "-B", str(engine), "verify"], cwd=str(root),
                            capture_output=True, text=True, env={**os.environ, "TESS_ROOT": str(root)})
@@ -18599,7 +19806,7 @@ def _gate_git_regular_blob_bytes(root: Path, ref: str, rel_path: str) -> bytes |
 
 def _gate_run_ship_check(
     root: Path, changed_paths: list, verdict_dirs: list = None,
-    head_shas: list = None, base_shas: list = None,
+    head_shas: list = None, base_shas: list = None, emit_receipts: bool = True,
 ) -> dict:
     if not changed_paths:
         return {"blocked": False, "reasons": [], "changed_paths": []}
@@ -18689,9 +19896,25 @@ def _gate_run_ship_check(
     # disagree with (never strengthen) what the gate already decided.
     hf_cleared: list = []
     if hard_floor_matches:
+        # v1.0 audit: a sign-off is bound to the pushed content of each
+        # hard-floor path (the all-zero id for a path deleted at every head).
+        try:
+            hf_index = _gate_git_tree_index(root, head_shas or [])
+            hf_present = _gate_git_all_paths(root, head_shas or [])
+        except GateSpineError as e:
+            reasons.append(f"[gate] {e}")
+            return {"blocked": True, "reasons": reasons, "changed_paths": changed_paths}
+        hf_content = {}
+        if head_shas:
+            for _rel in hard_floor_matches:
+                if _rel in hf_index:
+                    hf_content[_rel] = hf_index[_rel]
+                elif _rel not in hf_present:
+                    hf_content[_rel] = {GATE_DELETED_PATH_SHA}
         hf_reasons, hf_cleared = _gate_hard_floor_gap_report(
             root, hard_floor_matches, effective_policy_instance_for_signoffs,
             trusted_signoff_key_blobs, trusted_signoff_key_errors,
+            content_index=hf_content,
         )
         reasons += hf_reasons
 
@@ -18737,7 +19960,7 @@ def _gate_run_ship_check(
     # clearance while the push as a whole is refused would read as "this
     # was approved" when it was not; see this PR's own description for the
     # full "gate CLEARS a change" framing this mirrors exactly.
-    if not blocked:
+    if not blocked and emit_receipts:
         policy_path = _gate_find_policy_instance_path(root)
         receipts_emitted, receipt_gaps = _gate_emit_receipts_on_clear(
             root, cov_cleared, hf_cleared,
@@ -18992,6 +20215,7 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
     base = getattr(args, "base", None)
     head = getattr(args, "head", None)
 
+    pairs = None
     try:
         if base or head:
             if not (base and head):
@@ -19000,7 +20224,10 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
             head_shas = [head]
             base_shas = [base]
         else:
-            changed, head_shas, base_shas = _gate_changed_paths_from_stdin(root)
+            pairs = _gate_ref_pairs_from_stdin(root)
+            changed = sorted({p for c, _h, _b in pairs for p in c})
+            head_shas = [h for _c, h, _b in pairs]
+            base_shas = [b for _c, _h, b in pairs]
     except GateSpineError as e:
         result = {"blocked": True, "reasons": [str(e)], "changed_paths": []}
         _trace_record(  # Goal #8: mission trace log
@@ -19010,7 +20237,10 @@ def _cmd_gate_pre_push(args, root: Path) -> None:
         _gate_print_result("pre-push", result, as_json)
         sys.exit(1)
 
-    result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas, base_shas)
+    if pairs is not None and len(pairs) > 1:
+        result = _gate_run_ship_check_per_ref(root, pairs, verdict_dirs)
+    else:
+        result = _gate_run_ship_check(root, changed, verdict_dirs, head_shas, base_shas)
     trace_reasons, trace_extra_counts = _gate_trace_reasons_and_counts(result)  # PR-2: receipt-gap visibility
     _trace_record(  # Goal #8: mission trace log
         root, phase="gate", action="gate.pre-push",
@@ -19784,40 +21014,51 @@ def _cmd_gate_signoff_sign(args, root: Path) -> None:
             "tessctl gate signoff sign: sign-off artifact has no non-empty `authorized_by` "
             "field — cannot sign a sign-off without knowing who is authorizing it."
         )
+    # v1.0 audit (signoff-not-bound-to-change): a sign-off approves exactly the
+    # file contents it lists, so it must list them before it is signed.
+    hashes_err = _gate_signoff_hashes_error(data.get("artifact_hashes"))
+    if hashes_err:
+        sys.exit(
+            f"tessctl gate signoff sign: {hashes_err}. List every file this sign-off approves "
+            f"with its content id, e.g. \"artifact_hashes\": {{\"secrets/api.env\": "
+            f"\"<output of git hash-object secrets/api.env>\"}} (use forty zeros for a deleted "
+            f"file). Nothing was signed."
+        )
+
+    # v1.0 audit: a person at a terminal, the registered key, kept protected.
+    cmd = "tessctl gate signoff sign"
+    gnupg_home = getattr(args, "gnupg_home", None)
+    _signer_require_terminal(cmd)
+    signing_fingerprint, grips = _signer_check_custody(
+        cmd, root, "signoff_keys", authorized_by, args.key_id, gnupg_home)
+    hashes = data.get("artifact_hashes") or {}
+    _signer_confirm(cmd, [
+        f"You are signing a hard-floor sign-off as {authorized_by}:",
+        f"  file:  {file_path}",
+        f"  rule:  {data.get('rule_id')} ({data.get('category')})",
+        f"  files: {', '.join(sorted(hashes)[:5])}"
+        + (f" ... ({len(hashes)} files)" if len(hashes) > 5 else ""),
+        f"  key:   {signing_fingerprint}",
+        "Sign only if you approve these exact file contents.",
+    ], f"sign as {authorized_by}")
 
     canonical = signoff_canonical_bytes(data)
     content_hash = hashlib.sha256(canonical).hexdigest()
 
-    gpg_cmd = ["gpg"]
-    env = dict(os.environ)
-    if getattr(args, "gnupg_home", None):
-        gpg_cmd += ["--homedir", args.gnupg_home]
-        env["GNUPGHOME"] = args.gnupg_home
-    gpg_cmd += [
-        "--batch", "--yes", "--local-user", args.key_id,
-        "--detach-sign", "--armor", "--output", "-",
-    ]
-    sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    env, home_args = _signer_gpg_env(gnupg_home)
+    gpg_cmd = ["gpg", *home_args,
+               "--batch", "--yes", "--local-user", signing_fingerprint,
+               "--detach-sign", "--armor", "--output", "-"]
+    try:
+        sign_r = subprocess.run(gpg_cmd, input=canonical, capture_output=True, env=env)
+    finally:
+        _signer_forget_passphrase(grips, gnupg_home)
     if sign_r.returncode != 0:
         sys.exit(
             f"tessctl gate signoff sign: gpg signing failed for --key-id {args.key_id!r}:\n"
             f"  {sign_r.stderr.decode('utf-8', errors='replace').strip()}"
         )
     signature_armored = sign_r.stdout.decode("utf-8")
-
-    # Report the ACTUAL signing key's full fingerprint, so the operator can
-    # cross-check/register it in core/policy/policy.yaml's signoff_keys —
-    # never trust args.key_id's own spelling (could be a short id/email/uid).
-    fp_cmd = ["gpg"]
-    if getattr(args, "gnupg_home", None):
-        fp_cmd += ["--homedir", args.gnupg_home]
-    fp_cmd += ["--list-secret-keys", "--with-colons", args.key_id]
-    fp_r = subprocess.run(fp_cmd, capture_output=True, env=env)
-    signing_fingerprint = ""
-    for line in fp_r.stdout.decode("utf-8", errors="replace").splitlines():
-        if line.startswith("fpr:"):
-            signing_fingerprint = line.split(":")[9]
-            break
 
     data["signature"] = {
         "algorithm": SIGNOFF_SIGNATURE_ALGORITHM,
@@ -28036,6 +29277,9 @@ def build_parser() -> argparse.ArgumentParser:
             "fetch is refused if no fingerprint is pinned (fail-closed default)."
         ),
     )
+    p_update.add_argument("--allow-downgrade", action="store_true", dest="allow_downgrade",
+                          help="go back to an OLDER release on purpose (asks you to confirm "
+                               "at the terminal)")
 
     # publish
     p_publish = sub.add_parser("publish", help="copy core→live, status→user-published")
@@ -28127,6 +29371,9 @@ def build_parser() -> argparse.ArgumentParser:
             "when no fingerprint is pinned (fail-closed default)."
         ),
     )
+    p_selfupdate.add_argument("--allow-downgrade", action="store_true", dest="allow_downgrade",
+                              help="go back to an OLDER engine release on purpose (asks you "
+                                   "to confirm at the terminal)")
 
     # lock (M1) — CI gate verb + MAINTAINER re-baseline
     p_lock = sub.add_parser(
@@ -28252,9 +29499,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_vget = vault_sub.add_parser("get", help="show a secret (masked by default)")
     p_vget.add_argument("ref", metavar="service/key", help="ref to retrieve")
     p_vget.add_argument("--reveal", action="store_true",
-                        help="print raw value to stdout (refused if stdout is a TTY unless --force)")
+                        help="print the raw value, only to your own terminal (refused when output goes to a program or file)")
     p_vget.add_argument("--force", action="store_true",
-                        help="allow --reveal to a TTY (for scripting)")
+                        help="no effect (kept for compatibility)")
 
     # vault list
     p_vlist = vault_sub.add_parser("list", help="list all refs + metadata (never values)")
