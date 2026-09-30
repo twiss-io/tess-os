@@ -101,6 +101,27 @@ Reviewed competitive landscape for Kong Inc. Found 0 CRITICAL, 0 HIGH, 0 MEDIUM,
 
 ---
 
+## Evidence Bar — What Earns a Severity
+
+The format above is how a finding is written. Whether something is a finding at
+all is set by [review-and-verification.md](review-and-verification.md):
+
+- A finding names the lower-trust actor, the input or action, the intended
+  control, the boundary crossed, who or what is affected, and the concrete
+  result. A checklist gap or general advice is a note, not a finding.
+- Each candidate ends as **confirmed**, **needs_validation** (the exact missing
+  fact, **no severity**) or **rejected** (with the reason). Only confirmed
+  findings carry a severity tier, and the tier never exceeds the impact shown.
+- Candidates are sent to a fresh verifier to be disproved before any fix is
+  dispatched; each fix is checked by another fresh verifier.
+- A review of more than one round keeps a coverage ledger, and every review
+  states what it did not cover.
+
+Count needs_validation items separately in the summary line, for example
+`Found 0 CRITICAL, 1 HIGH, 2 MEDIUM, 0 LOW; 1 needs validation.`
+
+---
+
 ## Applicability
 
 These standards apply to all agents operating in review mode, including but not limited to:

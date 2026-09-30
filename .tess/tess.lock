@@ -17,12 +17,12 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-09-30T11:01:45.703289Z'
+  last_updated: '2026-09-30T13:11:14.934031Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:df1ab85ce6c7fb50e1c0a0a931c0eeb1ded6fb6b0a558a513f19db6cb681ee84
+    base_sha: sha256:0f13954c8f77af87152bdc7352b475491dddcfe2d38d82f8863d7d48e07aa814
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/personas/chief-of-staff.md:
@@ -70,7 +70,7 @@ files:
   .tess/core/agents-dispatch/cyra.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:e1f62e40b3d841bede271ea2c3772dc3d102d6ca200ebe03355b80868c27ddbb
+    base_sha: sha256:14c0fde84360c2aa7f65eb4a7035b94314e77df0ac1b04f6003e8519a3a79cfe
     live_path: .claude/agents/cyra.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/iris.md:
@@ -94,13 +94,13 @@ files:
   .tess/core/agents-dispatch/quinn.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:1debea789bbe6e28861b1d8893da9789d7059cc1789c8083057cd84740a04084
+    base_sha: sha256:e24de86683cb05cb32e924a14ef6903851d3477dad653103f311c5fcc7d9aefa
     live_path: .claude/agents/quinn.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/reid.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:0509a3cf4411faab76d52044394108dc9208e22dd9ef33e9a9eeda1a1f28e30b
+    base_sha: sha256:71d8de459696e81f57e89b0b076d562dd422ba5a9e234461275a9ceabfee2f85
     live_path: .claude/agents/reid.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/agents-dispatch/vega.md:
@@ -4528,13 +4528,13 @@ files:
   .tess/core/conductor/README.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6aa95bde6bc8c8767eccc3f2ee499078f60fe5e8845ddda5335f4ac773e70c22
+    base_sha: sha256:2fb00c662f69c724e6ded17059bd9c6db9306fdc26cec6a7de6b6e5c57e4f990
     live_path: conductor/README.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/release-process.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:6aaac279804cdb8bd34ee9f202ffba7c493331d88e4364039f3db7eb86bc86b1
+    base_sha: sha256:c988b6bb32c58e4ee973ce12774aedf20c36d6e5a3399e65c3739369cafbab6a
     live_path: conductor/release-process.md
     last_updated: '2026-06-29T02:22:00.000000Z'
   .tess/core/conductor/verdict-signing.md:
@@ -4743,7 +4743,7 @@ files:
   .tess/core/conductor/review-output-standards.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:8a88c7cfe8c4600606d2d6738a9a66cad6e207cfd60e391e634ca63c7ef1e4c1
+    base_sha: sha256:41666f911d455600a2bd6edc7a2f20a2babaff1fc50ab738e239bf3695e1f864
     live_path: conductor/review-output-standards.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/soul.md:
@@ -4767,7 +4767,7 @@ files:
   .tess/core/conductor/verification-routing.md:
     status: core-managed
     tier: security
-    base_sha: sha256:989f1d4b73ac3661443f43912056065b1ff67791ad453e748d4d747f18a747e4
+    base_sha: sha256:16888eb3eb008f54e3d2ec9dc127c7c7e51e929034b1025578caa29449e3e093
     live_path: conductor/verification-routing.md
     last_updated: 2026-06-27 10:00:00+00:00
   .tess/core/conductor/lenses/README.md:
@@ -5731,7 +5731,7 @@ files:
   .tess/core/templates/claude-md/hard-floor.md:
     status: core-managed
     tier: security
-    base_sha: sha256:e1e07869aa8d2aabf5a4a606da0d2d01a5c7447cf5fdbfda5de78cbb83c4f04f
+    base_sha: sha256:6ac3016a0d40a63e5d57be0d0d49c7bbec8f40fede5502e2beb9a466b85210d7
     live_path: CLAUDE.md
     render: fragment
     last_updated: 2026-09-24 00:00:00+00:00
@@ -6218,11 +6218,155 @@ files:
     base_sha: sha256:953408cd2570f0c83dc2fe39f7e4e388e41eeb05738aa69196a5f6ffcf6ba79e
     live_path: null
     last_updated: '2026-09-29T00:00:00.000000Z'
+  .tess/core/conductor/review-and-verification.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:2bc886e6b86c70911afd85ba2716c263bab21142cdb5877fcf955589c7b11dbb
+    live_path: conductor/review-and-verification.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/AI-AND-LLM.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:7335a95c43554eadefcf03ece639291bb0e038c398a179299e3887ffe06bd2ef
+    live_path: .claude/skills/security-audit/AI-AND-LLM.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/ATTACK-CLASSES.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:3ee4f00c6e8c9dcf6dd02dd5ac2a4ceb322e2085f3e9fbe79cf0c6330bc7ef83
+    live_path: .claude/skills/security-audit/ATTACK-CLASSES.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/CLIENT-SIDE.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:613f6b98f86083e045525c5b60154ffdab122bac35f1e05eb17488e6e453370c
+    live_path: .claude/skills/security-audit/CLIENT-SIDE.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/CLOUD-AND-DEPLOYMENT.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:3c80f3088be22345e07b057c056d6ed99fe2b0304f794398964f7ccd5a496ca3
+    live_path: .claude/skills/security-audit/CLOUD-AND-DEPLOYMENT.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/DATA-ISOLATION-AND-LIFECYCLE.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:307dcb3e24d292715c4a041190e7bb135646a37eb6187619ae01d000a634a4ad
+    live_path: .claude/skills/security-audit/DATA-ISOLATION-AND-LIFECYCLE.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/DESKTOP-MOBILE-AND-LOCAL-IPC.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:58eae8ee0ca6a46611c501ec5a3ab47fdff88dd7db0d8d74789bbf8bb19d8cb2
+    live_path: .claude/skills/security-audit/DESKTOP-MOBILE-AND-LOCAL-IPC.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/HUNTING.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:71c121decea1322c47c718f6e110f1a892980bb4266bd7ac55ef043a213ade09
+    live_path: .claude/skills/security-audit/HUNTING.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/LICENSE:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:e598e694aa506650c7192d5ea3be0e50aca0d356ea00551c53429f0b01eb6391
+    live_path: .claude/skills/security-audit/LICENSE
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/MEMORY-SAFETY-AND-BINARY.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:7c8b0dccfb35315cca2455509674d49632b2fe37e1f3aac16c1a496a7e9924a7
+    live_path: .claude/skills/security-audit/MEMORY-SAFETY-AND-BINARY.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/PROTOCOLS-RPC-AND-MESSAGING.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:8b73816fa5b3697c9c40977f0c836b40f01d6e81929ff2720fe83ce089e9a619
+    live_path: .claude/skills/security-audit/PROTOCOLS-RPC-AND-MESSAGING.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/RECONNAISSANCE.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:02ca887aca84de8ae137f1891bd2f0a54f28d3fa6da92a27f54734382b3381a2
+    live_path: .claude/skills/security-audit/RECONNAISSANCE.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/RESOURCE-EXHAUSTION-AND-AVAILABILITY.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:4326fab5c92a0b4c420a70196254040105cd794026562130b59bf1a6db3e4baa
+    live_path: .claude/skills/security-audit/RESOURCE-EXHAUSTION-AND-AVAILABILITY.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/SKILL.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:5e3e96a1e438d8f35fef0a1e38f02d4f00e2bdf910401b7dfe00e6779c6dac85
+    live_path: .claude/skills/security-audit/SKILL.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:f372e919940e335468ba1ae09f99026c3986a345f7fe26f8068f132e199f52a5
+    live_path: .claude/skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/TESS.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:a5f5d41524685fb991017af5c73cc49c83fddd61a30cafdfe32df48b451164d7
+    live_path: .claude/skills/security-audit/TESS.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/UPSTREAM.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:bfb83b26477bf52926d17b4fe4be5d69db6b41c5166ff38bd8a5bdc839df3555
+    live_path: .claude/skills/security-audit/UPSTREAM.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/VALIDATION-AND-REPORTING.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:b892470cb89bb31f33403e050d4bdfbe2cdaef940ade1496fa65e32b2e129449
+    live_path: .claude/skills/security-audit/VALIDATION-AND-REPORTING.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/WEB-PROTOCOL-AND-AUTH.md:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:4f3066dffa23c5635859187be9b96c32f2aff29a688186b91ff0c63e47d62b5c
+    live_path: .claude/skills/security-audit/WEB-PROTOCOL-AND-AUTH.md
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/report-schema.json:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:6575c9de4a62255699ea052ebf9a49ebfb373a32891bcd89af6f55cc84b35519
+    live_path: .claude/skills/security-audit/report-schema.json
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/validate-coverage-ledger.cjs:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:2eb280bd2e33c002916f86db9b29f9edfedb6454e5db973c766290465b868ac8
+    live_path: .claude/skills/security-audit/validate-coverage-ledger.cjs
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/validate-coverage-ledger.test.cjs:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:cfb9df26b03469a4279a70e7664a2a5434dd6f8c2c204e91f9b0aeb9dd71e648
+    live_path: .claude/skills/security-audit/validate-coverage-ledger.test.cjs
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/validate-findings.cjs:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:e85f232e36bfac0f866f244da50376692d6b45c690beadcb00608b0e6c8b5283
+    live_path: .claude/skills/security-audit/validate-findings.cjs
+    last_updated: '2026-09-30T13:03:24.987130Z'
+  .tess/core/skills/security-audit/validate-findings.test.cjs:
+    status: core-managed
+    tier: normal
+    base_sha: sha256:b92001117a92c4161d43777a0ba2fa182a8a4d97f2304cc8c0cee5331497b73b
+    live_path: .claude/skills/security-audit/validate-findings.test.cjs
+    last_updated: '2026-09-30T13:03:24.987130Z'
 render_outputs:
   CLAUDE.md:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:092c8bc7c0f9c47244518ad70993663ab7605317e97a9aa801461fd1ead3f991
+    rendered_sha: sha256:fc7b74d3429ab1e01cdb3c8b385faa7491ee3267ba210c5cdd51b7bcec04d0bc
   .claude/settings.json:
     target: claude-code
     status: rendered
@@ -6242,7 +6386,7 @@ render_outputs:
   AGENTS.md:
     target: gemini
     status: rendered
-    rendered_sha: sha256:e1b258e52359d6b44fca19cb843c4b0d959c65be8930d8626fa8d98912aacb95
+    rendered_sha: sha256:05d0a81ec946d676a5ed3a9da4c1d050d410d49f4fdabb789e61c0b0edbd4efd
   .codex/config.toml:
     target: codex
     status: rendered
@@ -6574,7 +6718,7 @@ render_outputs:
   .codex/agents/cyra.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:b4c558b4e5b3fad15d46d9856fbb583f111ab4149f305e6a43f9b473613624e3
+    rendered_sha: sha256:4dd54e50b308c0ee1a169bc1a08bb2c28c3c04582177e6204505cacbc2c8f8f8
   .codex/agents/iris.toml:
     target: codex
     status: rendered
@@ -6590,11 +6734,11 @@ render_outputs:
   .codex/agents/quinn.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:9f9409a5cb207a8b642fd396532f7314b014d40504566598d813891f35a3165e
+    rendered_sha: sha256:6debb6c544ea291580c37afa3889f875c6d2a0ee23adbfdde9cbbc327ec433bf
   .codex/agents/reid.toml:
     target: codex
     status: rendered
-    rendered_sha: sha256:a40f690c9d5e1e0d198b5f00c979f097fa26d1e5a1262442b3e1e2b5e756f556
+    rendered_sha: sha256:ccfe17279c12fa43a141f2755ea49b2eb5057b29a3e9a2c2d0307958063646a7
   .codex/agents/vega.toml:
     target: codex
     status: rendered
@@ -6603,3 +6747,95 @@ render_outputs:
     target: codex
     status: rendered
     rendered_sha: sha256:135a4a38f91e42a89f9dbfae73593b9599028c39d2c9ae1b0912c6971402565e
+  .agents/skills/security-audit/AI-AND-LLM.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:7335a95c43554eadefcf03ece639291bb0e038c398a179299e3887ffe06bd2ef
+  .agents/skills/security-audit/ATTACK-CLASSES.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3ee4f00c6e8c9dcf6dd02dd5ac2a4ceb322e2085f3e9fbe79cf0c6330bc7ef83
+  .agents/skills/security-audit/CLIENT-SIDE.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:613f6b98f86083e045525c5b60154ffdab122bac35f1e05eb17488e6e453370c
+  .agents/skills/security-audit/CLOUD-AND-DEPLOYMENT.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:3c80f3088be22345e07b057c056d6ed99fe2b0304f794398964f7ccd5a496ca3
+  .agents/skills/security-audit/DATA-ISOLATION-AND-LIFECYCLE.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:307dcb3e24d292715c4a041190e7bb135646a37eb6187619ae01d000a634a4ad
+  .agents/skills/security-audit/DESKTOP-MOBILE-AND-LOCAL-IPC.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:58eae8ee0ca6a46611c501ec5a3ab47fdff88dd7db0d8d74789bbf8bb19d8cb2
+  .agents/skills/security-audit/HUNTING.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:71c121decea1322c47c718f6e110f1a892980bb4266bd7ac55ef043a213ade09
+  .agents/skills/security-audit/LICENSE:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:e598e694aa506650c7192d5ea3be0e50aca0d356ea00551c53429f0b01eb6391
+  .agents/skills/security-audit/MEMORY-SAFETY-AND-BINARY.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:7c8b0dccfb35315cca2455509674d49632b2fe37e1f3aac16c1a496a7e9924a7
+  .agents/skills/security-audit/PROTOCOLS-RPC-AND-MESSAGING.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:8b73816fa5b3697c9c40977f0c836b40f01d6e81929ff2720fe83ce089e9a619
+  .agents/skills/security-audit/RECONNAISSANCE.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:02ca887aca84de8ae137f1891bd2f0a54f28d3fa6da92a27f54734382b3381a2
+  .agents/skills/security-audit/RESOURCE-EXHAUSTION-AND-AVAILABILITY.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:4326fab5c92a0b4c420a70196254040105cd794026562130b59bf1a6db3e4baa
+  .agents/skills/security-audit/SKILL.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:5e3e96a1e438d8f35fef0a1e38f02d4f00e2bdf910401b7dfe00e6779c6dac85
+  .agents/skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:f372e919940e335468ba1ae09f99026c3986a345f7fe26f8068f132e199f52a5
+  .agents/skills/security-audit/TESS.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:a5f5d41524685fb991017af5c73cc49c83fddd61a30cafdfe32df48b451164d7
+  .agents/skills/security-audit/UPSTREAM.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:bfb83b26477bf52926d17b4fe4be5d69db6b41c5166ff38bd8a5bdc839df3555
+  .agents/skills/security-audit/VALIDATION-AND-REPORTING.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:b892470cb89bb31f33403e050d4bdfbe2cdaef940ade1496fa65e32b2e129449
+  .agents/skills/security-audit/WEB-PROTOCOL-AND-AUTH.md:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:4f3066dffa23c5635859187be9b96c32f2aff29a688186b91ff0c63e47d62b5c
+  .agents/skills/security-audit/report-schema.json:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:6575c9de4a62255699ea052ebf9a49ebfb373a32891bcd89af6f55cc84b35519
+  .agents/skills/security-audit/validate-coverage-ledger.cjs:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:2eb280bd2e33c002916f86db9b29f9edfedb6454e5db973c766290465b868ac8
+  .agents/skills/security-audit/validate-coverage-ledger.test.cjs:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:cfb9df26b03469a4279a70e7664a2a5434dd6f8c2c204e91f9b0aeb9dd71e648
+  .agents/skills/security-audit/validate-findings.cjs:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:e85f232e36bfac0f866f244da50376692d6b45c690beadcb00608b0e6c8b5283
+  .agents/skills/security-audit/validate-findings.test.cjs:
+    target: codex
+    status: rendered
+    rendered_sha: sha256:b92001117a92c4161d43777a0ba2fa182a8a4d97f2304cc8c0cee5331497b73b

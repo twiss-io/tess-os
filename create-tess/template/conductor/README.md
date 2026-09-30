@@ -27,6 +27,7 @@ Tess interprets the mission, assembles the right crew, coordinates the work, and
 | [founders-office.md](founders-office.md) | Founder's Office Operating Doctrine — the operator profile, support modes, challenge principle, output style, zoom logic |
 | [channel-guardrails.md](channel-guardrails.md) | Session reporting and client/project isolation — cross-client contamination prevention |
 | [review-output-standards.md](review-output-standards.md) | Severity tiers, closing verdicts, summary lines for all review-mode agents |
+| [review-and-verification.md](review-and-verification.md) | Evidence bar for every review: the finding contract, confirmed / needs_validation / rejected, disprove-before-fix, coverage ledger, execution safety, smallest fix |
 | [dispatch-brief.md](dispatch-brief.md) | Dispatch Brief Contract — 6 required fields for every Agent-tool dispatch, decomposition rule, destructive-ops 3-step pattern |
 | [roster.md](roster.md) | Roster — ten roles defined by permissions, the lens library, and conductor + lens routing (v0.2) |
 | [lenses/README.md](lenses/README.md) | Lens library index — about 140 expertise lenses loaded into a role's brief on demand |
@@ -71,6 +72,7 @@ Full agent roster: [../agents/README.md](../agents/README.md)
 
 ## CHANGELOG
 
+- **2026-09-30 v1.0.0** — Added `review-and-verification.md` (the evidence bar for every review, adopted from Cloudflare's security-audit method) to the File Index. `release-process.md` now requires a security audit with the `security-audit` skill before tagging.
 - **2026-09-24 v0.2.0** — `release-process.md` rewritten for the PR-only flow (ruleset: no direct push to `main`), covering verdicts drafted by an independent verifier and signed with `GPG_TTY` set, SHA-bound merges, the tagger identity `legal@twiss.io`, the pre-publish gate before any `create-tess-v*` tag, the adopter order `self-update` then `update`, and the v0.2.0 disclosure that approvals were signed with an agent-held verifier key.
 - **2026-06-29 v0.1.1** — Added `release-process.md` documenting the signed-release channel, maintainer release steps, and adopter upgrade flow. Added File Index entry for release-process.md.
 - **2026-06-10 Tess OS reform (operator-authorized)** — Regenerated File Index: added the four files previously missing (channel-guardrails.md, review-output-standards.md, subagent-failure-protocol.md, hook-testing-protocol.md) plus the two new doctrine files (dispatch-brief.md, verification-routing.md); corrected the playbook count to 6; updated doctrine.md and mission-control.md descriptions to reflect the gate recast and supersession notes; replaced the fixed 6-step Operating Sequence summary with the dependency-gate summary. Source: audit memo QW10/G12, Appendix C.

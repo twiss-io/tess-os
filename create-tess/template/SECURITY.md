@@ -104,6 +104,38 @@ unreviewed-by-a-human code. That is why `main` is not a release.
 - If the release key or the maintainer's machine is compromised, this model is compromised. Report suspected misuse privately (see above).
 - **Multi-push policy reduction on `main` (A14, the #181 lineage) is out of scope.** Someone with write access can weaken `policy.yaml` in one merge and use the weaker policy in a later one; the gate only stops a relaxation from applying to the push that introduces it. This is accepted: `main` protections are best-effort, `main` is not a release, and users are protected by the signed release tag and the pinned key when they install or update. Reports of this pattern alone are not treated as vulnerabilities; a way to get unsigned code accepted by `tessctl update` with a pinned fingerprint is.
 
+## How Tess OS itself is audited
+
+Tess OS audits its own releases with the method it ships: Cloudflare's
+open-source security-audit skill (`.tess/core/skills/security-audit/`, MIT,
+vendored unchanged; `TESS.md` there maps its roles to Tess). The rules are in
+`conductor/release-process.md`:
+
+- **Before every release tag.** Major and minor releases get a full audit of
+  the release candidate. Patch releases get an audit scoped to the diff from
+  the previous release; everything outside the diff is recorded as out of
+  scope, not as reviewed.
+- **Each run builds on the last.** A run reads the previous run's coverage
+  ledger and findings, re-checks carried findings, and turns earlier blocked,
+  deferred and needs-validation items into current work.
+- **What must hold to tag.** `tessctl audit validate <run-dir>` passes (both
+  upstream validators accept `findings.json` and `coverage-ledger.json`); no
+  confirmed critical or high finding remains; every needs-validation item is
+  listed in the release notes by its fingerprint and the missing fact, without
+  exploit detail.
+- **Where the results go.** The run folder stays on the maintainer's machine,
+  outside the repository. Release notes carry only a summary (reviewed commit,
+  scope, counts per verdict and severity, validator result) and the sha256 of
+  `findings.json`. Unfixed findings are handled through the private reporting
+  channel above, never in public issues, PRs or commits.
+
+What this is not: the audit is run by AI agents following a published method,
+with fresh verifiers who try to disprove each finding. It is not a third-party
+penetration test, and a validator pass proves the files are well formed and
+the coverage ledger is consistent, not that the code is free of
+vulnerabilities. The method never probes deployed systems; anything that
+depends on a deployment is reported as needing validation.
+
 ## Known limits
 
 Tess OS runs as you, on your machine. These limits are residual after the v1.0.0

@@ -42,6 +42,27 @@ Verifier briefs follow the [dispatch-brief.md](dispatch-brief.md) contract like 
 
 ---
 
+## Disprove Before Fix
+
+Verification is not a formality after the build. Per
+[review-and-verification.md](review-and-verification.md):
+
+- Every review or audit candidate goes to a fresh verifier from the table above
+  (one who did not raise it) whose job is to disprove it, **before** any fix is
+  dispatched. Only a confirmed finding gets a severity and a fix;
+  needs_validation names the exact missing fact and carries no severity.
+- Each fix goes to a separate fresh verifier (not its builder, not the verifier
+  that confirmed the finding), who checks it enforces the rule at the last
+  trusted decision point and ships with a regression test.
+- A verifier that runs the code under review does so under the execution-safety
+  rules there: sandbox, no external network, scratch `HOME` and temp folder,
+  read-only target, resource limits, never the operator's real home folder.
+
+These add to the mandatory scope above; they never replace a mandatory
+verifier or its signed verdict.
+
+---
+
 ## Verifier Output Standard
 
 Verifier verdicts follow [review-output-standards.md](review-output-standards.md): severity tiers, a closing verdict, a one-line summary. Verdicts are appended to the mission record (guardrails Rule 16, layer 1).
@@ -62,6 +83,7 @@ Verification needs isolation (read-only, or tests without source edits) and an a
 
 ## CHANGELOG
 
+- **v1.0.0 (2026-09-30)** — Added "Disprove Before Fix": candidates are disproved by a fresh verifier before any fix, each fix gets a separate fresh verifier, and code runs under the execution-safety rules of review-and-verification.md. Routing table, mandatory scope and signed-verdict rules unchanged.
 - **v0.2.0 (2026-09-24)** — Header no longer points at an internal audit file that Tess OS does not ship. Routing table and rules unchanged.
 - **2026-06-10 Tess OS reform (operator-authorized)** — File created. Codifies the mandatory verification routing table (Reid/Quinn/Cyra/Verity/Maialen/Lysandra), the mandatory scope (prod-touching, client-facing, externally-visible, irreversible-decision-informing; discretionary otherwise), the primary-artifacts-only verifier brief standard, verdict format per review-output-standards.md, and the failed-verification → retry-protocol wiring. Source: audit memo B3, S3, G3, Decisions 4(b)/8(b).
 - **v0.2 ten-role roster** — Verifiers are the three roles Reid, Quinn and Cyra. Research, evidence and creative verification are Reid with the `verity`, `maialen` or `lysandra` lens. Cyra covers protected-path changes and signs verdicts. Schema enums keep the older names for backward compatibility. See roster.md.

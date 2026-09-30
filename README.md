@@ -14,6 +14,11 @@ or Codex, and it checks its own work before anything important goes out. It
 does not make the AI model itself smarter; it gives it a memory, a team and a
 routine.
 
+## What's included
+
+- Security audits: ask Tess to "security audit this project" — it uses
+  Cloudflare's open-source method.
+
 ## What you need
 
 - **macOS or Linux; Windows via WSL.**

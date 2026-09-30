@@ -74,6 +74,11 @@ python3 .tess/bin/tessctl doctor
 python3 .tess/bin/tessctl verify
 python3 .tess/bin/tessctl lock --check
 
+# 4b. Security audit of the candidate (see "Security audit before tagging"
+#     below). Both validators must pass and no confirmed critical/high may
+#     remain before the release PR is opened.
+python3 .tess/bin/tessctl audit validate ~/security-audit-skill/tess-os/run-<N>
+
 # 5. Push the branch and open the PR (not a draft)
 git push -u origin release/v<new-semver>
 gh pr create -R twiss-io/tess-os --base main --title "Tess OS v<new-semver>" --body "..."
@@ -143,6 +148,37 @@ git push origin v<new-semver>
 gh release create v<new-semver> --verify-tag --latest \
   --title "Tess OS v<new-semver>" --notes-file <curated summary>
 ```
+
+### Security audit before tagging (v1.0.0+)
+
+Tess OS audits itself with the method it ships: the `security-audit` skill
+(Cloudflare's open-source method, `.tess/core/skills/security-audit/`; read its
+`TESS.md` for how the roles map). Run it on the release candidate before step 5.
+
+- **Scope.** Major and minor releases: a full audit of the candidate. Patch
+  releases: a scoped audit of `git diff v<previous-release>..<candidate>`, with
+  every surface outside the diff recorded as `out_of_scope`, never `covered`.
+- **Reuse the last run.** Start from the previous release's run folder
+  (`~/security-audit-skill/tess-os/run-<N-1>`): the new run reads its
+  `coverage-ledger.json` and `findings.json`, re-checks carried findings, and
+  turns its blocked, deferred and needs_validation units into current work.
+- **Required to tag:**
+  1. `tessctl audit validate <run-dir>` passes: both upstream validators accept
+     `findings.json` and `coverage-ledger.json`.
+  2. `run_status` is `complete`, or the release notes state the exact
+     `incomplete_reason` and the maintainer accepts it in writing on the PR.
+  3. Zero `confirmed` findings of severity critical or high. Fix them (smallest
+     fix plus regression test, checked by a fresh verifier) and re-run the
+     affected units first.
+  4. Every `needs_validation` item is listed in the release notes by fingerprint
+     and the missing fact, in words that do not describe how to exploit it.
+- **Keep the artifacts out of the public repo.** The run folder stays on the
+  maintainer's machine, outside the repository. The release notes carry only a
+  summary: the reviewed commit, profile and scope, counts per verdict and
+  severity, validator result, the needs_validation list above, and the sha256
+  of `findings.json` so the run can be matched later. Details of an unfixed
+  finding go to the private reporting channel in SECURITY.md, never to an
+  issue, PR, commit or release note.
 
 ### Pre-publish gate (before ANY `create-tess-v*` tag)
 

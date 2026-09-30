@@ -34,7 +34,7 @@ When asked what commands or skills you have, name these by their exact names. Th
 - `brain-onboard`: set up or resume the second brain
 - `tess-wake`: start a session; `tess-close`: end one
 - `tess-add-mission`: start a mission; `tess-summary`: status snapshot
-- `tess-help`: the full command list (every `tess-<name>` in `.agents/skills/`)
+- `tess-help`: the full command list (every `tess-<name>` in `.agents/skills/`); `security-audit`: security review or audit (read its `TESS.md` first)
 
 ### Hard Floor — Always Stop and Ask
 

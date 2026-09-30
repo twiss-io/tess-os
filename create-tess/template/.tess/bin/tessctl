@@ -107,7 +107,10 @@ Implemented commands (Phase 1 + Phase 2 core + security hardening):
               using ONLY the pack's own bytes (no live .tess/state/ access).
               Every pack embeds a `trust_boundary` block stating plainly
               that it is tamper-evident (unsigned hash chain), not
-              cryptographically non-repudiable — see docs/AUDIT_PACK_SPEC.md
+              cryptographically non-repudiable — see docs/AUDIT_PACK_SPEC.md.
+              `validate <run-dir>` (v1.0.0) is separate: it checks a
+              security-audit run folder (findings.json + coverage-ledger.json)
+              with the vendored Cloudflare validators, using `node`
   skill       Issue #131: demo-to-skill — `from-task <id>` reads a completed
               task's record + its REAL ledger trail (task-scoped, reusing
               the audit region's own `_audit_collect_events_by_shard`) and
@@ -664,6 +667,19 @@ AGENT_SKILL_PREFIX = "tess-"
 AGENT_SKILL_OWNED_GLOB = ".agents/skills/tess-*/**"
 AGENT_SKILL_OPENAI_YAML = "agents/openai.yaml"
 RETIRED_CODEX_PROMPTS_DIR = ".codex/prompts"
+
+# v1.0.0 — core skills shipped to BOTH runtimes. `.tess/core/skills/<name>/**`
+# already reaches `.claude/skills/<name>/**` through its per-file tess.lock
+# entries (restore/doctor/verify). A skill named here is ALSO written by the
+# codex target to `.agents/skills/<name>/**`, byte for byte (no token
+# substitution, no .local.md shadow): vendored third-party skills must stay
+# identical to upstream in every runtime. Each needs its own owned glob in
+# tess.manifest.json (`.agents/**` is never_touch). Like the tess-* command
+# skills these copies carry no tess.lock `files` entry of their own (the core
+# source is pinned by the `.claude/skills/**` entries) and are drift-checked
+# via _check_untracked_render_generated().
+CORE_SKILLS_DIR = ".tess/core/skills"
+SHARED_CORE_SKILLS = ("security-audit",)
 # Where the command bodies were AUTHORED to live (their relative links are
 # written against this directory) — used to rebase links into a skill dir.
 COMMAND_AUTHORED_DIR = ".claude/commands"
@@ -1992,6 +2008,36 @@ def render_agent_skill_openai_yaml(root: Path, name: str) -> bytes | None:
     if not (root / COMMANDS_CORE_DIR / f"{name}.md").exists():
         return None
     return _AGENT_SKILL_OPENAI_YAML_BYTES
+
+
+def _shared_core_skill_files(root: Path) -> list:
+    """[(live_rel under .agents/skills, core Path)] for every regular file of
+    every SHARED_CORE_SKILLS skill, sorted. Symlinks and anything that is not
+    a regular file are skipped (never followed into a render output)."""
+    out = []
+    for name in SHARED_CORE_SKILLS:
+        base = root / CORE_SKILLS_DIR / name
+        if not base.is_dir() or base.is_symlink():
+            continue
+        for path in sorted(base.rglob("*")):
+            rel = path.relative_to(base)
+            if path.is_symlink() or not path.is_file():
+                continue
+            if any((base / part).is_symlink() for part in rel.parents if str(part) != "."):
+                continue
+            out.append((f"{AGENT_SKILLS_DIR}/{name}/{rel.as_posix()}", path))
+    return out
+
+
+def _shared_core_skill_bytes(root: Path, live_rel: str) -> bytes | None:
+    """The exact core bytes for a `.agents/skills/<shared skill>/...` path,
+    or None when `live_rel` is not one of them."""
+    if not live_rel.startswith(AGENT_SKILLS_DIR + "/"):
+        return None
+    for rel, path in _shared_core_skill_files(root):
+        if rel == live_rel:
+            return path.read_bytes()
+    return None
 
 
 def _agent_skill_command_for(live_rel: str) -> tuple:
@@ -5064,8 +5110,9 @@ class CodexRenderTarget(RenderTarget):
                                  # spawns a role only when asked (v0.2.1).
 
     def live_globs(self) -> list:
-        return ["AGENTS.md", AGENT_SKILL_OWNED_GLOB, ".codex/config.toml", CODEX_RULES_LIVE,
-                ".codex/agents/**"]
+        return (["AGENTS.md", AGENT_SKILL_OWNED_GLOB]
+                + [f"{AGENT_SKILLS_DIR}/{name}/**" for name in SHARED_CORE_SKILLS]
+                + [".codex/config.toml", CODEX_RULES_LIVE, ".codex/agents/**"])
 
     def doctrine_digest_paths(self, root: Path) -> set:
         return {"AGENTS.md"}
@@ -5083,6 +5130,9 @@ class CodexRenderTarget(RenderTarget):
                 f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}",
                 render_agent_skill_openai_yaml(root, name),
             ))
+        # v1.0.0: shared core skills (e.g. security-audit), copied unchanged.
+        for rel, path in _shared_core_skill_files(root):
+            out.append((rel, path.read_bytes()))
         out.append((".codex/config.toml", render_codex_config_toml(root).encode("utf-8")))
         # Only when the core carries the rules template (a v1.0+ core); an older
         # core, or a test fixture without it, renders everything else unchanged.
@@ -5097,11 +5147,15 @@ class CodexRenderTarget(RenderTarget):
         # install that does not own it has a corrupted manifest.
         results = write_render_outputs(root, self.name, dict(self._outputs(root)),
                                        verbose=verbose, required=("AGENTS.md",))
-        n_skills = sum(1 for r in results if r.endswith("/SKILL.md"))
+        n_skills = sum(1 for r in results if r.endswith("/SKILL.md")
+                       and r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}"))
         _report_render_statuses(results, [
             ("AGENTS.md", lambda r: r == "AGENTS.md"),
             (f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}*/ ({n_skills} skills)",
              lambda r: r.startswith(f"{AGENT_SKILLS_DIR}/{AGENT_SKILL_PREFIX}")),
+            *[(f"{AGENT_SKILLS_DIR}/{name}/**",
+               lambda r, _n=name: r.startswith(f"{AGENT_SKILLS_DIR}/{_n}/"))
+              for name in SHARED_CORE_SKILLS],
             (".codex/config.toml", lambda r: r == ".codex/config.toml"),
             (CODEX_RULES_LIVE, lambda r: r == CODEX_RULES_LIVE),
         ], verbose)
@@ -5123,6 +5177,9 @@ class CodexRenderTarget(RenderTarget):
             if not (root / CODEX_RULES_TPL).exists():
                 return None
             return render_codex_rules(root).encode("utf-8")
+        shared = _shared_core_skill_bytes(root, live_rel)
+        if shared is not None:
+            return shared
         name, inner = _agent_skill_command_for(live_rel)
         if name is not None:
             if inner == "SKILL.md":
@@ -5143,6 +5200,7 @@ class CodexRenderTarget(RenderTarget):
             paths.add(f"{agent_skill_dir(name)}/SKILL.md")
             paths.add(f"{agent_skill_dir(name)}/{AGENT_SKILL_OPENAI_YAML}")
         paths.update(f"{CODEX_AGENTS_DIR}/{name}.toml" for name in _installed_role_names(root))
+        paths.update(rel for rel, _path in _shared_core_skill_files(root))
         return paths
 
     def retired_paths(self, root: Path) -> set:
@@ -25614,12 +25672,89 @@ def _cmd_audit_verify(args, root: Path) -> None:
     sys.exit(0 if ok else 1)
 
 
+# v1.0.0 — `tessctl audit validate <run-dir>`: run the two validators that
+# ship with the vendored security-audit skill (Cloudflare, MIT, see
+# .tess/core/skills/security-audit/UPSTREAM.md) on a run folder. The
+# validators are JavaScript, so this needs `node` (create-tess already does);
+# without it the command stops with a plain message and exit 2, never a pass.
+# The validators run from the pristine core copy, with the run folder's files
+# passed as arguments, no shell, and a minimal environment.
+AUDIT_SKILL_DIR = f"{CORE_SKILLS_DIR}/security-audit"
+AUDIT_VALIDATORS = (
+    ("findings.json", "validate-findings.cjs"),
+    ("coverage-ledger.json", "validate-coverage-ledger.cjs"),
+)
+AUDIT_VALIDATE_TIMEOUT = 120
+
+
+def _cmd_audit_validate(args, root: Path) -> None:
+    run_dir = Path(args.run_dir).expanduser()
+    if not run_dir.is_dir():
+        sys.exit(f"tessctl audit validate: {run_dir} is not a folder. Give the security-audit "
+                 f"run folder (it holds findings.json and coverage-ledger.json).")
+    skill = root / AUDIT_SKILL_DIR
+    missing_v = [v for _f, v in AUDIT_VALIDATORS if not (skill / v).is_file()]
+    if missing_v:
+        sys.exit(f"tessctl audit validate: the security-audit validators are missing from "
+                 f"{AUDIT_SKILL_DIR} ({', '.join(missing_v)}). Run `tessctl doctor`.")
+    node = shutil.which("node")
+    if not node:
+        print("tessctl audit validate: Node.js is needed to check an audit run, and `node` "
+              "was not found. Install Node.js 18 or newer (https://nodejs.org), then run "
+              "this again. Nothing was checked.", file=sys.stderr)
+        sys.exit(2)
+    env = {"PATH": os.environ.get("PATH", ""), "NODE_OPTIONS": "", "NO_COLOR": "1"}
+    failed = []
+    for fname, validator in AUDIT_VALIDATORS:
+        target = run_dir / fname
+        if not target.is_file():
+            print(f"FAIL  {fname}: not found in {run_dir}")
+            failed.append(fname)
+            continue
+        try:
+            r = subprocess.run([node, str(skill / validator), str(target)], env=env,
+                               cwd=str(run_dir), capture_output=True, text=True,
+                               timeout=AUDIT_VALIDATE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"FAIL  {fname}: the validator did not finish in {AUDIT_VALIDATE_TIMEOUT}s")
+            failed.append(fname)
+            continue
+        except OSError as e:
+            print(f"FAIL  {fname}: could not run node ({e})")
+            failed.append(fname)
+            continue
+        if r.returncode == 0:
+            print(f"OK    {fname}")
+        else:
+            print(f"FAIL  {fname}")
+            failed.append(fname)
+        for line in (r.stdout + r.stderr).splitlines():
+            if line.strip():
+                print(f"      {line}")
+    if not failed:
+        # The upstream validator accepts an empty ledger ([]). A run that
+        # records no coverage audited nothing, so it never counts as valid.
+        try:
+            units = json.loads((run_dir / "coverage-ledger.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            units = None
+        if not isinstance(units, list) or not units:
+            print("FAIL  coverage-ledger.json: no coverage units recorded, so this run audited nothing")
+            failed.append("coverage-ledger.json")
+    if failed:
+        print(f"Audit run NOT valid: {len(failed)} of {len(AUDIT_VALIDATORS)} checks failed.")
+        sys.exit(1)
+    print("Audit run valid: findings.json and coverage-ledger.json pass both validators. "
+          "This checks format and ledger consistency only, not the findings themselves.")
+
+
 def cmd_audit(args, root: Path) -> None:
     sub = getattr(args, "audit_sub", None)
-    handlers = {"export": _cmd_audit_export, "verify": _cmd_audit_verify}
+    handlers = {"export": _cmd_audit_export, "verify": _cmd_audit_verify,
+                "validate": _cmd_audit_validate}
     fn = handlers.get(sub)
     if fn is None:
-        sys.exit("tessctl audit: choose a subcommand — export | verify")
+        sys.exit("tessctl audit: choose a subcommand — export | verify | validate")
     fn(args, root)
 
 
@@ -28703,7 +28838,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit = sub.add_parser(
         "audit",
         help="exportable auditor pack: accountability ledger events + agent "
-             "receipts for a scope, independently verifiable offline (export | verify)",
+             "receipts for a scope, independently verifiable offline (export | verify); "
+             "`validate` checks a security-audit run folder",
     )
     audit_sub = p_audit.add_subparsers(dest="audit_sub", metavar="SUBCOMMAND")
 
@@ -28737,6 +28873,16 @@ def build_parser() -> argparse.ArgumentParser:
         "pack", metavar="PACK", help="pack directory (containing manifest.json) or a manifest.json path directly",
     )
     p_audit_verify.add_argument("--json", action="store_true", dest="json_out")
+
+    p_audit_validate = audit_sub.add_parser(
+        "validate",
+        help="check a security-audit run folder (findings.json + coverage-ledger.json) with "
+             "the security-audit skill's validators; needs node",
+    )
+    p_audit_validate.add_argument(
+        "run_dir", metavar="RUN_DIR",
+        help="the run folder, e.g. ~/security-audit-skill/<repo>/run-1",
+    )
 
     # skill — Issue #131: the SKILL DRAFT SCAFFOLD region (a sibling of
     # `audit` above): `from-task` scaffolds a DRAFT skill from one
