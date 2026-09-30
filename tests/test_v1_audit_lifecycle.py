@@ -156,17 +156,27 @@ def test_extra_file_planted_in_staging_is_refused(project, gpg_key, tmp_path, mo
 
 
 @needs_gpg
-def test_clean_update_still_applies_and_repins_from_verified_hashes(project, gpg_key, tmp_path):
+def test_clean_update_still_applies_and_repins_from_verified_hashes(
+        project, gpg_key, tmp_path, monkeypatch):
     _update_project(project, gpg_key, tmp_path)
+    seen = {}
+    real = project.mod._apply_per_file_resolution
+
+    def record(root, lock, **kw):
+        seen.update(project.mod._STAGING_STATE["verified"] or {})
+        real(root, lock, **kw)
+
+    monkeypatch.setattr(project.mod, "_apply_per_file_resolution", record)
     project.mod.cmd_update(_update_args(), project.root)
     lock = project.lock()
     assert lock["framework"]["version"] == "2.1.0"
     assert project.core(".tess/core/conductor/intro.md").read_bytes() == b"intro v2\n"
     assert lock["files"][".tess/core/conductor/intro.md"]["base_sha"] == \
         project.mod.sha256_bytes(b"intro v2\n")
-    verified = project.mod._STAGING_STATE["verified"]
-    assert verified[".tess/core/conductor/intro.md"] == project.mod.sha256_bytes(b"intro v2\n")
-    assert "upstream-tess.lock" in verified
+    assert seen[".tess/core/conductor/intro.md"] == project.mod.sha256_bytes(b"intro v2\n")
+    assert "upstream-tess.lock" in seen
+    # The hashes belong to that one run: a later direct apply is not bound to them.
+    assert project.mod._STAGING_STATE["verified"] is None
 
 
 # ===========================================================================

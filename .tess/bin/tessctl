@@ -8837,7 +8837,15 @@ def _clone_verified_signed_tag(upstream: str, ref: str, clone_dir: Path, label: 
 # sha256 of every file fetch_to_staging wrote, keyed by its path under
 # .tess/staging (".tess/core/<rel>" or "upstream-tess.lock"). None until a
 # verified fetch ran in THIS process (dry-run / check never fetch).
-_STAGING_STATE: dict = {"verified": None}
+_STAGING_STATE: dict = {"verified": None, "root": None}
+
+
+def _staging_verified_table(root: Path):
+    """The verified hash table when it belongs to THIS project's staging
+    (the fetch that wrote it ran for `root` in this process), else None."""
+    if _STAGING_STATE.get("root") != os.path.realpath(str(root)):
+        return None
+    return _STAGING_STATE.get("verified")
 
 STAGING_TAMPER_MESSAGE = (
     "tessctl update: STOPPED — {what} in .tess/staging changed after the release "
@@ -8876,7 +8884,7 @@ def _release_tree_entries(clone_dir: Path, commit: str, prefix: str) -> dict:
 def _staging_write_new(path: Path, data: bytes, mode: int) -> None:
     """Create a NEW staging file (O_EXCL, never through a symlink planted in
     the fresh staging tree)."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0)
     try:
         fd = os.open(str(path), flags, mode)
     except FileExistsError:
@@ -8891,7 +8899,7 @@ def _staging_verified_bytes(root: Path, rel: str) -> bytes:
     bytes fetch_to_staging took from the verified release commit. Without a
     verified fetch in this process (dry-run) the file is read as it is."""
     path = root / STAGING_DIR / rel
-    verified = _STAGING_STATE.get("verified")
+    verified = _staging_verified_table(root)
     if verified is None:
         return path.read_bytes()
     data, why = _read_regular_nofollow(path)
@@ -8900,16 +8908,16 @@ def _staging_verified_bytes(root: Path, rel: str) -> bytes:
     return data
 
 
-def _staging_verified_sha(rel: str):
+def _staging_verified_sha(root: Path, rel: str):
     """The verified sha256 of staged `rel`, or None (not staged / no fetch)."""
-    verified = _STAGING_STATE.get("verified")
+    verified = _staging_verified_table(root)
     return None if verified is None else verified.get(rel)
 
 
 def _staging_verify_all(root: Path) -> None:
     """Refuse (exit) unless .tess/staging holds exactly the files the verified
     fetch wrote, byte for byte. No-op without a verified fetch."""
-    verified = _STAGING_STATE.get("verified")
+    verified = _staging_verified_table(root)
     if verified is None:
         return
     staging_dir = root / STAGING_DIR
@@ -9086,6 +9094,7 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                 print(f"  extracted upstream tess.lock to staging")
 
         _STAGING_STATE["verified"] = verified
+        _STAGING_STATE["root"] = os.path.realpath(str(root))
         print(f"  extracted {extracted} file(s) to .tess/staging/")
 
 
@@ -9412,11 +9421,16 @@ def cmd_update(args, root: Path) -> None:
     A dry run changes nothing and takes no lock.
     """
     dry_run = getattr(args, "dry_run", False) or getattr(args, "check", False)
-    if dry_run:
-        _cmd_update_run(args, root)
-        return
-    with tess_update_lock(root, "update"):
-        _cmd_update_run(args, root)
+    # v1.0 audit: the verified staging hashes belong to ONE update run.
+    _STAGING_STATE["verified"] = None
+    try:
+        if dry_run:
+            _cmd_update_run(args, root)
+            return
+        with tess_update_lock(root, "update"):
+            _cmd_update_run(args, root)
+    finally:
+        _STAGING_STATE["verified"] = None
 
 
 def _cmd_update_run(args, root: Path) -> None:
@@ -9915,8 +9929,8 @@ def _cmd_update_body(args, root: Path) -> None:
                         # advanced core to). Any other drift is left pinned at
                         # the old base_sha so verify keeps reporting it.
                         _stg = root / STAGING_DIR / core_key
-                        _vsha = _staging_verified_sha(core_key)   # v1.0 audit
-                        if (_vsha == new_sha if _STAGING_STATE.get("verified") is not None
+                        _vsha = _staging_verified_sha(root, core_key)   # v1.0 audit
+                        if (_vsha == new_sha if _staging_verified_table(root) is not None
                                 else (_stg.is_file() and not _stg.is_symlink()
                                       and sha256_file(_stg) == new_sha)):
                             lock["files"][core_key]["base_sha"] = new_sha
@@ -17972,7 +17986,7 @@ def _update_carry_policy_registries(root: Path) -> None:
                  f"release policy ({e}); nothing was changed.")
     if carried != new_text:
         _atomic_write_bytes(staged, carried.encode("utf-8"))
-        if _STAGING_STATE.get("verified") is not None:   # v1.0 audit: tessctl's own write
+        if _staging_verified_table(root) is not None:   # v1.0 audit: tessctl's own write
             _STAGING_STATE["verified"][rel] = sha256_bytes(carried.encode("utf-8"))
         print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
 
