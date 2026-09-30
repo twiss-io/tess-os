@@ -128,10 +128,10 @@ PROTECTED_GLOBS = (
     ".tess/bin/**", "tessctl", ".tess/core/**", ".tess/core/policy/policy.yaml",
     ".tess/tess.lock",
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
-    ".claude/hooks/**", ".claude/settings.json", "scripts/brain/**",
+    ".claude/hooks/**", ".claude/settings.json", ".claude/settings*.json", "scripts/brain/**",
     "scripts/release/**", ".github/CODEOWNERS",
     "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
-    ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**",
+    ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**", ".codex/**",
     ".git/hooks/**", ".git/config", ".gitleaks.toml",
     # v1.0.0 final reviews: what HEAD, the index and history resolve to. A
     # write here (a replace ref, a grafts or sparse-checkout file, a moved
@@ -509,21 +509,117 @@ ADVICE = {
 # v1.0.0 (release integration, item a): `tessctl update` (new safety rules) and
 # `tessctl approve` ask a person at a terminal to type the answer. An agent
 # must not fake that terminal or type the answer for them.
+# v1.0.0 final review (Cyra A-2): these are matched on the shlex-parsed words of
+# every sub-command (quotes and backslashes removed the way the shell removes
+# them), plus the command text with quotes and backslashes stripped, so
+# `./tess''ctl anchor ac''cept` or `"anchor" "accept"` read as what runs.
 _PTY_WRAPPER = re.compile(r"(?i)(?<![\w.-])(script|expect|unbuffer|socat|pexpect|ptyprocess|openpty|"
-                          r"pty\.spawn|import\s+pty|from\s+pty)(?![\w.-])")
-_TYPED_APPROVAL = re.compile(r"(?i)\baccept\s+v\d|\baccept\s+safety\s+changes\b")
+                          r"forkpty|pty\.spawn|import\s+pty|from\s+pty)(?![\w.-])")
+_TYPED_APPROVAL = re.compile(r"(?i)\baccept\W+v?\d|\baccept\W+safety\W+changes\b")
 # v1.0.0: the enforcement anchor is written only by the operator (accept) or
 # the installer (init); an agent never records its own changes as approved.
-_ANCHOR_WRITE = re.compile(r"(?i)\banchor\s+(accept|init)\b")
+_ANCHOR_WRITE = re.compile(r"(?i)\banchor\W+(accept|init)\b")
+# Programs that fake a terminal or type into one.
+_PTY_PROGRAMS = {"script", "expect", "unbuffer", "socat", "tmux", "screen", "dtach", "zpty",
+                 "empty", "ttyexec", "pexpect"}
+# Programs that run the command they are given (the tessctl word is theirs to run).
+_RUNNERS = _PTY_PROGRAMS | {"timeout", "gtimeout", "xargs", "stdbuf", "caffeinate", "watch",
+                            "parallel", "setsid", "arch", "open", "osascript"}
+# An interpreter that opens a pseudo-terminal: the word tessctl can be built at
+# run time (`'tess' + 'ctl'`), so the pty itself is the signal.
+_PTY_CODE = re.compile(r"(?i)\bimport\s+pty\b|\bfrom\s+pty\b|\bpty\.(spawn|fork|openpty)\b|"
+                       r"\bos\.(openpty|forkpty)\b|\bpexpect\b|\bptyprocess\b|IO::Pty|node-pty")
+# tessctl subcommands that ask the operator to type the answer.
+_PROMPT_SUBS = {"update", "self-update", "approve", "anchor"}
+
+
+def _unquote(text: str) -> str:
+    """The command text with shell quoting removed (`tess''ctl` -> `tessctl`)."""
+    return re.sub(r"[\"'\\]", "", text)
+
+
+def _is_tessctl(word: str) -> bool:
+    return os.path.basename(_unquote(word).rstrip("/")).lower() in ("tessctl", "tessctl.py")
+
+
+def _operator_pipelines(cmd: str) -> list | None:
+    """[[segment argv, ...] per pipeline] or None when the text does not parse
+    either way (the caller then judges the unquoted text alone)."""
+    for commenters in ("", "#"):
+        try:
+            lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
+            lx.whitespace, lx.whitespace_split, lx.commenters = " \t\r", True, commenters
+            toks = list(lx)
+        except ValueError:
+            continue
+        pipes, cur, seg = [], [], []
+        for tok in toks + [";"]:
+            if tok in ("|", "|&"):
+                cur, seg = cur + [seg], []
+            elif tok in OPERATORS:
+                cur = cur + [seg] if seg else cur
+                pipes, cur, seg = (pipes + [cur] if cur else pipes), [], []
+            else:
+                seg.append(tok)
+        return pipes
+    return None
+
+
+def _tessctl_call(argv: list) -> list | None:
+    """The words after `tessctl` when this segment runs it (directly, through
+    python3 [-I -B ...], or through a runner/pty program); else None."""
+    if not argv:
+        return None
+    name = os.path.basename(argv[0]).lower()
+    if _is_tessctl(argv[0]):
+        return argv[1:]
+    if INTERPRETERS.match(name) or name in SHELLS:
+        i = 1
+        while i < len(argv) and argv[i].startswith("-") and argv[i] not in ("-c", "-e", "-"):
+            i += 2 if argv[i] in ("-W", "-X", "-m") else 1
+        if i < len(argv) and _is_tessctl(argv[i]):
+            return argv[i + 1:]
+        return None
+    if name in _RUNNERS:
+        for j, a in enumerate(argv[1:], 1):
+            if _is_tessctl(a) or re.search(r"(?i)tessctl", _unquote(a)):
+                return argv[j + 1:] if _is_tessctl(a) else _unquote(a).split()
+    return None
 
 
 def _check_operator_only(cmd: str, v) -> None:
-    if not re.search(r"(?i)tessctl", cmd):
+    flat = _unquote(cmd)
+    pipes = _operator_pipelines(cmd)
+    calls, fed = [], False
+    for pipe in pipes or []:
+        for k, seg in enumerate(pipe):
+            _, argv = _strip_prefix(seg)
+            words = _tessctl_call(argv)
+            name = os.path.basename(argv[0]).lower() if argv else ""
+            if name in ("tmux", "screen") and any(
+                    re.search(r"(?i)\b(accept|anchor)\b", _unquote(a)) for a in argv[1:]):
+                v.add(DENY, "only the operator can answer Tess's approval prompts; this command "
+                            "would type the approval into a terminal for them", "operator")
+            if (INTERPRETERS.match(name) or name in ("-",)) and _PTY_CODE.search(flat):
+                v.add(DENY, "it runs interpreter code that opens a pseudo-terminal, which can fake "
+                            "the terminal Tess's approval prompts are typed into", "operator")
+            if words is None:
+                continue
+            calls.append((name, [w.lower() for w in words]))
+            sub = next((w.lower() for w in words if not w.startswith("-")), "")
+            redirected = any(re.match(r"^\d*<", w) for w in words)
+            if sub in _PROMPT_SUBS and (k > 0 or redirected):
+                fed = True
+    tess_text = re.search(r"(?i)tessctl", flat) is not None
+    if not calls and not tess_text:
         return
-    if _ANCHOR_WRITE.search(cmd):
+    if (tess_text and _ANCHOR_WRITE.search(flat)) or any(
+            "anchor" in w and {"accept", "init"} & set(w[w.index("anchor") + 1:]) for _, w in calls):
         v.add(DENY, "only the operator can record Tess's safety files as approved "
                     "(`tessctl anchor accept`, in their own terminal)", "operator")
-    if _PTY_WRAPPER.search(cmd) or _TYPED_APPROVAL.search(cmd):
+    if (fed or any(n in _PTY_PROGRAMS for n, _ in calls)
+            or (calls and re.search(r"(?i)\baccept\b", flat))
+            or (tess_text and (_PTY_WRAPPER.search(flat) or _TYPED_APPROVAL.search(flat)))):
         v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
                     "fake a terminal or type the approval for them", "operator")
 
@@ -1285,7 +1381,82 @@ def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v:
         return _git_apply(root, cwd, sub, rest, v, raw)
     if sub in ("merge", "rebase", "cherry-pick", "revert"):
         return _git_merge_like(root, cwd, sub, rest, v, raw, depth)
-    return None  # pull: what it merges is only known after the fetch (SECURITY.md)
+    if sub == "pull":
+        return _git_pull(root, cwd, rest, v)
+    return None
+
+
+# `git pull` options that take a separate value (short: -s -X -j -o).
+_PULL_VALS = ("--strategy", "--strategy-option", "--depth", "--deepen", "--shallow-since",
+              "--shallow-exclude", "--jobs", "--upload-pack", "--server-option",
+              "--negotiation-tip", "--refmap")
+_PULL_NETWORK = ("`git pull` from {src} fetches first, and what it brings in is only known "
+                 "after that fetch, so Tess cannot check whether it replaces Tess's own gate, "
+                 "launcher or hook settings. Run `git fetch` and then `git merge` (or `git "
+                 "rebase`) with the fetched branch: Tess checks that step against HEAD")
+
+
+def _pull_rebases(cwd: str, opts: dict) -> bool:
+    for k in ("--rebase", "-r"):
+        if k in opts:
+            return str(opts[k]).lower() not in ("false", "no", "off", "0")
+    if "--no-rebase" in opts or "--ff-only" in opts:
+        return False
+    branch = (_git_ro(cwd, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+    for key in ([f"branch.{branch}.rebase"] if branch else []) + ["pull.rebase"]:
+        val = (_git_ro(cwd, "config", "--get", key) or "").strip().lower()
+        if val:
+            return val not in ("false", "no", "off", "0")
+    return False
+
+
+def _git_pull(root, cwd, rest, v):
+    """v1.0.0 final review (Cyra A-1): `git pull` merges or rebases what it
+    fetches, so it can replace the in-repo launcher (.claude/hooks/run-pinned.py)
+    and the hook config that starts it; the anchor check runs INSIDE that
+    launcher, so the gate must judge the pull itself. The hook never fetches:
+    a pull from this repository (`.`, or an upstream whose remote is `.`) is
+    judged exactly, like `git merge` / `git rebase`; a pull from a remote
+    cannot be computed before its fetch, so it asks (Claude) / denies (Codex)."""
+    if any(_abbrev(a, *_RESUME) for a in rest if a.startswith("--")):
+        return None
+    opts, pos, _, _ = _parse(rest, "sXjo", _PULL_VALS)
+    if any(k in opts for k in ("--all", "--multiple")):
+        return v.add(ASK, _PULL_NETWORK.format(src="every remote"))
+    if pos:
+        repo, specs = pos[0], pos[1:]
+    else:
+        branch = (_git_ro(cwd, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+        repo = (_git_ro(cwd, "config", "--get", f"branch.{branch}.remote") or "").strip() \
+            if branch else ""
+        specs = []
+    if repo != ".":
+        return v.add(ASK, _PULL_NETWORK.format(src=repo or "its upstream"))
+    targets = []
+    for spec in specs:
+        src = spec.lstrip("+").split(":", 1)[0]
+        if not src or src.startswith("-"):
+            return v.add(ASK, f"`git pull . {spec}` names nothing Tess can resolve")
+        targets.append(src)
+    if not targets:
+        if pos:
+            return v.add(ASK, "`git pull .` without a branch merges what git decides at run "
+                              "time, which Tess cannot resolve")
+        up = (_git_ro(cwd, "rev-parse", "--verify", "--quiet", "@{upstream}") or "").strip()
+        if not up:
+            return v.add(ASK, "`git pull` has no upstream Tess can resolve, so it cannot check "
+                              "what the pull brings in")
+        targets.append(up)
+    rebase = _pull_rebases(cwd, opts)
+    for t in targets:
+        if not _tree(cwd, t):
+            v.add(ASK, f"`git pull` brings in {t}, which Tess cannot resolve; it may replace "
+                       "Tess's own gate, launcher or hook settings")
+        elif rebase:
+            _git_rebase(root, cwd, {}, [t], v)
+        else:
+            _move_to(root, cwd, t, v, "git pull", base="merge-base")
+    return None
 
 
 def _check_push(root: Path, cwd: str, rest: list, v: Verdict):

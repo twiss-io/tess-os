@@ -177,9 +177,28 @@ security reviews; they are stated so nobody relies on a check that is not there.
   verdict keygen`, `approve`, `vault init` or `gate install-hooks`, which change
   anchored files) confirm the change with `tessctl anchor accept`. A git worktree
   of an anchored project shares its anchor, so enforcement files that differ in
-  another worktree stop Tess there too. `git pull` is still not checked by the
-  gate (what it merges is known only after the fetch); the anchor catches what it
-  changes.
+  another worktree stop Tess there too.
+- **The in-repo launcher and hook configuration are protected by the gate's route
+  rules, not by the anchor.** The anchor check runs inside
+  `.claude/hooks/run-pinned.py`, which lives in the working tree, and the hook
+  commands that start it live in `.claude/settings*.json` and `.codex/**`. A git
+  route that replaces the launcher with an older or stubbed copy, or points the
+  hook commands at something else, skips the anchor check entirely, so the
+  anchor cannot catch it. What stops those routes is the gate: writes to
+  `.claude/hooks/**`, `.claude/settings*.json` and `.codex/**` are denied, and
+  `git merge`, `rebase`, `cherry-pick`, `revert`, `am`, `checkout`, `switch`,
+  `reset` and `pull` that would change them relative to HEAD are refused (a
+  patch naming them) or need the operator (Claude Code asks; Codex, which cannot
+  ask, denies). `git pull` is judged without fetching:
+  a pull from this repository (`git pull . <branch>`, or an upstream whose remote
+  is `.`) is checked against the exact commit it brings in; a pull from a
+  remote cannot be known before its fetch, so it asks (Claude Code) or is denied
+  (Codex), and `git fetch` followed by `git merge` or `git rebase` is the checked
+  path. A command the gate cannot see (a program that runs git itself, or a
+  change made outside the agent) can still replace the launcher. A user-level
+  launcher outside the repository, registered in the user-level Claude Code and
+  Codex settings so that it runs the anchor check before any in-repo file, is
+  planned for 1.0.1.
 - **The hooks heartbeat is a detection aid, not proof.** SessionStart and
   UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
   hooks-status` reads it to say whether the hooks ran in this session. It is an
