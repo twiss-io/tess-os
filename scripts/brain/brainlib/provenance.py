@@ -148,9 +148,10 @@ def transcript_ok(cfg: Config, path: Path, cwd: Optional[str], cwds: List[str],
 
 # -- the attestation ledger (outside the repo: extstate.py) -------------------------------------------
 
-def _append(cfg: Config, rows: List[Dict]) -> None:
+def _append(cfg: Config, rows: List[Dict]) -> bool:
+    """True when `rows` are durable in the external ledger (False: queued in the outbox, or not written)."""
     from . import extstate
-    extstate.append(cfg, rows) if rows else None
+    return extstate.append(cfg, rows) if rows else False
 
 
 def prepare(cfg: Config) -> None:

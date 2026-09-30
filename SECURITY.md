@@ -305,7 +305,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   its seal (planted, hand-edited, or pulled from another machine, which has
   its own ledger) is treated as awaiting your review, never as accepted,
   confirmed or learned, until you confirm it here. On the first run after an
-  upgrade the records already in the folder are sealed once as they are.
+  upgrade the records already in the folder are sealed once as they are. A
+  seal counts only while the file still says the status it was sealed with,
+  and a seal the sandbox queued (even after a hook moves it into the ledger)
+  never vouches for an accepted, active or confirmed record: a record the
+  sandbox wrote is accepted by the next hook only by being rewritten from its
+  verified quote, and a pending record nothing vouches for goes straight to
+  your review.
 - **The in-repo launcher and hook configuration are protected by the gate's route
   rules, not by the anchor.** The anchor check runs inside
   `.claude/hooks/run-pinned.py`, which lives in the working tree, and the hook

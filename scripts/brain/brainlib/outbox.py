@@ -22,6 +22,9 @@ OUTBOX = "outbox.jsonl"
 # and seals of records that are still waiting for verification may wait here.
 EVIDENCE_ROWS = ("line", "session", "turn", "seal-init")
 ELEVATED = ("accepted", "active")
+# GPT-6 round 6, item 10: a record seal that waited here keeps this origin in the ledger once a hook drains
+# it (extstate._append_locked), so draining never turns a sandbox seal into one that vouches for elevation.
+ORIGIN = "outbox"
 
 
 def admissible(row: Dict) -> bool:

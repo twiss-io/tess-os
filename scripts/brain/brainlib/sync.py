@@ -196,15 +196,20 @@ def _write_brain_json(cfg: Config, data: Dict) -> None:
 
 
 def _onboarding_records(cfg: Config) -> List[Dict]:
+    from . import extstate
     out = []
+    can_seal = extstate.writable(cfg)
     for rec in records.all_records(cfg):
         if rec.meta.get("detected_by") != "onboarding" or rec.status != "pending-verification":
             continue
         q = str(rec.meta.get("source_quote") or "")
         hits = [h for h in lookup.search(cfg, q) if h.principal and lookup.trusted(cfg, h)] if q.strip() else []
         if hits:
-            # a file no seal vouches for (not written by onboarding, or edited since) waits for review
-            status = "accepted" if rec.sealed else "proposed"
+            if rec.seal_trusted and not can_seal:
+                continue  # accepted (and sealed) by the next hook, outside the sandbox
+            # a file no seal vouches for (not written by onboarding, or edited since), or one only the sandbox
+            # sealed (GPT-6 round 6, item 10), waits for review
+            status = "accepted" if rec.seal_trusted else "proposed"
             records.update_fields(rec, {"status": status, "verified": True, "verified_at": iso(cfg.now()),
                                         "source_ref": hits[0].ref, "source_speaker": hits[0].speaker,
                                         "decided_by": rec.meta.get("decided_by") or hits[0].speaker})
