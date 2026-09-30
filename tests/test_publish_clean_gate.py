@@ -502,7 +502,7 @@ def test_e2e_precommit_coexists_with_vault_and_gate_guards(engine, run_cli, hook
     assert r.returncode == 0, r.stdout + r.stderr
 
     text = (hook_repo / ".git" / "hooks" / "pre-commit").read_text()
-    assert "# tess-vault-guard v3" in text
+    assert "# tess-vault-guard v4" in text
     assert "# tess-gate-guard v1" in text
     assert "# tess-publish-guard v1" in text
     assert subprocess.run(["bash", "-n", str(hook_repo / ".git" / "hooks" / "pre-commit")]).returncode == 0

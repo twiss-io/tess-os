@@ -70,12 +70,20 @@ never shadow a release tag.
 
 ### Verifier signatures are automated attestations
 
-The registered verifier key (Cyra, `F9321F92…76E8`) belongs to an automated
-reviewer. By design it has no passphrase and is used by the review automation
-without a human in the loop. A valid Cyra verdict attests **"the automated
-review of this exact content passed"**. It does **not** mean a human approved the
-change. Earlier Reid verifier keys are retired, and no Reid key is registered in
-`policy.yaml`'s `verifier_keys`.
+The registered verifier key (Cyra, `F9321F92…76E8`) attests a review. A valid
+Cyra verdict means **"the review of this exact content passed"**. It does **not**
+mean a human approved the change. Earlier Reid verifier keys are retired, and no
+Reid key is registered in `policy.yaml`'s `verifier_keys`.
+
+Since the v1.0 security audit, `tessctl verdict sign` (and `tessctl gate signoff
+sign` for hard-floor sign-offs) no longer signs for whoever runs it. It needs a
+person at a terminal who is shown the verdict and types `sign as <name>`; the
+key must be the one the committed `policy.yaml` registers for that name, kept
+outside the project and protected by a passphrase (or on a hardware token); and
+the passphrase gpg-agent cached is forgotten right after signing. The Cyra
+reviewer role drafts the verdict; the maintainer signs it. The Cyra key was
+created without a passphrase, so it needs one (`gpg --passwd`) before it can
+sign again. What this does not stop is in Known limits.
 
 ### No required human PR review, by design
 
@@ -152,6 +160,36 @@ security reviews; they are stated so nobody relies on a check that is not there.
   with another folder, `accept <version>`), which are presence checks, not
   cryptography. For a real boundary, run agents in the runtime's sandbox or as
   another OS user.
+- **Signing an approval is a presence and custody check, not an OS boundary.**
+  `tessctl verdict sign` and `tessctl gate signoff sign` refuse to run without a
+  terminal, refuse a key with no passphrase or one that is not the registered
+  key, and forget the cached passphrase after signing. A program running as you
+  can still fake a terminal, or call `gpg` itself with a key it can use, and the
+  gate cannot tell who produced a valid signature. The control that holds is the
+  key's passphrase (or a hardware token): type it only for a signing command you
+  started yourself. For a real separation, keep verifier and sign-off keys on a
+  hardware token or under another OS user.
+- **Sign-offs approve exact content.** A hard-floor sign-off lists every file it
+  approves with its content id (`artifact_hashes`), and the gate accepts it only
+  for those exact contents at the pushed commit. A later change to the same file
+  needs a new sign-off.
+- **The vault shows secrets only to a person, and only by reference to
+  programs.** `tessctl vault get --reveal` prints a value only when both input
+  and output are a terminal; `vault exec` outside a terminal refuses programs
+  that print or evaluate their environment (`printenv`, `env`, a shell or
+  interpreter given code on its command line), refuses variables programs run or
+  load (`BASH_ENV`, `ENV`, `PROMPT_COMMAND`, `LD_PRELOAD`, …), and masks the
+  exact value in the program's output. What remains: a script file or any other
+  program can still send the value somewhere or print it transformed (encoded,
+  split), and a process running as you can fake a terminal. On macOS the vault
+  identity is stored in the keychain with no pre-authorised application, so
+  every read (by `tessctl` too) shows a macOS prompt: click "Allow", never
+  "Always Allow". An item created before v1.0 keeps its old, open access list:
+  in Keychain Access, open `tess-vault-identity`, choose Access Control, select
+  "Confirm before allowing access" and remove every listed application. Linux
+  secret-service and
+  the `~/.config/tess/vault/identity.age` file have no per-application control:
+  any program running as you can read them.
 - **Hooks read command text; they cannot see commands built at run time.** A
   script that assembles a path or a command while it runs, decodes one, reads its
   program from a file, or starts another program is judged only by what its own

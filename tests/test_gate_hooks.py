@@ -122,9 +122,9 @@ def test_splice_above_vault_guard_both_layers_present(engine, tmp_path):
     for hook_name in ("pre-commit", "pre-push"):
         text = (tmp_path / ".git" / "hooks" / hook_name).read_text()
         assert "# tess-gate-guard v1" in text
-        assert "# tess-vault-guard v3" in text
+        assert "# tess-vault-guard v4" in text
         # Gate installed SECOND, so it sits above (runs first).
-        assert text.index("# tess-gate-guard v1") < text.index("# tess-vault-guard v3")
+        assert text.index("# tess-gate-guard v1") < text.index("# tess-vault-guard v4")
         assert subprocess.run(["bash", "-n", str(tmp_path / ".git" / "hooks" / hook_name)]).returncode == 0
 
 
