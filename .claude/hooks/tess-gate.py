@@ -3518,6 +3518,142 @@ def _check_extract(root: Path, cwd: str, argv: list, v: Verdict):
             return
 
 
+# --------------------------------------------------------------------------- copies into the project root (v1.0 audit, integration)
+# `cp -R x/. .` or `rsync -a x/ ./` writes into the project root files the
+# command text never names, so none of them reach the protected list (the
+# root itself is not protected: `cp file .` is ordinary). A recursive copy of
+# a directory's CONTENTS into the root, or into a folder above it, is
+# therefore treated as touching every protected path: it asks (Claude) and is
+# refused where nothing can ask (Codex, no-prompt modes). A copy of named
+# files into the root is checked file by file: `cp x/CLAUDE.md .` writes
+# ./CLAUDE.md.
+# tool: (short options taking a value, long options taking a value)
+_COPY_INTO = {
+    "cp": ("tS", ("--target-directory", "--suffix")),
+    "mv": ("tS", ("--target-directory", "--suffix")),
+    "install": ("tmogSB", ("--target-directory", "--suffix", "--mode", "--owner", "--group")),
+    "ln": ("tS", ("--target-directory", "--suffix")),
+    "scp": ("iFPoclSJDX", ()),
+    "rsync": ("efBTM", ("--exclude", "--include", "--filter", "--rsh", "--rsync-path",
+                        "--temp-dir", "--files-from", "--exclude-from", "--include-from",
+                        "--chmod", "--password-file", "--log-file", "--partial-dir",
+                        "--backup-dir", "--suffix", "--compare-dest", "--copy-dest",
+                        "--link-dest", "--remote-option", "--out-format", "--usermap",
+                        "--groupmap", "--chown", "--timeout", "--contimeout", "--max-size",
+                        "--min-size", "--bwlimit", "--port", "--sockopts", "--iconv",
+                        "--info", "--debug", "--protocol", "--checksum-choice",
+                        "--compress-choice", "--skip-compress", "--max-delete",
+                        "--modify-window", "--block-size", "--log-file-format")),
+    "ditto": ("", ("--arch", "--bom", "--zlibCompressionLevel", "--password")),
+}
+
+
+def _copy_plan(name: str, args: list) -> tuple:
+    """(recursive, target dir word | None, [operand words]) of a copy command."""
+    shorts, longs = _COPY_INTO[name]
+    flags, target, ops, i, rest = "", None, [], 0, False
+    while i < len(args):
+        a, s = args[i], str(args[i])
+        if rest or not s.startswith("-") or s == "-":
+            ops.append(a)
+        elif s == "--":
+            rest = True
+        elif s.startswith("--"):
+            opt, eq, _val = s.partition("=")
+            flags += {"--recursive": "r", "--archive": "a", "--keepParent": "K"}.get(opt, "")
+            if opt == "--target-directory":
+                target = _sub_word(a, len(opt) + 1) if eq else (args[i + 1] if i + 1 < len(args) else None)
+            if opt in longs and not eq:
+                i += 1
+        else:
+            for k, ch in enumerate(s[1:], 1):
+                flags += ch
+                if ch in shorts:
+                    val = s[k + 1:]
+                    if ch == "t":
+                        target = _sub_word(a, k + 1) if val else (args[i + 1] if i + 1 < len(args) else None)
+                    if not val:
+                        i += 1
+                    break
+        i += 1
+    if name in ("cp", "scp"):
+        recursive = bool(set(flags) & set("rRa"))
+    elif name == "ditto":
+        recursive = not (set(flags) & set("cxk"))
+    else:
+        recursive = name in ("mv", "rsync")
+    if target is None:
+        if len(ops) < 2:
+            return recursive, None, []
+        target, ops = ops[-1], ops[:-1]
+    return recursive, target, ops
+
+
+def _remote(text: str) -> bool:
+    return bool(re.match(r"^[^/]*[^/\\]:", text)) and not text.startswith(("./", "/", "~"))
+
+
+def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx",
+                     via_xargs: bool) -> None:
+    if name == "ditto" and any(re.fullmatch(r"-[A-Za-z]*[cxk][A-Za-z]*", str(a)) for a in argv[1:]):
+        return  # an archive, handled by _check_extract
+    recursive, target, ops = _copy_plan(name, _operands(argv[1:]))
+    keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
+    if target is None:
+        return
+    cands, _ = _word_values(target, cwd, ctx)
+    if not cands:
+        return  # a target known only at run time: _check_target asks
+    base = os.path.realpath(str(root))
+    dests = []
+    for text, _pat in cands:
+        if _remote(text):
+            continue
+        real = os.path.realpath(os.path.join(cwd, os.path.expanduser(text)))
+        if _within(base, real) is not None:  # the project root, or a folder above it
+            dests.append((text, real))
+    if not dests:
+        return
+    here = "the project folder" if any(_within(r, base) == "." for _t, r in dests) else \
+        "a folder that holds the project"
+    why = (f"it copies the contents of \0SRC into {dests[0][0]}, {here}, so it can overwrite any "
+           "protected Tess file there (hooks, gate, CLAUDE.md, AGENTS.md...) without naming it; "
+           "copy into a sub-folder instead, or copy the files you need by name")
+    if via_xargs or not ops:
+        v.add(ASK, why.replace("\0SRC", "the paths it reads from its input"))
+        return
+    for op in ops:
+        vals, _ = _word_values(op, cwd, ctx)
+        texts = []
+        for text, pat in vals or []:
+            texts += (_glob(cwd, pat) if pat else []) or [text]
+        for text in (texts if vals else [None]):
+            if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
+                v.add(ASK, why.replace("\0SRC", str(op)))  # which files is only known at run time
+                return
+            full = os.path.join(cwd, os.path.expanduser(text))
+            leaf = os.path.basename(text.rstrip("/"))
+            if name == "ditto":  # ditto copies a folder's contents unless --keepParent
+                contents = not keep_parent and not os.path.isfile(full)
+            else:
+                contents = text.endswith("/") or leaf in (".", "..", "")
+            if recursive and contents:
+                v.add(ASK, why.replace("\0SRC", str(op)))
+                return
+            for _t, real in dests:
+                written = os.path.join(real, leaf) if leaf not in (".", "..", "") else real
+                if _within(base, os.path.realpath(written)) is not None:
+                    if recursive:
+                        v.add(ASK, why.replace("\0SRC", str(op)))
+                        return
+                    continue
+                hit = protected_hit(root, cwd, written)
+                if hit:
+                    v.add(DENY, f"it copies {op} to {os.path.relpath(written, real) if real == base else written}, "
+                                f"a protected Tess path ({hit})", "protected")
+                    return
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
                    ctx: "_Ctx | None" = None, upstream=None):
     ctx = ctx if ctx is not None else _Ctx(raw)
@@ -3554,6 +3690,9 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
         argv = [_plain("git")] + ([_plain(name[4:])] if name.startswith("git-") else []) + list(argv[1:])
         name = "git"
     _check_home_env(env, argv, raw, v)
+    copier = name if name == "ditto" else _writer_name(name)
+    if copier in _COPY_INTO:
+        _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
     if INTERPRETERS.match(name):
         _check_interpreter(root, cwd, argv, v, raw)
     if name in SHELLS and _check_shell(root, cwd, argv, orig, v, depth, ctx, upstream):
