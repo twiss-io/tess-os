@@ -458,8 +458,11 @@ def make_upstream(path: Path, gpg, tag, *, sign="signed",
         }
         lp = path / ".tess" / "tess.lock"
         lp.parent.mkdir(parents=True, exist_ok=True)
-        # JSON is valid YAML — the engine reads tess.lock with yaml.safe_load.
-        lp.write_text(json.dumps(lock_obj, indent=2), encoding="utf-8")
+        # v1.0.0: the engine reads tess.lock in its strict block form (what
+        # save_lock writes); JSON / flow mappings are refused.
+        import yaml
+        lp.write_text(yaml.safe_dump(lock_obj, default_flow_style=False, sort_keys=False),
+                      encoding="utf-8")
 
     if unsafe_paths:
         git("-c", "core.protectHFS=false", "-c", "core.protectNTFS=false", "add", "-A")

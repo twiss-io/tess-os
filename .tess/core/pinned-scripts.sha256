@@ -2,7 +2,7 @@
 # Pinned by tess.lock (this file's own base_sha); read by .claude/hooks/run-pinned.py.
 # Regenerate: python3 .claude/hooks/run-pinned.py --regen-pins, then
 #   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256
-92bbf1f510d5e34ddda251e65a7f5fa73da6ba75ef05a2d97a8767bab7de0fac  .claude/hooks/run-pinned.py
+13c46e6882426ba3de468efab45048775d39799f2bf7bc7e28946850321744c3  .claude/hooks/run-pinned.py
 755e3e31bd4630f896472c66c1a1f98ac5118392b0be014f035937b5572d74b2  .claude/hooks/vault-dispatch-scan.py
 7ffe3dfaac32ed8ed1eb7edc88eded3b9d53c213698943bdae80364007918256  .claude/hooks/tess-gate.py
 8a0f410f2009a2272e7648789ee9c347a0b9f83acb454763d7f762be00d3aacf  scripts/brain/onboard.py

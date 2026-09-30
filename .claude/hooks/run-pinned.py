@@ -385,6 +385,7 @@ ANCHOR_FILES = (
     "scripts/brain/onboard.py", "scripts/brain/tessbrain.py",
     PINS_REL, LOCK_REL, ".claude/settings.json", ".codex/config.toml", ".codex/rules/tess.rules",
     "core/policy/policy.yaml", ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
+    ".tess/keys/twiss-release-key.asc", ".tess/keys/twiss-release-allowed-signers",
 )
 # Git hooks Tess installs (gate, vault, public-remote and brain guards); anchored
 # when present with a Tess marker at anchor time, keyed "git-hooks/<name>".
@@ -470,35 +471,169 @@ def anchor_file_path(root: Path, rel: str) -> "Path | None":
     return root / rel
 
 
+# --- tess.lock strict form (v1.0.0, GPT-6 final F1) ------------------------
+# This block is BYTE-IDENTICAL in .claude/hooks/run-pinned.py and
+# .tess/bin/tessctl (tests/test_v1_lock_strict.py compares the source).
+# tess.lock is read as a strict subset of YAML: block mappings only, one
+# `key: value` per line, single-line scalars. A duplicate key, a flow or
+# inline mapping, a merge key, an anchor or alias on anything but a scalar,
+# a tag, a block scalar, a continuation line, a sequence, a tab, an unusual
+# line break or a second document is refused, so the tree built here IS the
+# tree YAML builds (tessctl's load_lock checks that on every read). The anchor
+# digest covers every key and raw value except the volatile bookkeeping below,
+# so any change YAML would see in an enforcement field changes the digest.
+LOCK_VOLATILE = (
+    ("framework", "last_updated"), ("render_outputs",),
+    ("files", "*", "status"), ("files", "*", "last_updated"),
+    ("files", "*", "quarantined_at"), ("files", "*", "quarantined_by"),
+    ("files", "*", "resolved_at"), ("files", "*", "resolved_mode"),
+    ("files", "*", "override_diff"), ("files", "*", "override_recorded_at"),
+    ("files", "*", "captured_at"), ("files", "*", "captured_by"),
+    ("files", "*", "approved_at"), ("files", "*", "approved_rationale"),
+    ("files", "*", "published_at"), ("files", "*", "published_from"),
+)
+_LOCK_BAD_CHAR = re.compile("[\x00-\x09\x0b-\x1f\x7f\x85  ﻿�]")
+_LOCK_SQ = re.compile(r"'(?:[^']|'')*'")
+_LOCK_DQ = re.compile(r'"[^"\\]*"')
+_LOCK_PLAIN = re.compile(r"[^\s'\"&*!|>%@`{}\[\],#?:<-][^\n]*")
+_LOCK_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _lock_plain_ok(tok: str) -> bool:
+    return bool(_LOCK_PLAIN.fullmatch(tok)) and " #" not in tok and ": " not in tok \
+        and not tok.endswith(":")
+
+
+def _lock_scalar(tok: str, n: int, anchors: dict) -> str:
+    """The raw token of one single-line scalar value (an alias resolves to
+    the token its anchor names)."""
+    if tok.startswith("*"):
+        if not _LOCK_NAME.fullmatch(tok[1:]) or tok[1:] not in anchors:
+            raise ValueError(f"line {n}: an alias that names no earlier scalar anchor")
+        return anchors[tok[1:]]
+    if tok.startswith("&"):
+        name, _, rest = tok[1:].partition(" ")
+        if not _LOCK_NAME.fullmatch(name) or name in anchors or rest.startswith(("&", "*")):
+            raise ValueError(f"line {n}: an anchor that is repeated or not on a plain value")
+        anchors[name] = _lock_scalar(rest, n, anchors)
+        return anchors[name]
+    if tok in ("{}", "[]") or _LOCK_SQ.fullmatch(tok) or _LOCK_DQ.fullmatch(tok) or _lock_plain_ok(tok):
+        return tok
+    raise ValueError(f"line {n}: a value that is not a single-line scalar "
+                     "(inline mapping or list, tag, block text or comment)")
+
+
+def _lock_quote_end(s: str) -> int:
+    """Index just past the quote closing the quoted value `s` starts with; -1
+    while it is still open ('' in single quotes, \\x in double quotes)."""
+    k = 1
+    while k < len(s):
+        if s[0] == "'" and s[k] == "'":
+            if s[k + 1:k + 2] != "'":
+                return k + 1
+            k += 1
+        elif s[0] == '"' and s[k] == "\\":
+            k += 1
+        elif s[0] == '"' and s[k] == '"':
+            return k + 1
+        k += 1
+    return -1
+
+
+def lock_strict_tree(text: str) -> dict:
+    """tess.lock as nested dicts whose leaves are raw value tokens ("" = no
+    value). Raises ValueError (a plain reason) outside the strict form."""
+    if _LOCK_BAD_CHAR.search(text):
+        raise ValueError("has a tab, a control character or an unusual line break")
+    root: dict = {}
+    stack = [(0, root)]
+    pending = None
+    anchors: dict = {}
+    lines = text.split("\n")
+    i = -1
+    while i + 1 < len(lines):
+        i += 1
+        n, line = i + 1, lines[i]
+        body = line.lstrip(" ")
+        if not body.strip(" ") or body.startswith("#"):
+            continue
+        indent = len(line) - len(body)
+        if indent == 0 and body.startswith(("---", "...", "%")):
+            raise ValueError(f"line {n}: a second YAML document or a directive")
+        if pending is not None:
+            if indent > pending[0]:
+                pending[1][pending[2]] = {}
+                stack.append((indent, pending[1][pending[2]]))
+            pending = None
+        while indent < stack[-1][0]:
+            stack.pop()
+        if indent != stack[-1][0]:
+            raise ValueError(f"line {n}: unexpected indentation (a continued value?)")
+        if body.startswith("'"):
+            m = re.match(r"('(?:[^']|'')*'):(?: (.*))?$", body)
+            if not m:
+                raise ValueError(f"line {n}: not a `key: value` line")
+            key, tok = m.group(1)[1:-1].replace("''", "'"), m.group(2)
+        else:
+            key, sep, tok = body.partition(": ")
+            if not sep:
+                if not body.rstrip(" ").endswith(":"):
+                    raise ValueError(f"line {n}: not a `key: value` line")
+                key, tok = body.rstrip(" ")[:-1], None
+            if not _lock_plain_ok(key):
+                raise ValueError(f"line {n}: a key that is not plain text "
+                                 "(merge key, anchor, alias, tag or list?)")
+        mapping = stack[-1][1]
+        if key in mapping:
+            raise ValueError(f"line {n}: the key {key!r} appears twice")
+        if tok is not None and tok[:1] in ("'", '"'):
+            # a quoted value (the form save_lock writes long or multi-line text
+            # in) runs to its closing quote, over as many lines as it takes
+            j, end = i, _lock_quote_end(tok)
+            while end < 0:
+                j += 1
+                if j >= len(lines):
+                    raise ValueError(f"line {n}: a quoted value that never ends")
+                tok += "\n" + lines[j]
+                end = _lock_quote_end(tok)
+            if tok[end:].strip(" "):
+                raise ValueError(f"line {j + 1}: text after a quoted value")
+            mapping[key], i = tok[:end], j
+            continue
+        tok = None if tok is None else tok.rstrip(" ")
+        if not tok:
+            mapping[key] = ""
+            pending = (indent, mapping, key)
+        else:
+            mapping[key] = _lock_scalar(tok, n, anchors)
+    if not root:
+        raise ValueError("is empty")
+    return root
+
+
 def lock_projection(text: str) -> str:
-    """sha256 over the enforcement fields of tess.lock: every files: entry's
-    base_sha, live_path and tier, and the framework's release-key pins.
-    Status, timestamps and render records change in normal use and are left
-    out (same line scanner as _lock_entries: no YAML parser in a hook)."""
-    files: dict = {}
-    fw: dict = {}
-    section = key = None
-    for raw in text.splitlines():
-        if raw and not raw.startswith((" ", "#")):
-            section, key = raw.split(":", 1)[0].strip(), None
-            continue
-        if section == "framework":
-            m = re.match(r"^  (trusted_key_fingerprint|trusted_ssh_key_fingerprint):\s*(.*?)\s*$", raw)
-            if m:
-                fw[m.group(1)] = m.group(2).strip("'\"")
-            continue
-        if section != "files":
-            continue
-        m = re.match(r"^  (\S[^:]*):\s*$", raw)
-        if m:
-            key = m.group(1).strip().strip("'\"")
-            files[key] = {}
-            continue
-        m = re.match(r"^    (base_sha|live_path|tier):\s*(.*?)\s*$", raw)
-        if m and key is not None:
-            files[key][m.group(1)] = m.group(2).strip("'\"")
-    canon = json.dumps({"files": files, "framework": fw}, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    """sha256 over every key and raw value of tess.lock except LOCK_VOLATILE.
+    A file outside the strict form gets a digest no valid file can have."""
+    try:
+        tree = lock_strict_tree(text)
+    except ValueError:
+        return "rejected:" + hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+    rows: list = []
+
+    def walk(node: dict, path: tuple) -> None:
+        for key in sorted(node):
+            p = path + (key,)
+            if any(len(v) <= len(p) and all(a in ("*", b) for a, b in zip(v, p))
+                   for v in LOCK_VOLATILE):
+                continue
+            if isinstance(node[key], dict):
+                rows.append([list(p), None])
+                walk(node[key], p)
+            else:
+                rows.append([list(p), node[key]])
+    walk(tree, ())
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("utf-8")).hexdigest()
+# --- end tess.lock strict form ---------------------------------------------
 
 
 def anchor_digest(rel: str, data: bytes) -> str:

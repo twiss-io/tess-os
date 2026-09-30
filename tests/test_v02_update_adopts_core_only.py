@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 
+import yaml
+
 import pytest
 
 from conftest import make_upstream
@@ -159,7 +161,8 @@ def test_update_dry_run_lists_core_only_adoptions_and_writes_nothing(
         src = tmp_path / "upstream" / key
         project.stage(key, src.read_bytes())
     (project.root / ".tess" / "staging" / "upstream-tess.lock").write_text(
-        json.dumps({"schema": 1, "files": up_lock}), encoding="utf-8")
+        # v1.0.0: tess.lock is read in its strict block form (what save_lock writes)
+        yaml.safe_dump({"schema": 1, "files": up_lock}, default_flow_style=False), encoding="utf-8")
     lock_bytes = (project.root / ".tess" / "tess.lock").read_bytes()
 
     r = run_cli(project.root, "update", "--ref", "v2.1.0", flag)
