@@ -138,6 +138,7 @@ import base64
 import contextlib
 import copy
 import datetime
+import difflib
 import getpass
 import glob
 import hashlib
@@ -758,6 +759,27 @@ def find_tess_root() -> Path:
 
 def sha256_bytes(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _read_regular_nofollow(path: Path):
+    """(bytes, "") for a regular file read without following a symlink at
+    `path`; (None, plain reason) otherwise. v1.0 audit: callers that hash
+    bytes and then write them use this buffer, never a second read."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None, "is missing"
+    if stat.S_ISLNK(st.st_mode):
+        return None, "is a symbolic link"
+    if not stat.S_ISREG(st.st_mode):
+        return None, "is not a regular file"
+    nofollow = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+    try:
+        fd = os.open(str(path), os.O_RDONLY | nofollow)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(), ""
+    except OSError as e:
+        return None, f"cannot be read ({type(e).__name__})"
 
 
 def sha256_file(path: Path) -> str:
@@ -3459,12 +3481,137 @@ def snapshot_paths(root: Path, rels, label: str) -> str:
             entry["sha256"] = sha256_file(dst)
         manifest[rel] = entry
 
-    _atomic_write_bytes(
-        snap_dir / SNAPSHOT_MANIFEST,
-        (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    _manifest_bytes = (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    _atomic_write_bytes(snap_dir / SNAPSHOT_MANIFEST, _manifest_bytes)
+    _SNAPSHOTS_MADE[snap_id] = sha256_bytes(_manifest_bytes)   # v1.0 audit
     _prune_snapshots(root, keep=(snap_id,))
     return snap_id
+
+
+# ---------------------------------------------------------------------------
+# v1.0 audit (tessctl:_rollback_from_manifest:self-attested-snapshot-restore-
+# source): .tess/snapshots is ordinary, gitignored project space, so a
+# snapshot on disk proves nothing about who made it. Rollback therefore
+#   * trusts a snapshot's manifest only when THIS process wrote it
+#     (_SNAPSHOTS_MADE: update's automatic crash rollback);
+#   * otherwise restores only paths a tessctl operation snapshots (tess.lock,
+#     tess.lock live paths, render-target outputs), never a '.git' path or a
+#     symlink that points out of the project, and refuses the whole snapshot
+#     if it names anything else;
+#   * asks the person at the terminal before it changes tess.lock or any
+#     safety file (security-tier doctrine, runtime enforcement config, the
+#     anchored engine/hook files), listing each one.
+# ---------------------------------------------------------------------------
+
+_SNAPSHOTS_MADE: dict = {}
+ROLLBACK_CONFIRM = "roll back"
+
+
+def _snapshot_made_here(snap_dir: Path) -> bool:
+    """True when `snap_dir`'s manifest is byte-for-byte the one this process
+    wrote for that snapshot id."""
+    want = _SNAPSHOTS_MADE.get(snap_dir.name)
+    if not want:
+        return False
+    data, _why = _read_regular_nofollow(snap_dir / SNAPSHOT_MANIFEST)
+    return data is not None and sha256_bytes(data) == want
+
+
+def _rel_has_git_component(rel: str) -> bool:
+    return any(p.lower().rstrip(". ") == ".git" for p in Path(str(rel)).parts)
+
+
+def _rollback_allowed_rels(root: Path) -> set:
+    """Every path a tessctl operation snapshots: tess.lock, every tess.lock
+    live path and every render target's outputs (enabled or not)."""
+    return set(_operation_snapshot_rels(root, extra_targets=sorted(RENDER_TARGETS)))
+
+
+def _rollback_symlink_target_ok(root: Path, rel: str, target) -> bool:
+    if not isinstance(target, str) or not target or os.path.isabs(target):
+        return False
+    joined = os.path.normpath(os.path.join(os.path.dirname(rel), target))
+    if joined == ".." or joined.startswith(".." + os.sep) or os.path.isabs(joined):
+        return False
+    return not _rel_has_git_component(joined)
+
+
+def _rollback_problems(root: Path, rels_entries, trusted: bool) -> list:
+    """Plain reasons this snapshot must not be restored (empty = fine).
+    `rels_entries` is [(rel, manifest entry or None for a legacy copy)]."""
+    allowed = None if trusted else _rollback_allowed_rels(root)
+    out = []
+    for rel, entry in rels_entries:
+        entry = entry or {}
+        if _rel_has_git_component(rel):
+            out.append(f"{rel} (inside .git — rollback never writes there)")
+        elif allowed is not None and rel not in allowed and not entry.get("out_of_tree"):
+            out.append(f"{rel} (not a file any tessctl command snapshots)")
+        elif entry.get("is_symlink") and not _rollback_symlink_target_ok(
+                root, rel, entry.get("link_target")):
+            out.append(f"{rel} (a link that points outside the project or into .git)")
+    return out
+
+
+def _rollback_is_safety_rel(lock: dict, rel: str) -> bool:
+    return (rel == LOCK_FILE or rel in ANCHOR_FILES or rel.startswith(".claude/hooks/")
+            or is_enforcement_render_output(rel) or _live_path_is_security(lock, rel))
+
+
+def _rollback_guard(root: Path, snap: Path, manifest) -> None:
+    """Refuse (exit, nothing changed) a snapshot that names paths rollback
+    must not write, and ask the person at the terminal before a snapshot not
+    made by this process changes tess.lock or a safety file."""
+    trusted = manifest is not None and _snapshot_made_here(snap)
+    if manifest is not None:
+        bad = sorted(str(rel) for rel in manifest
+                     if manifest[rel] is not None and not isinstance(manifest[rel], dict))
+        if bad:
+            sys.exit(f"tessctl rollback: REFUSED — snapshot {snap.name} has a damaged "
+                     f"manifest ({bad[0]}). Nothing was changed.")
+        rels_entries = [(str(rel), manifest[rel] or {}) for rel in sorted(manifest)]
+    else:
+        rels_entries = [(str(p.relative_to(snap)).replace(os.sep, "/"), None)
+                        for p in sorted(snap.rglob("*"))
+                        if not p.is_dir() and p.name not in ("tess.lock.snapshot", ".kind")]
+        if (snap / "tess.lock.snapshot").exists():
+            rels_entries.append((LOCK_FILE, None))
+    problems = _rollback_problems(root, rels_entries, trusted)
+    if problems:
+        sys.exit(
+            f"tessctl rollback: REFUSED — snapshot {snap.name} names files that Tess never "
+            f"snapshots, so it was not made by tessctl:\n"
+            + "".join(f"  - {p}\n" for p in problems)
+            + f"  Nothing was changed. Delete it (`rm -r {SNAPSHOTS_DIR}/{snap.name}`) and "
+              f"pick another snapshot (`ls {SNAPSHOTS_DIR}`).")
+    if trusted:
+        return
+    try:
+        lock = load_lock(root)
+    except SystemExit:
+        lock = {}
+    changing = []
+    for rel, entry in rels_entries:
+        if not _rollback_is_safety_rel(lock, rel):
+            continue
+        if entry is not None:
+            if entry.get("out_of_tree") or _live_matches_snapshot_entry(root, rel, entry):
+                continue
+        else:
+            src = snap / ("tess.lock.snapshot" if rel == LOCK_FILE else rel)
+            live = root / rel
+            if (live.is_file() and not live.is_symlink() and src.is_file()
+                    and live.read_bytes() == src.read_bytes()):
+                continue
+        changing.append(rel)
+    if changing:
+        _require_human_presence(
+            "rollback", f"rolling back Tess's safety files from snapshot {snap.name}",
+            "no file was restored.", ROLLBACK_CONFIRM, prompt="rollback> ",
+            lines=[f"  Snapshot {snap.name} would change these safety files:"]
+                  + [f"    {r}" for r in changing]
+                  + ["  Only continue if you made this snapshot (for example by running "
+                     "`tessctl update`) and want those files back as they were."])
 
 
 def _rel_parent_inside(root_resolved: Path, path: Path) -> bool:
@@ -3557,8 +3704,13 @@ def _rollback_from_manifest(root: Path, snap_dir: Path, manifest: dict) -> dict:
     root_resolved = root.resolve()
     for rel in sorted(manifest):
         entry = manifest[rel] or {}
-        if not _snapshot_rel_ok(rel):
-            print(f"  WARN  rollback: skipping unsafe path {rel!r} (absolute or '..' traversal)")
+        if not _snapshot_rel_ok(rel) or _rel_has_git_component(rel):
+            print(f"  WARN  rollback: skipping unsafe path {rel!r} (absolute, '..' or .git)")
+            counts["failed"] += 1
+            continue
+        if entry.get("is_symlink") and not _rollback_symlink_target_ok(
+                root, rel, entry.get("link_target")):   # v1.0 audit
+            print(f"  WARN  rollback: skipping {rel!r} (link points outside the project)")
             counts["failed"] += 1
             continue
         if entry.get("out_of_tree"):
@@ -7454,10 +7606,16 @@ def _quarantine_file(core_key: str, live_rel: str, root: Path, lock: dict,
     live_path = root / live_rel
     q_path = root / QUARANTINE_DIR / live_rel
 
-    # Save attempted edit to quarantine directory
+    # Save attempted edit to quarantine directory. v1.0 audit
+    # (quarantine-bytes-unbound-to-confirmation): written from one read of
+    # the live file, and its sha256 recorded in tess.lock below, so approve
+    # can refuse a parked copy that changed after it was set aside.
     q_path.parent.mkdir(parents=True, exist_ok=True)
+    q_sha = None
     if live_path.exists():
-        shutil.copy2(live_path, q_path)
+        _q_bytes = live_path.read_bytes()
+        _atomic_write_bytes(q_path, _q_bytes)
+        q_sha = sha256_bytes(_q_bytes)
 
     # Pin the authoritative version back to live (H2/M3: manifest-gated + atomic)
     if core_path.exists():
@@ -7482,6 +7640,10 @@ def _quarantine_file(core_key: str, live_rel: str, root: Path, lock: dict,
         lock["files"][_qk]["status"] = "quarantined"
         lock["files"][_qk]["quarantined_at"] = _q_at
         lock["files"][_qk]["quarantined_by"] = source
+        if q_sha:
+            lock["files"][_qk]["quarantined_sha256"] = q_sha
+        else:
+            lock["files"][_qk].pop("quarantined_sha256", None)
 
     # Record provenance
     record_capture_event(root, core_key, live_rel, source, diff_text,
@@ -8671,6 +8833,101 @@ def _clone_verified_signed_tag(upstream: str, ref: str, clone_dir: Path, label: 
     return commit
 
 
+# v1.0 audit (tessctl:update:staging-bytes-not-rebound-to-verified-tag):
+# sha256 of every file fetch_to_staging wrote, keyed by its path under
+# .tess/staging (".tess/core/<rel>" or "upstream-tess.lock"). None until a
+# verified fetch ran in THIS process (dry-run / check never fetch).
+_STAGING_STATE: dict = {"verified": None}
+
+STAGING_TAMPER_MESSAGE = (
+    "tessctl update: STOPPED — {what} in .tess/staging changed after the release "
+    "signature was checked, so it is no longer the signed release. Something other "
+    "than tessctl wrote there.\n"
+    "  Nothing from that file was applied. Close any agent session that is running in "
+    "this project, then run `tessctl update` again (it fetches and checks the release "
+    "afresh)."
+)
+
+
+def _release_tree_entries(clone_dir: Path, commit: str, prefix: str) -> dict:
+    """{path relative to `prefix`: (git mode, object id)} for every entry
+    under `prefix` in the tree of `commit` (a single file: key "")."""
+    r = subprocess.run(["git", "-C", str(clone_dir), "ls-tree", "-r", "-z", "--full-tree",
+                        commit, "--", prefix], capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"tessctl fetch: SECURITY REJECT — cannot list {prefix!r} in the verified "
+                 f"release commit. No files were extracted.")
+    out: dict = {}
+    for rec in r.stdout.split(b"\0"):
+        if not rec:
+            continue
+        meta, _tab, path = rec.partition(b"\t")
+        parts = meta.decode("ascii", "replace").split()
+        name = path.decode("utf-8", "surrogateescape")
+        if len(parts) != 3:
+            continue
+        if name == prefix:
+            out[""] = (parts[0], parts[2])
+        elif name.startswith(prefix + "/"):
+            out[name[len(prefix) + 1:]] = (parts[0], parts[2])
+    return out
+
+
+def _staging_write_new(path: Path, data: bytes, mode: int) -> None:
+    """Create a NEW staging file (O_EXCL, never through a symlink planted in
+    the fresh staging tree)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags, mode)
+    except FileExistsError:
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=str(path.name) + " (appeared while staging)"))
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.chmod(str(path), mode)
+
+
+def _staging_verified_bytes(root: Path, rel: str) -> bytes:
+    """The bytes of .tess/staging/<rel>, refused unless they are exactly the
+    bytes fetch_to_staging took from the verified release commit. Without a
+    verified fetch in this process (dry-run) the file is read as it is."""
+    path = root / STAGING_DIR / rel
+    verified = _STAGING_STATE.get("verified")
+    if verified is None:
+        return path.read_bytes()
+    data, why = _read_regular_nofollow(path)
+    if data is None or verified.get(rel) != sha256_bytes(data):
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=rel))
+    return data
+
+
+def _staging_verified_sha(rel: str):
+    """The verified sha256 of staged `rel`, or None (not staged / no fetch)."""
+    verified = _STAGING_STATE.get("verified")
+    return None if verified is None else verified.get(rel)
+
+
+def _staging_verify_all(root: Path) -> None:
+    """Refuse (exit) unless .tess/staging holds exactly the files the verified
+    fetch wrote, byte for byte. No-op without a verified fetch."""
+    verified = _STAGING_STATE.get("verified")
+    if verified is None:
+        return
+    staging_dir = root / STAGING_DIR
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(staging_dir):
+        for name in list(filenames) + [d for d in dirnames
+                                       if os.path.islink(os.path.join(dirpath, d))]:
+            rel = os.path.relpath(os.path.join(dirpath, name), staging_dir).replace(os.sep, "/")
+            if rel not in verified:
+                sys.exit(STAGING_TAMPER_MESSAGE.format(what=rel + " (not in the release)"))
+            seen.add(rel)
+    for rel in verified:
+        _staging_verified_bytes(root, rel)
+    missing = sorted(set(verified) - seen)
+    if missing:
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=missing[0] + " (removed)"))
+
+
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     """
     Fetch the framework version at `ref` from upstream into .tess/staging/.
@@ -8748,77 +9005,69 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
         if _tofu_state["tofu"]:
             trusted_fingerprint = _tofu_state["fp"]
 
-        # -- F5: extract .tess/core/ from clone → .tess/staging/ with traversal hardening --
-        core_src = clone_dir / ".tess" / "core"
-        if not core_src.exists():
+        # -- F5: extract .tess/core/ → .tess/staging/ with traversal hardening --
+        # v1.0 audit (staging-bytes-not-rebound-to-verified-tag): the files
+        # are written from the VERIFIED COMMIT'S git objects (never the
+        # clone's working tree), and the sha256 of every staged file is kept
+        # in memory (_STAGING_STATE). Every later read of .tess/staging in
+        # this run is checked against it, so bytes written there after the
+        # signature check are refused instead of applied and re-anchored.
+        entries = _release_tree_entries(clone_dir, _verified_commit, ".tess/core")
+        if not entries:
             sys.exit(
                 f"tessctl fetch: .tess/core/ not found in upstream at ref {ref!r}.\n"
                 f"  The upstream may not be a valid Tess OS framework repository."
             )
 
         # Clear old staging content before populating (clean slate)
+        _STAGING_STATE["verified"] = None
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
         staging_dir_resolved = staging_dir.resolve()
 
+        blobs = _git_cat_file_batch(clone_dir, sorted({oid for _m, oid in entries.values()}))
+        verified: dict = {}
         extracted = 0
-        for src_file in core_src.rglob("*"):
-            if src_file.is_dir():
-                continue
-
-            # C2: reject symlinks before any write (TOCTOU + symlink-escape prevention)
-            if src_file.is_symlink():
+        for rel_str, (mode, oid) in sorted(entries.items()):
+            # C2: reject symlinks (and submodules) before any write
+            if mode not in ("100644", "100755"):
                 sys.exit(
-                    f"tessctl fetch: SECURITY REJECT — upstream entry "
-                    f"{str(src_file.relative_to(core_src))!r} is a symlink (C2).\n"
+                    f"tessctl fetch: SECURITY REJECT — upstream entry {rel_str!r} is not a "
+                    f"regular file (git mode {mode}; C2).\n"
                     f"  Extraction aborted — no files were written."
                 )
-
-            # rel is relative to core_src, e.g. "conductor/guardrails.md"
-            rel = src_file.relative_to(core_src)
-            rel_str = str(rel).replace(os.sep, "/")
-
             # Hard-reject absolute paths or '..' traversal in source filename
-            if os.path.isabs(rel_str) or ".." in Path(rel_str).parts:
+            if not rel_str or os.path.isabs(rel_str) or ".." in Path(rel_str).parts:
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL in upstream archive entry {rel_str!r}.\n"
                     f"  Extraction aborted — no files were written."
                 )
-
             # C4: reject any '.git' path component (case-insensitive, trailing-dot-aware)
-            _rel_parts = Path(rel_str).parts
-            if any(p.lower().rstrip(". ") == ".git" for p in _rel_parts):
+            if any(p.lower().rstrip(". ") == ".git" for p in Path(rel_str).parts):
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL — upstream entry {rel_str!r} contains "
                     f"'.git' path component (C4). Extraction aborted — no files written."
                 )
-
+            kind, data = blobs.get(oid, (None, None))
+            if kind != "blob":
+                sys.exit(f"tessctl fetch: SECURITY REJECT — cannot read {rel_str!r} from the "
+                         f"verified release commit. No files were applied.")
             # Mirror the core_key structure: staging/.tess/core/<rel>
-            # This matches the staging_path = staging_dir / core_key pattern in
-            # _apply_per_file_resolution (core_key = ".tess/core/<rel>").
-            dst = staging_dir / ".tess" / "core" / rel
-
+            # (core_key = ".tess/core/<rel>", as in _apply_per_file_resolution).
+            dst = staging_dir / ".tess" / "core" / rel_str
             # Resolve and containment-check BEFORE writing
             try:
-                dst_resolved = dst.resolve()
-                dst_resolved.relative_to(staging_dir_resolved)
+                dst.resolve().relative_to(staging_dir_resolved)
             except ValueError:
                 sys.exit(
                     f"tessctl fetch: PATH TRAVERSAL — entry {rel_str!r} resolves outside "
                     f".tess/staging/.  Extraction aborted — no files were written."
                 )
-
             dst.parent.mkdir(parents=True, exist_ok=True)
-            # C2: follow_symlinks=False as defense-in-depth (symlinks already rejected above)
-            shutil.copy2(src_file, dst, follow_symlinks=False)
+            _staging_write_new(dst, data, 0o755 if mode == "100755" else 0o644)
+            verified[".tess/core/" + rel_str] = sha256_bytes(data)
             extracted += 1
-
-        # Also copy upstream tess.lock to staging for new-file adoption (A2)
-        upstream_lock_src = clone_dir / ".tess" / "tess.lock"
-        if upstream_lock_src.exists():
-            shutil.copy2(upstream_lock_src, staging_dir / "upstream-tess.lock", follow_symlinks=False)
-            print(f"  extracted upstream tess.lock to staging")
 
         if extracted == 0:
             sys.exit(
@@ -8826,6 +9075,17 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                 f"  Nothing extracted."
             )
 
+        # Also copy upstream tess.lock to staging for new-file adoption (A2)
+        lock_entry = _release_tree_entries(clone_dir, _verified_commit, ".tess/tess.lock")
+        if lock_entry.get("") and lock_entry[""][0] in ("100644", "100755"):
+            kind, data = _git_cat_file_batch(clone_dir, [lock_entry[""][1]]).get(
+                lock_entry[""][1], (None, None))
+            if kind == "blob":
+                _staging_write_new(staging_dir / "upstream-tess.lock", data, 0o644)
+                verified["upstream-tess.lock"] = sha256_bytes(data)
+                print(f"  extracted upstream tess.lock to staging")
+
+        _STAGING_STATE["verified"] = verified
         print(f"  extracted {extracted} file(s) to .tess/staging/")
 
 
@@ -8848,6 +9108,78 @@ def _resolve_update_ref(args, lock: dict) -> str:
             "  Specify the signed release tag to fetch: --ref v2.0.0"
         )
     return ref
+
+
+# ---------------------------------------------------------------------------
+# v1.0 audit (tessctl:update-ref:no-version-floor-signed-rollback): update
+# and self-update never move to an OLDER signed release unless the person at
+# the terminal asks for it (--allow-downgrade) and confirms it. A signed old
+# release is still an old release: it can bring back fixed security holes,
+# and the re-anchor after it would record the older safety files as approved.
+# ---------------------------------------------------------------------------
+
+_RELEASE_SEMVER_RE = re.compile(
+    r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
+
+
+def _release_semver_key(text):
+    """A sort key for a release version ('v1.2.3', '1.2.3-rc.1'); None when
+    `text` is not one. Semver order: 1.0.0-rc.1 < 1.0.0 < 1.0.1."""
+    m = _RELEASE_SEMVER_RE.fullmatch(str(text or "").strip())
+    if not m:
+        return None
+    pre = m.group(4)
+    if pre is None:
+        pre_key = (1,)
+    else:
+        pre_key = (0,) + tuple((0, int(p), "") if p.isdigit() else (1, 0, p)
+                               for p in pre.split("."))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), pre_key)
+
+
+def _installed_release_floor(lock: dict):
+    """(version text, key) of the newest release this install is on:
+    framework.version, or framework.upstream_ref when that is newer (a
+    self-update moves the engine and upstream_ref but not version)."""
+    fw = lock.get("framework") or {}
+    best = (None, None)
+    for text in (fw.get("version"), fw.get("upstream_ref")):
+        key = _release_semver_key(text)
+        if key is not None and (best[1] is None or key > best[1]):
+            best = (str(text).lstrip("v"), key)
+    return best
+
+
+def _update_version_floor(args, lock: dict, ref: str, label: str, dry_run: bool = False) -> None:
+    """Refuse (exit) a target release older than the installed one, or one
+    that is not a Tess OS release tag at all, unless --allow-downgrade was
+    given AND the person at the terminal confirms. Nothing is fetched first."""
+    if str(ref).startswith("create-tess-v"):
+        sys.exit(f"tessctl {label}: REFUSED — {ref!r} is the tag of the create-tess setup "
+                 f"package, not a Tess OS release. Use the matching Tess OS tag instead: "
+                 f"--ref {ref[len('create-tess-'):]}\n  Nothing was changed.")
+    target = _release_semver_key(ref)
+    if target is None or not str(ref).startswith("v"):
+        sys.exit(f"tessctl {label}: REFUSED — {ref!r} is not a Tess OS release tag "
+                 f"(they look like v1.2.3).\n  Nothing was changed.")
+    installed, floor = _installed_release_floor(lock)
+    if floor is None or target >= floor:
+        return
+    if dry_run:
+        print(f"  NOTE  {ref} is OLDER than the installed version {installed}; a real "
+              f"{label} refuses it unless you pass --allow-downgrade and confirm.")
+        return
+    if not getattr(args, "allow_downgrade", False):
+        sys.exit(f"tessctl {label}: REFUSED — {ref} is older than the version you have "
+                 f"({installed}). Going back to an older release can bring back problems "
+                 f"that were already fixed, so Tess does not do it on its own.\n"
+                 f"  Nothing was changed. To go back on purpose, run this yourself in a "
+                 f"terminal:  ./tessctl {label} --ref {ref} --allow-downgrade")
+    _require_human_presence(
+        label, f"going back from {installed} to the older release {ref}",
+        f"you stay on {installed}.", f"downgrade to {ref}", prompt="downgrade> ",
+        lines=[f"  {ref} is OLDER than the version you have ({installed}). Only continue "
+               f"if you meant to go back."])
 
 
 # ---------------------------------------------------------------------------
@@ -9037,6 +9369,8 @@ def _update_auto_rollback(root: Path, snapshot_id: str | None, core_journal: dic
     if snapshot_id:
         snap = root / SNAPSHOTS_DIR / snapshot_id
         try:
+            if not _snapshot_made_here(snap):   # v1.0 audit: never a changed snapshot
+                raise RuntimeError(f"snapshot {snapshot_id} changed after update made it")
             _rollback_apply(root, snap, _load_snapshot_manifest(snap))
             snap_ok = True
         except BaseException as e:  # noqa: BLE001 — incl. SystemExit from an INCOMPLETE restore
@@ -9256,6 +9590,7 @@ def _cmd_update_body(args, root: Path) -> None:
             )
 
         target_ref = _resolve_update_ref(args, lock)
+        _update_version_floor(args, lock, target_ref, "update", dry_run=dry_run)   # v1.0 audit
         _allow_tofu = getattr(args, "trust_on_first_use", False)
         if not dry_run:
             fetch_to_staging(root, target_ref, allow_tofu=_allow_tofu)
@@ -9283,8 +9618,14 @@ def _cmd_update_body(args, root: Path) -> None:
                 "  Run `tessctl doctor` and `tessctl verify` to confirm integrity."
             )
         if not dry_run:
+            # v1.0 audit: staging must still be the verified release before
+            # and after the (operator-paced) policy prompt; every later read
+            # of staging is checked again (_staging_verified_bytes).
+            _staging_verify_all(root)
             _update_carry_policy_registries(root)   # v1.0.0 security review (H2)
+            _staging_verify_all(root)
             _update_confirm_policy_rule_changes(root, target_ref)   # v1.0.0 item a
+            _staging_verify_all(root)
 
         # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
@@ -9312,7 +9653,7 @@ def _cmd_update_body(args, root: Path) -> None:
         if staging_upstream_lock_path.exists():
             try:
                 upstream_lock_data = _lock_load_text(
-                    staging_upstream_lock_path.read_text(encoding="utf-8")
+                    _staging_verified_bytes(root, "upstream-tess.lock").decode("utf-8")
                 )
             except Exception as _e:
                 print(f"  WARN  A2: could not parse upstream tess.lock: {_e}")
@@ -9362,7 +9703,7 @@ def _cmd_update_body(args, root: Path) -> None:
                 if staging_src.is_symlink() or not staging_src.is_file():
                     _a2_skip(upstream_key, "no regular file for it in .tess/staging/")
                     continue
-                staging_bytes = staging_src.read_bytes()
+                staging_bytes = _staging_verified_bytes(root, upstream_key)
                 new_sha = sha256_bytes(staging_bytes)
                 up_sha = upstream_attrs.get("base_sha")
                 if up_sha and up_sha != new_sha:
@@ -9488,6 +9829,7 @@ def _cmd_update_body(args, root: Path) -> None:
                   f"above); `tessctl doctor` reports what is left untracked")
 
         _update_gate_captured_render_outputs(root, lock, dry_run)   # v0.2 eng-b
+        _staging_verify_all(root)   # v1.0 audit: still the verified release
         # Step 5 + 6: PLAN + APPLY per-file (staging is populated — real update)
         print("\nStep 5-6: plan and apply …")
         _apply_per_file_resolution(root, lock, dry_run=dry_run,
@@ -9510,7 +9852,7 @@ def _cmd_update_body(args, root: Path) -> None:
                     print(f"  WARN  advance core: skip symlink in staging: {core_key}")
                     continue
                 core_path = root / core_key
-                staging_bytes = staging_src.read_bytes()
+                staging_bytes = _staging_verified_bytes(root, core_key)   # v1.0 audit
                 if core_path.exists() and core_path.read_bytes() == staging_bytes:
                     continue
                 if core_key not in core_journal:   # v0.2.1: pre-image for rollback
@@ -9557,6 +9899,9 @@ def _cmd_update_body(args, root: Path) -> None:
         # Re-pin base_sha from the NOW-CURRENT core (after A1 advance) so that
         # verify/doctor see them as pristine instead of reporting CORE TAMPER.
         if not dry_run:
+            # v1.0 audit: staging unchanged through apply/render (inside the
+            # transaction, so a change rolls the whole update back).
+            _staging_verify_all(root)
             print("\nStep 8: update lock …")
             repinned = 0
             not_repinned: list[str] = []
@@ -9570,8 +9915,10 @@ def _cmd_update_body(args, root: Path) -> None:
                         # advanced core to). Any other drift is left pinned at
                         # the old base_sha so verify keeps reporting it.
                         _stg = root / STAGING_DIR / core_key
-                        if (_stg.is_file() and not _stg.is_symlink()
-                                and sha256_file(_stg) == new_sha):
+                        _vsha = _staging_verified_sha(core_key)   # v1.0 audit
+                        if (_vsha == new_sha if _STAGING_STATE.get("verified") is not None
+                                else (_stg.is_file() and not _stg.is_symlink()
+                                      and sha256_file(_stg) == new_sha)):
                             lock["files"][core_key]["base_sha"] = new_sha
                             repinned += 1
                         else:
@@ -9746,6 +10093,8 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
             src = staging_path if staging_path.exists() else core_path
             if not src.exists():
                 continue
+            if src is staging_path:
+                _staging_verified_bytes(root, core_key)   # v1.0 audit
 
             rendered = render_core_to_live(src, live_path, root)
             attrs = lock.get("files", {}).get(core_key, {})
@@ -9839,6 +10188,8 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
                 live_path = root / item["live_rel"]
                 src = staging_path if staging_path.exists() else core_path
                 if src.exists():
+                    if src is staging_path:
+                        _staging_verified_bytes(root, item["core_key"])   # v1.0 audit
                     rendered = render_core_to_live(src, live_path, root)
                     # H2/M3: manifest-gated atomic write
                     try:
@@ -9855,6 +10206,7 @@ def _apply_per_file_resolution(root: Path, lock: dict, dry_run: bool = False,
 
             if not staging_path.exists() or not core_path.exists() or not live_path.exists():
                 continue
+            _staging_verified_bytes(root, item["core_key"])   # v1.0 audit
 
             # 3-way merge: base=core, ours=live, theirs=staging
             with tempfile.NamedTemporaryFile(suffix=".base", delete=False) as fb:
@@ -10291,6 +10643,16 @@ def cmd_override(args, root: Path) -> None:
     manifest = load_manifest(root)
     check_manifest_write_gate(root, manifest, live_rel, op="override")
 
+    # v1.0 audit (coverage critic): an override on a security-tier file stores
+    # a diff that `tessctl update` re-applies to that file, and re-pins
+    # base_sha: the same person at the terminal as `tessctl approve`.
+    if _live_path_is_security(lock, live_rel):
+        _require_human_presence(
+            "override", f"recording an override of the security-tier file {live_rel}",
+            f"{live_rel} and tess.lock are as they were.", live_rel, prompt="path> ",
+            lines=[f"  This diff would be kept and re-applied to {live_rel} on every update:"]
+                  + ["    " + ln for ln in diff_text.splitlines()[:200]])
+
     # Store in lock — v0.2 eng-b (bug 8): on EVERY entry that shares this
     # live_path, so restore/render cannot overwrite the live file through a
     # sibling entry. Each entry carries the same live-file diff; update's
@@ -10382,6 +10744,7 @@ def cmd_rollback(args, root: Path) -> None:
     _ACTIVE_SNAPSHOTS.add(snap.name)
     try:
         manifest = _load_snapshot_manifest(snap)
+        _rollback_guard(root, snap, manifest)   # v1.0 audit: before anything changes
         if manifest is not None:
             undo_rels = list(manifest)
         else:
@@ -10902,7 +11265,71 @@ def cmd_verify(args, root: Path) -> None:
 # Command: approve (defect #1)
 # ---------------------------------------------------------------------------
 
-def _approve_require_human_presence(live_rel: str) -> None:
+def _presence_isatty(stream) -> bool:
+    try:
+        return bool(stream is not None and stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str,
+                            prompt: str = "confirm> ", lines=(), how: str = "") -> None:
+    """v1.0 audit: the presence check `tessctl approve` uses, for every
+    other command that makes a security-tier file (or an older release)
+    accepted. stdin AND stdout must be a TTY and the person must type
+    `confirm` exactly; otherwise exit non-zero before anything is written.
+    No flag or environment variable skips it. Like approve's, it is a
+    presence check, not a cryptographic boundary."""
+    stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
+    if not (stdin_tty and stdout_tty):
+        sys.exit(
+            f"tessctl {cmd}: REFUSED — {subject} needs a human at an interactive terminal.\n"
+            f"  stdin is {'a TTY' if stdin_tty else 'not a TTY'}; "
+            f"stdout is {'a TTY' if stdout_tty else 'not a TTY'}. Both must be a TTY.\n"
+            f"  Nothing was changed: {unchanged}\n"
+            + (f"  {how}" if how else f"  Run the same `tessctl {cmd}` command yourself, in a terminal.")
+        )
+    print(f"tessctl {cmd}: human confirmation required — {subject}")
+    for ln in lines:
+        print(ln)
+    print(f"  To continue, type exactly:  {confirm}")
+    print("  To stop without changing anything, press Enter.")
+    try:
+        typed = input(f"  {prompt}")
+    except EOFError:
+        typed = None
+    if typed is None or typed.strip() != confirm:
+        sys.exit(f"tessctl {cmd}: REFUSED — what you typed did not match {confirm!r}.\n"
+                 f"  Nothing was changed: {unchanged}")
+
+
+def _bytes_review_lines(label_old: str, old: bytes, label_new: str, new: bytes,
+                        max_lines: int = 200) -> list:
+    """Plain lines showing the exact bytes an operator is asked to accept:
+    their sha256 and a unified diff against what is live now (truncated
+    after max_lines; the digest still names the full content)."""
+    out = [f"  The exact content you are accepting ({label_new}) has "
+           f"{sha256_bytes(new)} ({len(new)} bytes)."]
+    try:
+        a = old.decode("utf-8").splitlines(keepends=True)
+        b = new.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        out.append("  (binary content — no line diff shown)")
+        return out
+    diff = list(difflib.unified_diff(a, b, fromfile=label_old, tofile=label_new))
+    if not diff:
+        out.append("  (no difference from what is live now)")
+        return out
+    out.append("  Changes compared with what is live now:")
+    for ln in diff[:max_lines]:
+        out.append("    " + ln.rstrip("\n"))
+    if len(diff) > max_lines:
+        out.append(f"    … {len(diff) - max_lines} more diff line(s) not shown — review "
+                   f"the whole file before you continue.")
+    return out
+
+
+def _approve_require_human_presence(live_rel: str, review_lines=None) -> None:
     """
     v0.2: approving a quarantined or security-tier file needs a human at an
     interactive terminal. stdin AND stdout must both be a TTY, and the
@@ -10933,7 +11360,11 @@ def _approve_require_human_presence(live_rel: str) -> None:
             "  Run `tessctl approve <path> --rationale \"...\"` yourself, in a terminal."
         )
     print(f"tessctl approve: human confirmation required for {live_rel}")
-    print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
+    if review_lines:
+        for ln in review_lines:
+            print(ln)
+    else:
+        print(f"  Review the edit first: diff -u {live_rel} {QUARANTINE_DIR}/{live_rel}")
     print(f"  Type the path exactly as shown to approve it: {live_rel}")
     try:
         typed = input("  path> ")
@@ -11025,15 +11456,44 @@ def cmd_approve(args, root: Path) -> None:
             f"  The quarantine directory may have been deleted.  Cannot approve without it."
         )
 
+    # v1.0 audit (quarantine-bytes-unbound-to-confirmation): read the parked
+    # copy ONCE (never through a symlink), check it is the copy capture set
+    # aside, show the operator exactly those bytes, re-check them after the
+    # confirmation, and write that same buffer.
+    q_bytes, q_why = _read_regular_nofollow(q_path)
+    if q_bytes is None:
+        sys.exit(f"tessctl approve: REFUSED — {QUARANTINE_DIR}/{live_rel} {q_why}.\n"
+                 f"  Nothing was changed: {live_rel} stays quarantined.")
+    q_sha = sha256_bytes(q_bytes)
+    recorded = {files[k].get("quarantined_sha256") for k in entry_keys} - {None, ""}
+    if recorded and recorded != {q_sha}:
+        sys.exit(
+            f"tessctl approve: REFUSED — the set-aside copy {QUARANTINE_DIR}/{live_rel} "
+            f"changed after Tess set it aside, so it is not the edit that was captured.\n"
+            f"  Nothing was changed: {live_rel} stays quarantined.\n"
+            f"  To approve an edit: put the text you want in {live_rel}, run "
+            f"`tessctl capture {live_rel}` to set it aside again, then run approve."
+        )
+    live_now = live_path.read_bytes() if live_path.is_file() else b""
+
     # v0.2: human presence — before ANY write or lock change.
     if any(
         files[k].get("status") == "quarantined" or is_security_tier(k, files[k])
         for k in entry_keys
     ):
-        _approve_require_human_presence(live_rel)
+        _approve_require_human_presence(
+            live_rel,
+            review_lines=_bytes_review_lines(f"{live_rel} (live now)", live_now,
+                                             f"{QUARANTINE_DIR}/{live_rel}", q_bytes))
+        again, _why = _read_regular_nofollow(q_path)
+        if again is None or sha256_bytes(again) != q_sha:
+            sys.exit(f"tessctl approve: REFUSED — {QUARANTINE_DIR}/{live_rel} changed while "
+                     f"you were reviewing it, so what you confirmed is not what would go "
+                     f"live.\n  Nothing was changed: {live_rel} stays quarantined. Run "
+                     f"`tessctl approve` again.")
 
     # Apply the quarantined edit to live (H2/M3: manifest-gated + atomic)
-    guarded_write(root, live_rel, q_path.read_bytes(), op="approve")
+    guarded_write(root, live_rel, q_bytes, op="approve")
 
     # Flip status to locally-modified (normal merge candidate going forward)
     approved_at = datetime.datetime.now(
@@ -11043,8 +11503,10 @@ def cmd_approve(args, root: Path) -> None:
         lock["files"][k]["status"] = "locally-modified"
         lock["files"][k]["approved_at"] = approved_at
         lock["files"][k]["approved_rationale"] = rationale
+        lock["files"][k]["approved_sha256"] = q_sha
         lock["files"][k].pop("quarantined_at", None)
         lock["files"][k].pop("quarantined_by", None)
+        lock["files"][k].pop("quarantined_sha256", None)
 
     # Record approval in modified.json
     diff_text = ""
@@ -11124,6 +11586,24 @@ def cmd_resolve(args, root: Path) -> None:
     live_path = root / live_rel
     conflict_dir = root / ".tess" / "conflicts"
     conflict_file = conflict_dir / live_rel.replace("/", "_")
+    # v1.0 audit (cmd_resolve:security-tier-write-without-presence): every
+    # resolve mode makes a live file's content accepted (locally-modified) or
+    # writes the parked incoming bytes live. For a security-tier or
+    # quarantined file that needs the same person at the terminal as
+    # `tessctl approve`, shown the exact bytes. Other files are unchanged.
+    _res_keys = _approve_entry_keys(lock, core_key, live_rel)
+    _res_security = any(files[k].get("status") == "quarantined" or is_security_tier(k, files[k])
+                        for k in _res_keys)
+
+    def _res_presence(new_bytes: bytes, label: str) -> None:
+        core_p = root / core_key
+        base = (render_core_to_live(core_p, live_path, root) if core_p.exists()
+                else (live_path.read_bytes() if live_path.is_file() else b""))
+        _require_human_presence(
+            "resolve", f"resolving the security-tier file {live_rel}",
+            f"{live_rel} and its tess.lock status are as they were.", live_rel,
+            prompt="path> ",
+            lines=_bytes_review_lines(f"{live_rel} (Tess's version)", base, label, new_bytes))
 
     if accept_ours:
         # Keep the live file as-is; just mark as locally-modified
@@ -11134,6 +11614,15 @@ def cmd_resolve(args, root: Path) -> None:
             if re.search(r'^<{7} |^={7}\s*$|^>{7} ', content, re.MULTILINE):
                 print(f"  WARN  {live_rel} still contains conflict markers — edit first.")
                 sys.exit(1)
+        if _res_security:
+            _ours, _why = _read_regular_nofollow(live_path)
+            if _ours is None:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} {_why}. Nothing was changed.")
+            _res_presence(_ours, f"{live_rel} (your version)")
+            _again, _why = _read_regular_nofollow(live_path)
+            if _again != _ours:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} changed while you were "
+                         f"reviewing it. Nothing was changed; run resolve again.")
         lock["files"][core_key]["status"] = "locally-modified"
         lock["files"][core_key]["resolved_at"] = datetime.datetime.now(
             datetime.timezone.utc
@@ -11151,8 +11640,19 @@ def cmd_resolve(args, root: Path) -> None:
                 f"tessctl resolve: conflict file not found at {conflict_file}.\n"
                 f"  Cannot accept theirs without the incoming version."
             )
+        # v1.0 audit: one read of the parked incoming bytes, shown and
+        # re-checked for a security-tier file, and that buffer is written.
+        _theirs, _why = _read_regular_nofollow(conflict_file)
+        if _theirs is None:
+            sys.exit(f"tessctl resolve: REFUSED — {conflict_file} {_why}. Nothing was changed.")
+        if _res_security:
+            _res_presence(_theirs, f"{conflict_file.name} (incoming)")
+            _again, _why = _read_regular_nofollow(conflict_file)
+            if _again != _theirs:
+                sys.exit(f"tessctl resolve: REFUSED — {conflict_file.name} changed while you "
+                         f"were reviewing it. Nothing was changed; run resolve again.")
         # Overwrite live with the conflict/incoming version (H2/M3: gated + atomic)
-        guarded_write(root, live_rel, conflict_file.read_bytes(), op="resolve-theirs")
+        guarded_write(root, live_rel, _theirs, op="resolve-theirs")
         lock["files"][core_key]["status"] = "core-managed"
         lock["files"][core_key]["resolved_at"] = datetime.datetime.now(
             datetime.timezone.utc
@@ -11187,9 +11687,25 @@ def cmd_resolve(args, root: Path) -> None:
         ret = subprocess.call([editor, edit_target])
         if ret != 0:
             sys.exit(f"tessctl resolve: editor exited with code {ret}")
-        # H1 fix: replace ungated shutil.copy2 with manifest-gated atomic write
+        # v1.0 audit: a security-tier file's edited result is shown and
+        # confirmed before it is written or its status changes.
+        _edited = None
         if conflict_file.exists():
-            guarded_write(root, live_rel, conflict_file.read_bytes(),
+            _edited, _why = _read_regular_nofollow(conflict_file)
+            if _edited is None:
+                sys.exit(f"tessctl resolve: REFUSED — {conflict_file} {_why}. Nothing was changed.")
+        if _res_security:
+            _shown = _edited if _edited is not None else _read_regular_nofollow(live_path)[0]
+            if _shown is None:
+                sys.exit(f"tessctl resolve: REFUSED — {live_rel} cannot be read. Nothing was changed.")
+            _res_presence(_shown, f"{live_rel} (your edited version)")
+            _src = conflict_file if _edited is not None else live_path
+            if _read_regular_nofollow(_src)[0] != _shown:
+                sys.exit(f"tessctl resolve: REFUSED — {_src.name} changed while you were "
+                         f"reviewing it. Nothing was changed; run resolve again.")
+        # H1 fix: replace ungated shutil.copy2 with manifest-gated atomic write
+        if _edited is not None:
+            guarded_write(root, live_rel, _edited,
                           op="resolve-edit", manifest=manifest)
         # Verify no remaining markers (LOW: anchored regex)
         if live_path.exists():
@@ -11273,6 +11789,24 @@ def cmd_reset(args, root: Path) -> None:
         sys.exit(f"tessctl reset: core file not found: {core_key}")
 
     rendered = render_core_to_live(core_path, live_path, root)
+
+    # v1.0 audit (coverage critic): reset re-pins base_sha to the core bytes
+    # on disk. When a security-tier file's core no longer matches its pinned
+    # base_sha, that re-pin would accept the changed core as pristine (and
+    # silence verify's CORE TAMPER), so it needs a person at the terminal.
+    # The usual reset (core unchanged) stays prompt-free.
+    _repin_changes = [
+        _rk for _rk in _reset_keys
+        if (root / _rk).exists() and files.get(_rk, {}).get("base_sha")
+        and sha256_file(root / _rk) != files[_rk]["base_sha"]]
+    if _repin_changes and any(is_security_tier(_rk, files[_rk]) for _rk in _reset_keys):
+        _require_human_presence(
+            "reset", f"resetting the security-tier file {live_rel}",
+            f"{live_rel} and tess.lock are as they were.", live_rel, prompt="path> ",
+            lines=[f"  These Tess core files no longer match the release they were "
+                   f"installed from, and reset would record them as the new original:"]
+                  + [f"    {k}" for k in _repin_changes]
+                  + ["  If you did not change them yourself, stop and run `tessctl verify`."])
 
     # Snapshot the current live file before discarding (always recoverable).
     # v0.2: a labelled snapshot with a manifest (snapshot_paths) that also
@@ -11689,6 +12223,7 @@ def cmd_self_update(args, root: Path) -> None:
         )
 
     ref = _resolve_update_ref(args, lock)
+    _update_version_floor(args, lock, ref, "self-update")   # v1.0 audit
     engine_path = root / ".tess" / "bin" / "tessctl"
     backup_path = engine_path.with_suffix(".bak")
 
@@ -11735,16 +12270,27 @@ def cmd_self_update(args, root: Path) -> None:
                 f"  The upstream may not have a compatible engine layout.\n"
                 f"  Current engine is unchanged."
             )
-        new_engine_bytes = new_engine_path.read_bytes()
+        # v1.0 audit: the engine bytes come from the verified commit's git
+        # object, never from the clone's working tree.
+        _eng = _release_tree_entries(clone_dir, _su_commit, ".tess/bin/tessctl").get("")
+        _eng_obj = (_git_cat_file_batch(clone_dir, [_eng[1]]).get(_eng[1], (None, None))
+                    if _eng and _eng[0] in ("100644", "100755") else (None, None))
+        if _eng_obj[0] != "blob":
+            sys.exit(f"tessctl self-update: .tess/bin/tessctl is not a regular file in the "
+                     f"verified release {ref!r}.\n  Current engine is unchanged.")
+        new_engine_bytes = _eng_obj[1]
 
         # -- Step 3: AST parse-check before touching the live engine --
         print("\nStep 2: parse-check new engine …")
         parse_result = subprocess.run(
             [sys.executable, "-I", "-B", "-c",
-             "import ast, sys; ast.parse(open(sys.argv[1]).read()); print('parse OK')",
-             str(new_engine_path)],
-            capture_output=True, text=True
+             "import ast, sys; ast.parse(sys.stdin.buffer.read()); print('parse OK')"],
+            input=new_engine_bytes, capture_output=True
         )
+        parse_result = subprocess.CompletedProcess(
+            parse_result.args, parse_result.returncode,
+            parse_result.stdout.decode("utf-8", "replace"),
+            parse_result.stderr.decode("utf-8", "replace"))
         if parse_result.returncode != 0:
             sys.exit(
                 f"tessctl self-update: ABORT — new engine fails AST parse:\n"
@@ -11886,6 +12432,21 @@ def _agent_keys_by_name(lock: dict) -> dict:
     return mapping
 
 
+def _roster_security_presence(cmd: str, lock: dict, core_keys) -> None:
+    """v1.0 audit (coverage critic): recruit / bench / roster apply change
+    agent-file statuses without a prompt. Should a tess.lock ever mark one of
+    those entries security-tier, the change needs the person at the terminal
+    (as `tessctl approve` does). Shipped agent files are normal tier, so this
+    never prompts in a normal install."""
+    files = lock.get("files") or {}
+    sec = sorted({(files[k].get("live_path") or k) for k in core_keys
+                  if k in files and is_security_tier(k, files[k])})
+    if sec:
+        _require_human_presence(
+            cmd, f"changing the security-tier file(s) {', '.join(sec)}",
+            "no file or tess.lock status was changed.", sec[0], prompt="path> ")
+
+
 def _roster_install_set(roster_data: dict, path_name: str) -> set:
     """
     Build the complete install set for a given STARTER_PATH.
@@ -12003,6 +12564,7 @@ def _roster_apply(args, root: Path) -> None:
     installed: list[str] = []
     staged_list: list[str] = []
     gate_skipped: list[str] = []
+    _roster_security_presence("roster", lock, by_name.values())   # v1.0 audit
 
     for agent_name in sorted(by_name.keys()):
         core_key = by_name[agent_name]
@@ -12141,6 +12703,7 @@ def cmd_recruit(args, root: Path) -> None:
     recruited: list[str] = []
     already_installed: list[str] = []
     gate_skipped: list[str] = []
+    _roster_security_presence("recruit", lock, [by_name[n] for n in to_recruit if n in by_name])
 
     for agent_name in sorted(to_recruit):
         core_key = by_name.get(agent_name)
@@ -12221,6 +12784,7 @@ def cmd_bench(args, root: Path) -> None:
 
     benched: list[str] = []
     already_staged: list[str] = []
+    _roster_security_presence("bench", lock, [by_name[n] for n in to_bench if n in by_name])
 
     for agent_name in sorted(to_bench):
         core_key = by_name.get(agent_name)
@@ -17401,13 +17965,15 @@ def _update_carry_policy_registries(root: Path) -> None:
             and current.is_file() and not current.is_symlink()):
         return
     try:
-        new_text = staged.read_text(encoding="utf-8")
+        new_text = _staging_verified_bytes(root, rel).decode("utf-8")   # v1.0 audit
         carried = _policy_carry_registries(new_text, current.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, ValueError) as e:
         sys.exit(f"tessctl update: cannot carry your policy key registries into the new "
                  f"release policy ({e}); nothing was changed.")
     if carried != new_text:
-        staged.write_text(carried, encoding="utf-8")
+        _atomic_write_bytes(staged, carried.encode("utf-8"))
+        if _STAGING_STATE.get("verified") is not None:   # v1.0 audit: tessctl's own write
+            _STAGING_STATE["verified"][rel] = sha256_bytes(carried.encode("utf-8"))
         print(f"  kept your verifier_keys / signoff_keys in {rel} (not the release's)")
 
 
@@ -28036,6 +28602,9 @@ def build_parser() -> argparse.ArgumentParser:
             "fetch is refused if no fingerprint is pinned (fail-closed default)."
         ),
     )
+    p_update.add_argument("--allow-downgrade", action="store_true", dest="allow_downgrade",
+                          help="go back to an OLDER release on purpose (asks you to confirm "
+                               "at the terminal)")
 
     # publish
     p_publish = sub.add_parser("publish", help="copy core→live, status→user-published")
@@ -28127,6 +28696,9 @@ def build_parser() -> argparse.ArgumentParser:
             "when no fingerprint is pinned (fail-closed default)."
         ),
     )
+    p_selfupdate.add_argument("--allow-downgrade", action="store_true", dest="allow_downgrade",
+                              help="go back to an OLDER engine release on purpose (asks you "
+                                   "to confirm at the terminal)")
 
     # lock (M1) — CI gate verb + MAINTAINER re-baseline
     p_lock = sub.add_parser(

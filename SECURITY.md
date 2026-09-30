@@ -231,6 +231,28 @@ security reviews; they are stated so nobody relies on a check that is not there.
   launcher outside the repository, registered in the user-level Claude Code and
   Codex settings so that it runs the anchor check before any in-repo file, is
   planned for 1.0.1.
+- **Security-tier lifecycle steps are presence checks, and snapshots are not
+  signed.** Every `tessctl` command that makes a security-tier file's content
+  accepted, or restores one, needs a person at a real terminal who types a
+  confirmation, exactly like `approve`: `approve` itself (it shows the sha256
+  and diff of the exact set-aside bytes, checks them against the digest capture
+  recorded in `tess.lock`, re-checks them after you type, and writes that same
+  buffer), `resolve` (every mode), `override`, `reset` when it would re-pin a
+  changed core file, `recruit` / `bench` / `roster apply` of a security-tier
+  entry, `rollback` that changes `tess.lock` or a safety file, and
+  `update --allow-downgrade`. Like `approve`, these are presence checks, not
+  cryptography: a process that fakes a terminal can pass them. Rollback
+  snapshots in `.tess/snapshots` are ordinary project files and carry no
+  signature; only the automatic rollback inside a failed `tessctl update`
+  trusts one (the snapshot that same run wrote, byte for byte). A snapshot
+  restored by `tessctl rollback` is limited to files a tessctl command
+  snapshots (never `.git`, never a link out of the project) and is listed for
+  the person to confirm before any safety file changes, but the confirmation
+  cannot tell a planted snapshot from a real one: confirm only a rollback you
+  expect. During `tessctl update` a staged file is checked right before each
+  read, but the renderer then reads it by path, so a change made in that
+  instant and undone before the next check would not be seen; the next check
+  catches any change that persists.
 - **The hooks heartbeat is a detection aid, not proof.** SessionStart and
   UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
   hooks-status` reads it to say whether the hooks ran in this session. It is an
@@ -324,6 +346,35 @@ Without gpg, the SSH signature alone decides. A missing, malformed or
 wrong-key signature fails closed before any file is written. The ship gate
 applies the same rule to `.tess/release-proof.json`, reading both pins and
 both public keys from the base commit, never from the candidate.
+
+After the signature check, `tessctl update` writes `.tess/staging` from the
+verified commit's git objects and keeps the sha256 of every staged file in
+memory; every later read of staging in that run (the policy-rule prompt, new
+file adoption, the per-file apply, the core advance, the `base_sha` re-pin) is
+checked against it, and the whole staging tree is re-checked before the apply
+and before the lock is saved. A staged file that changed after the check stops
+the update (rolling it back if the core advance had begun), so only the signed
+release's bytes are applied and anchored. `self-update` reads the new engine
+from the verified commit's git object the same way.
+
+**No silent downgrade.** `update` and `self-update` refuse a release tag older
+than the installed version (the newer of `framework.version` and
+`framework.upstream_ref`, semver order, so `v1.0.0-rc.1` is older than
+`v1.0.0`), a tag that is not a Tess OS release (`vX.Y.Z`), and a
+`create-tess-v*` package tag. Going back on purpose takes `--allow-downgrade`
+and typing `downgrade to <tag>` at a real terminal.
+
+**create-tess and a git template.** The wizard installs the template bundled
+in the npm package by default. An explicit `--template-source` git URL must be
+`https://`, and must name a release tag (`--template-ref v1.2.3`): the wizard
+fetches only that tag, verifies its OpenPGP and SSH signatures with the keys
+the package ships (the bundled template's `.tess/keys` and `tess.lock` pins,
+never keys from the fetched tree) by the same rule as `tessctl update`, and
+checks out and runs nothing before both pass. `git://`, `ssh://` and
+`user@host:path` sources are refused. A local template folder is run as
+trusted code, so it is accepted only when named on the command line with
+`--template-source`, not from the `TESS_TEMPLATE_SOURCE` environment variable
+alone.
 
 **The first push of a fresh install** has no base commit, so no earlier
 `tess.lock` pins a key. The npm package ships the proof of the signed release

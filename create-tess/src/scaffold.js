@@ -27,7 +27,6 @@
 // scaffolded, on both paths.
 import { existsSync, cpSync, readdirSync, chmodSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isExcludedRel, makeCopyFilter } from './ignore.js';
 import { restoreGitignores } from './dotfiles.js';
@@ -37,9 +36,9 @@ import { detectInstall } from './force-plan.js';
 import { CREATE_TESS_VERSION } from './version.js';
 import {
   isLocalSource,
-  buildCloneArgs,
   assertSafeTemplateSource,
 } from './git-template-source.js';
+import { fetchVerifiedRelease, loadReleaseTrust } from './release-verify.js';
 
 // The "git opt-in" cluster (DEFAULT_TEMPLATE_SOURCE, DEFAULT_TEMPLATE_REF,
 // resolveTemplateRef, buildCloneArgs, isSafeTemplateSource,
@@ -143,7 +142,7 @@ export function clobberReason(targetDir, force) {
 // resolved by the caller via resolveTemplateRef() so this function stays a
 // pure "fetch whatever I was told to fetch" primitive. Ignored entirely for
 // a local source (there is no ref to pin — a local directory is copied as-is).
-export function fetchTemplate(source, stagingDir, ref = null) {
+export function fetchTemplate(source, stagingDir, ref = null, { trust = null } = {}) {
   // Defence in depth — refuse a flag-shaped source before it can reach git.
   assertSafeTemplateSource(source);
   mkdirSync(stagingDir, { recursive: true });
@@ -163,22 +162,13 @@ export function fetchTemplate(source, stagingDir, ref = null) {
     restoreGitignores(stagingDir);
     return { mode: 'local', source: abs };
   }
-  // Git URL → shallow clone (pinned to `ref` when set), then strip .git +
-  // create-tess. The `--` end-of-options guard means a flag-shaped <source>
-  // can never be read as a git option (HIGH-2a; belt-and-suspenders with
-  // assertSafeTemplateSource).
-  try {
-    execFileSync('git', buildCloneArgs(source, stagingDir, ref), { stdio: 'inherit' });
-  } catch (err) {
-    if (ref) {
-      throw new Error(
-        `git clone --branch ${ref} ${source} failed — the pinned ref "${ref}" may not ` +
-          `exist yet at this source (has it been released?). Override with ` +
-          `--template-ref/TESS_TEMPLATE_REF to target a different ref. ${err.message}`,
-      );
-    }
-    throw err;
-  }
+  // Git URL (https only) → fetch EXACTLY the release tag `ref`, verify its
+  // OpenPGP + SSH release signatures with the keys this package ships, and
+  // only then check out the signed commit (v1.0 audit: an unverified tree was
+  // cloned and its tessctl run). Then strip .git + create-tess. The `--`
+  // end-of-options guard means a flag-shaped <source> can never be read as a
+  // git option (HIGH-2a; belt-and-suspenders with assertSafeTemplateSource).
+  fetchVerifiedRelease(source, stagingDir, ref, trust || loadReleaseTrust(BUNDLED_TEMPLATE_DIR));
   // Strip excluded dirs a clone brings in (so they never reach the target).
   for (const ex of ['.git', 'create-tess']) {
     const p = join(stagingDir, ex);

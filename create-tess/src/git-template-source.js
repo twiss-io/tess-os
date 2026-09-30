@@ -87,29 +87,34 @@ export function buildCloneArgs(source, stagingDir, ref) {
 // flag-shaped source (leading '-') matches none of the safe forms, so it is still
 // refused unless it names a real local directory (handled by the local branch and
 // never handed to git). Allowed forms:
-//   • https:// , git:// , ssh://  remote URLs
-//   • scp-form  user@host:path    (e.g. git@github.com:twiss-io/tess-os.git)
-//   • an existing LOCAL directory (relative or absolute)
-// Everything else is refused — in particular the transport schemes git can be
-// coerced through: `ext::sh -c …` (arbitrary-command → RCE-class) and `file://…`
-// (local-file disclosure). Remote sources are still passed to git after `--`.
-const SAFE_URL_SCHEME_RE = /^(?:https|git|ssh):\/\//;
-const SCP_FORM_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:/;
+//   • an https:// URL — and then only a SIGNED Tess OS release tag, verified with
+//     the release keys this package ships before anything is checked out or run
+//     (release-verify.js; v1.0 audit, create-tess/git-template-source/
+//     unauthenticated-template-executed-and-anchored)
+//   • an existing LOCAL directory (relative or absolute), named on the command
+//     line with --template-source (index.js refuses one that only comes from the
+//     TESS_TEMPLATE_SOURCE environment variable)
+// Everything else is refused: plaintext git:// (no transport integrity), ssh://
+// and scp-form git@host:path (the release signature is the check that matters,
+// and https is the one transport it is offered over), and the transport schemes
+// git can be coerced through: `ext::sh -c …` (arbitrary-command → RCE-class) and
+// `file://…` (local-file disclosure). Remote sources are passed to git after `--`.
+const SAFE_URL_SCHEME_RE = /^https:\/\/[^\s]+$/;
+
+export const TEMPLATE_SOURCE_HINT =
+  'Use an https:// URL of a signed Tess OS release (with --template-ref v1.2.3), or an ' +
+  'existing local folder given with --template-source.';
 
 export function isSafeTemplateSource(source) {
   if (typeof source !== 'string' || source.length === 0) return false;
   // An existing local directory is always safe — it is copied, never cloned.
   if (isLocalSource(source)) return true;
-  // Otherwise it must be an explicitly allowed remote transport form.
-  return SAFE_URL_SCHEME_RE.test(source) || SCP_FORM_RE.test(source);
+  // Otherwise it must be an https:// URL (signature-checked before use).
+  return SAFE_URL_SCHEME_RE.test(source);
 }
 
 export function assertSafeTemplateSource(source) {
   if (!isSafeTemplateSource(source)) {
-    throw new Error(
-      `refusing template-source "${source}": not an allowed source. Use an ` +
-        `https://, git://, or ssh:// URL, an scp-form git@host:path, or an ` +
-        `existing local directory.`,
-    );
+    throw new Error(`refusing template-source "${source}": not an allowed source. ${TEMPLATE_SOURCE_HINT}`);
   }
 }

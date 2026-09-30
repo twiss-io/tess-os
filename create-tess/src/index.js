@@ -19,6 +19,7 @@ import {
   resolveTemplateRef,
 } from './scaffold.js';
 import { loadRoster, installSetForPath } from './roster.js';
+import { TEMPLATE_SOURCE_HINT } from './git-template-source.js';
 import { writeProfile, bake, check, activateGate, regenPolicyLock, recordAnchor } from './keystone.js';
 import { runJourney } from './journey.js';
 import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
@@ -157,9 +158,14 @@ export async function main(argv) {
   // up front (blocks `ext::`/`file://` coercion and flag-shaped argument injection
   // into `git clone`); see isSafeTemplateSource for the allowlist.
   if (!isSafeTemplateSource(source)) {
+    die(`--template-source "${source}" is not an allowed source. ${TEMPLATE_SOURCE_HINT}`);
+  }
+  // v1.0 audit: a local template folder is run as trusted code, so it must be
+  // chosen on the command line, not picked up from the environment.
+  if (!usingBundledDefault && isLocalSource(source) && opts.templateSourceFrom !== 'flag') {
     die(
-      `--template-source "${source}" is not an allowed source. Use an https://, ` +
-        `git://, or ssh:// URL, an scp-form git@host:path, or an existing local directory.`,
+      `TESS_TEMPLATE_SOURCE names a local folder (${source}). A local template is run ` +
+        `as trusted code, so name it on the command line instead: --template-source ${source}`,
     );
   }
   const refusal = clobberReason(targetDir, opts.force);
