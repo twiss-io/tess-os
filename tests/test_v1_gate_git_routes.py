@@ -33,7 +33,9 @@ from test_v1_r3_gate_rollback import _claude, _codex, _fill, repo  # noqa: F401 
 
 pytestmark = pytest.mark.skipif(not HAS_GIT, reason="needs git")
 
-HOME_ANCHOR = os.path.join(os.path.expanduser("~"), ".config", "tess", "projects", "x", "anchor.json")
+# the OS user record's home, as the gate resolves it (in this suite: the fake home tests/conftest.py sets up)
+HOME_ANCHOR = os.path.join(__import__("pwd").getpwuid(os.getuid()).pw_dir, ".config", "tess", "projects", "x",
+                           "anchor.json")
 
 DENY_BOTH = [
     "git replace HEAD evil",

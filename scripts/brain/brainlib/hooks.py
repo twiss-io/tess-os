@@ -62,6 +62,71 @@ def _fit(text: str, limit: int) -> str:
     return "\n".join(out) + note
 
 
+# Runtime programs whose nesting marks an agent-started session (see automation_reason).
+_RUNTIME_EXES = ("claude", "codex", "gemini")
+
+
+def _ancestry(limit: int = 40) -> List[str]:
+    """Lower-cased program names of this process's ancestors, parent first ([] when `ps` is unavailable)."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True,
+                             timeout=3).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            procs[int(parts[0])] = (int(parts[1]), parts[2].strip())
+    names: List[str] = []
+    pid, seen = os.getppid(), set()
+    while pid in procs and pid not in seen and len(names) < limit:
+        seen.add(pid)
+        pid, comm = procs[pid]
+        names.append(os.path.basename(comm).lower())
+    return names
+
+
+def nested_runtime(names: Optional[List[str]] = None) -> str:
+    """'' unless this hook's runtime was itself started from inside another agent session: two separate
+    runs of runtime programs (claude, codex, gemini) with something else (the agent's shell) between them."""
+    groups: List[str] = []
+    prev = False
+    for n in (_ancestry() if names is None else names):
+        cur = n in _RUNTIME_EXES
+        if cur and not prev:
+            groups.append(n)
+        prev = cur
+    if len(groups) < 2:
+        return ""
+    return "a %s session started from inside a %s session" % (groups[0], groups[1])
+
+
+def automation_reason(runtime: str, data: Dict) -> str:
+    """Why this session is run by automation, not typed by the operator ('' when it is the operator).
+
+    v1.0.0 audit (headless prompts attributed to the operator): `claude -p`, the Agent SDK, `codex exec`, and
+    a runtime an agent started from its own shell send prompts a program or an agent chose. Signals: Claude
+    Code's entrypoint for this process, the session's own transcript markers (parsers), and a runtime
+    running inside another runtime's session (process ancestry)."""
+    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
+    if runtime == "claude" and ep.startswith("sdk"):
+        return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
+    path = str(data.get("transcript_path") or "")
+    if path and os.path.isfile(path):
+        from .parsers import transcript_automation
+        why = transcript_automation(runtime, path)
+        if why:
+            return why
+    return nested_runtime()
+
+
+def _mark_automation(cfg: Config, runtime: str, data: Dict, why: str) -> None:
+    from . import provenance
+    provenance.mark_automation(cfg, runtime, str(data.get("session_id") or ""), str(data.get("transcript_path") or ""),
+                               why)
+
+
 def spawn_argv(args: List[str]) -> List[str]:
     """The detached child goes back through the pinned launcher when this instance ships one, so the
     sync it runs is sha-verified again (the hook that spawns it was verified moments earlier).
@@ -102,7 +167,10 @@ def prompt(cfg: Config, runtime: str, data: Dict) -> None:
     text = str(data.get("prompt") or "")
     if not text.strip() or _INJECTED.search(text):  # plugin-injected text is not the operator typing
         return
-    rec = turns.append(cfg, runtime, str(data.get("session_id") or ""), text, "operator")
+    why = automation_reason(runtime, data)
+    if why:  # recorded before the turn, so the Stop hook's sync already journals it as automation
+        _mark_automation(cfg, runtime, data, why)
+    rec = turns.append(cfg, runtime, str(data.get("session_id") or ""), text, "automation" if why else "operator")
     from . import sync
     sync.remember_session(cfg, runtime, str(data.get("session_id") or ""), str(data.get("transcript_path") or ""),
                           str(data.get("cwd") or ""))
@@ -126,6 +194,9 @@ def stop(cfg: Config, runtime: str, data: Dict) -> None:
     """Hand journaling to a detached sync FIRST: `claude -p` ends the session (and may kill an async
     hook) right after Stop fires, so nothing slow may run before the child is spawned."""
     transcript = str(data.get("transcript_path") or "")
+    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
+    if runtime == "claude" and ep.startswith("sdk"):  # cheap; the prompt hook already checked the rest
+        _mark_automation(cfg, runtime, data, "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep)
     args = ["--root", str(cfg.root), "sync", "--runtime", runtime, "--quiet"]
     if transcript:
         args += ["--transcript", transcript]

@@ -137,7 +137,9 @@ def pinned(tmp_path):
 def _env(root, **extra):
     e = dict(os.environ, CLAUDE_PROJECT_DIR=str(root), TESS_BRAIN_NO_BACKFILL="1", TESS_BRAIN_HOOK_INLINE="1")
     none = str(root / ".no-such-home")
-    e.update(CODEX_HOME=none, GEMINI_CLI_HOME=none, CLAUDE_CONFIG_DIR=none)
+    # Claude's own transcript store for these sessions (_transcript writes into it): v1.0.0 audit, a Stop-hook
+    # transcript outside the runtime's store is never journaled as the operator's words
+    e.update(CODEX_HOME=none, GEMINI_CLI_HOME=none, CLAUDE_CONFIG_DIR=str(root.parent / "claude-cfg"))
     e.update(extra)
     return e
 
@@ -150,7 +152,8 @@ def _run_hook(cmd, root, payload):
 def _transcript(tmp_path, turns, cwd):
     """A transcript of a session run IN the instance: a Stop-hook path is journaled only when its own cwd
     is inside the instance (Codex review finding 4)."""
-    return fxlib.claude_session(tmp_path / "t" / (SID + ".jsonl"), SID, turns, cwd=str(cwd))
+    return fxlib.claude_session(tmp_path / "claude-cfg" / "projects" / "t" / (SID + ".jsonl"), SID, turns,
+                                cwd=str(cwd))
 
 
 def _one(hooks, event):

@@ -120,7 +120,8 @@ def learned_since(cfg: Config, recs, since: str) -> List[records.Record]:
     out = []
     for r in recs:
         try:
-            if parse_iso(str(r.meta.get("verified_at") or "")) >= t0 and r.status not in ("pending-verification",):
+            if parse_iso(str(r.meta.get("verified_at") or "")) >= t0 and r.status not in ("pending-verification",) \
+                    and r.sealed is not False:  # a file no seal vouches for is never "learned" (records.py)
                 out.append(r)
         except (ValueError, TypeError):
             continue

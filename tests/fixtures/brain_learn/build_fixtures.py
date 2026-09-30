@@ -1,7 +1,11 @@
 """Regenerate the synthetic transcripts in this folder (run by hand, output committed).
 
 Record shapes follow what Claude Code 2.1.281 and codex-cli 0.145.0 write
-(observed 2026-09-24); every value is fictional. No secret-shaped token is
+(observed 2026-09-24), as an interactive session: the v1.0.0 audit made headless
+`claude -p` / `codex exec` runs automation, never the operator, so the markers
+are entrypoint cli / promptSource typed and originator codex_cli_rs / source cli
+(tests/test_v1_audit_brain_learning.py builds its own headless transcripts).
+Every value is fictional. No secret-shaped token is
 written here: tests plant tokens at run time (see tests/test_brain_journal.py).
 The NRIC-shaped and Luhn-valid test values below exist to prove redaction.
 """
@@ -21,7 +25,7 @@ SCRIPT = ("Decision: let's go with Firebird for the widget ledger. From now on, 
 def base(kind, n, ts, sid=SID, **kw):
     rec = {"type": kind, "uuid": "u-%03d" % n, "parentUuid": "u-%03d" % (n - 1) if n > 1 else None,
            "sessionId": sid, "timestamp": ts, "cwd": CWD, "gitBranch": "main", "version": "2.1.281",
-           "entrypoint": "sdk-cli", "isSidechain": False, "userType": "external"}
+           "entrypoint": "cli", "isSidechain": False, "userType": "external"}
     rec.update(kw)
     return rec
 
@@ -35,7 +39,7 @@ def claude_main():
     t = "2026-09-24T06:05:%02d.000Z"
     return [
         {"type": "queue-operation", "operation": "enqueue", "timestamp": t % 0, "sessionId": SID},
-        base("user", 1, t % 1, promptSource="sdk", message={"role": "user", "content": SCRIPT}),
+        base("user", 1, t % 1, promptSource="typed", message={"role": "user", "content": SCRIPT}),
         {"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "UserPromptSubmit",
                                               "content": "UTC=2026-09-24 06:05:01Z"}, "sessionId": SID},
         base("user", 2, t % 2, isMeta=True, promptSource="system",
@@ -83,8 +87,8 @@ def codex(sid, cwd, user_text, extra_unknown):
     ts = "2026-09-24T07:20:%02d.000Z"
     recs = [
         {"timestamp": ts % 0, "type": "session_meta", "payload": {
-            "session_id": sid, "id": sid, "timestamp": ts % 0, "cwd": cwd, "originator": "codex_exec",
-            "cli_version": "0.145.0", "source": "exec", "thread_source": "user", "model_provider": "openai",
+            "session_id": sid, "id": sid, "timestamp": ts % 0, "cwd": cwd, "originator": "codex_cli_rs",
+            "cli_version": "0.145.0", "source": "cli", "thread_source": "user", "model_provider": "openai",
             "history_mode": "legacy", "git": {}}},
         {"timestamp": ts % 0, "type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}},
         {"timestamp": ts % 1, "type": "response_item", "payload": {"type": "message", "role": "developer", "content": [

@@ -32,7 +32,7 @@ HASHED = ("accepted", "superseded", "retracted", "active")
 def _record_issues(cfg: Config, rec: records.Record) -> List[str]:
     out = []
     rel = rec.rel(cfg)
-    if rec.status in ("accepted", "active") and rec.kind in REQUIRED:
+    if rec.raw_status in ("accepted", "active") and rec.kind in REQUIRED:
         for field in REQUIRED[rec.kind]:
             if not str(rec.meta.get(field) or "").strip():
                 out.append("%s: accepted record lacks %s" % (rel, field))
@@ -45,9 +45,9 @@ def _record_issues(cfg: Config, rec: records.Record) -> List[str]:
             elif not contains(line.text, str(rec.meta.get("source_quote") or "")):
                 out.append("%s: the line %s does not contain the source_quote" % (rel, ref))
     want = rec.meta.get("body_sha256")
-    if rec.status in HASHED and want and records.body_hash(rec.body) != want:
+    if rec.raw_status in HASHED and want and records.body_hash(rec.body) != want:
         out.append("%s: body changed after acceptance (body_sha256 mismatch); supersede, never edit" % rel)
-    if rec.status in ("accepted",) and rec.kind == "decision" and not want:
+    if rec.raw_status in ("accepted",) and rec.kind == "decision" and not want:
         out.append("%s: accepted decision has no body_sha256" % rel)
     meta_want = rec.meta.get("meta_sha256")
     if meta_want and records.meta_hash(rec.meta) != meta_want:

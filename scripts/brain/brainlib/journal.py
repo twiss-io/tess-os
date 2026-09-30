@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from . import cues, frontmatter, gitutil, lookup, redact
 from .notes import WITHHELD, private_read, private_file, summary
 from .config import Config, iso, read_json, write_json, write_text_if_changed
-from .parsers import Session, count_lines
+from .parsers import AUTOMATION, Session, count_lines, to_automation
 from .textutil import clip
 
 SPLIT_BYTES = 256 * 1024
@@ -112,7 +112,9 @@ def build_entries(cfg: Config, sess: Session, sticky: bool = False) -> Tuple[Lis
         nl += 1
         slug = cfg.resolve_speaker(m.raw_speaker)
         ok = bool(slug) and cfg.consents(slug)
-        shown = text if ok else "[non-principal %s omitted: no consent]" % m.raw_speaker
+        shown = text if ok else ("[prompt omitted: sent by a headless or agent-started run, not typed by the "
+                                 "operator]" if m.raw_speaker == AUTOMATION else
+                                 "[non-principal %s omitted: no consent]" % m.raw_speaker)
         entries.append(Entry(label="L%d" % nl, hhmm=_hhmm(cfg, m.at), speaker=slug if ok else m.raw_speaker,
                              channel=m.channel, text=shown, principal=ok, at=m.at, ordinal=m.ordinal, kind="msg"))
     return entries, counts
@@ -243,6 +245,10 @@ def update(cfg: Config, path: Path, parser, entity_names: Dict[str, str], truste
     if n <= through and not revived:
         return noop
     sess = parser(path, upto=n)
+    if not getattr(sess, "automation", "") and sess.runtime in ("claude", "codex"):
+        from . import provenance
+        if provenance.automation_session(cfg, sess.runtime, sess.session_id, str(path)):
+            to_automation(sess, "a capture hook saw this session started by automation")
     built = build_entries(cfg, sess, sticky=bool(cur.get("private")))
     entries = built[0]
     if not [e for e in entries if e.kind == "msg"]:

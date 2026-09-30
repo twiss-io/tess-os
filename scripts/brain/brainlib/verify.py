@@ -186,6 +186,11 @@ def check(cfg: Config, cand: Dict) -> Result:
     found = redact.scan(blob + " " + " ".join(cand.get("also_quoted") or []))
     if found:
         return res.fail("V7: secret-shaped content (%s)" % ", ".join(found))
+    if cand.get("target"):
+        target, why = records.register_target(cfg, cand["target"])
+        if why:
+            return res.fail("V9: " + why)
+        cand["target"] = target  # V9 below matches the normalised folder, never `..` segments
     line = _locate(cfg, cand, res)
     if line is None:
         return res.fail("V1: quote not found verbatim in any journal line or current turn")

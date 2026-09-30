@@ -89,28 +89,58 @@ def claude_dir_problem(cfg: Config, claude_dir: Optional[str]) -> str:
             % (claude_dir, own[0] if own else "~/.claude/projects/<project>"))
 
 
+def own_store(runtime: str, claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
+              gemini_home: Optional[str] = None) -> List[Path]:
+    """The runtime's own transcript store: the only place whose files are attested as this instance's
+    conversations. Overrides are passed here only once the operator allowed them at a terminal."""
+    if runtime == "codex":
+        return [codex.codex_home(codex_home) / "sessions"]
+    if runtime == "gemini":
+        return [gemini.gemini_dir(gemini_home) / "tmp"]
+    return _claude_store(claude_dir)
+
+
+def home_problem(cfg: Config, codex_home: Optional[str], gemini_home: Optional[str]) -> str:
+    """'' when --codex-home / --gemini-home are absent or name this machine's own runtime home, else why.
+
+    v1.0.0 audit (unbound transcript source): like --claude-dir before item e, these chose the folder whose
+    files were journaled and attested as the operator's own words, so an agent could sync a folder of
+    made-up rollouts. Any other folder now needs the operator at a terminal (tessbrain sync asks)."""
+    out = []
+    if codex_home and os.path.realpath(str(codex.codex_home(codex_home))) != \
+            os.path.realpath(str(codex.codex_home(None))):
+        out.append("%s is not this machine's Codex home (%s)" % (codex_home, codex.codex_home(None)))
+    if gemini_home and os.path.realpath(str(gemini.gemini_dir(gemini_home))) != \
+            os.path.realpath(str(gemini.gemini_dir(None))):
+        out.append("%s is not this machine's Gemini home (%s)" % (gemini_home, gemini.gemini_dir(None).parent))
+    return "; ".join(out)
+
+
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
             days: Optional[int], deadline: Optional[float] = None, gemini_home: Optional[str] = None):
+    """[(transcript, parser, the runtime store it was found in)]."""
     out = []
     also_cwd = roots.extra(cfg)  # operator-added, outside the repo; never brain.json (GPT-6 round 2, R6)
     cutoff = time.time() - days * 86400 if days else None
     if runtime in ("all", "claude"):
-        known = [str(p) for p in vetted(cfg, "claude", _known(cfg, "claude"), also_cwd, _claude_store(claude_dir))]
+        store = own_store("claude", claude_dir=claude_dir)
+        known = [str(p) for p in vetted(cfg, "claude", _known(cfg, "claude"), also_cwd, store)]
         for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, known):
             if cutoff is None or p.stat().st_mtime >= cutoff:
-                out.append((p, claude.parse))
+                out.append((p, claude.parse, store))
     if runtime in ("all", "codex"):
         paths = codex.discover(cfg.root, codex_home, also_cwd, days, deadline)
         seen = {os.path.realpath(str(p)) for p in paths}
-        store = [codex.codex_home(codex_home) / "sessions"]
+        store = own_store("codex", codex_home=codex_home)
         for p in vetted(cfg, "codex", _known(cfg, "codex"), also_cwd, store):
             if str(p) not in seen:
                 paths.append(p)
-        out.extend((p, codex.parse) for p in paths)
+        out.extend((p, codex.parse, store) for p in paths)
     if runtime in ("all", "gemini"):
+        store = own_store("gemini", gemini_home=gemini_home)
         for p in gemini.discover(cfg.root, gemini_home, also_cwd):
             if cutoff is None or p.stat().st_mtime >= cutoff:
-                out.append((p, gemini.parse))
+                out.append((p, gemini.parse, store))
     return out
 
 
@@ -173,10 +203,12 @@ def _onboarding_records(cfg: Config) -> List[Dict]:
         q = str(rec.meta.get("source_quote") or "")
         hits = [h for h in lookup.search(cfg, q) if h.principal and lookup.trusted(cfg, h)] if q.strip() else []
         if hits:
-            records.update_fields(rec, {"status": "accepted", "verified": True, "verified_at": iso(cfg.now()),
+            # a file no seal vouches for (not written by onboarding, or edited since) waits for review
+            status = "accepted" if rec.sealed else "proposed"
+            records.update_fields(rec, {"status": status, "verified": True, "verified_at": iso(cfg.now()),
                                         "source_ref": hits[0].ref, "source_speaker": hits[0].speaker,
                                         "decided_by": rec.meta.get("decided_by") or hits[0].speaker})
-            out.append({"record": rec.id, "status": "accepted"})
+            out.append({"record": rec.id, "status": status})
     return out
 
 
@@ -208,13 +240,18 @@ class Lock:
 
 def run(cfg: Config, runtime: str = "all", claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
         transcript: Optional[str] = None, days: Optional[int] = None,
-        wait: bool = True, gemini_home: Optional[str] = None, claude_dir_confirmed: bool = False) -> Dict:
+        wait: bool = True, gemini_home: Optional[str] = None, claude_dir_confirmed: bool = False,
+        homes_confirmed: bool = False) -> Dict:
     if not cfg.active():
         return {"skipped": "source repo" if cfg.is_source_repo() else "no brain/brain.json"}
     why = "" if claude_dir_confirmed else claude_dir_problem(cfg, claude_dir)
     if why:
         log_error(cfg, "sync: refusing --claude-dir: %s" % why)
         return {"error": "refused --claude-dir: " + why}
+    why = "" if homes_confirmed else home_problem(cfg, codex_home, gemini_home)
+    if why:
+        log_error(cfg, "sync: refusing a transcript home: %s" % why)
+        return {"error": "refused: " + why}
     with Lock(cfg, "sync") as lock:
         if not lock.ok and not wait:
             return {"skipped": "another sync is running"}
@@ -235,18 +272,30 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_h
     settled = claims.settle(cfg)  # confirmations a sandboxed shell queued are durable now: apply them
     ents = entities.names(cfg)
     if transcript:
+        # v1.0.0 audit: a --transcript is journaled (and attested) only from the runtime's OWN store, never an
+        # agent-written file elsewhere whose recorded cwd happens to name this instance.
         parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
         rt = runtime if runtime in ("codex", "gemini") else "claude"
-        srcs = [(p, parser) for p in vetted(cfg, rt, [transcript], roots.extra(cfg), None)]
+        store = own_store(rt)
+        srcs = [(p, parser, store) for p in vetted(cfg, rt, [transcript], roots.extra(cfg), store)]
     else:
         srcs = sources(cfg, runtime, claude_dir, codex_home, days, gemini_home=gemini_home)
     summary = {"journaled": 0, "candidates": 0, "outcomes": [], "rechecked": [], "onboarding_unverified": []}
     summary.update({"settled": settled} if settled else {})
     cands: List[Dict] = []
     taken_back: List[str] = []
-    for path, parser in srcs:
+    from . import extstate
+    can_attest = extstate.writable(cfg)
+    deferred = 0
+    for path, parser, store in srcs:
+        trusted = _trusted(cfg, path, store)
+        if trusted and not can_attest:
+            # v1.0.0 audit: a shell that cannot write the external ledger (the Codex sandbox) never attests
+            # a line: the next hook, outside the sandbox, journals this transcript with its attestations.
+            deferred += 1
+            continue
         try:
-            sess, new, commit = journal.update(cfg, path, parser, ents, trusted=_trusted(cfg, path))
+            sess, new, commit = journal.update(cfg, path, parser, ents, trusted=trusted)
             found = cue_candidates(cfg, sess, new, ents) if sess is not None else []
             for cand in found:
                 inbox.save(cfg, cand)  # persisted before the cursor moves
@@ -258,6 +307,8 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_h
             summary["journaled"] += 1
             cands += found
             taken_back += [e.ref for e in new if e.kind == "msg" and e.principal]
+    if deferred:
+        summary["deferred"] = deferred
     summary["candidates"] = len(cands)
     summary["outcomes"] = inbox.process_all(cfg)
     touched = {r.partition("#")[0] for r in taken_back}
@@ -269,10 +320,12 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_h
     return summary
 
 
-def _trusted(cfg: Config, path: Path) -> bool:
-    """Every source here was discovered in the runtime's store or vetted; its lines are attested when the
-    file itself is a uid-owned, non-shared file outside the instance."""
-    return not provenance.transcript_ok(cfg, path, str(cfg.root), [], None)
+def _trusted(cfg: Config, path: Path, store: Optional[List[Path]]) -> bool:
+    """Its lines are attested only when the file is a uid-owned, non-shared file outside the instance AND
+    inside the runtime's own transcript store (v1.0.0 audit: store=None attested any such file)."""
+    if not store:
+        return False
+    return not provenance.transcript_ok(cfg, path, str(cfg.root), [], store)
 
 
 JUDGED_BACK = ("decision", "preference", "correction")

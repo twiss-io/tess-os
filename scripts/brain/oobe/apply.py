@@ -261,6 +261,7 @@ def run(root: Path, dry: bool = False, final_status: str = "complete") -> Dict[s
     if dry:
         return result
     state.save_brain(root, brain)
+    records.seal_created(root, [p for p in plan.created() if p.startswith("brain/decisions/")])
     try:
         run_learn(root)
         sync_identity(root, brain, seed=git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0)
