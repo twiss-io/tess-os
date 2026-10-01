@@ -229,6 +229,9 @@ owned_globs. Add ".agents/skills/tess-*/**" ...`):
 ".agents/skills/tess-*/**"
 ```
 
+Tess protects `tess.manifest.json` (an assistant cannot edit it), so make the
+edit yourself, then run `tessctl anchor accept` in your own terminal.
+
 The glob covers only the `tess-` prefix, so skills you author under
 `.agents/skills/` stay out of the write gate's reach (owned_globs wins over
 never_touch for that prefix only).
@@ -242,7 +245,8 @@ that never edited its own manifest to add `"codex"` is unaffected — the
 future harness-select wizard axis is meant to make this choice per-install,
 not the engine. Preview it any time with `tessctl render --target codex`
 regardless of enablement, or edit `tess.manifest.json`'s
-`render_targets.enabled` list yourself to opt in or out.
+`render_targets.enabled` list yourself to opt in or out (then run
+`tessctl anchor accept` in your own terminal).
 
 ## Determinism and idempotency
 

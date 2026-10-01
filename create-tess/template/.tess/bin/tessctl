@@ -1157,6 +1157,12 @@ def check_manifest_write_gate(root: Path, manifest: dict, live_rel: str, op: str
             f"tessctl may only write to framework-owned paths (spec §2.4 ALLOWLIST). "
             f"Paths matching neither owned_globs nor never_touch are DENIED."
         )
+    if not manifest_owns(manifest, norm_rel):   # v1.0 r7 (B7)
+        raise GateError(
+            f"tessctl {op}: WRITE REFUSED — {norm_rel!r} matches your tess.manifest.json "
+            f"never_touch. Tess owns it only through an owned glob a release update added, "
+            f"and an added glob never overrides your own never_touch, so the file stays yours."
+        )
 
     # ---- Step 5: never_touch belt-and-suspenders (with documented precedence) ----
     # owned_globs > never_touch: if in both, ALLOW (e.g. clients/_template/**).
@@ -2207,6 +2213,63 @@ def path_matches_globs(rel_path: str, globs: list) -> bool:
     return False
 
 
+# v1.0 final review round 3 (B7): an owned glob that a verified update ADOPTED
+# from the release's manifest (recorded under `adopted_owned_globs`, with the
+# release-shipped never_touch entries it was meant to beat) never overrides a
+# never_touch entry of the operator's own. Adoption refuses a glob that may
+# intersect one (_globs_may_overlap); manifest_owns() keeps the rule on the
+# concrete path at write time too, so an exclusion the operator adds later wins.
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
+
+def _globs_may_overlap(a: str, b: str) -> bool:
+    """False only when no path can match both globs. A literal side is
+    matched exactly; otherwise the fixed leading folders are compared and any
+    wildcard component counts as a possible overlap (conservative)."""
+    if not _GLOB_META_RE.search(a):
+        return path_matches_globs(a, [b])
+    if not _GLOB_META_RE.search(b):
+        return path_matches_globs(b, [a])
+    for x, y in zip(a.split("/"), b.split("/")):
+        if _GLOB_META_RE.search(x) or _GLOB_META_RE.search(y):
+            return True
+        if x != y:
+            return False
+    return True
+
+
+def manifest_owns(manifest: dict, rel: str) -> bool:
+    """owned_globs > never_touch, except that a glob adopted by an update
+    (manifest `adopted_owned_globs`) beats only the never_touch entries
+    recorded with it, never one of the operator's own."""
+    owned = [g for g in (manifest.get("owned_globs") or []) if isinstance(g, str)]
+    hits = [g for g in owned if path_matches_globs(rel, [g])]
+    if not hits:
+        return False
+    adopted = manifest.get("adopted_owned_globs")
+    adopted = adopted if isinstance(adopted, dict) else {}
+    if any(g not in adopted for g in hits):
+        return True
+    beats: set = set()
+    for g in hits:
+        rec = adopted.get(g)
+        beats.update(n for n in (rec if isinstance(rec, list) else []) if isinstance(n, str))
+    never = [n for n in (manifest.get("never_touch") or []) if isinstance(n, str)]
+    return not any(n not in beats and path_matches_globs(rel, [n]) for n in never)
+
+
+def _safety_owned_view(manifest: dict, rel: str, lock: dict):
+    """v1.0 r7 (C1, manifest robustness): Tess's own safety files stay Tess's
+    to put back whatever owned_globs says. For a security-tier live path or a
+    runtime-enforcement render output: the manifest with `rel` added as a
+    literal owned path (the write gate's hard guards still apply). None for
+    any other path."""
+    rel = str(rel).replace(os.sep, "/")
+    if not (is_enforcement_render_output(rel) or _live_path_is_security(lock or {}, rel)):
+        return None
+    return {**manifest, "owned_globs": [rel] + [g for g in (manifest.get("owned_globs") or [])]}
+
+
 # ---------------------------------------------------------------------------
 # RENDER OUTPUTS (v0.2 eng-b) — per-live-path status + render records.
 #
@@ -2436,7 +2499,9 @@ def _hook_config_missing(root: Path) -> list:
     if not (root / ".claude" / "hooks" / "run-pinned.py").is_file():
         return []
     try:
-        enabled = render_generated_live_paths(root)
+        enabled = set(render_generated_live_paths(root))
+        # v1.0 r7: + a disabled runtime's hook config Tess rendered here
+        enabled |= set(_disabled_enforcement_outputs(root, _load_lock_or_empty(root)))
     except (SystemExit, Exception):  # noqa: BLE001 — unreadable manifest: check both
         enabled = set(_HOOK_CONFIG_GATE)
     out = []
@@ -2488,8 +2553,11 @@ def _enforcement_hook_findings(root: Path, lock: dict) -> list:
     .claude/settings.json whose live hooks lack a hook the render carries
     (or that sets disableAllHooks)."""
     out = []
-    for rel in sorted(p for p in render_generated_live_paths(root)
-                      if is_enforcement_render_output(p)):
+    # v1.0 r7: + the claude-code / codex enforcement outputs a disabled target
+    # left behind (render_targets.enabled never hides them).
+    for rel in sorted({p for p in render_generated_live_paths(root)
+                       if is_enforcement_render_output(p)}
+                      | set(_disabled_enforcement_outputs(root, lock))):
         stale = _enforcement_stale_statuses(lock, rel)
         if stale:
             out.append((rel, f"carries a {'/'.join(stale)} status (capture/override/hold); "
@@ -2669,17 +2737,16 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
     rel = str(rel).replace(os.sep, "/")
     if manifest is None:
         manifest = load_manifest(root)
-    owned = manifest.get("owned_globs", []) or []
-    if not path_matches_globs(rel, owned):
+    own_lock = lock is None
+    if own_lock:
+        lock = _load_lock_or_empty(root)
+    if not manifest_owns(manifest, rel):   # v1.0 r7 (B7): owned_globs, adopted-glob rule
         return "skipped:not-owned"
 
     live = root / rel
     if os.path.islink(live):
         return "skipped:symlink"
 
-    own_lock = lock is None
-    if own_lock:
-        lock = _load_lock_or_empty(root)
     can_record = bool(lock) and "files" in lock
 
     # A QUARANTINED security edit stays pinned to the core render until
@@ -2842,7 +2909,8 @@ def report_render_output_results(root: Path, target: str, results: dict,
         for g, rels in sorted(globs.items()):
             print(f"  NOTE  {target}: {len(rels)} output(s) not written — outside owned_globs. "
                   f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them "
-                  f"(tessctl never edits the manifest).")
+                  f"(tessctl never edits the manifest; edit it yourself, then run "
+                  f"`tessctl anchor accept` in your own terminal).")
     for rel in by_reason.get("hand-edited", []):
         print(f"  KEEP  {rel}  — hand-edited render output: "
               f"{_render_output_hand_edit_remedy(lock, rel)}; to discard it, "
@@ -2968,7 +3036,8 @@ def _print_not_owned_render_globs(root: Path) -> dict:
     for name, globs in notes.items():
         for g, n in sorted(globs.items()):
             print(f"  NOTE  {name}: {n} output(s) outside owned_globs are not rendered. "
-                  f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them.")
+                  f"Add \"{g}\" to tess.manifest.json owned_globs to let Tess manage them "
+                  f"(edit it yourself, then run `tessctl anchor accept` in your own terminal).")
     return notes
 
 
@@ -4401,7 +4470,6 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
     """
     lock = load_lock(root)
     manifest = load_manifest(root)
-    owned = manifest.get("owned_globs", [])
 
     counts = {
         "updated": 0,
@@ -4415,6 +4483,7 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         "forced": 0,
         "drift_paths": [],
         "forced_paths": [],
+        "security_unwritten": [],
         "snapshot": snapshot_id,
     }
     gate_skipped: list[str] = []
@@ -4477,11 +4546,15 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         # the full gate (the gate would also reject it, but this is cheaper and
         # produces a cleaner message).  NOTE: owned check comes BEFORE the gate
         # call so the gate's GateError catch below is never pre-empted by this.
-        if not path_matches_globs(live_rel, owned):
-            counts["skipped_manifest"] += 1
-            if verbose:
-                print(f"  skip [not in manifest owned_globs]  {live_rel}")
-            continue
+        write_manifest = manifest
+        if not manifest_owns(manifest, live_rel):
+            # v1.0 r7: a security-tier file is put back whatever owned_globs says.
+            write_manifest = _safety_owned_view(manifest, live_rel, lock)
+            if write_manifest is None:
+                counts["skipped_manifest"] += 1
+                if verbose:
+                    print(f"  skip [not in manifest owned_globs]  {live_rel}")
+                continue
 
         core_path = root / core_key
         if not core_path.exists():
@@ -4565,10 +4638,12 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
             # BULK-SKIP (BLOCKER-1): catch GateError per-file; skip with WARN, do NOT abort.
             # guarded_write already sets 0755 for .sh files — no extra chmod needed.
             try:
-                guarded_write(root, live_rel, rendered, op="restore", manifest=manifest)
+                guarded_write(root, live_rel, rendered, op="restore", manifest=write_manifest)
             except GateError as e:
                 counts["skipped_gate"] += 1
                 gate_skipped.append(live_rel)
+                if _live_path_is_security(lock, live_rel) and live_rel not in counts["security_unwritten"]:
+                    counts["security_unwritten"].append(live_rel)
                 if live_rel in counts["forced_paths"]:
                     counts["forced_paths"].remove(live_rel)
                     counts["forced"] -= 1
@@ -4577,10 +4652,12 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         else:
             # Dry-run: check gate but don't abort on violation; print "would skip"
             try:
-                check_manifest_write_gate(root, manifest, live_rel, op="restore")
+                check_manifest_write_gate(root, write_manifest, live_rel, op="restore")
             except GateError as e:
                 counts["skipped_gate"] += 1
                 gate_skipped.append(live_rel)
+                if _live_path_is_security(lock, live_rel) and live_rel not in counts["security_unwritten"]:
+                    counts["security_unwritten"].append(live_rel)
                 print(f"  WARN  would skip {live_rel!r}: {e}")
                 continue
 
@@ -4738,6 +4815,12 @@ def _lifecycle_sync(root: Path, op: str, force: bool = False) -> list:
     if forced:
         _record_forced_overwrites(root, forced, op, snap_id)
     _finish_snapshot(root, snap_id)
+    if counts["security_unwritten"]:
+        # v1.0 r7: never "complete" while a Tess safety file was left as it is.
+        sys.exit(f"tessctl {op}: STOPPED — these Tess safety files could not be put back:\n"
+                 + "".join(f"  - {r}\n" for r in counts["security_unwritten"])
+                 + "  The lines above say why (a symlink in the way, or a path the write gate "
+                   "refuses). Fix that, then run `tessctl " + op + "` again.")
     return blocked
 
 
@@ -5063,7 +5146,8 @@ def _sync_codex_role_agents(root: Path, verbose: bool = False) -> list:
     if not_owned and verbose:
         print(f"  NOTE  codex: {CODEX_AGENTS_DIR}/** not written — outside owned_globs. "
               f"Add \"{CODEX_AGENTS_DIR}/**\" to tess.manifest.json owned_globs to let "
-              f"Tess manage per-role Codex custom-agent files.")
+              f"Tess manage per-role Codex custom-agent files (edit it yourself, then run "
+              f"`tessctl anchor accept` in your own terminal).")
     agents_dir = root / CODEX_AGENTS_DIR
     if agents_dir.is_dir():
         for stale in sorted(agents_dir.glob("*.toml")):
@@ -5930,7 +6014,46 @@ def _check_worker_profile_denylist(root: Path) -> list:
     return violations
 
 
-def _check_untracked_render_generated(root: Path, covered: set) -> list:
+# v1.0 r7 (manifest robustness): the runtimes whose enforcement outputs doctor,
+# verify and lock --check keep checking when render_targets.enabled leaves them
+# out, provided Tess rendered them here before (a render_outputs record).
+_ALWAYS_CHECKED_TARGETS = ("claude-code", "codex")
+
+
+def _disabled_enforcement_outputs(root: Path, lock: dict) -> dict:
+    """{rel: target} — the runtime-enforcement outputs of the claude-code and
+    codex targets that render_targets.enabled leaves out, that Tess rendered
+    here before (a render_outputs record) and that still exist. Switching a
+    runtime off in tess.manifest.json must not hide a stale or stripped
+    enforcement file the runtime still loads. A file Tess never rendered (a
+    Codex config of the operator's own, say) is not listed."""
+    try:
+        enabled = enabled_render_targets(root)
+    except (SystemExit, Exception):  # noqa: BLE001 — unreadable manifest: nothing enabled
+        enabled = {}
+    enabled_paths: set = set()
+    for t in enabled.values():
+        enabled_paths |= t.render_generated_paths(root)
+    out: dict = {}
+    for name in _ALWAYS_CHECKED_TARGETS:
+        target = RENDER_TARGETS.get(name)
+        if name in enabled or target is None:
+            continue
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:  # noqa: BLE001 — a check must never break doctor
+            continue
+        for rel in paths:
+            if (rel in enabled_paths or not is_enforcement_render_output(rel)
+                    or render_output_record(lock, rel) is None):
+                continue
+            if (root / rel).is_file() and not (root / rel).is_symlink():
+                out.setdefault(rel, name)
+    return out
+
+
+def _check_untracked_render_generated(root: Path, covered: set,
+                                      disabled_enforcement: bool = False) -> list:
     """
     Phase 2 (Codex + generic targets): drift-check a render target's
     compiled artifacts that have NO individual tess.lock entry of their own —
@@ -6038,13 +6161,14 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
     # whose manifest predates v0.2.0. Read path: fail OPEN to "owned" on a
     # missing/unreadable manifest, like _enabled_target_names().
     try:
-        _owned = json.loads((root / MANIFEST_FILE).read_text(encoding="utf-8")).get("owned_globs")
+        _mf = json.loads((root / MANIFEST_FILE).read_text(encoding="utf-8"))
+        _owned = _mf.get("owned_globs")
     except (OSError, ValueError, AttributeError):
-        _owned = None
+        _mf, _owned = {}, None
     for name, target in enabled.items():
         target_rels = sorted(
             r for r in target.render_generated_paths(root)
-            if _owned is None or path_matches_globs(r, _owned)
+            if _owned is None or manifest_owns(_mf, r)
         )
 
         # Paths also owned by another currently-enabled target (AGENTS.md
@@ -6106,6 +6230,25 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
                 r["drift"] = True
                 r["issues"].append("UNCAPTURED DRIFT — live file has been edited without capture")
             results.append(r)
+    if disabled_enforcement:   # v1.0 r7: doctor, verify, lock --check
+        seen = {r["live_path"] for r in results}
+        for live_rel, name in sorted(_disabled_enforcement_outputs(
+                root, _load_lock_or_empty(root)).items()):
+            if live_rel in covered or live_rel in seen:
+                continue
+            expected = RENDER_TARGETS[name].expected_live_bytes(root, live_rel)
+            if expected is None or sha256_bytes(expected) == sha256_file(root / live_rel):
+                continue
+            results.append({
+                "core_key": None, "live_path": live_rel, "lock_status": "core-managed",
+                "tier": "normal", "is_security": False, "pristine": False, "drift": True,
+                "core_tamper": False, "staged_warn": [],
+                "issues": [f"UNCAPTURED DRIFT — {live_rel} is {name} safety configuration Tess "
+                           f"rendered here, and it no longer matches the render. {name} is not "
+                           f"in tess.manifest.json render_targets.enabled, so Tess stopped "
+                           f"keeping it current: run `tessctl render --target {name}`, or "
+                           f"delete it if you no longer use {name}"],
+            })
     return results
 
 
@@ -6424,7 +6567,6 @@ def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged")
     convention this same repo's own .gitignore already relies on throughout —
     kb/raw/.gitkeep, .tess/snapshots/.gitkeep, etc.).
     """
-    owned = manifest.get("owned_globs", [])
     tracked = _publish_clean_tracked_paths(root, scope)
 
     violations = []
@@ -6439,8 +6581,8 @@ def _publish_clean_violations(root: Path, manifest: dict, scope: str = "staged")
             # Hard tier: checked BEFORE owned_globs, like the write gate.
             violations.append((norm, hard))
             continue
-        if path_matches_globs(norm, owned):
-            continue  # owned_globs wins (e.g. clients/_template/**)
+        if manifest_owns(manifest, norm):
+            continue  # owned_globs wins (e.g. clients/_template/**); B7 adopted-glob rule
         matched = next((g for g in _PUBLISH_CLEAN_PRIVATE_GLOBS if path_matches_globs(norm, [g])), None)
         if matched:
             violations.append((norm, matched))
@@ -6797,8 +6939,8 @@ def cmd_doctor(args, root: Path) -> None:
     fix = getattr(args, "fix", False)
     # v1.0.0 enforcement anchor: said FIRST, before any other check can stop
     # doctor, because while it fails Tess's gate stops every tool call.
-    _anchor_lines = [] if getattr(args, "path", None) else (
-        _anchor_findings(root) + _hookspath_findings(root))
+    # v1.0 r7: also with --path (they stop every tool call, whatever the path).
+    _anchor_lines = _anchor_findings(root) + _hookspath_findings(root)
     if _anchor_lines and not as_json:
         print("doctor: FAIL — " + "\n".join(_anchor_lines) + "\n")
     path_filter = getattr(args, "path", None)
@@ -6861,7 +7003,7 @@ def cmd_doctor(args, root: Path) -> None:
     # in `covered` gets its own drift check here, folded into the same
     # `results`/errors/warnings this loop already produces.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         if path_filter and r["live_path"] != path_filter:
             continue
         results.append(r)
@@ -9198,30 +9340,81 @@ def _update_adopt_owned_globs(root: Path, core_journal: dict) -> list:
         return []
     if path.is_symlink() or not isinstance(inst, dict) or not isinstance(release, dict):
         return []
-    owned = list(inst.get("owned_globs") or [])
-    never = list(inst.get("never_touch") or [])
-    rel_never = set(release.get("never_touch") or [])
-    added = []
-    for g in release.get("owned_globs") or []:
-        if not isinstance(g, str) or g in owned or _OWNED_GLOB_REFUSED.match(g):
-            continue
-        head = re.split(r"[*?\[]", g, 1)[0].rstrip("/") or g
-        # the operator's own never_touch (one the release does not ship) wins
-        if g in never or any(n not in rel_never and (n == g or path_matches_globs(head, [n]))
-                             for n in never):
-            print(f"  NOTE  the release owns {g}, but your tess.manifest.json never_touch "
-                  f"keeps it yours; left as it is")
-            continue
-        owned.append(g)
-        added.append(g)
+    new, added, kept, refused = _manifest_adopt(inst, release)
+    for g in kept:
+        print(f"  NOTE  the release owns {g}, but your tess.manifest.json never_touch "
+              f"keeps it yours (or part of it); left as it is")
+    for g in refused:
+        print(f"  NOTE  the release lists the owned glob {g!r}, which an update never adds "
+              f"by itself (it must start with a named folder inside the project); left out")
     if not added:
         return []
-    inst["owned_globs"] = owned
     core_journal.setdefault(MANIFEST_FILE, raw)
-    _atomic_write_bytes(path, (json.dumps(inst, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    data = _manifest_adopt_bytes(new)
+    _atomic_write_bytes(path, data)
+    # v1.0 r7 (C1): the manifest is anchored; only these exact bytes, written
+    # from the verified release's manifest, are re-recorded as approved.
+    _release_write_note(path, data)
     for g in added:
         print(f"  manifest: Tess now manages {g} (owned by this release)")
     return added
+
+
+def _manifest_adopt(inst: dict, release: dict) -> tuple:
+    """(new manifest, added globs, globs your never_touch keeps out, globs not
+    adoptable automatically (_adoptable_owned_glob)) — the one adoption rule,
+    used by `update` and re-checked by the ship gate on the update commit.
+    A release glob is added when the install lacks it, it is not a catch-all,
+    and it cannot intersect a never_touch entry of the operator's own (one
+    the release does not ship). Each added glob is recorded in
+    `adopted_owned_globs` with the release-shipped never_touch entries it may
+    beat; manifest_owns() keeps every other exclusion at write time (B7)."""
+    new = json.loads(json.dumps(inst))
+    owned = [g for g in (new.get("owned_globs") or [])]
+    never = [n for n in (new.get("never_touch") or []) if isinstance(n, str)]
+    rel_never = {n for n in (release.get("never_touch") or []) if isinstance(n, str)}
+    own_never = [n for n in never if n not in rel_never]
+    added, kept, refused = [], [], []
+    for g in release.get("owned_globs") or []:
+        if not isinstance(g, str) or g in owned:
+            continue
+        if not _adoptable_owned_glob(g):
+            refused.append(g)
+            continue
+        head = re.split(r"[*?\[]", g, 1)[0].rstrip("/") or g
+        if g in never or any(n == g or path_matches_globs(head, [n]) or _globs_may_overlap(g, n)
+                             for n in own_never):
+            kept.append(g)
+            continue
+        owned.append(g)
+        added.append(g)
+    if added:
+        new["owned_globs"] = owned
+        rec = new.get("adopted_owned_globs")
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        for g in added:
+            rec[g] = sorted(n for n in never if n in rel_never)
+        new["adopted_owned_globs"] = rec
+    return new, added, kept, refused
+
+
+def _adoptable_owned_glob(g: str) -> bool:
+    """v1.0 r7 (B7): the allowlist for a glob an update may adopt. Its first
+    folder is a literal name (no wildcard; not `.`, `..` or `.git`), no part
+    is empty, `.` or `..`, it is relative and has no backslash, so it lies
+    inside the project under a named folder and can never be a catch-all
+    (`**/**`, `?*`, `*/**`, `./**` and the like are all refused)."""
+    if (not isinstance(g, str) or not g or g.startswith("/") or "\\" in g
+            or _OWNED_GLOB_REFUSED.match(g) or is_overbroad_glob(g)):
+        return False
+    parts = g.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    return not _GLOB_META_RE.search(parts[0]) and parts[0].rstrip(". ").lower() != ".git"
+
+
+def _manifest_adopt_bytes(doc: dict) -> bytes:
+    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _update_adopt_release_trust(root: Path, lock: dict, core_journal: dict) -> str | None:
@@ -10969,6 +11162,8 @@ def cmd_publish(args, root: Path) -> None:
         and _live_path_is_security(lock, lock["files"][k]["live_path"])})
     if _security_live_targets:
         _refuse_security_publish(_security_live_targets, bool(tag_sel))
+    if force:   # v1.0 r7 (B6): --force asks per file; refuse before anything is written
+        _require_terminal_for_questions("publish --force", "no file was published.")
 
     _live_outcome: dict = {}   # live_rel -> "written" | "skipped"
     _render_outputs_now = render_generated_live_paths(root)
@@ -11030,8 +11225,9 @@ def cmd_publish(args, root: Path) -> None:
                 if result.stdout:
                     print(f"\nDiff for {live_rel}:")
                     print(result.stdout)
-                ans = input(f"  Re-seed {live_rel} from latest core? [y/N] ").strip().lower()
-                if ans not in ("y", "yes"):
+                if not _confirm_at_terminal("publish --force",
+                                            f"Re-seed {live_rel} from latest core?",
+                                            f"{live_rel} is as it was."):
                     print(f"  skipped  {live_rel}")
                     continue
 
@@ -11697,7 +11893,7 @@ def cmd_verify(args, root: Path) -> None:
     # hasn't been rendered yet is skipped by that function (not a failure);
     # only an existing-but-drifted path is ever returned here.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         live_rel = r["live_path"]
         if r.get("drift"):
             normal_drifts.append(live_rel)
@@ -11872,6 +12068,31 @@ def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str
     if typed is None or typed.strip() != confirm:
         sys.exit(f"tessctl {cmd}: REFUSED — what you typed did not match {confirm!r}.\n"
                  f"  Nothing was changed: {unchanged}")
+
+
+def _require_terminal_for_questions(cmd: str, unchanged: str) -> None:
+    """v1.0 r7 (B6): exit unless a person can answer questions here: not
+    inside an assistant session, and stdin and stdout both a terminal."""
+    _refuse_in_agent_session(f"tessctl {cmd}", unchanged)
+    stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
+    if not (stdin_tty and stdout_tty):
+        sys.exit(f"tessctl {cmd}: REFUSED — this needs you at an interactive terminal to answer "
+                 f"its questions (stdin is {'a TTY' if stdin_tty else 'not a TTY'}; stdout is "
+                 f"{'a TTY' if stdout_tty else 'not a TTY'}).\n"
+                 f"  Nothing was changed: {unchanged}\n"
+                 f"  Run the same `tessctl {cmd}` command yourself, in a terminal.")
+
+
+def _confirm_at_terminal(cmd: str, question: str, unchanged: str) -> bool:
+    """v1.0 r7 (B6): a yes/no question only the person at a real terminal
+    answers: refused inside an assistant session, and when stdin or stdout is
+    not a terminal (so `yes | tessctl ...` cannot answer it). True on y/yes."""
+    _require_terminal_for_questions(cmd, unchanged)
+    try:
+        reply = input(f"  {question} [y/N] ").strip().lower()
+    except EOFError:
+        reply = ""
+    return reply in ("y", "yes")
 
 
 def _bytes_review_lines(label_old: str, old: bytes, label_new: str, new: bytes,
@@ -12484,6 +12705,10 @@ def _lock_regen_core(root: Path, only: set | None = None) -> tuple[int, int, int
     return total, repinned, missing, touched
 
 
+LOCK_REGEN_CONFIRM = "re-baseline tess.lock"
+LOCK_REGEN_UNCHANGED = "tess.lock is as it was; no pin was changed."
+
+
 def _lock_regen(args, root: Path) -> None:
     """
     MAINTAINER re-baseline.  Re-pin lock entries' base_sha to the sha256
@@ -12509,6 +12734,13 @@ def _lock_regen(args, root: Path) -> None:
     validation, warning text, and confirmation gate.
     """
     only_paths = getattr(args, "only", None) or []
+    # v1.0 final review round 3 (B6): every re-pin is a security decision.
+    # An assistant session is refused before anything is read or written,
+    # with --yes or without. Outside one, --yes stays the non-interactive
+    # maintainer / CI form (release-process.md step 3, the test suite);
+    # without --yes the person at a real terminal types the confirmation
+    # (the shared presence helper below).
+    _refuse_in_agent_session("tessctl lock --regen", LOCK_REGEN_UNCHANGED)
 
     lock = load_lock(root)
     files = lock.get("files", {})
@@ -12544,19 +12776,11 @@ def _lock_regen(args, root: Path) -> None:
         )
 
     if not getattr(args, "yes", False):
-        if not sys.stdin.isatty():
-            sys.exit(
-                "tessctl lock --regen: refused — re-baselining integrity is a "
-                "maintainer action.\n"
-                "  Re-run with --yes to confirm, e.g. `tessctl lock --regen --yes`."
-            )
-        try:
-            reply = input("Re-baseline tess.lock to current core? [y/N] ").strip().lower()
-        except EOFError:
-            reply = ""
-        if reply not in ("y", "yes"):
-            print("tessctl lock --regen: aborted (no confirmation).")
-            sys.exit(1)
+        _require_human_presence(
+            "lock --regen", "re-baselining tess.lock to the current .tess/core bytes",
+            LOCK_REGEN_UNCHANGED, LOCK_REGEN_CONFIRM, prompt="lock> ",
+            how="Run it yourself in a terminal and type the confirmation, or, as a maintainer "
+                "or in CI (outside Claude Code and Codex), re-run with --yes.")
 
     total, repinned, missing, _touched = _lock_regen_core(root, only=only)
 
@@ -12716,7 +12940,7 @@ def cmd_lock(args, root: Path) -> None:
     # lock-entry-only CI gate. A path not yet rendered is skipped (not a
     # failure) by that function; only an existing-but-drifted path returns.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         if r.get("drift"):
             issues.append(("DRIFT", r["live_path"]))
 
@@ -18360,7 +18584,9 @@ RELEASE_ANCHOR_SSH_FP = "SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI"
 # Release files whose raw bytes the npm package's proof carries: the first-
 # install check compares the committed lock and policy against them.
 _FIRST_INSTALL_POLICY_PATHS = ("core/policy/policy.yaml", ".tess/core/policy/policy.yaml")
-RELEASE_PROOF_BLOB_PATHS = (".tess/tess.lock",) + _FIRST_INSTALL_POLICY_PATHS
+# v1.0 r7 (C1): + the release manifest, so the ship gate can recompute the
+# owned-glob adoption an update commit carries (_gate_release_manifest_ok).
+RELEASE_PROOF_BLOB_PATHS = (".tess/tess.lock",) + _FIRST_INSTALL_POLICY_PATHS + (MANIFEST_FILE,)
 RELEASE_KEY_FILE = ".tess/keys/twiss-release-key.asc"
 _RELEASE_PROOF_STATE: dict = {"proof": None}
 _RELEASE_PROOF_MAX_BYTES = 8 * 1024 * 1024
@@ -19021,6 +19247,12 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
     head_files = head_lock.get("files") or {}
     accepted, carried = set(), set()
     for rel in candidate_paths:
+        if rel == MANIFEST_FILE and head_index.get(rel):
+            # v1.0 r7 (C1): exactly the owned-glob adoption of this release.
+            if _gate_release_manifest_ok(_gate_git_regular_blob_bytes(root, base, rel),
+                                         head_bytes(rel), resolve.release_bytes(rel)):
+                accepted.add(rel)
+            continue
         if rel == LOCK_FILE or rel not in core_managed or not head_index.get(rel):
             continue
         entry = head_files.get(rel) if isinstance(head_files, dict) else None
@@ -19446,6 +19678,198 @@ def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# v1.0 (integration pass 4): the operator approves their OWN change to a
+# protected file, for a push from this computer.
+#
+# A fresh `npm create tess` install has no verifier key (on purpose: nothing
+# in the repository may create the trust that clears its own change), so a
+# change the operator really meant to make to CLAUDE.md, a policy file or the
+# manifest could never leave the machine. `tessctl gate approve` closes that
+# for the operator only, with the same primitive as policy approvals above:
+#
+#   * it runs only at a real terminal, outside Claude Code and Codex (the
+#     presence check; the gate hooks also refuse it to agents);
+#   * it shows every protected file the pushed commits change, with the diff,
+#     and the person types `approve these changes`;
+#   * the record names each file with the exact git blob id of its committed
+#     content (all zeros for a deletion), is HMAC-signed with the per-machine
+#     OPERATOR KEY (~/.config/tess/operator/key, never in the repository) and
+#     is stored OUTSIDE the repository under
+#     ~/.config/tess/projects/<project id>/push-approvals/ (agents are
+#     refused that folder);
+#   * the local pre-push gate accepts a protected path only when its content
+#     at the pushed head is exactly what a verified record names. Any later
+#     edit needs a new approval. Hard-floor rules (credentials, money,
+#     destructive data) are never cleared this way.
+#
+# What it is not: a verifier signature. It verifies only where the operator
+# key is, so `tessctl gate ci` on another machine (a CI runner) still fails
+# closed for that change, and a process running as the same OS user can read
+# the key (SECURITY.md, Known limits). It needs no Tess maintainer key.
+# ---------------------------------------------------------------------------
+
+PUSH_APPROVAL_FORMAT = "tess-push-approval/1"
+PUSH_APPROVAL_MAC_DOMAIN = b"tess-os push approval v1\0"
+PUSH_APPROVAL_CONFIRM = "approve these changes"
+PUSH_APPROVAL_MAX_RECORDS = 500
+
+
+def _push_approvals_dir(root: Path) -> Path | None:
+    pid = _anchor_project_id(root)
+    return _anchor_tess_dir() / "projects" / pid / "push-approvals" if pid else None
+
+
+def _push_approval_mac(key: bytes, project_id: str, paths: dict, approved_at: str) -> str:
+    canon = json.dumps({"project": project_id, "paths": paths, "at": approved_at},
+                       sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, PUSH_APPROVAL_MAC_DOMAIN + canon.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _gate_operator_push_approvals(root: Path) -> dict:
+    """{rel: {blob id, ...}} from every push approval that verifies under
+    this machine's operator key for this project; {} without a key."""
+    d = _push_approvals_dir(root)
+    key, _why = _operator_key(root, create=False)
+    pid = _anchor_project_id(root)
+    out: dict = {}
+    if d is None or key is None or not d.is_dir() or d.is_symlink():
+        return out
+    for path in sorted(d.glob("*.json"))[:PUSH_APPROVAL_MAX_RECORDS]:
+        try:
+            rec = _anchor_private_json(path)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("format") != PUSH_APPROVAL_FORMAT:
+            continue
+        paths = rec.get("paths")
+        if (rec.get("project") != pid or not isinstance(paths, dict)
+                or not all(isinstance(k, str) and isinstance(v, str)
+                           and re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", v)
+                           for k, v in paths.items())):
+            continue
+        want = _push_approval_mac(key, pid, paths, str(rec.get("approved_at")))
+        if not hmac.compare_digest(str(rec.get("mac")), want):
+            continue
+        for rel, oid in paths.items():
+            out.setdefault(rel, set()).add(oid)
+    return out
+
+
+def _gate_operator_approved(root: Path, path_rule_matches: dict, head_shas: list) -> list:
+    """The protected paths whose content at every pushed head is exactly what
+    a verified operator push approval names."""
+    approvals = _gate_operator_push_approvals(root) if head_shas else {}
+    if not approvals:
+        return []
+    index = _gate_git_tree_index(root, head_shas)
+    present = _gate_git_all_paths(root, head_shas)
+    cleared = []
+    for rel in sorted(path_rule_matches):
+        if rel in index:
+            current = index[rel]
+        elif rel not in present:
+            current = {GATE_DELETED_PATH_SHA}
+        else:
+            continue   # a symlink at a protected path is never approvable
+        if current and current <= approvals.get(rel, set()):
+            cleared.append(rel)
+    return cleared
+
+
+def _cmd_gate_approve(args, root: Path) -> None:
+    """tessctl gate approve [--base <rev>] — approve, at your own terminal,
+    your own change to protected Tess files for a push from this computer."""
+    _refuse_in_agent_session("tessctl gate approve", "nothing was approved.")
+    try:
+        _cmd_gate_approve_run(args, root)
+    except GateSpineError:
+        sys.exit("tessctl gate approve: git could not read the commits to compare (is "
+                 "--base a commit in this folder?). Nothing was approved.")
+
+
+def _cmd_gate_approve_run(args, root: Path) -> None:
+    head = _gate_run_git(root, "rev-parse", "--verify", "HEAD^{commit}").strip()
+    base = getattr(args, "base", None)
+    if not base:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "-q", "@{upstream}"],
+                           capture_output=True, text=True)
+        base = r.stdout.strip() if r.returncode == 0 else ""
+    if not base:
+        sys.exit("tessctl gate approve: this branch has not been pushed yet, so there is "
+                 "nothing to compare with. Run `./tessctl gate approve --base <commit>` with "
+                 "the commit your change started from. Nothing was approved.")
+    base = _gate_run_git(root, "rev-parse", "--verify", base + "^{commit}").strip()
+    changed = _gate_diff_paths(root, base, head)
+    policy_instance, errors = _gate_load_policy(root)
+    if errors:
+        sys.exit("tessctl gate approve: the policy file cannot be read, so Tess cannot tell "
+                 "which files are protected:\n" + "\n".join(f"  - {e}" for e in errors))
+    matches, hard = _gate_classify_paths(policy_instance, changed)
+    baseline, _ref = _gate_load_policy_at_base_with_ref(root, [base])
+    if baseline is not None:
+        _gate_union_baseline_matches(baseline, changed, matches, hard)
+    if not matches:
+        print("tessctl gate approve: none of the commits since "
+              f"{base[:12]} change a protected Tess file. Nothing to approve.")
+        return
+    index = _gate_git_tree_index(root, [head])
+    present = _gate_git_all_paths(root, [head])
+    paths, problems = {}, []
+    for rel in sorted(matches):
+        if rel in index and len(index[rel]) == 1:
+            paths[rel] = next(iter(index[rel]))
+        elif rel not in present:
+            paths[rel] = GATE_DELETED_PATH_SHA
+        else:
+            problems.append(rel)
+    if problems:
+        sys.exit("tessctl gate approve: these protected paths are not ordinary files at HEAD "
+                 "(a link or a folder), and cannot be approved:\n"
+                 + "".join(f"  - {p}\n" for p in problems) + "Nothing was approved.")
+    diff = _gate_run_git(root, "diff", "--no-renames", "--stat", base, head, "--",
+                         *sorted(paths))
+    patch = _gate_run_git(root, "diff", "--no-renames", base, head, "--",
+                          *sorted(paths)).splitlines()
+    lines = ["  These protected Tess files change between "
+             f"{base[:12]} and {head[:12]}:"]
+    lines += ["    " + ln for ln in diff.rstrip().splitlines()]
+    lines += ["  The changes:"] + ["    " + ln for ln in patch[:400]]
+    if len(patch) > 400:
+        lines.append(f"    … {len(patch) - 400} more line(s): see `git diff {base[:12]} "
+                     f"{head[:12]}` before you approve.")
+    if hard:
+        lines.append("  NOTE: " + ", ".join(sorted(hard)) + " also match a hard-floor rule "
+                     "(credentials, money, destructive data); this approval does not clear "
+                     "that, and the push stays blocked for those files.")
+    lines.append("  Approve only changes you made, or read and agree with, yourself.")
+    _require_human_presence(
+        "gate approve", "approving your own change to protected Tess files for a push from "
+        "this computer", "nothing was approved.", PUSH_APPROVAL_CONFIRM, prompt="approve> ",
+        lines=lines)
+    key, why = _operator_key(root, create=True)
+    if key is None:
+        sys.exit(f"tessctl gate approve: cannot use the operator key ({why}). Nothing was approved.")
+    d = _push_approvals_dir(root)
+    pid = _anchor_project_id(root)
+    if d is None or not pid:
+        sys.exit("tessctl gate approve: this folder has no commits Tess can identify it by. "
+                 "Nothing was approved.")
+    tess_dir = _anchor_tess_dir()
+    for folder in (tess_dir, tess_dir / "projects", tess_dir / "projects" / pid, d):
+        _anchor_mkdir_private(folder, root)
+    at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec = {"format": PUSH_APPROVAL_FORMAT, "project": pid, "base": base, "head": head,
+           "paths": paths, "approved_at": at, "approved_by_typing": PUSH_APPROVAL_CONFIRM,
+           "mac": _push_approval_mac(key, pid, paths, at)}
+    name = hashlib.sha256(json.dumps(paths, sort_keys=True).encode("utf-8")).hexdigest()[:32]
+    _anchor_write_private(d / f"{name}.json", (json.dumps(rec, indent=2) + "\n").encode("utf-8"))
+    print(f"tessctl gate approve: approved {len(paths)} protected file(s) for a push from this "
+          f"computer. Now run `git push` again. A later change to any of them needs a new "
+          f"approval.")
+
+
+# ---------------------------------------------------------------------------
 # ENFORCEMENT ANCHOR (v1.0.0, final reviews GPT-6 + Cyra: "gate rollback")
 #
 # The gate decides from command text and its pins (.tess/core/pinned-scripts
@@ -19486,7 +19910,13 @@ ANCHOR_FILES = (
     ".codex/config.toml", ".codex/rules/tess.rules", "core/policy/policy.yaml",
     ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
     ".tess/keys/twiss-release-key.asc", ".tess/keys/twiss-release-allowed-signers",
+    MANIFEST_FILE,
 )
+# v1.0 final review round 3 (C1): files added to ANCHOR_FILES after anchors
+# already existed. An anchor written by an earlier release has no record of
+# them; the next verified update records them as they are then (a first
+# record, never a re-blessing of a change against an earlier record).
+ANCHOR_FIRST_RECORD = (MANIFEST_FILE,)
 ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
 ANCHOR_GIT_PREFIX = "git-hooks/"
 ANCHOR_GIT_MARKER = "# tess-"
@@ -20017,6 +20447,11 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
                 accept[rel] = data
             elif rec is not None and (data is None or _anchor_digest(rel, data) != rec.get("sha256")):
                 changed.append(rel)
+            elif rec is None and data is not None and rel in ANCHOR_FIRST_RECORD:
+                accept[rel] = data
+                print(f"  NOTE  Tess now also protects {rel}; recorded it as it is now. To "
+                      f"change it later, edit it yourself and run `tessctl anchor accept` in "
+                      f"your own terminal.")
         if changed:
             sys.exit(f"tessctl {verb}: STOPPED — the release was applied, but these safety files "
                      f"changed in a way the release did not, so Tess did NOT record them as "
@@ -20375,6 +20810,22 @@ def _first_install_lock_change_ok(rel_lock: dict, head_lock: dict, tag_name: str
     return None
 
 
+def _gate_release_manifest_ok(base: bytes | None, head: bytes | None,
+                              release: bytes | None) -> bool:
+    """v1.0 r7 (C1): True when the committed tess.manifest.json is exactly
+    what `update`'s owned-glob adoption (_manifest_adopt) makes from the base
+    commit's manifest and the proven release's manifest, and it adds at least
+    one glob. Any other manifest change needs a verdict."""
+    try:
+        docs = [json.loads(b.decode("utf-8")) for b in (base, head, release)]
+    except (AttributeError, UnicodeDecodeError, ValueError):
+        return False
+    if not all(isinstance(d, dict) for d in docs):
+        return False
+    want, added, _kept, _refused = _manifest_adopt(docs[0], docs[2])
+    return bool(added) and docs[1] == want
+
+
 def _gate_first_install_accepted(root: Path, candidate_paths: list, head: str, proof_text: str,
                                  info: dict) -> tuple[set, dict]:
     """Protected paths of a FIRST push that are exactly the signed release the
@@ -20497,6 +20948,20 @@ def _gate_run_ship_check(
         for _rel in released:
             path_rule_matches.pop(_rel, None)
 
+    # v1.0 (integration pass 4): the operator's own approval, at their own
+    # terminal with this machine's operator key, of exactly the pushed content
+    # (`tessctl gate approve`). Hard-floor matches are never cleared this way.
+    operator_info = None
+    if path_rule_matches and head_shas:
+        try:
+            _op_cleared = _gate_operator_approved(root, path_rule_matches, head_shas or [])
+        except GateSpineError:
+            _op_cleared = []
+        for _rel in _op_cleared:
+            path_rule_matches.pop(_rel, None)
+        if _op_cleared:
+            operator_info = {"status": "accepted", "paths": len(_op_cleared)}
+
     # Signature verification trusts only verifier/sign-off registrations
     # present at BASE. Candidate-added keys cannot authorize their own PR;
     # with an empty baseline registry, normal APPROVE remains impossible
@@ -20601,6 +21066,8 @@ def _gate_run_ship_check(
     result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
     if release_info is not None:
         result["release_proof"] = release_info
+    if operator_info is not None:
+        result["operator_approval"] = operator_info
 
     # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
     # push (some rules cleared, others not) is still a BLOCKED push overall
@@ -20705,6 +21172,10 @@ def _gate_print_refusal(phase: str, result: dict, safe: dict, *, verbose: bool,
     elif paths:
         print("What this means: these files hold Tess's own safety rules, so a change to them "
               "needs a signed approval before it can leave this computer. Nothing was sent.")
+        if local:
+            print("If you made this change on purpose: open your own terminal (not Claude Code "
+                  "or Codex) in this folder, run `./tessctl gate approve`, read the changes it "
+                  "shows, type `approve these changes`, then push again.")
         source = _gate_undo_source(root, bases) if local else None
         shown = paths[:_GATE_REFUSAL_SHOWN]
         if local and source and len(paths) <= _GATE_REFUSAL_SHOWN:
@@ -21793,6 +22264,7 @@ def cmd_gate(args, root: Path) -> None:
         "install-hooks": _cmd_gate_install_hooks,
         "signoff": _cmd_gate_signoff,
         "clear": _cmd_gate_clear,
+        "approve": _cmd_gate_approve,   # v1.0 integration pass 4
     }
     fn = handlers.get(sub)
     if fn is None:
@@ -30302,6 +30774,17 @@ def build_parser() -> argparse.ArgumentParser:
         "install-hooks",
         help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
     )
+
+    # gate approve — v1.0 integration pass 4: the operator approves their own
+    # change to protected files for a push from this computer.
+    p_gate_approve = gate_sub.add_parser(
+        "approve",
+        help="approve, at your own terminal, your own change to protected Tess files "
+             "so `git push` from this computer can send it",
+    )
+    p_gate_approve.add_argument("--base", metavar="COMMIT", default=None,
+                                help="the commit your change started from (default: the "
+                                     "branch's upstream, what the remote already has)")
 
     # gate signoff — honesty-capstone-audit-2026-07-08 §3-d: hard-floor
     # sign-off signing key management (sign a sign-off, or verify a signed one)

@@ -2,16 +2,16 @@
 # Pinned by tess.lock (this file's own base_sha); read by .claude/hooks/run-pinned.py.
 # Regenerate: python3 .claude/hooks/run-pinned.py --regen-pins, then
 #   ./tessctl lock --regen --only .tess/core/pinned-scripts.sha256
-2c5b52aff9587fc3bf36082e92c15e9da0365ec13bb62a92647db5dd749b2e7f  .claude/hooks/run-pinned.py
+2d7b24850cd1e5c5ba43231d256d00e38fccc3b0df81b26e73da524d7cbdd73a  .claude/hooks/run-pinned.py
 755e3e31bd4630f896472c66c1a1f98ac5118392b0be014f035937b5572d74b2  .claude/hooks/vault-dispatch-scan.py
-d71315b521af4824cb625d365d2ccc4c9bd8633a88d3058d7e574ff6e9117000  .claude/hooks/tess-gate.py
+4ab9db35299364e8479022e1a0bb07506f41cb24b22147b983021d6028e94ca6  .claude/hooks/tess-gate.py
 20ba8388ad7ebb4c0a54ed4769d19b26c3f1c09e4ac6060294117c81af887c82  scripts/brain/onboard.py
 b186ce8679048f3655182a70cea4e21b632057aca11e84f26a7cdecfb5605fe1  scripts/brain/probe.py
 995d0d02c57044a7c775bba0ef74b87bee845b8d0355c45becb2a616a25a44c1  scripts/brain/tessbrain.py
 d6bf677e34390ff2eeff59430458922f9b8eda8440979b0330c394d88bef1994  scripts/brain/brainlib/__init__.py
 7e9883c8a675c2524666cf30468727adaae4a2ca81dcd3a4327731021d7ef2f5  scripts/brain/brainlib/caps.py
 5e0d2c9ca7f11dd00d5df32ac362ff3284ccf56d68a5b7b2ec95b94b8532d151  scripts/brain/brainlib/claims.py
-93269c34952c4669c67ea39de09bb14ae34b104a403b50d78554bac55dfadd28  scripts/brain/brainlib/commands.py
+da9832a94557e223ffde7158acdd9de0e9f8b0c91369f182b8e8d59732fde532  scripts/brain/brainlib/commands.py
 00e730d2245d5bc1166a3a40ac57b3e563c39dec31a1feda32e2567fc4f4a6fe  scripts/brain/brainlib/config.py
 82bce23d482828a5f831412659d8201b63290c066b66965da27ccc3ec645dba3  scripts/brain/brainlib/confirm.py
 d95a942a5378328b177d387df89e286c0e631e9b952146bb57730e10ef9be0cb  scripts/brain/brainlib/cues.py
@@ -42,7 +42,7 @@ f321855dfa894ccb2abe159339e05559df88474d16fd038ae3b664d8880b6cb2  scripts/brain/
 b2a600e0420823a639681639925ea46b591a424f6b2f34ee6de92eee16686eda  scripts/brain/brainlib/receipts.py
 6cd9359a17b8232a7fe789bef3ff9a60f725ad674493377da6742d3ed164dd6e  scripts/brain/brainlib/records.py
 97bea8a1011928b6bc746c8462be7fbeece74b12dbd20bc88c600523d2fb0e8d  scripts/brain/brainlib/redact.py
-ab575a776f2218c85cfd872d0971a01e3a5891cc59d05bfe6cac4088c887196a  scripts/brain/brainlib/roots.py
+6535c874e9e267de710bf39c58feae9700795ffb01474a573aaf5f2af27e540c  scripts/brain/brainlib/roots.py
 b357eca61b53e1154113b20c7c5326e265fd32618358095c498fc0faf6206f99  scripts/brain/brainlib/save.py
 b6ee5055a1b31c60d625876a5d6bc7cb0c2c7872829e18b946d4cf5ef65d34c0  scripts/brain/brainlib/settle.py
 ce23cd02475ec151aab5ff5f0b5d8cb5aaf624b4fabe0e057b2ac68d03732013  scripts/brain/brainlib/status.py
