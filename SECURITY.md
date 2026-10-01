@@ -166,7 +166,7 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `CODEX_SANDBOX_NETWORK_DISABLED`), before it asks: in `tessctl`, `approve`,
   `resolve`, `override`, `reset`, `rollback`, `recruit` / `bench` / `roster
   apply`, `update` / `self-update` (`accept <version>`, `downgrade to <tag>`),
-  `anchor accept`, `verdict sign`, `gate signoff sign`, `lock --regen`
+  `anchor accept`, `verdict sign`, `gate signoff sign`, `gate approve`, `lock --regen`
   (with or without `--yes`) and the `publish --force` re-seed question; in the
   brain, `roots add` and `sync --claude-dir` / `--codex-home` /
   `--gemini-home` with another folder. The `vault set` / `vault rotate` value
@@ -364,8 +364,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   runtime's files from every check, or let `kb/` notes through (v1.0 final
   review round 3). The gate denies agent edits of the file, the
   security-tier policy rule and CODEOWNERS name it (a pushed change to it needs
-  a covering verdict at the ship gate, like any security-tier path), and the
-  anchor records it. To change it yourself: edit it in your own editor, then
+  a covering verdict at the ship gate, like any security-tier path, or your own
+  `tessctl gate approve` for a push from your computer; see the next item), and
+  the anchor records it. To change it yourself: edit it in your own editor, then
   run `tessctl anchor accept` in your own terminal (until you do, Tess stops,
   as for any changed safety file; `tessctl restore` puts the approved copy
   back). Editing the manifest never stops Tess from putting its own safety
@@ -470,8 +471,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   steps that record Tess's safety files as approved or change their recorded
   state (`update`, `self-update`, `approve`, `anchor`, `override`, `reset`,
   `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
-  `lock --regen`, `recruit`, `bench`, `roster apply`), and signing a verdict or a
-  sign-off (`verdict sign`, `gate signoff sign`), are the operator's: the gate
+  `lock --regen`, `recruit`, `bench`, `roster apply`), signing a verdict or a
+  sign-off (`verdict sign`, `gate signoff sign`), and approving your own push
+  (`gate approve`), are the operator's: the gate
   refuses an agent that feeds them input or fakes a terminal for them (and, in
   Codex, refuses them outright; see the Codex item above).
 - **Vault values stay out of agent sessions, for the commands the gate can
@@ -510,6 +512,21 @@ security reviews; they are stated so nobody relies on a check that is not there.
   read, but the renderer then reads it by path, so a change made in that
   instant and undone before the next check would not be seen; the next check
   catches any change that persists.
+- **Approving your own change is local to your computer.** A fresh install has
+  no verifier key, and Tess OS never creates one for it. For a deliberate change
+  of your own to a protected file, `tessctl gate approve` (run in your own
+  terminal; refused inside Claude Code and Codex and without a real terminal)
+  shows the changed protected files and their diff and, when you type `approve
+  these changes`, records an approval of exactly that content (each file's git
+  blob id), HMAC-signed with the per-machine operator key
+  (`~/.config/tess/operator/key`) and stored outside the repository. The
+  pre-push gate on that computer accepts exactly that content; any later edit
+  needs a new approval, hard-floor rules are never cleared this way, and a
+  record that does not verify, or names another project, is ignored. Limits:
+  it is a presence check plus a local key, not a verifier signature. A gate
+  run anywhere the key is absent (`tessctl gate ci` on a CI runner) cannot
+  verify it and still blocks the change, and a program running as you can read
+  the key and fake a terminal, as for every presence step above.
 - **The hooks heartbeat is a detection aid, not proof.** SessionStart and
   UserPromptSubmit write `.tess/state/hooks-alive.json`, and `python3 scripts/tess
   hooks-status` reads it to say whether the hooks ran in this session. It is an
