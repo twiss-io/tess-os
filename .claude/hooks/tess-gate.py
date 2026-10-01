@@ -170,7 +170,7 @@ PROTECTED_GLOBS = (
     "conductor/channel-guardrails.md", "conductor/dispatch-brief.md",
     "core/contracts/**", "core/policy/**",
     ".tess/bin/**", "tessctl", ".tess/core/**", ".tess/core/policy/policy.yaml",
-    ".tess/tess.lock",
+    ".tess/tess.lock", "tess.manifest.json",
     ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
     ".claude/hooks/**", ".claude/settings.json", ".claude/settings*.json", "scripts/brain/**",
     "scripts/release/**", ".github/CODEOWNERS",

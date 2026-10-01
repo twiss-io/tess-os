@@ -394,6 +394,10 @@ ANCHOR_FILES = (
     PINS_REL, LOCK_REL, ".claude/settings.json", ".codex/config.toml", ".codex/rules/tess.rules",
     "core/policy/policy.yaml", ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
     ".tess/keys/twiss-release-key.asc", ".tess/keys/twiss-release-allowed-signers",
+    # v1.0 final review round 3 (C1): owned_globs, never_touch and
+    # render_targets.enabled decide what tessctl writes and what doctor,
+    # verify, update and the publish-clean gate inspect.
+    "tess.manifest.json",
 )
 # Git hooks Tess installs (gate, vault, public-remote and brain guards); anchored
 # when present with a Tess marker at anchor time, keyed "git-hooks/<name>".
@@ -800,25 +804,82 @@ def anchor_check(root: Path) -> "dict | None":
 _GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES")
 
 
+# v1.0 final review round 3 (B8): in a project with a .git, git that cannot be
+# run or queried (not on PATH, an OSError, a timeout, an unexpected exit) is a
+# stop, not a pass: absence from PATH does not stop a command from running git
+# by its full path. Only a project with no .git at its root is exempt.
+_HOOKSPATH_NO_GIT = ("Tess could not run git to check its core.hooksPath setting ({why}), so it "
+                     "cannot tell whether its git hooks (secret scan, ship gate, public-remote guard) "
+                     "still run, and has stopped all actions. Make sure git is installed and on the "
+                     "PATH Claude Code or Codex starts with (run `git --version` in your own "
+                     "terminal), then try again.")
+
+
+def _unreadable_git_configs(common: Path, env: dict) -> list:
+    """Config files git would read that exist but cannot be opened. git skips
+    such a file without a word (exit 1, no output, as for an unset key), so a
+    core.hooksPath inside it is invisible here although a git started later,
+    or elsewhere, may read it."""
+    if env.get("GIT_CONFIG_GLOBAL"):
+        paths = [env["GIT_CONFIG_GLOBAL"]]
+    else:
+        home = env.get("HOME") or os.path.expanduser("~")
+        xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+        paths = [os.path.join(home, ".gitconfig"), os.path.join(xdg, "git", "config")]
+    if not env.get("GIT_CONFIG_NOSYSTEM"):
+        if env.get("GIT_CONFIG_SYSTEM"):
+            paths.append(env["GIT_CONFIG_SYSTEM"])
+        else:
+            paths.append("/etc/gitconfig")
+            exe = shutil.which("git", path=env.get("PATH"))
+            if exe:
+                prefix = os.path.dirname(os.path.dirname(os.path.realpath(exe)))
+                paths.append(os.path.join(prefix, "etc", "gitconfig"))
+    paths += [str(common / "config"), str(common / "config.worktree")]
+    bad = []
+    for path in paths:
+        try:
+            with open(path, "rb"):
+                pass
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            bad.append(f"{path} ({exc.strerror or type(exc).__name__})")
+    return bad
+
+
 def hookspath_problem(root: Path) -> "str | None":
     """The plain stop line when git's effective core.hooksPath for this
-    repository is not Tess's own hooks folder; None when it is unset or names
-    that folder (or this is not a git repository, or git is not installed)."""
+    repository is not Tess's own hooks folder, or when it cannot be checked;
+    None when it is unset or names that folder, or the project has no .git."""
+    try:
+        os.lstat(root / ".git")
+    except FileNotFoundError:
+        return None  # positively not a git-backed project: no Tess git hooks to bypass
+    except OSError as exc:
+        return _HOOKSPATH_NO_GIT.format(why=f".git cannot be read: {exc.strerror or type(exc).__name__}")
     common = anchor_git_common_dir(root)
     if common is None:
-        return None
+        return _HOOKSPATH_NO_GIT.format(why="this project's .git file names no readable git folder")
     env = {k: v for k, v in os.environ.items() if k not in _GIT_REPO_ENV}
     try:
         r = subprocess.run(["git", "-C", str(root), "config", "--show-origin", "--get", "core.hooksPath"],
                            capture_output=True, text=True, timeout=10, env=env)
-    except OSError:
-        return None  # no git: no git hooks run either
-    except subprocess.SubprocessError:
+    except subprocess.TimeoutExpired:
         return ("Tess could not read git's core.hooksPath setting in time, so it cannot tell whether "
                 "its git hooks still run, and has stopped all actions. Try again; if it keeps "
                 "happening, run `git config --show-origin --get core.hooksPath` in your own terminal.")
-    if r.returncode == 1 and not r.stdout.strip():
-        return None
+    except FileNotFoundError:
+        return _HOOKSPATH_NO_GIT.format(why="git was not found")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return _HOOKSPATH_NO_GIT.format(why=f"{type(exc).__name__}: {exc}")
+    unreadable = _unreadable_git_configs(common, env) if r.returncode in (0, 1) else []
+    if unreadable:
+        return ("git cannot read " + ", ".join(unreadable) + ", so Tess cannot tell whether it "
+                "redirects Tess's git hooks (core.hooksPath), and has stopped all actions. Make the "
+                "file readable again (or remove it) in your own terminal, then try again.")
+    if r.returncode == 1 and not r.stdout.strip() and not r.stderr.strip():
+        return None  # git's own "this key is not set"
     if r.returncode != 0:
         return ("git could not read its configuration (`git config --get core.hooksPath` failed), "
                 "so Tess cannot tell whether its git hooks still run, and has stopped all actions. "

@@ -30,6 +30,22 @@ from .config import Config, log_error
 FILE = "roots.json"
 WALK_DIRS = 4000
 
+# v1.0 final review round 3: the assistant-session markers tessctl's presence
+# checks refuse on (AGENT_SESSION_MARKERS in .tess/bin/tessctl; a test keeps
+# the two lists equal). Claude Code and Codex can run a command in a
+# pseudo-terminal and type into it, so a terminal alone does not prove a
+# person is there: every "type yes" step here also refuses inside a session.
+AGENT_SESSION_MARKERS = ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
+                         "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+
+def agent_session_marker():
+    """The first assistant-session marker in this process's environment, or None."""
+    for name in AGENT_SESSION_MARKERS:
+        if name in os.environ:
+            return name
+    return None
+
 
 def _real(p: str) -> str:
     return os.path.realpath(os.path.expanduser(str(p)))
@@ -148,6 +164,11 @@ def cmd_roots(cfg: Config, a) -> Tuple[int, Dict]:
     if action == "remove":
         save(cfg, [r for r in extra(cfg) if r != _real(path)])
         return 0, {"roots": extra(cfg)}
+    marker = agent_session_marker()
+    if marker:
+        return 1, {"error": "roots add was started from inside an AI assistant session (%s is set), and only "
+                            "you can allow it. Nothing was added. Run it in your own terminal, outside "
+                            "Claude Code and Codex." % marker}
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return 1, {"error": "roots add must be run by you at a terminal (it widens whose conversations this "
                             "brain treats as yours); an agent or a pipe cannot do it"}

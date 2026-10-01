@@ -387,7 +387,9 @@ to add. To opt in, add these lines to `owned_globs` in `tess.manifest.json`:
 ```
 
 The first line is for the Codex skills. The other two are for the Gemini CLI
-target, which also needs `"gemini"` in `render_targets.enabled`. Then run
+target, which also needs `"gemini"` in `render_targets.enabled`. Tess
+protects `tess.manifest.json`, so make this edit yourself (an assistant
+cannot), run `./tessctl anchor accept` in your own terminal, then run
 `./tessctl render`. A render output you edited by hand is not overwritten;
 `tessctl` reports it as skipped and names the reason.
 

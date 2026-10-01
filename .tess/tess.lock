@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-10-01T01:48:20.467761Z'
+  last_updated: '2026-10-01T04:34:27.963418Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -4534,7 +4534,7 @@ files:
   .tess/core/conductor/release-process.md:
     status: core-managed
     tier: normal
-    base_sha: sha256:279ec3bd19f3c5fad12dcfea2f3f23c571398b503133f170e52530cbb6b06f11
+    base_sha: sha256:07f06ca9fe34c2b590d193b31f6fd568e8bfc86a6f06aaf38d6475ea3c4a3ec1
     live_path: conductor/release-process.md
     last_updated: '2026-06-29T02:22:00.000000Z'
   .tess/core/conductor/verdict-signing.md:
@@ -6083,7 +6083,7 @@ files:
   .tess/core/policy/policy.yaml:
     status: core-managed
     tier: security
-    base_sha: sha256:1e2f2774163298c1acf4c458373b25547f62bbbd8d0a554d77bca9d8ff353bdb
+    base_sha: sha256:cf90a430f7a72a88de21488346104e8a527c7dd139fa0f213821c9109c5e1194
     live_path: core/policy/policy.yaml
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/contracts/task.schema.json:
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:844a82c71289259a0f6e829211e749ac4d69e58b3cb568cb30a0055514802e8b
+    base_sha: sha256:14741f3b0161c19b806e348cf592707684080e16ef360c8d4a1e597cab70b361
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:

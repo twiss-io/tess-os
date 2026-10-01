@@ -141,6 +141,12 @@ policy:
         - .tess/gate/policy-approvals/**
         - .tess/core/**
         - .tess/tess.lock
+        # v1.0 final review round 3 (C1): the install's manifest decides what
+        # tessctl may write, what doctor/verify/update inspect (owned_globs,
+        # never_touch, render_targets.enabled) and what the publish-clean
+        # gate exempts, so it is enforcement configuration. The gate denies
+        # assistant edits and the enforcement anchor records it.
+        - tess.manifest.json
         # v0.2.1 (2026-09-29 security review, MEDIUM "hooks run agent-editable
         # code"): everything a Claude Code hook executes or is wired by. Hooks
         # run automatically on every session/prompt/tool call, so an edit here

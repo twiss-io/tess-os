@@ -166,8 +166,9 @@ on 2026-09-24).
 - **Existing installs** keep their own manifest, which lacks both, so no
   Gemini file is written by `tessctl update`. To opt in, add `"gemini"` to
   `render_targets.enabled` and `"GEMINI.md"`, `".gemini/commands/tess/**"` to
-  `owned_globs` in `tess.manifest.json`, then run
-  `tessctl render --target gemini`. If you already have a hand-written
+  `owned_globs` in `tess.manifest.json` yourself (Tess protects that file, so
+  an assistant cannot edit it), run `tessctl anchor accept` in your own
+  terminal, then run `tessctl render --target gemini`. If you already have a hand-written
   `GEMINI.md`, move its content elsewhere first.
 
 ## Customising the rendered files
