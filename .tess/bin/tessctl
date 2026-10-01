@@ -11643,6 +11643,42 @@ def cmd_verify(args, root: Path) -> None:
 # Command: approve (defect #1)
 # ---------------------------------------------------------------------------
 
+# v1.0 integration (Codex presence): Codex can run a command in a pseudo-
+# terminal and type into it later (write_stdin), and that input never reaches
+# Tess's gate; Claude Code's Bash runs commands the same way. A terminal check
+# alone therefore cannot tell the operator from an assistant. Every "a person
+# must type this" step also refuses when the process was started inside an
+# assistant session. The markers are ones the hosts really set: Claude Code
+# exports CLAUDECODE and CLAUDE_CODE_ENTRYPOINT to the commands it runs; Codex
+# (0.158) exports CODEX_THREAD_ID, and CODEX_SANDBOX /
+# CODEX_SANDBOX_NETWORK_DISABLED inside its sandbox. An operator's own
+# terminal has none of them. Like the TTY check, this is a presence check,
+# not an OS boundary (a program can clear its own environment).
+AGENT_SESSION_MARKERS = ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
+                         "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+
+def _agent_session_marker() -> str | None:
+    """The first assistant-session marker in this process's environment."""
+    for name in AGENT_SESSION_MARKERS:
+        if name in os.environ:
+            return name
+    return None
+
+
+def _refuse_in_agent_session(cmd: str, unchanged: str) -> None:
+    """Exit before any prompt when run from inside Claude Code or Codex."""
+    marker = _agent_session_marker()
+    if marker:
+        sys.exit(
+            f"{cmd}: REFUSED — this was started from inside an AI assistant session "
+            f"({marker} is set), and only you can confirm it.\n"
+            f"  Nothing was changed: {unchanged}\n"
+            f"  Run this in your own terminal: open a terminal outside Claude Code and Codex, "
+            f"in this project, and run the same command there."
+        )
+
+
 def _presence_isatty(stream) -> bool:
     try:
         return bool(stream is not None and stream.isatty())
@@ -11658,6 +11694,7 @@ def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str
     `confirm` exactly; otherwise exit non-zero before anything is written.
     No flag or environment variable skips it. Like approve's, it is a
     presence check, not a cryptographic boundary."""
+    _refuse_in_agent_session(f"tessctl {cmd}", unchanged)
     stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
     if not (stdin_tty and stdout_tty):
         sys.exit(
@@ -11720,6 +11757,8 @@ def _approve_require_human_presence(live_rel: str, review_lines=None) -> None:
     that allocates its own pseudo-terminal can still satisfy it. The
     --rationale requirement and the modified.json audit record still apply.
     """
+    _refuse_in_agent_session("tessctl approve", f"{live_rel} stays quarantined.")
+
     def _isatty(stream) -> bool:
         try:
             return bool(stream is not None and stream.isatty())
@@ -15929,6 +15968,7 @@ def _signer_is_terminal() -> bool:
 
 
 def _signer_require_terminal(cmd: str) -> None:
+    _refuse_in_agent_session(cmd, "nothing was signed.")
     if not _signer_is_terminal():
         sys.exit(
             f"{cmd}: STOPPED — signing an approval needs a person at a terminal, and this was "
@@ -19938,6 +19978,7 @@ def cmd_anchor(args, root: Path) -> None:
         return
     if sub != "accept":
         sys.exit("tessctl anchor: choose status | accept | init")
+    _refuse_in_agent_session("tessctl anchor accept", "nothing was recorded.")
     if not _anchor_tty():
         sys.exit("tessctl anchor accept: REFUSED — accepting changed safety files needs a person "
                  "at an interactive terminal (stdin and stdout must both be a terminal). "
@@ -20061,6 +20102,10 @@ def _update_confirm_policy_rule_changes(root: Path, tag: str) -> None:
         except (AttributeError, ValueError, OSError):
             return False
 
+    if _agent_session_marker():
+        out.write(msg)
+        out.flush()
+        _refuse_in_agent_session("tessctl update", "you stay on your current version.")
     if not (_tty(sys.stdin) and _tty(out)):
         sys.exit(
             msg

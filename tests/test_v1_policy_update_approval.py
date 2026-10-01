@@ -280,9 +280,16 @@ def test_agent_cannot_fake_the_terminal_or_type_the_approval(proj, cmd):
 
 
 def test_plain_update_and_normal_commands_stay_allowed(proj):
-    for cmd in ("./tessctl update --ref v2.1.0", "./tessctl doctor", "git status",
+    for cmd in ("./tessctl update --check", "./tessctl doctor", "git status",
                 "python3 scripts/build.py --script-dir x"):
         r = _hook(proj, {"turn_id": "t", "tool_name": "Bash", "cwd": str(proj),
                          "tool_input": {"command": cmd}})
         dec = _decision(r)
         assert dec is None or "only the operator" not in dec[1], (cmd, dec)
+    # Integration pass 3: in Codex the update itself is the operator's to run
+    # (Codex can type its confirmation later through write_stdin).
+    r = _hook(proj, {"turn_id": "t", "tool_name": "Bash", "cwd": str(proj),
+                     "tool_input": {"command": "./tessctl update --ref v2.1.0"}})
+    dec = _decision(r)
+    assert dec == "deny" or dec[0] == "deny", dec
+    assert "your own terminal" in r.stdout + r.stderr, (r.stdout, r.stderr)

@@ -359,10 +359,17 @@ def test_state_changing_tessctl_steps_cannot_be_fed(proj, runtime, cmd):  # noqa
     "echo x | ./tessctl capture --dry-run",
     "./tessctl diff | head",
     "./tessctl verify",
-    "./tessctl rollback",
 ])
 def test_unfed_or_read_only_tessctl_forms_stay_allowed(proj, runtime, cmd):  # noqa: F811
     assert bash(proj, runtime, cmd) is None, (runtime, cmd)
+
+
+def test_unfed_rollback_is_claude_only(proj):  # noqa: F811
+    """Integration pass 3: Codex can type into a running command later
+    (write_stdin) without the gate seeing it, so the operator-only forms are
+    denied outright in Codex; Claude Code still lets the operator answer."""
+    assert bash(proj, "claude", "./tessctl rollback") is None
+    assert bash(proj, "codex", "./tessctl rollback") == "deny"
 
 
 def test_operator_form_matches_flags_and_prefixes():

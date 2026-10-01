@@ -179,7 +179,7 @@ OPERATOR_ALLOW = [
     "./tessctl anchor status",
     "python3 -I -B .tess/bin/tessctl anchor status",
     "./tessctl doctor",
-    "./tessctl update",
+    "./tessctl update --check",
     "./tessctl lock --check",
     "grep -n accept .tess/bin/tessctl",
     "git log --grep anchor",
@@ -192,6 +192,14 @@ def test_quoting_does_not_hide_operator_only_commands(pulls, cmd):
     root, _ = pulls
     assert _claude(root, cmd) == "deny", cmd
     assert _codex(root, cmd) == "deny", cmd
+
+
+def test_unfed_update_is_the_operators_in_codex(pulls):
+    """Integration pass 3: Claude Code lets the operator answer an unfed
+    `tessctl update`; Codex denies it (write_stdin can type the answer)."""
+    root, _ = pulls
+    assert _claude(root, "./tessctl update") is None
+    assert _codex(root, "./tessctl update") == "deny"
 
 
 @pytest.mark.parametrize("cmd", OPERATOR_ALLOW)

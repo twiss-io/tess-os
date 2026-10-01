@@ -1446,6 +1446,39 @@ def _vault_exec_parts(words: list) -> tuple:
     return as_names, []
 
 
+def _presence_read_only(words: list) -> bool:
+    """Forms of the operator-only tessctl subcommands that change nothing:
+    `--help`, `anchor` / `anchor status`, `update --check|--dry-run`,
+    `capture|restore --dry-run`. Codex may run these (integration pass 3)."""
+    low = [w.lower() for w in words]
+    if any(w in ("-h", "--help") for w in low):
+        return True
+    pos = [w for w in low if not w.startswith("-")]
+    head = pos[0] if pos else ""
+    if head == "anchor":
+        return pos[1:2] in ([], ["status"])
+    if head == "update":
+        return _opt_given(low, ("--check", "--dry-run"))
+    if head in ("capture", "restore"):
+        return _opt_given(low, ("--dry-run",))
+    return False
+
+
+def _expanded_words(argv: list, cwd, ctx) -> list:
+    """argv's operands as plain strings, each expanded as the shell will when
+    Tess can know it (else the word as written)."""
+    out = []
+    for a in _operands(argv):
+        cands = None
+        if ctx is not None and _dynamic(a):
+            try:
+                cands, _ = _word_values(a, cwd, ctx)
+            except (ValueError, TypeError):
+                cands = None
+        out += [t for t, _p in cands] if cands else [str(a)]
+    return out
+
+
 def _check_vault(words: list, v) -> None:
     """`tessctl vault get --reveal` / `--force`, and `tessctl vault exec` into a
     program that prints what it is given."""
@@ -4765,12 +4798,23 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     # that runs tessctl -- through `{ }`, `if/then`, wrappers, runners, `sh -c`,
     # substitutions or the unparseable fallback -- gets the vault rule and the
     # operator-only forms, not only the pipelines _check_operator_only reads.
-    tess_words = _tessctl_call([str(a) for a in _operands(argv)])
+    # Integration pass 3: the words as the shell expands them (a function's
+    # "$@", variables set earlier), so `f() { ./tessctl "$@"; }; f anchor
+    # accept` is judged as `tessctl anchor accept`.
+    tess_words = _tessctl_call(_expanded_words(argv, cwd, ctx))
     if tess_words is not None:
         _check_vault(tess_words, v)
+        tpos = [w.lower() for w in tess_words if not w.startswith("-")]
+        if tpos[:1] == ["anchor"] and tpos[1:2] in (["accept"], ["init"]):
+            v.add(DENY, "only the operator can record Tess's safety files as approved "
+                        "(`tessctl anchor accept`, in their own terminal)", "operator")
         if _operator_form(tess_words) and (upstream is not None or _stdin_source(orig) is not None):
             v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
                         "type the answer for them", "operator")
+        elif _operator_form(tess_words) and _STATE.get("codex") and not _presence_read_only(tess_words):
+            v.add(DENY, f"`tessctl {' '.join(tpos[:2])}` asks you to confirm at your own terminal, "
+                        "and in Codex an agent can type into a running command later (write_stdin) "
+                        "without Tess seeing it; run this in your own terminal", "operator")
     if name in EXTRACTORS:
         _check_extract(root, cwd, argv, v)
     if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(
@@ -5489,7 +5533,8 @@ _INTERACTIVE_ASK = ("it starts {what}, and Codex can type into a running command
 def _check_codex_session(cmd: str, v: Verdict) -> None:
     """Codex only: a bare shell or interpreter reads its program from what is
     typed into it later, which Tess would never see. (Tess's own approval
-    prompts run unfed are left as they were: see SECURITY.md, Known limits.)"""
+    prompts are denied outright in Codex in _check_segment, and tessctl refuses
+    them inside an assistant session: integration pass 3.)"""
     try:
         events = _events(cmd)
     except ValueError:
