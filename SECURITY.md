@@ -266,7 +266,7 @@ security reviews; they are stated so nobody relies on a check that is not there.
   part is a folder outside the project (`/tmp/build-$ID`, the gap named in the
   item above), a script's own arguments, and a find test when find only prints.
   A program whose own name is only known at run time is checked as each program
-  the gate stands in for it (git, gh, a shell, python, tessctl, find, a file
+  the gate stands in for it (git, gh, tessctl, find, a shell, python, a file
   writer) and asks if any of them would be stopped or if it has no arguments.
   Which positions decide is set per program family in the gate; a program the
   gate has no rules for is not covered by it (the item above).

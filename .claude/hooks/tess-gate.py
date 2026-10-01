@@ -5812,7 +5812,7 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
     expands to; v1.0 round 3: an empty value drops out and the next word is
     the program). Otherwise the program is only known at run time: the
     command is checked as if it were each program Tess stands in for it
-    (git, gh, a shell, python, tessctl, find, a file writer) and asks if any
+    (git, gh, tessctl, find, a shell, python, a file writer) and asks if any
     of them would be stopped, or if it has no arguments (round 3 fail-safe:
     tessctl and find joined the stand-ins)."""
     cands, _ = _word_fields(argv[0], cwd, ctx)
@@ -5838,7 +5838,7 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
                            _Ctx(raw, ctx))
     why = f"it runs a program whose name is only known when the command runs ({argv[0]})"
     if probe.level > ALLOW:
-        v.add(ASK, why + "; if that is git, gh, a shell, python, tessctl, find or a file writer, "
+        v.add(ASK, why + "; if that is git, gh, tessctl, find, a shell, python or a file writer, "
                          "Tess would stop it: " + "; ".join(probe.reasons))
     elif len(argv) == 1 or depth >= _MAX_DEPTH:
         v.add(ASK, why + ", so Tess cannot check what it does")
