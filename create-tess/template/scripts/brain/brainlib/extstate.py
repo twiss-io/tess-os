@@ -257,6 +257,8 @@ def _append_locked(cfg: Config, d: Path, new: List[Dict], durable: bool) -> bool
     ok, dropped = events.admit(got or [], pending, chains) if got is not None else (pending, 0)
     if dropped:
         log_error(cfg, "brain state: dropped %d outbox row(s): replayed, or older than the ledger" % dropped)
+    # a record seal made in the sandbox stays the sandbox's once durable (records.seal_row_trusted)
+    ok = [dict(r, origin=outbox.ORIGIN) if r.get("t") == "rec" else r for r in ok]
     new = events.stamp(list(new), seq, chain)
     done = False
     try:

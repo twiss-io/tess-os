@@ -521,6 +521,24 @@ def corrupt_tag_signature(repo_path: Path, tag: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# Assistant-session markers (integration pass 3). tessctl's "a person must
+# type this" steps refuse when CLAUDECODE, CLAUDE_CODE_ENTRYPOINT,
+# CODEX_THREAD_ID, CODEX_SANDBOX or CODEX_SANDBOX_NETWORK_DISABLED is set.
+# The suite may run inside Claude Code or Codex, so it plays the operator's
+# own terminal: the markers are removed for the whole run and restored after.
+# A test that needs one sets it itself (tests/test_v1_audit_presence_markers.py).
+# --------------------------------------------------------------------------
+@pytest.fixture(autouse=True, scope="session")
+def _no_assistant_session_markers():
+    from _presence_pty import AGENT_SESSION_MARKERS
+    saved = {k: os.environ.pop(k) for k in AGENT_SESSION_MARKERS if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+# --------------------------------------------------------------------------
 # Brain provenance key (scripts/brain/brainlib/provenance.py): tests never
 # touch the real ~/.config/tess. One per-session key dir, outside every
 # instance, 0700; subprocesses inherit it through the environment.

@@ -343,3 +343,55 @@ def test_fed_roster_changes_are_denied(proj, cmd):
                                  "./tessctl recruit --help"])
 def test_roster_reads_stay_allowed(proj, cmd):
     assert _level(proj, cmd) == "allow", cmd
+
+
+# ------------------------------------------------------------------ Codex: operator-only forms are the operator's (pass 3)
+
+PRESENCE_FORMS = [
+    "./tessctl update", "./tessctl update --ref v1.0.1", "./tessctl self-update",
+    "./tessctl approve CLAUDE.md --rationale x", "./tessctl anchor accept", "./tessctl override CLAUDE.md",
+    "./tessctl reset CLAUDE.md", "./tessctl resolve CLAUDE.md --theirs", "./tessctl rollback",
+    "./tessctl rollback --to 2026-01-01T00-00-00Z-update", "./tessctl restore --force",
+    "./tessctl publish --force", "./tessctl capture --auto", "./tessctl lock --regen",
+    "./tessctl recruit cyra", "./tessctl bench reid", "./tessctl roster apply",
+    "./tessctl verdict sign v.json --key-id K", "./tessctl gate signoff sign s.yaml",
+    "python3 -I -B .tess/bin/tessctl update",
+]
+
+READ_ONLY_FORMS = [
+    "./tessctl status", "./tessctl verify", "./tessctl doctor", "./tessctl diff",
+    "./tessctl anchor status", "./tessctl anchor", "./tessctl lock --check",
+    "./tessctl update --check", "./tessctl update --dry-run", "./tessctl restore --dry-run",
+    "./tessctl capture --dry-run", "./tessctl approve --help", "./tessctl verdict verify v.json",
+    "./tessctl roster list",
+]
+
+
+@pytest.mark.parametrize("cmd", PRESENCE_FORMS)
+def test_codex_denies_operator_only_tessctl_forms_even_unfed(proj, cmd):
+    """Codex can type into a running command later (write_stdin), which the
+    gate never sees, so an unfed presence prompt is still the operator's."""
+    data = {"tool_name": "Bash", "cwd": str(proj), "tool_input": {"command": cmd},
+            "hook_event_name": "PreToolUse", "session_id": "s", "turn_id": "t1"}
+    dec, why = G.decide(data, proj, "codex")
+    assert dec == "deny" and "your own terminal" in why, (cmd, dec, why)
+
+
+@pytest.mark.parametrize("cmd", [c for c in PRESENCE_FORMS if "anchor accept" not in c])
+def test_claude_still_lets_the_operator_answer_unfed_prompts(proj, cmd):
+    """Claude Code is unchanged: an unfed prompt reaches the operator (the
+    engine itself refuses inside the session; test_v1_audit_presence_markers)."""
+    v = _eval(proj, cmd)
+    assert not any("write_stdin" in r for r in v.reasons), (cmd, v.reasons)
+
+
+@pytest.mark.parametrize("cmd", READ_ONLY_FORMS)
+def test_codex_keeps_read_only_tessctl_forms(proj, cmd):
+    assert _decide(proj, cmd, "codex") is None, cmd
+
+
+def test_codex_presence_deny_reaches_resolved_and_expanded_segments(proj):
+    for cmd in ("nice -n 5 ./tessctl approve CLAUDE.md", "{ ./tessctl rollback; }",
+                "A=update; ./tessctl $A", "f() { ./tessctl \"$@\"; }; f override CLAUDE.md",
+                "bash -c './tessctl reset CLAUDE.md'"):
+        assert _decide(proj, cmd, "codex") == "deny", cmd

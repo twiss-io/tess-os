@@ -160,8 +160,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   including the keys, write into Claude's and Codex's transcript folders, and fake
   a terminal for the "only at a terminal" steps (`roots add`, `sync --claude-dir`
   with another folder, `accept <version>`), which are presence checks, not
-  cryptography. For a real boundary, run agents in the runtime's sandbox or as
-  another OS user.
+  cryptography. Tess's own "type this to confirm" steps also refuse when they were
+  started inside Claude Code or Codex (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+  `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), but a
+  program that clears its own environment passes that check too. For a real
+  boundary, run agents in the runtime's sandbox or as another OS user.
 - **Signing an approval is a presence and custody check, not an OS boundary.**
   `tessctl verdict sign` and `tessctl gate signoff sign` refuse to run without a
   terminal, refuse a key with no passphrase or one that is not the registered
@@ -210,25 +213,51 @@ security reviews; they are stated so nobody relies on a check that is not there.
   strings, here-strings, here-documents and `echo ... | sh`, expands `~`, `$HOME`,
   `$PWD`, `$TMPDIR`, variables and `for` lists set in the same command, braces and
   globs, tracks `cd` through `&&`, `||`, `;`, subshells and pipes, and uses a
-  Codex call's own `workdir`. It stops at what only exists when the command runs:
-  a program named by a variable or `$(...)`, a write target that is a variable
-  set elsewhere, file names `xargs` reads from another program, a shell fed by
-  a program such as `curl`. Those ask (Claude Code) or are refused (Codex, and
-  Claude Code's no-prompt modes). Two gaps remain: a target whose fixed part is a
+  Codex call's own `workdir`. Since v1.0.0 it also splits unquoted variables into
+  separate words, joins the values a variable can hold after an `if`, `while`,
+  `case` or `&&`/`||` branch that may not run, checks the commands inside
+  `${X:-$(...)}` and `$((...))`, expands git's own arguments (`git commit $FLAGS`),
+  and checks aliases and functions defined in the command where they are used,
+  with the words they are given. An expansion with more than 1,024 results is
+  treated as unknown, never checked in part. It stops at what only exists when
+  the command runs: a program named by a variable or `$(...)`, a write target
+  that is a variable set elsewhere, a git option or config key read from a file
+  (`git commit $(cat flags)`), file names `xargs` reads from another program, a
+  shell fed by a program such as `curl`. Those ask (Claude Code) or are refused
+  (Codex, and Claude Code's no-prompt modes). Aliases and functions defined
+  outside the command (a shell startup file) are not seen, and a git option only
+  known at run time is asked about for `git config`, `-c` and the commands
+  `--no-verify` belongs to, not for every git command. Two gaps remain: a target whose fixed part is a
   folder outside the project (`/tmp/build-$ID`) is allowed, although a value
   holding `../` could climb back into it; and a program the gate has no rules for
   (a formatter, a build tool) can still write the files its own options name.
   When `cd dir; <write>` is used and the `cd` could fail, the write is checked
   in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
-  `find -exec` are checked against the files find would match, up to 20,000
-  entries; beyond that they ask. The whole check has a 40-second budget (inside
+  `find -exec` are checked against the files find would match (its `-name`,
+  `-path`, `-type`, `!`, `-o` and `( )` are evaluated; a test such as `-mtime` counts
+  as possibly true), up to 20,000 entries; beyond that they ask, and so does a
+  changing `find -L` / `-follow`, which follows links Tess does not walk. The whole check has a 40-second budget (inside
   the 120-second hook timeout, after up to 60 seconds of the launcher's own
   check); a call it cannot finish in time asks, or is refused in Codex.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
   its own sandbox and approval settings apply. Input typed into an already-open
-  shell with `write_stdin` never reaches the gate, and a hook that times out or
+  shell with `write_stdin` never reaches the gate, so in Codex the gate refuses a
+  bare shell or interpreter (`bash`, `python3`), which reads its program from what
+  is typed later. For the same reason (Codex can start a command in a
+  pseudo-terminal the hook payload does not show and type into it later), the
+  gate refuses every `tessctl` step that asks the operator to type an answer
+  (`approve`, `update`, `rollback`, `anchor accept`, `verdict sign`...) in Codex
+  even when nothing feeds it, and `tessctl` refuses those steps when it was started
+  inside a Codex or Claude Code session; run them in your own terminal. Their
+  read-only forms (`status`, `verify`, `doctor`, `diff`, `anchor status`,
+  `lock --check`, `update --check`) stay allowed. Codex sends shell, `exec_command` and unified-exec calls to
+  the hook as `Bash` with only the command text (its documented hook schema): a
+  call's own `workdir` is used when a payload carries one, and otherwise relative
+  paths are judged from the session folder, so a relative write in an
+  `exec_command` whose `workdir` is a protected folder is not seen by the gate (the
+  git hooks and the ship gate still are). A hook that times out or
   crashes in the host fails open for that call. Details:
   [adapters/CONFORMANCE.md](adapters/CONFORMANCE.md), Codex row.
 - **Tess's safety files are anchored outside the repository; the anchor is not an
@@ -305,7 +334,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   its seal (planted, hand-edited, or pulled from another machine, which has
   its own ledger) is treated as awaiting your review, never as accepted,
   confirmed or learned, until you confirm it here. On the first run after an
-  upgrade the records already in the folder are sealed once as they are.
+  upgrade the records already in the folder are sealed once as they are. A
+  seal counts only while the file still says the status it was sealed with,
+  and a seal the sandbox queued (even after a hook moves it into the ledger)
+  never vouches for an accepted, active or confirmed record: a record the
+  sandbox wrote is accepted by the next hook only by being rewritten from its
+  verified quote, and a pending record nothing vouches for goes straight to
+  your review.
 - **The in-repo launcher and hook configuration are protected by the gate's route
   rules, not by the anchor.** The anchor check runs inside
   `.claude/hooks/run-pinned.py`, which lives in the working tree, and the hook
@@ -326,7 +361,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   change made outside the agent) can still replace the launcher. A user-level
   launcher outside the repository, registered in the user-level Claude Code and
   Codex settings so that it runs the anchor check before any in-repo file, is
-  planned for 1.0.1.
+  planned for 1.0.1. Git's own hooks are the other half: the launcher stops every
+  Tess hook while git's effective `core.hooksPath` (any config scope, or set
+  through `GIT_CONFIG_*`) points anywhere but this repository's own `.git/hooks`,
+  and `scripts/tess hooks-status` and `tessctl doctor` say so with the line that
+  puts it back.
 - **The gate judges paths by the file they name, and some control files live
   outside the project.** Since the v1.0 security audit the gate decides whether
   a path is protected (or is the key directory) by file identity: a case
@@ -356,7 +395,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
   `lock --regen`, `recruit`, `bench`, `roster apply`), and signing a verdict or a
   sign-off (`verdict sign`, `gate signoff sign`), are the operator's: the gate
-  refuses an agent that feeds them input or fakes a terminal for them.
+  refuses an agent that feeds them input or fakes a terminal for them (and, in
+  Codex, refuses them outright; see the Codex item above).
 - **Vault values stay out of agent sessions, for the commands the gate can
   see.** The gate refuses `tessctl vault get --reveal` (and `--force`) and
   `tessctl vault exec` into a program that prints what it is given (`printenv`,
@@ -490,6 +530,19 @@ and before the lock is saved. A staged file that changed after the check stops
 the update (rolling it back if the core advance had begun), so only the signed
 release's bytes are applied and anchored. `self-update` reads the new engine
 from the verified commit's git object the same way.
+
+**Adding the SSH key to an older install.** An install made before the SSH
+signature existed pins only the OpenPGP key, so it needs gpg to update. A
+verified update ADDS the release's SSH pin and its `twiss-release-allowed-signers`
+file, and only when the release's own `tess.lock` names that key, the shipped
+file is that key, and the tag being installed carries a valid SSH signature by
+it (the OpenPGP signature having been checked against the install's pin first).
+It never removes or changes the OpenPGP pin and never replaces an SSH pin the
+install already has: changing a pinned key stays the operator's decision. The
+ship gate accepts the lock change only when the added pin is the proven
+release's. The same update adds to the install's `tess.manifest.json` the
+`owned_globs` the signed release's own manifest lists (for example
+`.codex/rules/tess.rules`), never one the operator's own `never_touch` keeps.
 
 **No silent downgrade.** `update` and `self-update` refuse a release tag older
 than the installed version (the newer of `framework.version` and
