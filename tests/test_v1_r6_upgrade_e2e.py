@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from _presence_pty import run_tessctl_in_pty
+from _presence_pty import operator_env, run_tessctl_in_pty
 from conftest import HAS_GIT, HAS_GPG, REPO_ROOT
 from fixtures.os_home import use_os_home
 from test_v1_first_push_release_proof import _engine_consts
@@ -188,7 +188,8 @@ def upgraded(tmp_path_factory, gpg_key):
         rc, up_out = run_tessctl_in_pty(inst, "update", "--ref", TAG, answer=f"accept {TAG}",
                                         prompt=b"accept> ")
         yield {"inst": inst, "tmp": tmp, "seed": seed, "self_update": su, "update_rc": rc,
-               "update_out": up_out, "origin": tmp / "origin.git"}
+               "update_out": up_out, "origin": tmp / "origin.git", "ssh_fp": ssh_fp,
+               "signers": signers, "gpg_fpr": gpg_key.fpr}
     finally:
         mp.undo()
 
@@ -228,6 +229,53 @@ def test_self_update_then_update_succeed(upgraded):
     assert su.returncode == 0, su.stdout[-3000:] + su.stderr[-3000:]
     assert upgraded["update_rc"] == 0, upgraded["update_out"][-6000:]
     assert "Step 6.6: install Tess's hook and brain files" in upgraded["update_out"]
+
+
+def test_release_owned_paths_are_adopted(upgraded):
+    """Integration pass 3: 1.0.0 owns `.codex/rules/tess.rules` and
+    `.agents/skills/security-audit/**`; a 0.2.0 manifest did not, so the
+    render skipped them. The update adds exactly the release's new owned
+    globs and renders them."""
+    inst = upgraded["inst"]
+    manifest = json.loads((inst / "tess.manifest.json").read_text())
+    release = json.loads((REPO_ROOT / "tess.manifest.json").read_text())
+    for g in (".codex/rules/tess.rules", ".agents/skills/security-audit/**"):
+        assert g in manifest["owned_globs"], manifest["owned_globs"]
+    assert set(manifest["owned_globs"]) <= set(release["owned_globs"]), \
+        "only globs the release manifest owns are added"
+    assert "Tess OS command rules for Codex" in (inst / ".codex/rules/tess.rules").read_text()
+    shipped = sorted(p.name for p in (REPO_ROOT / ".agents/skills/security-audit").iterdir())
+    got = sorted(p.name for p in (inst / ".agents/skills/security-audit").iterdir())
+    assert got == shipped
+    assert "Tess now manages .codex/rules/tess.rules" in upgraded["update_out"]
+
+
+def test_the_release_ssh_trust_root_is_added_and_the_openpgp_pin_kept(upgraded, engine):
+    """Integration pass 3: the signed release's SSH release key is ADDED (pin
+    + allowed_signers file); the OpenPGP pin the install trusted is unchanged."""
+    inst = upgraded["inst"]
+    fw = engine.load_lock(inst)["framework"]
+    assert fw["trusted_ssh_key_fingerprint"] == upgraded["ssh_fp"]
+    assert fw["trusted_key_fingerprint"] == upgraded["gpg_fpr"]
+    assert (inst / SIGNERS).read_text() == upgraded["signers"]
+    assert "pinned the SSH release key" in upgraded["update_out"]
+
+
+def _path_without_gpg(tmp: Path) -> str:
+    """A PATH holding every program of the current PATH except gpg."""
+    shim = tmp / "nogpg-bin"
+    if not shim.is_dir():
+        shim.mkdir()
+        for d in os.environ.get("PATH", "").split(os.pathsep):
+            if not d or not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                if name.startswith("gpg") or (shim / name).exists():
+                    continue
+                src = os.path.join(d, name)
+                if os.path.isfile(src) and os.access(src, os.X_OK):
+                    os.symlink(src, shim / name)
+    return str(shim)
 
 
 def test_every_hook_script_is_installed_with_its_pinned_sha(upgraded, engine):
@@ -342,9 +390,15 @@ def test_a_self_update_committed_on_its_own_pushes_then_the_update(upgraded, eng
     assert (fw["version"], fw["upstream_ref"], fw["engine_ref"]) == ("1.0.0", NEXT_TAG, NEXT_TAG)
     assert re.fullmatch(r"[0-9a-f]{40}", fw["engine_commit"])
     _commit_and_push(upgraded, "Tess engine 1.0.1", engine_only=True)
+    # Integration pass 3: with the SSH release key adopted by the 1.0.0
+    # update, this update verifies with ssh-keygen alone (no gpg on PATH).
+    no_gpg = _path_without_gpg(upgraded["tmp"])
+    assert shutil.which("gpg", path=no_gpg) is None and shutil.which("ssh-keygen", path=no_gpg)
     rc, out = run_tessctl_in_pty(inst, "update", "--ref", NEXT_TAG, answer=f"accept {NEXT_TAG}",
-                                 prompt=b"accept> ")
+                                 prompt=b"accept> ",
+                                 env=operator_env(TESS_ROOT=str(inst), PATH=no_gpg))
     assert rc == 0, out[-4000:]
+    assert "SSH release signature OK" in out, out[-4000:]
     fw = engine.load_lock(inst)["framework"]
     assert (fw["version"], fw["engine_ref"], fw["upstream_commit"]) == (
         "1.0.1", NEXT_TAG, fw["engine_commit"])

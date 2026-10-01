@@ -9118,6 +9118,151 @@ def _stage_aux_runtime(clone_dir: Path, commit: str, staging_dir: Path, verified
     return len(entries)
 
 
+# ---------------------------------------------------------------------------
+# v1.0 integration (round-2 e2e): what a verified update adopts beyond core.
+#
+# * Owned globs. A release can start owning new live paths (1.0.0 added
+#   `.codex/rules/tess.rules` and `.agents/skills/security-audit/**`). The
+#   instance's tess.manifest.json was written by an older installer, so the
+#   render step skipped them. update adds to the instance manifest exactly the
+#   owned_globs the signed release's own manifest lists that the instance
+#   lacks, never one the operator put in never_touch, never a catch-all.
+# * SSH release trust root. 1.0 releases carry an SSH signature too, so an
+#   install can update without gpg. An older install has no SSH pin. update
+#   ADDS the release's pin (framework.trusted_ssh_key_fingerprint) and its
+#   allowed_signers file only when: the release was verified with this
+#   install's current pins, the release lock names that SSH key, the shipped
+#   file is that key, and this very tag carries a valid SSH signature by it.
+#   It never removes or changes the OpenPGP pin, and never replaces an SSH pin
+#   the install already has (a rotation stays the operator's decision).
+# ---------------------------------------------------------------------------
+STAGED_RELEASE_MANIFEST = "upstream-tess.manifest.json"
+STAGED_RELEASE_SIGNERS = "upstream-trust/twiss-release-allowed-signers"
+_RELEASE_TRUST_STATE: dict = {"ssh": None}
+_OWNED_GLOB_REFUSED = re.compile(r"^(\*\*?|\*\*/\*|/.*|.*\.\..*)$")
+
+
+def _stage_release_extras(clone_dir: Path, commit: str, tag_ref: str, staging_dir: Path,
+                          verified: dict) -> None:
+    _RELEASE_TRUST_STATE["ssh"] = None
+    picked = {}
+    for rel, dst in ((MANIFEST_FILE, STAGED_RELEASE_MANIFEST),
+                     (RELEASE_SSH_SIGNERS_FILE, STAGED_RELEASE_SIGNERS)):
+        ent = _release_tree_entries(clone_dir, commit, rel).get("")
+        if not ent or ent[0] not in ("100644", "100755"):
+            continue
+        kind, data = _git_cat_file_batch(clone_dir, [ent[1]]).get(ent[1], (None, None))
+        if kind != "blob":
+            continue
+        target = staging_dir / dst
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _staging_write_new(target, data, 0o644)
+        verified[dst] = sha256_bytes(data)
+        picked[rel] = data
+    signers = picked.get(RELEASE_SSH_SIGNERS_FILE)
+    lock_data = None
+    lock_ent = _release_tree_entries(clone_dir, commit, LOCK_FILE).get("")
+    if lock_ent:
+        kind, lock_data = _git_cat_file_batch(clone_dir, [lock_ent[1]]).get(lock_ent[1], (None, None))
+    try:
+        rlock = _lock_load_text(lock_data.decode("utf-8")) if lock_data else {}
+    except (UnicodeDecodeError, yaml.YAMLError):
+        rlock = {}
+    pin = _release_ssh_pin(rlock if isinstance(rlock, dict) else {})
+    if not (pin and signers):
+        return
+    def g(*a):
+        r = subprocess.run(["git", "-C", str(clone_dir), *a], capture_output=True)
+        return r.stdout if r.returncode == 0 else None
+    tag_bytes, commit_bytes = g("cat-file", "tag", tag_ref), g("cat-file", "commit", commit)
+    why = ("tag_unreadable" if tag_bytes is None or commit_bytes is None
+           else _release_ssh_reason(tag_bytes, commit_bytes, signers, pin))
+    _RELEASE_TRUST_STATE["ssh"] = {"pin": pin, "reason": why,
+                                   "signers_sha": sha256_bytes(signers)}
+
+
+def _update_adopt_owned_globs(root: Path, core_journal: dict) -> list:
+    """Add the signed release's new owned_globs to the instance manifest
+    (see the block comment above). Returns the globs added."""
+    table = _staging_verified_table(root) or {}
+    if STAGED_RELEASE_MANIFEST not in table:
+        return []
+    try:
+        release = json.loads(_staging_verified_bytes(root, STAGED_RELEASE_MANIFEST).decode("utf-8"))
+        path = root / MANIFEST_FILE
+        raw = path.read_bytes()
+        inst = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        print(f"  WARN  could not compare tess.manifest.json with the release's ({e}); "
+              f"new release paths may not be rendered")
+        return []
+    if path.is_symlink() or not isinstance(inst, dict) or not isinstance(release, dict):
+        return []
+    owned = list(inst.get("owned_globs") or [])
+    never = list(inst.get("never_touch") or [])
+    rel_never = set(release.get("never_touch") or [])
+    added = []
+    for g in release.get("owned_globs") or []:
+        if not isinstance(g, str) or g in owned or _OWNED_GLOB_REFUSED.match(g):
+            continue
+        head = re.split(r"[*?\[]", g, 1)[0].rstrip("/") or g
+        # the operator's own never_touch (one the release does not ship) wins
+        if g in never or any(n not in rel_never and (n == g or path_matches_globs(head, [n]))
+                             for n in never):
+            print(f"  NOTE  the release owns {g}, but your tess.manifest.json never_touch "
+                  f"keeps it yours; left as it is")
+            continue
+        owned.append(g)
+        added.append(g)
+    if not added:
+        return []
+    inst["owned_globs"] = owned
+    core_journal.setdefault(MANIFEST_FILE, raw)
+    _atomic_write_bytes(path, (json.dumps(inst, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    for g in added:
+        print(f"  manifest: Tess now manages {g} (owned by this release)")
+    return added
+
+
+def _update_adopt_release_trust(root: Path, lock: dict, core_journal: dict) -> str | None:
+    """Add the release's SSH release-key pin and allowed_signers file (see
+    the block comment above). Returns the pin added, or None."""
+    st = _RELEASE_TRUST_STATE.get("ssh")
+    fw = lock.setdefault("framework", {})
+    have = _release_ssh_pin(lock)
+    if not st:
+        return None
+    if st["reason"]:
+        if not have:
+            print(f"  NOTE  this release's SSH release key was not added ({st['reason']}); "
+                  f"updates still need gpg")
+        return None
+    if have and have != st["pin"]:
+        print(f"  NOTE  this release names another SSH release key ({st['pin']}); yours "
+              f"({have}) is kept. Changing it is your decision.")
+        return None
+    data = _staging_verified_bytes(root, STAGED_RELEASE_SIGNERS)
+    if sha256_bytes(data) != st["signers_sha"]:
+        sys.exit(STAGING_TAMPER_MESSAGE.format(what=STAGED_RELEASE_SIGNERS))
+    target = root / RELEASE_SSH_SIGNERS_FILE
+    current, _why = _read_regular_nofollow(target)
+    if target.is_symlink() or (current is not None and current != data):
+        print(f"  NOTE  {RELEASE_SSH_SIGNERS_FILE} differs from the release's; kept, and the "
+              f"SSH release key was not added")
+        return None
+    if current is None:
+        core_journal.setdefault(RELEASE_SSH_SIGNERS_FILE, None)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_bytes(target, data)
+        _release_write_note(target, data)
+        print(f"  installed {RELEASE_SSH_SIGNERS_FILE} (the release's SSH release key)")
+    if not have:
+        fw["trusted_ssh_key_fingerprint"] = st["pin"]
+        print(f"  pinned the SSH release key {st['pin']}: later updates verify without gpg")
+        return st["pin"]
+    return None
+
+
 def _aux_runtime_plan(root: Path, lock: dict) -> list:
     """Before anything is written: the auxiliary runtime paths this update
     installs (every one the verified release staged). Exits, changing
@@ -9405,6 +9550,10 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
 
         # v1.0.0 round 6 (GPT-6 #1): Tess's hook and brain files, same commit.
         _aux_n = _stage_aux_runtime(clone_dir, _verified_commit, staging_dir, verified)
+        # v1.0 integration: the release manifest (owned globs) and its SSH
+        # release trust root, same verified commit (see _update_adopt_*).
+        _stage_release_extras(clone_dir, _verified_commit, f"refs/tags/{ref}", staging_dir,
+                              verified)
         if _aux_n:
             print(f"  extracted {_aux_n} Tess runtime file(s) (hooks, brain) to staging")
         # v1.0.0 round 6 (GPT-6 #2): the release engine's sha256, so update can
@@ -10243,6 +10392,10 @@ def _cmd_update_body(args, root: Path) -> None:
         if not dry_run:
             _sync_render_outputs_to_disk(root, lock)     # v0.2 eng-b: Step 1 records reach render
         if not dry_run:
+            print("\nStep 6.7: release-owned paths …")
+            if not _update_adopt_owned_globs(root, core_journal):
+                print("  no new release-owned paths")
+        if not dry_run:
             print("\nStep 7: render (from new core, post-A1/A2) …")
             _render_enabled_targets(root, verbose=True)
             _pull_render_outputs_from_disk(root, lock)   # v0.2 eng-b: Step 8 save keeps new records
@@ -10290,6 +10443,9 @@ def _cmd_update_body(args, root: Path) -> None:
             for _k in not_repinned:
                 print(f"  WARN  {_k}: core bytes match neither base_sha nor the fetched "
                       f"release — NOT re-pinned (`tessctl verify` reports it)")
+
+            # v1.0 integration: the release's SSH trust root (add-only).
+            _update_adopt_release_trust(root, lock, core_journal)
 
             # A3: BUMP VERSION — set framework.version + upstream_ref to fetched tag
             _strip_v = target_ref.lstrip("v") if target_ref.startswith("v") else target_ref
@@ -18529,6 +18685,13 @@ def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str
             return f"{key} changed"
     bfw, hfw = base_lock.get("framework") or {}, head_lock.get("framework") or {}
     for key in set(bfw) | set(hfw):
+        if key == "trusted_ssh_key_fingerprint" and not str(bfw.get(key) or "").strip():
+            # v1.0 integration: an update may ADD the SSH release pin, and only
+            # the one the proven release's own tess.lock names.
+            added = str(hfw.get(key) or "").strip()
+            if not added or added == _release_ssh_pin(_gate_release_lock_from_proof(resolve) or {}):
+                continue
+            return f"framework.{key} is not the proven release's SSH key"
         if key not in _RELEASE_LOCK_FRAMEWORK_MUTABLE and bfw.get(key) != hfw.get(key):
             return f"framework.{key} changed"
     if bfw != hfw:
