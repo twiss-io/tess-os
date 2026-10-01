@@ -173,8 +173,8 @@ def test_command_word_is_resolved_through_wrappers_and_grouping(proj, cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    "$(echo git) commit --no-verify -m x",
-    "`echo git` commit --no-verify -m x",
+    "$(printf git) commit --no-verify -m x",  # round 2: $(echo git) now resolves to git (DENY)
+    "`printf git` commit --no-verify -m x",
     "\"$X\" commit --no-verify -m x",
     "$CMD",
     "eval \"$CMD\"",
