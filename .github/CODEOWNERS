@@ -9,6 +9,7 @@
 /.tess/bin/                     @XavierJ21
 /.tess/core/                    @XavierJ21
 /.tess/tess.lock                @XavierJ21
+/tess.manifest.json             @XavierJ21
 /.tess/keys/                    @XavierJ21
 /.tess/vendor/                  @XavierJ21
 /.tess/staging/                 @XavierJ21
