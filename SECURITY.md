@@ -210,11 +210,21 @@ security reviews; they are stated so nobody relies on a check that is not there.
   strings, here-strings, here-documents and `echo ... | sh`, expands `~`, `$HOME`,
   `$PWD`, `$TMPDIR`, variables and `for` lists set in the same command, braces and
   globs, tracks `cd` through `&&`, `||`, `;`, subshells and pipes, and uses a
-  Codex call's own `workdir`. It stops at what only exists when the command runs:
-  a program named by a variable or `$(...)`, a write target that is a variable
-  set elsewhere, file names `xargs` reads from another program, a shell fed by
-  a program such as `curl`. Those ask (Claude Code) or are refused (Codex, and
-  Claude Code's no-prompt modes). Two gaps remain: a target whose fixed part is a
+  Codex call's own `workdir`. Since v1.0.0 it also splits unquoted variables into
+  separate words, joins the values a variable can hold after an `if`, `while`,
+  `case` or `&&`/`||` branch that may not run, checks the commands inside
+  `${X:-$(...)}` and `$((...))`, expands git's own arguments (`git commit $FLAGS`),
+  and checks aliases and functions defined in the command where they are used,
+  with the words they are given. An expansion with more than 1,024 results is
+  treated as unknown, never checked in part. It stops at what only exists when
+  the command runs: a program named by a variable or `$(...)`, a write target
+  that is a variable set elsewhere, a git option or config key read from a file
+  (`git commit $(cat flags)`), file names `xargs` reads from another program, a
+  shell fed by a program such as `curl`. Those ask (Claude Code) or are refused
+  (Codex, and Claude Code's no-prompt modes). Aliases and functions defined
+  outside the command (a shell startup file) are not seen, and a git option only
+  known at run time is asked about for `git config`, `-c` and the commands
+  `--no-verify` belongs to, not for every git command. Two gaps remain: a target whose fixed part is a
   folder outside the project (`/tmp/build-$ID`) is allowed, although a value
   holding `../` could climb back into it; and a program the gate has no rules for
   (a formatter, a build tool) can still write the files its own options name.

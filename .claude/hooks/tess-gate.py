@@ -673,7 +673,7 @@ def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
     return None
 
 
-def _check_key_text(cwd: str, argv: list, raw: str, v) -> None:
+def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None) -> None:
     """Bash: any argument (or `--opt=value` value) that reaches the key
     directory, or command text that names it (an inline `python -c open(...)`)."""
     if _KEY_TEXT.search(raw):
@@ -687,20 +687,27 @@ def _check_key_text(cwd: str, argv: list, raw: str, v) -> None:
                          "ditto", "pax", "cpio") or \
         any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
     for a in argv[1:]:
-        for part in {a, a.split("=", 1)[-1]}:
-            if key_hit(cwd, part, ancestors=recursive) or (
+        parts = {a, a.split("=", 1)[-1]}
+        # v1.0 round 2 (Cyra L1): the text the shell builds (`~/$a/tess`,
+        # `${H}fig/tess`, `~/.config/{tess,x}`) reaches it too.
+        vals, _ = _word_values(a, cwd, ctx) if ctx is not None and isinstance(a, _Word) else (None, "")
+        for text, _pat in vals or []:
+            if text != str(a):
+                parts |= {text, text.split("=", 1)[-1]}
+        for part in parts:
+            if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or (
                     any(c in part for c in "*?[") and any(key_hit(cwd, g) for g in _glob(cwd, part))):
                 v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
                             "the operator's own tools, not for an agent", "keys")
                 return
 
 
-def _glob(cwd: str, pattern: str) -> list:
+def _glob(cwd: str, pattern: str, limit: int = 200) -> list:
     import glob as _g
     pat = _expand(pattern)
     pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
     try:
-        return _g.glob(pat, recursive=False)[:200]
+        return _g.glob(pat, recursive=False)[:limit]
     except Exception:
         return []
 
@@ -730,19 +737,24 @@ class _Word(str):
     there), "var" a $NAME, "sub" a command substitution, "proc" a process
     substitution, "dyn" any other expansion. `op` marks an unquoted operator
     or redirection, `fd` a file-descriptor number glued to one (`2>`), and
-    `body` a here-document's text (on the word after << / <<-)."""
+    `body` a here-document's text (on the word after << / <<-). `q` runs
+    parallel to `parts`: True for an expansion written inside double quotes
+    (no field splitting, no globbing of its value)."""
     op = False
     fd = False
     parts: tuple = ()
+    q: tuple = ()
     body = None
 
 
 def _mkword(parts, op: bool = False) -> "_Word":
     show = {"var": "${}", "sub": "$()", "proc": "<()", "dyn": "${}", "fallback": ""}
-    text = "".join(t if k in ("lit", "raw", "fallback", "arith") else
-                   show[k][:-1] + t + show[k][-1] if k != "var" else "$" + t for k, t in parts)
+    text = "".join(p[1] if p[0] in ("lit", "raw", "fallback", "arith") else
+                   show[p[0]][:-1] + p[1] + show[p[0]][-1] if p[0] != "var" else "$" + p[1]
+                   for p in parts)
     w = _Word(text)
-    w.parts, w.op = tuple((k, t) for k, t in parts), op
+    w.parts, w.op = tuple((p[0], p[1]) for p in parts), op
+    w.q = tuple(bool(p[2]) if len(p) > 2 else False for p in parts)
     return w
 
 
@@ -864,18 +876,18 @@ def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
         # $(cmd), and $((...)): bash runs $((cmd) ) as a command when it is
         # not arithmetic, so both are checked as a command.
         j = _close_paren(s, i + 1)
-        add("sub", s[i + 2:j])
+        add("sub", s[i + 2:j], quoted)
         return j + 1
     if nxt == "[":
         j = s.find("]", i)
         if j < 0:
             raise ValueError("No closing bracket")
-        add("dyn", s[i + 1:j + 1])
+        add("dyn", s[i + 1:j + 1], quoted)
         return j + 1
     if nxt == "{":
         j = _close_brace(s, i + 1)
         inner = s[i + 2:j]
-        add("var" if _NAME.fullmatch(inner) or inner.isdigit() else "dyn", inner)
+        add("var" if _NAME.fullmatch(inner) or inner.isdigit() else "dyn", inner, quoted)
         return j + 1
     if nxt == "'" and not quoted:
         j, text = _ansi_c(s, i + 2)
@@ -885,13 +897,13 @@ def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
         return _scan_dquote(s, i + 2, add)
     m = _NAME.match(s, i + 1)
     if m:
-        add("var", m.group(0))
+        add("var", m.group(0), quoted)
         return m.end()
     if nxt.isdigit():
-        add("var", nxt)
+        add("var", nxt, quoted)
         return i + 2
     if nxt and nxt in "@*#?$!-":
-        add("dyn", nxt)
+        add("dyn", nxt, quoted)
         return i + 2
     add("lit" if quoted else "raw", "$")
     return i + 1
@@ -911,7 +923,7 @@ def _scan_dquote(s: str, i: int, add) -> int:
             i = _scan_dollar(s, i, add, True)
         elif c == "`":
             j = _close_backtick(s, i)
-            add("sub", s[i + 1:j])
+            add("sub", s[i + 1:j], True)
             i = j + 1
         else:
             add("lit", c)
@@ -942,14 +954,14 @@ def _scan(cmd: str) -> list:
     unbalanced quotes, as shlex does."""
     toks, docs, state = [], [], {"parts": None}
 
-    def add(kind, text):
+    def add(kind, text, quoted=False):
         parts = state["parts"]
         if parts is None:
             parts = state["parts"] = []
         if parts and parts[-1][0] == kind and kind in ("lit", "raw"):
             parts[-1][1] += text
         else:
-            parts.append([kind, text])
+            parts.append([kind, text, quoted])
 
     def end():
         if state["parts"] is not None:
@@ -1178,9 +1190,9 @@ def _resolve(argv: list) -> "_Cmd":
         if isinstance(tok, _Word) and tok.fd and i + 1 < len(argv) and _is_op(argv[i + 1]):
             i += 1
             continue
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(tok)) and not _is_op(tok):
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", str(tok)) and not _is_op(tok):
             k, val = str(tok).split("=", 1)
-            res.env[k] = val
+            res.env[k.rstrip("+")] = val  # NAME+=value appends
             i += 1
             continue
         if (str(tok) in _KEYWORDS and not (isinstance(tok, _Word) and any(k != "raw" for k, _ in tok.parts))) \
@@ -1215,7 +1227,7 @@ def _next_program(argv: list, j: int) -> int:
     """Index of the command word from j: j itself when the rule tables know it,
     else the first later word they know (a runner's unknown option values sit
     in between), else j."""
-    if j >= len(argv) or _interesting(argv[j]) or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(argv[j])):
+    if j >= len(argv) or _interesting(argv[j]) or re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", str(argv[j])):
         return j
     for k in range(j + 1, len(argv)):
         if _interesting(argv[k]) and not _is_op(argv[k]):
@@ -1589,6 +1601,214 @@ def _commit_no_verify(args: list) -> bool:
                 if ch in "mFCctS":  # takes a value: the rest of the cluster is that value
                     break
     return False
+
+
+class _Unk(str):
+    """A git argument only known when the command runs; its text is the word
+    as written. `one`: it stays one argument; `lead`: it cannot start with
+    "-"; `prefix`: its known leading text; `positional`: a function's $1 or
+    "$@" read at the definition (checked again at each call)."""
+    one = lead = positional = False
+    prefix = ""
+
+
+def _word_shape(word, ctx: "_Ctx") -> tuple:
+    """(stays one argument, cannot start with "-") for a word Tess cannot
+    fully expand: quoted run-time parts stay one argument; a branch name from
+    `git branch --show-current` (or a variable set from one) or a length
+    ${#X} cannot be an option."""
+    if not isinstance(word, _Word) or not word.parts:
+        return False, False
+    one, lead = True, None
+    for n, (k, t) in enumerate(word.parts):
+        q, known, safe = _part_quoted(word, n), None, False
+        if k in ("lit", "raw"):
+            try:
+                known = [t] if k == "lit" else _braces(t)
+            except _Overflow:
+                return False, False
+        elif k == "var":
+            known = _var_values(t, None, ctx)
+            safe = known is None and t in ctx.nonopt
+        elif k == "sub":
+            known = _sub_values(t, None)
+            safe = known is None and bool(_NONOPT_SUB.match(t))
+        elif k == "dyn":
+            safe = t.startswith("#")
+        if known is not None:
+            if k in ("var", "sub") and not q and any(re.search(r"\s", x) for x in known):
+                one = False
+            if lead is None and any(x.startswith("-") for x in known):
+                lead = False
+            elif lead is None and all(known):
+                lead = True
+        elif safe:
+            lead = True if lead is None else lead
+        else:
+            one = one and q
+            lead = False if lead is None else lead
+    return one, lead is not False
+
+
+def _unk(word, ctx: "_Ctx", prefix: str = "", unsafe: bool = False) -> "_Unk":
+    u = _Unk(str(word))
+    u.prefix = prefix
+    if not unsafe:
+        u.one, u.lead = _word_shape(word, ctx)
+        u.positional = ctx.deferred and _positional_only(word)
+    return u
+
+
+# Options of the commands --no-verify belongs to whose value is the next word
+# (a message, an author, a strategy): a run-time value there is not an option.
+_GIT_SUB_VALUES = {
+    "commit": ("mFCct", ("--message", "--file", "--author", "--date", "--reuse-message",
+                         "--reedit-message", "--fixup", "--squash", "--trailer", "--template",
+                         "--cleanup", "--pathspec-from-file")),
+    "merge": ("mFsX", ("--message", "--file", "--strategy", "--strategy-option", "--into-name",
+                       "--cleanup")),
+    "pull": ("sX", ("--strategy", "--strategy-option", "--depth", "--shallow-since",
+                    "--shallow-exclude")),
+    "push": ("o", ("--push-option", "--repo")),
+    "rebase": ("sX", ("--onto", "--strategy", "--strategy-option", "--whitespace")),
+    "cherry-pick": ("msX", ("--mainline", "--strategy", "--strategy-option")),
+    "revert": ("msX", ("--mainline", "--strategy", "--strategy-option")),
+    "commit-tree": ("pmF", ()),
+    "notes": ("mFCc", ("--message", "--file", "--reuse-message", "--reedit-message", "--ref")),
+}
+
+
+def _takes_value(sub: str, a: str) -> bool:
+    shorts, longs = _GIT_SUB_VALUES.get(sub, ("", ()))
+    if a.startswith("--"):
+        return "=" not in a and a in longs
+    return bool(re.fullmatch(r"-[A-Za-z]+", a)) and a[-1] in shorts
+
+
+def _check_git_unknown(argv: list, v: "Verdict") -> None:
+    """v1.0 round 2 (Cyra H1): a git argument only known at run time
+    (`$(cat flags)`, a variable set outside the command, a function's "$@"
+    called with unknown words) could be --no-verify, -c core.hooksPath=...
+    or a config key. It asks for git config, -c / --config-env, and the
+    subcommands --no-verify belongs to, unless it cannot be an option: a
+    quoted value after -m / --author, a word that starts with known text,
+    or a branch name from `git branch --show-current`."""
+    args = argv[1:]
+
+    def unknown(a):
+        return isinstance(a, _Unk) and not a.positional
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if unknown(a):
+            m = re.match(r"^(--?[A-Za-z][\w-]*)=", a.prefix)
+            if m and m.group(1) not in ("--config-env", "-c"):
+                i += 1  # --git-dir="$D": the option is known, only its value is not
+                continue
+            v.add(ASK, f"it gives git an option or subcommand that is only known when the command "
+                       f"runs ({a}); if that is --no-verify or -c core.hooksPath it would switch off "
+                       "Tess's git hooks")
+            return
+        if not a.startswith("-"):
+            break
+        if a in GIT_VALUE_OPTS and i + 1 < len(args):
+            val = args[i + 1]
+            if a in ("-c", "--config-env") and unknown(val) and "=" not in val.prefix:
+                v.add(ASK, f"it sets a git setting whose name is only known when the command runs "
+                           f"({a} {val}), so Tess cannot check it is not core.hooksPath")
+            i += 2
+            continue
+        i += 1
+    if i >= len(args):
+        return
+    sub, rest = args[i], args[i + 1:]
+    if sub == "config":
+        key = None
+        for k, a in enumerate(rest):
+            prev = rest[k - 1] if k else ""
+            if unknown(a):
+                if key is None and prev in ("--file", "-f", "--blob"):
+                    why = "a config file"
+                elif key is None:
+                    why = "a setting"
+                elif not a.one:
+                    why = "a value"
+                else:
+                    continue
+                v.add(ASK, f"it changes {why} in git config that is only known when the command "
+                           f"runs ({a}), so Tess cannot check it is not core.hooksPath")
+                return
+            if key is None and not a.startswith("-") and prev not in (
+                    "--file", "-f", "--blob", "--type", "--default", "--comment"):
+                key = a
+        return
+    if sub not in _NO_VERIFY_SUBS:
+        return
+    for k, a in enumerate(rest):
+        if a == "--" and not isinstance(a, _Unk):
+            return
+        if not unknown(a):
+            continue
+        prev = rest[k - 1] if k else ""
+        value = not isinstance(prev, _Unk) and _takes_value(sub, prev)
+        if a.one and (value or a.lead):
+            continue
+        # --author="$A", -m"$M": the option is written out, only its value is not
+        if re.match(r"^--[A-Za-z][\w-]*=", a.prefix) or (
+                re.match(r"^-[A-Za-z]", a.prefix) and _takes_value(sub, a.prefix[:2])):
+            continue
+        v.add(ASK, f"it gives `git {sub}` an argument that is only known when the command runs "
+                   f"({a}); if that is --no-verify it would skip Tess's git hooks")
+        return
+
+
+def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", raw: str,
+                     depth: int, ctx: "_Ctx", prefix_words: list) -> None:
+    """v1.0 round 2 (Cyra H1): git sees its arguments after expansion. Each
+    word is expanded as the shell will (variables set earlier in the command,
+    $(echo ...), braces, field splitting) and every combination is checked;
+    what stays unknown goes to _check_git_unknown."""
+    env = dict(env)
+    for w in prefix_words:  # GIT_CONFIG_KEY_0=$K git ...
+        m = None if _is_op(w) else _ASSIGN.match(str(w))
+        if m and m.group(1).startswith("GIT_") and _dynamic(w):
+            cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
+            if cands is not None and len(cands) == 1:
+                env[m.group(1)] = cands[0][0]
+            elif m.group(1).startswith("GIT_CONFIG"):
+                v.add(ASK, f"it sets {m.group(1)} for git from a value only known when the command "
+                           "runs, so Tess cannot check it does not switch off Tess's git hooks")
+    per_word = []
+    for w in argv[1:]:
+        if _is_op(w) or not isinstance(w, _Word):
+            per_word.append([[str(w)]])
+            continue
+        cands, pre = _word_fields(w, cwd, ctx)
+        if cands is None:
+            per_word.append([[_unk(w, ctx, pre)]])
+            continue
+        alts = []
+        for cand in cands:
+            fields = []
+            for text, pat in cand:
+                # `touch ./--no-verify; git commit *`: a glob can name a file
+                # that git reads as an option.
+                risky = pat is not None and pat[:1] in "*?[" and (ctx.mutated or any(
+                    os.path.basename(g).startswith("-") for g in _glob(cwd, pat, _EXPAND_LIMIT)))
+                fields.append(_unk(_plain(text), ctx, unsafe=True) if risky else text)
+            alts.append(fields)
+        per_word.append(alts or [[]])
+    variants = [[]]
+    for alts in per_word:
+        if len(variants) * len(alts) > 16:
+            v.add(ASK, "its git arguments can take more values than Tess checks one by one")
+            return
+        variants = [a + b for a in variants for b in alts]
+    for var in variants:
+        gargv = [argv[0]] + var
+        _check_git_unknown(gargv, v)
+        _check_git(root, cwd, env, gargv, v, raw, depth)
 
 
 def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str, depth: int = 0):
@@ -2674,22 +2894,50 @@ def _budget(seconds: float) -> float:
 
 class _Ctx:
     """What one command has set up for the words after it: variables, the
-    symlinks it creates, and whether it has changed files yet."""
+    symlinks it creates, and whether it has changed files yet.
+
+    v1.0 round 2 (GPT-6 #5, Cyra H1/H2): also the aliases and functions it
+    defines, the positional parameters ($1, "$@") in force (None: only known
+    at run time), whether a function body is being read at its definition
+    (`deferred`: its $1/"$@" are checked again at each call), and which
+    variables hold a value only known at run time that cannot be an option
+    (`nonopt`: a branch name from `git branch --show-current`)."""
 
     def __init__(self, raw: str, parent: "_Ctx | None" = None, env: dict | None = None):
         self.raw = raw if parent is None else parent.raw
         self.vars = dict(parent.vars) if parent is not None else {}
         self.links = parent.links if parent is not None else {}
         self.mutated = parent.mutated if parent is not None else False
+        self.aliases = dict(parent.aliases) if parent is not None else {}
+        self.funcs = dict(parent.funcs) if parent is not None else {}
+        self.argv = parent.argv if parent is not None else None
+        self.deferred = parent.deferred if parent is not None else False
+        self.nonopt = set(parent.nonopt) if parent is not None else set()
+        self.opaque = parent.opaque if parent is not None else False
+        self.cond_now = parent.cond_now if parent is not None else False
+        self.call_dirs = None
         for k, val in (env or {}).items():
             self.vars[k] = None if re.search(r"[$`]", str(val)) else [str(val)]
+            self.nonopt.discard(k)
 
-    def assign(self, name: str, vals, cond: bool) -> None:
+    def assign(self, name: str, vals, cond: bool, nonopt: bool = False) -> None:
+        """Set `name`. `cond`: the assignment may not run (an if/while/case
+        branch, an && / || arm), so the value is the union of the old and
+        new values -- unknown when either is, or when the union is larger
+        than Tess tracks (never a truncated list)."""
         if cond:
             old = self.vars.get(name, _UNSET)
+            nonopt = nonopt and (name in self.nonopt or (
+                old not in (_UNSET, None) and all(_nonopt_text(x) for x in old)))
             old = None if old is _UNSET else old
-            vals = None if old is None or vals is None else list(dict.fromkeys(old + vals))[:64]
+            vals = None if old is None or vals is None else list(dict.fromkeys(old + vals))
+        if vals is not None and len(vals) > _EXPAND_LIMIT:
+            vals = None
         self.vars[name] = vals
+        if nonopt:
+            self.nonopt.add(name)
+        else:
+            self.nonopt.discard(name)
 
 
 def _writer_name(low: str) -> str | None:
@@ -2701,8 +2949,13 @@ def _writer_name(low: str) -> str | None:
 
 
 def _var_values(name: str, cwd: str | None, ctx: "_Ctx"):
+    if ctx.opaque and name not in _STABLE_VARS:
+        return None  # a nameref (declare -n) can change any variable
     if name in ctx.vars:
         return ctx.vars[name]
+    if name.isdigit() and name != "0" and ctx.argv is not None:
+        k = int(name)
+        return [ctx.argv[k - 1] if k <= len(ctx.argv) else ""]
     if name == "PWD":
         return [cwd] if cwd else None
     if name in _STABLE_VARS and not re.search(r"(?<![\w$])" + name + r"=", ctx.raw):
@@ -2719,6 +2972,12 @@ def _sub_values(text: str, cwd: str | None):
         return None
     if words in (["pwd"], ["pwd", "-P"], ["pwd", "-L"]):
         return [cwd] if cwd else None
+    if words and words[0] == "echo" and not re.search(r"[$`\\*?\[{~]", text):
+        # v1.0 round 2 (Cyra H1): `$(echo --no-verify)` prints its words.
+        args = words[1:]
+        while args and re.fullmatch(r"-[neE]+", args[0]):
+            args = args[1:]
+        return [" ".join(args)]
     if not words or words[0] != "mktemp" or any(re.search(r"[$`]", w) for w in words):
         return None
     where, k = None, 1
@@ -2737,46 +2996,89 @@ def _sub_values(text: str, cwd: str | None):
                          "tess-mktemp.XXXXXX")]
 
 
-def _braces(text: str, limit: int = 64) -> list:
-    """Brace expansion of unquoted text: {a,b} and {1..3}."""
+class _Overflow(Exception):
+    """An expansion with more results than Tess checks (see _EXPAND_LIMIT)."""
+
+
+# v1.0 round 2 (GPT-6 #3): how many strings one word, one variable or one
+# brace expansion may become. Past it the value is unknown (the command asks):
+# a truncated expansion is never checked as if it were complete.
+_EXPAND_LIMIT = 1024
+
+
+def _brace_seq(inner: str, limit: int):
+    """The strings of a sequence expression ({1..3}, {01..10..2}, {a..e});
+    None when `inner` is not one. The count is known before anything is built."""
+    m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?",
+                     inner)
+    if not m:
+        return None
+    num = m.group(1) is not None
+    a, b = (int(m.group(1)), int(m.group(2))) if num else (ord(m.group(4)), ord(m.group(5)))
+    inc = m.group(3) if num else m.group(6)
+    step = abs(int(inc)) if inc else 1
+    step = step or 1
+    if abs(b - a) // step + 1 > limit:
+        raise _Overflow()
+    step = step if b >= a else -step
+    width = 0
+    if num and any(len(x.lstrip("-")) > 1 and x.lstrip("-").startswith("0") for x in (m.group(1), m.group(2))):
+        width = max(len(m.group(1)), len(m.group(2)))
+    return [(str(x).zfill(width) if num else chr(x)) for x in range(a, b + (1 if step > 0 else -1), step)]
+
+
+def _brace_items(items: list, limit: int) -> list:
+    """Brace expansion of a word as the shell does it, before any other
+    expansion: `items` is the word with its unquoted text one character per
+    item ("raw", c, False) and every other part whole; only unquoted
+    `{`, `,` and `}` are special. Raises _Overflow past `limit` results."""
     start = 0
     while True:
-        i = text.find("{", start)
-        if i < 0:
-            return [text]
+        i = next((k for k in range(start, len(items)) if items[k][0] == "raw" and items[k][1] == "{"), None)
+        if i is None:
+            return [items]
         depth, j, commas = 0, i, []
-        while j < len(text):
-            if text[j] == "{":
-                depth += 1
-            elif text[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            elif text[j] == "," and depth == 1:
-                commas.append(j)
+        while j < len(items):
+            kind, t = items[j][0], items[j][1]
+            if kind == "raw":
+                if t == "{":
+                    depth += 1
+                elif t == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif t == "," and depth == 1:
+                    commas.append(j)
             j += 1
-        if j >= len(text):
-            return [text]
-        inner = text[i + 1:j]
+        if j >= len(items):
+            return [items]
         if commas:
             alts, prev = [], i + 1
             for c in commas + [j]:
-                alts.append(text[prev:c])
+                alts.append(items[prev:c])
                 prev = c + 1
         else:
-            m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)|([A-Za-z])\.\.([A-Za-z])", inner)
-            if not m:
+            inner = items[i + 1:j]
+            seq = _brace_seq("".join(t for _k, t, _q in inner), limit) \
+                if all(k == "raw" for k, _t, _q in inner) else None
+            if seq is None:
                 start = i + 1
                 continue
-            a, b = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(3)), ord(m.group(4)))
-            step = 1 if b >= a else -1
-            alts = [str(x) if m.group(1) else chr(x) for x in range(a, b + step, step)][:limit]
+            alts = [[("lit", x, False)] for x in seq]
         out = []
         for alt in alts:
-            out += _braces(text[:i] + alt + text[j + 1:], limit)
-            if len(out) >= limit:
-                return out[:limit]
+            out += _brace_items(items[:i] + alt + items[j + 1:], limit)
+            if len(out) > limit:
+                raise _Overflow()
         return out
+
+
+def _braces(text: str, limit: int = _EXPAND_LIMIT) -> list:
+    """Brace expansion of unquoted text: {a,b} and {1..3}. Raises _Overflow."""
+    out = []
+    for alt in _brace_items([("raw", c, False) for c in text], limit):
+        out.append("".join(t for _k, t, _q in alt))
+    return out
 
 
 def _tilde(text: str, cwd: str | None, ctx: "_Ctx"):
@@ -2797,32 +3099,184 @@ def _gescape(text: str) -> str:
     return re.sub(r"([*?[])", r"[\1]", text)
 
 
-def _word_values(word, cwd: str | None, ctx: "_Ctx | None", limit: int = 64) -> tuple:
-    """([(text, glob pattern or None), ...], None) for the strings `word` can
-    become; (None, prefix) when part of it is only known at run time, with the
-    text in front of that part."""
+_IFS_DEFAULT = " \t\n"
+# Command substitutions whose output Tess cannot know but that never starts
+# with "-" nor holds a space: a branch name or commit id, a date, a user name.
+_NONOPT_SUB = re.compile(
+    r"^\s*(git\s+(branch\s+--show-current|symbolic-ref\s+(-q\s+)?--short\s+HEAD|"
+    r"rev-parse\s+((--abbrev-ref|--short(=\d+)?|--verify|-q)\s+)*(HEAD|@|HEAD~\d+|HEAD\^|@\{u\}|"
+    r"@\{upstream\})|log\s+-1\s+--(format|pretty)=(format:)?%[hH]|merge-base\s+[\w./@^~-]+\s+[\w./@^~-]+)|"
+    r"date\s+['\"]?\+%[%A-Za-z0-9:_.]*['\"]?|whoami|id\s+-un?|hostname(\s+-s)?)\s*$")
+
+
+def _nonopt_text(x: str) -> bool:
+    """A value that stays one word and cannot be read as an option."""
+    return not x.startswith("-") and not re.search(r"\s", x)
+
+
+def _ifs(ctx: "_Ctx"):
+    """The characters unquoted expansions are split on; None when the command
+    sets IFS to something Tess cannot know."""
+    if "IFS" not in ctx.vars:
+        return _IFS_DEFAULT
+    vals = ctx.vars["IFS"]
+    return vals[0] if vals is not None and len(vals) == 1 else None
+
+
+def _val_chunk(x: str, quoted: bool, assign: bool) -> tuple:
+    if quoted or assign:
+        return (x, _gescape(x), False, False)
+    return (x, x, bool(_GLOB_CHARS.search(x)), True)
+
+
+def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", assign: bool):
+    """What one part of a word can become: a list of alternatives, each a list
+    of chunks (text, glob pattern, has glob, split by IFS), with None between
+    the fields of "$@"; None when only known at run time."""
+    if kind == "lit":
+        return [[(t, _gescape(t), False, False)]]
+    if kind in ("raw", "fallback"):
+        if kind == "fallback" and re.search(r"[$`]", t):
+            return None
+        if first and t.startswith("~"):
+            t = _tilde(t, cwd, ctx)
+            if t is None:
+                return None
+        g = not assign and bool(_GLOB_CHARS.search(t))
+        return [[(t, t if g else _gescape(t), g, False)]]
+    if kind in ("var", "sub"):
+        vals = _var_values(t, cwd, ctx) if kind == "var" else _sub_values(t, cwd)
+        if vals is None:
+            return None
+        return [[_val_chunk(x, quoted, assign)] for x in dict.fromkeys(vals)]
+    if kind == "dyn" and ctx.argv is not None and t in ("@", "*", "#"):
+        if t == "#":
+            return [[(str(len(ctx.argv)), str(len(ctx.argv)), False, False)]]
+        if quoted and t == "*":
+            x = ((_ifs(ctx) or " ")[:1]).join(ctx.argv)
+            return [[(x, _gescape(x), False, False)]]
+        chunks = []
+        for n, x in enumerate(ctx.argv):
+            chunks += ([None] if n else []) + [_val_chunk(x, quoted, assign)]
+        return [chunks]
+    return None
+
+
+def _split_fields(chunks: list, ifs) -> list | None:
+    """Field splitting (unquoted expansions only), then the glob pattern of
+    each field: [(text, pattern or None), ...]; None when IFS is unknown."""
+    fields, cur = [], None
+    for ch in chunks:
+        if ch is None:  # between the arguments of "$@"
+            if cur is not None:
+                fields.append(cur)
+            cur = None
+            continue
+        text, pat, glob, split = ch
+        if not split:
+            cur = cur or ["", "", False]
+            cur[0], cur[1], cur[2] = cur[0] + text, cur[1] + pat, cur[2] or glob
+            continue
+        if ifs is None:
+            if text:
+                return None
+            continue
+        pieces = re.split("[" + re.escape(ifs) + "]+", text) if ifs else [text]
+        for k, piece in enumerate(pieces):
+            if k and cur is not None:
+                fields.append(cur)
+                cur = None
+            if piece:
+                cur = cur or ["", "", False]
+                cur[0], cur[1] = cur[0] + piece, cur[1] + piece
+                cur[2] = cur[2] or bool(_GLOB_CHARS.search(piece))
+    if cur is not None:
+        fields.append(cur)
+    return [(f[0], f[1] if f[2] else None) for f in fields]
+
+
+def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
+                 assign: bool = False) -> tuple:
+    """([[field, ...], ...], None): every way `word` can expand, each a list of
+    the arguments it becomes, a field being (text, glob pattern or None).
+    The shell's order: brace expansion, tilde, variables and substitutions,
+    field splitting of unquoted expansions (v1.0 round 2, GPT-6 #4), then
+    globbing. (None, prefix) when part of it is only known at run time, with
+    the text in front of that part, and (None, "") when it has more results
+    than `limit` (GPT-6 #3: never a truncated list). `assign`: the value of
+    NAME=value, which is neither brace-expanded, split nor globbed."""
     ctx = ctx if ctx is not None else _Ctx("")
-    parts = word.parts if isinstance(word, _Word) and word.parts else (("fallback", str(word)),)
-    cands = [("", "", False)]
-    for n, (kind, t) in enumerate(parts):
-        alts = None
-        if kind == "lit":
-            alts = [(t, _gescape(t), False)]
-        elif kind in ("raw", "fallback") and not (kind == "fallback" and re.search(r"[$`]", t)):
-            if n == 0 and t.startswith("~"):
-                t = _tilde(t, cwd, ctx)
-            if t is not None:
-                alts = [(b, b, bool(_GLOB_CHARS.search(b))) for b in _braces(t)]
-        elif kind == "var":
-            vals = _var_values(t, cwd, ctx)
-            alts = None if vals is None else [(x, x, bool(_GLOB_CHARS.search(x))) for x in vals]
-        elif kind == "sub":
-            vals = _sub_values(t, cwd)
-            alts = None if vals is None else [(x, _gescape(x), False) for x in vals]
-        if alts is None:
-            return None, cands[0][0]
-        cands = [(a + x, p + y, g or h) for a, p, g in cands for x, y, h in alts][:limit]
-    return [(text, pat if glob else None) for text, pat, glob in cands], None
+    if isinstance(word, _Word) and word.parts:
+        parts = [(k, t, _part_quoted(word, n)) for n, (k, t) in enumerate(word.parts)]
+    else:
+        parts = [("fallback", str(word), False)]
+    if [(k, t) for k, t, _q in parts if not (k == "lit" and t == "")] == [("dyn", "@")] \
+            and ctx.argv == [] and parts[-1][2]:
+        return [[]], None  # "$@" with no arguments is no word at all
+    items = []
+    for k, t, q in parts:
+        if not assign and (k == "raw" or (k == "fallback" and not re.search(r"[$`]", t))):
+            items += [("raw", c, False) for c in t]
+        else:
+            items.append((k, t, q))
+    try:
+        alts = [items] if assign else _brace_items(items, limit)
+    except _Overflow:
+        return None, _overflow_prefix(items)
+    ifs, out = _ifs(ctx), []
+    for alt in alts:
+        merged = []
+        for k, t, q in alt:
+            if merged and k == "raw" and merged[-1][0] == "raw":
+                merged[-1] = ("raw", merged[-1][1] + t, False)
+            else:
+                merged.append((k, t, q))
+        cands = [[]]
+        for n, (k, t, q) in enumerate(merged):
+            opts = _part_alts(k, t, q, n == 0, cwd, ctx, assign)
+            if opts is None:
+                return None, os.path.commonprefix(
+                    ["".join(c[0] for c in cand if c is not None) for cand in cands])
+            if len(cands) * len(opts) > limit:
+                return None, _overflow_prefix(items)
+            cands = [c + o for c in cands for o in opts]
+        for cand in cands:
+            if assign:
+                out.append([("".join(c[0] for c in cand if c is not None), None)])
+                continue
+            fields = _split_fields(cand, ifs)
+            if fields is None:
+                return None, ""
+            out.append(fields)
+        if len(out) > limit:
+            return None, ""
+    return out, None
+
+
+def _overflow_prefix(items: list) -> str:
+    """The written-out text in front of an expansion too large to list
+    (`/tmp/cache-` of `/tmp/cache-{1..5000}`); "" if any `..` follows it."""
+    pre = ""
+    for k, t, _q in items:
+        if k not in ("lit", "raw") or (k == "raw" and t in "{$`"):
+            break
+        pre += t
+    rest = "".join(t for _k, t, _q in items)[len(pre):]
+    return "" if re.search(r"(^|[/{,])\.\.([/},]|$)", rest) else pre
+
+
+def _word_values(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
+                 assign: bool = False) -> tuple:
+    """([(text, glob pattern or None), ...], None): every argument `word` can
+    become, over all its expansions (see _word_fields); (None, prefix) when
+    part of it is only known at run time or it has more than `limit` results."""
+    cands, prefix = _word_fields(word, cwd, ctx, limit, assign)
+    if cands is None:
+        return None, prefix
+    flat = list(dict.fromkeys(f for cand in cands for f in cand))
+    if len(flat) > limit:
+        return None, ""
+    return flat, None
 
 
 def _may_reach(root: Path, cwd: str | None, prefix: str) -> bool:
@@ -2890,9 +3344,12 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
         return  # >(cmd): a pipe to a command checked on its own
     cands, prefix = _word_values(word, cwd, ctx)
     if cands is None:
+        if ctx.deferred and _positional_only(word):
+            return  # a function's "$1": checked again at each call, with its arguments
         if _may_reach(root, cwd, prefix):
-            v.add(ASK, f"it writes to {word}, a path that is only known when the command runs, "
-                       "so Tess cannot check it against its protected files")
+            v.add(ASK, f"it writes to {word}, a path that is only known when the command runs "
+                       "(or that expands to more names than Tess checks one by one), so Tess "
+                       "cannot check it against its protected files")
         return
     for text, pat in cands:
         for p in (_glob(cwd, pat) if pat else []) or [text]:
@@ -2911,12 +3368,19 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
             return
 
 
+def _positional_only(word) -> bool:
+    """Every run-time part of `word` is a positional parameter ($1, "$@", $#)."""
+    return isinstance(word, _Word) and all(
+        (k == "var" and t.isdigit() and t != "0") or (k == "dyn" and t in ("@", "*", "#"))
+        for k, t in word.parts if k not in ("lit", "raw"))
+
+
 def _sub_word(word, k: int):
     """`word` without its first k characters, keeping how the rest was written."""
     if not isinstance(word, _Word) or not word.parts:
         return str(word)[k:]
     out, left = [], k
-    for kind, t in word.parts:
+    for n, (kind, t) in enumerate(word.parts):
         if left and kind in ("lit", "raw", "fallback"):
             take = min(left, len(t))
             t, left = t[take:], left - take
@@ -2924,8 +3388,13 @@ def _sub_word(word, k: int):
                 continue
         elif left:
             return _mkword([("dyn", "")])
-        out.append((kind, t))
+        out.append((kind, t, _part_quoted(word, n)))
     return _mkword(out or [("lit", "")])
+
+
+def _part_quoted(word, n: int) -> bool:
+    q = getattr(word, "q", ())
+    return bool(q[n]) if n < len(q) else False
 
 
 def _redirect_targets(argv: list) -> list:
@@ -3060,11 +3529,12 @@ def _upstream_words(upstream) -> list | None:
 
 
 def _recurse(root: Path, cwd: str, text: str, v: "Verdict", depth: int, ctx: "_Ctx",
-             env: dict | None = None) -> None:
+             env: dict | None = None, into: "_Ctx | None" = None) -> None:
     if depth >= _MAX_DEPTH:
-        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`) more deeply than Tess checks")
+        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`, functions) more deeply than "
+                   "Tess checks")
         return
-    check_command(root, cwd, text, v, depth + 1, ctx=_Ctx(ctx.raw, ctx, env))
+    check_command(root, cwd, text, v, depth + 1, ctx=into if into is not None else _Ctx(ctx.raw, ctx, env))
 
 
 def _body_subs(body: str) -> list:
@@ -3098,7 +3568,9 @@ def _check_subs(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx
     for kind, t in word.parts:
         if kind in ("sub", "proc") and t.strip():
             _recurse(root, cwd, t, v, depth, ctx)
-        if kind == "arith":
+        # v1.0 round 2 (GPT-6 #6): a substitution inside ${X:-...}, ${X:=...},
+        # ${X:+...}, ${X:?...}, ${A[...]} or $[...] runs too.
+        if kind in ("arith", "dyn"):
             for inner in _body_subs(t):
                 _recurse(root, cwd, inner, v, depth, ctx)
     if word.body and all(k == "raw" for k, _ in word.parts):
@@ -3699,6 +4171,9 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     _check_targets(root, cwd, targets, v, ctx)
     if not argv:
         return
+    _check_alias_use(root, cwd, argv, v, raw, depth, ctx, upstream)
+    if not ctx.deferred and _plain_name(argv[0]) in ctx.funcs:
+        _call_function(root, cwd, str(argv[0]), argv[1:], v, raw, depth, ctx)
     if _dynamic(argv[0]):
         return _check_dynamic_program(root, cwd, argv, v, raw, depth, ctx)
     name = os.path.basename(str(argv[0])).lower()  # macOS finds `GIT` as git
@@ -3714,12 +4189,26 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     if name in SHELLS and _check_shell(root, cwd, argv, orig, v, depth, ctx, upstream):
         return
     if name == "eval":
-        _recurse(root, cwd, " ".join(str(a) for a in _operands(argv[1:])), v, depth, ctx)
+        # v1.0 round 2: what eval sets (variables, aliases, functions) stays set.
+        child = _Ctx(ctx.raw, ctx)
+        _recurse(root, cwd, " ".join(str(a) for a in _operands(argv[1:])), v, depth, ctx, into=child)
+        _merge_back(ctx, child)
         return
+    if name == "alias":
+        _check_alias_def(root, cwd, argv, v, depth, ctx)
+    if name == "shopt" and any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", str(a)) for a in argv[1:]) and any(
+            str(a) == "expand_aliases" for a in argv[1:]):
+        v.add(ASK, "it turns on shell aliases (shopt -s expand_aliases), which let a short name run "
+                   "a different command from the one Tess reads; write the command out, or use a "
+                   "function, instead")
+    if name == "trap":
+        ops = [a for a in _operands(argv[1:]) if not str(a).startswith("-")]
+        if len(ops) >= 2 and str(ops[0]).strip():
+            _recurse(root, cwd, str(ops[0]), v, depth, ctx)  # runs later, on the signal
     if name in ("source", ".") and len(argv) > 1:
         _program_from(root, cwd, argv[1], v, depth, ctx)
     if name in ("export", "declare", "typeset", "setenv") and any(
-            "hookspath" in a.lower() for a in argv[1:]):
+            "hookspath" in a.lower() for a in argv[1:] + _assigned_texts(argv[1:], cwd, ctx)):
         v.add(DENY, "it sets core.hooksPath through the environment, which switches off "
                     "Tess's git hooks", "hookspath")
     if name in ("export", "declare", "typeset", "setenv") and any(
@@ -3737,7 +4226,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
             for a in argv[1:]):
         v.add(ASK, "it sets git configuration through the environment that changes where a push "
                    "goes or what it sends")
-    _check_key_text(cwd, argv, " ".join(argv), v)
+    _check_key_text(cwd, argv, " ".join(argv), v, ctx)
     # v1.0 audit (A2 inside A1's resolver): every segment the resolver yields
     # that runs tessctl -- through `{ }`, `if/then`, wrappers, runners, `sh -c`,
     # substitutions or the unparseable fallback -- gets the vault rule and the
@@ -3755,7 +4244,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
         v.add(DENY, "GIT_REPLACE_REF_BASE makes git read commits through another set of replace "
                     "refs, so HEAD may not be what it looks like", "rollback")
     if name == "git":
-        _check_git(root, cwd, env, argv, v, raw, depth)
+        _check_git_words(root, cwd, env, argv, v, raw, depth, ctx, res.prefix)
     elif name == "gh":
         _check_gh(argv, v)
     elif name == "find":
@@ -3778,10 +4267,10 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
     in the command is checked as that program; otherwise the command is
     checked as if it were git, gh, a shell, python and a file writer, and
     asks if any of those would be stopped (or if it has no arguments at all)."""
-    cands, _ = _word_values(argv[0], cwd, ctx)
+    cands, _ = _word_fields(argv[0], cwd, ctx)
     if cands and depth < _MAX_DEPTH:
-        for text, _pat in cands:
-            words = [_plain(w) for w in text.split()]
+        for cand in cands:
+            words = [_plain(text) for text, _pat in cand]  # G='git commit'; $G: two words
             if words:
                 _check_segment(root, cwd, words + list(argv[1:]), v, raw, depth + 1, ctx)
         return
@@ -3796,6 +4285,174 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
                          "it: " + "; ".join(probe.reasons))
     elif len(argv) == 1 or depth >= _MAX_DEPTH:
         v.add(ASK, why + ", so Tess cannot check what it does")
+
+
+# --------------------------------------------------------------------------- aliases and functions
+# v1.0 round 2 (Cyra H1/H2): an alias or a function defined in the command
+# runs another command under a short name. An alias's command is checked
+# where it is defined and again, with the words that follow, wherever the
+# name is used (eval included); a function's body is read at its definition
+# and checked again at each call, with the call's arguments as $1 and "$@".
+
+_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
+
+
+def _plain_name(word, kinds: tuple = ("raw", "lit")) -> str | None:
+    """The word's text when it is written out (no expansion); else None."""
+    if isinstance(word, _Word) and word.parts and any(k not in kinds for k, _ in word.parts):
+        return None
+    return str(word)
+
+
+def _check_alias_def(root: Path, cwd: str, argv: list, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
+    for w in argv[1:]:
+        s = str(w)
+        if re.fullmatch(r"-[A-Za-z]*[gs][A-Za-z]*", s):
+            v.add(ASK, "it defines a global or suffix alias (alias -g / alias -s), which the shell "
+                       "expands anywhere in a command line, so the words Tess reads are not the "
+                       "ones that run; write the command out instead")
+            continue
+        if s.startswith("-") or "=" not in s:
+            continue
+        name = s.split("=", 1)[0]
+        cands, _ = _word_values(_sub_word(w, len(name) + 1), cwd, ctx, assign=True)
+        if cands is None:
+            v.add(ASK, f"it defines the shell alias {name} as a command that is only known when "
+                       "it runs, so Tess cannot check what the alias does")
+            continue
+        for text, _p in cands:
+            if text.strip():
+                _recurse(root, cwd, text, v, depth, ctx)
+
+
+def _check_alias_use(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth: int,
+                     ctx: "_Ctx", upstream) -> None:
+    name = _plain_name(argv[0], ("raw",))
+    if not name or name not in ctx.aliases:
+        return
+    vals = ctx.aliases[name]
+    if vals is None:
+        v.add(ASK, f"it runs the shell alias {name}, whose command is only known when it runs")
+        return
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests aliases more deeply than Tess checks")
+        return
+    saved = ctx.aliases.pop(name)  # an alias is not expanded inside itself
+    try:
+        for text in vals:
+            try:
+                segs = _segments(text)
+            except ValueError:
+                v.add(ASK, f"Tess cannot read the command the alias {name} runs")
+                continue
+            if segs:
+                _check_segment(root, cwd, list(segs[-1]) + list(argv[1:]), v, raw, depth + 1, ctx,
+                               upstream)
+    finally:
+        ctx.aliases[name] = saved
+
+
+def _local_names(body: list) -> set:
+    """Variables a function body declares local (restored after the call)."""
+    out = set()
+    for kind, x in body:
+        if kind != "seg":
+            continue
+        argv = _resolve(x).argv
+        if argv and str(argv[0]) in ("local", "declare", "typeset") and not any(
+                re.fullmatch(r"-[A-Za-z]*g[A-Za-z]*", str(a)) for a in argv[1:]):
+            for a in argv[1:]:
+                m = _ASSIGN.match(str(a)) or _NAME.fullmatch(str(a))
+                if m:
+                    out.add(m.group(1) if m.re is _ASSIGN else m.group(0))
+    return out
+
+
+def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", raw: str,
+                   depth: int, ctx: "_Ctx") -> None:
+    """Check the body of a function defined earlier in the command, with the
+    call's arguments as its positional parameters (unknown when any of them
+    is only known at run time)."""
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`, functions) more deeply than "
+                   "Tess checks")
+        return
+    vals = []
+    for w in _operands(args):
+        cands, _ = _word_fields(w, cwd, ctx)
+        if cands is None or len(cands) != 1:
+            vals = None
+            break
+        for text, pat in cands[0]:
+            found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else []
+            vals += sorted(f if os.path.isabs(os.path.expanduser(pat)) else os.path.relpath(f, cwd)
+                           for f in found) or [text]
+        if len(vals) > _EXPAND_LIMIT:
+            vals = None
+            break
+    body, sink = ctx.funcs[name], ctx.call_dirs
+    saved_argv, saved_vars, saved_nonopt = ctx.argv, dict(ctx.vars), set(ctx.nonopt)
+    ctx.argv = vals
+    try:
+        _, dirs = _walk(root, body, 0, frozenset([cwd]), v, raw, depth + 1, ctx, cond0=ctx.cond_now)
+    finally:
+        ctx.argv, ctx.call_dirs = saved_argv, sink
+        for n in _local_names(body):
+            if n in saved_vars:
+                ctx.vars[n] = saved_vars[n]
+            else:
+                ctx.vars.pop(n, None)
+            (ctx.nonopt.add if n in saved_nonopt else ctx.nonopt.discard)(n)
+    if sink is not None:
+        sink.append(dirs)
+
+
+def _merge_back(ctx: "_Ctx", child: "_Ctx") -> None:
+    """What an `eval` set, kept for the words after it."""
+    for n, val in child.vars.items():
+        if ctx.vars.get(n, _UNSET) != val or (n in child.nonopt) != (n in ctx.nonopt):
+            ctx.assign(n, val, ctx.cond_now, nonopt=n in child.nonopt)
+    ctx.aliases.update(child.aliases)
+    ctx.funcs.update(child.funcs)
+    ctx.opaque = ctx.opaque or child.opaque
+    if child.argv != ctx.argv:
+        ctx.argv = None
+
+
+def _assigned_texts(args: list, cwd: str, ctx: "_Ctx") -> list:
+    """NAME=value words of export/declare with the value expanded
+    (`export GIT_CONFIG_KEY_0=$K`)."""
+    out = []
+    for w in args:
+        m = _ASSIGN.match(str(w))
+        if m and _dynamic(w):
+            cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
+            out += [m.group(1) + "=" + t for t, _p in cands or []]
+    return out
+
+
+def _bind_positional(argv: list, ctx: "_Ctx") -> list:
+    """Inside a function called with known arguments: a word that is just $1
+    or "$@" becomes those arguments, so every rule reads the real words."""
+    if ctx.argv is None:
+        return argv
+    out = []
+    for w in argv:
+        ps = [(k, t) for k, t in getattr(w, "parts", ()) if not (k == "lit" and t == "")]
+        if isinstance(w, _Word) and len(ps) == 1 and (
+                (ps[0][0] == "dyn" and ps[0][1] in ("@", "*")) or
+                (ps[0][0] == "var" and ps[0][1].isdigit() and ps[0][1] != "0")):
+            cands, _ = _word_fields(w, None, ctx)
+            if cands is not None and len(cands) == 1:
+                for text, pat in cands[0]:
+                    if pat is None:
+                        out.append(_plain(text))
+                    else:  # an unquoted value is globbed, never tilde-expanded
+                        out.append(_mkword([("lit", text[:1]), ("raw", text[1:])]
+                                           if text.startswith("~") else [("raw", text)]))
+                continue
+        out.append(w)
+    return out
 
 
 def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ctx: "_Ctx | None" = None):
@@ -3865,19 +4522,97 @@ def _and_or(S, F, pending, s, f):
     return S | s, F | f
 
 
+# Reserved words that open and close a compound command. The commands inside
+# if/while/until/for/select/case (and a { } group after && / ||) may not
+# run, so what they assign joins the value before them (v1.0 round 2, GPT-6 #5).
+_OPENERS = {"if", "while", "until", "case", "for", "select", "{"}
+_CLOSERS = {"fi", "done", "esac", "}"}
+
+
+def _lead_words(words: list) -> list:
+    """The reserved words a segment starts with (`then if`, `}`, `for`)."""
+    out = []
+    for w in words:
+        s = _plain_name(w, ("raw",))
+        if s is None or s not in _KEYWORDS | {"for", "select", "case"}:
+            break
+        out.append(s)
+        if s in ("for", "select", "case"):
+            break
+    return out
+
+
+def _body_end(evs: list, t: int) -> int | None:
+    """Index of the event that closes the compound command starting at evs[t]
+    (a `{ ...; }` group or a `( ... )` subshell); None if it never closes."""
+    if evs[t] == ("op", "("):
+        depth = 0
+        for m in range(t, len(evs)):
+            if evs[m][0] == "op" and evs[m][1] == "(":
+                depth += 1
+            elif evs[m][0] == "op" and evs[m][1] == ")":
+                depth -= 1
+                if depth == 0:
+                    return m
+        return None
+    if evs[t][0] != "seg" or _lead_words(evs[t][1])[:1] != ["{"]:
+        return None
+    depth = 0
+    for m in range(t, len(evs)):
+        if evs[m][0] == "seg":
+            lead = _lead_words(evs[m][1])
+            depth += lead.count("{") - lead.count("}")
+            if depth <= 0 and "}" in lead:
+                return m
+    return None
+
+
+def _func_def(events: list, i: int):
+    """(name, body events, index after) when events[i] starts a function
+    definition: `f() { ...; }`, `f() ( ... )`, `function f { ...; }`."""
+    x = events[i][1]
+    names = [_plain_name(w) for w in x]
+    if None in names[:2]:
+        return None
+    if names[:1] == ["function"] and len(names) >= 2:
+        name, rest = names[1], list(x[2:])
+    elif len(names) == 1:
+        name, rest = names[0], []
+    else:
+        return None
+    if name in _KEYWORDS or not re.fullmatch(r"[^\s$`'\"=(){};&|<>]+", name):
+        return None
+    j = i + 1
+    if events[j:j + 2] == [("op", "("), ("op", ")")] and not rest:
+        j += 2
+    elif names[0] != "function":
+        return None
+    pre = [("seg", rest)] if rest else []
+    tail = pre + events[j:]
+    t = 0 if pre else next((k for k, e in enumerate(tail) if e != ("op", "\n")), len(tail))
+    if t >= len(tail):
+        return None
+    end = _body_end(tail, t)
+    if end is None:
+        return None
+    return name, tail[t:end + 1], j + end + 1 - len(pre)
+
+
 def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: str, depth: int,
-          ctx: "_Ctx", nested: bool = False) -> tuple:
+          ctx: "_Ctx", nested: bool = False, cond0: bool = False) -> tuple:
     """Check events[i:] up to the matching `)` (or the end), starting in the
     set of possible working directories `start` (None: only known at run
     time). A `cd` moves the commands that can only run after it (`&&`); a
     command that runs whether or not the `cd` worked (`;`, `||`) is checked in
     both places, a subshell's `cd` and variables stay inside it, and a
     background list's `cd` never reaches the next command. A `)` with no
-    open subshell (a `case` pattern) only separates commands.
+    open subshell (a `case` pattern) only separates commands. `cond0`: the
+    whole list may not run (a function body called from an && arm).
     Returns (index after, directories after)."""
     state = list_start = start
     S = F = None
     pending, last_run, prev = None, start, None
+    stack = []  # open compound commands: [may not run, (for variable, value before) or None]
     while i < len(events):
         kind, x = events[i]
         if kind == "op":
@@ -3889,9 +4624,14 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
                 pending = "|"
             elif x == "(":
                 run = _run_in(state, S, F, pending, last_run)
+                array = i and events[i - 1][0] == "seg" and re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]*\+?=", str(events[i - 1][1][-1]))
                 saved = dict(ctx.vars)
-                i, _ = _walk(root, events, i + 1, run, v, cmd, depth, ctx, True)
+                i, _ = _walk(root, events, i + 1, run, v, cmd, depth, ctx, True,
+                             cond0 or any(e[0] for e in stack) or pending in ("&&", "||"))
                 ctx.vars = saved
+                if array:  # NAME=(...): an array, whose elements Tess does not track
+                    ctx.assign(re.match(r"[A-Za-z_][A-Za-z0-9_]*", array.group(0)).group(0), None, False)
                 S, F = _and_or(S, F, pending, run, run)
                 last_run, pending, prev = run, None, None
                 continue
@@ -3902,21 +4642,67 @@ def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: s
             i += 1
             continue
         run = _run_in(state, S, F, pending, last_run)
+        fdef = _func_def(events, i)
+        if fdef is not None:
+            name, body, after = fdef
+            ctx.funcs[name] = body
+            dctx = _Ctx(ctx.raw, ctx)
+            dctx.deferred, dctx.argv = True, None
+            _walk(root, body, 0, run, v, cmd, depth, dctx, cond0=True)
+            S, F = _and_or(S, F, pending, run, run)
+            last_run, pending, prev = run, None, None
+            i = after
+            continue
         nxt = events[i + 1][1] if i + 1 < len(events) and events[i + 1][0] == "op" else None
         piped = pending == "|" or nxt in ("|", "|&")
-        cond = pending in ("&&", "||") or piped or nxt == "&"
+        lead = _lead_words(x)
+        for kw in lead:
+            if kw in _CLOSERS and stack:
+                _close(ctx, stack.pop())
+        for n, kw in enumerate(lead):
+            if kw in _OPENERS:
+                loopvar = None
+                if kw == "for" and n + 1 < len(x) and _NAME.fullmatch(str(x[n + 1])):
+                    loopvar = (str(x[n + 1]), ctx.vars.get(str(x[n + 1]), _UNSET),
+                               str(x[n + 1]) in ctx.nonopt)
+                stack.append([kw != "{" or pending in ("&&", "||") or piped or nxt == "&", loopvar])
+        cond = pending in ("&&", "||") or piped or nxt == "&" or cond0 or any(e[0] for e in stack)
+        if lead and lead[-1] in ("for", "select"):
+            # the loop variable is each value in turn inside the loop, and
+            # joins the value before it after `done` (_close)
+            cond = pending in ("&&", "||") or piped or nxt == "&"
         s, f = _run_segment(root, x, run, v, cmd, depth, ctx, prev if pending == "|" else None,
                             piped, cond)
         S, F = _and_or(S, F, pending, s, f)
         last_run, pending, prev = run, None, x
         i += 1
+    for ent in reversed(stack):
+        _close(ctx, ent)
     return i, (state if S is None else S | F)
+
+
+def _close(ctx: "_Ctx", ent: list) -> None:
+    """After `done`: a loop variable holds its last value, or the value it had
+    before the loop when the list was empty."""
+    if ent[1] is None:
+        return
+    name, old, old_nonopt = ent[1]
+    cur, cur_nonopt = ctx.vars.get(name, _UNSET), name in ctx.nonopt
+    if old is _UNSET:
+        ctx.vars.pop(name, None)
+    else:
+        ctx.vars[name] = old
+    (ctx.nonopt.add if old_nonopt else ctx.nonopt.discard)(name)
+    ctx.assign(name, None if cur is _UNSET else cur, True, nonopt=cur_nonopt)
 
 
 def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, depth: int,
                  ctx: "_Ctx", upstream, piped: bool, cond: bool) -> tuple:
     """Check one simple command in every directory it can run in; returns the
     directories after it succeeds and after it fails."""
+    argv = _bind_positional(argv, ctx)
+    ctx.cond_now, calls = cond, []
+    ctx.call_dirs = calls
     if len(run) == 1:
         _check_segment(root, next(iter(run)), argv, v, cmd, depth, ctx, upstream)
     else:
@@ -3933,16 +4719,25 @@ def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, d
                     v.advice.append(a)
         if len({sub.level for sub in verdicts}) > 1 and ADVICE["cdfail"] not in v.advice:
             v.advice.append(ADVICE["cdfail"])
+    ctx.call_dirs = None
     res = _resolve(argv)
     one = next(iter(run)) if len(run) == 1 else None
     _track_vars(argv, res, one, ctx, cond)
     name = os.path.basename(str(res.argv[0])).lower() if res.argv else ""
     if res.argv and name not in _READONLY_PROGRAMS:
         ctx.mutated = True
+    if calls:  # a function ran: its `cd` moves the words after it
+        after = frozenset().union(*calls)
+        return (after | run if piped else after), run
     if name in ("cd", "pushd", "chdir", "popd"):
         after = frozenset(None if name == "popd" else _next_cwd(root, c, argv, ctx) for c in run)
         return (after | run if piped else after), run
     return run, run
+
+
+# Names an arithmetic expression assigns: X=1, X+=1, X++, --X.
+_ARITH_ASSIGN = re.compile(r"([A-Za-z_]\w*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|([A-Za-z_]\w*)\s*(?:\+\+|--)|"
+                           r"(?:\+\+|--)\s*([A-Za-z_]\w*)")
 
 
 def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: bool) -> None:
@@ -3950,33 +4745,117 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
     argv = res.argv
     name = os.path.basename(str(argv[0])).lower() if argv else ""
     if not argv:
-        assigns = [w for w in orig if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(w)) and not _is_op(w)]
+        assigns = [w for w in orig if _ASSIGN.match(str(w)) and not _is_op(w)]
     elif name in ("export", "declare", "typeset", "local", "readonly"):
-        assigns = [w for w in argv[1:] if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", str(w))]
+        assigns = [w for w in argv[1:] if _ASSIGN.match(str(w))]
+        if any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", str(w)) for w in argv[1:]):
+            ctx.opaque = True  # a nameref: assigning one name sets another
     else:
         assigns = []
     for w in assigns:
-        n = str(w).split("=", 1)[0]
-        cands, _ = _word_values(_sub_word(w, len(n) + 1), cwd, ctx)
-        ctx.assign(n, None if cands is None else [t for t, _p in cands], cond)
-    if name == "for" and len(argv) >= 2 and _NAME.fullmatch(str(argv[1])):
-        vals = [] if len(argv) > 2 and str(argv[2]) == "in" else None
-        for w in (argv[3:] if vals is not None else []):
+        m = _ASSIGN.match(str(w))
+        n, value = m.group(1), _sub_word(w, m.end())
+        cands, _ = _word_values(value, cwd, ctx, assign=True)
+        vals = None if cands is None else [t for t, _p in cands]
+        if m.group(2) and vals is not None:  # NAME+=value appends
+            old = _var_values(n, cwd, ctx)
+            vals = None if old is None or len(old) * len(vals) > _EXPAND_LIMIT else \
+                [o + x for o in old for x in vals]
+        nonopt = all(_nonopt_text(x) for x in vals) if vals is not None else (
+            not m.group(2) and all(_word_shape(value, ctx)) and not any(
+                k in ("lit", "raw") and re.search(r"\s", t) or
+                (k in ("var", "sub", "dyn") and not (
+                    (k == "var" and t in ctx.nonopt) or (k == "sub" and _NONOPT_SUB.match(t))
+                    or (k == "dyn" and t.startswith("#"))))
+                for k, t in getattr(value, "parts", ())))
+        ctx.assign(n, vals, cond, nonopt=nonopt)
+    # Assignments hidden in expansions and arithmetic: ${X:=v}, $((X=1)), (( X++ )).
+    for w in orig:
+        for k, t in getattr(w, "parts", ()):
+            m = re.match(r"^([A-Za-z_]\w*):?=", t) if k == "dyn" else None
+            if m:
+                ctx.assign(m.group(1), None, True)
+            if k == "arith" or (k == "sub" and t.startswith("(") and t.endswith(")")):
+                for g in _ARITH_ASSIGN.findall(t):
+                    ctx.assign(next(x for x in g if x), None, cond)
+    if name == "let":
+        for w in argv[1:]:
+            for g in _ARITH_ASSIGN.findall(str(w)):
+                ctx.assign(next(x for x in g if x), None, cond)
+    if name == "printf":
+        for k, w in enumerate(argv[1:-1], 1):
+            if str(w) == "-v" and _NAME.fullmatch(str(argv[k + 1])):
+                ctx.assign(str(argv[k + 1]), None, cond)
+    if name in ("for", "select") and len(argv) >= 2 and _NAME.fullmatch(str(argv[1])):
+        has_in = len(argv) > 2 and str(argv[2]) == "in"
+        vals = [] if has_in else (list(ctx.argv) if ctx.argv is not None else None)
+        for w in (argv[3:] if has_in else []):
             cands, _ = _word_values(w, cwd, ctx)
             if cands is None:
                 vals = None
                 break
             for t, pat in cands:
-                vals += (_glob(cwd or ".", pat) if pat else []) or [t]
-        ctx.assign(str(argv[1]), vals, False)
+                vals += (_glob(cwd or ".", pat, _EXPAND_LIMIT + 1) if pat else []) or [t]
+            if len(vals) > _EXPAND_LIMIT:
+                vals = None
+                break
+        if vals != []:
+            ctx.assign(str(argv[1]), vals, cond)
     if name in ("read", "mapfile", "readarray", "getopts", "select"):
         for w in argv[1:]:
             if _NAME.fullmatch(str(w)):
                 ctx.assign(str(w), None, False)
     if name == "unset":
+        funcs = any(str(w) == "-f" for w in argv[1:])
         for w in argv[1:]:
-            if _NAME.fullmatch(str(w)):
+            if not _NAME.fullmatch(str(w)):
+                continue
+            if funcs:
+                ctx.funcs.pop(str(w), None)
+            elif str(w) == "IFS":
+                if cond:
+                    ctx.vars["IFS"] = None
+                else:
+                    ctx.vars.pop("IFS", None)
+            else:
                 ctx.assign(str(w), [""], cond)
+    if name == "set":
+        words, pos = [str(a) for a in _operands(argv[1:])], None
+        if "--" in words:
+            pos = _operands(argv[1:])[words.index("--") + 1:]
+        else:
+            k = 0
+            while k < len(words) and words[k][:1] in ("-", "+"):
+                k += 2 if words[k] in ("-o", "+o") else 1
+            pos = _operands(argv[1:])[k:] or None
+        if pos is not None:
+            vals = []
+            for w in pos:
+                cands, _ = _word_fields(w, cwd, ctx)
+                if cands is None or len(cands) != 1 or cond:
+                    vals = None
+                    break
+                vals += [t for t, _p in cands[0]]
+            ctx.argv = vals
+    if name == "shift" and ctx.argv is not None:
+        k = str(argv[1]) if len(argv) > 1 else "1"
+        ctx.argv = ctx.argv[int(k):] if k.isdigit() and not cond else None
+    if name == "alias":
+        for w in argv[1:]:
+            s = str(w)
+            if s.startswith("-") or "=" not in s:
+                continue
+            an = s.split("=", 1)[0]
+            cands, _ = _word_values(_sub_word(w, len(an) + 1), cwd, ctx, assign=True)
+            vals = None if cands is None else [t for t, _p in cands]
+            old = ctx.aliases.get(an, [])
+            ctx.aliases[an] = None if vals is None or old is None else (
+                list(dict.fromkeys(old + vals)) if cond else vals)
+    if name == "unalias" and not cond:
+        if any(str(w) == "-a" for w in argv[1:]):
+            ctx.aliases.clear()
+        for w in argv[1:]:
+            ctx.aliases.pop(str(w), None)
 
 
 def _check_archive_pipe(segs: list, v: Verdict) -> None:
