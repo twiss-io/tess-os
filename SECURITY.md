@@ -230,15 +230,28 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (a formatter, a build tool) can still write the files its own options name.
   When `cd dir; <write>` is used and the `cd` could fail, the write is checked
   in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
-  `find -exec` are checked against the files find would match, up to 20,000
-  entries; beyond that they ask. The whole check has a 40-second budget (inside
+  `find -exec` are checked against the files find would match (its `-name`,
+  `-path`, `-type`, `!`, `-o` and `( )` are evaluated; a test such as `-mtime` counts
+  as possibly true), up to 20,000 entries; beyond that they ask, and so does a
+  changing `find -L` / `-follow`, which follows links Tess does not walk. The whole check has a 40-second budget (inside
   the 120-second hook timeout, after up to 60 seconds of the launcher's own
   check); a call it cannot finish in time asks, or is refused in Codex.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
   its own sandbox and approval settings apply. Input typed into an already-open
-  shell with `write_stdin` never reaches the gate, and a hook that times out or
+  shell with `write_stdin` never reaches the gate, so in Codex the gate refuses a
+  bare shell or interpreter (`bash`, `python3`), which reads its program from what
+  is typed later. A tessctl step that asks the operator to type an answer
+  (`approve`, `update`, `rollback`...) is still allowed when nothing feeds it,
+  because without a terminal it only prints what to do; Codex can also start a
+  command in a pseudo-terminal (`tty`) that the hook payload does not show, and
+  then an agent could type that answer with `write_stdin`. Codex sends shell, `exec_command` and unified-exec calls to
+  the hook as `Bash` with only the command text (its documented hook schema): a
+  call's own `workdir` is used when a payload carries one, and otherwise relative
+  paths are judged from the session folder, so a relative write in an
+  `exec_command` whose `workdir` is a protected folder is not seen by the gate (the
+  git hooks and the ship gate still are). A hook that times out or
   crashes in the host fails open for that call. Details:
   [adapters/CONFORMANCE.md](adapters/CONFORMANCE.md), Codex row.
 - **Tess's safety files are anchored outside the repository; the anchor is not an

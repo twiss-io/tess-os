@@ -2456,6 +2456,32 @@ def _hook_config_missing(root: Path) -> list:
     return out
 
 
+def _hookspath_findings(root: Path) -> list:
+    """doctor (v1.0 final review, Cyra H1): the stop line .claude/hooks/run-pinned.py
+    gives when git's core.hooksPath bypasses the git hooks Tess installs in
+    <git dir>/hooks. Empty when fine, or when the launcher is not shipped here."""
+    launcher = root / ".claude" / "hooks" / "run-pinned.py"
+    if not launcher.is_file():
+        return []
+    saved = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # never leave a .pyc beside the launcher
+    try:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("tess_run_pinned_doctor", str(launcher))
+        spec = importlib.util.spec_from_loader("tess_run_pinned_doctor", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        why = mod.hookspath_problem(root)
+    except AttributeError:  # an older launcher has no such check
+        why = None
+    except Exception as exc:  # noqa: BLE001 — fail closed: say it could not be checked
+        why = f"Tess could not check git's core.hooksPath setting ({type(exc).__name__})."
+    finally:
+        sys.dont_write_bytecode = saved
+    return [why] if why else []
+
+
 def _enforcement_hook_findings(root: Path, lock: dict) -> list:
     """doctor: [(rel, problem)] for every enforcement render output of an
     enabled target that carries a capture/override/held status, and for a
@@ -6771,7 +6797,8 @@ def cmd_doctor(args, root: Path) -> None:
     fix = getattr(args, "fix", False)
     # v1.0.0 enforcement anchor: said FIRST, before any other check can stop
     # doctor, because while it fails Tess's gate stops every tool call.
-    _anchor_lines = [] if getattr(args, "path", None) else _anchor_findings(root)
+    _anchor_lines = [] if getattr(args, "path", None) else (
+        _anchor_findings(root) + _hookspath_findings(root))
     if _anchor_lines and not as_json:
         print("doctor: FAIL — " + "\n".join(_anchor_lines) + "\n")
     path_filter = getattr(args, "path", None)
