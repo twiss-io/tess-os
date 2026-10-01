@@ -77,7 +77,10 @@ routine.
 To check your install later, run `./tessctl doctor` inside the folder
 ("All good" means nothing is broken). `./tessctl help` lists the everyday
 commands. If Tess ever stops a push, see
-[When Tess stops a push](docs/WHEN_TESS_STOPS_A_PUSH.md).
+[When Tess stops a push](docs/WHEN_TESS_STOPS_A_PUSH.md). If you changed one of
+Tess's protected files on purpose, approve it yourself in your own terminal
+with `./tessctl gate approve`, then push again; your assistant cannot do this
+for you.
 
 ## Updating
 

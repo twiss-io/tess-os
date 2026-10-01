@@ -1392,7 +1392,9 @@ _SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"),
                # recruit / bench / roster apply of a security-tier entry ask the
                # operator at a terminal too (writer B); the gate cannot tell the
                # tier from the words, so every form counts.
-               ("recruit",), ("bench",), ("roster", "apply"))
+               ("recruit",), ("bench",), ("roster", "apply"),
+               # the operator's own push approval (integration pass 4)
+               ("gate", "approve"))
 
 
 def _opt_given(words: list, opts: tuple) -> bool:

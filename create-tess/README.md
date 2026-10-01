@@ -65,6 +65,14 @@ trust anchor is a custody ceremony owned by your project's key-custody owner,
 and GitHub required-check enforcement remains a separate production
 prerequisite.
 
+If you, the operator, made that change on purpose, approve it yourself: open
+your own terminal (not Claude Code or Codex) in the folder, run
+`./tessctl gate approve`, read the changes it shows, type `approve these
+changes`, and push again. The approval covers exactly that content, is signed
+with a key that stays on your computer, and counts only for pushes from that
+computer (a CI check elsewhere still blocks the change). Your assistant cannot
+give it for you. Details: [When Tess stops a push](../docs/WHEN_TESS_STOPS_A_PUSH.md).
+
 For experimentation, keep the scaffold in an isolated, non-production
 repository. For any governed or production-bound change, stop and follow the
 [gate custody boundary](../docs/GATE_QUICKSTART.md).

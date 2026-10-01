@@ -42,12 +42,41 @@ TESS_VERBOSE=1 git push
 
 ## If you meant to change it
 
-A change to Tess's own safety files needs a signed approval (a "verdict") from
-a reviewer whose key this project trusts. A new folder has no reviewer keys
-yet, on purpose: nobody, including an AI assistant, can approve its own change
-to the rules. Setting up reviewer keys is a one-time job for someone
-comfortable with git and signing keys; see
-[Gate operation and custody](GATE_QUICKSTART.md), "What to do when blocked".
+You can approve your own change yourself, on this computer:
+
+1. Open your own terminal (Terminal on a Mac), not Claude Code or Codex, in
+   your Tess folder.
+2. Run:
+
+   ```
+   ./tessctl gate approve
+   ```
+
+3. Tess lists every protected file your unsent commits change and shows the
+   changes. Read them. If they are what you meant, type
+   `approve these changes` and press Enter. To stop, just press Enter.
+4. Push again (`git push`, or ask your assistant to push).
+
+What this does: Tess records that you approved exactly that content, signed
+with a key that stays on this computer (`~/.config/tess/operator/key`). The
+push check on this computer then lets those exact files through. If the file
+changes again later, Tess asks again. Your AI assistant cannot do this for
+you: Tess refuses the command inside Claude Code and Codex, and when it is not
+typed at a real terminal.
+
+What it does not do:
+
+- It works only for pushes from this computer. A check that runs somewhere
+  else (a CI job on GitHub) cannot see the key, so it still blocks the change.
+- It does not cover the files Tess treats as off-limits for everyone:
+  passwords and keys (`.env` files, vault files) stay blocked.
+- If you changed one of Tess's own engine or hook files, Tess also stops your
+  assistant until you run `./tessctl anchor accept` in your terminal (or
+  `./tessctl restore` to put the file back). Do that first, then approve.
+
+Teams that want a reviewer other than the person making the change can set up
+reviewer keys instead; that is a one-time job for someone comfortable with git
+and signing keys, see [Gate operation and custody](GATE_QUICKSTART.md).
 
 ## First push of a new folder
 

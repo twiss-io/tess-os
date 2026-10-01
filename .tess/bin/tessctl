@@ -19678,6 +19678,198 @@ def _project_identity(root: Path, ref: str = "HEAD") -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# v1.0 (integration pass 4): the operator approves their OWN change to a
+# protected file, for a push from this computer.
+#
+# A fresh `npm create tess` install has no verifier key (on purpose: nothing
+# in the repository may create the trust that clears its own change), so a
+# change the operator really meant to make to CLAUDE.md, a policy file or the
+# manifest could never leave the machine. `tessctl gate approve` closes that
+# for the operator only, with the same primitive as policy approvals above:
+#
+#   * it runs only at a real terminal, outside Claude Code and Codex (the
+#     presence check; the gate hooks also refuse it to agents);
+#   * it shows every protected file the pushed commits change, with the diff,
+#     and the person types `approve these changes`;
+#   * the record names each file with the exact git blob id of its committed
+#     content (all zeros for a deletion), is HMAC-signed with the per-machine
+#     OPERATOR KEY (~/.config/tess/operator/key, never in the repository) and
+#     is stored OUTSIDE the repository under
+#     ~/.config/tess/projects/<project id>/push-approvals/ (agents are
+#     refused that folder);
+#   * the local pre-push gate accepts a protected path only when its content
+#     at the pushed head is exactly what a verified record names. Any later
+#     edit needs a new approval. Hard-floor rules (credentials, money,
+#     destructive data) are never cleared this way.
+#
+# What it is not: a verifier signature. It verifies only where the operator
+# key is, so `tessctl gate ci` on another machine (a CI runner) still fails
+# closed for that change, and a process running as the same OS user can read
+# the key (SECURITY.md, Known limits). It needs no Tess maintainer key.
+# ---------------------------------------------------------------------------
+
+PUSH_APPROVAL_FORMAT = "tess-push-approval/1"
+PUSH_APPROVAL_MAC_DOMAIN = b"tess-os push approval v1\0"
+PUSH_APPROVAL_CONFIRM = "approve these changes"
+PUSH_APPROVAL_MAX_RECORDS = 500
+
+
+def _push_approvals_dir(root: Path) -> Path | None:
+    pid = _anchor_project_id(root)
+    return _anchor_tess_dir() / "projects" / pid / "push-approvals" if pid else None
+
+
+def _push_approval_mac(key: bytes, project_id: str, paths: dict, approved_at: str) -> str:
+    canon = json.dumps({"project": project_id, "paths": paths, "at": approved_at},
+                       sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, PUSH_APPROVAL_MAC_DOMAIN + canon.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def _gate_operator_push_approvals(root: Path) -> dict:
+    """{rel: {blob id, ...}} from every push approval that verifies under
+    this machine's operator key for this project; {} without a key."""
+    d = _push_approvals_dir(root)
+    key, _why = _operator_key(root, create=False)
+    pid = _anchor_project_id(root)
+    out: dict = {}
+    if d is None or key is None or not d.is_dir() or d.is_symlink():
+        return out
+    for path in sorted(d.glob("*.json"))[:PUSH_APPROVAL_MAX_RECORDS]:
+        try:
+            rec = _anchor_private_json(path)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("format") != PUSH_APPROVAL_FORMAT:
+            continue
+        paths = rec.get("paths")
+        if (rec.get("project") != pid or not isinstance(paths, dict)
+                or not all(isinstance(k, str) and isinstance(v, str)
+                           and re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", v)
+                           for k, v in paths.items())):
+            continue
+        want = _push_approval_mac(key, pid, paths, str(rec.get("approved_at")))
+        if not hmac.compare_digest(str(rec.get("mac")), want):
+            continue
+        for rel, oid in paths.items():
+            out.setdefault(rel, set()).add(oid)
+    return out
+
+
+def _gate_operator_approved(root: Path, path_rule_matches: dict, head_shas: list) -> list:
+    """The protected paths whose content at every pushed head is exactly what
+    a verified operator push approval names."""
+    approvals = _gate_operator_push_approvals(root) if head_shas else {}
+    if not approvals:
+        return []
+    index = _gate_git_tree_index(root, head_shas)
+    present = _gate_git_all_paths(root, head_shas)
+    cleared = []
+    for rel in sorted(path_rule_matches):
+        if rel in index:
+            current = index[rel]
+        elif rel not in present:
+            current = {GATE_DELETED_PATH_SHA}
+        else:
+            continue   # a symlink at a protected path is never approvable
+        if current and current <= approvals.get(rel, set()):
+            cleared.append(rel)
+    return cleared
+
+
+def _cmd_gate_approve(args, root: Path) -> None:
+    """tessctl gate approve [--base <rev>] — approve, at your own terminal,
+    your own change to protected Tess files for a push from this computer."""
+    _refuse_in_agent_session("tessctl gate approve", "nothing was approved.")
+    try:
+        _cmd_gate_approve_run(args, root)
+    except GateSpineError:
+        sys.exit("tessctl gate approve: git could not read the commits to compare (is "
+                 "--base a commit in this folder?). Nothing was approved.")
+
+
+def _cmd_gate_approve_run(args, root: Path) -> None:
+    head = _gate_run_git(root, "rev-parse", "--verify", "HEAD^{commit}").strip()
+    base = getattr(args, "base", None)
+    if not base:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "-q", "@{upstream}"],
+                           capture_output=True, text=True)
+        base = r.stdout.strip() if r.returncode == 0 else ""
+    if not base:
+        sys.exit("tessctl gate approve: this branch has not been pushed yet, so there is "
+                 "nothing to compare with. Run `./tessctl gate approve --base <commit>` with "
+                 "the commit your change started from. Nothing was approved.")
+    base = _gate_run_git(root, "rev-parse", "--verify", base + "^{commit}").strip()
+    changed = _gate_diff_paths(root, base, head)
+    policy_instance, errors = _gate_load_policy(root)
+    if errors:
+        sys.exit("tessctl gate approve: the policy file cannot be read, so Tess cannot tell "
+                 "which files are protected:\n" + "\n".join(f"  - {e}" for e in errors))
+    matches, hard = _gate_classify_paths(policy_instance, changed)
+    baseline, _ref = _gate_load_policy_at_base_with_ref(root, [base])
+    if baseline is not None:
+        _gate_union_baseline_matches(baseline, changed, matches, hard)
+    if not matches:
+        print("tessctl gate approve: none of the commits since "
+              f"{base[:12]} change a protected Tess file. Nothing to approve.")
+        return
+    index = _gate_git_tree_index(root, [head])
+    present = _gate_git_all_paths(root, [head])
+    paths, problems = {}, []
+    for rel in sorted(matches):
+        if rel in index and len(index[rel]) == 1:
+            paths[rel] = next(iter(index[rel]))
+        elif rel not in present:
+            paths[rel] = GATE_DELETED_PATH_SHA
+        else:
+            problems.append(rel)
+    if problems:
+        sys.exit("tessctl gate approve: these protected paths are not ordinary files at HEAD "
+                 "(a link or a folder), and cannot be approved:\n"
+                 + "".join(f"  - {p}\n" for p in problems) + "Nothing was approved.")
+    diff = _gate_run_git(root, "diff", "--no-renames", "--stat", base, head, "--",
+                         *sorted(paths))
+    patch = _gate_run_git(root, "diff", "--no-renames", base, head, "--",
+                          *sorted(paths)).splitlines()
+    lines = ["  These protected Tess files change between "
+             f"{base[:12]} and {head[:12]}:"]
+    lines += ["    " + ln for ln in diff.rstrip().splitlines()]
+    lines += ["  The changes:"] + ["    " + ln for ln in patch[:400]]
+    if len(patch) > 400:
+        lines.append(f"    … {len(patch) - 400} more line(s): see `git diff {base[:12]} "
+                     f"{head[:12]}` before you approve.")
+    if hard:
+        lines.append("  NOTE: " + ", ".join(sorted(hard)) + " also match a hard-floor rule "
+                     "(credentials, money, destructive data); this approval does not clear "
+                     "that, and the push stays blocked for those files.")
+    lines.append("  Approve only changes you made, or read and agree with, yourself.")
+    _require_human_presence(
+        "gate approve", "approving your own change to protected Tess files for a push from "
+        "this computer", "nothing was approved.", PUSH_APPROVAL_CONFIRM, prompt="approve> ",
+        lines=lines)
+    key, why = _operator_key(root, create=True)
+    if key is None:
+        sys.exit(f"tessctl gate approve: cannot use the operator key ({why}). Nothing was approved.")
+    d = _push_approvals_dir(root)
+    pid = _anchor_project_id(root)
+    if d is None or not pid:
+        sys.exit("tessctl gate approve: this folder has no commits Tess can identify it by. "
+                 "Nothing was approved.")
+    tess_dir = _anchor_tess_dir()
+    for folder in (tess_dir, tess_dir / "projects", tess_dir / "projects" / pid, d):
+        _anchor_mkdir_private(folder, root)
+    at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec = {"format": PUSH_APPROVAL_FORMAT, "project": pid, "base": base, "head": head,
+           "paths": paths, "approved_at": at, "approved_by_typing": PUSH_APPROVAL_CONFIRM,
+           "mac": _push_approval_mac(key, pid, paths, at)}
+    name = hashlib.sha256(json.dumps(paths, sort_keys=True).encode("utf-8")).hexdigest()[:32]
+    _anchor_write_private(d / f"{name}.json", (json.dumps(rec, indent=2) + "\n").encode("utf-8"))
+    print(f"tessctl gate approve: approved {len(paths)} protected file(s) for a push from this "
+          f"computer. Now run `git push` again. A later change to any of them needs a new "
+          f"approval.")
+
+
+# ---------------------------------------------------------------------------
 # ENFORCEMENT ANCHOR (v1.0.0, final reviews GPT-6 + Cyra: "gate rollback")
 #
 # The gate decides from command text and its pins (.tess/core/pinned-scripts
@@ -20756,6 +20948,20 @@ def _gate_run_ship_check(
         for _rel in released:
             path_rule_matches.pop(_rel, None)
 
+    # v1.0 (integration pass 4): the operator's own approval, at their own
+    # terminal with this machine's operator key, of exactly the pushed content
+    # (`tessctl gate approve`). Hard-floor matches are never cleared this way.
+    operator_info = None
+    if path_rule_matches and head_shas:
+        try:
+            _op_cleared = _gate_operator_approved(root, path_rule_matches, head_shas or [])
+        except GateSpineError:
+            _op_cleared = []
+        for _rel in _op_cleared:
+            path_rule_matches.pop(_rel, None)
+        if _op_cleared:
+            operator_info = {"status": "accepted", "paths": len(_op_cleared)}
+
     # Signature verification trusts only verifier/sign-off registrations
     # present at BASE. Candidate-added keys cannot authorize their own PR;
     # with an empty baseline registry, normal APPROVE remains impossible
@@ -20860,6 +21066,8 @@ def _gate_run_ship_check(
     result = {"blocked": blocked, "reasons": reasons, "changed_paths": changed_paths}
     if release_info is not None:
         result["release_proof"] = release_info
+    if operator_info is not None:
+        result["operator_approval"] = operator_info
 
     # PR-2 (Agent Receipt EMIT wiring) — ONLY on an overall PASS. A mixed
     # push (some rules cleared, others not) is still a BLOCKED push overall
@@ -20964,6 +21172,10 @@ def _gate_print_refusal(phase: str, result: dict, safe: dict, *, verbose: bool,
     elif paths:
         print("What this means: these files hold Tess's own safety rules, so a change to them "
               "needs a signed approval before it can leave this computer. Nothing was sent.")
+        if local:
+            print("If you made this change on purpose: open your own terminal (not Claude Code "
+                  "or Codex) in this folder, run `./tessctl gate approve`, read the changes it "
+                  "shows, type `approve these changes`, then push again.")
         source = _gate_undo_source(root, bases) if local else None
         shown = paths[:_GATE_REFUSAL_SHOWN]
         if local and source and len(paths) <= _GATE_REFUSAL_SHOWN:
@@ -22052,6 +22264,7 @@ def cmd_gate(args, root: Path) -> None:
         "install-hooks": _cmd_gate_install_hooks,
         "signoff": _cmd_gate_signoff,
         "clear": _cmd_gate_clear,
+        "approve": _cmd_gate_approve,   # v1.0 integration pass 4
     }
     fn = handlers.get(sub)
     if fn is None:
@@ -30561,6 +30774,17 @@ def build_parser() -> argparse.ArgumentParser:
         "install-hooks",
         help="install/upgrade the gate's git pre-commit + pre-push hooks and the CI workflow template",
     )
+
+    # gate approve — v1.0 integration pass 4: the operator approves their own
+    # change to protected files for a push from this computer.
+    p_gate_approve = gate_sub.add_parser(
+        "approve",
+        help="approve, at your own terminal, your own change to protected Tess files "
+             "so `git push` from this computer can send it",
+    )
+    p_gate_approve.add_argument("--base", metavar="COMMIT", default=None,
+                                help="the commit your change started from (default: the "
+                                     "branch's upstream, what the remote already has)")
 
     # gate signoff — honesty-capstone-audit-2026-07-08 §3-d: hard-floor
     # sign-off signing key management (sign a sign-off, or verify a signed one)
