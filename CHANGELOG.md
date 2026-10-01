@@ -61,6 +61,7 @@ Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #
   - `claude -p`, `codex exec`, MCP and sub-agent runs, and a runtime started inside another agent session, are recorded as automation, never as the operator. (headless attribution)
   - A shell that cannot write the tamper-evident ledger (the Codex sandbox) can no longer mint "operator said this" evidence through the in-repo outbox. (attestation key in the sandbox)
   - Every record Tess writes is sealed in the ledger; a record whose file does not match its seal reads as `proposed` until you confirm it. (front-matter status)
+  - A seal must match the status of the file it seals, and a seal queued from the sandbox never makes a record accepted or active, even after the next hook moves it into the ledger: that hook rewrites the record from its verified quote first. A waiting record that no seal vouches for goes straight to your review, and retrying its check never seals it. (seal integrity, final review round 6)
   - `decide --register` / `inbox add --register` targets must be a plain folder inside `brain/`. (register target)
   - `sync --transcript` attests only files inside the runtime's own transcript store; another `--codex-home` / `--gemini-home` needs you at a terminal. (transcript source)
 - **Launcher (`run-pinned.py`) and git hooks:**

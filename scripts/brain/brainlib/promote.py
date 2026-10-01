@@ -79,17 +79,27 @@ def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
     if why:
         raise ValueError("not recorded: " + why)
     directory = cfg.root / target
+    at = cand.get("source_at") or iso(cfg.now())
+    rid = records.new_id(cfg, kind, at, cand.get("title") or cand.get("quote") or cand.get("statement") or "")
+    meta, body = _fields(cfg, cand, directory, rid, _status(kind, cand, pending), pending)
+    rec = records.write(cfg, kind, directory, meta, body)
+    if cand.get("supersedes"):
+        _supersede(cfg, cand["supersedes"], rec.id)
+    return rec
+
+
+def _fields(cfg: Config, cand: Dict, directory: Path, rid: str, status: str, pending: bool):
+    """(front matter, body fields) of the record promote() writes for `cand`."""
+    kind = cand["kind"]
     now = iso(cfg.now())
     quote, statement = cand.get("quote") or "", cand.get("statement") or cand.get("quote") or ""
     at = cand.get("source_at") or now
-    rid = records.new_id(cfg, kind, at, cand.get("title") or quote or statement)
     speaker = cand.get("speaker") or ""
     common = {"id": rid, "source_quote": quote, "source_speaker": speaker, "source_at": at,
               "source_ref": cand.get("source_ref") or "", "detected_by": cand.get("detected_by") or "operator",
               "verified_at": now}
     body = {"quote": quote, "statement": statement, "speaker": speaker,
             "source_link": _link(cfg, directory, cand.get("source_ref") or "")}
-    status = _status(kind, cand, pending)
     if kind == "decision":
         meta = dict(common, type="decision", kind=cand.get("decision_kind") or "decision",
                     title=cand.get("title") or clip(quote, 80), status=status, tier=cand.get("tier") or "routine",
@@ -119,10 +129,7 @@ def promote(cfg: Config, cand: Dict, pending: bool = False) -> records.Record:
                     owner=cand.get("owner") or speaker, due=cand.get("due") or "", confirmed_by="",
                     confirmed_at="")
         body.update(owner=meta["owner"] or "unassigned", due=meta["due"] or "not set")
-    rec = records.write(cfg, kind, directory, meta, body)
-    if cand.get("supersedes"):
-        _supersede(cfg, cand["supersedes"], rec.id)
-    return rec
+    return meta, body
 
 
 def profile_cap_error(cfg: Config, cand: Dict) -> str:
@@ -175,15 +182,29 @@ def _can_seal(cfg: Config) -> bool:
     return extstate.writable(cfg)
 
 
+UNSEALED = ("not written by Tess (or changed since): nothing vouches for this file, so it waits for the "
+            "operator's review")
+SANDBOXED = "verified; the next hook outside the sandbox accepts it"
+
+
 def recheck_pending(cfg: Config) -> List[Dict]:
     """Records in pending-verification: journal hit -> promote; 2 failed syncs -> unverified.
 
     v1.0.0 audit: a pending record whose file no seal vouches for (planted by a repo writer, or edited
     since the tool wrote it) is never auto-accepted, even when its quote is found: the tool would bless a
-    body and fields nobody verified. It goes to `proposed` and waits for the operator's review."""
+    body and fields nobody verified. GPT-6 round 6, item 9: it goes to `proposed` right away (the retry
+    bookkeeping below used to seal it, which made it acceptable at the next hook) and waits for the
+    operator's review. Item 10: a record only the sandbox sealed is elevated only by rebuilding it from the
+    verified fields (_rebuild); its old body and other fields are dropped. A shell that cannot write the
+    external ledger elevates nothing and counts no failed attempt (it cannot journal): the next hook does."""
     out = []
+    can_seal = _can_seal(cfg)
     for rec in records.all_records(cfg):
         if rec.status != "pending-verification" or rec.meta.get("detected_by") == "onboarding":
+            continue
+        if not rec.sealed:
+            records.update_fields(rec, {"status": "proposed"})  # never sealed here (records.update_fields)
+            out.append({"record": rec.id, "status": "proposed", "reason": UNSEALED})
             continue
         quote = str(rec.meta.get("source_quote") or "")
         hits = [h for h in lookup.search(cfg, quote) if h.kind != "turn" and h.principal
@@ -202,16 +223,24 @@ def recheck_pending(cfg: Config) -> List[Dict]:
                 out.append({"record": rec.id, "status": rec.status, "reason": res.reasons[-1]})
                 continue
             if res.status in ("pass", "noop", "review"):
-                status = _status(kind, cand, False) if res.status != "review" and rec.sealed else "proposed"
+                elevate = res.status != "review"
+                if elevate and not can_seal:
+                    out.append({"record": rec.id, "status": rec.status, "reason": SANDBOXED})
+                    continue
+                status = _status(kind, cand, False) if elevate else "proposed"
+                if elevate and not rec.seal_trusted:
+                    rec = _rebuild(cfg, rec, cand, line, status)
+                    out.append({"record": rec.id, "status": status})
+                    continue
                 upd = {"status": status, "source_ref": line.ref, "verified": True, "verified_at": iso(cfg.now()),
                        "source_speaker": line.speaker, "source_session": _session(cfg, line.ref)}
-                if cand.get("confirmed_ref"):
-                    upd.update(confirmed=True, confirmed_ref=cand["confirmed_ref"])
                 if kind == "decision":
                     upd["decided_by"] = rec.meta.get("decided_by") or line.speaker
                 records.update_fields(rec, upd)
                 out.append({"record": rec.id, "status": status})
                 continue
+        if not can_seal:
+            continue
         tries = int(rec.meta.get("verify_attempts") or 0) + 1
         upd = {"verify_attempts": tries}
         if tries >= 2:
@@ -219,6 +248,18 @@ def recheck_pending(cfg: Config) -> List[Dict]:
         records.update_fields(rec, upd)
         out.append({"record": rec.id, "status": upd.get("status", "pending-verification")})
     return out
+
+
+def _rebuild(cfg: Config, rec: records.Record, cand: Dict, line: lookup.JLine, status: str) -> records.Record:
+    """The record re-made from verified fields only, exactly as promote() writes a candidate: the quote the
+    trusted journal `line` holds, that line's speaker, reference and time, the title/statement/tier the
+    verifier just checked, and the entity its register folder names. Nothing else of the old file (its body,
+    supersedes, confirmations) survives. Sealed by this hook (the caller checked it can write the ledger)."""
+    parts = records.register_rel(cfg, rec.path.parent).split("/")
+    verified = dict(cand, source_at=lookup.line_time(cfg, line), _source_principal=True, _source_kind=line.kind,
+                    entity="/".join(parts[:-1]), statement=cand.get("statement") or cand.get("quote"))
+    meta, body = _fields(cfg, verified, rec.path.parent, rec.id, status, False)
+    return records.rebuild(rec, meta, body)
 
 
 def change_status(cfg: Config, rid: str, action: str, quote: str, line: lookup.JLine) -> Dict:
@@ -234,7 +275,7 @@ def change_status(cfg: Config, rid: str, action: str, quote: str, line: lookup.J
             upd["status"] = "accepted" if rec.kind == "decision" else "active"
         if rec.kind == "open_loop":
             upd.update(confirmed_by=line.speaker, confirmed_at=now)
-        rec = records.update_fields(rec, upd)
+        rec = records.update_fields(rec, upd, vouch=True)  # the operator confirmed exactly this content
         return {"ok": True, "record": rec.id, "status": rec.status, "confirmed": True}
     if action == "reject":
         rec = records.update_fields(rec, {"status": "rejected"})

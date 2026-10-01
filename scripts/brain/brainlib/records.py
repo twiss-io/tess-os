@@ -15,6 +15,16 @@ Every file this tool writes is now SEALED: a row in the MAC'd external ledger
 text. A record whose file does not match its latest seal reads, everywhere,
 as `proposed` (awaiting the operator's review) and never as confirmed:
 Record.status / Record.confirmed. The raw front matter stays in rec.meta.
+
+Round 6 (GPT-6 items 9 and 10): a seal vouches only for what a trusted writer
+made. A seal row names the status/confirmed of the text it seals (read from
+that text, never from the caller) and counts only while the file still says
+the same. A seal made where the external ledger cannot be written (the Codex
+sandbox: a pending outbox row, or one a hook drained from the outbox, marked
+`origin: outbox`) never vouches for an accepted/active/confirmed record, and a
+record it sealed is elevated only by being rebuilt from verified fields
+(promote.recheck_pending) or by the operator's confirmation. Bookkeeping never
+seals a file no seal vouched for (update_fields).
 """
 from __future__ import annotations
 
@@ -62,6 +72,7 @@ class Record:
         self.text_sha = text_sha
         self.cfg: Optional[Config] = None
         self.sealed: Optional[bool] = None  # None: not checked (a record built in memory, or just written)
+        self.seal_trusted: Optional[bool] = None  # sealed by a process that could write the external ledger
 
     @property
     def id(self) -> str:
@@ -81,11 +92,11 @@ class Record:
         """The status the brain acts on: an accepted/active record whose file no seal vouches for is only
         `proposed` (awaiting the operator's review)."""
         raw = self.raw_status
-        return "proposed" if self.sealed is False and raw in ELEVATED else raw
+        return "proposed" if raw in ELEVATED and (self.sealed is False or self.seal_trusted is False) else raw
 
     @property
     def confirmed(self) -> bool:
-        return self.meta.get("confirmed") is True and self.sealed is not False
+        return self.meta.get("confirmed") is True and self.sealed is not False and self.seal_trusted is not False
 
     def rel(self, cfg: Config) -> str:
         return self.path.relative_to(cfg.root).as_posix()
@@ -130,33 +141,68 @@ def _rel(cfg: Config, path: Path) -> str:
         return str(path)
 
 
-def is_sealed(cfg: Config, rec: Record, seals: Optional[Dict[str, Dict]] = None) -> bool:
-    """The record's file is exactly what this tool last wrote for its id, at this path."""
+def _flags(meta: Dict) -> Tuple[str, bool]:
+    return str(meta.get("status") or ""), meta.get("confirmed") is True
+
+
+def seal_row_trusted(row: Dict) -> bool:
+    """A seal a process that could write the external ledger made: not a pending outbox row, and not one a
+    hook drained from the outbox (extstate marks those `origin: outbox`; draining vouches for nothing)."""
+    from .outbox import ORIGIN
+    return not row.get("pending") and row.get("origin") != ORIGIN
+
+
+def seal_state(cfg: Config, rec: Record, seals: Optional[Dict[str, Dict]] = None) -> Tuple[bool, bool]:
+    """(sealed, trusted). Sealed: the file is exactly what was last sealed for its id, at this path, and it
+    still says the status/confirmed that seal recorded. A seal made in the sandbox never vouches for an
+    accepted/active/confirmed file (GPT-6 round 6, item 10)."""
     if seals is None:
         from . import provenance
         seals = provenance.record_seals(cfg)
     row = seals.get(rec.id)
-    return bool(row) and bool(rec.text_sha) and row.get("h") == rec.text_sha and row.get("path") == _rel(cfg, rec.path)
+    if not (row and rec.text_sha and row.get("h") == rec.text_sha and row.get("path") == _rel(cfg, rec.path)):
+        return False, False
+    status, confirmed = _flags(rec.meta)
+    if str(row.get("status") or "") != status or (row.get("confirmed") is True) != confirmed:
+        return False, False
+    trusted = seal_row_trusted(row)
+    if not trusted and (status in ELEVATED or confirmed):
+        return False, False
+    return True, trusted
 
 
-def seal(cfg: Config, path: Path, text: str, meta: Dict) -> None:
+def is_sealed(cfg: Config, rec: Record, seals: Optional[Dict[str, Dict]] = None) -> bool:
+    """The record's file is exactly what this tool last wrote for its id, at this path (seal_state)."""
+    return seal_state(cfg, rec, seals)[0]
+
+
+def seal(cfg: Config, path: Path, text: str, meta: Optional[Dict] = None, sandbox: bool = False) -> bool:
     """Record in the external ledger that this tool wrote `text` at `path` (see the module docstring).
+    The id, status and confirmed flag come from `text` itself, never from `meta` (GPT-6 round 6, item 10:
+    a caller could seal an active, confirmed file as `proposed`). `sandbox`: the text is not vouched for by
+    a trusted writer (it re-seals a file only the sandbox sealed), so the row keeps the sandbox origin.
     A shell that cannot write the ledger (the Codex sandbox) can only queue the seal of a record that is
-    not accepted/active/confirmed (outbox.admissible); such a record is re-checked by the next hook."""
+    not accepted/active/confirmed (outbox.admissible); such a record is re-checked by the next hook.
+    True when the seal is durable in the ledger as a trusted seal."""
     from . import provenance
-    provenance._append(cfg, [{"t": "rec", "id": str(meta.get("id") or Path(path).stem), "path": _rel(cfg, path),
-                              "h": sha256_text(text), "status": str(meta.get("status") or ""),
-                              "confirmed": meta.get("confirmed") is True}])
+    from .outbox import ORIGIN
+    fm = frontmatter.parse(text)[0]
+    status, confirmed = _flags(fm)
+    row = {"t": "rec", "id": str(fm.get("id") or (meta or {}).get("id") or Path(path).stem),
+           "path": _rel(cfg, path), "h": sha256_text(text), "status": status, "confirmed": confirmed}
+    if sandbox:
+        row["origin"] = ORIGIN
+    return provenance._append(cfg, [row]) and not sandbox
 
 
 def seal_file(cfg: Config, path: Path) -> None:
     """Seal a record file another part of Tess wrote (onboarding's first decision)."""
     try:
-        rec = load(path)
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
     except (OSError, UnicodeDecodeError):
         return
-    with open(path, encoding="utf-8") as fh:
-        seal(cfg, path, fh.read(), rec.meta)
+    seal(cfg, path, text)
 
 
 def seal_existing_once(cfg: Config) -> None:
@@ -197,7 +243,7 @@ def all_records(cfg: Config) -> List[Record]:
         seals = provenance.record_seals(cfg)
         for rec in out:
             rec.cfg = cfg
-            rec.sealed = is_sealed(cfg, rec, seals)
+            rec.sealed, rec.seal_trusted = seal_state(cfg, rec, seals)
     return out
 
 
@@ -234,21 +280,38 @@ class _Default(dict):
         return ""
 
 
-def write(cfg: Config, kind: str, directory: Path, meta: Dict, body_fields: Dict) -> Record:
+def _render(kind: str, meta: Dict, body_fields: Dict) -> str:
     body = render_body(kind, body_fields)
     meta = dict(meta)
     meta.setdefault("schema", 1)
     if meta.get("status") in ("accepted", "active") or kind in ("fact", "open_loop"):
         meta["body_sha256"] = body_hash(body)
     meta["meta_sha256"] = meta_hash(meta)
+    return frontmatter.dump(meta, body, ORDER.get(kind))
+
+
+def write(cfg: Config, kind: str, directory: Path, meta: Dict, body_fields: Dict) -> Record:
     path = Path(directory) / ("%s.md" % meta["id"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = frontmatter.dump(meta, body, ORDER.get(kind))
+    text = _render(kind, meta, body_fields)
     _create_new(path, text)
-    seal(cfg, path, text, meta)
+    seal(cfg, path, text)
     rec = load(path)
     rec.cfg = cfg
     return rec
+
+
+def rebuild(rec: Record, meta: Dict, body_fields: Dict) -> Record:
+    """Replace a record's whole file (front matter and body) with one made from `meta` and `body_fields`
+    alone, as write() would make it, and seal it as vouched for by this process (promote.recheck_pending:
+    the caller built both from verified fields only)."""
+    text = _render(rec.kind, dict(meta, id=rec.id), body_fields)
+    atomic_write(rec.path, text)
+    trusted = seal(rec.cfg, rec.path, text) if rec.cfg is not None else False
+    new = load(rec.path)
+    new.cfg = rec.cfg
+    new.sealed, new.seal_trusted = (True, True) if trusted else (None, None)
+    return new
 
 
 def _create_new(path: Path, text: str) -> None:
@@ -272,9 +335,15 @@ def _create_new(path: Path, text: str) -> None:
         os.unlink(tmp)
 
 
-def update_fields(rec: Record, updates: Dict, body: Optional[str] = None) -> Record:
+def update_fields(rec: Record, updates: Dict, body: Optional[str] = None, vouch: bool = False) -> Record:
     """Rewrite front matter only; the body bytes stay identical (unless `body` replaces it: then its hash
-    is recomputed). Seals the result when the record came from all_records/find/write (rec.cfg)."""
+    is recomputed).
+
+    Sealing (GPT-6 round 6, item 9: bumping `verify_attempts` sealed a planted pending record, which the
+    next hook then accepted, body and all): the result is re-sealed only when a seal vouched for the file
+    being changed, and keeps that seal's origin (a file only the sandbox sealed stays the sandbox's). A file
+    no seal vouches for stays unsealed, whatever the change. `vouch`: the operator's confirmation of this
+    very content (promote.change_status), which seals it as trusted."""
     meta = dict(rec.meta)
     meta.update(updates)
     if body is not None:
@@ -287,10 +356,12 @@ def update_fields(rec: Record, updates: Dict, body: Optional[str] = None) -> Rec
     meta["meta_sha256"] = meta_hash(meta)
     text = frontmatter.dump(meta, text_body, ORDER.get(rec.kind))
     atomic_write(rec.path, text)
-    if rec.cfg is not None:
-        seal(rec.cfg, rec.path, text, meta)
     new = load(rec.path)
     new.cfg = rec.cfg
+    if rec.cfg is not None and (vouch or rec.sealed):
+        seal(rec.cfg, rec.path, text, sandbox=not vouch and not rec.seal_trusted)
+    elif rec.sealed is False:
+        new.sealed, new.seal_trusted = False, False
     return new
 
 
