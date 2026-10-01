@@ -8990,6 +8990,227 @@ def _staging_verify_all(root: Path) -> None:
         sys.exit(STAGING_TAMPER_MESSAGE.format(what=missing[0] + " (removed)"))
 
 
+# ---------------------------------------------------------------------------
+# v1.0.0 round 6 (GPT-6 #1): Tess's AUXILIARY RUNTIME — the files the Claude
+# Code / Codex hooks and the boot launcher run that have NO .tess/core master:
+# the hook launcher, the gate, the dispatch secret scan, the second brain and
+# `scripts/tess`. The core advance never reaches them, so an update from a
+# release that lacked them (0.2.0) rendered hook configs that ran files that
+# were not there, and an update between releases left old copies behind while
+# pinned-scripts.sha256 advanced to the new hashes (every hook then refused).
+# `update` now stages exactly these paths from the VERIFIED release commit
+# (.tess/staging/runtime/<path>), installs them inside its transaction (pre-
+# images journaled for the automatic rollback), and checks every path the
+# release's pinned-scripts.sha256 lists against its pin BEFORE it advances the
+# version or the anchor. A pinned path this manifest does not cover stops the
+# update before anything is written (a newer release: self-update first).
+# ---------------------------------------------------------------------------
+AUX_RUNTIME_FILES = (".claude/hooks/run-pinned.py", ".claude/hooks/tess-gate.py",
+                     ".claude/hooks/vault-dispatch-scan.py", "scripts/tess")
+AUX_RUNTIME_TREES = ("scripts/brain",)
+AUX_STAGING_PREFIX = "runtime/"
+PINNED_SCRIPTS_KEY = ".tess/core/pinned-scripts.sha256"
+ENGINE_REL = ".tess/bin/tessctl"
+ENGINE_BACKUP_REL = ".tess/bin/tessctl.bak"
+
+
+def _aux_runtime_rel(rel) -> bool:
+    """True for a path in Tess's auxiliary runtime manifest (see above)."""
+    rel = str(rel or "")
+    return rel in AUX_RUNTIME_FILES or any(rel.startswith(t + "/") for t in AUX_RUNTIME_TREES)
+
+
+def _pinned_scripts_parse(text: str) -> dict:
+    """{path: sha256 hex} from pinned-scripts.sha256 text (run-pinned.py's
+    format). ValueError on a malformed line."""
+    pins: dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            raise ValueError(f"malformed line {line[:80]!r}")
+        pins[parts[1].strip()] = parts[0]
+    return pins
+
+
+def _aux_path_unsafe(root: Path, rel: str) -> str | None:
+    """Why `rel` cannot be written as a plain file inside the project (a
+    symlink on the way, a directory in its place), or None."""
+    parts = Path(rel).parts
+    if not rel or os.path.isabs(rel) or ".." in parts or any(
+            p.lower().rstrip(". ") == ".git" for p in parts):
+        return "not a plain path inside the project"
+    for i in range(1, len(parts) + 1):
+        p = root.joinpath(*parts[:i])
+        if p.is_symlink():
+            return f"{Path(*parts[:i]).as_posix()} is a symlink"
+    target = root / rel
+    if target.exists() and not target.is_file():
+        return "something other than a file is there"
+    return None
+
+
+def _stage_aux_runtime(clone_dir: Path, commit: str, staging_dir: Path, verified: dict) -> int:
+    """Write the auxiliary runtime files of the verified release commit (git
+    objects, never the working tree) to .tess/staging/runtime/<path> and add
+    their hashes to `verified`. Returns how many were staged."""
+    entries: dict = {}
+    for prefix in AUX_RUNTIME_FILES + AUX_RUNTIME_TREES:
+        for sub, mo in _release_tree_entries(clone_dir, commit, prefix).items():
+            if prefix in AUX_RUNTIME_FILES and sub != "":
+                continue   # a directory where the manifest names a file: not ours
+            entries[prefix if sub == "" else prefix + "/" + sub] = mo
+    if not entries:
+        return 0
+    blobs = _git_cat_file_batch(clone_dir, sorted({oid for _m, oid in entries.values()}))
+    staging_resolved = staging_dir.resolve()
+    for rel, (mode, oid) in sorted(entries.items()):
+        parts = Path(rel).parts
+        if mode not in ("100644", "100755"):
+            sys.exit(f"tessctl fetch: SECURITY REJECT — release entry {rel!r} is not a regular "
+                     f"file (git mode {mode}). Extraction aborted — nothing was applied.")
+        if os.path.isabs(rel) or ".." in parts or any(
+                p.lower().rstrip(". ") == ".git" for p in parts):
+            sys.exit(f"tessctl fetch: PATH TRAVERSAL in release entry {rel!r}. "
+                     f"Extraction aborted — nothing was applied.")
+        kind, data = blobs.get(oid, (None, None))
+        if kind != "blob":
+            sys.exit(f"tessctl fetch: SECURITY REJECT — cannot read {rel!r} from the verified "
+                     f"release commit. Nothing was applied.")
+        dst = staging_dir / AUX_STAGING_PREFIX / rel
+        try:
+            dst.resolve().relative_to(staging_resolved)
+        except ValueError:
+            sys.exit(f"tessctl fetch: PATH TRAVERSAL — {rel!r} resolves outside .tess/staging/. "
+                     f"Nothing was applied.")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _staging_write_new(dst, data, 0o755 if mode == "100755" else 0o644)
+        verified[AUX_STAGING_PREFIX + rel] = sha256_bytes(data)
+    return len(entries)
+
+
+def _aux_runtime_plan(root: Path, lock: dict) -> list:
+    """Before anything is written: the auxiliary runtime paths this update
+    installs (every one the verified release staged). Exits, changing
+    nothing, when the release pins a hook file this manifest does not cover
+    or does not ship, or a target cannot be written safely."""
+    staging = root / STAGING_DIR
+    table = _staging_verified_table(root) or {}
+    staged = sorted(k[len(AUX_STAGING_PREFIX):] for k in table if k.startswith(AUX_STAGING_PREFIX))
+    live_paths = {a.get("live_path") for a in (lock.get("files") or {}).values()
+                  if isinstance(a, dict) and a.get("live_path")}
+    problems: list = []
+    if PINNED_SCRIPTS_KEY in table:
+        try:
+            pins = _pinned_scripts_parse(
+                _staging_verified_bytes(root, PINNED_SCRIPTS_KEY).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            sys.exit(f"tessctl update: the release's {PINNED_SCRIPTS_KEY} cannot be read ({e}). "
+                     f"Nothing was changed.")
+        for rel in sorted(pins):
+            if rel in live_paths:
+                continue   # a lock-managed live file (installed by the per-file step)
+            if not _aux_runtime_rel(rel):
+                problems.append(f"{rel}: the release runs it from a hook, but this tessctl "
+                                f"does not know how to install it — run `./tessctl self-update "
+                                f"--ref <the same tag>` first, then `./tessctl update` again")
+            elif rel not in staged:
+                problems.append(f"{rel}: the release pins it but does not ship it")
+    try:
+        never = list(load_manifest(root).get("never_touch") or [])
+    except (SystemExit, ValueError, OSError):
+        never = []
+    plan = []
+    for rel in staged:
+        if rel in live_paths:
+            continue
+        why = _aux_path_unsafe(root, rel)
+        if why is None and path_matches_globs(rel, never):
+            why = "tess.manifest.json never_touch names it"
+        if why:
+            problems.append(f"{rel}: {why}")
+            continue
+        if not (staging / AUX_STAGING_PREFIX / rel).is_file():
+            problems.append(f"{rel}: missing from .tess/staging")
+            continue
+        plan.append(rel)
+    if problems:
+        sys.exit("tessctl update: STOPPED — Tess's own hook and brain files from this release "
+                 "cannot be installed:\n" + "".join(f"  - {p}\n" for p in problems)
+                 + "Nothing was changed; you stay on your current version.")
+    return plan
+
+
+def _aux_runtime_install(root: Path, plan: list, core_journal: dict) -> tuple:
+    """Install the planned auxiliary runtime files from verified staging.
+    Pre-images go to `core_journal` (the update's automatic rollback).
+    Returns (installed, unchanged)."""
+    installed = unchanged = 0
+    for rel in plan:
+        staged_rel = AUX_STAGING_PREFIX + rel
+        data = _staging_verified_bytes(root, staged_rel)
+        mode = 0o755 if (root / STAGING_DIR / staged_rel).stat().st_mode & 0o111 else 0o644
+        why = _aux_path_unsafe(root, rel)
+        if why:
+            sys.exit(f"tessctl update: STOPPED — cannot install {rel}: {why}.")
+        live = root / rel
+        if live.is_file() and live.read_bytes() == data and (
+                bool(live.stat().st_mode & 0o111) == bool(mode & 0o111)):
+            unchanged += 1
+            continue
+        if rel not in core_journal:
+            core_journal[rel] = live.read_bytes() if live.is_file() else None
+        _atomic_write_bytes(live, data, mode=mode)
+        installed += 1
+    return installed, unchanged
+
+
+def _aux_runtime_stale_code(root: Path, plan: list) -> list:
+    """Python files under a runtime tree that the release does not ship.
+    run-pinned.py refuses a closure holding unpinned code, so they are named."""
+    shipped = set(plan)
+    out = []
+    for tree in AUX_RUNTIME_TREES:
+        base = root / tree
+        if not base.is_dir() or base.is_symlink():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            for name in sorted(filenames):
+                rel = Path(dirpath, name).relative_to(root).as_posix()
+                if name.endswith(".py") and rel not in shipped:
+                    out.append(rel)
+    return out
+
+
+def _pinned_runtime_findings(root: Path, pins_text: str | None = None) -> list:
+    """[(rel, why)] for every path pinned-scripts.sha256 lists that is not a
+    regular file with exactly the pinned sha256 (run-pinned.py would refuse
+    to run it). Empty when the project has no pin list."""
+    if pins_text is None:
+        pins_path = root / PINNED_SCRIPTS_KEY
+        if pins_path.is_symlink() or not pins_path.is_file():
+            return []
+        try:
+            pins_text = pins_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return [(PINNED_SCRIPTS_KEY, "cannot be read")]
+    try:
+        pins = _pinned_scripts_parse(pins_text)
+    except ValueError as e:
+        return [(PINNED_SCRIPTS_KEY, f"is malformed ({e})")]
+    out = []
+    for rel, want in sorted(pins.items()):
+        path = root / rel
+        if path.is_symlink() or not path.is_file():
+            out.append((rel, "is missing, so the hooks that run it cannot run"))
+        elif sha256_file(path) != "sha256:" + want:
+            out.append((rel, "differs from its pin, so the hooks that run it refuse to run"))
+    return out
+
+
 def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
     """
     Fetch the framework version at `ref` from upstream into .tess/staging/.
@@ -9083,6 +9304,11 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
 
         # Clear old staging content before populating (clean slate)
         _STAGING_STATE["verified"] = None
+        # v1.0.0 round 6: keep the committed .tess/staging/.gitkeep (its
+        # deletion was a protected-path change the push gate refused).
+        _gitkeep = staging_dir / ".gitkeep"
+        _gitkeep_bytes = (_gitkeep.read_bytes()
+                          if _gitkeep.is_file() and not _gitkeep.is_symlink() else None)
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
@@ -9090,6 +9316,9 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
 
         blobs = _git_cat_file_batch(clone_dir, sorted({oid for _m, oid in entries.values()}))
         verified: dict = {}
+        if _gitkeep_bytes is not None:
+            _staging_write_new(_gitkeep, _gitkeep_bytes, 0o644)
+            verified[".gitkeep"] = sha256_bytes(_gitkeep_bytes)
         extracted = 0
         for rel_str, (mode, oid) in sorted(entries.items()):
             # C2: reject symlinks (and submodules) before any write
@@ -9146,6 +9375,20 @@ def fetch_to_staging(root: Path, ref: str, allow_tofu: bool = False) -> None:
                 _staging_write_new(staging_dir / "upstream-tess.lock", data, 0o644)
                 verified["upstream-tess.lock"] = sha256_bytes(data)
                 print(f"  extracted upstream tess.lock to staging")
+
+        # v1.0.0 round 6 (GPT-6 #1): Tess's hook and brain files, same commit.
+        _aux_n = _stage_aux_runtime(clone_dir, _verified_commit, staging_dir, verified)
+        if _aux_n:
+            print(f"  extracted {_aux_n} Tess runtime file(s) (hooks, brain) to staging")
+        # v1.0.0 round 6 (GPT-6 #2): the release engine's sha256, so update can
+        # record an engine that `self-update` installed from this release.
+        _eng_entry = _release_tree_entries(clone_dir, _verified_commit, ENGINE_REL).get("")
+        _RELEASE_PROOF_STATE["engine_sha"] = None
+        if _eng_entry and _eng_entry[0] in ("100644", "100755"):
+            _kind, _data = _git_cat_file_batch(clone_dir, [_eng_entry[1]]).get(
+                _eng_entry[1], (None, None))
+            if _kind == "blob":
+                _RELEASE_PROOF_STATE["engine_sha"] = sha256_bytes(_data)
 
         _STAGING_STATE["verified"] = verified
         _STAGING_STATE["root"] = os.path.realpath(str(root))
@@ -9694,6 +9937,9 @@ def _cmd_update_body(args, root: Path) -> None:
             _staging_verify_all(root)
             _update_confirm_policy_rule_changes(root, target_ref)   # v1.0.0 item a
             _staging_verify_all(root)
+        # v1.0.0 round 6 (GPT-6 #1): check Tess's hook/brain files can be
+        # installed before anything is written.
+        aux_plan = _aux_runtime_plan(root, lock) if not dry_run else []
 
         # Step 4.6 / A2: ADOPT NEW FILES — every upstream tess.lock `files` entry the
         # instance lock lacks.  The staged core file is copied into .tess/core and a
@@ -9946,6 +10192,17 @@ def _cmd_update_body(args, root: Path) -> None:
                 advanced += 1
             print(f"  advanced {advanced} core file(s) from staging")
 
+            # Step 6.6 (v1.0.0 round 6, GPT-6 #1): Tess's own hook and brain
+            # files (no .tess/core master), before Step 7 renders the hook
+            # configs that run them. Journaled: a failure rolls them back.
+            if aux_plan:
+                print("\nStep 6.6: install Tess's hook and brain files …")
+                _aux_new, _aux_same = _aux_runtime_install(root, aux_plan, core_journal)
+                print(f"  installed {_aux_new} file(s) from the release ({_aux_same} already current)")
+                for _rel in _aux_runtime_stale_code(root, aux_plan):
+                    print(f"  WARN  {_rel} is not part of this release; Tess's brain hooks "
+                          f"refuse to run while it is there. Move or delete it.")
+
 
         # Step 7: RENDER — runs AFTER A2 (Step 4.6, new files adopted), Step 5-6
         # (per-file apply) and A1 (core advance) so that CLAUDE.md.tpl, claude-md/
@@ -9970,6 +10227,18 @@ def _cmd_update_body(args, root: Path) -> None:
             # v1.0 audit: staging unchanged through apply/render (inside the
             # transaction, so a change rolls the whole update back).
             _staging_verify_all(root)
+            # v1.0.0 round 6 (GPT-6 #1): every hook-run file the release pins
+            # must be installed with exactly its pinned bytes before the
+            # version (and then the anchor) advances; otherwise roll back.
+            if PINNED_SCRIPTS_KEY in (_staging_verified_table(root) or {}):
+                _pin_bad = _pinned_runtime_findings(
+                    root, _staging_verified_bytes(root, PINNED_SCRIPTS_KEY).decode("utf-8"))
+                if _pin_bad:
+                    raise SystemExit(
+                        "tessctl update: STOPPED — after installing, these Tess hook files do "
+                        "not match the release's pins:\n"
+                        + "".join(f"  - {r}: {w}\n" for r, w in _pin_bad)
+                        + "The update is being undone; you stay on your current version.")
             print("\nStep 8: update lock …")
             repinned = 0
             not_repinned: list[str] = []
@@ -10011,6 +10280,12 @@ def _cmd_update_body(args, root: Path) -> None:
                 _release_proof_write(root, _proof)
                 lock["framework"]["upstream_commit"] = _proof["commit_id"]
                 print(f"  recorded release proof → {RELEASE_PROOF_FILE} (commit {_proof['commit_id'][:12]})")
+                # v1.0.0 round 6 (GPT-6 #2): the installed engine IS this
+                # release's (self-update ran first): record which one.
+                _eng_sha = _RELEASE_PROOF_STATE.get("engine_sha")
+                if _eng_sha and sha256_file(root / ENGINE_REL) == _eng_sha:
+                    lock["framework"]["engine_ref"] = target_ref
+                    lock["framework"]["engine_commit"] = _proof["commit_id"]
 
             lock["framework"]["last_updated"] = datetime.datetime.now(
                 datetime.timezone.utc
@@ -11016,6 +11291,10 @@ def cmd_verify(args, root: Path) -> None:
     hook_config = _hook_config_missing(root)
     for _rel, _why in hook_config:
         print(f"  HOOK CONFIG  {_rel}  — {_why}")
+    # v1.0.0 round 6 (GPT-6 #1): a hook-run file missing or not its pin.
+    runtime_bad = _pinned_runtime_findings(root)
+    for _rel, _why in runtime_bad:
+        print(f"  RUNTIME  {_rel}  — {_why}")
 
     for core_key, attrs in files.items():
         live_rel = attrs.get("live_path")
@@ -11286,10 +11565,14 @@ def cmd_verify(args, root: Path) -> None:
 
     if (core_tampers or security_drifts or normal_drifts or missing_live_files
             or quarantined_files or doctrine_leaks or untracked_core or unknown_targets
-            or security_symlinks or anchor_lines or hook_config):
+            or security_symlinks or anchor_lines or hook_config or runtime_bad):
         print("\nverify: FAIL")
         if anchor_lines:
             print("  " + anchor_lines[0])
+        if runtime_bad:
+            print(f"  {len(runtime_bad)} Tess hook file(s) missing or not matching "
+                  f"{PINNED_SCRIPTS_KEY} — those hooks cannot run; run `tessctl update` "
+                  f"again (or restore the files from git)")
         if hook_config:
             print(f"  {len(hook_config)} runtime hook config file(s) missing or without Tess's "
                   f"gate — no Tess hook runs there; run `tessctl restore` (or `tessctl render`)")
@@ -12437,13 +12720,20 @@ def cmd_self_update(args, root: Path) -> None:
         print(f"  verification: OK (doctor ran cleanly; exit code {verify_run.returncode})")
 
     # -- Step 7: update tess.lock if ref changed --
-    if fw.get("upstream_ref") != ref:
-        lock["framework"]["upstream_ref"] = ref
+    # v1.0.0 round 6 (GPT-6 #2): also record WHICH signed release the engine
+    # now is (engine_ref / engine_commit), so the push gate can accept the new
+    # engine as exactly that release even when self-update is committed alone.
+    _su_book = {"upstream_ref": ref}
+    if _su_proof is not None:
+        _su_book.update(engine_ref=ref, engine_commit=_su_commit)
+    if any(fw.get(k) != v for k, v in _su_book.items()):
+        lock["framework"].update(_su_book)
         lock["framework"]["last_updated"] = datetime.datetime.now(
             datetime.timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
         save_lock(root, lock)
-        print(f"\n  tess.lock: upstream_ref updated to {ref}")
+        print(f"\n  tess.lock: upstream_ref updated to {ref}"
+              + (f" (engine: {ref}, commit {_su_commit[:12]})" if _su_proof is not None else ""))
 
     if _su_proof is not None:
         # v1.0.0: verified signed release applied. Only the new engine (and
@@ -15722,11 +16012,29 @@ def _signer_check_custody(cmd: str, root: Path, registry: str, name: str,
             f"core/policy/policy.yaml ({registered}). Sign with the registered key. "
             f"Nothing was signed."
         )
-    if any(_signer_key_protection(g, gnupg_home) == "C" for g in grips):
+    # v1.0.0 round 6 (GPT-6 #11): custody must be ESTABLISHED, not merely not
+    # disproved. Every signing key needs gpg-agent's answer "P" (passphrase)
+    # or "T" (hardware token); no signing key, a failed probe, a missing
+    # gpg-connect-agent or an unknown answer ("-") all refuse.
+    if not grips:
+        sys.exit(
+            f"{cmd}: refused — gpg lists no signing key (keygrip) for {fpr}, so Tess cannot "
+            f"check that it is protected by a passphrase or a hardware token. Nothing was signed."
+        )
+    protection = {g: _signer_key_protection(g, gnupg_home) for g in grips}
+    if any(p == "C" for p in protection.values()):
         sys.exit(
             f"{cmd}: refused — key {fpr} has no passphrase, so any program running as you "
             f"(an assistant too) could sign with it silently. Add a passphrase with "
             f"`gpg --passwd {fpr}` (or move the key to a hardware token), then sign again. "
+            f"Nothing was signed."
+        )
+    if any(p not in ("P", "T") for p in protection.values()):
+        sys.exit(
+            f"{cmd}: refused — Tess could not confirm that key {fpr} is protected by a "
+            f"passphrase or a hardware token (gpg-agent did not say; `gpg-connect-agent` may be "
+            f"missing or not working). Install GnuPG with its agent (on a Mac: "
+            f"`brew install gnupg`), check that `gpg-connect-agent /bye` runs, then sign again. "
             f"Nothing was signed."
         )
     return fpr, grips
@@ -16100,6 +16408,7 @@ def _safe_gate_result(result: dict, *, phase: str | None = None) -> dict:
             "accepted_paths_count": int(rp.get("accepted_paths_count") or 0),
             "lock_rejected": bool(rp.get("lock_rejected")),
             "first_push": bool(rp.get("first_push")),
+            "engine_only": bool(rp.get("engine_only")),   # round 6: a self-update alone
             "policy_approval": (rp.get("policy_approval")
                                 if rp.get("policy_approval") in ("verified", "rejected") else None),
         }
@@ -17949,7 +18258,7 @@ def _release_proof_build(clone_dir: Path, tag_ref: str, tag_name: str, commit: s
     rels: set = set()
     for rel in g("ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).decode(
             "utf-8", "surrogateescape").split("\0"):
-        if rel.startswith(".tess/"):
+        if rel.startswith(".tess/") or _aux_runtime_rel(rel):   # round 6: + hook/brain files
             rels.add(rel)
         if rel.startswith(CORE_DIR + "/"):
             rels.add(rel[len(CORE_DIR) + 1:])
@@ -18131,7 +18440,10 @@ def _release_proof_verify(proof_text: str, pinned_fp: str, key_bytes: bytes | No
 
 
 _RELEASE_LOCK_FRAMEWORK_MUTABLE = ("version", "upstream_ref", "upstream_commit",
-                                   "upstream_digest", "last_updated")
+                                   "upstream_digest", "last_updated",
+                                   "engine_ref", "engine_commit")   # round 6 (GPT-6 #2)
+# v1.0.0 round 6 (GPT-6 #2): what `self-update` changes in tess.lock.
+_RELEASE_LOCK_ENGINE_BOOKKEEPING = ("upstream_ref", "engine_ref", "engine_commit", "last_updated")
 
 
 def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str,
@@ -18157,6 +18469,10 @@ def _gate_release_lock_change_ok(base_lock: dict, head_lock: dict, tag_name: str
             return "framework.version/upstream_ref do not name the proven tag"
         if hfw.get("upstream_commit") not in (None, commit_id) or hfw.get("upstream_digest") is not None:
             return "framework.upstream_commit/digest do not match the proof"
+        if ((bfw.get("engine_ref"), bfw.get("engine_commit"))
+                != (hfw.get("engine_ref"), hfw.get("engine_commit"))
+                and (hfw.get("engine_ref"), hfw.get("engine_commit")) != (tag_name, commit_id)):
+            return "framework.engine_ref/engine_commit do not name the proven release"
 
     def proven_core(core_key: str, base_sha) -> bool:
         if core_key in carried_policy:
@@ -18309,6 +18625,90 @@ def _gate_release_policy_ok(base_text: str | None, head_data: bytes | None,
     return tag is not None and _policy_approval_covers(approval, tag, base_doc, head_doc)
 
 
+def _gate_git_blob_id(root: Path, ref: str, rel: str) -> str | None:
+    """The blob id of the regular file at `ref:rel`, or None."""
+    r = subprocess.run(["git", "-C", str(root), "ls-tree", "--full-tree", ref, "--", rel],
+                       capture_output=True, text=True)
+    meta = r.stdout.split("\t", 1)[0].split() if r.returncode == 0 else []
+    return meta[2] if len(meta) == 3 and meta[0] in _RELEASE_BLOB_MODES and meta[1] == "blob" else None
+
+
+def _gate_release_runtime_accepted(root: Path, base: str, base_lock: dict, resolve,
+                                   head_index: dict, candidate_paths: list) -> set:
+    """v1.0.0 round 6 (GPT-6 #1/#2): candidate paths with no tess.lock entry
+    that a verified release run wrote: the engine (.tess/bin/tessctl) and the
+    auxiliary runtime (_aux_runtime_rel) when the committed blob IS the
+    proven release's blob at that path, and self-update's backup
+    (.tess/bin/tessctl.bak) when it is byte-identical to the engine the BASE
+    commit already holds (a copy of approved bytes). A path the base lock
+    names (as a core key or a live path) is never taken this way. The caller
+    has already verified the proof against the base's pins and checked the
+    tess.lock bookkeeping."""
+    named: set = set()
+    for key, attrs in (base_lock.get("files") or {}).items():
+        named.add(key)
+        if isinstance(attrs, dict) and isinstance(attrs.get("live_path"), str):
+            named.add(attrs["live_path"])
+    out: set = set()
+    for rel in candidate_paths:
+        if rel in named or not head_index.get(rel):
+            continue
+        if rel == ENGINE_REL or _aux_runtime_rel(rel):
+            got = resolve(rel)
+            if got is not None and head_index.get(rel) == got[1]:
+                out.add(rel)
+        elif rel == ENGINE_BACKUP_REL:
+            if head_index.get(rel) == _gate_git_blob_id(root, base, ENGINE_REL):
+                out.add(rel)
+    return out
+
+
+def _gate_release_engine_only(root: Path, base: str, head: str, base_lock: dict, head_lock,
+                              tag_name: str, commit_id: str, resolve, candidate_paths: list,
+                              changed: set) -> tuple:
+    """v1.0.0 round 6 (GPT-6 #2): (accepted paths, None) when the change is
+    exactly a `self-update` to the proven release, committed without the
+    matching `update`: .tess/bin/tessctl is the release's blob; tess.lock
+    changes only upstream_ref / engine_ref / engine_commit / last_updated and
+    records engine_ref = the proven tag, engine_commit = its commit; the tag
+    is newer than the engine (or, when none is recorded, the version) the
+    base records. Otherwise (set(), reason). Nothing else is accepted."""
+    if ENGINE_REL not in changed or LOCK_FILE not in changed:
+        return set(), "not a self-update (the engine and tess.lock must both change)"
+    if not isinstance(head_lock, dict) or not isinstance(base_lock, dict):
+        return set(), "lock missing"
+    got = resolve(ENGINE_REL)
+    if got is None or _gate_git_blob_id(root, head, ENGINE_REL) != got[1]:
+        return set(), "the engine is not the proven release's"
+    bfw, hfw = base_lock.get("framework") or {}, head_lock.get("framework") or {}
+    if not isinstance(bfw, dict) or not isinstance(hfw, dict):
+        return set(), "framework block malformed"
+    if (hfw.get("engine_ref"), hfw.get("engine_commit"), hfw.get("upstream_ref")) != (
+            tag_name, commit_id, tag_name):
+        return set(), "tess.lock does not record the engine as the proven release"
+    have = _release_version_tuple(tag_name)
+    was = _release_version_tuple(str(bfw.get("engine_ref") or bfw.get("version") or ""))
+    if have is None or was is None or not have > was:
+        return set(), "the proven release is not newer than the installed engine"
+    for key in set(base_lock) | set(head_lock):
+        if key != "framework" and base_lock.get(key) != head_lock.get(key):
+            return set(), f"tess.lock {key} changed"
+    for key in set(bfw) | set(hfw):
+        if key not in _RELEASE_LOCK_ENGINE_BOOKKEEPING and bfw.get(key) != hfw.get(key):
+            return set(), f"framework.{key} changed"
+    try:
+        head_index = _gate_git_ls_tree(root, head)
+    except GateSpineError:
+        return set(), "git failed"
+    accepted = {LOCK_FILE} & set(candidate_paths)
+    accepted |= _gate_release_runtime_accepted(
+        root, base, base_lock, resolve, head_index,
+        [r for r in candidate_paths if r in (ENGINE_REL, ENGINE_BACKUP_REL)])
+    if ENGINE_REL in candidate_paths and ENGINE_REL not in accepted:
+        return set(), "the engine is not the proven release's"
+    return accepted, None
+
+
 def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: list,
                                   base_shas: list, changed_paths: list | None = None
                                   ) -> tuple[set, dict | None]:
@@ -18366,6 +18766,14 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
     advance_why = (_gate_release_advance_reason(base_lock, head_lock, tag_name, commit_id)
                    if LOCK_FILE in changed else "tess.lock is not part of this change")
     if advance_why is not None:
+        # v1.0.0 round 6 (GPT-6 #2): a `self-update` committed on its own.
+        eng_ok, eng_why = _gate_release_engine_only(
+            root, base, head, base_lock, head_lock, tag_name, commit_id, resolve,
+            candidate_paths, changed)
+        if eng_why is None:
+            info.update(status="accepted", reason_code=None, engine_only=True,
+                        lock_rejected=False, accepted_paths_count=len(eng_ok))
+            return eng_ok, info
         info.update(status="rejected", reason_code="lock_not_advanced", lock_rejected=True,
                     lock_reason=advance_why)
         return set(), info
@@ -18405,6 +18813,11 @@ def _gate_release_update_accepted(root: Path, candidate_paths: list, head_shas: 
         got = resolve(rel)
         if got is not None and head_index.get(rel) == got[1]:
             accepted.add(rel)
+    # v1.0.0 round 6 (GPT-6 #1/#2): the engine and Tess's hook/brain files
+    # have no tess.lock entry; they pass when their bytes ARE the proven
+    # release's (never a path the base lock names under another status).
+    accepted |= _gate_release_runtime_accepted(root, base, base_lock, resolve, head_index,
+                                               candidate_paths)
     # v1.0.1: the approval file is itself protected; it needs no verdict only
     # when it is the verified approval for this proven tag.
     approval_rel = _policy_approval_rel(tag_name)
@@ -20099,7 +20512,8 @@ def _gate_print_result(phase: str, result: dict, as_json: bool, *, verbose: bool
     print(f"  changed paths: {safe['changed_paths_count']}")
     rp = safe.get("release_proof")
     if rp and rp["status"] == "accepted":
-        what = "first push" if rp.get("first_push") else "release update"
+        what = ("first push" if rp.get("first_push") else
+                "engine update" if rp.get("engine_only") else "release update")
         print(f"  {what}: {rp['accepted_paths_count']} protected file(s) are exactly the "
               f"signed Tess OS release {rp['tag']} — no verdict needed for them")
         if rp.get("policy_approval") == "rejected":

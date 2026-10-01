@@ -126,6 +126,7 @@ def test_untracked_core_file_fails_integrity_commands(project, run_cli, argv):
 _REAL_TREE_PARTS = (
     ".tess", ".claude", ".codex", ".agents", ".gemini", "conductor", "agents", "core", "clients",
     "prompts", "operator", "CLAUDE.md", "AGENTS.md", "GEMINI.md", "tess.manifest.json",
+    "scripts",  # v1.0.0 round 6: verify checks the pinned hook files (scripts/brain, scripts/tess)
 )
 
 
