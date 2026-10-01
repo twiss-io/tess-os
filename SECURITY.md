@@ -160,11 +160,22 @@ security reviews; they are stated so nobody relies on a check that is not there.
   including the keys, write into Claude's and Codex's transcript folders, and fake
   a terminal for the "only at a terminal" steps (`roots add`, `sync --claude-dir`
   with another folder, `accept <version>`), which are presence checks, not
-  cryptography. Tess's own "type this to confirm" steps also refuse when they were
-  started inside Claude Code or Codex (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
-  `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), but a
-  program that clears its own environment passes that check too. For a real
-  boundary, run agents in the runtime's sandbox or as another OS user.
+  cryptography. Every step where a person must type an answer also refuses
+  when it was started inside Claude Code or Codex (`CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`,
+  `CODEX_SANDBOX_NETWORK_DISABLED`), before it asks: in `tessctl`, `approve`,
+  `resolve`, `override`, `reset`, `rollback`, `recruit` / `bench` / `roster
+  apply`, `update` / `self-update` (`accept <version>`, `downgrade to <tag>`),
+  `anchor accept`, `verdict sign`, `gate signoff sign`, `lock --regen`
+  (with or without `--yes`) and the `publish --force` re-seed question; in the
+  brain, `roots add` and `sync --claude-dir` / `--codex-home` /
+  `--gemini-home` with another folder. The `vault set` / `vault rotate` value
+  prompt is not one of them: it reads a secret, not a confirmation, and the
+  same value can be piped in by design, so a marker check there would stop
+  nothing (an agent that sets a value already knows it; reading a value back
+  is what the vault guards). A program that clears its own environment passes
+  the marker check too. For a real boundary, run agents in the runtime's
+  sandbox or as another OS user.
 - **Signing an approval is a presence and custody check, not an OS boundary.**
   `tessctl verdict sign` and `tessctl gate signoff sign` refuse to run without a
   terminal, refuse a key with no passphrase or one that is not the registered
@@ -320,7 +331,14 @@ security reviews; they are stated so nobody relies on a check that is not there.
   anchor records it. To change it yourself: edit it in your own editor, then
   run `tessctl anchor accept` in your own terminal (until you do, Tess stops,
   as for any changed safety file; `tessctl restore` puts the approved copy
-  back). The only automated writer is a verified `tessctl update`, which adds
+  back). Editing the manifest never stops Tess from putting its own safety
+  files back: `restore` puts back every security-tier file (the hooks, both
+  `policy.yaml` copies, the security doctrine) whatever `owned_globs` says,
+  and exits non-zero, naming the file, when it cannot put one back. `doctor`, `verify` and `lock --check` keep checking the
+  Claude Code and Codex enforcement files Tess rendered here even when
+  `render_targets.enabled` leaves that runtime out; a file Tess never rendered
+  (your own Codex config in a project that never enabled Codex) is left alone.
+  The only automated writer is a verified `tessctl update`, which adds
   the paths the signed release newly owns and records exactly those bytes as
   approved; the ship gate accepts that manifest change only when it is that
   adoption recomputed from the proven release's own manifest. An install whose
@@ -384,7 +402,10 @@ security reviews; they are stated so nobody relies on a check that is not there.
   and `scripts/tess hooks-status` and `tessctl doctor` say so with the line that
   puts it back. In a project with a `.git`, git that cannot be run or queried
   (not on the hooks' PATH, an error starting it, a timeout, an unexpected exit)
-  is a stop too, never a pass; only a project with no `.git` is exempt.
+  is a stop too, never a pass, and so is a git config file that exists but
+  cannot be read (git skips it silently, so a `core.hooksPath` inside it would
+  be invisible); only a project with no `.git` is exempt. `tessctl doctor`
+  reports this, and a changed anchor, also when it is asked about one path.
 - **The gate judges paths by the file they name, and some control files live
   outside the project.** Since the v1.0 security audit the gate decides whether
   a path is protected (or is the key directory) by file identity: a case
@@ -567,8 +588,10 @@ install already has: changing a pinned key stays the operator's decision. The
 ship gate accepts the lock change only when the added pin is the proven
 release's. The same update adds to the install's `tess.manifest.json` the
 `owned_globs` the signed release's own manifest lists (for example
-`.codex/rules/tess.rules`), never one that may overlap a `never_touch` entry
-of the operator's own (a narrower file inside the new glob included). Each
+`.codex/rules/tess.rules`), only when the glob starts with a named folder or
+file inside the project (never a catch-all such as `**/**`, `*/**` or `./**`),
+and never one that may overlap a `never_touch` entry of the operator's own (a
+narrower file inside the new glob included). Each
 added glob is recorded under `adopted_owned_globs` in the manifest, and the
 write gate keeps the operator's own `never_touch` ahead of it on every concrete
 path, including entries added later.

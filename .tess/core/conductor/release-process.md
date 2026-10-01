@@ -63,7 +63,10 @@ git fetch origin && git switch -c release/v<new-semver> origin/main
 #    create-tess/package.json version (then: cd create-tess && npm install --package-lock-only)
 #    package.json and pyproject.toml version
 
-# 3. Re-baseline integrity (only after a reviewed change to .tess/core)
+# 3. Re-baseline integrity (only after a reviewed change to .tess/core).
+#    Run it in your own shell or in CI: `lock --regen` refuses to run inside
+#    Claude Code or Codex (with or without --yes). Without --yes it asks you
+#    to type `re-baseline tess.lock` at the terminal.
 python3 .tess/bin/tessctl lock --regen --yes
 
 # 4. Regenerate the create-tess template LAST, then check

@@ -508,3 +508,463 @@ def test_b8_a_project_with_no_git_folder_is_exempt_even_without_git(tmp_path, mo
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
     assert L.hookspath_problem(root) is None
+
+
+# =========================================================================== Quinn's verification at a6feef2
+# (scratchpad/quinn-r7): the adoption allowlist, marker refusal everywhere a
+# person must type, manifest robustness, more hooksPath failure modes and the
+# negative SSH-trust adoption cases.
+
+
+def _adopt(engine, tmp_path, monkeypatch, owned, never, rel_owned, rel_never=()):
+    root = tmp_path / "inst"
+    root.mkdir(exist_ok=True)
+    (root / MANIFEST).write_text(json.dumps({"owned_globs": owned, "never_touch": never}))
+    _stage_release_manifest(engine, root, monkeypatch, {"owned_globs": rel_owned,
+                                                        "never_touch": list(rel_never)})
+    return root, engine._update_adopt_owned_globs(root, {})
+
+
+@pytest.mark.parametrize("g", ["**/**", "?*", "**/?*", "*/**", "**/*.*", "[!.]*/**", "./**",
+                               "*", "**", "**/*", ".git/hooks/**", ".GIT./x", "../x/**", "/etc/**",
+                               "a//b/**", "a/../b/**", "a\\b/**"])
+def test_b7_only_globs_under_a_named_folder_are_adopted(engine, tmp_path, monkeypatch, g):
+    root, added = _adopt(engine, tmp_path, monkeypatch, ["CLAUDE.md"], ["kb/**"], [g])
+    assert added == []
+    manifest = engine.load_manifest(root)
+    for rel in ("kb/wiki/x.md", ".env", "docs/x.md"):
+        assert not engine.manifest_owns(manifest, rel), (g, rel)
+
+
+def test_b7_quinn_repro_catch_all_never_reaches_kb_or_env(engine, tmp_path, monkeypatch):
+    root, added = _adopt(engine, tmp_path, monkeypatch, ["CLAUDE.md"], ["kb/**"], ["**/**"])
+    assert added == []
+    manifest = engine.load_manifest(root)
+    for rel in ("kb/wiki/x.md", ".env"):
+        with pytest.raises(engine.GateError):
+            engine.check_manifest_write_gate(root, manifest, rel)
+
+
+def test_b7_a_narrower_operator_never_touch_inside_the_glob_wins(engine, tmp_path, monkeypatch):
+    root, added = _adopt(engine, tmp_path, monkeypatch, ["CLAUDE.md"], ["docs/private/**"], ["docs/**"])
+    assert added == []
+    (root / "docs" / "private").mkdir(parents=True)
+    with pytest.raises(engine.GateError):
+        engine.check_manifest_write_gate(root, engine.load_manifest(root), "docs/private/secret.md")
+
+
+@pytest.mark.parametrize("a,b,overlap", [
+    ("docs/**", "docs/private/**", True), ("docs/**", "kb/**", False),
+    ("x/a.md", "x/*.md", True), ("x/a.md", "x/*.txt", False),
+    ("**/SKILL.md", "y/**", True), (".agents/skills/s/**", ".agents/skills/*/SKILL.md", True),
+    ("a/b/**", "a/c/**", False), ("a/**/c", "a/x/y/c", True),
+])
+def test_b7_overlap_is_symmetric_and_conservative(engine, a, b, overlap):
+    assert engine._globs_may_overlap(a, b) is overlap
+    assert engine._globs_may_overlap(b, a) is overlap
+
+
+def test_b7_the_ship_gate_recomputes_the_adoption(engine):
+    base = {"owned_globs": ["CLAUDE.md"], "never_touch": [".agents/**"]}
+    release = {"owned_globs": ["CLAUDE.md", ".agents/skills/security-audit/**", "**/**"],
+               "never_touch": [".agents/**"]}
+    want, added, _kept, refused = engine._manifest_adopt(base, release)
+    assert added == [".agents/skills/security-audit/**"] and refused == ["**/**"]
+    enc = lambda d: json.dumps(d).encode()  # noqa: E731
+    assert engine._gate_release_manifest_ok(enc(base), enc(want), enc(release))
+    sneaky = json.loads(json.dumps(want))
+    sneaky["owned_globs"].append("kb/**")
+    assert not engine._gate_release_manifest_ok(enc(base), enc(sneaky), enc(release))
+    assert not engine._gate_release_manifest_ok(enc(base), enc(base), enc(release))
+    assert not engine._gate_release_manifest_ok(enc(base), enc(want), None)
+    assert engine.MANIFEST_FILE in engine.RELEASE_PROOF_BLOB_PATHS
+
+
+# --------------------------------------------------------------------------- markers
+
+
+@pytest.mark.parametrize("marker", sorted(MARKERS))
+def test_policy_accept_refuses_under_each_marker_even_on_a_terminal(engine, monkeypatch, tmp_path,
+                                                                    marker):
+    import io
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+    rel = ".tess/core/policy/policy.yaml"
+    (tmp_path / rel).parent.mkdir(parents=True)
+    (tmp_path / rel).write_text("policy:\n  rules:\n    - id: a\n      tier: security\n")
+    st = tmp_path / engine.STAGING_DIR / rel
+    st.parent.mkdir(parents=True)
+    st.write_text("policy:\n  rules:\n    - id: b\n      tier: normal\n")
+    monkeypatch.setenv(marker, MARKERS[marker])
+    monkeypatch.setattr(sys, "stdin", TTY("accept v9.9.9\n"))
+    out = TTY()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "__stdout__", out)
+    with pytest.raises(SystemExit) as exc:
+        engine._update_confirm_policy_rule_changes(tmp_path, "v9.9.9")
+    assert marker in str(exc.value.code) and "REFUSED" in str(exc.value.code)
+    assert "accept>" not in out.getvalue()
+
+
+def _brain_roots():
+    sys.path.insert(0, str(REPO / "scripts" / "brain"))
+    from brainlib import roots
+    return roots
+
+
+def test_brain_markers_match_tessctl(engine):
+    assert _brain_roots().AGENT_SESSION_MARKERS == tuple(engine.AGENT_SESSION_MARKERS)
+
+
+@pytest.mark.parametrize("marker", sorted(MARKERS))
+def test_brain_roots_add_refuses_under_each_marker(monkeypatch, tmp_path, marker):
+    import io
+    import types
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+    roots = _brain_roots()
+    monkeypatch.setenv(marker, MARKERS[marker])
+    monkeypatch.setattr(sys, "stdin", TTY("yes\n"))
+    monkeypatch.setattr(sys, "stdout", TTY())
+    saved = {}
+    monkeypatch.setattr(roots, "problem", lambda cfg, p, strict=False: None)
+    monkeypatch.setattr(roots, "extra", lambda cfg: [])
+    monkeypatch.setattr(roots, "save", lambda cfg, lst: saved.setdefault("v", lst))
+    monkeypatch.setattr(roots, "_codex_sessions_under", lambda p: 0)
+    rc, res = roots.cmd_roots(types.SimpleNamespace(root=tmp_path),
+                              types.SimpleNamespace(roots_cmd="add", path=str(tmp_path)))
+    assert rc == 1 and marker in res["error"] and "own terminal" in res["error"], res
+    assert not saved
+
+
+@pytest.mark.parametrize("marker", sorted(MARKERS))
+def test_brain_sync_other_folder_question_refuses_under_each_marker(monkeypatch, tmp_path, marker):
+    import io
+    import types
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+    _brain_roots()
+    from brainlib import commands
+    monkeypatch.setenv(marker, MARKERS[marker])
+    monkeypatch.setattr(sys, "stdin", TTY("yes\n"))
+    monkeypatch.setattr(sys, "stdout", TTY())
+    assert commands._operator_allows_claude_dir(types.SimpleNamespace(root=tmp_path), "/x", "why") is False
+
+
+def test_brain_questions_still_reach_the_operator_without_markers(monkeypatch, tmp_path):
+    import io
+    import types
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+    for m in MARKERS:
+        monkeypatch.delenv(m, raising=False)
+    _brain_roots()
+    from brainlib import commands
+    monkeypatch.setattr(sys, "stdin", TTY("yes\n"))
+    monkeypatch.setattr(sys, "stdout", TTY())
+    assert commands._operator_allows_claude_dir(types.SimpleNamespace(root=tmp_path), "/x", "why") is True
+
+
+# --------------------------------------------------------------------------- manifest robustness
+
+
+def _set_enabled(root: Path, names):
+    path = root / MANIFEST
+    doc = json.loads(path.read_text())
+    doc.setdefault("render_targets", {})["enabled"] = names
+    path.write_text(json.dumps(doc))
+
+
+def _narrow(root: Path, drop):
+    path = root / MANIFEST
+    doc = json.loads(path.read_text())
+    doc["owned_globs"] = [g for g in doc["owned_globs"] if g not in drop]
+    doc["never_touch"] = doc["never_touch"] + [".claude/hooks/dispatch-guard.sh"]
+    path.write_text(json.dumps(doc))
+
+
+def _seed_safety(project):
+    project.add(".claude/hooks/dispatch-guard.sh", "#!/bin/sh\nexit 0\n", tier="security",
+                core_key=".tess/core/hooks/dispatch-guard.sh")
+    project.add("core/policy/policy.yaml", "policy:\n  rules: []\n", tier="security",
+                core_key=".tess/core/policy/policy.yaml")
+    project.add("conductor/a.md", "alpha\n")
+    project.write()
+    _set_enabled(project.root, [])
+
+
+def test_restore_puts_back_safety_files_whatever_owned_globs_says(project, run_cli):
+    """Quinn: narrowing owned_globs made restore skip a deleted hook and the
+    live policy, and still say "restore: complete" (exit 0)."""
+    _seed_safety(project)
+    root = project.root
+    _narrow(root, (".claude/hooks/**", "core/policy/**"))
+    (root / ".claude/hooks/dispatch-guard.sh").unlink()
+    (root / "core/policy/policy.yaml").unlink()
+    r = run_cli(root, "restore")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (root / ".claude/hooks/dispatch-guard.sh").read_text() == "#!/bin/sh\nexit 0\n"
+    assert (root / "core/policy/policy.yaml").is_file()
+
+
+def test_restore_fails_when_a_safety_file_cannot_be_put_back(project, run_cli, tmp_path):
+    _seed_safety(project)
+    root = project.root
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    shutil.rmtree(root / "core" / "policy")
+    (root / "core" / "policy").symlink_to(elsewhere)
+    r = run_cli(root, "restore")
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and "could not be put back" in out and "core/policy/policy.yaml" in out, out
+    assert "restore: complete" not in out
+
+
+def test_publish_force_refuses_before_anything_is_written(project, run_cli):
+    project.add("conductor/a.md", "alpha\n")
+    project.write()
+    _set_enabled(project.root, [])
+    project.write_live("conductor/a.md", "alpha hand edit\n")
+    before = (project.root / ".tess/tess.lock").read_bytes()
+    r = run_cli(project.root, "publish", "conductor/a.md", "--force", input_text="y\n")
+    assert r.returncode != 0 and "REFUSED" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert project.read_live("conductor/a.md") == "alpha hand edit\n"
+    assert (project.root / ".tess/tess.lock").read_bytes() == before
+
+
+@pytest.fixture(scope="module")
+def tree(tmp_path_factory):
+    """A copy of this working tree (tracked files, as they are now) in a new git repo."""
+    root = tmp_path_factory.mktemp("r7tree") / "inst"
+    root.mkdir()
+    files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True,
+                           check=True).stdout.decode().split("\0")
+    for rel in filter(None, files):
+        src = REPO / rel
+        if src.is_symlink() or not src.is_file():
+            continue
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, root / rel)
+    _git(root.parent, "init", "-q", "-b", "main", str(root))
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.email=t@tess.test", "-c", "user.name=T", "-c", "commit.gpgsign=false",
+         "commit", "-q", "--no-verify", "-m", "init")
+    return root
+
+
+def _fresh(tree: Path, tmp_path: Path) -> Path:
+    d = tmp_path / "i"
+    subprocess.run(["cp", "-R", str(tree), str(d)], check=True)
+    return d
+
+
+def _tc(root, *args):
+    r = subprocess.run([sys.executable, "-I", "-B", str(root / ".tess/bin/tessctl"), *args],
+                       capture_output=True, text=True, cwd=str(root),
+                       env=dict(os.environ, TESS_ROOT=str(root)), timeout=600)
+    return r.returncode, r.stdout + r.stderr
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_disabling_codex_does_not_hide_its_enforcement_files(tree, tmp_path, engine):
+    """Quinn: emptying .codex/config.toml and .codex/rules/tess.rules and then
+    dropping codex from render_targets.enabled hid both from doctor and verify."""
+    d = _fresh(tree, tmp_path)
+    for rel in (".codex/config.toml", ".codex/rules/tess.rules"):
+        (d / rel).write_text("# emptied\n")
+    _set_enabled(d, ["claude-code"])
+    for cmd in ("doctor", "verify"):
+        rc, out = _tc(d, cmd)
+        assert rc != 0, out
+        for rel in (".codex/config.toml", ".codex/rules/tess.rules"):
+            assert rel in out, (cmd, rel, out[-2000:])
+    rc, out = _tc(d, "lock", "--check")
+    assert rc != 0 and ".codex/config.toml" in out, out[-2000:]
+    found = dict(engine._enforcement_hook_findings(d, engine.load_lock(d)))
+    assert ".codex/config.toml" not in found or found  # checked, not skipped
+    assert ".codex/config.toml" in engine._disabled_enforcement_outputs(d, engine.load_lock(d))
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_a_never_rendered_codex_file_of_the_operators_own_is_not_flagged(tree, tmp_path, engine):
+    d = _fresh(tree, tmp_path)
+    lock_text = (d / ".tess/tess.lock").read_text()
+    lock = engine.load_lock(d)
+    for rel in list(lock.get("render_outputs") or {}):
+        if rel.startswith(".codex/"):
+            del lock["render_outputs"][rel]
+    engine.save_lock(d, lock)
+    _set_enabled(d, ["claude-code"])
+    (d / ".codex/config.toml").write_text("# my own codex config\n")
+    assert ".codex/config.toml" not in engine._disabled_enforcement_outputs(d, engine.load_lock(d))
+    (d / ".tess/tess.lock").write_text(lock_text)
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_doctor_path_still_reports_hookspath_and_exits_nonzero(tree, tmp_path):
+    d = _fresh(tree, tmp_path)
+    _git(d, "config", "core.hooksPath", "/dev/null")
+    for args in (("doctor",), ("doctor", "CLAUDE.md")):
+        rc, out = _tc(d, *args)
+        assert rc == 1 and "core.hooksPath" in out, (args, out[-1500:])
+
+
+# --------------------------------------------------------------------------- hooksPath failure modes
+
+
+@pytest.fixture
+def gitenv(tmp_path, monkeypatch):
+    home = tmp_path / "ghome"
+    home.mkdir()
+    glob = home / "gitconfig"
+    glob.write_text("")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(glob))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for k in [k for k in os.environ if k.startswith("GIT_CONFIG_")
+              and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")]:
+        monkeypatch.delenv(k, raising=False)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    return repo, glob
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_b8_hookspath_through_include_path_stops(gitenv, tmp_path):
+    repo, _g = gitenv
+    inc = tmp_path / "inc.cfg"
+    inc.write_text("[core]\n\thooksPath = /nonexistent\n")
+    _git(repo, "config", "include.path", str(inc))
+    assert "core.hooksPath" in (L.hookspath_problem(repo) or "")
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_b8_hookspath_through_global_includeif_stops(gitenv, tmp_path):
+    repo, glob = gitenv
+    inc = tmp_path / "inc.cfg"
+    inc.write_text("[core]\n\thooksPath = /nonexistent\n")
+    glob.write_text(f'[includeIf "gitdir:{os.path.realpath(repo)}/"]\n\tpath = {inc}\n')
+    assert "core.hooksPath" in (L.hookspath_problem(repo) or "")
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_b8_hookspath_through_git_config_parameters_stops(gitenv, monkeypatch):
+    repo, _g = gitenv
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath'='/nonexistent'")
+    assert "core.hooksPath" in (L.hookspath_problem(repo) or "")
+
+
+@pytest.mark.skipif(not HAS_GIT or os.geteuid() == 0, reason="needs git, not root")
+def test_b8_an_unreadable_global_config_stops(gitenv):
+    repo, glob = gitenv
+    glob.write_text("[core]\n\thooksPath = /nonexistent\n")
+    os.chmod(glob, 0)
+    try:
+        why = L.hookspath_problem(repo)
+    finally:
+        os.chmod(glob, 0o644)
+    assert why and "stopped all actions" in why, why
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_b8_a_malformed_local_config_stops(gitenv):
+    repo, _g = gitenv
+    cfg = repo / ".git" / "config"
+    cfg.write_text(cfg.read_text() + "\n[core\nbroken = = =\n")
+    why = L.hookspath_problem(repo)
+    assert why and "stopped all actions" in why, why
+
+
+@pytest.mark.skipif(not HAS_GIT, reason="needs git")
+def test_b8_a_git_timeout_stops(gitenv, monkeypatch):
+    repo, _g = gitenv
+
+    def slow(*_a, **_k):
+        raise subprocess.TimeoutExpired("git", 10)
+    monkeypatch.setattr(L.subprocess, "run", slow)
+    why = L.hookspath_problem(repo)
+    assert why and "in time" in why, why
+
+
+# --------------------------------------------------------------------------- SSH trust adoption: negatives
+
+
+HAS_SSH_KEYGEN = shutil.which("ssh-keygen") is not None
+
+
+def _ssh_release(tmp_path, *, signer, signers_text, pin, sign=True, tag="v9.9.9"):
+    from test_v1_ssh_release_sig import _ssh_block
+    up = tmp_path / "up"
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "main")
+    (up / ".tess" / "keys").mkdir(parents=True)
+    (up / ".tess" / "keys" / "twiss-release-allowed-signers").write_text(signers_text)
+    (up / ".tess" / "tess.lock").write_text(
+        f"schema: 1\nframework:\n  version: {tag[1:]}\n  trusted_ssh_key_fingerprint: {pin}\n"
+        f"files: {{}}\n")
+    (up / MANIFEST).write_text(json.dumps({"owned_globs": ["CLAUDE.md"], "never_touch": []}))
+    _git(up, "add", "-A")
+    _git(up, "-c", "user.email=r@t", "-c", "user.name=R", "-c", "commit.gpgsign=false",
+         "commit", "-q", "-m", "release")
+    commit = _git(up, "rev-parse", "HEAD")
+    tree_id = _git(up, "rev-parse", "HEAD^{tree}")
+    msg = f"Release {tag}\n"
+    if sign:
+        msg += "\n" + _ssh_block(signer, tag, commit, tree_id, tmp_path)
+    (tmp_path / "tagmsg").write_text(msg)
+    _git(up, "-c", "user.email=r@t", "-c", "user.name=R", "-c", "tag.gpgsign=false",
+         "tag", "-a", "--cleanup=verbatim", "-F", str(tmp_path / "tagmsg"), tag)
+    return up, commit, tag
+
+
+@pytest.fixture(scope="module")
+def ssh_pair(tmp_path_factory):
+    from test_v1_ssh_release_sig import _new_ssh_key
+    d = tmp_path_factory.mktemp("r7ssh")
+    return _new_ssh_key(d, "release"), _new_ssh_key(d, "attacker")
+
+
+def _stage_extras(engine, tmp_path, up, commit, tag):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    engine._stage_release_extras(up, commit, tag, staging, {})
+    return engine._RELEASE_TRUST_STATE["ssh"]
+
+
+@pytest.mark.skipif(not (HAS_GIT and HAS_SSH_KEYGEN), reason="git + ssh-keygen required")
+def test_ssh_trust_adopted_only_with_a_valid_signature(engine, tmp_path, ssh_pair):
+    (key, fp, signers), _other = ssh_pair
+    up, commit, tag = _ssh_release(tmp_path, signer=key, signers_text=signers, pin=fp)
+    st = _stage_extras(engine, tmp_path, up, commit, tag)
+    assert st and st["reason"] == "" and st["pin"] == fp
+
+
+@pytest.mark.skipif(not (HAS_GIT and HAS_SSH_KEYGEN), reason="git + ssh-keygen required")
+@pytest.mark.parametrize("case", ["missing", "invalid", "key_mismatch", "extra_entry"])
+def test_ssh_trust_is_not_adopted_without_proof(engine, tmp_path, ssh_pair, case):
+    (key, fp, signers), (okey, ofp, osigners) = ssh_pair
+    kw = dict(signer=key, signers_text=signers, pin=fp)
+    if case == "missing":
+        kw["sign"] = False
+    elif case == "invalid":
+        kw["signer"] = okey                      # signed by another key
+    elif case == "key_mismatch":
+        kw["pin"] = ofp                          # the lock pins another key
+    else:
+        kw["signers_text"] = signers + osigners.split("\n", 1)[1]   # a second entry
+    up, commit, tag = _ssh_release(tmp_path, **kw)
+    st = _stage_extras(engine, tmp_path, up, commit, tag)
+    assert st and st["reason"], (case, st)
+    root = tmp_path / "inst"
+    (root / ".tess" / "staging").mkdir(parents=True)
+    lock = {"framework": {"version": "1.0.0", "trusted_key_fingerprint": "E" * 40}, "files": {}}
+    assert engine._update_adopt_release_trust(root, lock, {}) is None
+    assert "trusted_ssh_key_fingerprint" not in lock["framework"]

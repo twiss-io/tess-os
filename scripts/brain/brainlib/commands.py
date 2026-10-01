@@ -31,11 +31,13 @@ def cmd_sync(cfg: Config, a) -> Out:
     if why or homes:  # one question for every folder that is not the runtime's own
         ok = _operator_allows_claude_dir(cfg, a.claude_dir, "; ".join(x for x in (why, homes) if x))
         if not ok and why:
-            return 1, {"error": "refused --claude-dir: %s. Only you, at a terminal, can journal another folder "
-                                "of Claude conversations as your own words; an agent or a pipe cannot" % why}
+            return 1, {"error": "refused --claude-dir: %s. Only you, at a terminal outside Claude Code and Codex, "
+                                "can journal another folder of Claude conversations as your own words; an agent "
+                                "or a pipe cannot" % why}
         if not ok:
-            return 1, {"error": "refused: %s. Only you, at a terminal, can journal another folder of "
-                                "conversations as your own words; an agent or a pipe cannot" % homes}
+            return 1, {"error": "refused: %s. Only you, at a terminal outside Claude Code and Codex, can journal "
+                                "another folder of conversations as your own words; an agent or a pipe cannot"
+                                % homes}
     res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
                    gemini_home=a.gemini_home, claude_dir_confirmed=ok and bool(why),
                    homes_confirmed=ok and bool(homes))
@@ -46,9 +48,10 @@ def cmd_sync(cfg: Config, a) -> Out:
 
 
 def _operator_allows_claude_dir(cfg: Config, path: str, why: str) -> bool:
-    """TTY-only, typed "yes" (the same bar as `roots add`)."""
+    """TTY-only, outside an assistant session, typed "yes" (the same bar as `roots add`)."""
     import sys
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    from .roots import agent_session_marker
+    if agent_session_marker() or not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     print("%s.\nSyncing it journals every conversation in it into THIS brain (%s) as your own words, and they "
           "can count as your decisions and confirmations." % (why, cfg.root))

@@ -2258,6 +2258,18 @@ def manifest_owns(manifest: dict, rel: str) -> bool:
     return not any(n not in beats and path_matches_globs(rel, [n]) for n in never)
 
 
+def _safety_owned_view(manifest: dict, rel: str, lock: dict):
+    """v1.0 r7 (C1, manifest robustness): Tess's own safety files stay Tess's
+    to put back whatever owned_globs says. For a security-tier live path or a
+    runtime-enforcement render output: the manifest with `rel` added as a
+    literal owned path (the write gate's hard guards still apply). None for
+    any other path."""
+    rel = str(rel).replace(os.sep, "/")
+    if not (is_enforcement_render_output(rel) or _live_path_is_security(lock or {}, rel)):
+        return None
+    return {**manifest, "owned_globs": [rel] + [g for g in (manifest.get("owned_globs") or [])]}
+
+
 # ---------------------------------------------------------------------------
 # RENDER OUTPUTS (v0.2 eng-b) — per-live-path status + render records.
 #
@@ -2487,7 +2499,9 @@ def _hook_config_missing(root: Path) -> list:
     if not (root / ".claude" / "hooks" / "run-pinned.py").is_file():
         return []
     try:
-        enabled = render_generated_live_paths(root)
+        enabled = set(render_generated_live_paths(root))
+        # v1.0 r7: + a disabled runtime's hook config Tess rendered here
+        enabled |= set(_disabled_enforcement_outputs(root, _load_lock_or_empty(root)))
     except (SystemExit, Exception):  # noqa: BLE001 — unreadable manifest: check both
         enabled = set(_HOOK_CONFIG_GATE)
     out = []
@@ -2539,8 +2553,11 @@ def _enforcement_hook_findings(root: Path, lock: dict) -> list:
     .claude/settings.json whose live hooks lack a hook the render carries
     (or that sets disableAllHooks)."""
     out = []
-    for rel in sorted(p for p in render_generated_live_paths(root)
-                      if is_enforcement_render_output(p)):
+    # v1.0 r7: + the claude-code / codex enforcement outputs a disabled target
+    # left behind (render_targets.enabled never hides them).
+    for rel in sorted({p for p in render_generated_live_paths(root)
+                       if is_enforcement_render_output(p)}
+                      | set(_disabled_enforcement_outputs(root, lock))):
         stale = _enforcement_stale_statuses(lock, rel)
         if stale:
             out.append((rel, f"carries a {'/'.join(stale)} status (capture/override/hold); "
@@ -2720,6 +2737,9 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
     rel = str(rel).replace(os.sep, "/")
     if manifest is None:
         manifest = load_manifest(root)
+    own_lock = lock is None
+    if own_lock:
+        lock = _load_lock_or_empty(root)
     if not manifest_owns(manifest, rel):   # v1.0 r7 (B7): owned_globs, adopted-glob rule
         return "skipped:not-owned"
 
@@ -2727,9 +2747,6 @@ def write_render_output(root: Path, rel: str, data: bytes, target: str, *,
     if os.path.islink(live):
         return "skipped:symlink"
 
-    own_lock = lock is None
-    if own_lock:
-        lock = _load_lock_or_empty(root)
     can_record = bool(lock) and "files" in lock
 
     # A QUARANTINED security edit stays pinned to the core render until
@@ -4466,6 +4483,7 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         "forced": 0,
         "drift_paths": [],
         "forced_paths": [],
+        "security_unwritten": [],
         "snapshot": snapshot_id,
     }
     gate_skipped: list[str] = []
@@ -4528,11 +4546,15 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         # the full gate (the gate would also reject it, but this is cheaper and
         # produces a cleaner message).  NOTE: owned check comes BEFORE the gate
         # call so the gate's GateError catch below is never pre-empted by this.
+        write_manifest = manifest
         if not manifest_owns(manifest, live_rel):
-            counts["skipped_manifest"] += 1
-            if verbose:
-                print(f"  skip [not in manifest owned_globs]  {live_rel}")
-            continue
+            # v1.0 r7: a security-tier file is put back whatever owned_globs says.
+            write_manifest = _safety_owned_view(manifest, live_rel, lock)
+            if write_manifest is None:
+                counts["skipped_manifest"] += 1
+                if verbose:
+                    print(f"  skip [not in manifest owned_globs]  {live_rel}")
+                continue
 
         core_path = root / core_key
         if not core_path.exists():
@@ -4616,10 +4638,12 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
             # BULK-SKIP (BLOCKER-1): catch GateError per-file; skip with WARN, do NOT abort.
             # guarded_write already sets 0755 for .sh files — no extra chmod needed.
             try:
-                guarded_write(root, live_rel, rendered, op="restore", manifest=manifest)
+                guarded_write(root, live_rel, rendered, op="restore", manifest=write_manifest)
             except GateError as e:
                 counts["skipped_gate"] += 1
                 gate_skipped.append(live_rel)
+                if _live_path_is_security(lock, live_rel) and live_rel not in counts["security_unwritten"]:
+                    counts["security_unwritten"].append(live_rel)
                 if live_rel in counts["forced_paths"]:
                     counts["forced_paths"].remove(live_rel)
                     counts["forced"] -= 1
@@ -4628,10 +4652,12 @@ def _do_restore(root: Path, verbose: bool = False, dry_run: bool = False, *,
         else:
             # Dry-run: check gate but don't abort on violation; print "would skip"
             try:
-                check_manifest_write_gate(root, manifest, live_rel, op="restore")
+                check_manifest_write_gate(root, write_manifest, live_rel, op="restore")
             except GateError as e:
                 counts["skipped_gate"] += 1
                 gate_skipped.append(live_rel)
+                if _live_path_is_security(lock, live_rel) and live_rel not in counts["security_unwritten"]:
+                    counts["security_unwritten"].append(live_rel)
                 print(f"  WARN  would skip {live_rel!r}: {e}")
                 continue
 
@@ -4789,6 +4815,12 @@ def _lifecycle_sync(root: Path, op: str, force: bool = False) -> list:
     if forced:
         _record_forced_overwrites(root, forced, op, snap_id)
     _finish_snapshot(root, snap_id)
+    if counts["security_unwritten"]:
+        # v1.0 r7: never "complete" while a Tess safety file was left as it is.
+        sys.exit(f"tessctl {op}: STOPPED — these Tess safety files could not be put back:\n"
+                 + "".join(f"  - {r}\n" for r in counts["security_unwritten"])
+                 + "  The lines above say why (a symlink in the way, or a path the write gate "
+                   "refuses). Fix that, then run `tessctl " + op + "` again.")
     return blocked
 
 
@@ -5982,7 +6014,46 @@ def _check_worker_profile_denylist(root: Path) -> list:
     return violations
 
 
-def _check_untracked_render_generated(root: Path, covered: set) -> list:
+# v1.0 r7 (manifest robustness): the runtimes whose enforcement outputs doctor,
+# verify and lock --check keep checking when render_targets.enabled leaves them
+# out, provided Tess rendered them here before (a render_outputs record).
+_ALWAYS_CHECKED_TARGETS = ("claude-code", "codex")
+
+
+def _disabled_enforcement_outputs(root: Path, lock: dict) -> dict:
+    """{rel: target} — the runtime-enforcement outputs of the claude-code and
+    codex targets that render_targets.enabled leaves out, that Tess rendered
+    here before (a render_outputs record) and that still exist. Switching a
+    runtime off in tess.manifest.json must not hide a stale or stripped
+    enforcement file the runtime still loads. A file Tess never rendered (a
+    Codex config of the operator's own, say) is not listed."""
+    try:
+        enabled = enabled_render_targets(root)
+    except (SystemExit, Exception):  # noqa: BLE001 — unreadable manifest: nothing enabled
+        enabled = {}
+    enabled_paths: set = set()
+    for t in enabled.values():
+        enabled_paths |= t.render_generated_paths(root)
+    out: dict = {}
+    for name in _ALWAYS_CHECKED_TARGETS:
+        target = RENDER_TARGETS.get(name)
+        if name in enabled or target is None:
+            continue
+        try:
+            paths = sorted(target.render_generated_paths(root))
+        except Exception:  # noqa: BLE001 — a check must never break doctor
+            continue
+        for rel in paths:
+            if (rel in enabled_paths or not is_enforcement_render_output(rel)
+                    or render_output_record(lock, rel) is None):
+                continue
+            if (root / rel).is_file() and not (root / rel).is_symlink():
+                out.setdefault(rel, name)
+    return out
+
+
+def _check_untracked_render_generated(root: Path, covered: set,
+                                      disabled_enforcement: bool = False) -> list:
     """
     Phase 2 (Codex + generic targets): drift-check a render target's
     compiled artifacts that have NO individual tess.lock entry of their own —
@@ -6159,6 +6230,25 @@ def _check_untracked_render_generated(root: Path, covered: set) -> list:
                 r["drift"] = True
                 r["issues"].append("UNCAPTURED DRIFT — live file has been edited without capture")
             results.append(r)
+    if disabled_enforcement:   # v1.0 r7: doctor, verify, lock --check
+        seen = {r["live_path"] for r in results}
+        for live_rel, name in sorted(_disabled_enforcement_outputs(
+                root, _load_lock_or_empty(root)).items()):
+            if live_rel in covered or live_rel in seen:
+                continue
+            expected = RENDER_TARGETS[name].expected_live_bytes(root, live_rel)
+            if expected is None or sha256_bytes(expected) == sha256_file(root / live_rel):
+                continue
+            results.append({
+                "core_key": None, "live_path": live_rel, "lock_status": "core-managed",
+                "tier": "normal", "is_security": False, "pristine": False, "drift": True,
+                "core_tamper": False, "staged_warn": [],
+                "issues": [f"UNCAPTURED DRIFT — {live_rel} is {name} safety configuration Tess "
+                           f"rendered here, and it no longer matches the render. {name} is not "
+                           f"in tess.manifest.json render_targets.enabled, so Tess stopped "
+                           f"keeping it current: run `tessctl render --target {name}`, or "
+                           f"delete it if you no longer use {name}"],
+            })
     return results
 
 
@@ -6849,8 +6939,8 @@ def cmd_doctor(args, root: Path) -> None:
     fix = getattr(args, "fix", False)
     # v1.0.0 enforcement anchor: said FIRST, before any other check can stop
     # doctor, because while it fails Tess's gate stops every tool call.
-    _anchor_lines = [] if getattr(args, "path", None) else (
-        _anchor_findings(root) + _hookspath_findings(root))
+    # v1.0 r7: also with --path (they stop every tool call, whatever the path).
+    _anchor_lines = _anchor_findings(root) + _hookspath_findings(root)
     if _anchor_lines and not as_json:
         print("doctor: FAIL — " + "\n".join(_anchor_lines) + "\n")
     path_filter = getattr(args, "path", None)
@@ -6913,7 +7003,7 @@ def cmd_doctor(args, root: Path) -> None:
     # in `covered` gets its own drift check here, folded into the same
     # `results`/errors/warnings this loop already produces.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         if path_filter and r["live_path"] != path_filter:
             continue
         results.append(r)
@@ -9250,10 +9340,13 @@ def _update_adopt_owned_globs(root: Path, core_journal: dict) -> list:
         return []
     if path.is_symlink() or not isinstance(inst, dict) or not isinstance(release, dict):
         return []
-    new, added, kept = _manifest_adopt(inst, release)
+    new, added, kept, refused = _manifest_adopt(inst, release)
     for g in kept:
         print(f"  NOTE  the release owns {g}, but your tess.manifest.json never_touch "
               f"keeps it yours (or part of it); left as it is")
+    for g in refused:
+        print(f"  NOTE  the release lists the owned glob {g!r}, which an update never adds "
+              f"by itself (it must start with a named folder inside the project); left out")
     if not added:
         return []
     core_journal.setdefault(MANIFEST_FILE, raw)
@@ -9268,7 +9361,8 @@ def _update_adopt_owned_globs(root: Path, core_journal: dict) -> list:
 
 
 def _manifest_adopt(inst: dict, release: dict) -> tuple:
-    """(new manifest, added globs, globs kept out) — the one adoption rule,
+    """(new manifest, added globs, globs your never_touch keeps out, globs not
+    adoptable automatically (_adoptable_owned_glob)) — the one adoption rule,
     used by `update` and re-checked by the ship gate on the update commit.
     A release glob is added when the install lacks it, it is not a catch-all,
     and it cannot intersect a never_touch entry of the operator's own (one
@@ -9280,9 +9374,12 @@ def _manifest_adopt(inst: dict, release: dict) -> tuple:
     never = [n for n in (new.get("never_touch") or []) if isinstance(n, str)]
     rel_never = {n for n in (release.get("never_touch") or []) if isinstance(n, str)}
     own_never = [n for n in never if n not in rel_never]
-    added, kept = [], []
+    added, kept, refused = [], [], []
     for g in release.get("owned_globs") or []:
-        if not isinstance(g, str) or g in owned or _OWNED_GLOB_REFUSED.match(g):
+        if not isinstance(g, str) or g in owned:
+            continue
+        if not _adoptable_owned_glob(g):
+            refused.append(g)
             continue
         head = re.split(r"[*?\[]", g, 1)[0].rstrip("/") or g
         if g in never or any(n == g or path_matches_globs(head, [n]) or _globs_may_overlap(g, n)
@@ -9298,7 +9395,22 @@ def _manifest_adopt(inst: dict, release: dict) -> tuple:
         for g in added:
             rec[g] = sorted(n for n in never if n in rel_never)
         new["adopted_owned_globs"] = rec
-    return new, added, kept
+    return new, added, kept, refused
+
+
+def _adoptable_owned_glob(g: str) -> bool:
+    """v1.0 r7 (B7): the allowlist for a glob an update may adopt. Its first
+    folder is a literal name (no wildcard; not `.`, `..` or `.git`), no part
+    is empty, `.` or `..`, it is relative and has no backslash, so it lies
+    inside the project under a named folder and can never be a catch-all
+    (`**/**`, `?*`, `*/**`, `./**` and the like are all refused)."""
+    if (not isinstance(g, str) or not g or g.startswith("/") or "\\" in g
+            or _OWNED_GLOB_REFUSED.match(g) or is_overbroad_glob(g)):
+        return False
+    parts = g.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    return not _GLOB_META_RE.search(parts[0]) and parts[0].rstrip(". ").lower() != ".git"
 
 
 def _manifest_adopt_bytes(doc: dict) -> bytes:
@@ -11050,6 +11162,8 @@ def cmd_publish(args, root: Path) -> None:
         and _live_path_is_security(lock, lock["files"][k]["live_path"])})
     if _security_live_targets:
         _refuse_security_publish(_security_live_targets, bool(tag_sel))
+    if force:   # v1.0 r7 (B6): --force asks per file; refuse before anything is written
+        _require_terminal_for_questions("publish --force", "no file was published.")
 
     _live_outcome: dict = {}   # live_rel -> "written" | "skipped"
     _render_outputs_now = render_generated_live_paths(root)
@@ -11779,7 +11893,7 @@ def cmd_verify(args, root: Path) -> None:
     # hasn't been rendered yet is skipped by that function (not a failure);
     # only an existing-but-drifted path is ever returned here.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         live_rel = r["live_path"]
         if r.get("drift"):
             normal_drifts.append(live_rel)
@@ -11956,18 +12070,24 @@ def _require_human_presence(cmd: str, subject: str, unchanged: str, confirm: str
                  f"  Nothing was changed: {unchanged}")
 
 
+def _require_terminal_for_questions(cmd: str, unchanged: str) -> None:
+    """v1.0 r7 (B6): exit unless a person can answer questions here: not
+    inside an assistant session, and stdin and stdout both a terminal."""
+    _refuse_in_agent_session(f"tessctl {cmd}", unchanged)
+    stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
+    if not (stdin_tty and stdout_tty):
+        sys.exit(f"tessctl {cmd}: REFUSED — this needs you at an interactive terminal to answer "
+                 f"its questions (stdin is {'a TTY' if stdin_tty else 'not a TTY'}; stdout is "
+                 f"{'a TTY' if stdout_tty else 'not a TTY'}).\n"
+                 f"  Nothing was changed: {unchanged}\n"
+                 f"  Run the same `tessctl {cmd}` command yourself, in a terminal.")
+
+
 def _confirm_at_terminal(cmd: str, question: str, unchanged: str) -> bool:
     """v1.0 r7 (B6): a yes/no question only the person at a real terminal
     answers: refused inside an assistant session, and when stdin or stdout is
     not a terminal (so `yes | tessctl ...` cannot answer it). True on y/yes."""
-    _refuse_in_agent_session(f"tessctl {cmd}", unchanged)
-    stdin_tty, stdout_tty = _presence_isatty(sys.stdin), _presence_isatty(sys.stdout)
-    if not (stdin_tty and stdout_tty):
-        sys.exit(f"tessctl {cmd}: REFUSED — this question needs you at an interactive terminal "
-                 f"(stdin is {'a TTY' if stdin_tty else 'not a TTY'}; stdout is "
-                 f"{'a TTY' if stdout_tty else 'not a TTY'}).\n"
-                 f"  Nothing was changed: {unchanged}\n"
-                 f"  Run the same `tessctl {cmd}` command yourself, in a terminal.")
+    _require_terminal_for_questions(cmd, unchanged)
     try:
         reply = input(f"  {question} [y/N] ").strip().lower()
     except EOFError:
@@ -12820,7 +12940,7 @@ def cmd_lock(args, root: Path) -> None:
     # lock-entry-only CI gate. A path not yet rendered is skipped (not a
     # failure) by that function; only an existing-but-drifted path returns.
     covered_live_paths = {a.get("live_path") for a in files.values() if a.get("live_path")}
-    for r in _check_untracked_render_generated(root, covered_live_paths):
+    for r in _check_untracked_render_generated(root, covered_live_paths, disabled_enforcement=True):
         if r.get("drift"):
             issues.append(("DRIFT", r["live_path"]))
 
@@ -20510,7 +20630,7 @@ def _gate_release_manifest_ok(base: bytes | None, head: bytes | None,
         return False
     if not all(isinstance(d, dict) for d in docs):
         return False
-    want, added, _kept = _manifest_adopt(docs[0], docs[2])
+    want, added, _kept, _refused = _manifest_adopt(docs[0], docs[2])
     return bool(added) and docs[1] == want
 
 
