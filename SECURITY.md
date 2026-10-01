@@ -160,8 +160,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   including the keys, write into Claude's and Codex's transcript folders, and fake
   a terminal for the "only at a terminal" steps (`roots add`, `sync --claude-dir`
   with another folder, `accept <version>`), which are presence checks, not
-  cryptography. For a real boundary, run agents in the runtime's sandbox or as
-  another OS user.
+  cryptography. Tess's own "type this to confirm" steps also refuse when they were
+  started inside Claude Code or Codex (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+  `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), but a
+  program that clears its own environment passes that check too. For a real
+  boundary, run agents in the runtime's sandbox or as another OS user.
 - **Signing an approval is a presence and custody check, not an OS boundary.**
   `tessctl verdict sign` and `tessctl gate signoff sign` refuse to run without a
   terminal, refuse a key with no passphrase or one that is not the registered
@@ -242,11 +245,14 @@ security reviews; they are stated so nobody relies on a check that is not there.
   its own sandbox and approval settings apply. Input typed into an already-open
   shell with `write_stdin` never reaches the gate, so in Codex the gate refuses a
   bare shell or interpreter (`bash`, `python3`), which reads its program from what
-  is typed later. A tessctl step that asks the operator to type an answer
-  (`approve`, `update`, `rollback`...) is still allowed when nothing feeds it,
-  because without a terminal it only prints what to do; Codex can also start a
-  command in a pseudo-terminal (`tty`) that the hook payload does not show, and
-  then an agent could type that answer with `write_stdin`. Codex sends shell, `exec_command` and unified-exec calls to
+  is typed later. For the same reason (Codex can start a command in a
+  pseudo-terminal the hook payload does not show and type into it later), the
+  gate refuses every `tessctl` step that asks the operator to type an answer
+  (`approve`, `update`, `rollback`, `anchor accept`, `verdict sign`...) in Codex
+  even when nothing feeds it, and `tessctl` refuses those steps when it was started
+  inside a Codex or Claude Code session; run them in your own terminal. Their
+  read-only forms (`status`, `verify`, `doctor`, `diff`, `anchor status`,
+  `lock --check`, `update --check`) stay allowed. Codex sends shell, `exec_command` and unified-exec calls to
   the hook as `Bash` with only the command text (its documented hook schema): a
   call's own `workdir` is used when a payload carries one, and otherwise relative
   paths are judged from the session folder, so a relative write in an
@@ -355,7 +361,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   change made outside the agent) can still replace the launcher. A user-level
   launcher outside the repository, registered in the user-level Claude Code and
   Codex settings so that it runs the anchor check before any in-repo file, is
-  planned for 1.0.1.
+  planned for 1.0.1. Git's own hooks are the other half: the launcher stops every
+  Tess hook while git's effective `core.hooksPath` (any config scope, or set
+  through `GIT_CONFIG_*`) points anywhere but this repository's own `.git/hooks`,
+  and `scripts/tess hooks-status` and `tessctl doctor` say so with the line that
+  puts it back.
 - **The gate judges paths by the file they name, and some control files live
   outside the project.** Since the v1.0 security audit the gate decides whether
   a path is protected (or is the key directory) by file identity: a case
@@ -385,7 +395,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `resolve`, `rollback`, `restore --force`, `publish --force`, `capture --auto`,
   `lock --regen`, `recruit`, `bench`, `roster apply`), and signing a verdict or a
   sign-off (`verdict sign`, `gate signoff sign`), are the operator's: the gate
-  refuses an agent that feeds them input or fakes a terminal for them.
+  refuses an agent that feeds them input or fakes a terminal for them (and, in
+  Codex, refuses them outright; see the Codex item above).
 - **Vault values stay out of agent sessions, for the commands the gate can
   see.** The gate refuses `tessctl vault get --reveal` (and `--force`) and
   `tessctl vault exec` into a program that prints what it is given (`printenv`,
@@ -519,6 +530,19 @@ and before the lock is saved. A staged file that changed after the check stops
 the update (rolling it back if the core advance had begun), so only the signed
 release's bytes are applied and anchored. `self-update` reads the new engine
 from the verified commit's git object the same way.
+
+**Adding the SSH key to an older install.** An install made before the SSH
+signature existed pins only the OpenPGP key, so it needs gpg to update. A
+verified update ADDS the release's SSH pin and its `twiss-release-allowed-signers`
+file, and only when the release's own `tess.lock` names that key, the shipped
+file is that key, and the tag being installed carries a valid SSH signature by
+it (the OpenPGP signature having been checked against the install's pin first).
+It never removes or changes the OpenPGP pin and never replaces an SSH pin the
+install already has: changing a pinned key stays the operator's decision. The
+ship gate accepts the lock change only when the added pin is the proven
+release's. The same update adds to the install's `tess.manifest.json` the
+`owned_globs` the signed release's own manifest lists (for example
+`.codex/rules/tess.rules`), never one the operator's own `never_touch` keeps.
 
 **No silent downgrade.** `update` and `self-update` refuse a release tag older
 than the installed version (the newer of `framework.version` and
