@@ -791,6 +791,61 @@ def anchor_check(root: Path) -> "dict | None":
     return doc
 
 
+# v1.0 final review (Cyra H1): Tess installs its git hooks (secret scan, ship
+# gate, public-remote guard) in <common git dir>/hooks and never sets
+# core.hooksPath (`tessctl gate install-hooks`, `tessbrain.py githooks
+# install`). A core.hooksPath at any scope git reads (system, global, local,
+# worktree, GIT_CONFIG_* environment) that points elsewhere makes git skip
+# those hooks for good, so it stops every hook here, like a changed safety file.
+_GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES")
+
+
+def hookspath_problem(root: Path) -> "str | None":
+    """The plain stop line when git's effective core.hooksPath for this
+    repository is not Tess's own hooks folder; None when it is unset or names
+    that folder (or this is not a git repository, or git is not installed)."""
+    common = anchor_git_common_dir(root)
+    if common is None:
+        return None
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPO_ENV}
+    try:
+        r = subprocess.run(["git", "-C", str(root), "config", "--show-origin", "--get", "core.hooksPath"],
+                           capture_output=True, text=True, timeout=10, env=env)
+    except OSError:
+        return None  # no git: no git hooks run either
+    except subprocess.SubprocessError:
+        return ("Tess could not read git's core.hooksPath setting in time, so it cannot tell whether "
+                "its git hooks still run, and has stopped all actions. Try again; if it keeps "
+                "happening, run `git config --show-origin --get core.hooksPath` in your own terminal.")
+    if r.returncode == 1 and not r.stdout.strip():
+        return None
+    if r.returncode != 0:
+        return ("git could not read its configuration (`git config --get core.hooksPath` failed), "
+                "so Tess cannot tell whether its git hooks still run, and has stopped all actions. "
+                "Fix the git config error that `git status` reports, then try again.")
+    origin, _tab, value = r.stdout.rstrip("\n").rpartition("\t")
+    try:
+        p = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
+                           capture_output=True, text=True, timeout=10, env=env)
+        used = p.stdout.strip() if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        used = ""
+    if used:
+        used = used if os.path.isabs(used) else os.path.join(str(root), used)
+        if os.path.realpath(used) == os.path.realpath(str(common / "hooks")):
+            return None
+    where = origin[len("file:"):] if origin.startswith("file:") else (
+        "the GIT_CONFIG_* environment variables" if origin.startswith("command line") else "git's settings")
+    scope = ("" if where.startswith(".git") or os.path.realpath(where).startswith(os.path.realpath(str(common)))
+             else "--system " if where.startswith("/etc") or "/etc/" in where else "--global ")
+    how = (f"remove it in your own terminal with `git config {scope}--unset core.hooksPath`"
+           if origin.startswith("file:") else f"remove it from {where} and start a new session")
+    return (f"git is set to run hooks from {value or '(empty)'} (core.hooksPath, set in {where}) instead "
+            "of this project's own hooks folder, so Tess's git hooks (secret scan, ship gate, "
+            f"public-remote guard) do not run, and Tess has stopped all actions. If you did not set "
+            f"this, {how}, then try again.")
+
+
 def _fail(mode: str, target: str, reason: str) -> int:
     msg = (f"TESS HOOK NOT RUN: {target} was skipped because {reason}. "
            f"Tess only runs hook scripts that match the release pinned in {LOCK_REL}. "
@@ -857,6 +912,9 @@ def main(argv: list) -> int:
     root = _root()
     try:
         anchor_check(root)
+        why = hookspath_problem(root)
+        if why:
+            raise AnchorError(why, [why])
     except AnchorError as exc:
         return _fail_anchor(mode, target, exc)
     except Exception as exc:  # fail closed on anything unexpected

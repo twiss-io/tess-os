@@ -117,9 +117,11 @@ def anchor_problem() -> str:
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
         mod.anchor_check(ROOT)
+        # v1.0 final review (Cyra H1): a core.hooksPath that bypasses Tess's git hooks.
+        check = getattr(mod, "hookspath_problem", None)
+        return (check(ROOT) if check else "") or ""
     except Exception as exc:  # AnchorError, or a launcher that cannot even load
         return str(exc) or type(exc).__name__
-    return ""
 
 
 def hooks_status(argv: list) -> int:
@@ -138,7 +140,7 @@ def hooks_status(argv: list) -> int:
             else ".claude/hooks/run-pinned.py is missing, so no Tess hook can run") or anchor_problem()
     if why:
         print("Tess's safety checks are OFF in this %s session \u2014 %s" % (RUNTIME_LABEL[runtime], why)
-              + ("" if "tessctl restore" in why else
+              + ("" if "tessctl restore" in why or "core.hooksPath" in why else
                  ". Run `./tessctl restore` in your own terminal, then start a new session."))
         return 1
     if not sid:
