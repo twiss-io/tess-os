@@ -21,7 +21,7 @@ export function tessctl(targetDir, argsArr, { capture = true } = {}) {
   }
   const env = { ...process.env, TESS_ROOT: targetDir };
   try {
-    const out = execFileSync('python3', [py, ...argsArr], {
+    const out = execFileSync('python3', ['-I', '-B', py, ...argsArr], {
       cwd: targetDir,
       env,
       encoding: 'utf8',
@@ -215,14 +215,14 @@ export function activateGate(
     result.gitInit = 'already';
   } else {
     try {
-      onStep('Initialising git repository', 'start');
+      onStep('Starting the history of your folder (git)', 'start');
       execFileSync('git', ['init', '--quiet', '-b', 'main'], {
         cwd: targetDir,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       result.gitInit = 'done';
-      onStep('Initialising git repository', 'done');
+      onStep('Starting the history of your folder (git)', 'done');
     } catch (err) {
       result.gitInit = 'failed';
       result.error = gitErrorMessage(err);
@@ -243,11 +243,11 @@ export function activateGate(
     return result;
   }
   try {
-    onStep('Installing gate hooks (tessctl gate install-hooks)', 'start');
+    onStep('Turning on the safety checks that run on every save', 'start');
     result.hooksOut = tessctl(targetDir, ['gate', 'install-hooks']);
     result.hooksInstalled = true;
     result.gitHooksLive = /installed git (pre-commit|pre-push) hook/.test(result.hooksOut);
-    onStep('Installing gate hooks (tessctl gate install-hooks)', 'done');
+    onStep('Turning on the safety checks that run on every save', 'done');
   } catch (err) {
     result.hooksInstalled = false;
     result.error = result.error ? `${result.error}\n${err.message}` : err.message;
@@ -279,4 +279,18 @@ export function check(targetDir, { doctor = true, verify = true } = {}) {
     }
   }
   return result;
+}
+
+// v1.0.0: `tessctl anchor init` records the sha256 of every Tess safety file
+// (hooks, hook config, pins, lock, policy, engine, git hooks) under the OS
+// user's ~/.config/tess, outside the project. From then on a changed or
+// rolled-back safety file stops Tess's gate until `tessctl restore` or
+// `tessctl anchor accept`. Returns true/false; never throws.
+export function recordAnchor(targetDir) {
+  try {
+    tessctl(targetDir, ['anchor', 'init']);
+    return true;
+  } catch {
+    return false;
+  }
 }

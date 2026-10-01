@@ -73,6 +73,10 @@ def test_trust_line_per_runtime(runtime):
 
 
 def test_covers_defer_skip_convert_and_seed_push():
+    # v1.0 (B4): the skill never hands the operator a --no-verify push; it says
+    # the work is saved locally and points at the safe path (ONBOARDING §8).
     for needle in ("defer --days 7", "skip --quote", "convert-clone --yes",
-                   "git push --no-verify -u origin main", "never run\n`--no-verify` yourself"):
+                   "saved in git on this computer", "Never skip or disable the safety checks",
+                   "docs/brain/ONBOARDING.md, section 8"):
         assert needle in TEXT, needle
+    assert "--no-verify" not in TEXT

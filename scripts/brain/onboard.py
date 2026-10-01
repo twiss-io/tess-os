@@ -48,7 +48,8 @@ def cmd_status(root: Path, a) -> int:
         st["detected_timezone"] = state.detect_timezone()
         st["missing"] = [f for f in answers.required_fields(st["step"] or 1, brain)
                          if f not in answers.answered(brain)]
-    _emit(st, a.json, "onboarding: %s" % state.status_line(st))
+    ready = " (ready: run apply)" if st.get("ready_to_apply") and not st.get("last_apply_error") else ""
+    _emit(st, a.json, "onboarding: %s%s" % (state.status_line(st), ready))
     return 0
 
 
@@ -119,6 +120,10 @@ def cmd_init(root: Path, a) -> int:
 
 def cmd_apply(root: Path, a) -> int:
     result = apply.run(root, dry=a.dry_run)
+    if not a.dry_run:  # the create-tess wizard runs this outside any sandbox: make the provenance key now
+        from brainlib import provenance
+        from brainlib.config import Config
+        provenance.prepare(Config(root))
     if a.json:
         _emit(result, True, "")
     else:
@@ -144,7 +149,7 @@ def cmd_add(root: Path, a) -> int:
     records.probe_refresh(plan, brain)
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
-    print("%s %s -> %s (not committed yet: save with the brain-save skill or git)" % (a.kind, a.name, dest))
+    print("%s %s -> %s (not committed yet: save it with git, e.g. commit the brain/ folder)" % (a.kind, a.name, dest))
     warn = entities.start_here_budget_warning(root, brain)
     if warn:
         print(warn, file=sys.stderr)
@@ -172,6 +177,7 @@ def cmd_add_mode(root: Path, a) -> int:
     records.probe_refresh(plan, brain)
     if not a.dry_run:
         state.save_brain(root, brain)
+        records.seal_created(root, [p for p in plan.created() if p.startswith("brain/decisions/")])
     for action, path in plan.actions:
         print("%s: %s" % (action, path))
     print("mode %s added (decision %s); nothing was moved or renamed" % (mode, rid))

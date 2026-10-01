@@ -54,7 +54,7 @@ def test_keychain_store_passes_key_on_stdin_not_argv(engine, monkeypatch):
 
     assert engine._vault_store_identity_keychain(priv) is True
 
-    add_argv, add_kw = calls[0]
+    add_argv, add_kw = next(c for c in calls if "add-generic-password" in c[0])
     assert "add-generic-password" in add_argv
     # The key must NOT appear in ANY argv element.
     assert all(priv not in str(part) for part in add_argv), \
@@ -99,7 +99,7 @@ def _git(root, *args, check=True, input_text=None):
 
 
 def _init_repo(root):
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")
@@ -116,14 +116,15 @@ def test_generated_hooks_scan_with_git_show(engine, tmp_path):
     pre_push = (tmp_path / ".git" / "hooks" / "pre-push").read_text()
 
     for body in (pre_commit, pre_push):
-        assert "git show" in body
+        assert "git cat-file blob" in body  # round 2 (L-d): no textconv, fail closed
         # the old working-tree existence gate must be gone
         assert '[ -f "$file" ]' not in body
         # secret patterns are still present
         assert "AGE-SECRET-KEY-" in body
     # pre-commit reads the staged index blob, pre-push the pushed sha blob
-    assert 'git show "$blob"' in pre_commit
-    assert "${local_sha}:${_f}" in pre_push
+    assert 'git cat-file blob "$blob"' in pre_commit
+    # v1.0 audit: pre-push reads each PUSHED COMMIT's own blob, not only the tip
+    assert "${c}:${_f}" in pre_push
 
 
 @pytest.mark.skipif(not HAS_GIT, reason="git required")

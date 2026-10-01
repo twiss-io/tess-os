@@ -2,6 +2,15 @@
 """Tess launcher: open this instance in a runtime CLI.
 
   scripts/tess claude|codex|gemini [--print-cmd] [-- extra args for the CLI]
+  scripts/tess hooks-status [--runtime claude|codex]
+
+hooks-status (read-only) prints one plain line saying whether Tess's hooks,
+and so its safety checks, ran in the CURRENT session: the SessionStart and
+UserPromptSubmit hooks write .tess/state/hooks-alive.json (runtime + session
+id + time; see scripts/brain/brainlib/hooksalive.py), and the session id comes
+from CODEX_THREAD_ID (Codex) or CLAUDE_CODE_SESSION_ID (Claude Code). Exit 0
+on, 1 off, 3 when the runtime or session cannot be told (it then prints why).
+The BOOT block in AGENTS.md / CLAUDE.md runs it at the first reply.
 
 While onboarding is pending (or in progress, or a deferral has come due) it
 passes the start prompt, so the first thing the runtime does is the next
@@ -37,7 +46,7 @@ def onboarding_status() -> str:
     if not tool.exists():
         return "unknown"
     try:
-        done = subprocess.run([sys.executable, str(tool), "status", "--json"], cwd=str(ROOT),
+        done = subprocess.run([sys.executable, "-I", "-B", str(tool), "status", "--json"], cwd=str(ROOT),
                               capture_output=True, text=True, timeout=20)
         status = json.loads(done.stdout).get("status", "unknown")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -49,6 +58,107 @@ def onboarding_status() -> str:
     return status
 
 
+HOOKS_ALIVE = ROOT / ".tess" / "state" / "hooks-alive.json"
+RUNTIME_LABEL = {"codex": "Codex", "claude": "Claude Code"}
+HOOKS_OFF = {
+    "codex": "Tess's safety checks are OFF in this Codex session \u2014 type /hooks and approve "
+             "Tess's hooks, then start a new session.",
+    "claude": "Tess's safety checks are OFF in this Claude Code session \u2014 type /hooks, check "
+              "that Tess's hooks are listed and turned on, then start a new session.",
+}
+
+
+def current_session(forced: str = "") -> tuple:
+    """(runtime, session id) of the session running this command. Codex first: a Codex
+    started from inside Claude Code inherits CLAUDE_CODE_SESSION_ID."""
+    codex = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID") or ""
+    claude = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if forced:
+        return forced, codex if forced == "codex" else claude if forced == "claude" else ""
+    if codex:
+        return "codex", codex
+    if claude:
+        return "claude", claude
+    return "", ""
+
+
+# v1.0.0: the runtime config that loads Tess's hooks, and the gate hook it must
+# carry. Without it the runtime runs no Tess hook at all (so no heartbeat is
+# written either), and the heartbeat alone is only a detection aid an agent
+# could write, so these are checked first.
+HOOK_CONFIG = {
+    "claude": (".claude/settings.json", "tess-gate.py --runtime claude"),
+    "codex": (".codex/config.toml", "tess-gate.py --runtime codex"),
+}
+
+
+def config_problem(runtime: str) -> str:
+    rel, needle = HOOK_CONFIG[runtime]
+    try:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "%s is missing, so %s loads none of Tess's hooks" % (rel, RUNTIME_LABEL[runtime])
+    if needle not in text:
+        return "%s no longer runs Tess's safety gate" % rel
+    return ""
+
+
+def anchor_problem() -> str:
+    """The plain stop line when Tess's safety files differ from the approved
+    record kept outside the project (checked by .claude/hooks/run-pinned.py)."""
+    launcher = ROOT / ".claude" / "hooks" / "run-pinned.py"
+    if not launcher.is_file():
+        return ""
+    try:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("tess_run_pinned", str(launcher))
+        spec = importlib.util.spec_from_loader("tess_run_pinned", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        mod.anchor_check(ROOT)
+        # v1.0 final review (Cyra H1): a core.hooksPath that bypasses Tess's git hooks.
+        check = getattr(mod, "hookspath_problem", None)
+        return (check(ROOT) if check else "") or ""
+    except Exception as exc:  # AnchorError, or a launcher that cannot even load
+        return str(exc) or type(exc).__name__
+
+
+def hooks_status(argv: list) -> int:
+    forced = argv[argv.index("--runtime") + 1] if "--runtime" in argv[:-1] else ""
+    runtime, sid = current_session(forced)
+    if runtime not in HOOKS_OFF:
+        print("Tess can't tell which app this session runs in, so it can't check its safety "
+              "checks here.")
+        return 3
+    # Only in a Tess instance (it has .tess/tess.lock): a bare copy of this
+    # script has no hook configuration to check.
+    why = ""
+    if (ROOT / ".tess" / "tess.lock").is_file():
+        why = config_problem(runtime) or (
+            "" if (ROOT / ".claude" / "hooks" / "run-pinned.py").is_file()
+            else ".claude/hooks/run-pinned.py is missing, so no Tess hook can run") or anchor_problem()
+    if why:
+        print("Tess's safety checks are OFF in this %s session \u2014 %s" % (RUNTIME_LABEL[runtime], why)
+              + ("" if "tessctl restore" in why or "core.hooksPath" in why else
+                 ". Run `./tessctl restore` in your own terminal, then start a new session."))
+        return 1
+    if not sid:
+        print("Tess can't read this %s session's id, so it can't check its safety checks here."
+              % RUNTIME_LABEL[runtime])
+        return 3
+    try:
+        doc = json.loads(HOOKS_ALIVE.read_text(encoding="utf-8"))
+        rows = doc.get(runtime) if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        rows = None
+    if any(isinstance(r, dict) and r.get("session_id") == sid for r in rows or []):
+        print("Tess's safety checks are on in this %s session." % RUNTIME_LABEL[runtime])
+        return 0
+    print(HOOKS_OFF[runtime])
+    return 1
+
+
 def command(runtime: str, status: str, extra: list) -> list:
     if status in PENDING:
         return [runtime] + extra + START[runtime][1:]
@@ -57,6 +167,8 @@ def command(runtime: str, status: str, extra: list) -> list:
 
 def main(argv: list) -> int:
     args = list(argv)
+    if args[:1] == ["hooks-status"]:
+        return hooks_status(args[1:])
     extra = args[args.index("--") + 1:] if "--" in args else []
     args = args[: args.index("--")] if "--" in args else args
     print_only = "--print-cmd" in args

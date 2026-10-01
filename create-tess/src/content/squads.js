@@ -35,23 +35,28 @@ export function displayOrch(key) {
 }
 
 // Per-vibe framing for the STARTER_PATH select. v0.2: every path installs the
-// same ten roles; the path only changes the suggested default lenses
+// same crew of 9 specialists plus your assistant; the path only changes the suggested default lenses
 // (roster-paths.json `default_lenses`), surfaced honestly in PATH_NOTES.
 export const PATH_FRAMING = {
+  plain: {
+    founders: { label: 'Running a business', hint: 'strategy, money and customers first' },
+    builders: { label: 'Building a product or software', hint: 'product and engineering first' },
+    operators: { label: 'Day-to-day operations', hint: 'operations and customer care first' },
+  },
   rpg: {
-    founders: { label: "FOUNDER'S PATH", hint: 'Same ten roles · strategy and commercial lenses first' },
-    builders: { label: "BUILDER'S PATH", hint: 'Same ten roles · product and engineering lenses first' },
-    operators: { label: "OPERATOR'S PATH", hint: 'Same ten roles · operations and CX lenses first' },
+    founders: { label: "FOUNDER'S PATH", hint: 'Same crew of 9 plus your assistant · strategy and commercial lenses first' },
+    builders: { label: "BUILDER'S PATH", hint: 'Same crew of 9 plus your assistant · product and engineering lenses first' },
+    operators: { label: "OPERATOR'S PATH", hint: 'Same crew of 9 plus your assistant · operations and CX lenses first' },
   },
   command: {
-    founders: { label: 'ALPHA   — Founder\'s Office', hint: 'Ten roles · strategy lenses' },
-    builders: { label: 'BRAVO   — Builder\'s Core', hint: 'Ten roles · engineering lenses' },
-    operators: { label: 'CHARLIE — Operator\'s Base', hint: 'Ten roles · operations lenses' },
+    founders: { label: 'ALPHA   — Founder\'s Office', hint: 'Crew of 9 + assistant · strategy lenses' },
+    builders: { label: 'BRAVO   — Builder\'s Core', hint: 'Crew of 9 + assistant · engineering lenses' },
+    operators: { label: 'CHARLIE — Operator\'s Base', hint: 'Crew of 9 + assistant · operations lenses' },
   },
   studio: {
-    founders: { label: "The Founder's Studio", hint: 'Ten roles; strategy, revenue and founder lenses suggested.' },
-    builders: { label: "The Builder's Studio", hint: 'Ten roles; product, engineering and QA lenses suggested.' },
-    operators: { label: "The Operator's Studio", hint: 'Ten roles; operations, client and reliability lenses suggested.' },
+    founders: { label: "The Founder's Studio", hint: 'Crew of 9 + assistant; strategy, revenue and founder lenses suggested.' },
+    builders: { label: "The Builder's Studio", hint: 'Crew of 9 + assistant; product, engineering and QA lenses suggested.' },
+    operators: { label: "The Operator's Studio", hint: 'Crew of 9 + assistant; operations, client and reliability lenses suggested.' },
   },
 };
 
@@ -59,15 +64,15 @@ export const PATH_FRAMING = {
 // Expectation-setting note shown at the reveal for each path.
 export const PATH_NOTES = {
   founders: [
-    'Every path installs the same ten roles. This one suggests strategy and commercial lenses first',
+    'Every path installs the same crew of 9 specialists plus your assistant. This one suggests strategy and commercial lenses first',
     '(Founder\'s Office, Revenue, Athena, Apolline, Naomi, Sienna, Zélie) — loaded into a role\'s brief on demand.',
   ],
   builders: [
-    'Every path installs the same ten roles. This one suggests product and engineering lenses first',
+    'Every path installs the same crew of 9 specialists plus your assistant. This one suggests product and engineering lenses first',
     '(Product and Delivery, Elena, Freya, Petra, Selene, Joséphine) — loaded into a role\'s brief on demand.',
   ],
   operators: [
-    'Every path installs the same ten roles. This one suggests operations and client lenses first',
+    'Every path installs the same crew of 9 specialists plus your assistant. This one suggests operations and client lenses first',
     '(Operational Reliability, Client Experience, Adrienne, Evangeline, Joséphine, Corinne).',
   ],
 };

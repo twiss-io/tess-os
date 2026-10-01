@@ -15,12 +15,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import answers, chart, entities, gitignore, records, scaffold, state
+from . import answers, chart, entities, gitignore, records, scaffold, seed, state
 from .slug import name_key, one_line, slugify
 
-SEED_PUSH = ("First push of a new instance: a one-time step you run yourself after reading `git log`; "
-             "the exact command is in docs/brain/ONBOARDING.md, section 8 (The one-time seed push). "
-             "Tess never runs it.")
+SEED_PUSH = ("Saved in git on this computer. Pushing this folder to a remote needs the project's "
+             "own reviewer keys first (docs/brain/ONBOARDING.md, section 8); to keep a copy "
+             "elsewhere, back up the folder. Never skip the safety checks to push.")
 
 
 def value(brain: Dict[str, Any], field: str, default: Any = None) -> Any:
@@ -143,13 +143,42 @@ def commit_brain(root: Path, message: str, extra_paths: List[str]) -> Optional[s
         print("apply: not a git repository; skipped the commit (run `git init`, then apply again)")
         return None
     if git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
-        git(root, "add", "-A")
-        return _commit(root, ["commit", "-q", "-m", "tess: seed instance + second brain (onboarding)"])
+        return commit_seed(root)
     paths = [p for p in ["brain", "memory/projects"] + extra_paths if (root / p).exists()]
     git(root, "add", "--", *paths)
     if git(root, "diff", "--cached", "--quiet", "--", *paths).returncode == 0:
         return None
     return _commit(root, ["commit", "-q", "-m", message, "--"] + paths)
+
+
+def commit_seed(root: Path) -> Optional[str]:
+    """First commit of a new instance, path-scoped (never `git add -A`).
+
+    Commits the scaffold plus everything onboarding wrote, and leaves out the
+    paths the publish-clean pre-commit gate treats as private (operator/**,
+    .env*, client data, ...), so a missing .gitignore can no longer deadlock
+    the first commit. See oobe/seed.py.
+    """
+    try:
+        paths, held = seed.seed_paths(root)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise state.BrainError("could not list the files for the first commit: %s" % exc, 4)
+    if held:
+        print("apply: left %d private file(s) out of the first commit (e.g. %s)" % (len(held), held[0]))
+    if not paths:
+        return None
+    spec = "\0".join(paths) + "\0"
+    env = dict(os.environ, GIT_LITERAL_PATHSPECS="1")
+    for args in (["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                 ["commit", "-q", "-m", "tess: seed instance + second brain (onboarding)",
+                  "--pathspec-from-file=-", "--pathspec-file-nul"]):
+        done = subprocess.run(["git", "-C", str(root)] + args, input=spec, capture_output=True,
+                              text=True, env=env)
+        if done.returncode != 0:
+            detail = (done.stderr or done.stdout).strip().splitlines()[-12:]
+            raise state.BrainError("git %s failed (the brain files are written; fix and re-run apply):\n  "
+                                   % args[0] + "\n  ".join(detail), 4)
+    return git(root, "rev-parse", "--short", "HEAD").stdout.strip()
 
 
 def _commit(root: Path, args: List[str]) -> str:
@@ -190,7 +219,7 @@ def run_learn(root: Path) -> None:
         return
     for args in (["index", "--quiet"], ["githooks", "install"]):
         try:
-            done = subprocess.run([sys.executable, str(tool)] + args, cwd=str(root),
+            done = subprocess.run([sys.executable, "-I", "-B", str(tool)] + args, cwd=str(root),
                                   capture_output=True, text=True, timeout=120)
             if done.returncode != 0:
                 state.log_error(root, "tessbrain.py %s exited %d" % (" ".join(args), done.returncode),
@@ -225,17 +254,37 @@ def run(root: Path, dry: bool = False, final_status: str = "complete") -> Dict[s
     if not done_before:
         onb.update({"status": final_status, "step": state.TOTAL_STEPS,
                     "completed_at": state.now_iso(brain.get("timezone"))})
+        onb.pop("last_apply_error", None)
     result = {"status": onb["status"], "dry_run": dry, "decision": rid, "commit": None,
               "created": plan.created(),
               "skipped": sum(1 for a, _ in plan.actions if a == "skipped (exists)")}
     if dry:
         return result
     state.save_brain(root, brain)
-    run_learn(root)
-    sync_identity(root, brain, seed=git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0)
-    msg = "brain: onboarding apply (%s)" % ", ".join(brain["modes"] + brain["presets"])
-    result["commit"] = commit_brain(root, msg, [".gitignore"] if gi_changed else [])
+    records.seal_created(root, [p for p in plan.created() if p.startswith("brain/decisions/")])
+    try:
+        run_learn(root)
+        sync_identity(root, brain, seed=git(root, "rev-parse", "--verify", "-q", "HEAD").returncode != 0)
+        msg = "brain: onboarding apply (%s)" % ", ".join(brain["modes"] + brain["presets"])
+        result["commit"] = commit_brain(root, msg, [".gitignore"] if gi_changed else [])
+    except Exception as exc:
+        if not done_before:
+            _mark_apply_failed(root, brain, exc)
+        raise
     return result
+
+
+def _mark_apply_failed(root: Path, brain: Dict[str, Any], exc: Exception) -> None:
+    """v1.0 (B4): a failed apply never leaves onboarding marked complete.
+
+    The files apply created stay (apply is create-only, so running it again is
+    safe); onboarding goes back to in_progress on the last step, with the
+    first line of the error, so `status` shows what is left and the one fix.
+    """
+    first = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+    brain["onboarding"].update({"status": "in_progress", "step": state.TOTAL_STEPS,
+                                "completed_at": None, "last_apply_error": first[:300]})
+    state.save_brain(root, brain)
 
 
 def print_summary(result: Dict[str, Any], brain: Optional[Dict[str, Any]]) -> None:

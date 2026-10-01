@@ -26,7 +26,7 @@ def _fixture_repository(tmp_path: Path) -> Path:
         validator.SCHEMA_PATH,
         validator.POLICY_PATH,
         Path("adapters/manifests/claude-code.adapter-manifest.json"),
-        Path("README.md"),
+        Path("docs/TECHNICAL_OVERVIEW.md"),
         Path("docs/STATUS.md"),
         validator.ADR_PATH,
     ):
@@ -257,7 +257,7 @@ def test_cloud_credentials_provider_and_cost_defaults_fail_closed(tmp_path):
 
 def test_public_docs_cannot_promote_planned_runtime_or_products(tmp_path):
     root = _fixture_repository(tmp_path)
-    readme = root / "README.md"
+    readme = root / "docs/TECHNICAL_OVERVIEW.md"
     readme.write_text(
         readme.read_text(encoding="utf-8")
         + "\n| Tess Cloud | **Available** | Contradictory added claim. |\n",
@@ -270,7 +270,7 @@ def test_public_docs_cannot_promote_planned_runtime_or_products(tmp_path):
         encoding="utf-8",
     )
     findings = validator.validate_repository(root)
-    assert any("README.md:" in finding and "planned-only" in finding for finding in findings)
+    assert any("docs/TECHNICAL_OVERVIEW.md:" in finding and "planned-only" in finding for finding in findings)
     assert any("docs/STATUS.md:" in finding and "planned-only" in finding for finding in findings)
 
 

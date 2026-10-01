@@ -5,7 +5,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUICKSTART_PATH = REPO_ROOT / "docs" / "GATE_QUICKSTART.md"
-README_PATH = REPO_ROOT / "README.md"
+# v1.0 (B4): the gate/custody detail moved from README.md to the technical overview.
+README_PATH = REPO_ROOT / "docs" / "TECHNICAL_OVERVIEW.md"
 SIGNING_GUIDE_PATH = REPO_ROOT / "conductor" / "verdict-signing.md"
 SIGNING_GUIDE_MIRROR_PATH = REPO_ROOT / ".tess" / "core" / "conductor" / "verdict-signing.md"
 LOCK_PATH = REPO_ROOT / ".tess" / "tess.lock"
@@ -116,23 +117,17 @@ def test_verdict_signing_guide_lock_entry_matches_mirror():
 
 
 def test_wizard_source_has_custody_only_first_push_notice():
-    # printFirstPushNotice lives in output.js (split out of index.js in v0.2.0).
+    # v1.0 (B4): the wizard ends with ONE plain line that a successful setup is
+    # not production protection and points at SECURITY.md; the fail-closed and
+    # key-custody detail lives in the docs it points to, not on the final screen.
     source = WIZARD_SOURCE_PATH.read_text(encoding="utf-8") + WIZARD_OUTPUT_PATH.read_text(
         encoding="utf-8"
     )
-    notice = source.split("function printFirstPushNotice()", 1)[1].split(
-        "function printGateStatus", 1
-    )[0]
-
-    for required_text in (
-        "Local scaffold ready; protected production work remains blocked.",
-        "first governed push can fail closed",
-        "Do not bypass or disable the hook",
-        "escalate to your project's",
-        "key-custody owner",
-        "Local scaffold complete; production protection requires external custody",
-    ):
-        assert required_text in source
+    notice = source.split("export const PRODUCTION_NOTE", 1)[1].split(";", 1)[0]
+    assert "needs extra setup first: see SECURITY.md in the folder." in notice
+    assert "productionNote: PRODUCTION_NOTE" in source
+    custody = QUICKSTART_PATH.read_text(encoding="utf-8")
+    assert "custody" in custody and "no covering APPROVE verdict" in custody
 
     for forbidden_text in (
         "git push --no-verify",

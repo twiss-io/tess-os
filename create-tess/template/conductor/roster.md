@@ -18,7 +18,7 @@ Every dispatched role carries the line: *"You are a dispatched specialist: execu
 | 4 | Researcher | Leah | Read-only plus web. Cites every source. | strong (opus) | `.claude/agents/leah.md` |
 | 5 | Code reviewer | Reid | Read-only. Mandatory verifier for code diffs. | strong (opus) | `.claude/agents/reid.md` |
 | 6 | QA | Quinn | Runs tests and probes. No source edits, no push or merge. Mandatory verifier for release readiness. | strong (opus) | `.claude/agents/quinn.md` |
-| 7 | Security + approval signer | Cyra | Read-only review of the code; its only write is the verdict file it signs with `tessctl verdict sign` (so its Codex sandbox is workspace-write). Mandatory verifier for security and protected paths. | strong (opus) | `.claude/agents/cyra.md` |
+| 7 | Security + approval signer | Cyra | Read-only review of the code; its only write is the verdict file it drafts (so its Codex sandbox is workspace-write). The operator signs that verdict at their own terminal with `tessctl verdict sign`. Mandatory verifier for security and protected paths. | strong (opus) | `.claude/agents/cyra.md` |
 | 8 | Scribe | Clio | Writes only to the brain paths (notes, decisions, KB wiki/conversations). Anti-fabrication: every claim links to its source. | default (sonnet) | `.claude/agents/clio.md` |
 | 9 | Release / devops | Vega | Push, tag, publish, deploy: only behind the gate (`tessctl gate`, required verdicts present). | default (sonnet) | `.claude/agents/vega.md` |
 | 10 | Designer | Iris | Frontend and design, with the design skills attached. | default (sonnet) | `.claude/agents/iris.md` |

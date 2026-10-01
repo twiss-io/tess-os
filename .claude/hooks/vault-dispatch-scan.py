@@ -12,8 +12,12 @@ control. It cannot catch every secret (encoding, context, side-channels) and
 MUST NOT be marketed as "blocks secrets."
 
 Exit code 2 = block and tell Claude why.
-Exit code 0 = allow (including on errors — fail-open per design; the wall is
-doctrine, not this hook).
+Exit code 0 = allow (no secret-shaped value found, or not a dispatch tool).
+
+FAIL CLOSED (v0.2.1, 2026-09-29 security review): if the hook cannot read the
+tool-call JSON or errors while scanning, the dispatch is BLOCKED with a plain
+message, never let through unscanned. Before v0.2.1 an error let the call
+through, so a malformed payload silently skipped the scan.
 
 Patterns matched:
   - PEM private keys
@@ -79,12 +83,25 @@ def _scan_text(text: str) -> list[str]:
     return hits
 
 
+def _block_on_error(detail: str) -> None:
+    message = (
+        "VAULT DISPATCH SCAN — BLOCKED: the secret scan could not run "
+        f"({detail}), so this dispatch was stopped rather than sent unscanned. "
+        "Retry the dispatch; if it keeps failing, check that python3 works and "
+        "that .claude/hooks/vault-dispatch-scan.py matches the release "
+        "(`./tessctl doctor`)."
+    )
+    print(message, file=sys.stderr)
+    sys.exit(2)
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
-    except Exception:
-        # Malformed input — fail open (do not block dispatch)
-        sys.exit(0)
+    except Exception as exc:
+        _block_on_error(f"the tool-call JSON was unreadable: {type(exc).__name__}")
+    if not isinstance(data, dict):
+        _block_on_error("the tool-call JSON was not an object")
 
     tool_name = data.get("tool_name", "")
     if tool_name not in ("Task", "Agent"):
@@ -128,4 +145,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # fail closed: never let a dispatch through unscanned
+        _block_on_error(f"the scan errored: {type(exc).__name__}")
