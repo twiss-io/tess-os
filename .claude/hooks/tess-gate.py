@@ -1169,6 +1169,7 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
     shorts, longs, operands = _WRAP[prog]
     cdflag = {"env": "C", "sudo": "D"}.get(prog, "")
     chdir = split = None
+    split_word = None
     while i < len(argv):
         a = str(argv[i])
         if a == "--":
@@ -1184,7 +1185,7 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
             if name == "--chdir":
                 chdir = word
             if name == "--split-string":
-                split = val
+                split, split_word = val, word
             i += 1
             continue
         if a in longs:  # single-dash long options (`arch -arch x86_64`)
@@ -1200,7 +1201,7 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
                     if ch == cdflag:
                         chdir = word
                     if ch == "S":
-                        split = val
+                        split, split_word = val, word
                     break
             i += 1
             continue
@@ -1208,6 +1209,8 @@ def _skip_options(argv: list, i: int, prog: str) -> tuple:
             i += 1
             continue
         break
+    if split_word is not None and _dynamic(split_word):
+        split = (str(split_word),)  # round 3: a run-time string, checked as a command
     return i + operands, chdir, split
 
 
@@ -1246,6 +1249,12 @@ def _resolve(argv: list) -> "_Cmd":
             j, chdir, split = _skip_options(argv, i + 1, low)
             res.chdir = chdir if chdir is not None else res.chdir
             res.via_xargs = res.via_xargs or low == "xargs"
+            if isinstance(split, tuple):
+                # v1.0 round 3: `env -S "$X" ...`: the value (split as the shell
+                # splits an unquoted word) and the words after it run as a command
+                res.inner.append(" ".join([split[0]] + [str(a) if _dynamic(a) else shlex.quote(str(a))
+                                                        for a in argv[j:] if not _is_op(a)]))
+                return res
             if split is not None:
                 argv = argv[:j] + [_plain(w) for w in split.split()] + argv[j:]
             i = _next_program(argv, j)
@@ -5164,6 +5173,13 @@ def _braced(word) -> bool:
         return True
 
 
+def _globbed(word) -> bool:
+    """An unquoted glob in `word` (`/usr/bin/g[i]t`): the shell replaces it
+    with the matching names before it runs anything."""
+    return isinstance(word, _Word) and not isinstance(word, _Field) and any(
+        k == "raw" and re.search(r"[*?]|\[[^]]+\]", t) for k, t in word.parts)
+
+
 def _expands(word) -> bool:
     """A word the shell changes before the program sees it (beyond ~ and globs,
     which every rule already reads)."""
@@ -5239,7 +5255,7 @@ def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
     unk = [i for i in range(1, len(argv)) if i not in slots and _unknown_word(argv[i], ctx)]
     if not unk or name in ("git", "find", "sed", "gsed") or name in _AWK or not _gated(name):
         return
-    if name in ("tessctl", "tessctl.py"):
+    if name in ("tessctl", "tessctl.py") or _tessctl_call([str(a) for a in argv]) is not None:
         v.add(ASK, f"it gives tessctl an argument that is only known when the command runs "
                    f"({argv[unk[0]]}), so Tess cannot check which step it runs (an approval, a "
                    "vault read or a change to Tess's safety files)")
@@ -5354,6 +5370,8 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
                 i += 1
                 break
             if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file", "-C", "--init-command"):
+                if a in ("--rcfile", "--init-file", "-C", "--init-command") and unk(i + 1):
+                    return out("unknown", i + 1)
                 i += 2
                 continue
             if a in ("--help", "--version"):
@@ -5442,6 +5460,8 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
                 if "=" in a:
                     return out("code", i, inter)
                 return out("unknown", i + 1) if unk(i + 1) else out("code" if i + 1 < n else "none", i + 1, inter)
+            if a in ("-r", "--require", "--import", "--loader", "--experimental-loader") and unk(i + 1):
+                return out("unknown", i + 1)  # a module loaded before the program
             if a in ("-i", "--interactive"):
                 inter = True
             elif base in ("--test", "--run"):
@@ -5502,6 +5522,8 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
                         return out("info", i)
                     if ch in rest_v:
                         if k + 1 >= len(a) and ch in sep:
+                            if unk(i + 1) and ch in "rIM":
+                                return out("unknown", i + 1)  # a library loaded first
                             nxt = i + 2
                         break
                     k += 1
@@ -5533,6 +5555,8 @@ def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
             elif a in ("-S", "--server"):
                 return out("code", i, inter)
             elif a in ("-d", "--define", "-c", "--php-ini", "-t", "--docroot", "-z", "--zend-extension"):
+                if a != "-t" and a != "--docroot" and unk(i + 1):
+                    return out("unknown", i + 1)  # an ini setting can prepend a file of code
                 i += 2
                 continue
             elif a == "--":
@@ -5648,7 +5672,7 @@ def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str
     _check_alias_use(root, cwd, argv, v, raw, depth, ctx, upstream)
     if not ctx.deferred and _plain_name(argv[0]) in ctx.funcs:
         _call_function(root, cwd, str(argv[0]), argv[1:], v, raw, depth, ctx)
-    if _dynamic(argv[0]) or _braced(argv[0]):
+    if _dynamic(argv[0]) or _braced(argv[0]) or _globbed(argv[0]):
         return _check_dynamic_program(root, cwd, argv, v, raw, depth, ctx, upstream)
     name = os.path.basename(str(argv[0])).lower()  # macOS finds `GIT` as git
     if name == "hub" or (name.startswith("git-") and name not in _GIT_TOOLS):
@@ -5793,11 +5817,20 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
     tessctl and find joined the stand-ins)."""
     cands, _ = _word_fields(argv[0], cwd, ctx)
     if cands and depth < _MAX_DEPTH:
+        unsure = False
         for cand in cands:
-            words = [_field(text, pat) for text, pat in cand]  # G='git commit'; $G: two words
+            words = []  # G='git commit'; $G: two words
+            for text, pat in cand:
+                # v1.0 round 3: a glob in the program word (`/usr/bin/g[i]t`) is
+                # replaced by the names it matches; one that matches nothing now
+                # may match a file this command makes, so it is also probed.
+                found = sorted(_glob(cwd, pat)) if pat else []
+                unsure = unsure or (pat is not None and (not found or ctx.mutated))
+                words += [_field(f) for f in found] or [_field(text)]
             if words or len(argv) > 1:
                 _check_segment(root, cwd, words + list(argv[1:]), v, raw, depth + 1, ctx, upstream)
-        return
+        if not unsure:
+            return
     probe = Verdict()
     if depth < _MAX_DEPTH:
         for stand_in in ("git", "gh", "sh", "python3", "cp", "rm", "tessctl", "find"):
