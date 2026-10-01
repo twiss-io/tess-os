@@ -229,23 +229,60 @@ security reviews; they are stated so nobody relies on a check that is not there.
   known at run time is asked about for `git config`, `-c` and the commands
   `--no-verify` belongs to, not for every git command. Two gaps remain: a target whose fixed part is a
   folder outside the project (`/tmp/build-$ID`) is allowed, although a value
-  holding `../` could climb back into it; and a program the gate has no rules for
+  holding `../` could climb back into it (or, unquoted, a space could add
+  another path); and a program the gate has no rules for
   (a formatter, a build tool) can still write the files its own options name.
   When `cd dir; <write>` is used and the `cd` could fail, the write is checked
   in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
   `find -exec` are checked against the files find would match (its `-name`,
   `-path`, `-type`, `!`, `-o` and `( )` are evaluated; a test such as `-mtime` counts
-  as possibly true), up to 20,000 entries; beyond that they ask, and so does a
-  changing `find -L` / `-follow`, which follows links Tess does not walk. The whole check has a 40-second budget (inside
+  as possibly true; `-prune` stops the descent unless `-depth` or `-delete` turns
+  it off), up to 20,000 entries; beyond that they ask, and so do a
+  changing `find -L` / `-follow`, which follows links Tess does not walk, and a
+  changing `find -files0-from`. sed and awk programs are read for the files they
+  write (`w FILE`, `print > "FILE"`, `-i inplace`), and Codex patch headers are
+  read the way Codex reads them (lines split on newlines, trimmed of every
+  Unicode space). The whole check has a 40-second budget (inside
   the 120-second hook timeout, after up to 60 seconds of the launcher's own
   check); a call it cannot finish in time asks, or is refused in Codex.
+- **The gate's fail-safe: what it cannot read, it never allows.** Since v1.0.0
+  (round 3) this rule is stated once and enforced on every program the gate has
+  rules for (git, gh, tessctl, the file writers and editors, find, sed, awk,
+  interpreters, shells, `apply_patch`, `export`, `eval`, `trap`, `source`). The
+  gate first works out the arguments the shell really hands the program: brace
+  expansion makes several arguments at once (`git {-c,core.hooksPath=x,commit}`
+  is `git -c core.hooksPath=x commit`), a variable set in the same command is
+  replaced by each value it can hold, and `$(echo ...)` or `$(printf ...)` is
+  folded only when it is one plain command (`$(echo CLAUDE.md; :)` is not). A
+  word that is still only known when the command runs (a variable set
+  elsewhere, `$(cat file)`, `${X#y}` and other forms Tess does not fold, a
+  `<(...)` feeding the program, an expansion too large to list, a program name
+  built that way) and that could change a protected decision (what is written,
+  a git subcommand or option, which `tessctl` step runs, a vault use, or the code
+  an interpreter or shell runs) makes the call ask in Claude Code and be refused
+  in Codex and the no-prompt modes; it is never allowed. Positions that cannot
+  change those decisions stay allowed: a commit message after `-m`, a branch
+  name after `checkout -b`, a value after `--author=`, a quoted path whose fixed
+  part is a folder outside the project (`/tmp/build-$ID`, the gap named in the
+  item above), a script's own arguments, and a find test when find only prints.
+  A program whose own name is only known at run time is checked as each program
+  the gate stands in for it (git, gh, a shell, python, tessctl, find, a file
+  writer) and asks if any of them would be stopped or if it has no arguments.
+  Which positions decide is set per program family in the gate; a program the
+  gate has no rules for is not covered by it (the item above).
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
   its own sandbox and approval settings apply. Input typed into an already-open
   shell with `write_stdin` never reaches the gate, so in Codex the gate refuses a
   bare shell or interpreter (`bash`, `python3`), which reads its program from what
-  is typed later. For the same reason (Codex can start a command in a
+  is typed later. Since v1.0.0 (round 3) this is judged after the program and its
+  options are resolved (`P=python3; "$P"`, `bash -c python3`, a function body), and
+  covers options that leave a program reading the terminal (`python3 -q`, `python3
+  -i script.py`, `python3 -m pdb`, `node -i`, `bash -s`, `sh -i`, `perl -d`), REPLs
+  and terminal programs (`irb`, `psql`, `sqlite3 db`, an editor or pager), and an
+  option the gate cannot classify, which counts as interactive. A pager that a
+  program opens by itself (`git log` in a terminal) is not seen. For the same reason (Codex can start a command in a
   pseudo-terminal the hook payload does not show and type into it later), the
   gate refuses every `tessctl` step that asks the operator to type an answer
   (`approve`, `update`, `rollback`, `anchor accept`, `verdict sign`...) in Codex
