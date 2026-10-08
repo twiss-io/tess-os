@@ -40,7 +40,7 @@
     "precommit": "tsc --noEmit"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.42.0",
@@ -48,7 +48,8 @@
     "tsx": "^4.22.4",
     "typescript": "^5.4.0",
     "classpresso": "^1.7.2",
-    "vitest": "^4.1.11"
+    "vitest": "4.1.11",
+    "@vitest/coverage-v8": "4.1.11"
   },
   "dependencies": {
     "strictdb": "^0.1.0",
@@ -68,6 +69,7 @@
       "esbuild": ">=0.28.1",
       "postcss": ">=8.5.23",
       "rollup": ">=4.59.0",
+      "source-map-js": ">=1.2.2",
       "vite": ">=6.4.3 <8"
     }
   }

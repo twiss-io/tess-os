@@ -299,9 +299,7 @@ PAGE_EOF
 
 # src/app/globals.css
 cat > "$PROJECT_PATH/src/app/globals.css" << 'CSS_EOF'
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 CSS_EOF
 
 # src/app/api/v1/health/route.ts
@@ -336,7 +334,7 @@ export async function register() {
 }
 INSTRUMENT_EOF
 
-# ── Step 7: Create config files (tsconfig, next, tailwind, postcss) ───────────
+# ── Step 7: Create config files (tsconfig, next, postcss) ────────────────────
 progress "Creating TypeScript + Next.js + Tailwind configs..."
 
 cat > "$PROJECT_PATH/tsconfig.json" << 'TSCONFIG_EOF'
@@ -381,29 +379,11 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 NEXTCONFIG_EOF
 
-cat > "$PROJECT_PATH/tailwind.config.ts" << 'TAILWIND_EOF'
-import type { Config } from 'tailwindcss';
-
-const config: Config = {
-  content: [
-    './src/app/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/components/**/*.{js,ts,jsx,tsx,mdx}',
-  ],
-  theme: {
-    extend: {},
-  },
-  plugins: [],
-};
-
-export default config;
-TAILWIND_EOF
-
 cat > "$PROJECT_PATH/postcss.config.mjs" << 'POSTCSS_EOF'
 /** @type {import('postcss-load-config').Config} */
 const config = {
   plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
+    '@tailwindcss/postcss': {},
   },
 };
 
@@ -517,6 +497,9 @@ cat > "$PROJECT_PATH/package.json" << PKGJSON_EOF
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+  },
   "scripts": {
     "dev": "next dev -p 3000",
     "dev:website": "next dev -p 3000",
@@ -553,12 +536,20 @@ cat > "$PROJECT_PATH/package.json" << PKGJSON_EOF
     "@types/node": "^20.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0",
-    "tailwindcss": "^3.4.0",
+    "@tailwindcss/postcss": "4.3.3",
+    "postcss": "^8.5.28",
+    "tailwindcss": "4.3.3",
     "tsx": "^4.7.0",
     "typescript": "^5.0.0",
-    "vitest": "^2.0.0"
+    "vitest": "4.1.11",
+    "@vitest/coverage-v8": "4.1.11"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.28",
+      "source-map-js": ">=1.2.2",
+      "vite": ">=6.4.3 <8"
+    }
   }
 }
 PKGJSON_EOF
@@ -672,6 +663,10 @@ cat > "$PROJECT_PATH/CLAUDE.md" << 'CLAUDEMD_EOF'
 # CLAUDE.md — Project Instructions
 
 ---
+
+CSS uses Tailwind 4 with automatic source detection and vendor prefixing.
+Browser minimums: Safari 16.4, Chrome 111, Firefox 128. Configure themes in
+`src/app/globals.css`; no legacy `tailwind.config.ts` is generated.
 
 ## Quick Reference — Scripts
 
