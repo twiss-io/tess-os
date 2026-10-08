@@ -12,13 +12,24 @@ claim into the ledger, which consumes the line durably, re-checks every rule in
 confirm.find against the current item, applies the change, and records an
 `applied` row. A deleted claim confirms nothing; a replayed one is dropped
 (events.py) or already applied.
+
+v1.0 allow-list fix (2026-10-08): confirm and reject were pre-approved in Claude
+Code's allow list, so the operator's words were the ONLY barrier. Defence in
+depth: _operator_backed re-resolves the evidence line from its source and
+re-checks its authentication at the point of change, independent of
+confirm.find, so no caller (a direct import, a queued claim, a future change to
+find) applies an operator decision on anything but the operator's
+authenticated words: an attested journal line of a runtime transcript or a
+MAC-checked captured turn of a principal. There is deliberately no other path:
+an operator at their own terminal confirms by saying the words to the
+assistant, never by a flag.
 """
 from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
-from . import confirm, extstate, inbox, index, promote, provenance, records, verify
+from . import confirm, extstate, inbox, index, lookup, promote, provenance, records, verify
 from .config import Config, iso, log_error
 
 Out = Tuple[int, object]
@@ -57,14 +68,33 @@ def _consume(cfg: Config, line, item_id: str, action: str, quote: str, h: str, s
                "note": PENDING % (item_id, item_id, state)}
 
 
+def _operator_backed(cfg: Config, line) -> str:
+    """'' when `line` is the operator's authenticated words, re-read from its source now; else why not."""
+    ref = str(getattr(line, "ref", "") or "")
+    fresh = lookup.resolve(cfg, ref) if ref else None
+    if fresh is None:
+        return "no operator line backs it"
+    if not (fresh.principal and lookup.trusted(cfg, fresh)):
+        return ("%s is not the operator's authenticated words (an attested runtime transcript line or a "
+                "captured turn); only the operator can confirm or reject" % ref)
+    if str(fresh.text or "") != str(getattr(line, "text", "") or ""):
+        return "%s no longer says what was checked" % ref
+    return ""
+
+
 def _find(cfg: Config, item_id: str, quote: str, action: str, h: str, claim: Optional[Dict]):
     if claim is None:
-        return confirm.find(cfg, item_id, quote, action, h)
-    if (claim.get("claim") or {}).get("h") != h:
+        line, why = confirm.find(cfg, item_id, quote, action, h)
+    elif (claim.get("claim") or {}).get("h") != h:
         return None, "%s changed after the confirmation was queued" % item_id
-    line, why = confirm.find(cfg, item_id, quote, action, h, except_eid=str(claim.get("eid") or ""))
-    if line is not None and line.ref != claim.get("ref"):
-        return None, "the queued confirmation names another operator line"
+    else:
+        line, why = confirm.find(cfg, item_id, quote, action, h, except_eid=str(claim.get("eid") or ""))
+        if line is not None and line.ref != claim.get("ref"):
+            return None, "the queued confirmation names another operator line"
+    if line is not None:
+        why = _operator_backed(cfg, line)
+        if why:
+            return None, why
     return line, why
 
 

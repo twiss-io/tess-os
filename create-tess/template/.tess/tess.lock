@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-10-01T07:08:35.853582Z'
+  last_updated: '2026-10-08T09:18:52.193241Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -5661,7 +5661,7 @@ files:
   .tess/core/settings-core.json:
     status: core-managed
     tier: security
-    base_sha: sha256:3b230be7cb5ee69e060f0c6aa6c9c8c0fc33de90a2fa76857f5e380f0501b297
+    base_sha: sha256:f9f35687e898361604b7613e6ddd824525df687e45d2c379550525054070554b
     live_path: .claude/settings.json
     render: rendered
     last_updated: '2026-09-28T17:56:20.991251Z'
@@ -5766,7 +5766,7 @@ files:
   .tess/core/templates/agents-md/codex-tess.rules.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:d9c32f56ae603cb1499402fa48a75b5e978a9f46449df6f086ed4f422100379e
+    base_sha: sha256:858248934e2d187fc75750a98fc3bf01dad0d0af16819fb86834ad320470fee7
     live_path: null
     render: template
     last_updated: '2026-09-29T00:00:00Z'
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:e61d9bcf4c7f324a6fb29ec404b324bc053f0f22a54dbb03b85f32ae51f3d97d
+    base_sha: sha256:73ac676451d25027131e6e870c34f12ec136913d7ea62dae662e8cb4668a3068
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:
@@ -6370,7 +6370,7 @@ render_outputs:
   .claude/settings.json:
     target: claude-code
     status: rendered
-    rendered_sha: sha256:3b230be7cb5ee69e060f0c6aa6c9c8c0fc33de90a2fa76857f5e380f0501b297
+    rendered_sha: sha256:f9f35687e898361604b7613e6ddd824525df687e45d2c379550525054070554b
   conductor/identity.md:
     target: claude-code
     status: rendered
@@ -6746,7 +6746,7 @@ render_outputs:
   .codex/rules/tess.rules:
     target: codex
     status: rendered
-    rendered_sha: sha256:d9c32f56ae603cb1499402fa48a75b5e978a9f46449df6f086ed4f422100379e
+    rendered_sha: sha256:858248934e2d187fc75750a98fc3bf01dad0d0af16819fb86834ad320470fee7
   .agents/skills/security-audit/AI-AND-LLM.md:
     target: codex
     status: rendered

@@ -223,11 +223,12 @@ def test_docs_say_codex_hooks_are_required(rel):
 # ── nice-to-haves ─────────────────────────────────────────────────────────
 
 
-def test_claude_allow_list_confirm_and_reject_are_narrow():
+def test_claude_allow_list_never_pre_approves_confirm_or_reject():
+    # v1.0 allow-list fix (2026-10-08): the e2e round 2 nice-to-have that pre-approved confirm:* and reject:*
+    # is reverted; they are operator decisions, so Claude Code asks (tests/test_v1_allowlist_operator_decisions.py).
     allow = json.loads((REPO / ".tess/core/settings-core.json").read_text())["permissions"]["allow"]
-    assert "Bash(python3 scripts/brain/tessbrain.py confirm:*)" in allow
-    assert "Bash(python3 scripts/brain/tessbrain.py reject:*)" in allow
-    assert "Bash(python3 scripts/brain/tessbrain.py retract:*)" not in allow
+    for verb in ("confirm", "reject", "retract", "promote"):
+        assert not any("tessbrain.py %s" % verb in a for a in allow), verb
     live = json.loads((REPO / ".claude/settings.json").read_text())["permissions"]["allow"]
     assert live == allow
 

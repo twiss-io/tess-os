@@ -25,7 +25,7 @@ LAUNCH = 'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-f
 ONBOARD_START = LAUNCH + "scripts/brain/onboard.py hook session-start --runtime claude"
 LEARN = LAUNCH + "scripts/brain/tessbrain.py hook %s --runtime claude"
 LEARN_ALLOW = ["Bash(python3 scripts/brain/tessbrain.py %s:*)" % c
-               for c in ("recall", "status", "review", "sync", "save", "confirm", "reject", "index", "lint", "decide", "remember",
+               for c in ("recall", "status", "review", "sync", "save", "index", "lint", "decide", "remember",
                          "inbox", "journal note")]
 # v1.0 security review round 2 (H-A): git diff/log/show are no longer
 # pre-approved; they take --output=<file>, which writes any file.
@@ -47,7 +47,10 @@ def test_live_settings_byte_identical_to_core():
 def test_auto_memory_on_and_permissions(settings):
     assert settings["autoMemoryEnabled"] is True
     allow = settings["permissions"]["allow"]
-    assert "Bash(python3 scripts/brain/onboard.py:*)" in allow
+    # v1.0 allow-list fix (2026-10-08): only onboarding's read-only status is pre-approved; answer,
+    # add-mode, skip, apply and restore record the operator's words or change setup, so they ask.
+    assert "Bash(python3 scripts/brain/onboard.py status:*)" in allow
+    assert "Bash(python3 scripts/brain/onboard.py:*)" not in allow
     # v1.0 e2e review (S6, owner decision): `save` is pre-approved so saving does not
     # prompt every time. It is the one path-scoped commit of brain/; the git hooks and
     # the pre-push ship gate still run on it. Every other write verb stays unapproved.

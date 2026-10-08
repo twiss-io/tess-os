@@ -108,6 +108,18 @@ subcommand, or `format-patch -o`. The in-session gate (`tess-gate.py`)
 parses the options and denies all of those; without the allow rules these
 commands also go through the normal permission flow.
 
+The brain's own commands follow the same rule. Read-only ones (`tessbrain.py
+recall`, `status`, `review`, `index`, `lint`, `onboard.py status`) and the
+reviewed scribe and save commands are pre-approved. The operator's decisions
+are not: `tessbrain.py confirm`, `reject`, `retract` and `promote`, and every
+onboarding step that records the operator's answers or changes setup
+(`onboard.py answer`, `add-mode`, `skip`, `apply`, `restore`, ...) ask first,
+in Claude Code (not on the allow list) and in Codex (`prompt` rules in
+`.codex/rules/tess.rules`). Each still checks the operator's own
+authenticated words itself. `tests/test_v1_allowlist_operator_decisions.py`
+holds the reviewed list of no-prompt-safe entries and fails on any allow-list
+entry, in any tracked copy, that is not on it.
+
 ## 3. Dispatch locks live in a per-user directory
 
 `dispatch-guard.sh` stays quiet while a dispatched subagent is working,

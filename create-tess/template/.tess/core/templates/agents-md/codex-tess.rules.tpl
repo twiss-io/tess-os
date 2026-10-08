@@ -169,3 +169,34 @@ prefix_rule(
     match = ["./tessctl vault get --reveal github/token", "tessctl vault get --force github/token"],
     not_match = ["./tessctl vault get github/token", "./tessctl vault list"],
 )
+
+# v1.0 allow-list fix (2026-10-08). The brain's operator decisions (confirm,
+# reject, retract, promote) and roots changes, and every onboarding step that
+# records the operator's answers or changes the brain's setup, ask first, as
+# they do in Claude Code (they are not on its allow list). Each command still
+# checks the operator's own authenticated words itself; this rule makes the
+# runtime ask too. Read-only forms (`review`, `status`, `recall`, `lint`,
+# `onboard.py status`) run without asking.
+prefix_rule(
+    pattern = ["python3", ["scripts/brain/tessbrain.py", "./scripts/brain/tessbrain.py"], ["confirm", "reject", "retract", "promote", "roots", "githooks"]],
+    decision = "prompt",
+    justification = "confirm, reject, retract and promote are the operator's decisions about what the brain believes. Run them only after the operator said so in their own words.",
+    match = ["python3 scripts/brain/tessbrain.py confirm D-0929-pricing --quote x", "python3 scripts/brain/tessbrain.py reject D-1 --quote x"],
+    not_match = ["python3 scripts/brain/tessbrain.py review", "python3 scripts/brain/tessbrain.py status"],
+)
+
+prefix_rule(
+    pattern = ["python3", ["scripts/brain/tessbrain.py", "./scripts/brain/tessbrain.py"], ["--json", "--root"]],
+    decision = "prompt",
+    justification = "Put --json or --root after the subcommand so Tess can see which brain command this is.",
+    match = ["python3 scripts/brain/tessbrain.py --json confirm D-1 --quote x"],
+    not_match = ["python3 scripts/brain/tessbrain.py review --json"],
+)
+
+prefix_rule(
+    pattern = ["python3", ["scripts/brain/onboard.py", "./scripts/brain/onboard.py"], ["answer", "init", "apply", "add", "add-mode", "defer", "skip", "restore", "convert-clone"]],
+    decision = "prompt",
+    justification = "Onboarding records the operator's own answers (who the principals are, where the brain is pushed) and changes the brain's setup. Run each step only with the operator's words.",
+    match = ["python3 scripts/brain/onboard.py answer --step 4 --field principals --value x --quote x", "python3 scripts/brain/onboard.py add-mode agency --quote x"],
+    not_match = ["python3 scripts/brain/onboard.py status --json"],
+)
