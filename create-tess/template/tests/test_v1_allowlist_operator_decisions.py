@@ -269,3 +269,14 @@ def test_the_point_of_change_rechecks_the_operators_words(tmp_path, monkeypatch)
     code, out = claims.apply_status(cfg, SimpleNamespace(id=rid, quote="confirm %s" % rid, action="confirm"))
     assert code == 1 and ("not the operator" in str(out) or "no operator line" in str(out)), out
     assert _meta(rec)["status"] == "proposed" and _meta(rec).get("confirmed") != "true"
+
+
+def test_auto_accept_off_holds_an_agent_run_decide_too(tmp_path):
+    """`decide` is pre-approved as a scribe command. With learn.auto_accept off the operator confirms every
+    decision, but on c4c29b6 an agent-run `decide` (non-strict V12) accepted it with no prompt and no review."""
+    from test_brain_switch_adversarial import NOTED, PG, _accepted, _run
+    inst, _ = _run(tmp_path, NOTED, learn={"auto_accept": "off"})
+    r = fxlib.cli(inst, "--json", "decide", "--quote", PG, "--no-sync", env=MARKERS)
+    assert r.returncode in (0, 3), r.stdout + r.stderr
+    assert "Postgres" not in _accepted(inst), r.stdout
+    assert "auto_accept is off" in r.stdout
