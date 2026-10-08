@@ -44,6 +44,28 @@ are flagged as uncaptured drift).
 
 {{WORKER_SHARED_TASKS}}
 
+## Public Preview Handoffs
+
+Use the shipped `python3 scripts/preview/tesspreview.py` launcher for previews
+(macOS/Linux/Windows WSL; Python 3.9+). It starts only when explicitly requested.
+Explain LAN exposure, select only approved files in an isolated public build
+directory with repeated `--file`, and use a clean `/dev/<project-slug>` route.
+Never serve the workspace, private KB/brain, credentials or internal control
+state. Default binding is `0.0.0.0`; use `--localhost-only` when LAN sharing is
+not wanted. The launcher detects a current LAN IPv4 address and selects a free
+port without stopping any listener. Configure the build's asset base for
+`/dev/<project-slug>/`; use `--spa` only for approved SPA previews.
+
+Run `verify <slug>` before handoff: both available addresses, all selected
+assets, deep links and denied private paths must pass. Return the launcher's
+clickable **This computer** and **Other computers on the same LAN** links, plus
+PID, private log and restart/stop commands. If no LAN address exists, give the
+localhost link and explicit limitation. Host-side checks are not a second-device
+test. Keep the host awake and LAN-connected; HTTP only, no public tunnel,
+router forwarding or firewall weakening. Snapshot bytes stay fixed until
+explicit restart; re-verify after rebuild/restart. Full contract:
+[docs/LAN_PREVIEWS.md](docs/LAN_PREVIEWS.md).
+
 ---
 
 Full orchestration doctrine (Claude Code as {{ASSISTANT_NAME}}) lives in

@@ -323,6 +323,12 @@ test(
       /bundled template — no network required/,
       'the wizard must report it fetched from the bundled template, not git',
     );
+    assert.match(run.stdout, /Public preview launcher installed \(not started\)/);
+    assert.match(run.stdout, /localhost-only disables LAN sharing/);
+    assert.ok(existsSync(join(target, 'scripts', 'preview', 'tesspreview.py')));
+    assert.ok(existsSync(join(target, 'docs', 'LAN_PREVIEWS.md')));
+    assert.ok(!existsSync(join(target, '.tess', 'state', 'previews')),
+      'the real default wizard must never start a preview listener');
 
     // ── 4. `git clone` specifically was NEVER invoked — the actual bug ──
     // (see this file's header comment: a benign, local-only, network-free

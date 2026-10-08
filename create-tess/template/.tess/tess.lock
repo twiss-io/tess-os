@@ -5709,7 +5709,7 @@ files:
   .tess/core/templates/CLAUDE.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:8bffebcaced5d28bea51ad50d127015a25846640f0651c21ae610b076c2a5166
+    base_sha: sha256:1334420cb18f95c6dbc0d2d1fd6327e0124aa33ce86525c7149087d03f9e95b2
     live_path: CLAUDE.md
     render: template
     last_updated: 2026-06-28 00:00:00+00:00
@@ -5758,7 +5758,7 @@ files:
   .tess/core/templates/agents-md/AGENTS.md.tpl:
     status: core-managed
     tier: normal
-    base_sha: sha256:70cece2ca84207f13c24ed382a2ad4a781970bb8f381c9d777e888fa1f2915b5
+    base_sha: sha256:2a5647ecd0137cfba5a79cd536b1d4a7660e3c2145d1a65c07996cace4e2696e
     live_path: null
     render: template
     last_updated: 2026-07-20 00:00:00+00:00

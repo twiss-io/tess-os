@@ -388,6 +388,9 @@ is not supported in 0.2.0. Start from a fresh install.
 
 - [Local development quickstart](https://github.com/twiss-io/tess-os/blob/main/docs/LOCAL_DEV_QUICKSTART.md) — clone, Python
   environment, scoped `create-tess` validation, and safe local checks.
+- [Portable LAN previews](docs/LAN_PREVIEWS.md) — explicit public-file snapshots,
+  clean `/dev/<slug>` links, verification and safe lifecycle commands; installed
+  by default, never auto-started.
 - [Demo recording](docs/demo/README.md) — how the terminal recording above was
   made and how to reproduce it.
 - [Support and status](docs/STATUS.md) — capability labels and current limits.
