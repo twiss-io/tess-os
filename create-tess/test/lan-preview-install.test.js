@@ -8,9 +8,23 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync,
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { promote } from '../src/scaffold.js';
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+test('source and bundled preview instructions have exact generated-output cache hashes', () => {
+  for (const root of [resolve(pkg, '..'), join(pkg, 'template')]) {
+    const records = readFileSync(join(root, '.tess', 'tess.lock'), 'utf8').split('\nrender_outputs:\n')[1];
+    assert.ok(records, 'generated render-output cache must exist');
+    for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+      const record = records.split(`  ${name}:\n`)[1]?.split(/\n  (?=\S)/)[0];
+      const recorded = record?.match(/rendered_sha: sha256:([a-f0-9]{64})/)?.[1];
+      const actual = createHash('sha256').update(readFileSync(join(root, name))).digest('hex');
+      assert.equal(recorded, actual, `${root}: ${name} cache must match shipped bytes; stale metadata breaks forced re-scaffold`);
+    }
+  }
+});
 
 test('packed installer ships inert portable launcher, renders rules, and serves only selections', () => {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'tess-lan-preview-install-')));

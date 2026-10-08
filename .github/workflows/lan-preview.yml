@@ -55,7 +55,7 @@ jobs:
       - name: Install only selected test dependencies
         run: python -m pip install pytest==8.4.2 PyYAML==6.0.3
       - name: Selected preview and render tests (no signing fixtures)
-        run: python -m pytest tests/test_lan_preview.py tests/test_lan_preview_readiness.py tests/test_render.py -q
+        run: python -m pytest tests/test_lan_preview.py tests/test_lan_preview_readiness.py tests/test_render.py -vv -o faulthandler_timeout=30
       - name: Actual packed installer and bundle parity
         run: node --test create-tess/test/lan-preview-install.test.js create-tess/test/template-drift-guard.test.js
 
