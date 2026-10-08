@@ -90,11 +90,9 @@ def test_only_save_is_pre_approved_among_the_write_verbs():
     unapproved, and there is no blanket tessbrain.py rule."""
     allow = SETTINGS["permissions"]["allow"]
     assert "Bash(python3 scripts/brain/tessbrain.py save:*)" in allow
-    # e2e round 2 (owner): confirm and reject are pre-approved too (same narrow form);
-    # both still need the principal's words (tessbrain.py confirm/reject grammar).
-    assert "Bash(python3 scripts/brain/tessbrain.py confirm:*)" in allow
-    assert "Bash(python3 scripts/brain/tessbrain.py reject:*)" in allow
-    for verb in ("promote", "retract", "githooks"):
+    # v1.0 allow-list fix (2026-10-08): e2e round 2 had pre-approved confirm and reject and
+    # flipped this guard to assert it. They are operator decisions: the host asks again.
+    for verb in ("confirm", "reject", "promote", "retract", "githooks", "roots"):
         assert not any("tessbrain.py %s" % verb in a for a in allow), verb
     assert "Bash(python3 scripts/brain/tessbrain.py:*)" not in allow
 
