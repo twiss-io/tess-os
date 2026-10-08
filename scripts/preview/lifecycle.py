@@ -16,6 +16,7 @@ if os.name == "posix":
 
 from content import PreviewError, directory, snapshot
 from server import bind, control_handler, lan_ip, public_handler
+from readiness import absent_asset, other_slug, resolved_assets
 
 
 def private_file(root, name, flags):
@@ -172,21 +173,39 @@ def verify(record):
     prefix = "/dev/" + record["slug"]
     denied = ["/.git/config", "/.env", "/kb/private.html", "/.tess/state",
               "/../index.html", "/%2e%2e/index.html", "/%252e%252e/index.html",
-              "/assets%2fsecret.html", "/assets/", "/unknown.js"]
+              "/assets%2fsecret.html", "/assets/", absent_asset(record["assets"])]
     for host in hosts:
         if fetch(host, record["port"], prefix)[:2] != (308, prefix + "/"):
             raise PreviewError("Preview trailing-slash verification failed.")
         code, _, body = fetch(host, record["port"], prefix + "/")
         if code != 200 or hashlib.sha256(body).hexdigest() != record["assets"]["index.html"]:
             raise PreviewError("Preview entry-point verification failed.")
+        documents = [(prefix + "/", body)]
         for name, digest in record["assets"].items():
             code, _, body = fetch(host, record["port"], prefix + "/" + name)
             if code != 200 or hashlib.sha256(body).hexdigest() != digest:
                 raise PreviewError("A required preview asset failed verification.")
-        code, _, body = fetch(host, record["port"], prefix + "/verify/deep-link")
+        deep_route = prefix + "/preview-readiness/one/two/"
+        code, _, body = fetch(host, record["port"], deep_route)
         expected = 200 if record["config"]["spa"] else 404
         if code != expected or (expected == 200 and hashlib.sha256(body).hexdigest() != record["assets"]["index.html"]):
             raise PreviewError("Preview deep-link verification failed.")
+        if expected == 200:
+            documents.append((deep_route, body))
+        # Also check selected nested HTML using its real document URL.
+        for name in record["assets"]:
+            if name.endswith(".html") and name != "index.html":
+                documents.append((prefix + "/" + name, fetch(host, record["port"], prefix + "/" + name)[2]))
+        for route, html in documents:
+            origin = f"http://{host}:{record['port']}"
+            resolved = resolved_assets(html, origin + route, prefix, record["assets"])
+            if route == deep_route and resolved != resolved_assets(documents[0][1], origin + prefix + "/", prefix, record["assets"]):
+                raise PreviewError("SPA HTML asset URLs depend on the deep route. Export with base " + prefix +
+                                   "/ before relative assets, restart and verify.")
+            for path, digest in resolved:
+                code, _, asset_body = fetch(host, record["port"], path)
+                if code != 200 or hashlib.sha256(asset_body).hexdigest() != digest:
+                    raise PreviewError("A browser-resolved HTML asset failed verification; check export base and --file selection.")
         for suffix in denied:
             # For an SPA an extensionless directory can return the explicit index,
             # never a listing; use the non-SPA asset directory probe otherwise.
@@ -194,7 +213,7 @@ def verify(record):
                 continue
             if fetch(host, record["port"], prefix + suffix)[0] != 404:
                 raise PreviewError("Preview private-path denial verification failed.")
-        for outside in ("/", "/dev/other-project/index.html", "/.tess/state"):
+        for outside in ("/", "/dev/" + other_slug(record["slug"]) + "/index.html", "/.tess/state"):
             if fetch(host, record["port"], outside)[0] != 404:
                 raise PreviewError("Preview project isolation verification failed.")
     return hosts

@@ -1,19 +1,60 @@
 """Public snapshot HTTP service and separate loopback-only lifecycle service."""
 import hmac
+import io
 import ipaddress
 import json
 import os
 import socket
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
 from content import PreviewError, safe_relative
 
+HEADER_SECONDS = 3
+RESPONSE_SECONDS = 5
 
-def lan_ip():
-    """Use current interfaces, never an Internet probe, fixed IP or DNS guess."""
+
+class DeadlineReader(io.RawIOBase):
+    """Recompute remaining wall-clock budget on EVERY recv, not inactivity."""
+    def __init__(self, connection):
+        super().__init__()
+        self.connection = connection
+        self.deadline = time.monotonic() + HEADER_SECONDS
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Request header deadline exceeded")
+        self.connection.settimeout(remaining)
+        return self.connection.recv_into(buffer)
+
+
+def wsl_mode():
+    """Query actual active mode, not a requested .wslconfig setting."""
+    release = os.uname().release.lower() if os.name == "posix" else ""
+    if "microsoft" not in release and not os.environ.get("WSL_DISTRO_NAME"):
+        return None
+    try:
+        value = subprocess.check_output(["/usr/bin/wslinfo", "--networking-mode"],
+                                        timeout=3, text=True).strip().lower()
+        return value if value in {"nat", "mirrored", "none", "wsl1", "bridged", "virtioproxy", "consomme"} else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def network_status():
+    """Use current interfaces; WSL NAT guests are NOT LAN host addresses."""
+    mode = wsl_mode()
+    if mode is not None and mode != "mirrored":
+        return {"address": None, "wsl_mode": mode,
+                "limitation": "WSL networking mode " + mode +
+                ": guest-local HTTP does not establish a LAN route. Only localhost is offered; no portproxy/firewall change was made."}
     try:
         if __import__("sys").platform == "darwin":
             output = subprocess.check_output(["/sbin/ifconfig"], timeout=3, text=True)
@@ -27,10 +68,16 @@ def lan_ip():
         for candidate in candidates:
             addr = ipaddress.IPv4Address(candidate)
             if not (addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_multicast):
-                return str(addr)
+                return {"address": str(addr), "wsl_mode": mode,
+                        "limitation": "WSL mirrored interface candidate only; firewall and second-device reachability remain unverified."
+                        if mode == "mirrored" else None}
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         pass
-    return None
+    return {"address": None, "wsl_mode": mode, "limitation": "No usable LAN IPv4 interface detected; only localhost is offered."}
+
+
+def lan_ip():
+    return network_status()["address"]
 
 
 class Server(ThreadingHTTPServer):
@@ -77,11 +124,18 @@ class QuietHandler(BaseHTTPRequestHandler):
     server_version = "TessPreview"
     sys_version = ""
 
+    def setup(self):
+        super().setup()
+        self.rfile.close()
+        self.rfile = io.BufferedReader(DeadlineReader(self.connection))
+
     def log_message(self, format, *args):
         # Never log arbitrary URL/query/header input or bearer credentials.
         pass
 
     def reply(self, code, data=b"Not available\n", mime="text/plain", head=False, location=None):
+        deadline = time.monotonic() + RESPONSE_SECONDS
+        self.connection.settimeout(RESPONSE_SECONDS)
         self.send_response(code)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
@@ -93,6 +147,11 @@ class QuietHandler(BaseHTTPRequestHandler):
             self.send_header("Location", location)
         self.end_headers()
         if not head:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Response deadline exceeded")
+            # sendall's timeout is the total write budget, not a per-byte reset.
+            self.connection.settimeout(remaining)
             self.wfile.write(data)
 
     def send_error(self, code, message=None, explain=None):

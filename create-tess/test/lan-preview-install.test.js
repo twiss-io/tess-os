@@ -20,10 +20,12 @@ test('packed installer ships inert portable launcher, renders rules, and serves 
       { cwd: pkg, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const [packed] = JSON.parse(output);
     const paths = packed.files.map(f => f.path);
-    for (const file of ['tesspreview.py', 'content.py', 'lifecycle.py', 'server.py']) {
+    for (const file of ['tesspreview.py', 'content.py', 'lifecycle.py', 'server.py', 'readiness.py']) {
       assert.ok(paths.includes(`template/scripts/preview/${file}`), file);
     }
     assert.ok(paths.includes('template/docs/LAN_PREVIEWS.md'));
+    assert.ok(!paths.includes('template/.github/workflows/lan-preview.yml'),
+      'framework platform CI must not be activated in adopter projects');
     execFileSync('tar', ['-xzf', join(scratch, packed.filename), '-C', scratch]);
     const installed = join(scratch, 'instance');
     promote(join(scratch, 'package', 'template'), installed);
@@ -48,7 +50,7 @@ test('packed installer ships inert portable launcher, renders rules, and serves 
       'render must not start any preview');
     const publicDir = join(scratch, 'public');
     mkdirSync(join(publicDir, 'assets'), { recursive: true });
-    writeFileSync(join(publicDir, 'index.html'), '<base href="/dev/packed-demo/">PUBLIC');
+    writeFileSync(join(publicDir, 'index.html'), '<base href="/dev/packed-demo/"><script src="assets/app.js"></script>PUBLIC');
     writeFileSync(join(publicDir, 'assets', 'app.js'), 'console.log("PUBLIC")');
     writeFileSync(join(publicDir, 'private.html'), 'NOT-SELECTED');
     const started = call('--json', 'start', 'packed-demo', '--public-dir', publicDir,

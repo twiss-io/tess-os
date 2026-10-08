@@ -285,6 +285,7 @@ def test_private_state_permissions_and_symlink_guard(tmp_path):
 
 
 def test_lan_detection_platform_paths_and_no_lan(monkeypatch):
+    monkeypatch.setattr(server, "wsl_mode", lambda: None)
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "inet 127.0.0.1\n inet 192.168.42.8\n")
     assert server.lan_ip() == "192.168.42.8"

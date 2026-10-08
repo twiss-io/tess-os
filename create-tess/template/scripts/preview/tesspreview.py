@@ -10,7 +10,7 @@ import sys
 
 from content import PreviewError, directory, require_platform
 from lifecycle import control, private_file, read_record, serve, start, stop, verify
-from server import lan_ip
+from server import lan_ip, network_status
 
 SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 SCRIPT = str(Path(__file__).resolve())
@@ -43,6 +43,8 @@ def handoff(record, checked=None):
         "bind": record["host"], "port": record["port"],
         "localhost_url": f"http://127.0.0.1:{record['port']}{route}",
         "lan_url": f"http://{address}:{record['port']}{route}" if address else None,
+        "lan_limitation": "Localhost-only mode; LAN sharing disabled." if record["host"] == "127.0.0.1"
+                          else network_status()["limitation"],
         "log_path": str(Path(record["config"]["state_dir"]) / (record["slug"] + ".log")),
         "snapshot_files": len(record["assets"]), "snapshot_bytes": record["snapshot_bytes"],
         "host_verified_addresses": checked or [], "second_device_tested": False,
@@ -61,6 +63,8 @@ def display(result, json_output):
         print(f"[Other computers on the same LAN]({result['lan_url']})")
     else:
         print("LAN link unavailable: localhost-only mode or no usable LAN IPv4 address detected.")
+    if result["lan_limitation"]:
+        print(result["lan_limitation"])
     print(f"Bind: {result['bind']}; PID: {result['pid']}; log: {result['log_path']}")
     if result["host_verified_addresses"]:
         print("Host-side assets, deep links and denied paths verified on: " + ", ".join(result["host_verified_addresses"]))

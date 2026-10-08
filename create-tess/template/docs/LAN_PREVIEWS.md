@@ -50,7 +50,13 @@ Always run `verify` before saying a preview is ready. It checks both available
 addresses, bytes of **all selected assets**, trailing-slash redirect, deep-link
 behavior, isolation, and private/traversal-path denials. These are host-side
 checks, **not** evidence that another physical device loaded the preview.
-WSL virtual networking, Wi-Fi client isolation and host firewall rules may
+WSL NAT/unknown networking modes suppress the LAN link entirely: a WSL guest
+address that passes HTTP inside the guest is **not** a LAN-reachable Windows
+host address. Actual mode is queried with `/usr/bin/wslinfo --networking-mode`,
+not guessed from `.wslconfig`. Only detected `mirrored` mode offers a qualified
+interface candidate; missing utility, NAT, unknown, none and other unsupported
+modes offer localhost plus an explicit limitation. No portproxy is added.
+Mirrored mode, Wi-Fi client isolation and host firewall rules may
 prevent another device from reaching it even when host-side checks pass. This
 launcher does not modify those controls; report the limitation instead.
 
@@ -70,13 +76,25 @@ base `/dev/demo/`, or put this in the HTML head **before** relative asset tags:
 <link rel="stylesheet" href="assets/site.css">
 ```
 
-The server does not rewrite HTML/JS/CSS. Root-absolute `/assets/...` URLs must
+The server does not rewrite HTML/JS/CSS or modify your source files. Root-absolute `/assets/...` URLs must
 be changed by the build to `/dev/demo/assets/...`. With `--spa`, safe unlisted
 extensionless routes (including routes ending in `/`) return the selected
 index; missing asset paths with extensions still return 404. Without `--spa`,
 unlisted paths return 404. Directory listings are never generated. Private and
 hidden names are rejected before SPA fallback. Each process serves only its
 own slug, not another project's route or internal workspace paths.
+
+Readiness parses the selected UTF-8 HTML and checks browser URL resolution for
+HTML-declared script, stylesheet/preload/icon, image/srcset, media and embedded
+asset references at both the root URL and a multi-level SPA URL ending in `/`.
+Selected nested HTML is checked against its own document URL too. Missing,
+late or wrong bases, root-absolute `/assets/...`, external-host references and
+unselected resolved files fail with export/base/allowlist guidance. Correct
+root-absolute `/dev/<slug>/assets/...` paths and nested relative assets work.
+Simple srcset URL candidates are supported; ambiguous data-URL srcsets fail
+closed. This is static HTML readiness, not JavaScript execution or a browser QA
+claim: validate runtime-generated URLs, JS imports and CSS dependencies in the
+actual application as well. Inline data URLs/fragments do not fetch files.
 
 ## Lifecycle, freshness and private state
 
@@ -111,7 +129,11 @@ Edits, new files, root replacement and symlink changes do not expand a running
 server's file set. Restart after a new build, then verify again. Limits are
 512 selected files, 16 MiB per file, 64 MiB total snapshot; launch fails closed
 above these limits. HTTP concurrency is bounded to 16 requests per listener
-with a five-second socket timeout. Preview is not a production web server.
+with an absolute three-second request-header deadline (continued trickle bytes
+do not reset it), and a single five-second response write budget. The public
+and loopback lifecycle listeners have separate capacity. Request bodies are
+never consumed; connections close after the response. Preview is not a
+production web server.
 
 ## Security boundary and validation
 
@@ -133,7 +155,7 @@ tool for credentialed apps, unapproved client documents or private data.
 Safe targeted validation (no signing fixtures):
 
 ```sh
-python3 -m pytest tests/test_lan_preview.py -q
+python3 -m pytest tests/test_lan_preview.py tests/test_lan_preview_readiness.py -q
 node --test create-tess/test/lan-preview-install.test.js
 ```
 
@@ -142,7 +164,29 @@ mocked interface-selection branches are not native OS validation. Test artifacts
 and listeners are synthetic and isolated. The feature's review record must
 name which platforms actually ran; unsupported/unavailable hosts are unverified.
 
+The source repository's focused `Portable LAN preview` CI workflow runs Python 3.9 and 3.13 on
+Ubuntu 24.04 and Intel macOS 15, including real packed-install checks, with
+immutable Action commits, read-only contents permission and no signing suite.
+A workflow file is not evidence of a passed run; inspect its exact candidate
+SHA and actual terminal logs before making a platform-pass claim.
+
+### Native WSL smoke (run inside the actual distribution)
+
+Use an already-installed Python 3.9+ and the same selected-test commands above.
+For an approved small public fixture, start once with `--localhost-only`, run
+`verify`, inspect `status`/`logs`, then `stop`. Start again without the switch,
+record `wslinfo --networking-mode` and run `verify`/`status`. NAT or an unknown
+mode must print localhost plus the explicit no-LAN-route limitation, not a
+guest-IP LAN link. Detected mirrored mode must label the interface candidate
+and disclose firewall/second-device limitations. Stop the synthetic listener.
+Optionally have a human load the link from another physical LAN device and
+record that separately. Do not change networking mode, portproxy or firewall
+rules as part of this test. Until those steps are actually run, native WSL is
+**unverified**, regardless of mocked mode tests or Linux CI.
+
 Primary API references: [descriptor-relative file operations](https://docs.python.org/3/library/os.html),
 [detached subprocess sessions](https://docs.python.org/3/library/subprocess.html),
 [socket binding](https://docs.python.org/3/library/socket.html), and
 [WSL network behavior](https://learn.microsoft.com/en-us/windows/wsl/networking).
+The active-mode query is documented in Microsoft's
+[WSL 2.0.4 release notes](https://github.com/microsoft/WSL/discussions/10590).
