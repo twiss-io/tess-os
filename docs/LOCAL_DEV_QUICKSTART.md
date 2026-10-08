@@ -6,8 +6,9 @@ create approval authority, or configure a production branch.
 
 ## Prerequisites
 
-- **Git** and a Bash-compatible shell. On Windows, use a current WSL
-  distribution rather than Command Prompt or PowerShell for the commands below.
+- **macOS or Linux; Windows via WSL.** Run the commands below in a current WSL
+  distribution, not Command Prompt or PowerShell.
+- **Git** and a Bash-compatible shell.
 - **Python 3.9 or newer.** The checked-in project metadata declares
   `requires-python = ">=3.9"`; use a supported Python 3 release available on
   your machine.

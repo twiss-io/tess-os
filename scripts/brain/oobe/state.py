@@ -231,7 +231,14 @@ def status_of(root: Path) -> Dict[str, Any]:
            "remind_after": onb.get("remind_after")}
     if status in ("complete", "skipped"):
         out["step"] = None
+    if status == "in_progress" and onb.get("last_apply_error"):
+        # v1.0 (B4): the last apply failed; say what is left and the one fix.
+        out["last_apply_error"] = onb["last_apply_error"]
+        out["fix"] = APPLY_AGAIN
     return out
+
+
+APPLY_AGAIN = "python3 scripts/brain/onboard.py apply"
 
 
 def _due(remind_after: Optional[str]) -> bool:
@@ -244,6 +251,11 @@ def _due(remind_after: Optional[str]) -> bool:
 def status_line(st: Dict[str, Any]) -> str:
     s = st["status"]
     if s == "in_progress":
-        return "in_progress(%s)" % st.get("step")
+        line = "in_progress(%s)" % st.get("step")
+        if st.get("last_apply_error"):
+            line += ("; all questions are answered but setup did not finish: %s\n"
+                     "  left: create and save the brain folder. Fix the problem above, then run: %s"
+                     % (st["last_apply_error"], st.get("fix", APPLY_AGAIN)))
+        return line
     return s
 

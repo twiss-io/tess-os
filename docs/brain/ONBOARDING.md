@@ -14,7 +14,8 @@ the trees they create: [MODES.md](MODES.md).
 | Plain copy | `npx degit twiss-io/tess-os/create-tess/template my-brain` | No wizard; run `git init` yourself. |
 | Git clone | `git clone https://github.com/twiss-io/tess-os my-brain`, then say "convert this clone" | See section 6. The clone carries the framework's development tree. |
 
-Requirements: git, python3 3.9 or newer, and one runtime CLI. The brain tools
+Requirements: git, python3 3.9 or newer, and one AI app: Claude Code or Codex
+(Gemini CLI also reads the files, advisory only). The brain tools
 (`scripts/brain/*.py`) use only the Python standard library. No API keys: each
 runtime uses its own login. Nothing is written to your global config.
 
@@ -22,7 +23,7 @@ runtime uses its own login. Nothing is written to your global config.
 
 ```
 cd my-brain
-claude        # or: codex, gemini, kimi
+claude        # or: codex
 ```
 
 Or use the launcher, which also passes the start prompt while onboarding is
@@ -33,10 +34,10 @@ without running it).
 
 | Runtime | Step | What it enables | Works without it |
 |---|---|---|---|
-| Claude Code | one workspace-trust click (`claude -p` counts as trusted; `--bare` skips hooks) | brain hooks (the onboarding reminder), tool permissions for the brain scripts | `CLAUDE.md` + BOOT, commands, skills |
-| Codex CLI | none to start; optional: trust the project and approve the hooks in `/hooks` (approval is pinned to the hook text: re-approve after an update) | per-turn hooks | `AGENTS.md` + BOOT, `.agents/skills` |
-| Gemini CLI | one folder-trust click (an untrusted headless run exits 55) | `GEMINI.md` (imports `AGENTS.md`) and the `/tess:*` commands | `.agents/skills` |
-| Kimi and other AGENTS.md tools | tool-specific | nothing from Tess | `AGENTS.md` only |
+| Claude Code | one workspace-trust click, in an interactive `claude` session (`claude -p` does not count: it runs the project hooks, but ignores the project's tool allow list until the folder has been trusted once; `--bare` skips hooks) | tool permissions for the brain scripts, so saving and recalling do not ask every time | `CLAUDE.md` + BOOT, commands, skills |
+| Codex CLI | REQUIRED for the safety checks: trust the folder, then type `/hooks` in Codex and approve Tess's hooks; Codex asks again after each Tess update | Tess's safety checks (secret scan, protected files, push guard) and per-turn capture; until then every first reply warns that the checks are OFF | `AGENTS.md` + BOOT, `.agents/skills` (no safety checks) |
+| Gemini CLI (advisory) | one folder-trust click (an untrusted headless run exits 55) | `GEMINI.md` (imports `AGENTS.md`) and the `/tess:*` commands | `.agents/skills` |
+| Other AGENTS.md tools (advisory) | tool-specific | nothing from Tess | `AGENTS.md` only |
 
 ### How onboarding starts itself
 
@@ -44,7 +45,7 @@ without running it).
 |---|---|---|---|---|
 | BOOT rule in the entry file ("if `brain/brain.json` is missing or onboarding is not complete, your first reply ends with the next onboarding question"; a first message that is a task gets a short answer first, then the question) | `CLAUDE.md` | `AGENTS.md` | `GEMINI.md` -> `AGENTS.md` | I |
 | `brain-onboard` skill, whose description starts "START HERE when brain/brain.json is missing or onboarding is not complete" | `.claude/skills/` | `.agents/skills/` | `.agents/skills/` | I |
-| SessionStart hook line `ONBOARDING PENDING (step k/7): ...` from `onboard.py hook session-start` | after trust | v0.2.1 | v0.2.1 | M/T |
+| SessionStart hook line `ONBOARDING PENDING (step k/7): ...` from `onboard.py hook session-start` | after trust | after project trust + `/hooks` approval (inline in `.codex/config.toml`) | not rendered | M/T |
 | Launcher start prompt (`claude "/brain-onboard"`, `codex '$brain-onboard'`, `gemini -i "Use the brain-onboard skill."`) | yes | yes | yes | M |
 
 The hook is silent in the Tess OS source repo, once onboarding is complete or
@@ -166,14 +167,22 @@ another. A name with no letters or digits is refused. `add` and `add-mode`
 also keep `brain/probe.json` current, so the probe stays green as the brain
 grows.
 
-## 8. The one-time seed push
+## 8. Keeping a copy somewhere else
 
-The instance's ship-gate refuses the first push, because a new instance has no
-verifier keys. After reading `git log`, the operator runs once:
+Everything onboarding creates is already saved in git on this computer.
 
-```
-git push --no-verify -u origin main
-```
+A folder made with `npm create tess` carries the proof of the signed Tess OS
+release it came from (`.tess/release-proof.json`), so its first push to a
+remote passes the ship-gate with no reviewer keys, as long as Tess's
+protected files are exactly that release. A later change to a protected
+file, or a folder made another way (a git clone, `--template-source`),
+needs the project's own reviewer keys, because a push is where protected
+changes are checked (see [Gate operation and custody](../GATE_QUICKSTART.md)).
+Do not skip or disable the check to get past it. Until the keys are set up:
 
-Tess never runs `--no-verify` and never pushes brain content to the public
-framework repository.
+- back up the folder like any other folder (Time Machine, an external drive,
+  or your usual backup tool), or
+- make a single-file copy of the whole history:
+  `git bundle create ~/my-brain-backup.bundle --all`
+
+Tess never pushes brain content to the public framework repository.

@@ -102,7 +102,7 @@ def real_engine_root(tmp_path):
     shutil.rmtree(dst / "reviews" / "verdicts", ignore_errors=True)
     assert (dst / WORKFLOW_REL).exists()
     assert (dst / ".tess" / "bin" / "tessctl").exists()
-    _git(dst, "init", "-q")
+    _git(dst, "init", "-b", "main", "-q")
     _git(dst, "config", "user.email", "test@tess.test")
     _git(dst, "config", "user.name", "Test")
     _git(dst, "config", "commit.gpgsign", "false")
@@ -138,7 +138,7 @@ def _extract_step_run(workflow_text: str, step_name: str) -> str:
     raise KeyError(step_name)
 
 
-def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
+def _run_real_workflow_trusted_engine(root: Path, base: str, head: str, head_env: bool = False):
     """Parses and EXECUTES the real, COMMITTED `.github/workflows/
     tess-gate.yml`'s own "Extract trusted gate engine" + final "tessctl
     gate ci" run: blocks — substituting the two GH Actions expressions this
@@ -161,6 +161,8 @@ def _run_real_workflow_trusted_engine(root: Path, base: str, head: str):
     gh_output_path = Path(tempfile.mkstemp(prefix="gh_output_")[1])
     gh_output_path.write_text("")
     env1 = {**os.environ, "GITHUB_OUTPUT": str(gh_output_path)}
+    if head_env:
+        env1["HEAD_SHA"] = head
     r1 = subprocess.run(["bash", "-c", extract_script], cwd=str(root), env=env1, capture_output=True, text=True)
     if r1.returncode != 0:
         return r1.returncode, r1.stdout + r1.stderr
@@ -253,7 +255,22 @@ def test_trusted_engine_extraction_fails_closed_when_no_baseline_engine_exists(r
     empty_tree_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     head = _git(root, "rev-parse", "HEAD").stdout.strip()
 
-    rc, out = _run_real_workflow_trusted_engine(root, empty_tree_sha, head)
+    # v4 (2026-09-29 Codex review): a base-less push now fetches the engine of
+    # the signed release its proof names (tests/test_v1_ci_first_push_bootstrap.py).
+    # Without a proof there is still nothing trusted to run: it fails closed.
+    proof = root / ".tess" / "release-proof.json"
+    if proof.exists():
+        proof.unlink()
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "drop the release proof")
+        head = _git(root, "rev-parse", "HEAD").stdout.strip()
+    rc, out = _run_real_workflow_trusted_engine(root, empty_tree_sha, head, head_env=True)
+    assert rc != 0
+    assert "no .tess/release-proof.json" in out and "never trusted" in out
+
+    # A base that exists but predates the gate (no engine there) still fails closed.
+    base = _git(root, "commit-tree", empty_tree_sha, "-m", "pre-adoption").stdout.strip()
+    rc, out = _run_real_workflow_trusted_engine(root, base, head)
     assert rc != 0
     assert "refusing to fall back" in out or "no gate engine found" in out
 

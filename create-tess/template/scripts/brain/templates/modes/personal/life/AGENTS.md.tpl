@@ -31,7 +31,7 @@ verify_via: operator
 ## Rules for this entity
 - A project has a goal, a done-when and a next action; an area has none of these and never ends.
 - Health and money details live in `brain/.private/areas/<area>/` (local only); keep only pointers here.
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 - Secrets, government IDs, pay, health or HR records and contract files never go here: write a pointer to where they live.
 
 ## Decisions (latest 5 accepted)

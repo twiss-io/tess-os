@@ -47,7 +47,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _run_verifier(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(RECEIPT_VERIFY), *args],
+        [sys.executable, "-I", "-B", str(RECEIPT_VERIFY), *args],
         capture_output=True, text=True,
     )
 

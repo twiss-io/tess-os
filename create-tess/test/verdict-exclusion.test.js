@@ -87,7 +87,7 @@ test('a tracked reviews/verdicts file leaves the built template unchanged', { ti
     .filter((rel) => rel && existsSync(join(snap, ...rel.split('/'))));
   tracked.push(verdictRel);
 
-  const init = spawnSync('git', ['init', '-q', snap], { encoding: 'utf8' });
+  const init = spawnSync('git', ['init', '-q', '-b', 'main', snap], { encoding: 'utf8' });
   assert.equal(init.status, 0, init.stderr);
   const add = spawnSync('git', ['-C', snap, 'add', '--force', '--pathspec-from-file=-', '--pathspec-file-nul'], {
     input: tracked.join('\0'),

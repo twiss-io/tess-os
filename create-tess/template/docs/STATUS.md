@@ -1,8 +1,8 @@
 # Support and status
 
 This page is the public claim boundary for Tess OS. It separates what is in the
-repository today from pilot work and product plans. It describes v0.2.0, and
-its facts were re-verified on 2026-09-24.
+repository today from pilot work and product plans. It describes v1.0.0, and
+its facts were re-verified on 2026-09-29.
 
 ## Claim labels
 
@@ -33,9 +33,9 @@ to a change whatever tool produced it.
 
 | Runtime | Enforcement | Basis and limits |
 |---|---|---|
-| Claude Code | **Enforced** | Reference target and driver. The hooks in `.claude/settings.json` run natively (`dispatch-guard` only warns, by design). The merge gate is still a preview (see below). |
-| Codex CLI | **Partial** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (`$tess-<command>`). Enforcement is Codex's own sandbox and approval settings from the rendered `.codex/config.toml`, loaded only for a trusted project. No Tess hook runs inside Codex in 0.2.0. The `AGENTS.md` chain is capped at 32 KiB. |
-| Gemini CLI | **Advisory** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, plus the Tess commands as `/tess:<command>`. The doctrine and commands load natively, but only in a trusted folder. Nothing Tess ships can block a tool call in Gemini: no Tess hook, setting or policy is rendered for it in 0.2.0, so the ship gate in git and CI is the only enforcement. No live model run was part of the v0.2.0 checks. |
+| Claude Code | **Enforced** | Reference target and driver. The hooks in `.claude/settings.json` run natively (`dispatch-guard` only warns, by design). Since v1.0 Tess's PreToolUse safety gate (`.claude/hooks/tess-gate.py`, sha-pinned, run through `run-pinned.py --on-fail block`) runs on every `Bash`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` call and blocks edits to Tess's security-tier and enforcement files, attempts to skip or re-point Tess's git hooks, `gh auth token`, secret-shaped values in commands, and a push of brain/ or clients/ data to a public or unverifiable remote; force pushes, remote changes and visibility changes ask you first (denied in `bypassPermissions`/`dontAsk` mode, which cannot ask). Checked live with Claude Code 2.1.284 in a fresh install on 2026-09-29: a commit that skips the git hooks and an Edit to `conductor/guardrails.md` were blocked by the Tess gate (its decision log recorded both). The hooks also run in `claude -p` in a folder that was never trusted, but the project's tool allow list does not (see docs/brain/ONBOARDING.md). The shell checks read the command text (an interpreter one-liner is not seen); the ship gate in git and CI stays the wall. The merge gate is still a preview (see below). |
+| Codex CLI | **Enforced** | `codex` target: `AGENTS.md`, `.codex/config.toml`, and the Tess commands as `.agents/skills/tess-*` skills (`$tess-<command>`). Enforced once the project is trusted and Tess hooks are approved in `/hooks`: from then on Tess's PreToolUse safety gate (`.claude/hooks/tess-gate.py`, sha-pinned) runs on every shell command, file edit, subagent spawn and MCP call and blocks what it refuses; approval is pinned to the hook's hash, so re-approve after a Tess update. Until then only Codex's own sandbox and approval settings apply. The shell checks read the command text (an interpreter one-liner is not seen); the ship gate in git and CI stays the wall. The `AGENTS.md` chain is capped at 32 KiB. |
+| Gemini CLI | **Advisory** | `gemini` target: `GEMINI.md`, which imports `AGENTS.md`, plus the Tess commands as `/tess:<command>`. The doctrine and commands load natively, but only in a trusted folder. Nothing Tess ships can block a tool call in Gemini: no Tess hook, setting or policy is rendered for it in this release, so the ship gate in git and CI is the only enforcement. No live Gemini model run has been part of the release checks. |
 | GitHub Copilot CLI, Cursor | **Partial** | No dedicated target. Both read `CLAUDE.md`, `AGENTS.md`, `.claude/agents`, and the Claude hooks. Not tested by Tess OS. Copilot hook timeouts fail open; Cursor fails open on hook crashes and timeouts. Both load the doctrine twice. |
 | Other `AGENTS.md` tools (for example OpenCode, Amp, Devin Desktop, Jules, Aider, Kiro, Qwen Code) | **Advisory** | Doctrine text only (Aider needs `read: [AGENTS.md]` in its config). |
 | Cline, Roo Code, and any runtime not listed here | **unverified** | Not verified for this release. |
@@ -48,18 +48,18 @@ lifecycle evidence exists for an adapter, not how much it enforces.
 
 | Capability or surface | Label | Current boundary |
 |---|---|---|
-| Local policy and gate CLI | **Preview** | The engine can validate policy/evidence and fail closed. The live `main` ruleset requires the App-bound gate and CI checks. The gate is still a non-authoritative preview: see [v0.2.0 trust and custody facts](#v020-trust-and-custody-facts). |
+| Local policy and gate CLI | **Preview** | The engine can validate policy/evidence and fail closed. The live `main` ruleset requires the App-bound gate and CI checks. The gate is still a non-authoritative preview: see [v1.0.0 trust facts](#v100-trust-facts). |
 | Agent Receipt spec + standalone verifier + emit CLI + demo (System B — GPG, `verdict`/`signoff`) | **Available** | `core/contracts/agent-receipt.schema.json`, `tools/receipt-verify/`, `tools/receipt-emit/`, and `examples/receipt-demo/` (see `docs/AGENT_RECEIPT_SPEC.md`) are present, tested, and runnable with real GPG signatures — including `tools/receipt-emit/`, which actually PRODUCES a real, chained, self-verified receipt from an already-signed verdict or hard-floor sign-off (not just the demo's illustrative walkthrough). Not wired into `tessctl gate`; not a claim of external adoption. This repository's policy registers one verifier key (Cyra); `signoff_keys` remains empty. A receipt is not independently trusted merely because it is signed: custody, signer identity, artifact binding, and the applicable gate path still have to verify. |
 | Agent Receipt emission from a codegen run (System A — local HMAC, `decision_kind: local_approval`) | **Available** | `orchestrator.pipeline.run_pipeline()` (`orchestrator/mission_receipt.py`, Hop 7) now emits a real, locally HMAC-signed, independently re-verifiable `local_approval` Agent Receipt for a successful codegen run, wired directly into the pipeline — opt-in only (off unless a caller supplies `receipt_path`; most callers never do). `tools/receipt-verify/hmac_verify.py` (the standalone `local_approval` counterpart to `gpg_verify.py`) and `core/contracts/agent-receipt.schema.json`'s `$defs.LocalApprovalArtifact` verify/validate it. Deliberately WEAKER, and structurally distinct, evidence than the GPG-backed row above — verifiable only by a holder of the same local secret key, never a public key; see `docs/AGENT_RECEIPT_SPEC.md`'s "★ Trust levels are not interchangeable." Always a single genesis receipt to one JSON file per run — durable, cross-run JSONL-chain persistence is still a disclosed, scoped follow-up, not built here. The full idea→route→approve→boots→receipt-verify (+ rejection, + mid-kill unhappy-path) DoD B.9 end-to-end proof now EXISTS and passes: `tests/orchestrator/test_e2e_wedge_loop.py`, driven entirely through `run_pipeline()`, Node hard-required (not silently skipped) in CI — see `orchestrator/README.md`'s "Wedge-loop epic addition" section. |
 | Auditor pack export + verify (`tessctl audit export`/`verify`) | **Available** | Exports the accountability ledger (+ any caller-supplied Agent Receipts) for a scope into a self-contained, offline-verifiable bundle (`docs/AUDIT_PACK_SPEC.md`). Tamper-evident via the ledger's unsigned hash chain, not cryptographically non-repudiable; does not perform GPG signature verification (delegated to `tools/receipt-verify/`); a `full`-scope export's tail anchor (`.tip`) is asserted so a dropped tail is detected, but a `task`/range-scoped (partial) export still cannot prove no matching event was omitted by the exporter. |
 | Ten-role roster + lens library (v0.2) | **Available** | Nine dispatchable role files (`.tess/core/agents-dispatch/`) plus the conductor, identical on every starter path; ~140 former personas are lenses in `conductor/lenses/` (index `docs/LENSES.md`). Role permissions are enforced by each runtime's tool list / sandbox mode; path restrictions such as Clio's brain-only writes and Vega's gate-only push are doctrine in the role text, not engine-enforced. |
 | Claude Code target and driver | **C3 — managed-adapter preview** | Reference integration; enforcement level **Enforced**. It remains an uncertified preview for protected delivery. |
-| Codex target and driver | **C2 — manual-gated compatibility** | Enforcement level **Partial**. The renderer emits `AGENTS.md`, `.codex/config.toml`, the Tess commands as `.agents/skills/tess-*` skills (Codex does not load a project `.codex/prompts/` directory), and one `.codex/agents/<name>.toml` per installed role (sandbox mode from the role file). The driver is not live-tested against native event samples and does not have native-parity certification. |
+| Codex target and driver | **C2 — manual-gated compatibility** | Enforcement level **Enforced** once the project is trusted and Tess hooks are approved in `/hooks`. The renderer emits `AGENTS.md`, `.codex/config.toml`, the Tess commands as `.agents/skills/tess-*` skills (Codex does not load a project `.codex/prompts/` directory), and one `.codex/agents/<name>.toml` per installed role (sandbox mode from the role file). The driver is not live-tested against native event samples and does not have native-parity certification. |
 | Gemini CLI target | **C2 — manual-gated compatibility** | Enforcement level **Advisory**, with no live model run. The renderer emits `GEMINI.md` (which imports `AGENTS.md`) and the Tess commands as `/tess:<command>`. It renders no Gemini hooks, settings or policies. There is no Gemini dispatch driver. |
 | Generic `AGENTS.md` target | **C2 — manual-gated compatibility** | Enforcement level **Advisory** in the host tool. Emits instructions and plain prompts only. Host-specific orchestration, tool permissions, and command behavior are not implied. |
 | `tessctl run` conductor | **Available** | Validates plans, gates, artifacts, retries, and escalation in a sequential execution model. Parallel execution and synthesis remain future work. |
 | MCP server | **Available** | Provider-neutral stdio JSON-RPC with limited read/check tools. MCP connects tools and context; it is not a review or trust-enforcement mechanism. |
-| Adopting an existing, hand-built Tess instance | **Unsupported** | 0.2.0 has no adopt command. Start from a fresh `create-tess` install. |
+| Adopting an existing, hand-built Tess instance | **Unsupported** | There is no adopt command. Start from a fresh `create-tess` install. |
 | Perplexity adapter/driver | **C0 — not supported** | Tess OS has no Perplexity repository adapter. A future read-only research-worker role is only a proposal. |
 | All frontier models | **Unsupported as a blanket claim** | A model name, OpenAI-compatible API, or MCP support is not adapter conformance. Only the runtimes in the enforcement table above are covered, each at its stated level. |
 | AEC governance defaults and advisory template | **Available** | The accepted, non-enforcing contract and offline validator are in `docs/AEC_GOVERNANCE_DEFAULTS.md` and `adapters/support-policy/`. This does not grade a real execution. |
@@ -68,55 +68,56 @@ lifecycle evidence exists for an adapter, not how much it enforces.
 | Tess Cloud | **Planned** | Optional cloud synchronization/coordination product, separate from the local core and not present here. |
 | Tess Vault | **Planned** | Separate agent-era secret-capability product. It must never expose secrets to agent prompts, evidence, or memory. |
 
-## v0.2.0 trust and custody facts
+## v1.0.0 trust facts
 
-Re-verified on 2026-09-24 against the live repository, its GitHub ruleset,
-and the build machine's keyring.
+Re-verified on 2026-09-29. The full trust model is in
+[SECURITY.md](../SECURITY.md#trust-model).
 
-1. **v0.2.0 approvals were signed with an agent-held verifier key.** The
-   registered verifier key is Cyra, fingerprint `F9321F92…76E8`. It has no
-   passphrase and is stored on the build machine, where the build agents can
-   use it. For each protected change, an agent that did not build it
-   reviewed the full diff, and that review's verdict was signed with this
-   key. No key was rotated for this release.
-   **Custody hardening is the first v0.2.1 item:** a passphrase-protected or
-   hardware-held key, a human sign-off on each verdict, and a decision on the
-   merge-admission topology (#76).
-2. **Enforcement is by process, not by GitHub.** The `main` ruleset requires
-   six status checks (`tests (py3.9)`, `tests (py3.12)`,
+1. **Verifier approvals attest a review, signed by the operator.** The
+   registered verifier key is Cyra, fingerprint `F9321F92…76E8`. An agent that
+   did not build a protected change reviews it and drafts the verdict; since
+   the v1.0 security audit the operator signs it at their own terminal
+   (`tessctl verdict sign` asks them to type `sign as <name>` and needs the
+   key's passphrase). A Cyra signature means the review of that exact content
+   passed. The key was created without a passphrase and needs one before it
+   can sign again (SECURITY.md,
+   [Trust model](../SECURITY.md#verifier-signatures-attest-a-review-and-the-operator-signs-them)).
+2. **Merges to `main` need no human review, by design.** The `main` ruleset
+   requires six status checks (`tests (py3.9)`, `tests (py3.12)`,
    `create-tess tests (node 18)`, `create-tess tests (node 24)`,
    `secret scan (gitleaks)` and the App-bound `tessctl gate ci`), with strict
-   up-to-date branches and no bypass actors. It requires 0 approving
-   reviews, and the GitHub token the build agents use has admin rights on
-   the repository. "Only a reviewed change merges" therefore holds because
-   the maintainers follow that process, not because GitHub prevents
-   anything else.
-3. **The P0 type-swap gate bypass (the #71 lineage) remains open in v0.2.0.**
-   Its fix, #181, is deferred to v0.2.1. #181 would freeze the verifier and
-   sign-off registries with no reset authority, which would lock in the
-   agent-held key described above.
-4. **The gate is a non-authoritative preview.** A14, the multi-push
-   policy-reduction case, is OPEN. The merge-admission topology (#76) is
-   undecided. The committed `gate-arena` scorecard reports 12/12 attacks
-   blocked; A14 is not part of that score.
+   up-to-date branches and no bypass actors, and 0 approving reviews. `main`
+   is therefore not a release; only a signed tag is.
+3. **The release signing key is the single human root of trust.** Nothing
+   reaches users unless it comes from a tag signed with that key, and every
+   use of the key needs the maintainer's explicit approval. `tessctl update`
+   and `self-update` check the tag against the pinned keys (SSH, and OpenPGP
+   when gpg is installed) on the user's machine before any file changes. The
+   P0 type-swap gate bypass (#71 lineage) is closed: the gate sees type
+   changes, deletions and renames of protected paths. A fresh install's
+   first push passes the gate with no reviewer keys because it carries the
+   signed release's proof; any protected file that differs from that release
+   still needs a verdict.
+4. **The gate is a merge check, not the release control.** The A14
+   multi-push policy-reduction case is out of scope under the trust model:
+   `main` protections are best-effort, and users are protected by the signed
+   release and the pinned key when they update. The committed `gate-arena`
+   scorecard reports 12/12 attacks blocked; A14 is not part of that score.
 5. **Gemini CLI is Advisory, with no live model run.** The doctrine and
    the Tess commands load natively, but Tess renders no Gemini hook,
-   setting or policy in 0.2.0, so nothing Tess ships can block a tool call
-   there; the ship gate in git and CI is the only enforcement. The v0.2.0
-   checks cover the rendered files and Gemini CLI commands that need no
-   sign-in. No Gemini model session was run against a Tess install.
+   setting or policy, so nothing Tess ships can block a tool call there; the
+   ship gate in git and CI is the only enforcement.
 
 ## Production-gate status
 
 **Not ready as a universal production claim.** The remaining production
 requirements are:
 
-1. independent, human custody of the registered verifier key and of every
-   covering approval, without candidate self-authorization (today the key is
-   agent-held; see fact 1);
+1. independent, human custody of every covering approval where a project
+   needs a person, not only the automated verifier, to approve (see fact 1);
 2. an external, human-owned sign-off trust anchor (`signoff_keys` is empty);
 3. a candidate policy and evidence path that cannot authorize its own key or
-   approval, with the type-swap bypass and A14 closed;
+   approval (the type-swap bypass is closed; A14 is out of scope, see fact 4);
 4. admission enforced by the host rather than by process (see fact 2);
 5. policy coverage for the actual runtime, installer, release, dependency,
    and trust-state surfaces; and

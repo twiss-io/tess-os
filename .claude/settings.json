@@ -1,23 +1,52 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git*)",
-      "Bash(python3 scripts/brain/onboard.py:*)"
+      "Bash(git status:*)",
+      "Bash(git branch --list:*)",
+      "Bash(python3 scripts/brain/onboard.py status:*)",
+      "Bash(python3 scripts/brain/tessbrain.py recall:*)",
+      "Bash(python3 scripts/brain/tessbrain.py status:*)",
+      "Bash(python3 scripts/brain/tessbrain.py review:*)",
+      "Bash(python3 scripts/brain/tessbrain.py sync:*)",
+      "Bash(python3 scripts/brain/tessbrain.py save:*)",
+      "Bash(python3 scripts/brain/tessbrain.py index:*)",
+      "Bash(python3 scripts/brain/tessbrain.py lint:*)",
+      "Bash(python3 scripts/brain/tessbrain.py decide:*)",
+      "Bash(python3 scripts/brain/tessbrain.py remember:*)",
+      "Bash(python3 scripts/brain/tessbrain.py inbox:*)",
+      "Bash(python3 scripts/brain/tessbrain.py journal note:*)",
+      "Bash(python3 scripts/tess hooks-status)"
+    ],
+    "deny": [
+      "Bash(git diff *--no-index*)",
+      "Bash(git diff *--output*)",
+      "Bash(git diff *--ext-diff*)",
+      "Bash(git diff *--textconv*)",
+      "Bash(git log *--output*)",
+      "Bash(git log *--ext-diff*)",
+      "Bash(git log *--textconv*)",
+      "Bash(git show *--output*)",
+      "Bash(git show *--ext-diff*)",
+      "Bash(git show *--textconv*)",
+      "Bash(git format-patch *--output*)",
+      "Bash(git whatchanged *--output*)",
+      "Read(~/.config/tess/**)",
+      "Edit(~/.config/tess/**)"
     ]
   },
-  "autoMemoryEnabled": false,
+  "autoMemoryEnabled": true,
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/utc-local-context.sh"
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/utc-local-context.sh"
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook prompt --runtime claude || exit 0'",
-            "timeout": 3
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook prompt --runtime claude",
+            "timeout": 5
           }
         ]
       }
@@ -28,11 +57,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/task-lock-set.sh"
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/task-lock-set.sh"
           },
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/vault-dispatch-scan.py"
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"TESS HOOK NOT RUN: python3 was not found, so the dispatch secret scan cannot run; this dispatch is blocked.\" >&2; exit 2; }; exec python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail block -- .claude/hooks/vault-dispatch-scan.py"
           }
         ]
       },
@@ -41,7 +70,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch-guard.sh"
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/dispatch-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|NotebookRead)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo \"TESS GATE NOT RUN: python3 was not found, so the Tess safety check cannot run; this tool call is blocked.\" >&2; exit 2; }; exec python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail block -- .claude/hooks/tess-gate.py --runtime claude",
+            "timeout": 120
           }
         ]
       }
@@ -52,7 +91,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/task-lock-clear.sh"
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/task-lock-clear.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime claude",
+            "timeout": 30
           }
         ]
       }
@@ -62,7 +112,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/task-lock-clear.sh"
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn -- .claude/hooks/task-lock-clear.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook stop --runtime claude",
+            "timeout": 30
           }
         ]
       }
@@ -73,25 +128,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/onboard.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/onboard.py hook session-start --runtime claude",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook session-start --runtime claude || exit 0'",
+            "command": "python3 -I -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py\" --on-fail warn --closure scripts/brain -- scripts/brain/tessbrain.py hook session-start --runtime claude",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -c 'f=\"$CLAUDE_PROJECT_DIR/scripts/brain/tessbrain.py\"; [ -f \"$f\" ] && command -v python3 >/dev/null 2>&1 && exec python3 \"$f\" hook stop --runtime claude || exit 0'",
-            "async": true,
-            "timeout": 30
           }
         ]
       }

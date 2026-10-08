@@ -1,0 +1,6689 @@
+#!/usr/bin/env python3
+"""tess-gate.py — the Tess tool-call safety gate for runtimes where Tess cannot
+configure the native permission layer (Codex first; runs in Claude Code too).
+
+Wired for Codex by `.codex/config.toml` (rendered by `tessctl render --target
+codex` from `.tess/core/templates/agents-md/codex-config.toml.tpl`) as a
+PreToolUse hook, always through `.claude/hooks/run-pinned.py --on-fail block`,
+so this file runs only when it matches the sha pinned for the release.
+
+What it stops (each check says in plain English what the user can do instead):
+
+  * secret-shaped values in a dispatch (`spawn_agent`/`Agent`/`Task`: the full
+    vault-dispatch-scan.py pattern set) or in a shell command (the specific
+    token formats only: PEM, GitHub, Stripe, Slack, AWS, age);
+  * writes to Tess's security-tier and enforcement files, through `apply_patch`
+    / Edit / Write, a write-shaped MCP tool, or a shell writer (`>`, `tee`,
+    `sed -i`, `rm`, `mv`, `cp`, ...): the files `.tess/tess.lock` tags
+    `tier: security`, plus PROTECTED_GLOBS below;
+  * git hook bypasses: `--no-verify` (and `git commit -n`), any
+    `core.hooksPath` override (`-c`, `--config-env`, `git config`, GIT_CONFIG_*
+    env), and shell writes under `.git/hooks/` or to `.git/config`;
+  * `gh auth token` / `gh auth status --show-token` (prints a live credential
+    into the transcript);
+  * a `git push` whose commits carry brain/ or clients/ data to a public or
+    unverifiable remote: the SAME check as the git pre-push hook
+    (`tessctl doctor --publish-remote`), run before the push so it also holds
+    when the pre-push hook is not installed.
+
+It asks (Claude Code) or denies (Codex, and Claude's no-prompt modes) for:
+force pushes, remote add/set-url/rename/remove, and repository visibility
+changes. Codex does not support a PreToolUse "ask": it fails the hook and RUNS
+the command (learn.chatgpt.com/docs/hooks.md, "Unsupported PreToolUse
+features"), so every ask is sent as a deny whose reason tells the user to run
+the command themselves. A payload carrying `turn_id` is treated as Codex even
+without `--runtime codex` (same test as the machine-level git-guard).
+
+Fail closed: unreadable input or an internal error denies the call.
+
+Audit trail: every deny/ask is appended (redacted, one JSON line) to
+$TESS_GATE_LOG, default ${XDG_CACHE_HOME:-~/.cache}/tess/gate-decisions.log
+(rotated at 1 MB). Logging is best effort and never changes a decision.
+
+v1.0.0 security review (M1) also denies: pointing git at another config file
+(GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM / GIT_CONFIG_PARAMETERS in the
+environment), writing `include.*` / `includeIf.*` / `alias.*` git config
+(`git config` or `git -c`), shell writes after a `cd` into a protected
+directory (the cwd is tracked across `cd`/`pushd`; a `cd` whose target is
+computed at run time makes later relative writes a deny), and, best effort,
+an inline interpreter program (`python -c`, `node -e`, a heredoc fed to one)
+that names a protected path and calls a write-shaped API.
+
+v1.0.0 security review round 2 also:
+  * denies git options that write a file or run a helper: `--output`
+    (`--output=X`, `--output X`, any unique abbreviation such as `--outp`),
+    `--output-directory`, `-o` on the diff/log family, `--no-index`,
+    `--ext-diff`, `--textconv`, `git grep -O`, GIT_EXTERNAL_DIFF, and `-c` /
+    `git config` of keys whose value is a command git runs (H-A);
+  * asks (Claude) / denies (Codex) for anything that changes what Tess
+    believes a remote already holds or where it points: `git config`
+    remote.*.url / pushurl, url.*.insteadOf, tess.privateRemote,
+    `git update-ref refs/remotes/...`, a fetch/push refspec into
+    refs/remotes/, and `git push --delete` (H-B);
+  * denies reads and writes of the per-user key directory
+    (~/.config/tess, $XDG_CONFIG_HOME/tess, $TESS_BRAIN_PROVENANCE_DIR) by
+    shell commands, Read/Grep/Glob, edits and (Codex; Claude does not route
+    MCP tools to this hook) MCP tools (M-1). This is a
+    guard against an agent reading a key by accident or on a planted
+    instruction, NOT a boundary: the agent runs as the operator's own user,
+    so a program it assembles at run time can still read any file the
+    operator can, and whatever holds the key can sign as the operator;
+  * matches git's unique-prefix abbreviations of long options
+    (`--no-veri`, `--forc`, `--mirr`, `--del`, `--outp`) (M-2);
+  * asks only in a known interactive `permission_mode` (default,
+    acceptEdits, plan); a missing or unknown mode cannot be trusted to
+    pause for the operator, so its ask becomes a deny (L-c). Since the v1.0
+    audit `auto` is a deny too: its classifier can settle a prompt unseen.
+
+v1.0.0 security review round 3 also:
+  * denies git commands that put back other copies of protected files
+    (checkout/restore from a commit other than HEAD, checkout-index --prefix
+    or -a, --work-tree / --git-dir / GIT_WORK_TREE / GIT_DIR / GIT_INDEX_FILE
+    / core.worktree on a writing command, update-index, read-tree --prefix,
+    a patch naming one), and asks (Claude) / denies (Codex) for a switch,
+    reset --hard, read-tree -u, stash apply, merge, rebase or cherry-pick
+    whose target changes a protected file relative to HEAD (N-1);
+  * denies HOME= / XDG_CONFIG_HOME= on git and tessctl commands, and checks
+    the key directory under the OS user record's home as well (N-2).
+  Restoring from HEAD or the index stays allowed; that is the undo path.
+  A whole-tree rollback the operator makes runs that commit's own gate.
+
+v1.0 security audit (gate paths) also:
+  * decides "is this protected / the key directory" by file identity
+    (st_dev, st_ino of the nearest existing ancestor, the rest compared
+    without case), so case variants on APFS/NTFS, `..` and symlinked
+    spellings, and a move of a directory above the key dir are caught;
+  * denies writes to out-of-project enforcement-control files: the global
+    and system git config (and files they include), the user-level Claude
+    Code and Codex settings; and `git config --edit` / `init.templateDir`;
+  * protects scripts/tess (run without a prompt at every session start),
+    the top-level modules beside it, and .github/scripts/**;
+  * denies `tessctl vault get --reveal|--force` and `tessctl vault exec`
+    into a printer, shell or inline interpreter (or with a dangerous --as);
+  * treats the tessctl steps that change the recorded state of the safety
+    files (override, reset, resolve, rollback, restore --force, publish
+    --force, capture --auto, lock --regen) like the approval prompts: an
+    agent may not feed or fake their terminal.
+
+v1.0 security audit (gate shell parsing) also:
+  * finds the program a segment runs the way the shell does: through `{ }`,
+    `!`, `if/then/do`, glued operators, leading redirections, wrappers and
+    runners with their option values (env, nice -n, timeout, xargs, sudo,
+    uv run...), any letter case, `$'..'` quoting, `git-<sub>`, shell `-c`
+    clusters, here-strings, here-documents and `echo ... | sh`, command
+    substitutions and `find -exec/-delete`; a program named only at run time
+    asks;
+  * expands write targets as the shell will (globs, braces, ~, $HOME/$PWD,
+    variables and `for` lists set in the same command, dd of=, --opt=DIR,
+    -tDIR, curl -o, tar -cf, links made earlier in the command); a target
+    known only at run time asks;
+  * resolves relative paths against a tool call's own `workdir` and tracks
+    `cd` through `&&`, `||`, `;`, subshells, pipes and background lists;
+  * works out a push's destination and refs as git does (--repo, one-command
+    config, every pushurl, insteadOf/pushInsteadOf, push refspecs, mirror,
+    push.default, --all/--tags/--follow-tags, `tag <name>`);
+  * parses tess.lock once per file version and stops within GATE_BUDGET
+    seconds (or at MAX_COMMAND characters) with an ask, never an allow.
+
+v1.0.0 final review round 3 also:
+  * states the gate's fail-safe contract (see _check_unknown_args and
+    SECURITY.md): when a word of a gated program is only known at run time
+    and could change a protected decision (a write, a git subcommand or
+    option, a tessctl step, a vault use, the code an interpreter or shell
+    runs), the answer is ask (deny in Codex), never ALLOW;
+  * checks every complete argument list a gated program can receive: brace
+    results side by side, a variable's values as alternatives (B1, B3);
+  * folds `$(echo ...)` / `$(printf ...)` only for one plain command (B2);
+  * reads Codex patch headers as Codex's parser does (B4);
+  * refuses, in Codex, interpreters and shells that read the terminal,
+    judged after the program and its options are resolved (B5);
+  * follows find's -prune (D1) and checks shell strings call by call (D2).
+
+Known limits (adapters/CONFORMANCE.md, Codex row): the shell checks read the
+command text, so a write assembled at run time (`$(...)`, variables), a
+script file run by an interpreter, or an interpreter write this pattern
+match misses is not seen; hosted tools never reach hooks; Codex `write_stdin`
+(typed input to an already-open unified-exec shell) never reaches
+PreToolUse; a hook that times out or crashes in the host fails open for that
+call. The ship-gate in git/CI stays the wall; this gate is the in-session
+guard in front of it.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import importlib.util
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ALLOW, ASK, DENY = 0, 1, 2
+NO_PROMPT_MODES = {"bypassPermissions", "dontAsk"}
+# Claude Code modes that pause and show the operator an "ask" (L-c). Any other
+# value, or none, is treated as a mode that cannot ask. v1.0 audit: "auto" is
+# NOT here. In auto mode Claude Code's own classifier may settle a permission
+# prompt without the operator seeing it, so a Tess ask there becomes a deny.
+INTERACTIVE_MODES = {"default", "acceptEdits", "plan"}
+# Modes where the host approves on the operator's behalf (named in the deny).
+AUTO_APPROVE_MODES = {"auto"}
+SCAN_REL = ".claude/hooks/vault-dispatch-scan.py"
+LAUNCHER_REL = ".claude/hooks/run-pinned.py"
+TESSCTL_REL = ".tess/bin/tessctl"
+
+# Enforcement surfaces on top of the tess.lock `tier: security` live paths.
+# Kept in step with core/policy/policy.yaml rule tess-os-security-tier-doctrine
+# plus the files that switch a runtime's enforcement on or off.
+PROTECTED_GLOBS = (
+    "conductor/guardrails.md", "conductor/verification-routing.md",
+    "conductor/channel-guardrails.md", "conductor/dispatch-brief.md",
+    "core/contracts/**", "core/policy/**",
+    ".tess/bin/**", "tessctl", ".tess/core/**", ".tess/core/policy/policy.yaml",
+    ".tess/tess.lock", "tess.manifest.json",
+    ".tess/keys/**", ".tess/gate/**", ".github/workflows/**",
+    ".claude/hooks/**", ".claude/settings.json", ".claude/settings*.json", "scripts/brain/**",
+    "scripts/release/**", ".github/CODEOWNERS",
+    # v1.0 audit: release-workflow helpers (run by release.yml and by
+    # publish-npm.yml inside the job that holds id-token: write), and the
+    # boot launcher every session runs without a prompt (settings allow-list
+    # `python3 scripts/tess hooks-status`; CLAUDE.md / AGENTS.md boot line).
+    ".github/scripts/**", "scripts/tess",
+    # v1.0 audit (integration): the working folders tessctl reads back as
+    # trusted input. update applies .tess/staging, approve and resolve write
+    # what .tess/quarantine and .tess/conflicts hold, rollback restores
+    # .tess/snapshots; an agent write there plants the bytes those steps use.
+    ".tess/staging/**", ".tess/quarantine/**", ".tess/conflicts/**", ".tess/snapshots/**",
+    "CLAUDE.md", "AGENTS.md", "GEMINI.md", ".gemini/settings.json",
+    ".codex/config.toml", ".codex/hooks.json", ".codex/rules/**", ".codex/**",
+    ".git/hooks/**", ".git/config", ".gitleaks.toml",
+    # v1.0.0 final reviews: what HEAD, the index and history resolve to. A
+    # write here (a replace ref, a grafts or sparse-checkout file, a moved
+    # branch, a crafted index) changes what the "restore from HEAD" undo puts back.
+    ".git/info/**", ".git/refs/**", ".git/HEAD", ".git/packed-refs", ".git/index",
+    ".git/objects/**", ".git/worktrees/**",
+)
+
+DISPATCH_TOOLS = {"Agent", "Task", "spawn_agent"}
+READ_TOOLS = {"Read", "Grep", "Glob", "NotebookRead", "LS"}
+SHELL_TOOLS = {"Bash", "shell", "exec_command", "local_shell", "unified_exec"}
+EDIT_TOOLS = {"apply_patch", "Edit", "Write", "MultiEdit", "NotebookEdit"}
+MCP_WRITE_WORDS = ("write", "edit", "create", "move", "rename", "delete",
+                   "remove", "patch", "append", "save", "upload")
+MCP_PATH_KEYS = {"path", "file_path", "filepath", "filename", "file",
+                 "destination", "dest", "target", "source", "new_path", "old_path"}
+
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+WRAPPERS = {"env", "command", "exec", "nohup", "time", "nice", "sudo", "doas", "builtin"}
+WRITERS = {"rm", "mv", "cp", "tee", "truncate", "chmod", "chown", "chflags", "ln",
+           "install", "touch", "dd", "rsync", "unlink", "rmdir", "shred", "patch"}
+INPLACE = {"sed", "gsed", "perl", "ruby"}
+READERS_OK_FOR_GIT_DIR = {"ls", "cat", "head", "tail", "stat", "file", "test", "[",
+                          "grep", "rg", "wc", "shasum", "sha256sum", "diff", "less"}
+OPERATORS = {";", "&&", "||", "|", "&", "(", ")", "\n", "|&", ";;", ";&", ";;&"}
+REDIRECTS = {">", ">>", ">|", "&>", "&>>", "<>"}
+GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                  "--exec-path", "--config-env", "--super-prefix", "--list-cmds"}
+PUSH_VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+ZERO = "0" * 40
+# v1.0 final review (Cyra H3): Codex's patch parser trims each line before it
+# matches a file header, so `  *** Delete File: x` and TAB`*** Add File: x`
+# are headers too. v1.0 round 3 (B4): it splits lines on "\n" only (Rust's
+# str::lines, which also drops one "\r") and trims with Rust's str::trim,
+# which removes every Unicode White_Space character (NBSP, U+2000-U+200A,
+# U+3000...). _patch_paths reads the same lines the same way, extracting and
+# validating each header in one pass; a trimmed `***` line that is not a
+# header Tess knows is refused.
+_PATCH_HEADERS = ("*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: ")
+_PATCH_MARKERS = {"*** Begin Patch", "*** End Patch", "*** End of File"}
+_RUST_WS = ("\t\n\x0b\x0c\r \x85\xa0\u1680" + "".join(chr(c) for c in range(0x2000, 0x200b))
+            + "\u2028\u2029\u202f\u205f\u3000")
+_URL_CREDS = re.compile(r"(//)[^/@\s]+@")
+# git reads another config file (which can set core.hooksPath, an alias or an
+# include) from these; any assignment of them is a deny.
+GIT_CONFIG_FILE_ENV = {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS",
+                       "GIT_CONFIG"}
+# An empty config (the usual test isolation, GIT_CONFIG_GLOBAL=/dev/null) sets nothing.
+_EMPTY_CONFIG = {"/dev/null", "", "''", '""'}
+# Config keys that pull in other config (include) or define commands (alias).
+_GIT_CONFIG_INDIRECT = re.compile(r"^(include|includeif\.[^=]*|alias)\.", re.IGNORECASE)
+INTERPRETERS = re.compile(r"^(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|osascript)$")
+_INTERP_WRITE = re.compile(
+    r"write_text|write_bytes|\.write\(|writeFile|appendFile|createWriteStream|\bunlink|"
+    r"\bos\.(remove|rename|replace|system|symlink|chmod|truncate|popen|makedirs)|rmtree|"
+    r"\bshutil\.|\bsubprocess\b|child_process|execSync|spawnSync|rmSync|\.rename\(|\.symlink_to\(|"
+    r"\.chmod\(|\.touch\(|File\.(write|open|delete|rename)|\bsystem\(|open\([^)]*['\"][rwxa]?[wxa+]",
+)
+_INTERP_TOKEN = re.compile(r"[A-Za-z0-9_./~+-]+")
+# --- git option tables (security review round 2) -----------------------------
+# git's parse-options accepts any unique prefix of a long option (`--no-veri`
+# is `--no-verify`), so each dangerous option is matched as a prefix, not by
+# exact string. A prefix git would reject as ambiguous is flagged too, which
+# costs nothing. _NOT_ABBREV lists real options that are themselves a prefix
+# of a flagged one (git takes an exact match over an abbreviation).
+_NOT_ABBREV = {"--text"}
+_NO_VERIFY_SUBS = {"commit", "merge", "am", "rebase", "cherry-pick", "revert", "push", "pull",
+                   "commit-tree", "notes"}
+# Options that make git write its output to a file or run an external helper.
+_GIT_FILE_OPTS = ("--output", "--output-directory", "--no-index", "--ext-diff", "--textconv")
+# Subcommands whose short -o means "write the output to <file/dir>".
+_GIT_SHORT_O_SUBS = {"diff", "log", "show", "format-patch", "whatchanged", "archive", "diff-tree",
+                     "diff-index", "diff-files", "range-diff"}
+# Short options of the diff/log family that take their value in the same
+# cluster (`-Sfoo`, `-U5`, `-M50%`): the rest of the cluster is that value.
+_DIFF_VALUE_SHORT = set("SGOUlnMCBXIL")
+# Config keys whose value is a command git runs or an external diff/pager (H-A),
+# set with -c / --config-env or written by `git config`.
+_GIT_CMD_KEYS = re.compile(
+    r"^(diff\.external|diff\..+\.(command|textconv)|core\.pager|pager\..+|core\.fsmonitor|"
+    r"core\.sshcommand|core\.editor|sequence\.editor|core\.askpass|credential\.helper|"
+    r"credential\..+\.helper|gpg\.program|gpg\..+\.program|filter\..+\.(clean|smudge|process)|"
+    r"merge\..+\.driver|core\.gitproxy|core\.alternaterefscommand|uploadpack\.packobjectshook|"
+    r"remote\..+\.(uploadpack|receivepack)|protocol\..*allow)$", re.IGNORECASE)
+_BENIGN_VALUE = re.compile(r"^(cat|less|more|true|:|vi|vim|nano)(\s+-[A-Za-z]+)*$|^$")
+# Config keys the public-remote guard trusts to know where a push goes or
+# which remote is private (H-B).
+_GIT_REMOTE_KEYS = re.compile(r"^(remote\..+\.(url|pushurl)|url\..+\.(insteadof|pushinsteadof)|"
+                              r"tess\.privateremote)$", re.IGNORECASE)
+# The key directory named in command text (M-1): `~/.config/tess`,
+# `$HOME/.config/tess`, `${XDG_CONFIG_HOME}/tess`, the provenance override.
+# v1.0 audit: `./` and `x/../` segments between the two names still count
+# (`~/.CONFIG/./TESS`), since the file system resolves them to the same place.
+_KEY_DOTSEGS = r"(?:[/\\]+(?:\.|[^/\\\s'\"]+[/\\]+\.\.))*"
+_KEY_TEXT = re.compile(r"(?i)\.config" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
+                       r"|\$\{?XDG_CONFIG_HOME\}?" + _KEY_DOTSEGS + r"[/\\]+tess(?![\w.-])"
+                       r"|TESS_BRAIN_PROVENANCE_DIR")
+PROTECTED_DIR_ROOTS = {".tess", ".git", ".claude", ".codex", ".gemini", ".github",
+                       ".git/hooks", ".claude/hooks", ".github/workflows", "core/policy",
+                       "core/contracts", "scripts/brain", ".tess/core", ".tess/bin", ".tess/keys"}
+
+
+# --------------------------------------------------------------------------- helpers
+
+def _root() -> Path:
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    return Path(env) if env else Path(__file__).resolve().parent.parent.parent
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _scanner(root: Path):
+    """vault-dispatch-scan.py, loaded only after run-pinned.py verifies its sha."""
+    launcher = _load(root / LAUNCHER_REL, "tess_run_pinned")
+    path = launcher.verify(root, SCAN_REL, None)
+    return _load(path, "tess_vault_scan")
+
+
+def _leak_pattern_names(root: Path, text: str, specific_only: bool) -> list:
+    """Descriptions of the scanner patterns `text` matches (for example
+    "GitHub personal access token (ghp_)"). Never the matched text itself."""
+    mod = _scanner(root)
+    hits = []
+    for pattern, desc in mod._PATTERNS:
+        if specific_only and desc.startswith("generic"):
+            continue
+        if pattern.search(text) and desc not in hits:
+            hits.append(desc)
+    return hits
+
+
+# L-b: a whole PEM block (header, base64 body, footer; a missing footer
+# redacts to the end of the text), and any long base64 run that is not a
+# plain hex object id, are removed before the scanner's own patterns run.
+_PEM_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}-----.*?(?:-----END [A-Z0-9 ]{0,40}-----|\Z)",
+                        re.DOTALL)
+_B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9+/=_-])")
+
+
+def _redact_blob(m) -> str:
+    s = m.group(0)
+    return s if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", s) else "[REDACTED]"
+
+
+def _redact(root: Path, text: str) -> str:
+    text = _URL_CREDS.sub(r"\1***@", text)
+    text = _PEM_BLOCK.sub("[REDACTED PEM BLOCK]", text)
+    text = _B64_RUN.sub(_redact_blob, text)
+    try:
+        for pattern, _desc in _scanner(root)._PATTERNS:
+            text = pattern.sub("[REDACTED]", text)
+    except Exception:  # redaction must never be the reason a message is lost
+        text = re.sub(r"[A-Za-z0-9_\-]{32,}", "[REDACTED]", text)
+    return text
+
+
+def _short(root: Path, cmd: str) -> str:
+    one = " ".join(cmd.split())
+    one = _redact(root, one)
+    return one if len(one) <= 200 else one[:197] + "..."
+
+
+def _security_tier_paths(root: Path) -> set:
+    """live_path of every tess.lock `files:` entry tagged tier: security.
+
+    A line scanner, not a YAML parser (hooks run under the system python3,
+    which may not have PyYAML); same approach as run-pinned.py. v1.0 audit:
+    parsed once per file version (path, inode, mtime, size), not per path checked."""
+    path = root / ".tess" / "tess.lock"
+    try:
+        st = os.stat(str(path))
+        key = (os.path.realpath(str(path)), st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns,
+               st.st_size)
+        if key in _LOCK_CACHE:
+            return set(_LOCK_CACHE[key])
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    found = _parse_security_tier(text)
+    _LOCK_CACHE.clear()
+    _LOCK_CACHE[key] = frozenset(found)
+    return set(found)
+
+
+_LOCK_CACHE: dict = {}
+
+
+def _parse_security_tier(text: str) -> set:
+    entries: dict = {}
+    section = key = None
+    for raw in text.splitlines():
+        if raw and not raw.startswith((" ", "#")):
+            section, key = raw.split(":", 1)[0].strip(), None
+            continue
+        if section != "files":
+            continue
+        m = re.match(r"^  (\S[^:]*):\s*$", raw)
+        if m:
+            key = m.group(1).strip("'\"")
+            entries[key] = {}
+            continue
+        m = re.match(r"^    (tier|live_path):\s*(.*?)\s*$", raw)
+        if m and key is not None:
+            entries[key][m.group(1)] = m.group(2).strip("'\"")
+    return {e["live_path"] for e in entries.values()
+            if e.get("tier") == "security" and e.get("live_path") not in (None, "", "null", "~")}
+
+
+def _glob_hit(rel: str, globs) -> str | None:
+    low = rel.lower()  # macOS/Windows file systems are case-insensitive
+    for g in globs:
+        gl = g.lower()
+        if gl.endswith("/**"):
+            base = gl[:-3]
+            if low == base or low.startswith(base + "/"):
+                return g
+        elif fnmatch.fnmatchcase(low, gl):
+            return g
+        # A directory that CONTAINS a protected file (rm -rf .claude, mv .tess x).
+        base = gl[:-3] if gl.endswith("/**") else gl
+        if "*" not in base and base.startswith(low + "/"):
+            return g
+    return None
+
+
+# --------------------------------------------------------------------------- path identity (v1.0 audit)
+# realpath keeps the case the caller typed, and macOS (APFS) and Windows file
+# systems ignore case, so `/users/me/PROJ/.claude/x` names the same file as
+# `/Users/me/proj/.claude/x` while the strings differ. Containment is therefore
+# decided by file identity (st_dev, st_ino) of the nearest existing ancestor,
+# and the not-yet-existing rest of the path is compared without case.
+
+def _stat_id(path: str):
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _split_existing(path: str) -> tuple:
+    """(deepest existing ancestor of `path` (itself when it exists), [the
+    components below it])."""
+    p, tail = path, []
+    while _stat_id(p) is None:
+        parent = os.path.dirname(p)
+        if parent == p:
+            return p, tail
+        tail.insert(0, os.path.basename(p))
+        p = parent
+    return p, tail
+
+
+def _within(real: str, base: str) -> str | None:
+    """`real` relative to `base` ("." for base itself) when `real` is base or
+    lies under it, by identity; else None. Both are absolute, realpath'd."""
+    if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+        return os.path.relpath(real, base).replace(os.sep, "/")
+    anchor, btail = _split_existing(base)
+    aid = _stat_id(anchor)
+    if aid is None:
+        return None
+    want = [c.lower() for c in btail]
+    p, tail = real, []
+    while True:
+        if _stat_id(p) == aid:
+            if [c.lower() for c in tail[:len(want)]] == want and len(tail) >= len(want):
+                return "/".join(tail[len(want):]) or "."
+            return None
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        tail.insert(0, os.path.basename(p))
+        p = parent
+
+
+def _is_above(real: str, base: str, floor: str) -> bool:
+    """`real` is a directory strictly between `floor` and `base` (an ancestor
+    of base below floor), by identity. A search or a move of it reaches base."""
+    rid, fid = _stat_id(real), _stat_id(floor)
+    if rid is None or fid is None:
+        low, b, f = real.lower().rstrip(os.sep), base.lower(), floor.lower().rstrip(os.sep)
+        return b.startswith(low + os.sep) and low.startswith(f + os.sep)
+    between, p = [], os.path.dirname(base)
+    while True:
+        pid = _stat_id(p)
+        if pid == fid:
+            return rid in between
+        if pid is not None:
+            between.append(pid)
+        if p == os.path.dirname(p):
+            return False
+        p = os.path.dirname(p)
+
+
+def _rel_to_root(root: Path, cwd: str, path: str) -> str | None:
+    if not path:
+        return None
+    path = os.path.expanduser(path)
+    full = path if os.path.isabs(path) else os.path.join(cwd or str(root), path)
+    real = os.path.realpath(full)
+    base = os.path.realpath(str(root))
+    return _within(real, base)
+
+
+# Top-level modules and packages in scripts/: `python3 scripts/tess` (run at
+# every session start without a prompt) puts scripts/ first on sys.path, so a
+# new scripts/json.py would run in place of the standard library module.
+_SCRIPTS_IMPORTABLE = re.compile(r"^scripts/[^/]+(\.py[cw]?|\.so|\.pth|/__init__\.pyc?)$", re.IGNORECASE)
+
+
+def protected_hit(root: Path, cwd: str, path: str) -> str | None:
+    rel = _rel_to_root(root, cwd, path)
+    if rel is None:
+        return control_file_hit(root, cwd, path)
+    if rel == ".":
+        return None
+    if _SCRIPTS_IMPORTABLE.match(rel):
+        return "scripts/<module> (imported by scripts/tess at every session start)"
+    # A home directory inside the project (unusual) still has its control files.
+    return _glob_hit(rel, tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS) or \
+        control_file_hit(root, cwd, path)
+
+
+# --------------------------------------------------------------------------- control files outside the project (v1.0 audit)
+# Files outside the project that switch Tess's enforcement off for every
+# repository of this user: a global git config can set core.hooksPath (Tess's
+# git hooks stop running), an include, an alias or a command git runs; the
+# user-level Claude Code and Codex settings can turn hooks off. The command
+# routes (`git config --global core.hooksPath`, GIT_CONFIG_GLOBAL=...) were
+# already denied; a direct write of the file itself now is too.
+
+def _homes() -> list:
+    return sorted({os.path.expanduser("~"), _os_home()})
+
+
+def _git_includes(cfg: str) -> list:
+    """Files a git config pulls in with [include] / [includeIf] path = ...
+    (one level). A write to one of them is a write to that config."""
+    out = []
+    try:
+        with open(cfg, encoding="utf-8", errors="replace") as fh:
+            text = fh.read(262144)
+    except OSError:
+        return out
+    section = ""
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"^\[\s*([A-Za-z]+)", s)
+        if m:
+            section = m.group(1).lower()
+            continue
+        if section in ("include", "includeif"):
+            m = re.match(r"(?i)^path\s*=\s*(.+?)\s*$", s)
+            if m:
+                val = m.group(1).strip("\"'")
+                val = os.path.expanduser(val)
+                out.append(val if os.path.isabs(val) else os.path.join(os.path.dirname(cfg), val))
+    return out
+
+
+_CONTROL_CACHE: dict = {}
+
+
+def _control_files(root: Path) -> list:
+    """[(absolute path, real path, label)] of out-of-project enforcement-control
+    files (computed once per hook run)."""
+    key = str(root)
+    if key not in _CONTROL_CACHE:
+        _CONTROL_CACHE[key] = [(f, os.path.realpath(f), label) for f, label in _control_list(root)]
+    return _CONTROL_CACHE[key]
+
+
+def _control_list(root: Path) -> list:
+    files = []
+    for home in _homes():
+        xdg = os.path.join(home, ".config")
+        files += [
+            (os.path.join(home, ".gitconfig"), "your global git config"),
+            (os.path.join(xdg, "git", "config"), "your global git config"),
+            (os.path.join(home, ".claude", "settings.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude", "settings.local.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".claude.json"), "your Claude Code user settings"),
+            (os.path.join(home, ".codex", "config.toml"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "hooks.json"), "your Codex user settings"),
+            (os.path.join(home, ".codex", "rules"), "your Codex user rules"),
+        ]
+    if os.environ.get("XDG_CONFIG_HOME"):
+        files.append((os.path.join(os.environ["XDG_CONFIG_HOME"], "git", "config"),
+                      "your global git config"))
+    if os.environ.get("CODEX_HOME"):
+        for name in ("config.toml", "hooks.json", "rules"):
+            files.append((os.path.join(os.environ["CODEX_HOME"], name), "your Codex user settings"))
+    files += [("/etc/gitconfig", "the system git config"),
+              ("/Library/Application Support/ClaudeCode", "the managed Claude Code settings"),
+              ("/etc/claude-code", "the managed Claude Code settings"),
+              ("/etc/codex", "the managed Codex settings")]
+    for cfg in [f for f, label in files if label.endswith("git config")] + [
+            os.path.join(str(root), ".git", "config")]:
+        files += [(inc, "a file your git config includes") for inc in _git_includes(cfg)]
+    return files
+
+
+def control_file_hit(root: Path, cwd: str, path: str) -> str | None:
+    """The label of the out-of-project control file `path` writes (itself,
+    inside a control directory, or a directory holding one)."""
+    if not path or not isinstance(path, str):
+        return None
+    full = _expand(path)
+    full = full if os.path.isabs(full) else os.path.join(cwd or str(root), full)
+    real = os.path.realpath(full)
+    if re.search(r"(?i)(^|/)etc/gitconfig$", real.replace(os.sep, "/")):
+        return _control_label(real, "the system git config")
+    homes = [os.path.realpath(h) for h in _homes()]
+    for f, fr, label in _control_files(root):
+        # The file itself, a file inside a control directory, or (below the
+        # home directory) a directory that holds one: `mv ~/.codex x`.
+        if _within(real, fr) is not None or any(_is_above(real, fr, h) for h in homes):
+            return _control_label(f, label)
+    return None
+
+
+def _control_label(f: str, label: str) -> str:
+    for home in _homes():
+        if f.startswith(home.rstrip(os.sep) + os.sep):
+            f = "~" + f[len(home.rstrip(os.sep)):]
+            break
+    if "git config" in label or "includes" in label:
+        return (f"{f}: {label}, which can switch off Tess's git hooks for every repository; "
+                "set one ordinary key with `git config --global <key> <value>` instead")
+    return f"{f}: {label}, which can switch off Tess's safety gate"
+
+
+# --------------------------------------------------------------------------- key directory (M-1)
+
+def _os_home() -> str:
+    """The home directory in the OS user record. tessctl locates the operator
+    key from here, never from $HOME / $XDG_CONFIG_HOME (round 3, N-2)."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, AttributeError):
+        return os.path.expanduser("~")
+
+
+def _key_dirs() -> list:
+    """Real paths of the per-user directories that hold Tess signing keys:
+    the brain provenance key and the operator key dir (~/.config/tess), the
+    XDG variant, and the provenance override. Same-user files: see the
+    module docstring for what this does and does not stop."""
+    home = os.path.expanduser("~")
+    dirs = [os.path.join(home, ".config", "tess"), os.path.join(_os_home(), ".config", "tess")]
+    if os.environ.get("XDG_CONFIG_HOME"):
+        dirs.append(os.path.join(os.environ["XDG_CONFIG_HOME"], "tess"))
+    if os.environ.get("TESS_BRAIN_PROVENANCE_DIR"):
+        dirs.append(os.environ["TESS_BRAIN_PROVENANCE_DIR"])
+    return sorted({os.path.realpath(d) for d in dirs})
+
+
+def _expand(path: str) -> str:
+    home = os.path.expanduser("~")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    for var, val in (("HOME", home), ("XDG_CONFIG_HOME", xdg)):
+        path = path.replace("${" + var + "}", val).replace("$" + var, val)
+    return os.path.expanduser(path)
+
+
+def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
+    """The key directory `path` reaches (itself, inside it, or through a
+    symlink); with `ancestors`, also a directory ABOVE it that a recursive
+    search (Grep, `grep -r`) would descend into."""
+    if not path or not isinstance(path, str):
+        return None
+    full = _expand(path)
+    full = full if os.path.isabs(full) else os.path.join(cwd or os.getcwd(), full)
+    cands = {os.path.normpath(full), os.path.realpath(full)}
+    homes = {os.path.realpath(h) for h in _homes()}
+    for d in _key_dirs():
+        for c in cands:
+            # v1.0 audit: by identity, so a case variant (`~/.CONFIG/TESS`), a
+            # symlinked or `..` spelling, or another path to the same
+            # directory is the key directory too.
+            if _within(c, d) is not None:
+                return d
+            # A search (or a move) rooted between the home directory and the
+            # key dir (~/.config). A search of the whole home directory or of
+            # / is not refused: that is the stated same-user limit, not a boundary.
+            if ancestors and any(_is_above(c, d, h) for h in homes):
+                return d
+    return None
+
+
+def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None) -> None:
+    """Bash: any argument (or `--opt=value` value) that reaches the key
+    directory, or command text that names it (an inline `python -c open(...)`)."""
+    if _KEY_TEXT.search(raw):
+        v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing keys "
+                    "there are for the operator's own tools, not for an agent", "keys")
+        return
+    name = os.path.basename(argv[0]) if argv else ""
+    # v1.0 audit: mv/ditto too. Renaming a directory above the key dir
+    # (`mv ~/.config ~/cfg`) moves the keys to a path no check names.
+    recursive = name in ("grep", "rg", "find", "tar", "zip", "rsync", "cp", "ln", "fd", "mv",
+                         "ditto", "pax", "cpio") or \
+        any(re.match(r"^-[A-Za-z]*[rR]", a) for a in argv[1:])
+    for a in argv[1:]:
+        parts = {a, a.split("=", 1)[-1]}
+        # v1.0 round 2 (Cyra L1): the text the shell builds (`~/$a/tess`,
+        # `${H}fig/tess`, `~/.config/{tess,x}`) reaches it too.
+        vals, _ = _word_values(a, cwd, ctx) if ctx is not None and isinstance(a, _Word) else (None, "")
+        for text, _pat in vals or []:
+            if text != str(a):
+                parts |= {text, text.split("=", 1)[-1]}
+        for part in parts:
+            if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or (
+                    any(c in part for c in "*?[") and any(key_hit(cwd, g) for g in _glob(cwd, part))):
+                v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
+                            "the operator's own tools, not for an agent", "keys")
+                return
+
+
+def _glob(cwd: str, pattern: str, limit: int = 200) -> list:
+    import glob as _g
+    pat = _expand(pattern)
+    pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
+    try:
+        return _g.glob(pat, recursive=False)[:limit]
+    except Exception:
+        return []
+
+
+# --------------------------------------------------------------------------- shell parsing
+# v1.0 security audit (command-word resolution, literal operands): the gate
+# reads a command the way the shell does. Words keep how they were written
+# (quoted, a $variable, a glob, a command substitution), operators glued to
+# each other (`true&&(cp ...)`) are split, a here-document body is data (and
+# a program only for a shell reading it), and the program a segment runs is
+# found through reserved words, redirections, wrappers and runners.
+
+_PUNCT = ";&|()<>\n"
+# Longest first: what the shell reads as one operator or redirection.
+_OPS = (";;&", ";;", ";&", "&&", "||", "|&", "&>>", "&>", ">>", "<<<", "<<-", "<<", ">|", "<>",
+        ">&", "<&", ";", "&", "|", "(", ")", "<", ">", "\n")
+_REDIR_OPS = {">", ">>", ">|", "&>", "&>>", "<>", ">&", "<&", "<", "<<", "<<-", "<<<"}
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ANSI_C = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b",
+           "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+class _Word(str):
+    """One shell word: its text with quoting removed (what shlex gives), plus
+    how it was written. `parts` holds (kind, text) pieces: "lit" quoted or
+    escaped text, "raw" unquoted text (globs, braces and a leading ~ expand
+    there), "var" a $NAME, "sub" a command substitution, "proc" a process
+    substitution, "dyn" any other expansion. `op` marks an unquoted operator
+    or redirection, `fd` a file-descriptor number glued to one (`2>`), and
+    `body` a here-document's text (on the word after << / <<-). `q` runs
+    parallel to `parts`: True for an expansion written inside double quotes
+    (no field splitting, no globbing of its value)."""
+    op = False
+    fd = False
+    parts: tuple = ()
+    q: tuple = ()
+    body = None
+
+
+def _mkword(parts, op: bool = False) -> "_Word":
+    show = {"var": "${}", "sub": "$()", "proc": "<()", "dyn": "${}", "fallback": ""}
+    text = "".join(p[1] if p[0] in ("lit", "raw", "fallback", "arith") else
+                   show[p[0]][:-1] + p[1] + show[p[0]][-1] if p[0] != "var" else "$" + p[1]
+                   for p in parts)
+    w = _Word(text)
+    w.parts, w.op = tuple((p[0], p[1]) for p in parts), op
+    w.q = tuple(bool(p[2]) if len(p) > 2 else False for p in parts)
+    return w
+
+
+def _plain(text: str) -> "_Word":
+    """A word the gate made itself (a stand-in program name, a split value)."""
+    return _mkword([("lit", text)])
+
+
+class _Field(_Word):
+    """v1.0 round 3: one argument the gate has already expanded (a brace
+    field, a variable's value): its text, and `pat`, the glob pattern the
+    shell matches it against (None when it is not globbed). It is never
+    expanded again."""
+    pat = None
+
+
+def _field(text: str, pat: str | None = None) -> "_Field":
+    f = _Field(text)
+    f.parts, f.q, f.pat = (("lit", text),), (True,), pat
+    return f
+
+
+def _close_quote(s: str, i: int) -> int:
+    """Index of the `"` closing a double-quoted string whose text starts at i."""
+    while i < len(s):
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == '"':
+            return i
+        if c == "`":
+            i = _close_backtick(s, i)
+        elif s.startswith("$(", i):
+            i = _close_paren(s, i + 1)
+        i += 1
+    raise ValueError("No closing quotation")
+
+
+def _close_backtick(s: str, i: int) -> int:
+    j = i + 1
+    while j < len(s):
+        if s[j] == "\\":
+            j += 2
+            continue
+        if s[j] == "`":
+            return j
+        j += 1
+    raise ValueError("No closing backquote")
+
+
+def _close_paren(s: str, i: int) -> int:
+    """Index of the `)` closing the `(` at s[i] (quotes and nesting respected)."""
+    depth, j = 0, i
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            if k < 0:
+                raise ValueError("No closing quotation")
+            j = k
+        elif c == '"':
+            j = _close_quote(s, j + 1)
+        elif c == "`":
+            j = _close_backtick(s, j)
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    raise ValueError("No closing parenthesis")
+
+
+def _close_brace(s: str, i: int) -> int:
+    depth, j = 0, i
+    while j < len(s):
+        c = s[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "'":
+            k = s.find("'", j + 1)
+            j = k if k >= 0 else len(s)
+        elif c == '"':
+            j = _close_quote(s, j + 1)
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    raise ValueError("No closing brace")
+
+
+def _ansi_c(s: str, i: int) -> tuple:
+    """(index after the closing quote, decoded text) of a $'...' string."""
+    out = []
+    while i < len(s):
+        c = s[i]
+        if c == "'":
+            return i + 1, "".join(out)
+        if c == "\\" and i + 1 < len(s):
+            d = s[i + 1]
+            m = re.match(r"x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|c(.)",
+                         s[i + 1:])
+            if d in _ANSI_C:
+                out.append(_ANSI_C[d])
+                i += 2
+                continue
+            if m:
+                num = m.group(1) or m.group(2) or m.group(3)
+                out.append(chr(int(num, 16)) if num else chr(int(m.group(4), 8)) if m.group(4)
+                           else chr(ord(m.group(5)) & 0x1f))
+                i += 1 + m.end()
+                continue
+            out.append("\\" + d)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    raise ValueError("No closing quotation")
+
+
+def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
+    nxt = s[i + 1] if i + 1 < len(s) else ""
+    if nxt == "(":
+        # $(cmd), and $((...)): bash runs $((cmd) ) as a command when it is
+        # not arithmetic, so both are checked as a command.
+        j = _close_paren(s, i + 1)
+        add("sub", s[i + 2:j], quoted)
+        return j + 1
+    if nxt == "[":
+        j = s.find("]", i)
+        if j < 0:
+            raise ValueError("No closing bracket")
+        add("dyn", s[i + 1:j + 1], quoted)
+        return j + 1
+    if nxt == "{":
+        j = _close_brace(s, i + 1)
+        inner = s[i + 2:j]
+        add("var" if _NAME.fullmatch(inner) or inner.isdigit() else "dyn", inner, quoted)
+        return j + 1
+    if nxt == "'" and not quoted:
+        j, text = _ansi_c(s, i + 2)
+        add("lit", text)
+        return j
+    if nxt == '"' and not quoted:
+        return _scan_dquote(s, i + 2, add)
+    m = _NAME.match(s, i + 1)
+    if m:
+        add("var", m.group(0), quoted)
+        return m.end()
+    if nxt.isdigit():
+        add("var", nxt, quoted)
+        return i + 2
+    if nxt and nxt in "@*#?$!-":
+        add("dyn", nxt, quoted)
+        return i + 2
+    add("lit" if quoted else "raw", "$")
+    return i + 1
+
+
+def _scan_dquote(s: str, i: int, add) -> int:
+    add("lit", "")  # "" is still a word
+    while i < len(s):
+        c = s[i]
+        if c == '"':
+            return i + 1
+        if c == "\\" and i + 1 < len(s) and s[i + 1] in '$`"\\\n':
+            if s[i + 1] != "\n":
+                add("lit", s[i + 1])
+            i += 2
+        elif c == "$":
+            i = _scan_dollar(s, i, add, True)
+        elif c == "`":
+            j = _close_backtick(s, i)
+            add("sub", s[i + 1:j], True)
+            i = j + 1
+        else:
+            add("lit", c)
+            i += 1
+    raise ValueError("No closing quotation")
+
+
+def _read_heredocs(s: str, i: int, toks: list, docs: list) -> int:
+    """Attach each pending here-document body (the lines after the newline at
+    i, up to its delimiter) to its delimiter word; returns where commands resume."""
+    for idx, strip in docs:
+        if idx >= len(toks) or toks[idx].op:
+            continue  # `<<` with no delimiter word: a syntax error, nothing runs
+        delim, lines = str(toks[idx]), []
+        while i < len(s):
+            j = s.find("\n", i)
+            j = len(s) if j < 0 else j
+            line, i = s[i:j], min(j + 1, len(s))
+            if (line.lstrip("\t") if strip else line) == delim:
+                break
+            lines.append(line)
+        toks[idx].body = "\n".join(lines)
+    return i
+
+
+def _scan(cmd: str) -> list:
+    """The words and operators of `cmd` (see _Word). Raises ValueError on
+    unbalanced quotes, as shlex does."""
+    toks, docs, state = [], [], {"parts": None}
+
+    def add(kind, text, quoted=False):
+        parts = state["parts"]
+        if parts is None:
+            parts = state["parts"] = []
+        if parts and parts[-1][0] == kind and kind in ("lit", "raw"):
+            parts[-1][1] += text
+        else:
+            parts.append([kind, text, quoted])
+
+    def end():
+        if state["parts"] is not None:
+            toks.append(_mkword(state["parts"]))
+        state["parts"] = None
+
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c in " \t\r":
+            end()
+            i += 1
+        elif c == "\\":
+            if i + 1 >= len(cmd):
+                raise ValueError("No escaped character")
+            if cmd[i + 1] != "\n":
+                add("lit", cmd[i + 1])
+            i += 2
+        elif c == "'":
+            j = cmd.find("'", i + 1)
+            if j < 0:
+                raise ValueError("No closing quotation")
+            add("lit", cmd[i + 1:j])
+            i = j + 1
+        elif c == '"':
+            i = _scan_dquote(cmd, i + 1, add)
+        elif c == "$":
+            i = _scan_dollar(cmd, i, add, False)
+        elif c == "`":
+            j = _close_backtick(cmd, i)
+            add("sub", cmd[i + 1:j])
+            i = j + 1
+        elif c in "<>" and cmd.startswith("(", i + 1):
+            end()
+            j = _close_paren(cmd, i + 1)
+            add("proc", cmd[i + 2:j])
+            end()
+            i = j + 1
+        elif c == "(" and cmd.startswith("((", i) and state["parts"] is None and (
+                not toks or (toks[-1].op and toks[-1] not in _REDIR_OPS)):
+            j = _close_paren(cmd, i)  # (( arithmetic )): one word, not a subshell
+            add("arith", cmd[i:j + 1])
+            end()
+            i = j + 1
+        elif c in _PUNCT:
+            parts = state["parts"]
+            fd = c in "<>" and parts is not None and len(parts) == 1 and parts[0][0] == "raw" \
+                and parts[0][1].isdigit()
+            end()
+            if fd:
+                toks[-1].fd = True
+            op = next(o for o in _OPS if cmd.startswith(o, i))
+            toks.append(_mkword([("raw", op)], op=True))
+            i += len(op)
+            if op in ("<<", "<<-"):
+                docs.append((len(toks), op == "<<-"))
+            elif op == "\n" and docs:
+                i, docs = _read_heredocs(cmd, i, toks, docs), []
+        else:
+            add("raw", c)
+            i += 1
+    end()
+    return toks
+
+
+def _is_op(tok) -> bool:
+    return tok.op if isinstance(tok, _Word) else (tok in OPERATORS or tok in _REDIR_OPS)
+
+
+def _events(cmd: str) -> list:
+    """[("seg", [word, ...]) | ("op", operator), ...] in order. Redirections
+    stay inside their segment."""
+    out, cur = [], []
+    for tok in _scan(cmd):
+        if tok.op and tok in OPERATORS:
+            if cur:
+                out.append(("seg", cur))
+            out.append(("op", str(tok)))
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        out.append(("seg", cur))
+    return out
+
+
+def _segments(cmd: str) -> list:
+    """[[argv...], ...] split on shell operators. Redirection tokens stay in argv."""
+    return [x for kind, x in _events(cmd) if kind == "seg"]
+
+
+def _dynamic(word) -> bool:
+    """The word holds a value only known when the command runs."""
+    if isinstance(word, _Word) and word.parts:
+        return any(k in ("var", "sub", "dyn", "proc") or (k == "fallback" and re.search(r"[$`]", t))
+                   for k, t in word.parts)
+    return bool(re.search(r"[$`]", str(word)))
+
+
+# Words the shell reads before the program itself: `{ git ...; }`, `! git ...`,
+# `if true; then git ...; fi`, `while x; do git ...; done`.
+_KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+             "esac", "coproc"}
+# Wrappers and runners: the command they run follows their own options.
+# name: (short options taking a value, long options taking a value, operands before the command)
+_WRAP = {
+    "env": ("uCSP", ("--unset", "--chdir", "--split-string", "--block-signal", "--default-signal",
+                     "--ignore-signal"), 0),
+    "command": ("", (), 0), "builtin": ("", (), 0), "exec": ("a", (), 0), "nohup": ("", (), 0),
+    "time": ("fo", ("--format", "--output"), 0), "nice": ("n", ("--adjustment",), 0),
+    "sudo": ("ugChDprtTU", ("--user", "--group", "--close-from", "--host", "--chdir", "--prompt",
+                            "--role", "--type", "--command-timeout", "--other-user"), 0),
+    "doas": ("uC", (), 0), "nocorrect": ("", (), 0), "noglob": ("", (), 0),
+    "timeout": ("sk", ("--signal", "--kill-after"), 1), "gtimeout": ("sk", ("--signal", "--kill-after"), 1),
+    "xargs": ("adEIJLnPRSs", ("--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
+                              "--process-slot-var"), 0),
+    "stdbuf": ("ioe", ("--input", "--output", "--error"), 0),
+    "gstdbuf": ("ioe", ("--input", "--output", "--error"), 0),
+    "setsid": ("", (), 0), "caffeinate": ("tw", (), 0), "chronic": ("", (), 0),
+    "unbuffer": ("", (), 0), "ionice": ("cnp", ("--class", "--classdata", "--pid"), 0),
+    "taskset": ("", (), 1), "flock": ("wE", ("--wait", "--timeout", "--conflict-exit-code"), 1),
+    "chroot": ("", ("--userspec", "--groups"), 1), "sandbox-exec": ("fpnD", (), 0),
+    "arch": ("", ("-arch", "-e", "-d"), 0), "busybox": ("", (), 0), "toybox": ("", (), 0),
+    "faketime": ("f", (), 1), "firejail": ("", (), 0), "proxychains": ("f", (), 0),
+    "proxychains4": ("f", (), 0), "torsocks": ("", (), 0), "strace": ("eoOpPsSuEIXb", (), 0),
+    "ltrace": ("eoOpPsSuEIXbn", (), 0), "dtruss": ("pnt", (), 0), "valgrind": ("", (), 0),
+    "catchsegv": ("", (), 0), "pkexec": ("", ("--user",), 0), "runuser": ("ugG", ("--user",), 0),
+    "nsenter": ("tSG", (), 0), "unshare": ("", (), 0), "entr": ("", (), 0), "script": ("tT", (), 0),
+}
+# `tool sub` pairs that run the rest of the line: `uv run git ...`, `bundle exec ...`.
+_SUB_RUNNERS = {"uv": ("run", "tool"), "uvx": None, "poetry": ("run",), "pipenv": ("run",),
+                "pdm": ("run",), "hatch": ("run",), "rye": ("run",), "conda": ("run",),
+                "mamba": ("run",), "micromamba": ("run",), "bundle": ("exec",), "npm": ("exec",),
+                "pnpm": ("exec", "dlx"), "yarn": ("exec", "dlx"), "npx": None, "bunx": None,
+                "pnpx": None, "direnv": ("exec",), "mise": ("exec", "x"), "asdf": ("exec",),
+                "op": ("run",), "doppler": ("run",), "aws-vault": ("exec",), "devbox": ("run",),
+                "nix": ("develop", "shell"), "dotenv": None, "infisical": ("run",)}
+# Programs that run a command string: `watch 'git ...'`, `su -c '...'`, `flock f -c '...'`.
+_STRING_RUNNERS = {"watch": None, "hyperfine": None, "parallel": None, "su": "-c", "flock": "-c",
+                   "nix-shell": "--run", "script": "-c", "sudo": None}
+_READONLY_PROGRAMS = {"cd", "pushd", "popd", "echo", "printf", "true", "false", ":", "pwd", "ls",
+                      "cat", "test", "[", "export", "set", "unset", "read", "for", "local",
+                      "declare", "typeset", "readonly", "grep", "rg", "head", "tail", "wc",
+                      "stat", "which", "type", "sleep", "date", "whoami", "hostname", "uname"}
+
+
+class _Cmd:
+    """The program a segment runs, found through the words in front of it."""
+    __slots__ = ("env", "argv", "chdir", "inner", "via_xargs", "prefix")
+
+    def __init__(self):
+        self.env, self.argv, self.chdir, self.inner = {}, [], None, []
+        self.via_xargs, self.prefix = False, []
+
+
+def _interesting(word) -> bool:
+    """A word that can be the program the gate has rules for."""
+    low = os.path.basename(str(word)).lower()
+    return (_dynamic(word) or low in _NAMED or low in WRITERS or low in INPLACE or low in SHELLS
+            or low in EXTRACTORS or low in _WRAP or low in _SUB_RUNNERS or low in _STRING_RUNNERS
+            or _writer_name(low) or bool(INTERPRETERS.match(low)) or low.startswith("git-"))
+
+
+def _skip_options(argv: list, i: int, prog: str) -> tuple:
+    """(index of the command word, chdir, split string) after the wrapper
+    `prog` at argv[i-1]."""
+    shorts, longs, operands = _WRAP[prog]
+    cdflag = {"env": "C", "sudo": "D"}.get(prog, "")
+    chdir = split = None
+    split_word = None
+    while i < len(argv):
+        a = str(argv[i])
+        if a == "--":
+            i += 1
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            takes = name in longs
+            word = _sub_word(argv[i], len(name) + 1) if eq else None
+            if takes and not eq:
+                word = argv[i + 1] if i + 1 < len(argv) else _plain("")
+                val, i = str(word), i + 1
+            if name == "--chdir":
+                chdir = word
+            if name == "--split-string":
+                split, split_word = val, word
+            i += 1
+            continue
+        if a in longs:  # single-dash long options (`arch -arch x86_64`)
+            i += 2
+            continue
+        if a.startswith("-") and len(a) > 1 and not a[1:].isdigit():
+            for k, ch in enumerate(a[1:], 1):
+                if ch in shorts:
+                    val, word = a[k + 1:], _sub_word(argv[i], k + 1)
+                    if not val:
+                        word = argv[i + 1] if i + 1 < len(argv) else _plain("")
+                        val, i = str(word), i + 1
+                    if ch == cdflag:
+                        chdir = word
+                    if ch == "S":
+                        split, split_word = val, word
+                    break
+            i += 1
+            continue
+        if a.startswith("-") and a[1:].isdigit():  # nice -5
+            i += 1
+            continue
+        break
+    if split_word is not None and _dynamic(split_word):
+        split = (str(split_word),)  # round 3: a run-time string, checked as a command
+    return i + operands, chdir, split
+
+
+def _resolve(argv: list) -> "_Cmd":
+    """Find the program a segment runs: past VAR=value assignments, reserved
+    words (`{`, `!`, `then`...), redirections, wrappers and runners (env,
+    nice -n 5, timeout 600, xargs -I{}, uv run...). The resolved argv starts
+    at that program; `env` holds the assignments met on the way."""
+    res, i, guard = _Cmd(), 0, 0
+    argv = list(argv)
+    while i < len(argv) and guard < 64:
+        guard += 1
+        tok = argv[i]
+        low = os.path.basename(str(tok)).lower()
+        if _is_op(tok) and str(tok) in _REDIR_OPS:
+            i += 2
+            continue
+        if isinstance(tok, _Word) and tok.fd and i + 1 < len(argv) and _is_op(argv[i + 1]):
+            i += 1
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", str(tok)) and not _is_op(tok):
+            k, val = str(tok).split("=", 1)
+            res.env[k.rstrip("+")] = val  # NAME+=value appends
+            i += 1
+            continue
+        if (str(tok) in _KEYWORDS and not (isinstance(tok, _Word) and any(k != "raw" for k, _ in tok.parts))) \
+                or (isinstance(tok, _Word) and [k for k, _ in tok.parts] == ["arith"]):
+            i += 1  # a reserved word, or a (( arithmetic )) command
+            continue
+        if str(tok) == "function":
+            i += 2
+            continue
+        if low in _STRING_RUNNERS and _string_runner(argv, i, low, res):
+            return res
+        if low in _WRAP:
+            j, chdir, split = _skip_options(argv, i + 1, low)
+            res.chdir = chdir if chdir is not None else res.chdir
+            res.via_xargs = res.via_xargs or low == "xargs"
+            if isinstance(split, tuple):
+                # v1.0 round 3: `env -S "$X" ...`: the value (split as the shell
+                # splits an unquoted word) and the words after it run as a command
+                res.inner.append(" ".join([split[0]] + [str(a) if _dynamic(a) else shlex.quote(str(a))
+                                                        for a in argv[j:] if not _is_op(a)]))
+                return res
+            if split is not None:
+                argv = argv[:j] + [_plain(w) for w in split.split()] + argv[j:]
+            i = _next_program(argv, j)
+            continue
+        if low in _SUB_RUNNERS:
+            subs = _SUB_RUNNERS[low]
+            if subs is None or (i + 1 < len(argv) and str(argv[i + 1]) in subs):
+                i = _next_program(argv, i + (1 if subs is None else 2))
+                continue
+        break
+    res.argv = argv[i:]
+    res.prefix = argv[:i]
+    return res
+
+
+def _next_program(argv: list, j: int) -> int:
+    """Index of the command word from j: j itself when the rule tables know it,
+    else the first later word they know (a runner's unknown option values sit
+    in between), else j."""
+    if j >= len(argv) or _interesting(argv[j]) or re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", str(argv[j])):
+        return j
+    for k in range(j + 1, len(argv)):
+        if _interesting(argv[k]) and not _is_op(argv[k]):
+            return k
+    return j
+
+
+def _string_runner(argv: list, i: int, low: str, res: "_Cmd") -> bool:
+    """Runners whose command is one string: the string is checked as a command."""
+    flag = _STRING_RUNNERS[low]
+    rest = [str(a) for a in argv[i + 1:] if not _is_op(a)]
+    if low == "sudo":
+        if not any(a in ("-s", "-i", "--shell", "--login") for a in rest):
+            return False
+        cmd = [a for a in rest if not a.startswith("-")]
+        if cmd:
+            res.inner.append(" ".join(cmd))
+        else:
+            res.argv = [_plain("sh")]  # `sudo -s`: an interactive shell (Codex refuses it)
+        return True
+    if flag is not None:
+        for k, a in enumerate(rest):
+            if (a == flag or (flag == "-c" and re.fullmatch(r"-[A-Za-z]*c", a))) and k + 1 < len(rest):
+                res.inner.append(rest[k + 1])
+                return True
+        return False
+    if low == "parallel":
+        cut = rest.index(":::") if ":::" in rest else len(rest)
+        words = [a for a in rest[:cut] if not a.startswith("-")]
+    else:
+        words = [a for a in rest if not a.startswith("-") and not a.isdigit()]
+    if words:
+        res.inner.append(" ".join(words))
+    return True
+
+
+def _strip_prefix(argv: list) -> tuple:
+    """(env, argv from the program on): see _resolve."""
+    res = _resolve(argv)
+    return res.env, res.argv
+
+
+ADVICE = {
+    "noverify": "Commit or push without --no-verify and fix what the hook reports.",
+    "hookspath": "Leave core.hooksPath unset. If you really need another hooks directory, "
+                 "set it yourself outside the agent.",
+    "protected": "Protected Tess files change only through a reviewed release. If you mean to "
+                 "change one, do it yourself outside the agent; the ship gate will ask for a "
+                 "signed verdict.",
+    "token": "Run gh commands directly (gh reads the token itself), or use "
+             "`tessctl vault exec` for a secret.",
+    "secret": "Keep secrets out of commands and dispatches: read them from the environment, "
+              "`tessctl vault exec`, or a vault:// reference.",
+    "push": "Push to a private remote, or follow the steps above.",
+    "error": "Try a simpler command. If it keeps failing, run `./tessctl doctor`, or run the "
+             "command yourself outside the agent.",
+    "gitfile": "Let git print to the terminal (drop the output-file option), or redirect the "
+               "output to a file outside Tess's protected paths yourself.",
+    "keys": "Tess's signing keys stay with the operator. Run the tessctl or tessbrain command "
+            "that needs the key; it reads the key itself.",
+    "rollback": "Protected Tess files come back only from HEAD (`git restore --source=HEAD -- "
+                "<path>`) or through a reviewed release (`./tessctl update`). To check out an "
+                "older copy on purpose, run the git command yourself outside the agent.",
+    "envhome": "Run git and tessctl with your normal HOME and XDG_CONFIG_HOME; Tess finds the "
+               "operator's key directory from the OS user record either way.",
+    "vault": "The raw value stays out of this session (conductor/vault.md). Pass the ref to a "
+             "tool that reads the secret from its environment itself: `./tessctl vault exec "
+             "--ref <service/key> -- <tool>` (a provider's CLI or SDK). To see or use the value "
+             "by hand, run the command yourself in your own terminal.",
+    "operator": "Ask the operator to run it in their own terminal and type the answer "
+                "themselves (for an update: `./tessctl update`, then `accept <version>`).",
+    "cdfail": "If a `cd` in this command fails, the shell stays where it was and runs the rest "
+              "there. Write `cd <folder> && <command>` so the command runs only after the `cd` works.",
+}
+
+# v1.0.0 (release integration, item a): `tessctl update` (new safety rules) and
+# `tessctl approve` ask a person at a terminal to type the answer. An agent
+# must not fake that terminal or type the answer for them.
+# v1.0.0 final review (Cyra A-2): these are matched on the shlex-parsed words of
+# every sub-command (quotes and backslashes removed the way the shell removes
+# them), plus the command text with quotes and backslashes stripped, so
+# `./tess''ctl anchor ac''cept` or `"anchor" "accept"` read as what runs.
+_PTY_WRAPPER = re.compile(r"(?i)(?<![\w.-])(script|expect|unbuffer|socat|pexpect|ptyprocess|openpty|"
+                          r"forkpty|pty\.spawn|import\s+pty|from\s+pty)(?![\w.-])")
+_TYPED_APPROVAL = re.compile(r"(?i)\baccept\W+v?\d|\baccept\W+safety\W+changes\b")
+# v1.0.0: the enforcement anchor is written only by the operator (accept) or
+# the installer (init); an agent never records its own changes as approved.
+_ANCHOR_WRITE = re.compile(r"(?i)\banchor\W+(accept|init)\b")
+# Programs that fake a terminal or type into one.
+_PTY_PROGRAMS = {"script", "expect", "unbuffer", "socat", "tmux", "screen", "dtach", "zpty",
+                 "empty", "ttyexec", "pexpect"}
+# Programs that run the command they are given (the tessctl word is theirs to run).
+_RUNNERS = _PTY_PROGRAMS | {"timeout", "gtimeout", "xargs", "stdbuf", "caffeinate", "watch",
+                            "parallel", "setsid", "arch", "open", "osascript"}
+# An interpreter that opens a pseudo-terminal: the word tessctl can be built at
+# run time (`'tess' + 'ctl'`), so the pty itself is the signal.
+_PTY_CODE = re.compile(r"(?i)\bimport\s+pty\b|\bfrom\s+pty\b|\bpty\.(spawn|fork|openpty)\b|"
+                       r"\bos\.(openpty|forkpty)\b|\bpexpect\b|\bptyprocess\b|IO::Pty|node-pty")
+# tessctl subcommands that ask the operator to type the answer.
+_PROMPT_SUBS = {"update", "self-update", "approve", "anchor"}
+# v1.0 audit: forms that change the recorded state of Tess's safety files
+# (their tess.lock status or base_sha, or the live copy) on the operator's
+# behalf. tessctl asks a person at a terminal for these; like the prompts
+# above, an agent must not feed or fake that terminal. () = every form of the
+# subcommand; otherwise only with one of these options (argparse also takes a
+# unique prefix, `--reg`). Read-only forms (status, diff, verify, `lock
+# --check`, `restore --dry-run`) are unaffected.
+_STATE_SUBS = {"override": (), "reset": (), "resolve": (), "rollback": (),
+               "restore": ("--force",), "publish": ("--force",), "capture": ("--auto",),
+               "lock": ("--regen",)}
+# v1.0 audit (integration): signing a verifier verdict or a hard-floor
+# sign-off needs the operator at their terminal typing `sign as <Name>` and
+# the key's passphrase. The words after `tessctl` (positional words only).
+_SIGN_FORMS = (("verdict", "sign"), ("gate", "signoff", "sign"),
+               # recruit / bench / roster apply of a security-tier entry ask the
+               # operator at a terminal too (writer B); the gate cannot tell the
+               # tier from the words, so every form counts.
+               ("recruit",), ("bench",), ("roster", "apply"),
+               # the operator's own push approval (integration pass 4)
+               ("gate", "approve"))
+
+
+def _opt_given(words: list, opts: tuple) -> bool:
+    """One of the long options `opts` is among `words`, spelled out or as a
+    prefix argparse would expand (`--forc`, `--regen=x`)."""
+    for w in words:
+        if w == "--":
+            return False
+        name = w.split("=", 1)[0]
+        if len(name) >= 3 and name.startswith("--") and any(o.startswith(name) for o in opts):
+            return True
+    return False
+
+
+def _operator_form(words: list) -> bool:
+    """These tessctl words ask the operator at a terminal (see _PROMPT_SUBS,
+    _STATE_SUBS)."""
+    sub = next((w.lower() for w in words if not w.startswith("-")), "")
+    if sub in _PROMPT_SUBS:
+        return True
+    pos = tuple(w.lower() for w in words if not w.startswith("-"))
+    if any(pos[:len(form)] == form for form in _SIGN_FORMS):
+        return True
+    if sub in _STATE_SUBS:
+        opts = _STATE_SUBS[sub]
+        return not opts or _opt_given([w.lower() for w in words], opts)
+    return False
+
+
+# --------------------------------------------------------------------------- vault (v1.0 audit)
+# The vault's rule (conductor/vault.md): a secret's raw value never enters an
+# agent transcript; it is decrypted only into the environment of the program
+# that uses it. `vault get --reveal` prints it, and `vault exec -- <printer>`
+# (printenv, echo, a shell, an interpreter running inline code) hands it to a
+# program whose output is the transcript. Denied like `gh auth token`.
+_VAULT_PRINTERS = {"printenv", "env", "echo", "printf", "cat", "tee", "head", "tail", "less", "more",
+                   "od", "xxd", "hexdump", "strings", "base64", "awk", "gawk", "mawk", "nawk", "jq",
+                   "set", "export", "declare", "typeset", "ps", "launchctl", "pbcopy", "xargs",
+                   "logger", "sed", "grep", "rev", "tr", "cut", "fold", "nl", "sort", "uniq",
+                   "osascript", "tmux", "screen", "script", "expect", "vi", "vim", "nano", "emacs"}
+_VAULT_SHELLS = SHELLS | {"fish", "csh", "tcsh", "pwsh", "powershell", "busybox", "eval", "source"}
+# Variables a program reads as a file, a command, an option list or a prompt:
+# a secret placed in one shows up in error output or is run.
+_VAULT_BAD_AS = re.compile(r"(?i)^(BASH_ENV|ENV|PATH|CDPATH|IFS|PS[0-9]|PROMPT_COMMAND|SHELLOPTS|"
+                           r"BASHOPTS|HOME|ZDOTDIR|TMPDIR|SHELL|EDITOR|VISUAL|PAGER|LESS[A-Z_]*|"
+                           r"MANPAGER|LD_[A-Z_]*|DYLD_[A-Z_]*|BASH_FUNC_.*|PYTHON[A-Z_]*|NODE_[A-Z_]*|"
+                           r"NPM_CONFIG_.*|PERL[A-Z0-9_]*|RUBY[A-Z_]*|GEM_[A-Z_]*|JAVA_TOOL_OPTIONS|"
+                           r"_JAVA_OPTIONS|GIT_[A-Z_]*|SSH_ASKPASS|SUDO_ASKPASS|XDG_[A-Z_]*|TESS_[A-Z_]*|"
+                           r"CLAUDE_[A-Z_]*|CODEX_[A-Z_]*|HTTPS?_PROXY|ALL_PROXY)$")
+_VAULT_RUNNERS = {"timeout", "gtimeout", "stdbuf", "caffeinate", "setsid", "arch", "nice", "nohup",
+                  "time", "command", "exec", "builtin", "sudo", "doas"}
+
+
+def _vault_consumer(argv: list) -> list:
+    """The program `vault exec` would run, past assignments and wrappers
+    (`env VAR=x`, `nice`, `timeout 5`, `sudo`)."""
+    i = 0
+    while i < len(argv):
+        name = os.path.basename(_unquote(argv[i])).lower()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+            i += 1
+        elif name == "env":
+            j = i + 1
+            while j < len(argv) and (argv[j].startswith("-") or re.match(r"^[A-Za-z_]\w*=", argv[j])):
+                j += 1
+            if j >= len(argv):
+                return argv[i:]  # a bare `env` prints the whole environment
+            i = j
+        elif name in _VAULT_RUNNERS:
+            i += 1
+            while i < len(argv) and (argv[i].startswith("-") or re.match(r"^[0-9.]+[smhd]?$", argv[i])):
+                i += 1
+        else:
+            break
+    return argv[i:]
+
+
+def _vault_exec_parts(words: list) -> tuple:
+    """(the --as names, the consumer argv) of the words after `vault exec`."""
+    as_names, i = [], 0
+    while i < len(words):
+        w = words[i]
+        if w == "--":
+            return as_names, words[i + 1:]
+        if not w.startswith("-") or w == "-":
+            return as_names, words[i:]
+        name, eq, val = w.partition("=")
+        is_as = len(name) >= 3 and "--as".startswith(name)
+        takes = is_as or (len(name) >= 3 and "--ref".startswith(name))
+        if takes and not eq:
+            val = words[i + 1] if i + 1 < len(words) else ""
+            i += 1
+        if is_as:
+            as_names.append(_unquote(val))
+        i += 1
+    return as_names, []
+
+
+def _presence_read_only(words: list) -> bool:
+    """Forms of the operator-only tessctl subcommands that change nothing:
+    `--help`, `anchor` / `anchor status`, `update --check|--dry-run`,
+    `capture|restore --dry-run`. Codex may run these (integration pass 3)."""
+    low = [w.lower() for w in words]
+    if any(w in ("-h", "--help") for w in low):
+        return True
+    pos = [w for w in low if not w.startswith("-")]
+    head = pos[0] if pos else ""
+    if head == "anchor":
+        return pos[1:2] in ([], ["status"])
+    if head == "update":
+        return _opt_given(low, ("--check", "--dry-run"))
+    if head in ("capture", "restore"):
+        return _opt_given(low, ("--dry-run",))
+    return False
+
+
+def _expanded_words(argv: list, cwd, ctx) -> list:
+    """argv's operands as plain strings, each expanded as the shell will when
+    Tess can know it (else the word as written)."""
+    out = []
+    for a in _operands(argv):
+        cands = None
+        if ctx is not None and _dynamic(a):
+            try:
+                cands, _ = _word_values(a, cwd, ctx)
+            except (ValueError, TypeError):
+                cands = None
+        out += [t for t, _p in cands] if cands else [str(a)]
+    return out
+
+
+def _check_vault(words: list, v) -> None:
+    """`tessctl vault get --reveal` / `--force`, and `tessctl vault exec` into a
+    program that prints what it is given."""
+    pos = [w for w in words if not w.startswith("-")]
+    if len(pos) < 2 or pos[0].lower() != "vault":
+        return
+    vsub = pos[1].lower()
+    rest = words[words.index(pos[1]) + 1:]
+    if vsub == "get" and _opt_given([w.lower() for w in rest], ("--reveal", "--force")):
+        v.add(DENY, "`tessctl vault get --reveal` prints a secret's raw value into this session "
+                    "and its transcript", "vault")
+        return
+    if vsub != "exec":
+        return
+    as_names, consumer = _vault_exec_parts(rest)
+    bad = [n for n in as_names if _VAULT_BAD_AS.match(n.strip())]
+    if bad:
+        v.add(DENY, f"`tessctl vault exec --as {bad[0]}` puts the secret in a variable that "
+                    "programs read as a file, command or setting, so its value can show up in "
+                    "their output", "vault")
+        return
+    prog = _vault_consumer(consumer)
+    if not prog:
+        return
+    name = os.path.basename(_unquote(prog[0])).lower()
+    args = prog[1:]
+    inline = any(a in ("-c", "-e", "-E", "-p", "-r", "--eval", "--print", "--command", "-")
+                 or re.match(r"^-[A-Za-z]*[ceE]$", a) for a in args)
+    script = [a for a in args if not a.startswith("-")]
+    if name in _VAULT_PRINTERS or name in _VAULT_SHELLS or (
+            INTERPRETERS.match(name) and (inline or not script)):
+        v.add(DENY, f"`tessctl vault exec` would hand the secret to `{name}`, which can print it "
+                    "into this session and its transcript", "vault")
+
+
+def _unquote(text: str) -> str:
+    """The command text with shell quoting removed (`tess''ctl` -> `tessctl`)."""
+    return re.sub(r"[\"'\\]", "", text)
+
+
+def _is_tessctl(word: str) -> bool:
+    return os.path.basename(_unquote(word).rstrip("/")).lower() in ("tessctl", "tessctl.py")
+
+
+def _operator_pipelines(cmd: str) -> list | None:
+    """[[segment argv, ...] per pipeline] or None when the text does not parse
+    either way (the caller then judges the unquoted text alone)."""
+    for commenters in ("", "#"):
+        try:
+            lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
+            lx.whitespace, lx.whitespace_split, lx.commenters = " \t\r", True, commenters
+            toks = list(lx)
+        except ValueError:
+            continue
+        pipes, cur, seg = [], [], []
+        for tok in toks + [";"]:
+            if tok in ("|", "|&"):
+                cur, seg = cur + [seg], []
+            elif tok in OPERATORS:
+                cur = cur + [seg] if seg else cur
+                pipes, cur, seg = (pipes + [cur] if cur else pipes), [], []
+            else:
+                seg.append(tok)
+        return pipes
+    return None
+
+
+def _tessctl_call(argv: list) -> list | None:
+    """The words after `tessctl` when this segment runs it (directly, through
+    python3 [-I -B ...], or through a runner/pty program); else None."""
+    if not argv:
+        return None
+    name = os.path.basename(argv[0]).lower()
+    if _is_tessctl(argv[0]):
+        return argv[1:]
+    if INTERPRETERS.match(name) or name in SHELLS:
+        i = 1
+        while i < len(argv) and argv[i].startswith("-") and argv[i] not in ("-c", "-e", "-"):
+            i += 2 if argv[i] in ("-W", "-X", "-m") else 1
+        if i < len(argv) and _is_tessctl(argv[i]):
+            return argv[i + 1:]
+        return None
+    if name in _RUNNERS:
+        for j, a in enumerate(argv[1:], 1):
+            if _is_tessctl(a) or re.search(r"(?i)tessctl", _unquote(a)):
+                return argv[j + 1:] if _is_tessctl(a) else _unquote(a).split()
+    return None
+
+
+def _check_operator_only(cmd: str, v) -> None:
+    flat = _unquote(cmd)
+    pipes = _operator_pipelines(cmd)
+    calls, fed = [], False
+    if pipes is None:  # unparseable: judge the words after each `tessctl` in the plain text
+        words = re.split(r"[\s;&|()<>]+", flat)
+        for i, w in enumerate(words):
+            if _is_tessctl(w):
+                _check_vault(words[i + 1:], v)
+    for pipe in pipes or []:
+        for k, seg in enumerate(pipe):
+            _, argv = _strip_prefix(seg)
+            words = _tessctl_call(argv)
+            name = os.path.basename(argv[0]).lower() if argv else ""
+            if name in ("tmux", "screen") and any(
+                    re.search(r"(?i)\b(accept|anchor)\b|\bsign\W+as\b", _unquote(a)) for a in argv[1:]):
+                v.add(DENY, "only the operator can answer Tess's approval prompts; this command "
+                            "would type the approval into a terminal for them", "operator")
+            if (INTERPRETERS.match(name) or name in ("-",)) and _PTY_CODE.search(flat):
+                v.add(DENY, "it runs interpreter code that opens a pseudo-terminal, which can fake "
+                            "the terminal Tess's approval prompts are typed into", "operator")
+            if words is None:
+                continue
+            calls.append((name, [w.lower() for w in words]))
+            _check_vault(words, v)
+            redirected = any(re.match(r"^\d*<", w) for w in words)
+            if _operator_form(words) and (k > 0 or redirected):
+                fed = True
+    tess_text = re.search(r"(?i)tessctl", flat) is not None
+    if not calls and not tess_text:
+        return
+    # v1.0 final review (Cyra L2): the anchor words count where tessctl really
+    # runs (its own words, or code handed to an interpreter or runner that
+    # names it), not in prose (`echo "run tessctl anchor accept" > doc`).
+    # v1.0 round 3 (D2): a shell's `-c` string and eval's words are commands,
+    # parsed and checked call by call where they run (_check_shell, eval in
+    # _check_program), so their plain text is not matched here.
+    code_text = flat if pipes is None else " ".join(
+        _unquote(" ".join(a)) for pipe in pipes for seg in pipe for a in [_strip_prefix(seg)[1]]
+        if a and (INTERPRETERS.match(os.path.basename(a[0]).lower())
+                  or os.path.basename(a[0]).lower() in _RUNNERS | WRAPPERS))
+    if (tess_text and _ANCHOR_WRITE.search(code_text) and re.search(r"(?i)tessctl", code_text)) or any(
+            "anchor" in w and {"accept", "init"} & set(w[w.index("anchor") + 1:]) for _, w in calls):
+        v.add(DENY, "only the operator can record Tess's safety files as approved "
+                    "(`tessctl anchor accept`, in their own terminal)", "operator")
+    if (fed or any(n in _PTY_PROGRAMS for n, _ in calls)
+            or (calls and re.search(r"(?i)\baccept\b", flat))
+            or (tess_text and (_PTY_WRAPPER.search(flat) or _TYPED_APPROVAL.search(flat)))):
+        v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
+                    "fake a terminal or type the approval for them", "operator")
+
+
+class Verdict:
+    def __init__(self):
+        self.level = ALLOW
+        self.reasons: list = []
+        self.advice: list = []
+
+    def add(self, level: int, reason: str, advice: str | None = None):
+        if reason not in self.reasons:
+            self.reasons.append(reason)
+        if advice and ADVICE[advice] not in self.advice:
+            self.advice.append(ADVICE[advice])
+        self.level = max(self.level, level)
+
+
+def _short_flags(args: list) -> str:
+    return "".join(a[1:] for a in args if re.match(r"^-[A-Za-z]+$", a))
+
+
+def _commit_no_verify(args: list) -> bool:
+    for a in args:
+        if a == "--":
+            break
+        if re.match(r"^-[A-Za-z]+$", a):
+            for ch in a[1:]:
+                if ch == "n":
+                    return True
+                if ch in "mFCctS":  # takes a value: the rest of the cluster is that value
+                    break
+    return False
+
+
+class _Unk(str):
+    """A git argument only known when the command runs; its text is the word
+    as written. `one`: it stays one argument; `lead`: it cannot start with
+    "-"; `prefix`: its known leading text; `positional`: a function's $1 or
+    "$@" read at the definition (checked again at each call)."""
+    one = lead = positional = False
+    prefix = ""
+
+
+def _word_shape(word, ctx: "_Ctx") -> tuple:
+    """(stays one argument, cannot start with "-") for a word Tess cannot
+    fully expand: quoted run-time parts stay one argument; a branch name from
+    `git branch --show-current` (or a variable set from one) or a length
+    ${#X} cannot be an option."""
+    if not isinstance(word, _Word) or not word.parts:
+        return False, False
+    one, lead = True, None
+    for n, (k, t) in enumerate(word.parts):
+        q, known, safe = _part_quoted(word, n), None, False
+        if k in ("lit", "raw"):
+            try:
+                known = [t] if k == "lit" else _braces(t)
+            except _Overflow:
+                return False, False
+        elif k == "var":
+            known = _var_values(t, None, ctx)
+            safe = known is None and t in ctx.nonopt
+        elif k == "sub":
+            known = _sub_values(t, None)
+            safe = known is None and bool(_NONOPT_SUB.match(t))
+        elif k == "dyn":
+            # ${#X}, $#, $$, $!, $? are numbers; $- is a run of flag letters
+            safe = t.startswith("#") or t in ("$", "!", "?", "-")
+        elif k == "proc":
+            safe = True  # <(cmd) is one /dev/fd path; what it holds is judged per program
+        if known is not None:
+            if k in ("var", "sub") and not q and any(re.search(r"\s", x) for x in known):
+                one = False
+            if lead is None and any(x.startswith("-") for x in known):
+                lead = False
+            elif lead is None and all(known):
+                lead = True
+        elif safe:
+            lead = True if lead is None else lead
+        else:
+            one = one and q
+            lead = False if lead is None else lead
+    return one, lead is not False
+
+
+def _unk(word, ctx: "_Ctx", prefix: str = "", unsafe: bool = False) -> "_Unk":
+    u = _Unk(str(word))
+    u.prefix = prefix
+    if not unsafe:
+        u.one, u.lead = _word_shape(word, ctx)
+        u.positional = ctx.deferred and _positional_only(word)
+    return u
+
+
+# Options of the commands --no-verify belongs to whose value is the next word
+# (a message, an author, a strategy): a run-time value there is not an option.
+_GIT_SUB_VALUES = {
+    "commit": ("mFCct", ("--message", "--file", "--author", "--date", "--reuse-message",
+                         "--reedit-message", "--fixup", "--squash", "--trailer", "--template",
+                         "--cleanup", "--pathspec-from-file")),
+    "merge": ("mFsX", ("--message", "--file", "--strategy", "--strategy-option", "--into-name",
+                       "--cleanup")),
+    "pull": ("sX", ("--strategy", "--strategy-option", "--depth", "--shallow-since",
+                    "--shallow-exclude")),
+    "push": ("o", ("--push-option", "--repo")),
+    "rebase": ("sX", ("--onto", "--strategy", "--strategy-option", "--whitespace")),
+    "cherry-pick": ("msX", ("--mainline", "--strategy", "--strategy-option")),
+    "revert": ("msX", ("--mainline", "--strategy", "--strategy-option")),
+    "commit-tree": ("pmF", ()),
+    "notes": ("mFCc", ("--message", "--file", "--reuse-message", "--reedit-message", "--ref")),
+}
+
+
+def _takes_value(sub: str, a: str) -> bool:
+    shorts, longs = _GIT_SUB_VALUES.get(sub, ("", ()))
+    if a.startswith("--"):
+        return "=" not in a and a in longs
+    return bool(re.fullmatch(r"-[A-Za-z]+", a)) and a[-1] in shorts
+
+
+def _check_git_unknown(argv: list, v: "Verdict") -> None:
+    """v1.0 round 2 (Cyra H1): a git argument only known at run time
+    (`$(cat flags)`, a variable set outside the command, a function's "$@"
+    called with unknown words) could be --no-verify, -c core.hooksPath=...
+    or a config key. It asks for git config, -c / --config-env, and the
+    subcommands --no-verify belongs to, unless it cannot be an option: a
+    quoted value after -m / --author, a word that starts with known text,
+    or a branch name from `git branch --show-current`."""
+    args = argv[1:]
+
+    def unknown(a):
+        return isinstance(a, _Unk) and not a.positional
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if unknown(a):
+            m = re.match(r"^(--?[A-Za-z][\w-]*)=", a.prefix)
+            if m and m.group(1) not in ("--config-env", "-c"):
+                i += 1  # --git-dir="$D": the option is known, only its value is not
+                continue
+            v.add(ASK, f"it gives git an option or subcommand that is only known when the command "
+                       f"runs ({a}); if that is --no-verify or -c core.hooksPath it would switch off "
+                       "Tess's git hooks")
+            return
+        if not a.startswith("-"):
+            break
+        if a in GIT_VALUE_OPTS and i + 1 < len(args):
+            val = args[i + 1]
+            if a in ("-c", "--config-env") and unknown(val) and "=" not in val.prefix:
+                v.add(ASK, f"it sets a git setting whose name is only known when the command runs "
+                           f"({a} {val}), so Tess cannot check it is not core.hooksPath")
+            i += 2
+            continue
+        i += 1
+    if i >= len(args):
+        return
+    sub, rest = args[i], args[i + 1:]
+    if sub == "config":
+        key = None
+        for k, a in enumerate(rest):
+            prev = rest[k - 1] if k else ""
+            if unknown(a):
+                if key is None and prev in ("--file", "-f", "--blob"):
+                    why = "a config file"
+                elif key is None:
+                    why = "a setting"
+                elif not a.one:
+                    why = "a value"
+                else:
+                    continue
+                v.add(ASK, f"it changes {why} in git config that is only known when the command "
+                           f"runs ({a}), so Tess cannot check it is not core.hooksPath")
+                return
+            if key is None and not a.startswith("-") and prev not in (
+                    "--file", "-f", "--blob", "--type", "--default", "--comment"):
+                key = a
+        return
+    if sub not in _NO_VERIFY_SUBS:
+        _check_git_unknown_rest(sub, rest, v)
+        return
+    for k, a in enumerate(rest):
+        if a == "--" and not isinstance(a, _Unk):
+            return
+        if not unknown(a):
+            continue
+        prev = rest[k - 1] if k else ""
+        value = not isinstance(prev, _Unk) and _takes_value(sub, prev)
+        if a.one and (value or a.lead):
+            continue
+        # --author="$A", -m"$M": the option is written out, only its value is not
+        if re.match(r"^--[A-Za-z][\w-]*=", a.prefix) or (
+                re.match(r"^-[A-Za-z]", a.prefix) and _takes_value(sub, a.prefix[:2])):
+            continue
+        v.add(ASK, f"it gives `git {sub}` an argument that is only known when the command runs "
+                   f"({a}); if that is --no-verify it would skip Tess's git hooks")
+        return
+
+
+# v1.0 round 3 fail-safe: git subcommands whose every argument (a revision, a
+# path, a ref, a remote, a refspec) decides what they write or where they
+# point, and the options of each that only carry a name or a number.
+_GIT_STRICT_SUBS = {"checkout", "restore", "reset", "switch", "read-tree", "checkout-index",
+                    "update-index", "stash", "am", "apply", "worktree", "clone", "symbolic-ref",
+                    "update-ref", "replace", "remote", "fetch", "rm", "mv", "sparse-checkout", "bisect",
+                    "submodule", "filter-branch", "filter-repo"}
+_GIT_STRICT_VALUES = {
+    "checkout": ("bB", ("--orphan",)), "switch": ("cC", ("--create", "--force-create")),
+    "stash": ("m", ("--message",)), "worktree": ("bB", ("--reason",)),
+    "clone": ("b", ("--branch", "--depth", "--origin")), "update-ref": ("m", ()),
+    "symbolic-ref": ("m", ("--message",)),
+    "fetch": ("", ("--depth", "--deepen", "--shallow-since", "--shallow-exclude", "--jobs")),
+}
+# git subcommands with an option that writes a file or runs a helper
+# (--output, -o, --ext-diff, --textconv, grep -O, archive --remote/--exec).
+_GIT_FLAG_SUBS = _GIT_SHORT_O_SUBS | {"grep", "archive", "cat-file", "blame", "bundle", "difftool",
+                                      "mergetool", "shortlog", "show-branch", "annotate"}
+
+
+def _check_git_unknown_rest(sub: str, rest: list, v: "Verdict") -> None:
+    """v1.0 round 3 fail-safe for the subcommands outside _NO_VERIFY_SUBS: in
+    a _GIT_STRICT_SUBS command every argument only known at run time asks
+    (`git reset --hard "$REV"`, `git remote "$X" origin URL`), except the
+    value of a name-only option (`git checkout -b "feature/$NAME"`); in a
+    _GIT_FLAG_SUBS command one asks when it could be an option."""
+    strict, flagged = sub in _GIT_STRICT_SUBS, sub in _GIT_FLAG_SUBS
+    if not (strict or flagged):
+        return
+    shorts, longs = _GIT_STRICT_VALUES.get(sub, ("", ()))
+    for k, a in enumerate(rest):
+        if a == "--" and not isinstance(a, _Unk):
+            if not strict:
+                return
+            continue
+        if not (isinstance(a, _Unk) and not a.positional):
+            continue
+        prev = rest[k - 1] if k else ""
+        if not isinstance(prev, _Unk) and prev.startswith("-") and (
+                prev in longs or (re.fullmatch(r"-[A-Za-z]+", prev) and prev[-1] in shorts)):
+            continue  # the name after -b / --message
+        if not strict and (a.one and a.lead or re.match(r"^--[A-Za-z][\w-]*=", a.prefix)):
+            continue
+        v.add(ASK, f"it gives `git {sub}` an argument that is only known when the command runs "
+                   f"({a}), so Tess cannot check which files, refs or remotes it changes")
+        return
+
+
+def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", raw: str,
+                     depth: int, ctx: "_Ctx", prefix_words: list) -> None:
+    """v1.0 round 2 (Cyra H1): git sees its arguments after expansion. Each
+    word is expanded as the shell will (variables set earlier in the command,
+    $(echo ...), braces, field splitting) and every combination is checked;
+    what stays unknown goes to _check_git_unknown."""
+    env = dict(env)
+    for w in prefix_words:  # GIT_CONFIG_KEY_0=$K git ...
+        m = None if _is_op(w) else _ASSIGN.match(str(w))
+        if m and m.group(1).startswith("GIT_") and _dynamic(w):
+            cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
+            if cands is not None and len(cands) == 1:
+                env[m.group(1)] = cands[0][0]
+            elif m.group(1).startswith("GIT_CONFIG"):
+                v.add(ASK, f"it sets {m.group(1)} for git from a value only known when the command "
+                           "runs, so Tess cannot check it does not switch off Tess's git hooks")
+    per_word = []
+    for w in argv[1:]:
+        if _is_op(w) or not isinstance(w, _Word):
+            per_word.append([[str(w)]])
+            continue
+        cands, pre = _word_fields(w, cwd, ctx)
+        if cands is None:
+            per_word.append([[_unk(w, ctx, pre)]])
+            continue
+        alts = []
+        for cand in cands:
+            fields = []
+            for text, pat in cand:
+                # `touch ./--no-verify; git commit *`: a glob can name a file
+                # that git reads as an option.
+                risky = pat is not None and pat[:1] in "*?[" and (ctx.mutated or any(
+                    os.path.basename(g).startswith("-") for g in _glob(cwd, pat, _EXPAND_LIMIT)))
+                fields.append(_unk(_plain(text), ctx, unsafe=True) if risky else text)
+            alts.append(fields)
+        per_word.append(alts or [[]])
+    variants = [[]]
+    for alts in per_word:
+        if len(variants) * len(alts) > 16:
+            v.add(ASK, "its git arguments can take more values than Tess checks one by one")
+            return
+        variants = [a + b for a in variants for b in alts]
+    for var in variants:
+        gargv = [argv[0]] + var
+        _check_git_unknown(gargv, v)
+        _check_git(root, cwd, env, gargv, v, raw, depth)
+
+
+def _check_git(root: Path, cwd: str, env: dict, argv: list, v: Verdict, raw: str, depth: int = 0):
+    args = argv[1:]
+    cfg, i, gcwd, redirect, cenv = [], 0, cwd, None, []
+    while i < len(args) and args[i].startswith("-"):
+        a = args[i]
+        if a.split("=", 1)[0] in ("--work-tree", "--git-dir"):
+            redirect = a.split("=", 1)[0]
+        if a in GIT_VALUE_OPTS and i + 1 < len(args):
+            if a == "-c" or a == "--config-env":
+                cfg.append(args[i + 1])
+            if a == "--config-env":
+                cenv.append(args[i + 1])
+            if a == "-C":
+                # A -C target known only at run time: later path checks cannot resolve it.
+                gcwd = None if gcwd is None or any(c in args[i + 1] for c in "$`*?[") else \
+                    os.path.join(gcwd or str(root), os.path.expanduser(args[i + 1]))
+            i += 2
+            continue
+        if a.startswith("--config-env=") or a.startswith("-c") and len(a) > 2:
+            cfg.append(a.split("=", 1)[1] if a.startswith("--config-env=") else a[2:])
+            if a.startswith("--config-env="):
+                cenv.append(cfg[-1])
+        i += 1
+    cfg += _env_config(env)  # GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>
+    sub = args[i] if i < len(args) else ""
+    rest = args[i + 1:]
+    redirect = redirect or next((k for k in env if k in _REDIRECT_ENV), None) or next(
+        ("-c " + c.split("=", 1)[0] for c in cfg if re.match(r"(?i)^core\.(worktree|bare)\b", c)), None)
+    _check_git_tree_writes(root, gcwd, sub, rest, v, redirect, raw, depth)
+    gcwd = gcwd or cwd
+    hooks_env = any("hookspath" in (k + "=" + val).lower() for k, val in env.items()
+                    if k.startswith("GIT_CONFIG"))
+    if hooks_env or any(c.lower().startswith("core.hookspath") for c in cfg):
+        v.add(DENY, "it points git at a different hooks directory (core.hooksPath), which "
+                    "switches off Tess's git hooks (secret scan, ship gate, public-remote guard)", "hookspath")
+    if any(_GIT_CONFIG_INDIRECT.match(c) for c in cfg):
+        v.add(DENY, "it sets a git include or alias on the command line, which can switch off "
+                    "Tess's git hooks or run another command", "hookspath")
+    _check_git_cmd_values(root, gcwd, env, cfg, v, depth)
+    if any(_GIT_REMOTE_KEYS.match(c.split("=", 1)[0]) for c in cfg):
+        v.add(ASK, "it overrides a remote's URL (or Tess's private-remote list) for one command, "
+                   "which changes where a push goes")
+    opts = rest[:rest.index("--")] if "--" in rest else rest
+    if sub == "config":
+        _check_git_config(rest, v)
+    _check_git_history_views(root, gcwd, sub, rest, cfg, v, raw, depth)
+    if sub in _NO_VERIFY_SUBS and any(_abbrev(a, "--no-verify") for a in opts):
+        v.add(DENY, "--no-verify skips Tess's git hooks (secret scan and ship gate)", "noverify")
+    if sub == "commit" and _commit_no_verify(rest):
+        v.add(DENY, "`git commit -n` is --no-verify: it skips Tess's git hooks", "noverify")
+    _check_git_file_opts(sub, opts, v)
+    if sub == "remote" and rest and rest[0] in ("add", "set-url", "rename", "remove", "rm"):
+        v.add(ASK, "it changes where this repository pushes (git remote " + rest[0] + ")")
+    if sub == "update-ref" and any(a == "--stdin" or a.startswith("refs/remotes/") for a in rest):
+        v.add(ASK, "it writes a remote-tracking ref (refs/remotes/...), which records what a "
+                   "remote holds; a forged one could hide data from the public-remote guard")
+    if sub in ("fetch", "push") and any(
+            not a.startswith("-") and ":" in a and a.lstrip("+").split(":", 1)[1].startswith(
+                ("refs/remotes/", "remotes/")) for a in rest):
+        v.add(ASK, "its refspec writes a remote-tracking ref (refs/remotes/...), which records "
+                   "what a remote holds")
+    if sub in ("rm", "mv"):
+        for a in rest:
+            hit = not a.startswith("-") and protected_hit(root, gcwd, a)
+            if hit:
+                v.add(DENY, f"it removes or moves {a}, a protected Tess path ({hit})", "protected")
+    if sub == "push":
+        _check_push(root, gcwd, rest, v, cfg, cenv)
+
+
+def _env_config(env: dict) -> list:
+    """Config git reads from GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / _VALUE_<n>."""
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    return [f"{env[f'GIT_CONFIG_KEY_{k}']}={env.get(f'GIT_CONFIG_VALUE_{k}', '')}"
+            for k in range(min(count, 64)) if f"GIT_CONFIG_KEY_{k}" in env]
+
+
+_HISTORY_ADVICE = ("git replace refs, sparse checkouts and fetching into the checked-out branch "
+                   "change which files git writes without naming them")
+
+
+def _has_replace_refs(cwd: str) -> bool | None:
+    out = _git_ro(cwd, "for-each-ref", "--count=1", "--format=%(refname)", "refs/replace/")
+    return None if out is None else bool(out.strip())
+
+
+def _check_git_history_views(root: Path, cwd: str, sub: str, rest: list, cfg: list,
+                             v: Verdict, raw: str, depth: int):
+    """v1.0.0 final reviews (GPT-6 + Cyra): git routes that change what HEAD,
+    a branch or the working tree resolve to without naming a protected path."""
+    if sub == "replace":
+        v.add(DENY, "`git replace` makes git read one commit or file as another, so a later "
+                    "restore from HEAD could put back a different copy of Tess's gate", "rollback")
+    if sub == "update-ref" and any(a.startswith(("refs/replace/", "replace/")) for a in rest):
+        v.add(DENY, "it writes a git replace ref (refs/replace/...), which makes git read one "
+                    "commit or file as another", "rollback")
+    if sub == "update-ref" and "--stdin" in rest:
+        v.add(DENY, "`git update-ref --stdin` writes refs Tess cannot see (replace refs "
+                    "included)", "rollback")
+    if sub in ("fetch", "push", "pull") and any(
+            not a.startswith("-") and ":" in a and a.lstrip("+").split(":", 1)[1].startswith(
+                ("refs/replace/", "replace/")) for a in rest):
+        v.add(DENY, "its refspec writes git replace refs (refs/replace/...), which make git read "
+                    "one commit or file as another", "rollback")
+    if sub == "fetch" and any(_abbrev(a, "--update-head-ok") or (
+            re.match(r"^-[A-Za-z0-9]*u", a) and not a.startswith("--")) for a in rest):
+        v.add(DENY, "`git fetch --update-head-ok` (-u) can move the checked-out branch without "
+                    "touching the files; a reset or restore from HEAD would then bring in that "
+                    "commit's copy of Tess's gate", "rollback")
+    if sub == "sparse-checkout" and rest[:1] != ["list"] and "-h" not in rest:
+        v.add(DENY, "`git sparse-checkout` can delete Tess's hook configuration from the working "
+                    "tree, so the next session would run with no Tess hook at all", "rollback")
+    if any(c.split("=", 1)[0].lower().startswith("core.sparsecheckout") for c in cfg):
+        v.add(DENY, "it turns on a sparse checkout (-c core.sparseCheckout), which lets git delete "
+                    "Tess's hook configuration from the working tree", "rollback")
+    if sub == "bisect" and cwd:
+        _git_bisect(root, cwd, rest, v, depth)
+
+
+def _abbrev(arg: str, *targets: str) -> str | None:
+    """The flagged long option `arg` names, exactly or as a unique-prefix
+    abbreviation git would accept (`--no-veri` -> `--no-verify`)."""
+    if not arg.startswith("--") or len(arg) < 3:
+        return None
+    name = arg.split("=", 1)[0]
+    if name in _NOT_ABBREV:
+        return None
+    return next((t for t in targets if t.startswith(name)), None)
+
+
+def _check_git_cmd_values(root: Path, cwd: str, env: dict, cfg: list, v: Verdict, depth: int):
+    """A command hidden in a git setting (H-A): `-c core.pager='cp x .git/hooks/pre-push'`,
+    `GIT_EXTERNAL_DIFF=...`. The value is checked as a command in its own right."""
+    values = [c.split("=", 1)[1] for c in cfg
+              if "=" in c and _GIT_CMD_KEYS.match(c.split("=", 1)[0])]
+    values += [val for k, val in env.items()
+               if k in ("GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+                        "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "GIT_PROXY_COMMAND")]
+    for val in values:
+        if depth < 4 and val.strip():
+            check_command(root, cwd, val, v, depth + 1)
+    if any(c.split("=", 1)[0].lower().startswith("core.fsmonitor") and c.split("=", 1)[-1].lower() not in
+           ("false", "0", "", "true", "1", "yes", "no", "on", "off") for c in cfg):
+        v.add(DENY, "it points git's fsmonitor at a program, which git runs on every command", "hookspath")
+
+
+def _check_git_config(rest: list, v: Verdict):
+    keys = [a.lower() for a in rest]
+    reading = any(k in ("--get", "--get-all", "--list", "-l", "--get-regexp", "get", "list",
+                        "--get-urlmatch", "--show-origin", "--show-scope")
+                  for k in keys) and not any(k in ("set", "--add", "--replace-all", "unset",
+                                                  "--unset", "--unset-all") for k in keys)
+    if reading:
+        return
+    if any(k == "core.hookspath" or k.startswith("core.hookspath=") for k in keys):
+        v.add(DENY, "it changes core.hooksPath, which switches off Tess's git hooks", "hookspath")
+    # v1.0 audit: an editor session on a config file (any scope) can set any
+    # key, and init.templateDir puts hook scripts into every new clone.
+    if any(k in ("-e", "--edit", "edit") for k in keys):
+        v.add(DENY, "it opens a git config file in an editor, where any setting (core.hooksPath "
+                    "included) can change; set one key with `git config <key> <value>`", "hookspath")
+    if any(k == "init.templatedir" or k.startswith("init.templatedir=") for k in keys):
+        v.add(DENY, "it changes init.templateDir, which copies hook scripts into every new "
+                    "repository", "hookspath")
+    if any(re.match(r"^core\.sparsecheckout", k) for k in keys):
+        v.add(DENY, "it turns on a sparse checkout (core.sparseCheckout), which lets git delete "
+                    "Tess's hook configuration from the working tree", "rollback")
+    if any(re.match(r"^core\.(worktree|bare)(=|$)", k) for k in keys):
+        v.add(DENY, "it changes core.worktree / core.bare, which points git's file writes at "
+                    "another directory (Tess's git hooks included)", "protected")
+    if any(k == "--file" or k == "-f" for k in keys) and any("hook" in k for k in keys):
+        v.add(DENY, "it edits git hook configuration directly", "hookspath")
+    if any(_GIT_CONFIG_INDIRECT.match(k) for k in keys):
+        v.add(DENY, "it writes a git include or alias, which can switch off Tess's git hooks "
+                    "or run another command in place of a git one", "hookspath")
+    words = [a for a in rest if not a.startswith("-") and a not in ("set", "unset")]
+    if words and _GIT_CMD_KEYS.match(words[0]) and not (
+            len(words) > 1 and _BENIGN_VALUE.match(words[1].strip())):
+        v.add(DENY, f"it saves a command in git config ({words[0]}); git would run it later, "
+                    "outside Tess's checks", "hookspath")
+    if words and _GIT_REMOTE_KEYS.match(words[0]):
+        v.add(ASK, f"it changes {words[0]}, which decides where a push goes or which remote Tess "
+                   "treats as private")
+
+
+def _check_git_file_opts(sub: str, opts: list, v: Verdict):
+    """H-A: git options that write the command's output to a file (any path,
+    hooks and settings included) or run an external diff/text-conversion."""
+    for i, a in enumerate(opts):
+        hit = _abbrev(a, *_GIT_FILE_OPTS)
+        if hit:
+            v.add(DENY, f"`{a}` ({hit}) makes git write a file or run an external program; "
+                        "git can overwrite any file this way, Tess's hooks and settings included",
+                  "gitfile")
+        if sub == "grep" and (a.startswith("--op") or re.match(r"^-[A-Za-z]*O", a)):
+            v.add(DENY, "`git grep -O` runs a program on the matching files", "gitfile")
+        if sub in _GIT_SHORT_O_SUBS and re.match(r"^-[A-Za-z]", a) and not a.startswith("--"):
+            for ch in a[1:]:
+                if ch == "o":
+                    v.add(DENY, f"`{a}` (-o) makes git write its output to a file or directory",
+                          "gitfile")
+                    break
+                if ch in _DIFF_VALUE_SHORT:
+                    break
+
+
+# --------------------------------------------------------------------------- git tree writes (round 3, N-1)
+# git itself can rewrite the gate: `git checkout <old> -- .claude/hooks .tess/...`
+# brings back an old gate with matching pins, and --work-tree / GIT_WORK_TREE /
+# core.worktree / checkout-index --prefix point git's writes at .git/hooks.
+# Protected files come back only from HEAD or the index (the documented undo);
+# a switch, reset or merge that changes them relative to HEAD needs the operator.
+
+# Subcommands that write the working tree or the index from a commit or patch.
+_TREE_WRITE_SUBS = {"checkout", "restore", "checkout-index", "reset", "switch", "read-tree",
+                    "stash", "update-index", "merge", "rebase", "cherry-pick", "revert", "pull",
+                    "am", "apply", "worktree", "clone", "symbolic-ref", "update-ref"}
+_CLONE_VALS = ("--branch", "--origin", "--config", "--upload-pack", "--depth", "--reference",
+               "--separate-git-dir", "--template", "--jobs", "--filter", "--shallow-since",
+               "--shallow-exclude", "--server-option", "--bundle-uri", "--ref-format",
+               "--reference-if-able")
+_REDIRECT_ENV = {"GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}
+_SAME_SOURCE = {"HEAD", "@"}
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+_RESUME = ("--abort", "--continue", "--skip", "--quit", "--edit-todo", "--resolved",
+           "--show-current-patch")
+# Short options that take a value, per subcommand (`cherry-pick -s` is signoff, not a strategy).
+_MERGE_SHORT_VALS = {"merge": "msXF", "rebase": "sXx", "cherry-pick": "mX", "revert": "mX"}
+
+
+def _git_ro(cwd: str, *args) -> str | None:
+    """Read-only git for the gate's own questions: no shell, no GIT_* from the
+    runtime, fsmonitor off. None when git fails (the caller fails closed)."""
+    env = {k: val for k, val in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"  # the gate reads the real objects
+    timeout = _budget(20)
+    try:
+        r = subprocess.run(["git", "-C", cwd, "-c", "core.fsmonitor=false", *args],
+                           capture_output=True, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _tree(cwd: str, rev: str) -> str | None:
+    if not rev or rev.startswith("-") or "\n" in rev:
+        return None
+    out = _git_ro(cwd, "rev-parse", "--verify", "--quiet", rev + "^{tree}")
+    return out.strip() if out else None
+
+
+def _protected_globs(root: Path) -> tuple:
+    return tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS
+
+
+def _changed_protected(root: Path, cwd: str, a: str | None, b: str, specs=()) -> list | None:
+    """Protected paths whose content differs between tree-ish `a` (None: the
+    empty tree) and `b`, limited to `specs`. None: git could not tell."""
+    ta = _EMPTY_TREE if a is None else (_tree(cwd, a) or (a == "HEAD" and _unborn_head(cwd)))
+    tb = _tree(cwd, b)
+    top = _git_ro(cwd, "rev-parse", "--show-toplevel")
+    if not ta or not tb or not top:
+        return None
+    out = _git_ro(cwd, "diff-tree", "-r", "--name-only", "-z", "--no-renames", ta, tb, "--", *specs)
+    if out is None:
+        return None
+    globs, hits = _protected_globs(root), []
+    for name in out.split("\0"):
+        rel = name and _rel_to_root(root, top.strip(), name)
+        if rel and _glob_hit(rel, globs) and rel not in hits:
+            hits.append(rel)
+    return hits
+
+
+def _unborn_head(cwd: str) -> str | None:
+    """HEAD of a repository with no commit yet reads as the empty tree."""
+    return _EMPTY_TREE if _git_ro(cwd, "rev-parse", "--git-dir") is not None else None
+
+
+def _pathspec_hit(root: Path, cwd: str, spec: str) -> str | None:
+    """The protected path a pathspec names, contains, or sits inside (after
+    `:(top)` / `:/` magic); "the whole repository" for the top. Exclusions
+    (`:!x`, `:(exclude)x`) add nothing."""
+    s = spec
+    m = re.match(r"^:\(([^)]*)\)(.*)$", s, re.S) or re.match(r"^:([/!^]*):?(.*)$", s, re.S)
+    if s.startswith(":") and m:
+        magic = m.group(1).lower()
+        if "exclude" in magic or "!" in magic or "^" in magic:
+            return None
+        s = m.group(2)
+        if "top" in magic or "/" in magic:
+            cwd = str(root)
+    rel = _rel_to_root(root, cwd, s or ".")
+    if rel is None:
+        return None
+    if rel == ".":
+        return "the whole repository"
+    return _glob_hit(rel, _protected_globs(root))
+
+
+def _parse(rest: list, short_vals: str = "", long_vals: tuple = ()) -> tuple:
+    """(options, positionals before --, arguments after --, saw --). An option
+    that takes a value keeps it (`-b name`, `-sREV`, `--source REV`)."""
+    opts, pos, after, dd, i = {}, [], [], False, 0
+    while i < len(rest):
+        a = rest[i]
+        if dd:
+            after.append(a)
+        elif a == "--":
+            dd = True
+        elif a.startswith("--"):
+            name, eq, val = a.partition("=")
+            full = _abbrev(name, *long_vals) if long_vals else None
+            if full and not eq and i + 1 < len(rest):
+                opts[full] = rest[i + 1]
+                i += 1
+            else:
+                opts[full or name] = val if eq else True
+        elif a.startswith("-") and len(a) > 1:
+            for k, ch in enumerate(a[1:], 1):
+                if ch in short_vals:
+                    val = a[k + 1:]
+                    if not val and i + 1 < len(rest):
+                        i += 1
+                        val = rest[i]
+                    opts["-" + ch] = val
+                    break
+                opts["-" + ch] = True
+        else:
+            pos.append(a)
+        i += 1
+    return opts, pos, after, dd
+
+
+def _rev(a: str) -> str:
+    return "@{-1}" if a == "-" else a
+
+
+def _restore_from(root: Path, cwd: str, source, specs: list, v: Verdict, what: str):
+    """Files written from `source` (a commit or tree): only HEAD/the index may
+    supply a protected file."""
+    if source is None or source is True or source in _SAME_SOURCE or not specs:
+        return
+    for s in specs:
+        hit = _pathspec_hit(root, cwd, s)
+        if hit:
+            v.add(DENY, f"`{what}` overwrites {s} ({hit}) with the copy from {source}; an older or "
+                        "different copy of Tess's gate, pins or rules would then run", "rollback")
+            return
+    changed = _changed_protected(root, cwd, "HEAD", source, specs)
+    if changed is None:
+        v.add(DENY, f"`{what}` writes files from {source}, which Tess cannot resolve yet, so it "
+                    "cannot check them against the protected list", "rollback")
+    elif changed:
+        v.add(DENY, f"`{what}` overwrites protected Tess files ({', '.join(changed[:5])}) with the "
+                    f"copies from {source}", "rollback")
+
+
+def _move_to(root: Path, cwd: str, target: str, v: Verdict, what: str, base: str | None = "HEAD"):
+    """The working tree becomes `target` (a switch, reset --hard, merge): the
+    operator decides when that changes protected files relative to HEAD."""
+    if base == "merge-base":
+        mb = _git_ro(cwd, "merge-base", "HEAD", target) if not target.startswith("-") else None
+        base = mb.strip() if mb else None
+        if base is None:
+            v.add(ASK, f"`{what}` brings in {target}, and Tess cannot tell what that changes; it may "
+                       "replace Tess's own gate or rules")
+            return
+    changed = _changed_protected(root, cwd, base, target)
+    if changed is None:
+        v.add(ASK, f"`{what}` switches the working tree to {target}, which Tess cannot resolve yet; "
+                   "it may replace Tess's own gate or rules")
+    elif changed:
+        v.add(ASK, f"`{what}` changes protected Tess files ({', '.join(changed[:5])}): the copy of "
+                   f"the gate and rules in {target} would run from then on")
+
+
+def _dwim(cwd: str, name: str) -> str | None:
+    """`git checkout foo` / `git switch foo` with only refs/remotes/*/foo."""
+    out = _git_ro(cwd, "for-each-ref", "--format=%(refname)", f"refs/remotes/*/{name}")
+    refs = [r for r in (out or "").split("\n") if r]
+    return refs[0] if len(refs) == 1 else None
+
+
+def _git_checkout(root, cwd, rest, v):
+    opts, pos, after, dd = _parse(rest, "bB", ("--orphan", "--pathspec-from-file"))
+    new = next((opts[k] for k in ("-b", "-B", "--orphan") if k in opts), None)
+    pff = opts.get("--pathspec-from-file")
+    if dd:
+        source = pos[0] if pos else None
+        if after or pff:
+            if pff and source not in (None, *_SAME_SOURCE):
+                v.add(DENY, "`git checkout <commit> --pathspec-from-file` names files Tess cannot "
+                            "see", "rollback")
+            return _restore_from(root, cwd, source, after, v, "git checkout")
+        return source and _move_to(root, cwd, _rev(source), v, "git checkout")
+    if not pos:
+        return None
+    first = _rev(pos[0])
+    if new is not None or len(pos) == 1:
+        if _tree(cwd, first):
+            return _move_to(root, cwd, first, v, "git checkout")
+        if new is None and os.path.lexists(os.path.join(cwd, pos[0])):
+            return None  # a path, restored from the index
+        return _move_to(root, cwd, _dwim(cwd, pos[0]) or first, v, "git checkout")
+    if _tree(cwd, first):
+        return _restore_from(root, cwd, first, pos[1:], v, "git checkout")
+    if all(os.path.lexists(os.path.join(cwd, p)) for p in pos):
+        return None  # paths, restored from the index
+    return _restore_from(root, cwd, first, pos[1:], v, "git checkout")
+
+
+def _git_restore(root, cwd, rest, v):
+    opts, pos, after, _ = _parse(rest, "s", ("--source", "--pathspec-from-file"))
+    source = opts.get("-s", opts.get("--source"))
+    if opts.get("--pathspec-from-file") and source not in (None, *_SAME_SOURCE):
+        v.add(DENY, "`git restore --source --pathspec-from-file` names files Tess cannot see", "rollback")
+    _restore_from(root, cwd, source, pos + after, v, "git restore")
+
+
+def _git_reset(root, cwd, rest, v):
+    opts, pos, after, dd = _parse(rest, "", ("--pathspec-from-file",))
+    if dd:
+        rev, specs = (pos[0] if pos else "HEAD"), after
+    elif pos and _tree(cwd, pos[0]):
+        rev, specs = pos[0], pos[1:]
+    else:
+        rev, specs = "HEAD", pos
+    if specs:
+        return _restore_from(root, cwd, rev, specs, v, "git reset")
+    if rev not in _SAME_SOURCE:
+        # --soft / --mixed move HEAD (and the index) without the files; the
+        # "restore from HEAD" undo would then bring back the other copy.
+        _move_to(root, cwd, rev, v, "git reset")
+    return None
+
+
+def _git_head_ref(root, cwd, sub, rest, v):
+    """`git symbolic-ref HEAD <ref>` / `git update-ref HEAD|<current branch> <rev>`
+    move HEAD without the files; the HEAD undo would then restore that tree."""
+    opts, pos, _, _ = _parse(rest, "m", ("--message",))
+    if len(pos) < 2 or "-d" in opts or "--delete" in opts:
+        return
+    current = (_git_ro(cwd, "symbolic-ref", "-q", "HEAD") or "").strip()
+    if pos[0] == "HEAD" or (sub == "update-ref" and current and pos[0] == current):
+        _move_to(root, cwd, pos[1], v, f"git {sub}")
+
+
+def _git_switch(root, cwd, rest, v):
+    opts, pos, _, _ = _parse(rest, "cC", ("--create", "--force-create", "--orphan"))
+    if "--orphan" in opts:
+        return v.add(ASK, "`git switch --orphan` empties the working tree, Tess's gate and rules "
+                          "included")
+    new = any(k in opts for k in ("-c", "-C", "--create", "--force-create"))
+    target = pos[0] if pos else None
+    if target is None:
+        return None
+    target = _rev(target)
+    if not new and not _tree(cwd, target):
+        target = _dwim(cwd, target) or target
+    return _move_to(root, cwd, target, v, "git switch")
+
+
+def _git_read_tree(root, cwd, rest, v):
+    opts, pos, _, _ = _parse(rest)
+    if any(k.startswith("--index-output") for k in opts):
+        v.add(DENY, "`git read-tree --index-output` writes an index file to a path of its "
+                    "choosing", "rollback")
+    prefix = opts.get("--prefix")
+    if isinstance(prefix, str) and _pathspec_hit(root, cwd, prefix.rstrip("/") or "."):
+        v.add(DENY, f"`git read-tree --prefix={prefix}` writes index entries inside a protected "
+                    "Tess path", "rollback")
+    # Without -u only the index changes, but the "restore from the index" undo
+    # would then write that tree's copies.
+    for t in pos:
+        _move_to(root, cwd, t, v, "git read-tree")
+
+
+def _git_stash(root, cwd, rest, v):
+    if not rest or rest[0] not in ("apply", "pop", "branch"):
+        return
+    refs = [a for a in rest[1:] if not a.startswith("-")]
+    ref = refs[1] if rest[0] == "branch" and len(refs) > 1 else (
+        refs[0] if refs and rest[0] != "branch" else "stash@{0}")
+    ref = f"stash@{{{ref}}}" if ref.isdigit() else ref
+    if ref == "stash@{0}" and _git_ro(cwd, "rev-parse", "--verify", "--quiet", "refs/stash") is None:
+        return  # no stash: git reports it and changes nothing
+    changed = _changed_protected(root, cwd, ref + "^1", ref)
+    if changed is not None and _tree(cwd, ref + "^3"):
+        extra = _changed_protected(root, cwd, None, ref + "^3")
+        changed = None if extra is None else changed + extra
+    if changed is None:
+        v.add(ASK, f"`git stash {rest[0]}` applies {ref}, which Tess cannot read")
+    elif changed:
+        v.add(ASK, f"`git stash {rest[0]}` rewrites protected Tess files ({', '.join(changed[:5])})")
+
+
+def _git_update_index(root, cwd, rest, v):
+    if any(a in ("--index-info", "--stdin") for a in rest):
+        v.add(DENY, "`git update-index --index-info/--stdin` writes index entries Tess cannot see",
+              "rollback")
+    paths, i = [], 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--cacheinfo" and i + 1 < len(rest):
+            if "," in rest[i + 1]:
+                paths.append(rest[i + 1].split(",", 2)[-1])
+                i += 2
+                continue
+            paths += rest[i + 3:i + 4]
+            i += 4
+            continue
+        if not a.startswith("-") or a == "-":
+            paths.append(a)
+        i += 1
+    for p in paths:
+        hit = _pathspec_hit(root, cwd, p)
+        if hit:
+            v.add(DENY, f"`git update-index` writes {p} ({hit}) straight into git's index, "
+                        "where the next commit would take it from", "rollback")
+
+
+def _git_merge_like(root, cwd, sub, rest, v, raw, depth):
+    if any(_abbrev(a, *_RESUME) for a in rest if a.startswith("--")):
+        return
+    opts, pos, _, _ = _parse(rest, _MERGE_SHORT_VALS[sub], (
+        "--message", "--strategy", "--strategy-option", "--file", "--into-name", "--onto",
+        "--exec", "--mainline"))
+    for key in ("-x", "--exec"):
+        if isinstance(opts.get(key), str) and depth < 4:
+            check_command(root, cwd, opts[key], v, depth + 1)
+    if sub in ("cherry-pick", "revert"):
+        for c in pos:
+            if ".." in c:
+                a, _, b = c.partition("...") if "..." in c else c.partition("..")
+                _move_to(root, cwd, b or "HEAD", v, f"git {sub}", base=a or "HEAD")
+            elif sub == "revert":
+                _move_to(root, cwd, c + "^", v, "git revert", base=c)
+            else:
+                _move_to(root, cwd, c, v, "git cherry-pick", base=c + "^")
+        return
+    if sub == "rebase":
+        return _git_rebase(root, cwd, opts, pos, v)
+    for t in pos or ["@{upstream}"]:
+        _move_to(root, cwd, _rev(t), v, f"git {sub}", base="merge-base")
+
+
+def _git_rebase(root, cwd, opts, pos, v):
+    """v1.0.0 final reviews: judge the tree the rebase PRODUCES against HEAD.
+    `git rebase --onto <old> HEAD` replays nothing onto <old>, so comparing
+    <old> with its merge-base (the round-3 rule) saw an empty change."""
+    onto = opts.get("--onto") if isinstance(opts.get("--onto"), str) else None
+    branch = _rev(pos[1]) if len(pos) > 1 else "HEAD"
+    if "--root" in opts:
+        if onto is None:
+            return None  # rewrites the same commits in place
+        base = _EMPTY_TREE
+        upstream = None
+    else:
+        upstream = _rev(pos[0]) if pos else "@{upstream}"
+        mb = _git_ro(cwd, "merge-base", upstream, branch) if not upstream.startswith("-") else None
+        base = mb.strip() if mb else None
+    newbase = onto or upstream
+    what = "git rebase" + (" --onto" if onto else "")
+    out = None
+    if base and newbase and not newbase.startswith("-") and not branch.startswith("-"):
+        out = _git_ro(cwd, "merge-tree", "--write-tree", "--no-messages",
+                      f"--merge-base={base}", newbase, branch)
+    result = out.split()[0] if out and out.split() else None
+    changed = _changed_protected(root, cwd, "HEAD", result) if result else None
+    if changed is None:
+        return v.add(ASK, f"`{what}` rewrites the branch onto {newbase}, and Tess cannot work out "
+                          "the result; it may replace Tess's own gate or rules")
+    if changed:
+        return v.add(ASK, f"`{what}` would change protected Tess files ({', '.join(changed[:5])}) "
+                          "relative to HEAD: that copy of the gate and rules would run from then on")
+    if any(k in opts for k in ("-i", "--interactive", "--edit-todo")) and base:
+        touched = _changed_protected(root, cwd, base, branch)
+        if touched is None or touched:
+            v.add(ASK, "an interactive rebase can drop or edit the commits that changed protected "
+                       f"Tess files ({', '.join((touched or ['unknown'])[:5])})")
+    return None
+
+
+def _bisect_terms(cwd: str) -> tuple:
+    path = _git_ro(cwd, "rev-parse", "--git-path", "BISECT_TERMS")
+    try:
+        with open(os.path.join(cwd, path.strip()) if path else "", encoding="utf-8") as fh:
+            words = fh.read().split()
+        return (words[0], words[1]) if len(words) >= 2 else ("bad", "good")
+    except OSError:
+        return "bad", "good"
+
+
+def _git_bisect(root, cwd, rest, v, depth):
+    """v1.0.0 final reviews: `git bisect` checks out commits in a range; each
+    one must not change protected files relative to HEAD."""
+    if not rest or rest[0] in ("help", "log", "visualize", "view", "terms", "-h", "--help"):
+        return None
+    op, args = rest[0], rest[1:]
+    if op == "replay":
+        return v.add(ASK, "`git bisect replay` checks out commits from a log Tess cannot read")
+    if op == "reset":
+        pos = [a for a in args if not a.startswith("-")]
+        target = pos[0] if pos else None
+        if target is None:
+            path = _git_ro(cwd, "rev-parse", "--git-path", "BISECT_START")
+            try:
+                with open(os.path.join(cwd, path.strip()) if path else "", encoding="utf-8") as fh:
+                    target = fh.read().strip() or None
+            except OSError:
+                target = None
+        return target and _move_to(root, cwd, target, v, "git bisect reset")
+    new_t, old_t = _bisect_terms(cwd)
+    refs = [r for r in (_git_ro(cwd, "for-each-ref", "--format=%(refname)", "refs/bisect/")
+                        or "").split("\n") if r]
+    bads = [r for r in refs if r == f"refs/bisect/{new_t}"]
+    goods = [r for r in refs if r.startswith(f"refs/bisect/{old_t}-")]
+    if op == "run":
+        if depth < 4 and args:
+            check_command(root, cwd, shlex.join(args), v, depth + 1)
+    elif op == "start":
+        if "--no-checkout" in args:
+            return None
+        _, pos, _, _ = _parse(args, "", ("--term-new", "--term-bad", "--term-old", "--term-good"))
+        bads, goods = pos[:1], pos[1:]
+    elif op in ("bad", "new", new_t):
+        bads = [a for a in args if not a.startswith("-")][:1] or ["HEAD"]
+    elif op in ("good", "old", old_t):
+        goods = goods + ([a for a in args if not a.startswith("-")] or ["HEAD"])
+    if not bads or not goods:
+        return None  # git needs both ends before it checks anything out
+    for b in bads:
+        _move_to(root, cwd, b, v, f"git bisect {op}")
+    names = _git_ro(cwd, "log", "--format=", "--name-only", "-m", "--no-renames",
+                    "--max-count=20000", *bads, "--not", *goods, "--")
+    if names is None:
+        return v.add(ASK, f"`git bisect {op}` checks out commits Tess cannot list")
+    top = (_git_ro(cwd, "rev-parse", "--show-toplevel") or str(root)).strip()
+    globs = _protected_globs(root)
+    hits = sorted({rel for n in names.split("\n") if n
+                   for rel in [_rel_to_root(root, top, n)] if rel and _glob_hit(rel, globs)})
+    if hits:
+        v.add(ASK, f"`git bisect {op}` would check out commits that change protected Tess files "
+                   f"({', '.join(hits[:5])}); those copies of the gate and rules would run")
+    return None
+
+
+_PATCH_PATHS = re.compile(r"^(?:diff --git a/(\S+) b/(\S+)|(?:\+\+\+|---) (\S+)|"
+                          r"(?:rename|copy) (?:from|to) (.+?))\s*$", re.M)
+
+
+def _git_apply(root, cwd, sub, rest, v, raw):
+    if any(_abbrev(a, *_RESUME) for a in rest if a.startswith("--")):
+        return None
+    args, skip = [], False  # drop redirections (`<<'EOF'`, `< x.patch`, `> out`) and their targets
+    for a in rest:
+        if skip:
+            skip = False
+        elif a == "<":
+            continue  # `git apply < x.patch`: the next word is the patch file
+        elif re.match(r"^\d*[<>]", a):
+            skip = re.fullmatch(r"\d*[<>&|-]+", a) is not None
+        else:
+            args.append(a)
+    opts, pos, after, _ = _parse(args, "p", ("--directory", "--exclude", "--include"))
+    if sub == "apply" and not any(k in opts for k in ("--apply", "--index", "--cached", "--3way",
+                                                      "-3")) and any(
+            k in opts for k in ("--check", "--stat", "--numstat", "--summary")):
+        return  # reports only
+    texts = []
+    for f in pos + after:
+        try:
+            with open(os.path.join(cwd, f), encoding="utf-8", errors="replace") as fh:
+                texts.append(fh.read(5_000_000))
+        except OSError:
+            v.add(ASK, f"`git {sub}` applies {f}, which Tess cannot read")
+    if not pos and not after:
+        texts.append(raw)  # a heredoc or pipe in this command
+    prefix = opts.get("--directory") if isinstance(opts.get("--directory"), str) else ""
+    names = [n for t in texts for m in _PATCH_PATHS.finditer(t) for n in m.groups() if n]
+    if not names and not pos and not after:
+        v.add(ASK, f"`git {sub}` reads a patch from input Tess cannot see")
+    for n in names:
+        if n == "/dev/null":
+            continue
+        for cand in {n, n.split("/", 1)[-1]}:
+            hit = _pathspec_hit(root, cwd if not prefix else str(root),
+                                os.path.join(prefix, cand) if prefix else cand)
+            if hit:
+                return v.add(DENY, f"`git {sub}` patches {cand} ({hit}), a protected Tess path",
+                             "rollback")
+
+
+def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v: Verdict,
+                           redirect: str | None, raw: str, depth: int):
+    if sub not in _TREE_WRITE_SUBS or "-h" in rest or "--help" in rest:
+        return
+    if redirect:
+        return v.add(DENY, f"`git {sub}` with {redirect} points git's file writes at another "
+                           "directory, where it can replace Tess's git hooks or gate", "rollback")
+    if cwd is None:
+        return v.add(DENY, f"`git {sub}` runs in a directory known only at run time (-C), so Tess "
+                           "cannot check what it writes", "rollback")
+    if sub != "clone" and _has_replace_refs(cwd):
+        # v1.0.0: with replace refs, HEAD and the index no longer mean what they
+        # say, so even the "restore from HEAD" undo is not the same source.
+        # (No answer = not a repository: the git command fails on its own.)
+        return v.add(DENY, f"`git {sub}` would read commits through git replace refs "
+                           "(refs/replace/ is not empty), so HEAD may not be what it looks "
+                           "like. Remove them yourself (`git replace -d`) outside the agent",
+                     "rollback")
+    if sub == "checkout-index":
+        if any(a.startswith("--prefix") for a in rest) or any(
+                a in ("-a", "--all", "--stdin") or re.match(r"^-[a-z]*a", a) for a in rest):
+            return v.add(DENY, "`git checkout-index` with --prefix, --all or --stdin can write "
+                               "files anywhere, Tess's git hooks and gate included", "rollback")
+        for p in rest:
+            hit = not p.startswith("-") and _pathspec_hit(root, cwd, p)
+            if hit:
+                return v.add(DENY, f"`git checkout-index` overwrites {p} ({hit}) from the index",
+                             "rollback")
+        return None
+    if sub in ("worktree", "clone"):
+        if sub == "worktree":
+            opts, pos, after, _ = _parse(rest[1:], "bB", ("--reason",))
+            dests = (pos + after)[:1] if rest[:1] == ["add"] else []
+        else:
+            opts, pos, after, _ = _parse(rest, "bocuj", _CLONE_VALS)
+            dests = (pos + after)[1:2] + [opts[k] for k in ("--separate-git-dir",)
+                                          if isinstance(opts.get(k), str)]
+        for dest in dests:
+            if _pathspec_hit(root, cwd, dest):
+                v.add(DENY, f"`git {sub}` writes a checkout into {dest}, a protected Tess path",
+                      "rollback")
+        return None
+    handler = {"checkout": _git_checkout, "restore": _git_restore, "reset": _git_reset,
+               "switch": _git_switch, "read-tree": _git_read_tree, "stash": _git_stash,
+               "update-index": _git_update_index}.get(sub)
+    if sub in ("symbolic-ref", "update-ref"):
+        return _git_head_ref(root, cwd, sub, rest, v)
+    if handler:
+        return handler(root, cwd, rest, v)
+    if sub in ("am", "apply"):
+        return _git_apply(root, cwd, sub, rest, v, raw)
+    if sub in ("merge", "rebase", "cherry-pick", "revert"):
+        return _git_merge_like(root, cwd, sub, rest, v, raw, depth)
+    if sub == "pull":
+        return _git_pull(root, cwd, rest, v)
+    return None
+
+
+# `git pull` options that take a separate value (short: -s -X -j -o).
+_PULL_VALS = ("--strategy", "--strategy-option", "--depth", "--deepen", "--shallow-since",
+              "--shallow-exclude", "--jobs", "--upload-pack", "--server-option",
+              "--negotiation-tip", "--refmap")
+_PULL_NETWORK = ("`git pull` from {src} fetches first, and what it brings in is only known "
+                 "after that fetch, so Tess cannot check whether it replaces Tess's own gate, "
+                 "launcher or hook settings. Run `git fetch` and then `git merge` (or `git "
+                 "rebase`) with the fetched branch: Tess checks that step against HEAD")
+
+
+def _pull_rebases(cwd: str, opts: dict) -> bool:
+    for k in ("--rebase", "-r"):
+        if k in opts:
+            return str(opts[k]).lower() not in ("false", "no", "off", "0")
+    if "--no-rebase" in opts or "--ff-only" in opts:
+        return False
+    branch = (_git_ro(cwd, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+    for key in ([f"branch.{branch}.rebase"] if branch else []) + ["pull.rebase"]:
+        val = (_git_ro(cwd, "config", "--get", key) or "").strip().lower()
+        if val:
+            return val not in ("false", "no", "off", "0")
+    return False
+
+
+def _git_pull(root, cwd, rest, v):
+    """v1.0.0 final review (Cyra A-1): `git pull` merges or rebases what it
+    fetches, so it can replace the in-repo launcher (.claude/hooks/run-pinned.py)
+    and the hook config that starts it; the anchor check runs INSIDE that
+    launcher, so the gate must judge the pull itself. The hook never fetches:
+    a pull from this repository (`.`, or an upstream whose remote is `.`) is
+    judged exactly, like `git merge` / `git rebase`; a pull from a remote
+    cannot be computed before its fetch, so it asks (Claude) / denies (Codex)."""
+    if any(_abbrev(a, *_RESUME) for a in rest if a.startswith("--")):
+        return None
+    opts, pos, _, _ = _parse(rest, "sXjo", _PULL_VALS)
+    if any(k in opts for k in ("--all", "--multiple")):
+        return v.add(ASK, _PULL_NETWORK.format(src="every remote"))
+    if pos:
+        repo, specs = pos[0], pos[1:]
+    else:
+        branch = (_git_ro(cwd, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+        repo = (_git_ro(cwd, "config", "--get", f"branch.{branch}.remote") or "").strip() \
+            if branch else ""
+        specs = []
+    if repo != ".":
+        return v.add(ASK, _PULL_NETWORK.format(src=repo or "its upstream"))
+    targets = []
+    for spec in specs:
+        src = spec.lstrip("+").split(":", 1)[0]
+        if not src or src.startswith("-"):
+            return v.add(ASK, f"`git pull . {spec}` names nothing Tess can resolve")
+        targets.append(src)
+    if not targets:
+        if pos:
+            return v.add(ASK, "`git pull .` without a branch merges what git decides at run "
+                              "time, which Tess cannot resolve")
+        up = (_git_ro(cwd, "rev-parse", "--verify", "--quiet", "@{upstream}") or "").strip()
+        if not up:
+            return v.add(ASK, "`git pull` has no upstream Tess can resolve, so it cannot check "
+                              "what the pull brings in")
+        targets.append(up)
+    rebase = _pull_rebases(cwd, opts)
+    for t in targets:
+        if not _tree(cwd, t):
+            v.add(ASK, f"`git pull` brings in {t}, which Tess cannot resolve; it may replace "
+                       "Tess's own gate, launcher or hook settings")
+        elif rebase:
+            _git_rebase(root, cwd, {}, [t], v)
+        else:
+            _move_to(root, cwd, t, v, "git pull", base="merge-base")
+    return None
+
+
+# v1.0 audit: the push check works out the destination and the refs the way
+# git will: --repo, one-command config (-c, GIT_CONFIG_COUNT) for remotes,
+# branches, url.*.insteadOf / pushInsteadOf and push.*, every pushurl,
+# configured push refspecs, remote.<name>.mirror, push.default=matching,
+# --all / --mirror / --tags / --follow-tags and `tag <name>`. What it cannot
+# work out is refused, never guessed.
+_PUSH_CFG = re.compile(r"(?i)^(remote|branch|url|push)\.")
+
+
+def _push_config_key(key: str) -> bool:
+    return bool(_PUSH_CFG.match(str(key).strip()))
+
+
+def _check_push(root: Path, cwd: str, rest: list, v: Verdict, cfg=(), cenv=()):
+    flags = _short_flags(rest)
+    opts = [a for a in rest if a.startswith("--")]
+    if any(_abbrev(o, "--dry-run") for o in opts) or "n" in flags:
+        return
+    if ("f" in flags or any(_abbrev(o, "--force", "--force-with-lease", "--force-if-includes",
+                                    "--mirror", "--prune") for o in opts)
+            or any(a.startswith("+") for a in rest if not a.startswith("-"))):
+        v.add(ASK, "it is a force push, which can overwrite commits on the remote")
+    if ("d" in flags or any(_abbrev(o, "--delete") for o in opts)
+            or any(a.startswith(":") for a in rest if not a.startswith("-"))):
+        v.add(ASK, "it deletes a branch or tag on the remote")
+        if "d" in flags or any(_abbrev(o, "--delete") for o in opts):
+            return  # every refspec names a ref to delete: no data is published
+    pos, repo, i = [], None, 0
+    while i < len(rest):
+        a = str(rest[i])
+        if a == "--":
+            pos += [str(x) for x in rest[i + 1:]]
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            full = _abbrev(name, "--repo", "--receive-pack", "--exec", "--push-option")
+            if full and not eq:
+                val, i = (str(rest[i + 1]) if i + 1 < len(rest) else ""), i + 1
+            if full == "--repo":
+                repo = val
+            elif full in ("--receive-pack", "--exec"):
+                v.add(ASK, f"`git push {full}` runs a program of its own choosing ({val}) to "
+                           "receive the push, which Tess cannot check")
+        elif re.fullmatch(r"-[A-Za-z]*o", a):
+            i += 1  # -o <push option>
+        elif not a.startswith("-") or a == "-":
+            pos.append(a)
+        i += 1
+    if any(_push_config_key(str(c).split("=", 1)[0]) for c in cenv):
+        v.add(DENY, "it takes push settings from an environment variable (--config-env), so Tess "
+                    "cannot tell where the push goes or what it sends", "push")
+        return
+    pre = [x for c in cfg if _push_config_key(str(c).split("=", 1)[0]) for x in ("-c", str(c))]
+    try:
+        _publish_remote_check(root, cwd, pos, opts, v, pre, repo)
+    except _GateTimeout:
+        raise
+    except _PushRefMissing as exc:
+        v.add(DENY, f"this push names {exc}, which does not exist yet, so Tess cannot check what it "
+                    "would publish; if an earlier step creates it, run the push as its own command "
+                    "after that step", "push")
+    except Exception as exc:  # fail closed
+        v.add(DENY, f"Tess could not check what this push would publish ({type(exc).__name__})", "error")
+
+
+def _git(cwd: str, *args, check=False) -> str | None:
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=_budget(20))
+    if r.returncode != 0:
+        if check:
+            raise RuntimeError(f"git {' '.join(args[:2])} failed")
+        return None
+    return r.stdout.strip()
+
+
+def _url_rules(top: str, pre: list, kind: str) -> list:
+    """[(prefix, replacement), ...] from url.<base>.insteadOf / pushInsteadOf."""
+    out = _git(top, *pre, "config", "--get-regexp", r"^url\..*\." + kind + "$") or ""
+    rules = []
+    for line in out.splitlines():
+        key, _, val = line.partition(" ")
+        rules.append((val, key[4:-(len(kind) + 1)]))
+    return rules
+
+
+def _rewrite(url: str, rules: list) -> str | None:
+    """`url` rewritten by the longest matching rule, as git does; None if none match."""
+    best = max((r for r in rules if url.startswith(r[0])), key=lambda r: len(r[0]), default=None)
+    return best[1] + url[len(best[0]):] if best else None
+
+
+def _push_destination(top: str, pre: list, dest: str | None, branch: str) -> tuple:
+    """(remote name or URL, is a configured remote, [push URLs]), worked out the
+    way git's remote.c does: every pushurl (with insteadOf), else every url
+    (with pushInsteadOf, or failing that insteadOf); a URL or path given on the
+    command line is rewritten the same way."""
+    if dest is None:
+        dest = ((branch and _git(top, *pre, "config", "--get", f"branch.{branch}.pushRemote"))
+                or _git(top, *pre, "config", "--get", "remote.pushDefault")
+                or (branch and _git(top, *pre, "config", "--get", f"branch.{branch}.remote"))
+                or "origin")
+    pushurls = (_git(top, *pre, "config", "--get-all", f"remote.{dest}.pushurl") or "").splitlines()
+    urls = (_git(top, *pre, "config", "--get-all", f"remote.{dest}.url") or "").splitlines()
+    named = bool(pushurls or urls)
+    if not named and re.fullmatch(r"[\w.-]+", dest):
+        common = _git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common and any(os.path.exists(os.path.join(common, d, dest)) for d in ("remotes", "branches")):
+            raise RuntimeError("remote defined in .git/remotes or .git/branches")
+    instead = _url_rules(top, pre, "insteadof")
+    if pushurls:
+        out = [_rewrite(u, instead) or u for u in pushurls]
+    else:
+        push_rules = _url_rules(top, pre, "pushinsteadof")
+        out = [_rewrite(u, push_rules) or _rewrite(u, instead) or u for u in (urls or [dest])]
+    return dest, named, [u for u in out if u.strip()] or [dest]
+
+
+def _push_refs(top: str, pre: list, remote: str | None, specs: list, opts: list) -> list:
+    """[[ref, sha], ...] the push sends, from its refspecs or git's defaults."""
+    def has(*names):
+        return any(_abbrev(o.split("=", 1)[0], *names) for o in opts)
+
+    def each(pattern):
+        out = _git(top, "for-each-ref", "--format=%(refname) %(objectname)", pattern, check=True)
+        return [ln.split() for ln in out.splitlines() if ln.strip()]
+
+    def conf(*args):
+        return (_git(top, *pre, "config", *args) or "").strip()
+
+    mirror = has("--mirror") or bool(remote and conf("--type=bool", "--get", f"remote.{remote}.mirror") == "true")
+    all_, tags = has("--all", "--branches"), has("--tags")
+    refs = each("refs/") if mirror else []
+    refs += each("refs/heads/") if all_ else []
+    if tags:
+        refs += each("refs/tags/")
+    # v1.0 final review (GPT-6 #14): --follow-tags (or push.followTags, the
+    # last of --follow-tags / --no-follow-tags winning) adds only the ANNOTATED
+    # tags that point into the history being pushed, as git does.
+    follow = conf("--type=bool", "--get", "push.followTags") == "true"
+    for o in opts:
+        name = o.split("=", 1)[0]
+        if name.startswith("--no-") and len(name) >= 8 and "follow-tags".startswith(name[5:]):
+            follow = False
+        elif _abbrev(name, "--follow-tags"):
+            follow = True
+    specs = list(specs)
+    if not specs and not (mirror or all_ or tags):
+        configured = remote and conf("--get-all", f"remote.{remote}.push")
+        if configured:
+            specs = configured.splitlines()
+        elif (conf("--get", "push.default") or "simple").lower() == "matching":
+            refs += each("refs/heads/")
+        else:
+            sha = _git(top, "rev-parse", "--verify", "--quiet", "HEAD")
+            refs += [["HEAD", sha]] if sha else []
+    k = 0
+    while k < len(specs):
+        spec, k = specs[k], k + 1
+        if spec == "tag" and k < len(specs):
+            spec, k = "refs/tags/" + specs[k], k + 1
+        src = spec.lstrip("+").split(":", 1)[0]
+        if not src:
+            continue  # a deletion carries no data
+        if "*" in src:
+            for pat in ({src} if src.startswith("refs/") else {src, "refs/heads/" + src, "refs/tags/" + src}):
+                refs += each(pat)
+            continue
+        sha = _git(top, "rev-parse", "--verify", "--quiet", src)
+        if not sha:
+            # v1.0 final review (Cyra M1): a branch or tag an earlier step of
+            # this same command creates (`git checkout -b x && ... && git push -u
+            # origin x`) is checked by the pre-push hook when the push runs.
+            if _created_in_command(src):
+                continue
+            raise _PushRefMissing(src)
+        refs.append([src, sha])
+    if follow and not tags and not mirror:
+        out = _git(top, "for-each-ref", "--format=%(refname) %(objectname) %(objecttype)", "refs/tags/")
+        annotated = [ln.split()[:2] for ln in (out or "").splitlines() if ln.endswith(" tag")]
+        reach = set()
+        for sha in sorted({sha for _r, sha in refs})[:64]:
+            merged = _git(top, "for-each-ref", f"--merged={sha}", "--format=%(refname)", "refs/tags/")
+            reach.update((merged or "").split())
+        refs += [[r, sha] for r, sha in annotated if r in reach and [r, sha] not in refs]
+    return refs
+
+
+class _PushRefMissing(Exception):
+    """A refspec names a branch or tag that does not exist (yet)."""
+
+
+_REF_MAKERS = {"checkout": ("-b", "-B", "--orphan"),
+               "switch": ("-c", "-C", "--create", "--force-create", "--orphan")}
+_REF_VALUE_OPTS = ("-m", "-F", "-u", "-t", "--message", "--file", "--local-user", "--cleanup",
+                   "--format", "--sort", "--contains", "--points-at", "--merged", "--no-merged",
+                   "--track", "--set-upstream-to")
+
+
+def _created_in_command(src: str) -> bool:
+    """`src` is a branch or tag that a git step of the command being checked
+    creates (checkout -b, switch -c, branch, tag, worktree add -b)."""
+    name = re.sub(r"^refs/(heads|tags)/", "", src)
+    try:
+        segs = _segments(_STATE.get("cmd") or "")
+    except ValueError:
+        return False
+    for seg in segs:
+        argv = [str(a) for a in _resolve(seg).argv]
+        if not argv or os.path.basename(argv[0]).lower() != "git":
+            continue
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 2 if argv[i] in GIT_VALUE_OPTS else 1
+        sub, rest = (argv[i] if i < len(argv) else ""), argv[i + 1:]
+        if sub == "worktree" and rest[:1] == ["add"]:
+            sub, rest = "checkout", rest[1:]
+        made = []
+        if sub in _REF_MAKERS:
+            made += [rest[k + 1] for k, a in enumerate(rest[:-1]) if a in _REF_MAKERS[sub]]
+            made += [a.split("=", 1)[1] for a in rest if "=" in a and a.split("=", 1)[0] in _REF_MAKERS[sub]]
+            made += [a[2:] for a in rest if re.match(r"^-[bBcC][^-]", a)]
+        elif sub in ("branch", "tag"):
+            k = 0
+            while k < len(rest):
+                if rest[k] in _REF_VALUE_OPTS:
+                    k += 2
+                    continue
+                if not rest[k].startswith("-"):
+                    made.append(rest[k])
+                k += 1
+        if name in made:
+            return True
+    return False
+
+
+def _publish_remote_check(root: Path, cwd: str, pos: list, opts: list, v: Verdict,
+                          pre: list = (), repo: str | None = None):
+    top = _git(cwd or str(root), "rev-parse", "--show-toplevel")
+    if not top:
+        return  # not a repository: the push itself will fail
+    pre = list(pre)
+    branch = _git(top, "symbolic-ref", "--quiet", "--short", "HEAD") or ""
+    remote, named, urls = _push_destination(top, pre, pos[0] if pos else repo, branch)
+    refs = _push_refs(top, pre, remote if named else None, pos[1:], opts)
+    if not refs:
+        return
+    stdin = "".join(f"{r} {s} {r} {ZERO}\n" for r, s in refs)
+    tessctl = root / TESSCTL_REL
+    if not tessctl.is_file():
+        v.add(DENY, f"{TESSCTL_REL} is missing, so Tess cannot check what this push would publish", "error")
+        return
+    env = dict(os.environ, TESS_ROOT=top)
+    for url in urls:  # git pushes to every pushurl of a remote
+        # -I -B: the engine lives in the working tree, and a planted
+        # .tess/bin/argparse.py (or yaml.py) beside it must never run inside this hook.
+        r = subprocess.run([sys.executable, "-I", "-B", str(tessctl), "doctor", "--publish-remote",
+                            remote, url],
+                           input=stdin, capture_output=True, text=True, cwd=top, env=env,
+                           timeout=_budget(90))
+        if r.returncode != 0:
+            detail = (r.stderr.strip() or r.stdout.strip() or "tess-remote-guard refused the push")
+            v.add(DENY, "the public-remote guard refused it: " + _redact(root, detail), "push")
+            return
+
+
+def _check_gh(argv: list, v: Verdict):
+    args = argv[1:]
+    if args[:2] == ["auth", "token"]:
+        v.add(DENY, "`gh auth token` prints your live GitHub token into this session", "token")
+    if args[:2] == ["auth", "status"] and ("--show-token" in args or "-t" in args):
+        v.add(DENY, "`gh auth status --show-token` prints your live GitHub token into this session", "token")
+    if args[:2] == ["repo", "edit"] and any(a.startswith("--visibility") for a in args):
+        v.add(ASK, "it changes a repository's visibility")
+    if args[:2] == ["repo", "create"] and "--public" in args:
+        v.add(ASK, "it creates a PUBLIC repository")
+    if args[:1] == ["api"] and any(re.search(r"(visibility|private)=", a) for a in args):
+        v.add(ASK, "it changes a repository's visibility through the GitHub API")
+
+
+def _check_gh_input(cwd: str, argv: list, orig: list, v: Verdict, upstream) -> None:
+    """v1.0 round 3 fail-safe: `gh api --input FILE|-` sends a request body
+    the gate must read before it can say the call does not change a
+    repository's visibility: a here-document or here-string is read, a file
+    is read, and a body from a pipe Tess cannot read asks."""
+    args = [str(a) for a in _operands(argv[1:])]
+    if args[:1] != ["api"]:
+        return
+    src = next((args[k + 1] for k, a in enumerate(args[:-1]) if a == "--input"), None) or next(
+        (a.split("=", 1)[1] for a in args if a.startswith("--input=")), None)
+    if src is None:
+        return
+    if src == "-":
+        got = _stdin_source(orig)
+        if got and got[0] in ("heredoc", "herestring"):
+            body = str(got[1])
+        elif got and got[0] == "file":
+            src = str(got[1])
+            body = None
+        else:
+            up = _upstream_words(upstream) if upstream is not None else None
+            body = None if up is None else " ".join(up)
+            if body is None:
+                v.add(ASK, "`gh api --input -` sends a request body from another program, which Tess "
+                           "cannot read to check it does not change a repository's visibility")
+                return
+    else:
+        body = None
+    if body is None:
+        try:
+            with open(os.path.join(cwd, os.path.expanduser(src)), encoding="utf-8", errors="replace") as fh:
+                body = fh.read(1_000_000)
+        except OSError:
+            v.add(ASK, f"`gh api --input {src}` sends a request body Tess cannot read, so it cannot "
+                       "check it does not change a repository's visibility")
+            return
+    if re.search(r"(?i)[\"']?(visibility|private)[\"']?\s*[:=]", body):
+        v.add(ASK, "it changes a repository's visibility through the GitHub API")
+
+
+# --------------------------------------------------------------------------- operands (v1.0 audit)
+# A write target is compared with the protected list the way the shell will
+# expand it: ~, $HOME / $PWD / $TMPDIR, variables set earlier in the same
+# command, `for` loop lists, braces and globs (against the files on disk and
+# against the protected names themselves), `$(pwd)` / `$(mktemp)`, and
+# symlinks the command makes before it writes. A target that is still only
+# known at run time asks, unless the text in front of it fixes a directory
+# outside the project.
+
+_NAMED = {"git", "gh", "hub", "tessctl", "tessctl.py", "eval", "find", "cd", "pushd", "popd",
+          "chdir", "export", "declare", "typeset", "setenv", "local", "readonly",
+          "apply_patch", "applypatch"}
+# Writers outside WRITERS: every operand, or the one noted in _write_targets.
+_EXTRA_WRITERS = {"scp", "rename", "trash", "srm", "link", "mktemp", "chgrp", "mkfifo", "zip",
+                  # v1.0 round 3: programs that write the file they are given (Cyra's corpus):
+                  # `sponge FILE`, and editors run with commands (`ed -s F <<< ...`, `vim -es`).
+                  "sponge", "ed", "ex", "vi", "vim", "nvim", "nano", "pico", "emacs", "joe", "mg",
+                  "micro"}
+_AWK = {"awk", "gawk", "mawk", "nawk"}
+_AWK_WRITE = re.compile(r">|\|\s*[\"\w]|\bsystem\s*\(")
+# Programs that write the file an option names.
+_OUTPUT_OPTS = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document", "-P", "--directory-prefix"),
+                "sort": ("-o", "--output"), "base64": ("-o", "--output"), "openssl": ("-out",),
+                "gpg": ("-o", "--output"), "ssh-keygen": ("-f",), "uudecode": ("-o",),
+                "iconv": ("-o", "--output"), "plutil": ("-o",), "pandoc": ("-o", "--output")}
+_GIT_TOOLS = {"git-lfs", "git-receive-pack", "git-upload-pack", "git-upload-archive", "git-shell",
+              "git-credential-osxkeychain", "git-credential-manager", "git-filter-repo"}
+_STABLE_VARS = ("HOME", "TMPDIR", "USER", "LOGNAME")
+_GLOB_CHARS = re.compile(r"[*?[]")
+_MAX_DEPTH = 4
+_FIND_LIMIT = 20000
+_UNSET = object()
+# Filled per evaluate(): the deadline and what this call already checked.
+_STATE: dict = {"deadline": None, "interp": set()}
+
+
+class _GateTimeout(Exception):
+    """The gate's time budget ran out (see GATE_BUDGET)."""
+
+
+def _tick() -> None:
+    d = _STATE.get("deadline")
+    if d is not None and time.monotonic() > d:
+        raise _GateTimeout()
+
+
+def _budget(seconds: float) -> float:
+    """A subprocess timeout that ends inside the gate's own budget."""
+    d = _STATE.get("deadline")
+    if d is None:
+        return seconds
+    left = d - time.monotonic()
+    if left <= 0.5:
+        raise _GateTimeout()
+    return min(seconds, left)
+
+
+class _Ctx:
+    """What one command has set up for the words after it: variables, the
+    symlinks it creates, and whether it has changed files yet.
+
+    v1.0 round 2 (GPT-6 #5, Cyra H1/H2): also the aliases and functions it
+    defines, the positional parameters ($1, "$@") in force (None: only known
+    at run time), whether a function body is being read at its definition
+    (`deferred`: its $1/"$@" are checked again at each call), and which
+    variables hold a value only known at run time that cannot be an option
+    (`nonopt`: a branch name from `git branch --show-current`)."""
+
+    def __init__(self, raw: str, parent: "_Ctx | None" = None, env: dict | None = None):
+        self.raw = raw if parent is None else parent.raw
+        self.vars = dict(parent.vars) if parent is not None else {}
+        self.links = parent.links if parent is not None else {}
+        self.mutated = parent.mutated if parent is not None else False
+        self.aliases = dict(parent.aliases) if parent is not None else {}
+        self.funcs = dict(parent.funcs) if parent is not None else {}
+        self.argv = parent.argv if parent is not None else None
+        self.deferred = parent.deferred if parent is not None else False
+        self.nonopt = set(parent.nonopt) if parent is not None else set()
+        self.opaque = parent.opaque if parent is not None else False
+        self.cond_now = parent.cond_now if parent is not None else False
+        self.call_dirs = None
+        for k, val in (env or {}).items():
+            self.vars[k] = None if re.search(r"[$`]", str(val)) else [str(val)]
+            self.nonopt.discard(k)
+
+    def assign(self, name: str, vals, cond: bool, nonopt: bool = False) -> None:
+        """Set `name`. `cond`: the assignment may not run (an if/while/case
+        branch, an && / || arm), so the value is the union of the old and
+        new values -- unknown when either is, or when the union is larger
+        than Tess tracks (never a truncated list)."""
+        if cond:
+            old = self.vars.get(name, _UNSET)
+            nonopt = nonopt and (name in self.nonopt or (
+                old not in (_UNSET, None) and all(_nonopt_text(x) for x in old)))
+            old = None if old is _UNSET else old
+            vals = None if old is None or vals is None else list(dict.fromkeys(old + vals))
+        if vals is not None and len(vals) > _EXPAND_LIMIT:
+            vals = None
+        self.vars[name] = vals
+        if nonopt:
+            self.nonopt.add(name)
+        else:
+            self.nonopt.discard(name)
+
+
+def _writer_name(low: str) -> str | None:
+    if low in WRITERS or low in _EXTRA_WRITERS:
+        return low
+    if low.startswith("g") and low[1:] in WRITERS:
+        return low[1:]  # GNU coreutils as installed by Homebrew: gcp, gmv, grm...
+    return None
+
+
+def _var_values(name: str, cwd: str | None, ctx: "_Ctx"):
+    if ctx.opaque and name not in _STABLE_VARS:
+        return None  # a nameref (declare -n) can change any variable
+    if name in ctx.vars:
+        return ctx.vars[name]
+    if name.isdigit() and name != "0" and ctx.argv is not None:
+        k = int(name)
+        return [ctx.argv[k - 1] if k <= len(ctx.argv) else ""]
+    if name == "PWD":
+        return [cwd] if cwd else None
+    if name in _STABLE_VARS and not re.search(r"(?<![\w$])" + name + r"=", ctx.raw):
+        val = os.path.expanduser("~") if name == "HOME" else os.environ.get(name)
+        return [val] if val else None
+    return None
+
+
+def _sub_values(text: str, cwd: str | None):
+    """What a command substitution prints, for the few Tess can know: $(pwd),
+    $(mktemp ...), $(echo WORDS), $(printf TEXT).
+
+    v1.0 round 3 (B2): only ONE simple command whose words are all written
+    out is folded: no operator (`;`, `&&`, `|`, a newline), no redirection,
+    no expansion, glob, brace or `~` in any word. `$(echo CLAUDE.md; :)` or
+    `$(mktemp -d && echo x)` print more than that one command, so their
+    output is unknown."""
+    try:
+        toks = _scan(text)
+    except ValueError:
+        return None
+    if not toks or any(t.op or t.fd or t.body is not None for t in toks) or any(
+            k not in ("lit", "raw") or (k == "raw" and re.search(r"[$`\\*?\[{}~#]", t))
+            for w in toks for k, t in w.parts):
+        return None
+    words = [str(t) for t in toks]
+    if words in (["pwd"], ["pwd", "-P"], ["pwd", "-L"]):
+        return [cwd] if cwd else None
+    if words[0] == "echo":
+        # v1.0 round 2 (Cyra H1): `$(echo --no-verify)` prints its words.
+        outs = _echo_out(words[1:])
+        return None if outs is None else [o.rstrip("\n") for o in outs]
+    if words[0] == "printf":
+        out = _printf_out(words[1:])
+        return None if out is None else [out.rstrip("\n")]
+    if words[0] != "mktemp":
+        return None
+    where, k = None, 1
+    while k < len(words):
+        w = words[k]
+        if w in ("-p", "--tmpdir") and k + 1 < len(words):
+            where, k = words[k + 1], k + 2
+            continue
+        if w.startswith("--tmpdir="):
+            where = w.split("=", 1)[1]
+        elif not w.startswith("-") and "/" in w:
+            where = os.path.dirname(w)
+        k += 1
+    base = os.path.expanduser(where) if where else (os.environ.get("TMPDIR") or tempfile.gettempdir())
+    return [os.path.join(base if os.path.isabs(base) else os.path.join(cwd or ".", base),
+                         "tess-mktemp.XXXXXX")]
+
+
+_SIMPLE_ESC = {"n": "\n", "t": "\t", "\\": "\\"}
+
+
+def _unescape(text: str) -> str | None:
+    """`text` with \\n, \\t and \\\\ decoded; None for any other escape (octal,
+    hex, \\c...), whose output Tess does not work out."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\":
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+            if nxt not in _SIMPLE_ESC:
+                return None
+            out.append(_SIMPLE_ESC[nxt])
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _echo_out(args: list) -> list | None:
+    """What `echo ARGS` (written-out words) prints, as alternatives: zsh's
+    echo (and sh's with xpg_echo) decodes backslash escapes even without -e,
+    bash's does not, so both readings count; None for an escape Tess does
+    not decode (v1.0 round 3)."""
+    while args and re.fullmatch(r"-[neE]+", args[0]):
+        args = args[1:]
+    out = " ".join(args)
+    if "\\" not in out:
+        return [out]
+    dec = _unescape(out)
+    return None if dec is None else list(dict.fromkeys([out, dec]))
+
+
+def _printf_out(args: list) -> str | None:
+    """What `printf FORMAT ARGS` (written-out words) prints when the format
+    uses only %s, %% and the escapes _unescape reads; else None."""
+    if not args or args[0].startswith("-") or not re.fullmatch(r"(?:[^%]|%%|%s)*", args[0], re.S):
+        return None
+    fmt = _unescape(args[0])
+    if fmt is None:
+        return None
+    toks = re.split(r"(%%|%s)", fmt)
+    n, rest = toks.count("%s"), args[1:]
+    rounds = [rest[k:k + n] for k in range(0, len(rest), n)] if n and rest else [[]]
+    out = []
+    for chunk in rounds:  # the format is reused until the arguments run out
+        it = iter(chunk + [""] * n)
+        out.append("".join("%" if t == "%%" else next(it) if t == "%s" else t for t in toks))
+    return "".join(out)
+
+
+class _Overflow(Exception):
+    """An expansion with more results than Tess checks (see _EXPAND_LIMIT)."""
+
+
+# v1.0 round 2 (GPT-6 #3): how many strings one word, one variable or one
+# brace expansion may become. Past it the value is unknown (the command asks):
+# a truncated expansion is never checked as if it were complete.
+_EXPAND_LIMIT = 1024
+
+
+def _brace_seq(inner: str, limit: int):
+    """The strings of a sequence expression ({1..3}, {01..10..2}, {a..e});
+    None when `inner` is not one. The count is known before anything is built."""
+    m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?",
+                     inner)
+    if not m:
+        return None
+    num = m.group(1) is not None
+    a, b = (int(m.group(1)), int(m.group(2))) if num else (ord(m.group(4)), ord(m.group(5)))
+    inc = m.group(3) if num else m.group(6)
+    step = abs(int(inc)) if inc else 1
+    step = step or 1
+    if abs(b - a) // step + 1 > limit:
+        raise _Overflow()
+    step = step if b >= a else -step
+    width = 0
+    if num and any(len(x.lstrip("-")) > 1 and x.lstrip("-").startswith("0") for x in (m.group(1), m.group(2))):
+        width = max(len(m.group(1)), len(m.group(2)))
+    return [(str(x).zfill(width) if num else chr(x)) for x in range(a, b + (1 if step > 0 else -1), step)]
+
+
+def _brace_items(items: list, limit: int) -> list:
+    """Brace expansion of a word as the shell does it, before any other
+    expansion: `items` is the word with its unquoted text one character per
+    item ("raw", c, False) and every other part whole; only unquoted
+    `{`, `,` and `}` are special. Raises _Overflow past `limit` results."""
+    start = 0
+    while True:
+        i = next((k for k in range(start, len(items)) if items[k][0] == "raw" and items[k][1] == "{"), None)
+        if i is None:
+            return [items]
+        depth, j, commas = 0, i, []
+        while j < len(items):
+            kind, t = items[j][0], items[j][1]
+            if kind == "raw":
+                if t == "{":
+                    depth += 1
+                elif t == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif t == "," and depth == 1:
+                    commas.append(j)
+            j += 1
+        if j >= len(items):
+            return [items]
+        if commas:
+            alts, prev = [], i + 1
+            for c in commas + [j]:
+                alts.append(items[prev:c])
+                prev = c + 1
+        else:
+            inner = items[i + 1:j]
+            seq = _brace_seq("".join(t for _k, t, _q in inner), limit) \
+                if all(k == "raw" for k, _t, _q in inner) else None
+            if seq is None:
+                start = i + 1
+                continue
+            alts = [[("lit", x, False)] for x in seq]
+        out = []
+        for alt in alts:
+            out += _brace_items(items[:i] + alt + items[j + 1:], limit)
+            if len(out) > limit:
+                raise _Overflow()
+        return out
+
+
+def _braces(text: str, limit: int = _EXPAND_LIMIT) -> list:
+    """Brace expansion of unquoted text: {a,b} and {1..3}. Raises _Overflow."""
+    out = []
+    for alt in _brace_items([("raw", c, False) for c in text], limit):
+        out.append("".join(t for _k, t, _q in alt))
+    return out
+
+
+def _tilde(text: str, cwd: str | None, ctx: "_Ctx"):
+    m = re.match(r"~([^/]*)", text)
+    user = m.group(1)
+    if user == "":
+        home = _var_values("HOME", cwd, ctx)
+        return home[0] + text[1:] if home else None
+    if user == "+":
+        return cwd + text[2:] if cwd else None
+    if user == "-":
+        return None
+    exp = os.path.expanduser("~" + user)
+    return text if exp.startswith("~") else exp + text[m.end():]
+
+
+def _gescape(text: str) -> str:
+    return re.sub(r"([*?[])", r"[\1]", text)
+
+
+_IFS_DEFAULT = " \t\n"
+# Command substitutions whose output Tess cannot know but that never starts
+# with "-" nor holds a space: a branch name or commit id, a date, a user name.
+_NONOPT_SUB = re.compile(
+    r"^\s*(git\s+(branch\s+--show-current|symbolic-ref\s+(-q\s+)?--short\s+HEAD|"
+    r"rev-parse\s+((--abbrev-ref|--short(=\d+)?|--verify|-q)\s+)*(HEAD|@|HEAD~\d+|HEAD\^|@\{u\}|"
+    r"@\{upstream\})|log\s+-1\s+--(format|pretty)=(format:)?%[hH]|merge-base\s+[\w./@^~-]+\s+[\w./@^~-]+)|"
+    r"date\s+['\"]?\+%[%A-Za-z0-9:_.]*['\"]?|whoami|id\s+-un?|hostname(\s+-s)?)\s*$")
+
+
+def _nonopt_text(x: str) -> bool:
+    """A value that stays one word and cannot be read as an option."""
+    return not x.startswith("-") and not re.search(r"\s", x)
+
+
+def _ifs(ctx: "_Ctx"):
+    """The characters unquoted expansions are split on; None when the command
+    sets IFS to something Tess cannot know."""
+    if "IFS" not in ctx.vars:
+        return _IFS_DEFAULT
+    vals = ctx.vars["IFS"]
+    return vals[0] if vals is not None and len(vals) == 1 else None
+
+
+def _val_chunk(x: str, quoted: bool, assign: bool) -> tuple:
+    if quoted or assign:
+        return (x, _gescape(x), False, False)
+    return (x, x, bool(_GLOB_CHARS.search(x)), True)
+
+
+def _part_alts(kind: str, t: str, quoted: bool, first: bool, cwd, ctx: "_Ctx", assign: bool):
+    """What one part of a word can become: a list of alternatives, each a list
+    of chunks (text, glob pattern, has glob, split by IFS), with None between
+    the fields of "$@"; None when only known at run time."""
+    if kind == "lit":
+        return [[(t, _gescape(t), False, False)]]
+    if kind in ("raw", "fallback"):
+        if kind == "fallback" and re.search(r"[$`]", t):
+            return None
+        if first and t.startswith("~"):
+            t = _tilde(t, cwd, ctx)
+            if t is None:
+                return None
+        g = not assign and bool(_GLOB_CHARS.search(t))
+        return [[(t, t if g else _gescape(t), g, False)]]
+    if kind in ("var", "sub"):
+        vals = _var_values(t, cwd, ctx) if kind == "var" else _sub_values(t, cwd)
+        if vals is None:
+            return None
+        return [[_val_chunk(x, quoted, assign)] for x in dict.fromkeys(vals)]
+    if kind == "dyn" and ctx.argv is not None and t in ("@", "*", "#"):
+        if t == "#":
+            return [[(str(len(ctx.argv)), str(len(ctx.argv)), False, False)]]
+        if quoted and t == "*":
+            x = ((_ifs(ctx) or " ")[:1]).join(ctx.argv)
+            return [[(x, _gescape(x), False, False)]]
+        chunks = []
+        for n, x in enumerate(ctx.argv):
+            chunks += ([None] if n else []) + [_val_chunk(x, quoted, assign)]
+        return [chunks]
+    return None
+
+
+def _split_fields(chunks: list, ifs) -> list | None:
+    """Field splitting (unquoted expansions only), then the glob pattern of
+    each field: [(text, pattern or None), ...]; None when IFS is unknown."""
+    fields, cur = [], None
+    for ch in chunks:
+        if ch is None:  # between the arguments of "$@"
+            if cur is not None:
+                fields.append(cur)
+            cur = None
+            continue
+        text, pat, glob, split = ch
+        if not split:
+            cur = cur or ["", "", False]
+            cur[0], cur[1], cur[2] = cur[0] + text, cur[1] + pat, cur[2] or glob
+            continue
+        if ifs is None:
+            if text:
+                return None
+            continue
+        pieces = re.split("[" + re.escape(ifs) + "]+", text) if ifs else [text]
+        for k, piece in enumerate(pieces):
+            if k and cur is not None:
+                fields.append(cur)
+                cur = None
+            if piece:
+                cur = cur or ["", "", False]
+                cur[0], cur[1] = cur[0] + piece, cur[1] + piece
+                cur[2] = cur[2] or bool(_GLOB_CHARS.search(piece))
+    if cur is not None:
+        fields.append(cur)
+    return [(f[0], f[1] if f[2] else None) for f in fields]
+
+
+def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
+                 assign: bool = False) -> tuple:
+    """([[field, ...], ...], None): every way `word` can expand, each a list of
+    the arguments it becomes, a field being (text, glob pattern or None).
+    The shell's order: brace expansion, tilde, variables and substitutions,
+    field splitting of unquoted expansions (v1.0 round 2, GPT-6 #4), then
+    globbing. (None, prefix) when part of it is only known at run time, with
+    the text in front of that part, and (None, "") when it has more results
+    than `limit` (GPT-6 #3: never a truncated list). `assign`: the value of
+    NAME=value, which is neither brace-expanded, split nor globbed.
+
+    v1.0 round 3 (B1): brace expansion makes several arguments AT ONCE
+    (`git {-c,core.hooksPath=x,commit}` is `git -c core.hooksPath=x
+    commit`), so the brace results are joined into one argument list; only
+    a value the gate cannot pin down (a variable set in an `if`) makes
+    alternative lists."""
+    ctx = ctx if ctx is not None else _Ctx("")
+    if isinstance(word, _Field):
+        return [[(str(word), word.pat)]], None
+    if isinstance(word, _Word) and word.parts:
+        parts = [(k, t, _part_quoted(word, n)) for n, (k, t) in enumerate(word.parts)]
+    else:
+        parts = [("fallback", str(word), False)]
+    if [(k, t) for k, t, _q in parts if not (k == "lit" and t == "")] == [("dyn", "@")] \
+            and ctx.argv == [] and parts[-1][2]:
+        return [[]], None  # "$@" with no arguments is no word at all
+    items = []
+    for k, t, q in parts:
+        if not assign and (k == "raw" or (k == "fallback" and not re.search(r"[$`]", t))):
+            items += [("raw", c, False) for c in t]
+        else:
+            items.append((k, t, q))
+    try:
+        alts = [items] if assign else _brace_items(items, limit)
+    except _Overflow:
+        return None, _overflow_prefix(items)
+    ifs, out = _ifs(ctx), [[]]
+    for alt in alts:
+        merged = []
+        for k, t, q in alt:
+            if merged and k == "raw" and merged[-1][0] == "raw":
+                merged[-1] = ("raw", merged[-1][1] + t, False)
+            else:
+                merged.append((k, t, q))
+        cands = [[]]
+        for n, (k, t, q) in enumerate(merged):
+            opts = _part_alts(k, t, q, n == 0, cwd, ctx, assign)
+            if opts is None:
+                return None, _unknown_prefix(alts, cands, ifs)
+            if len(cands) * len(opts) > limit:
+                return None, _overflow_prefix(items)
+            cands = [c + o for c in cands for o in opts]
+        this = []
+        for cand in cands:
+            if assign:
+                this.append([("".join(c[0] for c in cand if c is not None), None)])
+                continue
+            fields = _split_fields(cand, ifs)
+            if fields is None:
+                return None, ""
+            this.append(fields)
+        if len(out) * len(this) > limit:
+            return None, ""
+        out = [o + t for o in out for t in this]  # brace results are simultaneous
+    return out, None
+
+
+def _unknown_prefix(alts: list, cands: list, ifs) -> str:
+    """The written-out text every argument of a partly unknown word starts
+    with. Several brace results are several arguments, so only the text they
+    all start with counts (round 3: `{/tmp/a,CLAUDE}$Y` has no fixed folder);
+    text an unquoted value would split is no fixed prefix either."""
+    if len(alts) > 1:
+        return os.path.commonprefix([_overflow_prefix(a) for a in alts])
+    texts = []
+    for cand in cands:
+        if any(c is None or (c[3] and (ifs is None or any(ch in c[0] for ch in ifs))) for c in cand):
+            return ""
+        texts.append("".join(c[0] for c in cand))
+    return os.path.commonprefix(texts)
+
+
+def _overflow_prefix(items: list) -> str:
+    """The written-out text in front of an expansion too large to list
+    (`/tmp/cache-` of `/tmp/cache-{1..5000}`); "" if any `..` follows it."""
+    pre = ""
+    for k, t, _q in items:
+        if k not in ("lit", "raw") or (k == "raw" and t in "{$`"):
+            break
+        pre += t
+    rest = "".join(t for _k, t, _q in items)[len(pre):]
+    return "" if re.search(r"(^|[/{,])\.\.([/},]|$)", rest) else pre
+
+
+def _word_values(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
+                 assign: bool = False) -> tuple:
+    """([(text, glob pattern or None), ...], None): every argument `word` can
+    become, over all its expansions (see _word_fields); (None, prefix) when
+    part of it is only known at run time or it has more than `limit` results."""
+    cands, prefix = _word_fields(word, cwd, ctx, limit, assign)
+    if cands is None:
+        return None, prefix
+    flat = list(dict.fromkeys(f for cand in cands for f in cand))
+    if len(flat) > limit:
+        return None, ""
+    return flat, None
+
+
+def _may_reach(root: Path, cwd: str | None, prefix: str) -> bool:
+    """False only when the text in front of a run-time part fixes a directory
+    outside the project and not above it (`/tmp/build-$ID`)."""
+    base = os.path.realpath(str(root))
+    if "/" in prefix:
+        head = prefix.rsplit("/", 1)[0] or "/"
+        real = os.path.realpath(os.path.join(cwd or base, os.path.expanduser(head)))
+    else:
+        real = os.path.realpath(cwd or base)
+    return (_within(real, base) is not None or _within(base, real) is not None
+            or control_file_hit(root, real, real) is not None)
+
+
+def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
+    """`path` with the symlinks this command creates earlier followed; None
+    when one points somewhere only known at run time."""
+    full = os.path.normpath(os.path.join(cwd, path))
+    for _ in range(8):
+        for link, target in ctx.links.items():
+            if full == link or full.startswith(link + os.sep):
+                if target is None:
+                    return None
+                full = os.path.normpath(target + full[len(link):])
+                break
+        else:
+            return full
+    return full
+
+
+def _seg_match(name: str, pat: str) -> bool:
+    if name.startswith(".") and not pat.startswith("."):
+        return False  # a glob does not match a dot file unless it starts with a dot
+    return fnmatch.fnmatchcase(name.lower(), pat.lower())
+
+
+def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
+    """The protected path a glob pattern can name, whether or not that file
+    exists when the gate runs (`CLAUDE.m?`, `.claude/hook[s]/*`, `*`)."""
+    full = pat if os.path.isabs(pat) else os.path.join(cwd, pat)
+    parts = full.split(os.sep)
+    k = next((i for i, p in enumerate(parts) if _GLOB_CHARS.search(p)), len(parts))
+    head = os.path.realpath(os.sep.join(parts[:k]) or os.sep)
+    base = os.path.realpath(str(root))
+    rel = _within(head, base)  # v1.0 audit: by identity (case variants on APFS)
+    if rel is None:
+        return None
+    pparts = ([] if rel == "." else rel.split("/")) + [p for p in parts[k:] if p]
+    for g in _protected_globs(root):
+        entry = g[:-3] if g.endswith("/**") else g
+        if _GLOB_CHARS.search(entry):
+            continue
+        eparts = entry.split("/")
+        if len(pparts) <= len(eparts) and all(_seg_match(e, p) for e, p in zip(eparts, pparts)):
+            return g  # the entry, or a directory holding it
+        if g.endswith("/**") and len(pparts) > len(eparts) and all(
+                _seg_match(e, p) for e, p in zip(eparts, pparts)):
+            return g  # a file inside a protected directory
+    return None
+
+
+def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None:
+    if isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts):
+        return  # >(cmd): a pipe to a command checked on its own
+    cands, prefix = _word_values(word, cwd, ctx)
+    if cands is None:
+        if ctx.deferred and _positional_only(word):
+            return  # a function's "$1": checked again at each call, with its arguments
+        if _may_reach(root, cwd, prefix):
+            v.add(ASK, f"it writes to {word}, a path that is only known when the command runs "
+                       "(or that expands to more names than Tess checks one by one), so Tess "
+                       "cannot check it against its protected files")
+        return
+    for text, pat in cands:
+        for p in (_glob(cwd, pat) if pat else []) or [text]:
+            full = _through_links(p, cwd, ctx)
+            if full is None:
+                v.add(ASK, f"it writes to {word} through a link this command makes to a place "
+                           "Tess cannot work out")
+                return
+            hit = protected_hit(root, cwd, full)
+            if hit:
+                v.add(DENY, f"it writes to {word}, a protected Tess path ({hit})", "protected")
+                return
+        hit = pat and _pattern_hit(root, cwd, pat)
+        if hit:
+            v.add(DENY, f"it writes to {word}, which matches a protected Tess path ({hit})", "protected")
+            return
+
+
+def _positional_only(word) -> bool:
+    """Every run-time part of `word` is a positional parameter ($1, "$@", $#)."""
+    return isinstance(word, _Word) and all(
+        (k == "var" and t.isdigit() and t != "0") or (k == "dyn" and t in ("@", "*", "#"))
+        for k, t in word.parts if k not in ("lit", "raw"))
+
+
+def _sub_word(word, k: int):
+    """`word` without its first k characters, keeping how the rest was written."""
+    if isinstance(word, _Field):
+        if word.pat is None:
+            return _field(str(word)[k:])
+        head = str(word)[:k]
+        # The pattern starts with the same text unless that text needed escaping;
+        # otherwise the rest is treated as only known at run time (it asks).
+        return _field(str(word)[k:], word.pat[k:]) if word.pat.startswith(head) else _mkword([("dyn", "")])
+    if not isinstance(word, _Word) or not word.parts:
+        return str(word)[k:]
+    out, left = [], k
+    for n, (kind, t) in enumerate(word.parts):
+        if left and kind in ("lit", "raw", "fallback"):
+            take = min(left, len(t))
+            t, left = t[take:], left - take
+            if not t:
+                continue
+        elif left:
+            return _mkword([("dyn", "")])
+        out.append((kind, t, _part_quoted(word, n)))
+    return _mkword(out or [("lit", "")])
+
+
+def _part_quoted(word, n: int) -> bool:
+    q = getattr(word, "q", ())
+    return bool(q[n]) if n < len(q) else False
+
+
+def _redirect_targets(argv: list) -> list:
+    out = []
+    for i, tok in enumerate(argv):
+        s = str(tok)
+        red = (tok.op and s in _REDIR_OPS) if isinstance(tok, _Word) else (
+            s in REDIRECTS or s == ">&" or re.match(r"^\d*>{1,2}\|?$", s))
+        if not red or s in ("<", "<<", "<<-", "<<<", "<&") or i + 1 >= len(argv) or _is_op(argv[i + 1]):
+            continue
+        if s == ">&" and re.fullmatch(r"\d+-?|-", str(argv[i + 1])):
+            continue  # 2>&1: a descriptor, not a file
+        out.append(argv[i + 1])
+    return out
+
+
+def _output_targets(name: str, args: list) -> list:
+    out = []
+    for i, a in enumerate(args):
+        s = str(a)
+        for o in _OUTPUT_OPTS.get(name, ()):
+            if s == o and i + 1 < len(args):
+                out.append(args[i + 1])
+            elif o.startswith("--") and s.startswith(o + "="):
+                out.append(_sub_word(a, len(o) + 1))
+            elif len(o) == 2 and s.startswith(o) and len(s) > 2:
+                out.append(_sub_word(a, 2))
+    if name == "curl" and any(str(a) in ("--remote-name", "--remote-name-all") or
+                              re.fullmatch(r"-[A-Za-z]*O[A-Za-z]*", str(a)) for a in args):
+        for a in args:
+            m = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]+/(?:[^?#]*/)?([^/?#]+)", str(a))
+            if m:
+                out.append(_plain(m.group(1)))
+    if name in ("tar", "gtar", "bsdtar"):
+        words = [str(a) for a in args]
+        if words and not words[0].startswith("-"):
+            words[0] = "-" + words[0]  # old-style `tar czf out.tgz ...`
+        clusters = [w for w in words if re.fullmatch(r"-[A-Za-z]+", w)]
+        if any(set("cruA") & set(c[1:]) for c in clusters) or any(
+                w in ("--create", "--append", "--update") for w in words):
+            for i, w in enumerate(words):
+                if w.startswith("--file="):
+                    out.append(_sub_word(args[i], 7))
+                elif w == "--file" and i + 1 < len(args):
+                    out.append(args[i + 1])
+                elif re.fullmatch(r"-[A-Za-z]+", w) and "f" in w:
+                    rest = w[w.index("f") + 1:]
+                    out.append(_plain(rest) if rest else (args[i + 1] if i + 1 < len(args) else _plain("")))
+    return out
+
+
+def _write_targets(argv: list, orig: list | None = None) -> list:
+    """Words naming what a segment writes: redirect targets (in `orig`, the
+    whole segment when given) and the operands the program writes (`argv`,
+    from the program on)."""
+    out = _redirect_targets(orig if orig is not None else argv)
+    if not argv:
+        return out
+    name = os.path.basename(str(argv[0])).lower()
+    args = [a for a in argv[1:] if not (_is_op(a) and str(a) in _REDIR_OPS)]
+    w = _writer_name(name)
+    ops = [a for a in args if not str(a).startswith("-")]
+    if w == "dd":
+        out += [_sub_word(a, 3) for a in args if str(a).startswith("of=")]
+    elif w == "scp":
+        out += ops[-1:]
+    elif w == "zip":
+        out += ops[:1]
+    elif w:
+        if w == "cp" and not any(re.match(r"^-[A-Za-z]*[ls]", str(a)) or _abbrev(
+                str(a), "--link", "--symbolic-link") for a in args):
+            # v1.0 final review (GPT-6 #12): cp reads its sources and writes only
+            # the destination (a copy, not a link: -l/-s keep the source reachable).
+            # Reading Tess's key directory stays refused (_check_key_text).
+            _rec, dest, srcs = _copy_plan("cp", _operands(argv[1:]))
+            ops = [dest] if dest is not None else ops
+        out += ops
+        for a in args:
+            s = str(a)
+            if s.startswith("--") and "=" in s:
+                out.append(_sub_word(a, s.index("=") + 1))  # --target-directory=DIR
+            elif w in ("cp", "mv", "install", "ln") and re.match(r"^-[A-Za-z]*t.", s):
+                out.append(_sub_word(a, s.index("t") + 1))  # -tDIR
+    elif name in INPLACE and any(re.match(r"^-[A-Za-z]*i", str(a)) or str(a).startswith("--in-place")
+                                 for a in args):
+        out += ops
+    if name in ("sed", "gsed"):
+        out += [_plain(t) for t in _sed_program(argv[1:], None)[0]]
+    return out + _output_targets(name, args)
+
+
+# v1.0 final review (Cyra M2): sed writes files from inside its program too:
+# the `w FILE` / `W FILE` commands and the `w FILE` flag of `s///`. GNU sed's
+# `e` command and `s///e` flag run the text as a shell command.
+_SED_NOARG = set("=dDgGhHlnNpPxzFqQ{}!") | {"L"}
+
+
+def _sed_skip_re(s: str, i: int, delim: str) -> int:
+    """Index just past the closing `delim` of a regex/replacement starting at i."""
+    while i < len(s):
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\n" and delim != "\n":
+            raise ValueError("newline in a sed expression")
+        if c == delim:
+            return i + 1
+        i += 1
+    raise ValueError("unterminated sed expression")
+
+
+def _sed_parse(script: str) -> tuple:
+    """([files the program writes], runs a shell command) of one sed program;
+    ValueError when it cannot be read."""
+    s, i, writes, runs = script, 0, [], False
+
+    def to_eol(j):
+        k = s.find("\n", j)
+        return (s[j:] if k < 0 else s[j:k]), (len(s) if k < 0 else k)
+
+    while i < len(s):
+        c = s[i]
+        if c in " \t\n;":
+            i += 1
+            continue
+        # addresses: 12, $, /re/, \cREc, first~step, addr,addr, +N, ~N, then ! and spaces
+        for _ in range(2):
+            if i < len(s) and s[i] == "/":
+                i = _sed_skip_re(s, i + 1, "/")
+                while i < len(s) and s[i] in "IM":
+                    i += 1
+            elif i + 1 < len(s) and s[i] == "\\":
+                i = _sed_skip_re(s, i + 2, s[i + 1])
+                while i < len(s) and s[i] in "IM":
+                    i += 1
+            else:
+                m = re.match(r"[0-9]+(~[0-9]+)?|\$|[+~][0-9]+", s[i:])
+                if m:
+                    i += m.end()
+            if i < len(s) and s[i] == ",":
+                i += 1
+                continue
+            break
+        while i < len(s) and s[i] in " \t!":
+            i += 1
+        if i >= len(s):
+            break
+        c, i = s[i], i + 1
+        if c == "#":
+            _t, i = to_eol(i)
+        elif c in "wW":
+            name, i = to_eol(i)
+            writes.append(name.strip())
+        elif c in "rRaic:bBtTv":
+            _t, i = to_eol(i)
+            while c in "aic" and _t.endswith("\\") and i < len(s):  # a\ text continues
+                _t, i = to_eol(i + 1)
+            if c in "bBtTv:":  # a label ends at `;` in GNU sed: rescan from there
+                k = s.find(";", i - len(_t), i)
+                i = k + 1 if k >= 0 else i
+        elif c == "e":
+            runs = True
+            _t, i = to_eol(i)
+        elif c in "sy":
+            if i >= len(s):
+                raise ValueError("sed s/y without a delimiter")
+            d = s[i]
+            i = _sed_skip_re(s, _sed_skip_re(s, i + 1, d), d)
+            if c == "s":
+                while i < len(s) and s[i] in "gpiImMe0123456789w":
+                    if s[i] == "e":
+                        runs = True
+                    if s[i] == "w":
+                        name, i = to_eol(i + 1)
+                        writes.append(name.strip())
+                        break
+                    i += 1
+        elif c in "qQlL":
+            m = re.match(r"\s*[0-9]*", s[i:])
+            i += m.end() if m else 0
+        elif c in _SED_NOARG:
+            pass
+        else:
+            raise ValueError(f"unknown sed command {c!r}")
+    return writes, runs
+
+
+def _sed_program(args: list, cwd: str | None, ctx: "_Ctx | None" = None) -> tuple:
+    """([files the sed programs write], [plain reasons Tess cannot check it]).
+    `--sandbox` (GNU) turns w/r/e off.
+
+    v1.0 round 3 (B3): the words are the expanded ones (`S='w CLAUDE.md';
+    sed -n "$S"` reads the program `w CLAUDE.md`). With `ctx`, a word still
+    only known at run time is a reason: as the program (or -e/-f value) it
+    can write any file; where it could be an option (sed takes options
+    anywhere) it could be -i or -e. A file operand only known at run time is
+    left to the write-target check (with -i) or is a read."""
+    items = _operands(args)
+    scripts, ops, problems, i, bsd_i = [], [], [], 0, False
+    unknown = object()
+
+    def unk(w):
+        return ctx is not None and _unknown_word(w, ctx)
+
+    def value(k):
+        if k >= len(items):
+            return ""
+        return unknown if unk(items[k]) else str(items[k])
+
+    while i < len(items):
+        a = str(items[i])
+        if unk(items[i]):
+            if all(_unknown_shape(items[i], ctx)):
+                ops.append(unknown)
+            else:
+                problems.append(f"it gives sed an argument that is only known when the command runs "
+                                f"({items[i]}); it could be an option such as -i, or -e with a program "
+                                "that writes files, so Tess cannot check it")
+            i += 1
+            continue
+        if a == "--":
+            ops += [value(k) for k in range(i + 1, len(items))]
+            break
+        if a == "--sandbox":
+            return [], problems
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in ("--expression", "--file", "--line-length") and not eq:
+                val, i = value(i + 1), i + 1
+            if name == "--expression":
+                scripts.append(val)
+            elif name == "--file":
+                scripts.append(("file", val))
+        elif a.startswith("-") and len(a) > 1:
+            if a in ("-i", "-I"):
+                bsd_i = True
+            for k, ch in enumerate(a[1:], 1):
+                if ch in "efl":
+                    val = a[k + 1:]
+                    if not val and (ch != "l" or (i + 1 < len(items) and str(items[i + 1]).isdigit())):
+                        val, i = value(i + 1), i + 1
+                    if ch == "e":
+                        scripts.append(val)
+                    elif ch == "f":
+                        scripts.append(("file", val))
+                    break
+                if ch in "iI":
+                    break  # GNU -iSUFFIX: the rest is the suffix
+        else:
+            ops.append(a)
+        i += 1
+    if not scripts:
+        scripts = ops[:2] if bsd_i else ops[:1]  # BSD `sed -i '' 'script' file`
+    writes, runs = [], False
+    for sc in scripts:
+        if sc is unknown or (isinstance(sc, tuple) and sc[1] is unknown):
+            problems.append("its sed program is only known when the command runs, so Tess cannot "
+                            "tell which files it writes or what it runs")
+            continue
+        if isinstance(sc, tuple):
+            try:
+                with open(os.path.join(cwd or os.getcwd(), os.path.expanduser(sc[1])),
+                          encoding="utf-8", errors="replace") as fh:
+                    sc = fh.read(1_000_000)
+            except OSError:
+                problems.append(f"its sed program comes from {sc[1]}, a file Tess cannot read, so "
+                                "it cannot tell which files that program writes")
+                continue
+        try:
+            w, r = _sed_parse(sc)
+        except ValueError:
+            if sc in scripts[1:] and bsd_i:
+                continue  # the BSD in-place suffix guess was wrong: that word is a file
+            if re.search(r"[wWe]", sc):
+                problems.append("Tess could not read its sed program, which may write files or "
+                                "run commands")
+            continue
+        writes += w
+        runs = runs or r
+    if runs:
+        problems.append("its sed program runs a shell command (`e`), which Tess cannot check")
+    return [w for w in writes if w not in ("/dev/stdout", "/dev/stderr")], problems
+
+
+def _check_sed(root: Path, cwd: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
+    """Problems _sed_program reports (its write targets are in _write_targets)."""
+    for why in _sed_program(argv[1:], cwd, ctx)[1]:
+        v.add(ASK, why)
+
+
+_AWK_SHORT = {"-f": "file", "-E": "file", "-e": "text", "-i": "include", "-v": "", "-F": "",
+              "-l": "", "-W": ""}
+_AWK_LONG = {"--file": "file", "--exec": "file", "--source": "text", "--include": "include",
+             "--assign": "", "--field-separator": "", "--load": ""}
+
+
+def _check_awk(root: Path, cwd: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
+    """v1.0 round 3 (Cyra's corpus): awk writes files from its program
+    (`print > "CLAUDE.md"`, `system(...)`, a pipe) and, with gawk's `-i
+    inplace`, rewrites the files it reads. A program only known at run time
+    asks (the fail-safe); a value after -v or a file it only reads does not."""
+    words, progs, i, have_prog, inplace = _operands(argv[1:]), [], 0, False, False
+    while i < len(words):
+        w, s = words[i], str(words[i])
+        if _unknown_word(w, ctx):
+            v.add(ASK, f"it gives {argv[0]} an option or program that is only known when the command "
+                       f"runs ({w}), so Tess cannot check which files the program writes")
+            return
+        if s == "--":
+            i += 1
+            break
+        if not s.startswith("-") or s == "-":
+            break
+        kind, val, nxt = None, None, i + 1
+        if s.startswith("--"):
+            name, eq, rest = s.partition("=")
+            kind = _AWK_LONG.get(name)
+            if kind is not None:
+                val, nxt = (rest, i + 1) if eq else ((words[i + 1] if i + 1 < len(words) else None), i + 2)
+        elif s[:2] in _AWK_SHORT:
+            kind = _AWK_SHORT[s[:2]]
+            val, nxt = (s[2:], i + 1) if len(s) > 2 else ((words[i + 1] if i + 1 < len(words) else None), i + 2)
+        if kind and val is not None:
+            if _unknown_word(val, ctx):
+                v.add(ASK, f"its {argv[0]} program or library is only known when the command runs ({val})")
+                return
+            if kind == "include":
+                inplace = inplace or str(val).split(".")[0] == "inplace"
+            elif kind == "text":
+                have_prog = True
+                progs.append(str(val))
+            else:
+                have_prog = True
+                try:
+                    with open(os.path.join(cwd, os.path.expanduser(str(val))), encoding="utf-8",
+                              errors="replace") as fh:
+                        progs.append(fh.read(1_000_000))
+                except OSError:
+                    v.add(ASK, f"its {argv[0]} program comes from {val}, a file Tess cannot read")
+        i = nxt
+    if not have_prog and i < len(words):
+        progs.append(str(words[i]))
+        i += 1
+    for text in progs:
+        if not _AWK_WRITE.search(text):
+            continue
+        for tok in dict.fromkeys(re.findall(r"[A-Za-z0-9_./~+-]+", text)):
+            t = tok[2:] if tok.startswith("./") else tok
+            hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/")) or (
+                ("/" in t or "." in t) and protected_hit(root, cwd, t))
+            if hit:
+                v.add(DENY, f"its {argv[0]} program writes near {tok}, a protected Tess path ({hit})",
+                      "protected")
+                return
+    if inplace:  # gawk -i inplace: every file operand is rewritten
+        _check_targets(root, cwd, [w for w in words[i:] if not re.match(r"^[A-Za-z_]\w*=", str(w))], v, ctx)
+
+
+def _check_targets(root: Path, cwd: str, targets: list, v: "Verdict", ctx: "_Ctx") -> None:
+    for t in targets:
+        _tick()
+        _check_target(root, cwd, t, v, ctx)
+
+
+def _operands(words: list) -> list:
+    """Words that are not redirections (nor their targets)."""
+    out, skip = [], False
+    for w in words:
+        if skip:
+            skip = False
+        elif _is_op(w) and str(w) in _REDIR_OPS:
+            skip = True
+        elif not (isinstance(w, _Word) and w.fd):
+            out.append(w)
+    return out
+
+
+def _stdin_source(orig: list):
+    """('herestring', word) | ('heredoc', body) | ('file', word) | None: the
+    last input redirection of a segment."""
+    src = None
+    for i, tok in enumerate(orig):
+        if _is_op(tok) and i + 1 < len(orig):
+            s = str(tok)
+            if s == "<<<":
+                src = ("herestring", orig[i + 1])
+            elif s in ("<<", "<<-"):
+                src = ("heredoc", getattr(orig[i + 1], "body", None) or "")
+            elif s == "<":
+                src = ("file", orig[i + 1])
+    return src
+
+
+def _upstream_words(upstream) -> list | None:
+    """The text a pipeline's previous command prints, when Tess can read it
+    from the command line (echo, printf, cat of a here-document); None if not."""
+    if upstream is None:
+        return None
+    argv = _resolve(upstream).argv
+    name = os.path.basename(str(argv[0])).lower() if argv else ""
+    if name in ("echo", "printf"):
+        words = [str(a) for a in _operands(argv[1:])]
+        if any(_dynamic(a) for a in _operands(argv[1:])):
+            # a value is expanded again where the text is read (the shell below)
+            return [w for w in words if not (name == "echo" and re.fullmatch(r"-[neE]+", w))]
+        # v1.0 round 3 (B2): what they print, escapes and printf's format
+        # applied; one Tess cannot work out is unknown (the caller asks).
+        return _echo_out(words) if name == "echo" else (
+            None if _printf_out(words) is None else [_printf_out(words)])
+    if name == "cat" and not [a for a in _operands(argv[1:]) if not str(a).startswith("-")]:
+        src = _stdin_source(upstream)
+        if src and src[0] in ("heredoc", "herestring"):
+            return [str(src[1])]
+    return None
+
+
+def _recurse(root: Path, cwd: str, text: str, v: "Verdict", depth: int, ctx: "_Ctx",
+             env: dict | None = None, into: "_Ctx | None" = None) -> None:
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`, functions) more deeply than "
+                   "Tess checks")
+        return
+    check_command(root, cwd, text, v, depth + 1, ctx=into if into is not None else _Ctx(ctx.raw, ctx, env))
+
+
+def _body_subs(body: str) -> list:
+    """Command substitutions a here-document with an unquoted delimiter runs."""
+    out, i = [], 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\":
+            i += 2
+            continue
+        try:
+            if body.startswith("$(", i):
+                j = _close_paren(body, i + 1)
+                out.append(body[i + 2:j])
+                i = j
+            elif c == "`":
+                j = _close_backtick(body, i)
+                out.append(body[i + 1:j])
+                i = j
+        except ValueError:
+            out.append(body[i:])
+            break
+        i += 1
+    return out
+
+
+def _check_subs(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
+    """Command and process substitutions in a word run first, in this directory."""
+    if not isinstance(word, _Word):
+        return
+    for kind, t in word.parts:
+        if kind in ("sub", "proc") and t.strip():
+            _recurse(root, cwd, t, v, depth, ctx)
+        # v1.0 round 2 (GPT-6 #6): a substitution inside ${X:-...}, ${X:=...},
+        # ${X:+...}, ${X:?...}, ${A[...]} or $[...] runs too.
+        if kind in ("arith", "dyn"):
+            for inner in _body_subs(t):
+                _recurse(root, cwd, inner, v, depth, ctx)
+    if word.body and all(k == "raw" for k, _ in word.parts):
+        for t in _body_subs(word.body):
+            _recurse(root, cwd, t, v, depth, ctx)
+
+
+def _check_shell(root: Path, cwd: str, argv: list, orig: list, v: "Verdict", depth: int,
+                 ctx: "_Ctx", upstream) -> bool:
+    """A shell's program: `-c` string (any option cluster holding c: -c, -Ec,
+    -xc; `--` allowed), a here-string or here-document, or the text a pipe
+    feeds it. A script file is not read (documented limit). True when the
+    segment was a shell running a program Tess checked or refused."""
+    words, i, has_c, has_s = [str(a) for a in argv[1:]], 0, False, False
+    while i < len(words):
+        a = words[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2
+            continue
+        if re.fullmatch(r"[-+][A-Za-z]+", a):
+            has_c = has_c or (a[0] == "-" and "c" in a[1:])
+            has_s = has_s or (a[0] == "-" and "s" in a[1:])
+            i += 1
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        break
+    operands = _operands(argv[1 + i:])
+    if has_c:
+        if operands:  # `sh -c 'rm "$1"' _ file`: $0, $1... are the words after the string
+            _recurse(root, cwd, str(operands[0]), v, depth, ctx,
+                     {str(k): str(w) for k, w in enumerate(operands[1:10])})
+        return True
+    if operands and not has_s and str(operands[0]) not in ("-", "/dev/stdin", "/dev/fd/0"):
+        if _program_from(root, cwd, operands[0], v, depth, ctx):
+            return True
+        return False  # a script file: see SECURITY.md "Hooks read command text"
+    src = _stdin_source(orig)
+    if src and src[0] in ("herestring", "heredoc"):
+        _recurse(root, cwd, str(src[1]), v, depth, ctx)
+    elif src is None and upstream is not None:
+        texts = _upstream_words(upstream)
+        if texts is None:
+            prog = _resolve(upstream).argv
+            v.add(ASK, f"it runs shell commands that another program "
+                       f"({os.path.basename(str(prog[0])) if prog else 'a pipe'}) prints, which "
+                       "Tess cannot read before they run")
+        for t in texts or []:
+            _recurse(root, cwd, t, v, depth, ctx)
+        if texts:
+            _recurse(root, cwd, " ".join(texts), v, depth, ctx)
+    return True
+
+
+def _program_from(root: Path, cwd: str, word, v: "Verdict", depth: int, ctx: "_Ctx") -> bool:
+    """`bash <(cmd)`, `source <(cmd)`: the program is what another command
+    prints. Checked when that is echo/printf/cat of a here-document, asked
+    otherwise. False when `word` is a plain file (a script: documented limit)."""
+    if not (isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts)):
+        return False
+    try:
+        segs = _segments(word.parts[0][1])
+    except ValueError:
+        segs = []
+    texts = _upstream_words(segs[-1]) if segs else None
+    if texts is None:
+        v.add(ASK, "it runs shell commands that another program prints, which Tess cannot read "
+                   "before they run")
+    for t in texts or []:
+        _recurse(root, cwd, t, v, depth, ctx)
+    return True
+
+
+def _check_stdin_operands(root: Path, cwd: str, name: str, orig: list, v: "Verdict",
+                          ctx: "_Ctx", upstream) -> None:
+    """`xargs <writer>`: the file names come from its input."""
+    src = _stdin_source(orig)
+    words = None
+    if src and src[0] in ("heredoc", "herestring"):
+        words = str(src[1]).split()
+    elif src is None and upstream is not None:
+        up = _upstream_words(upstream)
+        words = None if up is None else " ".join(up).split()
+    if words is None:
+        v.add(ASK, f"it hands {name} file names that it reads from its input, which Tess cannot "
+                   "check against its protected files")
+        return
+    for w in words:
+        _check_target(root, cwd, _plain(w), v, ctx)
+
+
+def _patch_paths(text: str, v: "Verdict") -> list:
+    """The files a Codex patch (`*** Begin Patch` ...) changes. Each line is
+    split and trimmed as Codex's parser does (see _RUST_WS), and its header
+    is read and checked in the same pass (Cyra H3, round 3 B4); in a patch, a
+    trimmed `***` line that is none of Codex's headers is refused, since Tess
+    cannot tell what Codex would make of it."""
+    lines = [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+    trimmed = [ln.strip(_RUST_WS) for ln in lines]
+    in_patch = "*** Begin Patch" in trimmed
+    paths, bad = [], None
+    for s in trimmed:
+        if not s.startswith("***"):
+            continue
+        head = next((h for h in _PATCH_HEADERS if s.startswith(h)), None)
+        if head is not None:
+            paths.append(s[len(head):])
+        elif s not in _PATCH_MARKERS and in_patch and bad is None:
+            bad = s
+    if bad is not None:
+        v.add(DENY, f"the patch has a line Tess does not recognise as a patch header "
+                    f"({bad[:60]!r}), so it cannot tell which file that line changes; write each "
+                    "header as `*** Add File:`, `*** Update File:`, `*** Delete File:` or "
+                    "`*** Move to:`", "error")
+    return paths
+
+
+def _check_patch_paths(root: Path, cwd: str, paths: list, v: "Verdict") -> None:
+    for p in paths:
+        hit = protected_hit(root, cwd, p)
+        if hit:
+            v.add(DENY, f"it edits {p}, a protected Tess path ({hit})", "protected")
+        if key_hit(cwd, p):
+            v.add(DENY, f"it writes {p}, in Tess's key directory", "keys")
+
+
+def _check_apply_patch_shell(root: Path, cwd: str, argv: list, orig: list, v: "Verdict",
+                             upstream) -> None:
+    """Codex puts `apply_patch` and `applypatch` on PATH and runs them from the
+    shell (Cyra H4): the patch is their first argument, or what they read
+    from a here-document, here-string, file or pipe. Its headers are read with
+    the apply_patch parser above and every path is checked."""
+    ops = _operands(argv[1:])
+    texts = None
+    if ops:
+        w = ops[0]
+        if not _dynamic(w):
+            texts = [str(w)]
+    else:
+        src = _stdin_source(orig)
+        if src and src[0] in ("heredoc", "herestring"):
+            texts = [str(src[1])] if not (src[0] == "herestring" and _dynamic(src[1])) else None
+        elif src and src[0] == "file" and not _dynamic(src[1]):
+            try:
+                with open(os.path.join(cwd, os.path.expanduser(str(src[1]))), encoding="utf-8",
+                          errors="replace") as fh:
+                    texts = [fh.read(5_000_000)]
+            except OSError:
+                texts = None
+        elif src is None and upstream is not None:
+            up = _upstream_words(upstream)
+            texts = None if up is None else [" ".join(up)] + up
+    if texts is None:
+        v.add(ASK, f"it runs {os.path.basename(str(argv[0]))} with a patch Tess cannot read before "
+                   "it runs, so it cannot check which files the patch changes")
+        return
+    texts += [t.replace("\\n", "\n").replace("\\t", "\t") for t in texts if "\\" in t]  # printf, echo -e
+    paths = [p for t in texts for p in _patch_paths(t, v)]
+    if any(re.search(r"[$`]", p) for p in paths):
+        v.add(ASK, f"its patch names a file through a variable or command ({next(p for p in paths if re.search(r'[$`]', p))}), "
+                   "which is only known when the command runs")
+    _check_patch_paths(root, cwd, paths, v)
+
+
+def _check_patch_input(root: Path, cwd: str, argv: list, orig: list, v: "Verdict") -> None:
+    """`patch` writes the files its diff names (from -i FILE, `<`, or a here-document)."""
+    texts, args = [], [str(a) for a in argv[1:]]
+    src = _stdin_source(orig)
+    files = [args[k + 1] for k, a in enumerate(args[:-1]) if a == "-i"] + [
+        a.split("=", 1)[1] for a in args if a.startswith("--input=")]
+    if src and src[0] == "file":
+        files.append(str(src[1]))
+    elif src:
+        texts.append(str(src[1]))
+    for f in files:
+        try:
+            with open(os.path.join(cwd, os.path.expanduser(f)), encoding="utf-8", errors="replace") as fh:
+                texts.append(fh.read(5_000_000))
+        except OSError:
+            v.add(ASK, f"`patch` applies {f}, which Tess cannot read")
+    for n in {n for t in texts for m in _PATCH_PATHS.finditer(t) for n in m.groups() if n}:
+        for cand in {n, n.split("/", 1)[-1]}:
+            hit = cand != "/dev/null" and protected_hit(root, cwd, cand)
+            if hit:
+                v.add(DENY, f"`patch` changes {cand} ({hit}), a protected Tess path", "protected")
+                return
+
+
+def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
+    """Remember the links `ln` makes, so a later write through one in the same
+    command (`ln -s . x && cp y x/CLAUDE.md`) is checked where it lands."""
+    args, tdir, ops, i = _operands(argv[1:]), None, [], 0
+    sym = any(re.match(r"^-[A-Za-z]*s", str(a)) or str(a) == "--symbolic" for a in args)
+    while i < len(args):
+        s = str(args[i])
+        if s in ("-t", "-S", "--suffix") and i + 1 < len(args):
+            tdir = args[i + 1] if s == "-t" else tdir
+            i += 2
+            continue
+        if s.startswith("--target-directory="):
+            tdir = _sub_word(args[i], 19)
+        elif not s.startswith("-") or s == "-":
+            ops.append(args[i])
+        i += 1
+
+    def val(w):
+        cands, _ = _word_values(w, cwd, ctx)
+        return cands[0][0] if cands and len(cands) == 1 else None
+
+    if tdir is not None:
+        pairs = [(t, os.path.join(val(tdir) or "\0", os.path.basename(val(t) or "\0"))) for t in ops]
+    elif len(ops) == 1:
+        pairs = [(ops[0], os.path.basename(val(ops[0]) or "\0"))]
+    elif len(ops) >= 2:
+        dest = val(ops[-1])
+        dest_abs = os.path.join(cwd, dest) if dest else None
+        many = len(ops) > 2 or (dest_abs and os.path.isdir(dest_abs) and not os.path.islink(dest_abs))
+        pairs = [(t, os.path.join(dest_abs, os.path.basename(val(t) or "\0")) if many else dest_abs)
+                 for t in ops[:-1]] if dest_abs else []
+    else:
+        pairs = []
+    for t, link in pairs:
+        if not link or "\0" in link:
+            continue
+        link = os.path.normpath(os.path.join(cwd, link))
+        tv = val(t)
+        target = None if tv is None else os.path.normpath(
+            os.path.join(os.path.dirname(link) if sym else cwd, os.path.expanduser(tv)))
+        ctx.links[link] = target
+
+
+# v1.0 final review (GPT-6 #7, #8, #13): a find expression is evaluated the
+# way find does, per file, in three-valued logic (a test Tess cannot evaluate,
+# such as -mtime, may be true or false), so `\( -name '*.tmp' -o -name '*.log'
+# \) -delete` changes only what it matches; a start outside the project is
+# checked against the control files there (`find ~/.claude -name
+# settings.json -delete`); link-following modes (-L, -follow) ask.
+_FIND_NOARG = {"-true", "-false", "-print", "-print0", "-ls", "-delete", "-prune", "-quit",
+               "-empty", "-executable", "-readable", "-writable", "-nouser", "-nogroup",
+               "-depth", "-d", "-xdev", "-mount", "-x", "-noleaf", "-ignore_readdir_race",
+               "-noignore_readdir_race", "-daystart", "-follow", "-nowarn", "-warn", "-s"}
+_FIND_ONEARG = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex",
+                "-iregex", "-type", "-xtype", "-maxdepth", "-mindepth", "-regextype", "-mtime",
+                "-atime", "-ctime", "-mmin", "-amin", "-cmin", "-size", "-newer", "-anewer",
+                "-cnewer", "-perm", "-user", "-group", "-uid", "-gid", "-links", "-inum",
+                "-samefile", "-lname", "-ilname", "-fstype", "-used", "-context", "-printf",
+                "-fprint", "-fprint0", "-fls", "-files0-from", "-flags", "-xattrname", "-Bmin",
+                "-Btime", "-Bnewer"}
+_FIND_OPTIONS = {"-maxdepth", "-mindepth", "-regextype", "-depth", "-d", "-xdev", "-mount", "-x",
+                 "-noleaf", "-ignore_readdir_race", "-noignore_readdir_race", "-daystart",
+                 "-follow", "-nowarn", "-warn", "-files0-from", "-s"}
+_FIND_PRINTS = {"-print", "-print0", "-ls", "-printf", "-fprint", "-fprint0", "-fls", "-fprintf",
+                "-prune", "-quit"}
+_MAYBE = frozenset((True, False))
+
+
+def _find_exec_mutates(inner: list) -> bool:
+    prog = _resolve(inner).argv
+    low = os.path.basename(str(prog[0])).lower() if prog else ""
+    return bool(prog) and low not in _READONLY_PROGRAMS and low not in (
+        "git", "gh", "file", "shasum", "sha256sum", "md5", "md5sum", "basename", "dirname")
+
+
+def _find_tree(expr: list, ctx: "_Ctx | None" = None):
+    """The parsed expression, as nested tuples; None when Tess cannot read it
+    (the caller then counts every file as changed). v1.0 round 3: a test's
+    value only known at run time (`-name "$P"`) is "maybe", never a literal
+    non-match, and `-prune` is its own node (it stops the descent)."""
+    words = [str(w) for w in expr]
+    unknown = {k for k, w in enumerate(expr) if ctx is not None and _unknown_word(w, ctx)}
+    pos = [0]
+
+    def peek():
+        return words[pos[0]] if pos[0] < len(words) else None
+
+    def primary():
+        w = peek()
+        if w is None:
+            raise ValueError("expression ends early")
+        pos[0] += 1
+        if w == "(":
+            node = comma()
+            if peek() != ")":
+                raise ValueError("unbalanced (")
+            pos[0] += 1
+            return node
+        if w in ("!", "-not"):
+            return ("not", primary())
+        if w in ("-exec", "-execdir", "-ok", "-okdir"):
+            k = pos[0]
+            while k < len(words) and words[k] not in (";", "+"):
+                k += 1
+            if k >= len(words):
+                raise ValueError("unterminated -exec")
+            inner = list(expr[pos[0]:k])
+            pos[0] = k + 1
+            return ("exec", _find_exec_mutates(inner) if inner else False)
+        if w == "-fprintf":
+            pos[0] += 2
+            return ("print",)
+        if w == "-depth" and peek() is not None and re.fullmatch(r"[-+]?\d+", peek()):
+            pos[0] += 1  # BSD `-depth N`: a test
+            return ("maybe",)
+        if w in _FIND_NOARG:
+            if w == "-delete":
+                return ("delete",)
+            if w == "-prune":
+                return ("prune",)
+            if w == "-false":
+                return ("const", False)
+            if w in _FIND_PRINTS:
+                return ("print",)
+            if w in ("-true",) or w in _FIND_OPTIONS:
+                return ("const", True)
+            return ("maybe",)
+        if w in _FIND_ONEARG:
+            if peek() is None:
+                raise ValueError(f"{w} needs a value")
+            val = words[pos[0]]
+            pos[0] += 1
+            if w in _FIND_OPTIONS:
+                return ("const", True)
+            if w in _FIND_PRINTS:
+                return ("print",)
+            if pos[0] - 1 in unknown:
+                return ("maybe",)
+            if w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+                     "-regex", "-iregex", "-type"):
+                return ("test", w, val)
+            return ("maybe",)
+        raise ValueError(f"unknown find word {w}")
+
+    def conj():
+        node = primary()
+        while peek() is not None and peek() not in ("-o", "-or", ",", ")"):
+            if peek() in ("-a", "-and"):
+                pos[0] += 1
+            node = ("and", node, primary())
+        return node
+
+    def disj():
+        node = conj()
+        while peek() in ("-o", "-or"):
+            pos[0] += 1
+            node = ("or", node, conj())
+        return node
+
+    def comma():
+        node = disj()
+        while peek() == ",":
+            pos[0] += 1
+            node = ("comma", node, disj())
+        return node
+
+    try:
+        if not words:
+            return ("const", True)
+        node = comma()
+        if pos[0] != len(words):
+            raise ValueError("trailing words")
+        return node
+    except ValueError:
+        return None
+
+
+def _find_test(op: str, pat: str, path: str, shown: str, start: bool = False) -> frozenset:
+    if op == "-type":
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            return _MAYBE
+        import stat as _st
+        kinds = {"f": _st.S_ISREG, "d": _st.S_ISDIR, "l": _st.S_ISLNK, "p": _st.S_ISFIFO,
+                 "s": _st.S_ISSOCK, "b": _st.S_ISBLK, "c": _st.S_ISCHR}
+        want = [k for k in pat.split(",") if k]
+        if not want or any(k not in kinds for k in want):
+            return _MAYBE
+        if _st.S_ISLNK(mode) and start:
+            return _MAYBE  # a start point that is a link counts as its target under -H
+        return frozenset([any(kinds[k](mode) for k in want)])
+    low = op in ("-iname", "-ipath", "-iwholename", "-iregex")
+    subject = (os.path.basename(shown.rstrip("/")) or shown) if op in ("-name", "-iname") else shown
+    if op.endswith("regex"):
+        try:
+            return frozenset([bool(re.fullmatch(pat, subject, re.I if low else 0))])
+        except re.error:
+            return _MAYBE
+    return frozenset([fnmatch.fnmatchcase(subject.lower() if low else subject,
+                                          pat.lower() if low else pat)])
+
+
+def _find_eval(node, path: str, shown: str, start: bool = False) -> tuple:
+    """(possible values, whether a changing action may run, whether -prune
+    surely runs) for one file."""
+    kind = node[0]
+    if kind == "const":
+        return frozenset([node[1]]), False, False
+    if kind == "maybe":
+        return _MAYBE, False, False
+    if kind == "test":
+        return _find_test(node[1], node[2], path, shown, start), False, False
+    if kind == "print":
+        return frozenset([True]), False, False
+    if kind == "prune":
+        return frozenset([True]), False, True
+    if kind == "delete":
+        return frozenset([True]), True, False
+    if kind == "exec":
+        return _MAYBE, node[1], False
+    if kind == "not":
+        vals, m, p = _find_eval(node[1], path, shown, start)
+        return frozenset(not x for x in vals), m, p
+    a_vals, a_m, a_p = _find_eval(node[1], path, shown, start)
+    if kind == "comma":
+        b_vals, b_m, b_p = _find_eval(node[2], path, shown, start)
+        return b_vals, a_m or b_m, a_p or b_p
+    go = True if kind == "and" else False
+    if go not in a_vals:
+        return a_vals, a_m, a_p
+    b_vals, b_m, b_p = _find_eval(node[2], path, shown, start)
+    # the right side surely runs only when the left side surely lets it
+    return (a_vals - {go}) | b_vals, a_m or b_m, a_p or (a_vals == frozenset([go]) and b_p)
+
+
+def _find_plan(argv: list) -> tuple:
+    """(start paths, expression, follows links) of a find command."""
+    args, i, starts, follow = argv[1:], 0, [], False
+    while i < len(args):
+        a = str(args[i])
+        if a in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x") or re.fullmatch(r"-O\d*", a):
+            follow = (a == "-L") or (follow and a not in ("-P", "-H"))
+            i += 1
+        elif a == "-D":
+            i += 2
+        elif a == "-f" and i + 1 < len(args):
+            starts.append(args[i + 1])
+            i += 2
+        else:
+            break
+    while i < len(args) and not str(args[i]).startswith("-") and str(args[i]) not in ("(", "!", ","):
+        starts.append(args[i])
+        i += 1
+    return starts or [_plain(".")], args[i:], follow
+
+
+def _check_find(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth: int,
+                ctx: "_Ctx") -> None:
+    """`find -delete`, `find -exec <cmd> {} ;` and `-fprint FILE` change files
+    the command line does not name: the files find would match are listed
+    (up to _FIND_LIMIT) and checked."""
+    starts, expr, follow = _find_plan(argv)
+    # v1.0 round 3 (B3): find is judged on its expanded words (the caller
+    # expands variables set in the command). A word still only known at run
+    # time asks when it could be a test or an action (`find . "$A"`: -delete),
+    # or a starting folder that could be one, and, when find changes files,
+    # also when it is a test's value (`-name "$P" -delete`).
+    for s in starts:
+        if _unknown_word(s, ctx) and not all(_unknown_shape(s, ctx)):
+            v.add(ASK, f"it gives find a starting folder that is only known when the command runs "
+                       f"({s}); it could be a test or an action such as -delete, so Tess cannot "
+                       "check what find changes")
+            return
+    value_unknown, j = None, 0
+    while j < len(expr):
+        a = str(expr[j])
+        if _unknown_word(expr[j], ctx):
+            v.add(ASK, f"it gives find a test or action that is only known when the command runs "
+                       f"({expr[j]}); it could be -delete or -exec, so Tess cannot check what find "
+                       "changes")
+            return
+        if a in ("-exec", "-execdir", "-ok", "-okdir"):
+            while j < len(expr) and str(expr[j]) not in (";", "+"):
+                j += 1
+        elif a in _FIND_ONEARG and j + 1 < len(expr):
+            if _unknown_word(expr[j + 1], ctx) and a not in ("-fprint", "-fprint0", "-fls"):
+                value_unknown = value_unknown or (a, expr[j + 1])
+            j += 1
+        elif a == "-fprintf":
+            j += 2
+        j += 1
+    changes, j = False, 0
+    while j < len(expr):
+        a = str(expr[j])
+        if a in ("-exec", "-execdir", "-ok", "-okdir"):
+            k = j + 1
+            while k < len(expr) and str(expr[k]) not in (";", "+"):
+                k += 1
+            inner = list(expr[j + 1:k])  # {} stays: a plain name, the matches are walked below
+            if inner:
+                _check_segment(root, cwd, inner, v, raw, depth + 1, _Ctx(raw, ctx))
+                changes = changes or _find_exec_mutates(inner)
+            j = k + 1
+            continue
+        if a == "-delete":
+            changes = True
+        if a == "-follow":
+            follow = True
+        if a in ("-fprint", "-fprint0", "-fls", "-fprintf") and j + 1 < len(expr):
+            _check_target(root, cwd, expr[j + 1], v, ctx)
+        j += 1
+    if changes and value_unknown:
+        v.add(ASK, f"`find` changes the files it matches, and its {value_unknown[0]} value is only "
+                   f"known when the command runs ({value_unknown[1]}), so Tess cannot check which "
+                   "files those are")
+        return
+    if changes and any(str(a) == "-files0-from" for a in expr):
+        v.add(ASK, "`find -files0-from` reads the files it changes from a list Tess cannot check")
+        return
+    if changes and follow:
+        v.add(ASK, "`find -L` (or -follow) follows symbolic links, so the files it would change "
+                   "can lie anywhere a link points, and Tess cannot check them; run it without "
+                   "-L, or name the files")
+        return
+    if changes:
+        _find_protected(root, cwd, starts, expr, v, ctx,
+                        depth_first=any(str(a) in ("-d", "-depth") for a in argv[1:]))
+
+
+def _find_depths(words: list) -> tuple:
+    maxdepth, mindepth = None, 0
+    for k, w in enumerate(words[:-1]):
+        if w in ("-maxdepth", "-mindepth") and words[k + 1].isdigit():
+            if w == "-maxdepth":
+                maxdepth = int(words[k + 1])
+            else:
+                mindepth = int(words[k + 1])
+    return maxdepth, mindepth
+
+
+def _find_control_entries(root: Path, start: str, top: str, maxdepth) -> list | None:
+    """[(path, shown, depth)] of the out-of-project control files (and the
+    folders holding them) under `top`; None when `top` lies inside one (the
+    whole tree is then walked)."""
+    real = os.path.realpath(top)
+    out = []
+    for f, fr, _label in _control_files(root):
+        if _within(real, fr) is not None:
+            return None
+        rel = _within(fr, real)
+        if rel is None or rel == "." or not os.path.lexists(f):
+            continue
+        parts = rel.split("/")
+        for n in range(1, len(parts) + 1):
+            if maxdepth is not None and n > maxdepth:
+                break
+            out.append((os.path.join(real, *parts[:n]), os.path.join(start, *parts[:n]), n))
+    return out
+
+
+def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict", ctx: "_Ctx",
+                    depth_first: bool = False) -> None:
+    words = [str(w) for w in expr]
+    maxdepth, mindepth = _find_depths(words)
+    tree = _find_tree(expr, ctx)  # None: every file counts
+    # v1.0 round 3 (D1): a directory where -prune surely runs is not entered,
+    # as find does. -depth (and -delete, which implies it) turns -prune off.
+    prune_on = tree is not None and not depth_first and "-delete" not in words
+
+    def changed(path, shown, d):
+        return tree is None or _find_eval(tree, path, shown, d == 0)[1]
+
+    def pruned(path, shown, d):
+        return prune_on and d >= mindepth and os.path.isdir(path) and not os.path.islink(path) and \
+            _find_eval(tree, path, shown, d == 0)[2]
+
+    seen = 0
+    for s in starts:
+        cands, prefix = _word_values(s, cwd, ctx)
+        if cands is None:
+            if _may_reach(root, cwd, prefix):
+                v.add(ASK, f"`find` changes files under {s}, a directory only known when the command "
+                           "runs, so Tess cannot check them")
+            continue
+        for text, pat in cands:
+            for start in (_glob(cwd, pat) if pat else []) or [text]:
+                top = os.path.normpath(os.path.join(cwd, os.path.expanduser(start)))
+                base = os.path.realpath(str(root))
+                real = os.path.realpath(top)
+                entries = None
+                if _within(real, base) is None and _within(base, real) is None:
+                    # Outside the project: only the control files there matter.
+                    entries = _find_control_entries(root, start, top, maxdepth)
+                    if entries is not None:
+                        entries = [(top, start, 0)] + entries
+                if entries is None:
+                    entries = [(top, start, 0)]
+                    for dirpath, dirnames, filenames in ([] if pruned(top, start, 0) else os.walk(top)):
+                        rel = os.path.relpath(dirpath, top)
+                        d = 0 if rel == "." else rel.count(os.sep) + 1
+                        if maxdepth is not None and d + 1 > maxdepth:
+                            dirnames[:] = []
+                            continue
+                        shown_dir = start if rel == "." else os.path.join(start, rel)
+                        entries += [(os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)
+                                    for n in dirnames + filenames]
+                        dirnames[:] = [n for n in dirnames if not pruned(
+                            os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)]
+                        seen += len(dirnames) + len(filenames)
+                        if seen > _FIND_LIMIT:
+                            v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
+                                       "check them against its protected files")
+                            return
+                        _tick()
+                for path, shown, d in entries:
+                    if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
+                        continue
+                    hit = protected_hit(root, cwd, path)
+                    if hit:
+                        v.add(DENY, f"`find` would change {shown}, a protected Tess path ({hit})", "protected")
+                        return
+                    if key_hit(cwd, path):
+                        v.add(DENY, f"`find` would change {shown}, in Tess's key directory; the signing "
+                                    "keys there are for the operator's own tools, not for an agent", "keys")
+                        return
+
+
+def _interp_code(argv: list, raw: str) -> str:
+    """The program an interpreter segment runs from the command text: the
+    -c/-e argument, else (stdin / heredoc) the whole command text."""
+    for j, a in enumerate(argv[1:], 1):
+        if a in ("-c", "-e", "-E", "--eval", "-p", "--print", "-r") and j + 1 < len(argv):
+            return argv[j + 1]
+        if re.match(r"^-[A-Za-z]*[ceE]$", a) and j + 1 < len(argv):
+            return argv[j + 1]
+    return raw
+
+
+def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
+    """Best effort (M1): an inline program that names a protected path and
+    calls a write-shaped API. A script FILE is not read; the ship gate stays
+    the wall."""
+    code = str(_interp_code(argv, raw))
+    if not _INTERP_WRITE.search(code):
+        return
+    # v1.0 audit: each distinct token is checked once, and one evaluation
+    # checks a program text once (a heredoc program is the whole command, which
+    # every interpreter segment of that command would otherwise rescan).
+    memo = _STATE["interp"] if _STATE.get("deadline") is not None else {}
+    key = (str(root), cwd, code)
+    if key not in memo:
+        memo[key] = None
+        for n, tok in enumerate(dict.fromkeys(_INTERP_TOKEN.findall(code))):
+            if n % 256 == 0:
+                _tick()
+            t = tok[2:] if tok.startswith("./") else tok
+            hit = (t.rstrip("/") in PROTECTED_DIR_ROOTS and t.rstrip("/"))
+            if not hit and ("/" in t or "." in t):
+                hit = protected_hit(root, cwd, t)
+            if hit:
+                memo[key] = (tok, hit)
+                break
+    if memo[key]:
+        tok, hit = memo[key]
+        v.add(DENY, f"an inline {os.path.basename(str(argv[0]))} program writes near {tok}, a "
+                    f"protected Tess path ({hit})", "protected")
+
+
+_HOME_ENV = ("HOME", "XDG_CONFIG_HOME")
+_KEY_TOOLS = re.compile(r"(?<![\w.-])(git|tessctl|tessbrain(\.py)?)(?![\w-])")
+
+
+def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
+    """Round 3, N-2: HOME / XDG_CONFIG_HOME moved for a git or tessctl command
+    (as TESS_BRAIN_PROVENANCE_DIR is): a verifier that trusted them would read
+    a key the agent planted. tessctl uses the OS user record; this keeps the
+    gate's own view consistent with it."""
+    name = os.path.basename(argv[0])
+    if name in ("export", "declare", "typeset", "setenv"):
+        moved = [a.partition("=")[0] for a in argv[1:] if a.partition("=")[0] in _HOME_ENV
+                 and "=" in a]
+        tool = _KEY_TOOLS.search(raw)
+    else:
+        moved = [k for k in env if k in _HOME_ENV]
+        tool = _KEY_TOOLS.search(" ".join(argv[:3]))
+    if moved and tool:
+        v.add(DENY, f"it sets {', '.join(moved)} for {tool.group(1)}; a moved home directory "
+                    "could point Tess's verifiers at a key the agent made", "envhome")
+
+
+EXTRACTORS = {"tar", "gtar", "bsdtar", "unzip", "ditto", "cpio", "pax"}
+_TAR_VALS = ("--file", "--directory", "--exclude", "--files-from", "--transform", "--xform",
+             "--strip-components", "--use-compress-program", "--to-command", "--format",
+             "--owner", "--group", "--mode", "--newer", "--label", "--volno-file",
+             "--info-script", "--new-volume-script", "--checkpoint-action")
+
+
+def _extract_plan(argv: list, cwd: str) -> tuple | None:
+    """(destination dir, archive file | None, names unknowable) for an
+    extractor segment that writes files; None when it only lists or prints."""
+    name = os.path.basename(argv[0])
+    args = [a for a in argv[1:] if a not in REDIRECTS]
+    join = lambda d: d if os.path.isabs(os.path.expanduser(d)) else os.path.join(cwd, d)  # noqa: E731
+    if name in ("tar", "gtar", "bsdtar"):
+        if args and not args[0].startswith("-"):
+            args = ["-" + args[0]] + args[1:]  # old-style `tar xzf file`
+        opts, pos, _, _ = _parse(args, "fCTXs", _TAR_VALS)
+        flags = "".join(k[1:] for k in opts if re.fullmatch(r"-[A-Za-z]", k))
+        if not ("x" in flags or any(str(k).startswith(("--extract", "--get")) for k in opts)):
+            return None
+        if "O" in flags or "--to-stdout" in opts:
+            return None
+        dest = opts.get("-C") or opts.get("--directory") or "."
+        src = opts.get("-f") or opts.get("--file")
+        odd = any(k in opts for k in ("-s", "-P", "--transform", "--xform", "--strip-components",
+                                      "--absolute-names", "--to-command", "-T", "--files-from"))
+        return join(str(dest)), (None if src in (None, True, "-") else join(str(src))), odd
+    if name == "unzip":
+        opts, pos, _, _ = _parse(args, "dx")
+        if any(k in opts for k in ("-l", "-t", "-Z", "-z", "-p", "-v", "-c")):
+            return None
+        return join(str(opts.get("-d") or ".")), (join(pos[0]) if pos else None), False
+    if name == "ditto":
+        pos = [a for a in args if not a.startswith("-")]
+        if "-x" in args or any(re.fullmatch(r"-[a-z]*x[a-z]*", a) for a in args):
+            src = pos[0] if pos and "-k" in args else None
+            return join(pos[-1] if pos else "."), (join(src) if src else None), not src
+        return join(pos[-1] if pos else "."), None, True
+    if name in ("cpio", "pax"):
+        flags = "".join(a[1:] for a in args if re.match(r"^-[A-Za-z]+$", a))
+        writes = ("i" in flags or "p" in flags or "--extract" in args or "--pass-through" in args
+                  ) if name == "cpio" else "r" in flags
+        if not writes:
+            return None
+        pos = [a for a in args if not a.startswith("-")]
+        copy = ("p" in flags) if name == "cpio" else ("w" in flags)
+        return join(pos[-1] if copy and pos else "."), None, True
+    return None
+
+
+def _archive_members(archive: str, tool: str) -> list | None:
+    cmd = ["unzip", "-Z1", archive] if tool in ("unzip", "ditto") else ["tar", "-tf", archive]
+    timeout = _budget(20)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return [ln for ln in r.stdout.splitlines() if ln] if r.returncode == 0 else None
+
+
+def _check_extract(root: Path, cwd: str, argv: list, v: Verdict):
+    """v1.0.0 final reviews: an archive extractor writes files the command
+    text does not name (`git archive <old> .claude/hooks | tar -x`)."""
+    plan = _extract_plan(argv, cwd)
+    if plan is None:
+        return
+    dest, archive, odd = plan
+    rel = _rel_to_root(root, cwd, dest)
+    if rel is None:
+        return  # outside the project
+    tool = os.path.basename(argv[0])
+    members = None if odd or archive is None else _archive_members(archive, tool)
+    if members is None:
+        if rel == "." or _glob_hit(rel, _protected_globs(root)) or rel.split("/")[0] in {
+                r.split("/")[0] for r in PROTECTED_DIR_ROOTS}:
+            v.add(DENY, f"`{tool}` extracts files Tess cannot list into {dest}, which holds "
+                        "protected Tess files", "protected")
+        return
+    for m in members:
+        hit = protected_hit(root, dest, m.lstrip("/") if not m.startswith("/") else m)
+        if hit:
+            v.add(DENY, f"`{tool}` extracts {m} ({hit}), a protected Tess path", "protected")
+            return
+
+
+# --------------------------------------------------------------------------- copies into the project root (v1.0 audit, integration)
+# `cp -R x/. .` or `rsync -a x/ ./` writes into the project root files the
+# command text never names, so none of them reach the protected list (the
+# root itself is not protected: `cp file .` is ordinary). A recursive copy of
+# a directory's CONTENTS into the root, or into a folder above it, is
+# therefore treated as touching every protected path: it asks (Claude) and is
+# refused where nothing can ask (Codex, no-prompt modes). A copy of named
+# files into the root is checked file by file: `cp x/CLAUDE.md .` writes
+# ./CLAUDE.md.
+# tool: (short options taking a value, long options taking a value)
+_COPY_INTO = {
+    "cp": ("tS", ("--target-directory", "--suffix")),
+    "mv": ("tS", ("--target-directory", "--suffix")),
+    "install": ("tmogSB", ("--target-directory", "--suffix", "--mode", "--owner", "--group")),
+    "ln": ("tS", ("--target-directory", "--suffix")),
+    "scp": ("iFPoclSJDX", ()),
+    "rsync": ("efBTM", ("--exclude", "--include", "--filter", "--rsh", "--rsync-path",
+                        "--temp-dir", "--files-from", "--exclude-from", "--include-from",
+                        "--chmod", "--password-file", "--log-file", "--partial-dir",
+                        "--backup-dir", "--suffix", "--compare-dest", "--copy-dest",
+                        "--link-dest", "--remote-option", "--out-format", "--usermap",
+                        "--groupmap", "--chown", "--timeout", "--contimeout", "--max-size",
+                        "--min-size", "--bwlimit", "--port", "--sockopts", "--iconv",
+                        "--info", "--debug", "--protocol", "--checksum-choice",
+                        "--compress-choice", "--skip-compress", "--max-delete",
+                        "--modify-window", "--block-size", "--log-file-format")),
+    "ditto": ("", ("--arch", "--bom", "--zlibCompressionLevel", "--password")),
+}
+
+
+def _copy_plan(name: str, args: list) -> tuple:
+    """(recursive, target dir word | None, [operand words]) of a copy command."""
+    shorts, longs = _COPY_INTO[name]
+    flags, target, ops, i, rest = "", None, [], 0, False
+    while i < len(args):
+        a, s = args[i], str(args[i])
+        if rest or not s.startswith("-") or s == "-":
+            ops.append(a)
+        elif s == "--":
+            rest = True
+        elif s.startswith("--"):
+            opt, eq, _val = s.partition("=")
+            flags += {"--recursive": "r", "--archive": "a", "--keepParent": "K"}.get(opt, "")
+            if opt == "--target-directory":
+                target = _sub_word(a, len(opt) + 1) if eq else (args[i + 1] if i + 1 < len(args) else None)
+            if opt in longs and not eq:
+                i += 1
+        else:
+            for k, ch in enumerate(s[1:], 1):
+                flags += ch
+                if ch in shorts:
+                    val = s[k + 1:]
+                    if ch == "t":
+                        target = _sub_word(a, k + 1) if val else (args[i + 1] if i + 1 < len(args) else None)
+                    if not val:
+                        i += 1
+                    break
+        i += 1
+    if name in ("cp", "scp"):
+        recursive = bool(set(flags) & set("rRa"))
+    elif name == "ditto":
+        recursive = not (set(flags) & set("cxk"))
+    else:
+        recursive = name in ("mv", "rsync")
+    if target is None:
+        if len(ops) < 2:
+            return recursive, None, []
+        target, ops = ops[-1], ops[:-1]
+    return recursive, target, ops
+
+
+def _remote(text: str) -> bool:
+    return bool(re.match(r"^[^/]*[^/\\]:", text)) and not text.startswith(("./", "/", "~"))
+
+
+def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx",
+                     via_xargs: bool) -> None:
+    if name == "ditto" and any(re.fullmatch(r"-[A-Za-z]*[cxk][A-Za-z]*", str(a)) for a in argv[1:]):
+        return  # an archive, handled by _check_extract
+    recursive, target, ops = _copy_plan(name, _operands(argv[1:]))
+    keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
+    if target is None:
+        return
+    cands, _ = _word_values(target, cwd, ctx)
+    if not cands:
+        return  # a target known only at run time: _check_target asks
+    base = os.path.realpath(str(root))
+    dests = []
+    for text, _pat in cands:
+        if _remote(text):
+            continue
+        real = os.path.realpath(os.path.join(cwd, os.path.expanduser(text)))
+        if _within(base, real) is not None:  # the project root, or a folder above it
+            dests.append((text, real))
+    if not dests:
+        return
+    here = "the project folder" if any(_within(r, base) == "." for _t, r in dests) else \
+        "a folder that holds the project"
+    why = (f"it copies the contents of \0SRC into {dests[0][0]}, {here}, so it can overwrite any "
+           "protected Tess file there (hooks, gate, CLAUDE.md, AGENTS.md...) without naming it; "
+           "copy into a sub-folder instead, or copy the files you need by name")
+    if via_xargs or not ops:
+        v.add(ASK, why.replace("\0SRC", "the paths it reads from its input"))
+        return
+    for op in ops:
+        vals, _ = _word_values(op, cwd, ctx)
+        texts = []
+        for text, pat in vals or []:
+            texts += (_glob(cwd, pat) if pat else []) or [text]
+        for text in (texts if vals else [None]):
+            if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
+                v.add(ASK, why.replace("\0SRC", str(op)))  # which files is only known at run time
+                return
+            full = os.path.join(cwd, os.path.expanduser(text))
+            leaf = os.path.basename(text.rstrip("/"))
+            if name == "ditto":  # ditto copies a folder's contents unless --keepParent
+                contents = not keep_parent and not os.path.isfile(full)
+            else:
+                contents = text.endswith("/") or leaf in (".", "..", "")
+            if recursive and contents:
+                v.add(ASK, why.replace("\0SRC", str(op)))
+                return
+            for _t, real in dests:
+                written = os.path.join(real, leaf) if leaf not in (".", "..", "") else real
+                if _within(base, os.path.realpath(written)) is not None:
+                    if recursive:
+                        v.add(ASK, why.replace("\0SRC", str(op)))
+                        return
+                    continue
+                hit = protected_hit(root, cwd, written)
+                if hit:
+                    v.add(DENY, f"it copies {op} to {os.path.relpath(written, real) if real == base else written}, "
+                                f"a protected Tess path ({hit})", "protected")
+                    return
+
+
+# --------------------------------------------------------------------------- the fail-safe (v1.0 round 3)
+# Three review rounds each found a new shell spelling the text-level gate
+# mis-modelled. The contract, stated once here and in SECURITY.md: when a
+# word of a gated program is not known with certainty when the gate runs (a
+# variable set outside the command, `$(cat f)`, `${X#y}`, a `<(...)` feeding
+# it, an expansion too large to list) and that word can change a protected
+# decision -- what is written, a git subcommand or option, a tessctl step, a
+# vault use, the code an interpreter or shell runs -- the answer is ASK
+# (DENY in Codex), never ALLOW. Each program family says which positions are
+# inert (a commit message after -m, a quoted path after a fixed folder, a
+# script's own arguments); every other unknown word asks.
+
+# Programs whose arguments the gate rules read (see _check_unknown_args).
+_GATED_NAMED = {"git", "gh", "tessctl", "tessctl.py", "find", "sed", "gsed", "apply_patch", *_AWK,
+                "applypatch", "patch", "eval", "trap", "source", ".", "alias", "ln", "ditto",
+                "export", "declare", "typeset", "local", "readonly", "setenv"}
+_EXEC_STRING = {"eval", "trap", "source", ".", "alias"}
+_ASSIGNERS = {"export", "declare", "typeset", "local", "readonly", "setenv"}
+# The most complete argument lists one gated program is checked with.
+_VARIANT_LIMIT = 16
+
+
+def _gated(name: str) -> bool:
+    return bool(name in _GATED_NAMED or _writer_name(name) or name in INPLACE or name in _OUTPUT_OPTS
+                or name in EXTRACTORS or name in SHELLS or name in _VAULT_SHELLS
+                or INTERPRETERS.match(name) or name in _REPLS)
+
+
+def _word_items(word) -> list:
+    """`word` as _brace_items reads it: unquoted text one character per item."""
+    items = []
+    for n, (k, t) in enumerate(word.parts):
+        if k == "raw":
+            items += [("raw", c, False) for c in t]
+        else:
+            items.append((k, t, _part_quoted(word, n)))
+    return items
+
+
+def _braced(word) -> bool:
+    """`word` has an unquoted brace expansion ({a,b}, {1..3}) that makes more
+    than one argument (or more than Tess lists)."""
+    if not isinstance(word, _Word) or isinstance(word, _Field) or not word.parts or not any(
+            k == "raw" and "{" in t for k, t in word.parts):
+        return False
+    try:
+        return len(_brace_items(_word_items(word), _EXPAND_LIMIT)) > 1
+    except _Overflow:
+        return True
+
+
+def _globbed(word) -> bool:
+    """An unquoted glob in `word` (`/usr/bin/g[i]t`): the shell replaces it
+    with the matching names before it runs anything."""
+    return isinstance(word, _Word) and not isinstance(word, _Field) and any(
+        k == "raw" and re.search(r"[*?]|\[[^]]+\]", t) for k, t in word.parts)
+
+
+def _expands(word) -> bool:
+    """A word the shell changes before the program sees it (beyond ~ and globs,
+    which every rule already reads)."""
+    if not isinstance(word, _Word) or isinstance(word, _Field) or word.op or word.fd:
+        return False
+    return _dynamic(word) or _braced(word)
+
+
+def _redirect_slots(argv: list) -> set:
+    """Indices of the words that are redirections or their targets."""
+    out, skip = set(), False
+    for i, w in enumerate(argv):
+        if skip:
+            out.add(i)
+            skip = False
+        elif _is_op(w) and str(w) in _REDIR_OPS:
+            out.add(i)
+            skip = True
+        elif isinstance(w, _Word) and w.fd:
+            out.add(i)
+    return out
+
+
+def _argv_variants(argv: list, cwd: str | None, ctx: "_Ctx") -> list | None:
+    """Every complete argument list `argv` can become ([program, field, ...]),
+    each expanded word replaced by its fields; a word only known at run time
+    stays as written. None when there are more than _VARIANT_LIMIT lists."""
+    slots, per = _redirect_slots(argv), []
+    for i, w in enumerate(argv[1:], 1):
+        if i in slots or not _expands(w) or (ctx.deferred and _positional_only(w)):
+            per.append([[w]])
+            continue
+        cands, _ = _word_fields(w, cwd, ctx)
+        if cands is None:
+            per.append([[w]])
+            continue
+        per.append([[_field(t, p) for t, p in cand] for cand in cands] or [[]])
+    variants = [[argv[0]]]
+    for alts in per:
+        if len(variants) * len(alts) > _VARIANT_LIMIT:
+            return None
+        variants = [a + b for a in variants for b in alts]
+    return variants
+
+
+def _unknown_word(word, ctx: "_Ctx") -> bool:
+    """A word (left as written by _argv_variants) whose value is only known
+    at run time; a function's "$1" read at its definition is checked again at
+    each call, so it does not count there."""
+    if not isinstance(word, _Word) or isinstance(word, _Field) or word.op or word.fd:
+        return False
+    if ctx.deferred and _positional_only(word):
+        return False
+    return _dynamic(word) or _braced(word)
+
+
+def _unknown_shape(word, ctx: "_Ctx") -> tuple:
+    """(every argument it becomes starts with the same written text or it
+    stays one argument, none of them can start with "-") for an unknown word.
+    A brace expansion too large to list makes many arguments, all starting
+    with its written-out text."""
+    if not _dynamic(word):
+        pre = _overflow_prefix(_word_items(word))
+        return True, bool(pre) and not pre.startswith(("-", "+"))
+    return _word_shape(word, ctx)
+
+
+def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
+    """The fail-safe for one gated program (see the section comment). git,
+    find and sed read their unknown words in place (_check_git_unknown,
+    _check_find, _sed_program), where they know which position is which."""
+    slots = _redirect_slots(argv)
+    unk = [i for i in range(1, len(argv)) if i not in slots and _unknown_word(argv[i], ctx)]
+    if not unk or name in ("git", "find", "sed", "gsed") or name in _AWK or not _gated(name):
+        return
+    if name in ("tessctl", "tessctl.py") or _tessctl_call([str(a) for a in argv]) is not None:
+        v.add(ASK, f"it gives tessctl an argument that is only known when the command runs "
+                   f"({argv[unk[0]]}), so Tess cannot check which step it runs (an approval, a "
+                   "vault read or a change to Tess's safety files)")
+        return
+    if name in _EXEC_STRING:
+        v.add(ASK, f"it hands {name} a command that is only known when the command runs "
+                   f"({argv[unk[0]]}), so Tess cannot check what it runs")
+        return
+    if name in _ASSIGNERS:
+        for i in unk:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", _overflow_prefix(_word_items(argv[i]))):
+                v.add(ASK, f"it sets a variable whose name is only known when the command runs "
+                           f"({argv[i]}); that could point git at another config file or switch off "
+                           "Tess's git hooks")
+                return
+        return
+    if name == "gh":
+        pos = [str(a).lower() for a in argv[1:] if not _unknown_word(a, ctx) and not str(a).startswith("-")]
+        first = sum(1 for a in argv[1:unk[0]] if not str(a).startswith("-"))
+        if first < 2 or pos[:1] in (["auth"], ["api"]) or pos[:2] in (["repo", "edit"], ["repo", "create"]):
+            v.add(ASK, f"it gives gh an argument that is only known when the command runs "
+                       f"({argv[unk[0]]}), so Tess cannot check it does not print your token or "
+                       "change a repository's visibility")
+        return
+    if name in SHELLS or name in _VAULT_SHELLS or INTERPRETERS.match(name):
+        got = _interp_parse(name, argv, ctx)
+        if got and got["kind"] == "unknown":
+            v.add(ASK, f"it gives {name} an option, program or script that is only known when the "
+                       f"command runs ({got['word']}), so Tess cannot check what code it runs")
+        return
+    # Writers, in-place editors, archivers, output-option programs, patch tools:
+    # a word that could be an option (`-t DIR`, `--target-directory=...`) asks;
+    # one with written-out text in front is an operand, and a target among
+    # those is judged by _check_target (a fixed folder outside the project is
+    # the documented gap, SECURITY.md).
+    ended = False
+    for i in range(1, len(argv)):
+        if i in slots:
+            continue
+        if str(argv[i]) == "--" and not _unknown_word(argv[i], ctx):
+            ended = True
+            continue
+        if i not in unk:
+            continue
+        one, lead = _unknown_shape(argv[i], ctx)
+        if not lead and (not ended or not one):
+            v.add(ASK, f"it gives {name} an argument that is only known when the command runs "
+                       f"({argv[i]}); it could be an option (such as -t DIR) or several file "
+                       f"names, so Tess cannot check what {name} writes")
+            return
+
+
+# --------------------------------------------------------------------------- interpreters and shells (round 3, B5)
+# Codex: input typed into a running command (write_stdin) never reaches the
+# gate, so a program that reads code from its terminal -- a shell or
+# interpreter with no program, reading stdin, or staying interactive after
+# running one -- is refused. Options are parsed per interpreter; a form the
+# parse cannot pin down counts as interactive (refused in Codex).
+_PY = re.compile(r"^(python[0-9.]*|pypy[0-9.]*)$")
+_PY_INTERACTIVE_MODULES = {"pdb", "code", "IPython", "asyncio", "ptpython", "bpython", "idlelib",
+                           "ipdb", "pudb", "rlcompleter", "jupyter_console"}
+_NODE_VALUES = {"-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions",
+                "--input-type", "--title", "--env-file", "--env-file-if-exists", "--watch-path",
+                "--test-reporter", "--test-reporter-destination", "--test-name-pattern",
+                "--test-skip-pattern", "--redirect-warnings", "--icu-data-dir", "--openssl-config",
+                "--diagnostic-dir", "--report-dir", "--report-directory", "--report-filename",
+                "--cpu-prof-dir", "--heap-prof-dir", "--secure-heap", "--secure-heap-min",
+                "--disable-warning", "--experimental-config-file", "--localstorage-file"}
+_NODE_FLAG = re.compile(r"^--(no-|experimental-|trace-|enable-|disable-proto|inspect|harmony|expose-|"
+                        r"preserve-symlinks|prof|cpu-prof|heap-prof|jitless|test|watch|frozen-intrinsics|"
+                        r"pending-deprecation|throw-deprecation|abort-on-uncaught-exception|use-|"
+                        r"zero-fill-buffers|report-|track-heap-objects|insecure-http-parser|"
+                        r"force-|tls-|perf-|interpreted-frames|verify-base-objects|pending-)")
+# REPLs and other programs that read commands from the terminal (several of
+# them can run shell commands from there: `\!` in psql, `!` in ed or less).
+# Value: options after which they do NOT read the terminal.
+_REPLS = {"irb": (), "pry": (), "jshell": (), "ghci": (), "bpython": (), "ptpython": (),
+          "ipython": ("-c", "-m"), "lua": ("-e",), "luajit": ("-e",), "julia": ("-e", "-E", "--eval", "--print"),
+          "r": ("-f", "--file", "-e", "CMD"), "tclsh": (), "wish": (), "dc": ("-e", "-f"),
+          "psql": ("-c", "--command", "-f", "--file", "-l", "--list"),
+          "mysql": ("-e", "--execute"), "sqlite3": (), "gdb": ("-batch", "--batch"),
+          "lldb": ("-b", "--batch"), "ed": (), "ex": (), "vi": (), "vim": (), "nvim": (), "view": (),
+          "nano": (), "pico": (), "emacs": ("--batch", "-batch", "--script"), "less": (), "more": (),
+          "most": (), "man": (), "su": ("-c", "--command"), "tmux": (), "screen": ()}
+_INFO_OPTS = {"-h", "--help", "-V", "--version", "-v", "-version", "-help"}
+
+
+def _interp_parse(name: str, argv: list, ctx: "_Ctx") -> dict | None:
+    """How an interpreter or shell finds its program: {"kind": "code" |
+    "script" | "module" | "stdin" | "none" | "info" | "unknown" | "unsure",
+    "at": index of that word, "inter": stays interactive after it,
+    "module": name}. "unknown": a word in an option or program position is
+    only known at run time (the fail-safe asks)."""
+    slots = _redirect_slots(argv)
+    argv = [a for k, a in enumerate(argv) if k not in slots]
+    words = [str(a) for a in argv]
+    n = len(words)
+
+    def unk(i):
+        return i < n and _unknown_word(argv[i], ctx)
+
+    def out(kind, at, inter=False, module=None):
+        return {"kind": kind, "word": argv[at] if at < n else None, "inter": inter, "module": module}
+
+    if name in SHELLS or name in ("fish", "csh", "tcsh", "busybox"):
+        i, has_c, has_s, inter = 1, False, False, False
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            if a in ("--", "-"):
+                i += 1
+                break
+            if a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file", "-C", "--init-command"):
+                if a in ("--rcfile", "--init-file", "-C", "--init-command") and unk(i + 1):
+                    return out("unknown", i + 1)
+                i += 2
+                continue
+            if a in ("--help", "--version"):
+                return out("info", i)
+            if re.fullmatch(r"[-+][A-Za-z]+", a):
+                if a[0] == "-":
+                    has_c, has_s, inter = has_c or "c" in a, has_s or "s" in a, inter or "i" in a
+                i += 1
+                continue
+            if a.startswith("--"):
+                has_c = has_c or a == "--command"
+                i += 1
+                continue
+            break
+        if has_c:
+            if i >= n:
+                return out("none", i)
+            return out("unknown", i) if unk(i) else out("code", i)
+        if has_s:
+            return out("stdin", i)
+        if i < n:
+            if unk(i):
+                return out("unknown", i)
+            return out("stdin", i) if words[i] in ("/dev/stdin", "/dev/fd/0") else out("script", i, inter)
+        return out("none", i, inter)
+    if name in ("pwsh", "powershell"):
+        low = [w.lower() for w in words[1:]]
+        prog = any(w in ("-c", "-command", "-f", "-file", "-encodedcommand", "-e", "-ec") for w in low) or any(
+            not w.startswith("-") for w in low)
+        return out("code" if prog else "none", 1, any(w in ("-noexit", "-noe") for w in low))
+    if _PY.match(name):
+        i, inter = 1, False
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            if a == "--":
+                i += 1
+                break
+            if a == "-":
+                return out("stdin", i, inter)
+            if a.startswith("--"):
+                if a.split("=", 1)[0] in ("--help", "--version", "--help-env", "--help-xoptions", "--help-all"):
+                    return out("info", i)
+                i += 2 if a == "--check-hash-based-pycs" else 1
+                continue
+            if a.startswith("-") and len(a) > 1:
+                k, nxt = 1, i + 1
+                while k < len(a):
+                    ch = a[k]
+                    if ch in "cm":
+                        kind = "code" if ch == "c" else "module"
+                        if k + 1 < len(a):
+                            return out(kind, i, inter, a[k + 1:] if ch == "m" else None)
+                        if i + 1 >= n:
+                            return out("none", i, inter)
+                        if unk(i + 1):
+                            return out("unknown", i + 1)
+                        return out(kind, i + 1, inter, words[i + 1] if ch == "m" else None)
+                    if ch in "WX":
+                        nxt = i + (1 if k + 1 < len(a) else 2)
+                        break
+                    if ch in "hV?":
+                        return out("info", i)
+                    inter = inter or ch == "i"
+                    k += 1
+                i = nxt
+                continue
+            return out("script", i, inter)
+        if i < n:
+            return out("unknown", i) if unk(i) else out("stdin" if words[i] == "-" else "script", i, inter)
+        return out("none", i, inter)
+    if name in ("node", "nodejs"):
+        i, inter, unsure = 1, False, False
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            base = a.split("=", 1)[0]
+            if a == "--":
+                i += 1
+                break
+            if a == "-":
+                return out("stdin", i, inter)
+            if base in ("-e", "--eval", "-p", "--print"):
+                if "=" in a:
+                    return out("code", i, inter)
+                return out("unknown", i + 1) if unk(i + 1) else out("code" if i + 1 < n else "none", i + 1, inter)
+            if a in ("-r", "--require", "--import", "--loader", "--experimental-loader") and unk(i + 1):
+                return out("unknown", i + 1)  # a module loaded before the program
+            if a in ("-i", "--interactive"):
+                inter = True
+            elif base in ("--test", "--run"):
+                return out("code", i, inter)  # runs test files or a package script
+            elif a in ("-h", "--help", "-v", "--version", "--v8-options"):
+                return out("info", i)
+            elif a in ("-c", "--check"):
+                pass
+            elif a.startswith("-") and "=" not in a and (a in _NODE_VALUES or not (
+                    a.startswith("--") and _NODE_FLAG.match(a))):
+                unsure = unsure or a not in _NODE_VALUES
+                i += 2  # a value follows (an option Tess does not know is read as taking one)
+                continue
+            elif not a.startswith("-"):
+                return out("script", i, inter or a == "inspect" or unsure)
+            i += 1
+        if i < n:
+            return out("unknown", i) if unk(i) else out("script", i, inter or unsure)
+        return out("none", i, inter)
+    if name in ("perl", "ruby"):
+        rest_v = "IMmFCxDi" if name == "perl" else "rICEFKxTWi"  # the rest of the cluster is a value
+        digits = "0l" if name == "perl" else "0"  # an optional number follows
+        sep = "I" if name == "perl" else "rICEF"  # with nothing attached, the next word is the value
+        info = "vVh" if name == "perl" else "h"
+        i, inter, code = 1, False, None
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            if a == "--":
+                i += 1
+                break
+            if a == "-":
+                return out("stdin", i, inter)
+            if a.startswith("--"):
+                if a in ("--help", "--version"):
+                    return out("info", i)
+                i += 2 if name == "ruby" and "=" not in a and a in (
+                    "--enable", "--disable", "--encoding", "--external-encoding", "--internal-encoding",
+                    "--dump") else 1
+                continue
+            if a.startswith("-") and len(a) > 1:
+                k, nxt = 1, i + 1
+                while k < len(a):
+                    ch = a[k]
+                    if ch == "e" or (ch == "E" and name == "perl"):
+                        if k + 1 < len(a):
+                            code = i
+                        elif i + 1 < n:
+                            if unk(i + 1):
+                                return out("unknown", i + 1)
+                            code, nxt = i + 1, i + 2
+                        break
+                    if ch == "d" and name == "perl":
+                        inter = True  # the debugger reads commands from the terminal
+                        break
+                    if ch in info:
+                        return out("info", i)
+                    if ch in rest_v:
+                        if k + 1 >= len(a) and ch in sep:
+                            if unk(i + 1) and ch in "rIM":
+                                return out("unknown", i + 1)  # a library loaded first
+                            nxt = i + 2
+                        break
+                    k += 1
+                    if ch in digits:
+                        while k < len(a) and a[k].isdigit():
+                            k += 1
+                i = nxt
+                continue
+            break
+        if code is not None:
+            return out("code", code, inter)
+        if i < n:
+            return out("unknown", i) if unk(i) else out("script", i, inter)
+        return out("none", i, inter)
+    if name == "php":
+        i, inter = 1, False
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            if a in ("-a", "--interactive"):
+                inter = True
+            elif a in ("-r", "-B", "-R", "-E", "--run", "--process-code", "--process-begin", "--process-end"):
+                return out("unknown", i + 1) if unk(i + 1) else out("code", i + 1, inter)
+            elif a in ("-f", "-F", "--file", "--process-file"):
+                return out("unknown", i + 1) if unk(i + 1) else out("script", i + 1, inter)
+            elif a in ("-h", "--help", "-v", "--version", "-i", "--info", "-m", "--modules"):
+                return out("info", i)
+            elif a in ("-S", "--server"):
+                return out("code", i, inter)
+            elif a in ("-d", "--define", "-c", "--php-ini", "-t", "--docroot", "-z", "--zend-extension"):
+                if a != "-t" and a != "--docroot" and unk(i + 1):
+                    return out("unknown", i + 1)  # an ini setting can prepend a file of code
+                i += 2
+                continue
+            elif a == "--":
+                i += 1
+                break
+            elif not a.startswith("-") or a == "-":
+                break
+            i += 1
+        if i < n:
+            return out("unknown", i) if unk(i) else out("stdin" if words[i] == "-" else "script", i, inter)
+        return out("none", i, inter)
+    if name == "osascript":
+        i, inter, code = 1, False, None
+        while i < n:
+            if unk(i):
+                return out("unknown", i)
+            a = words[i]
+            if a == "-e":
+                if unk(i + 1):
+                    return out("unknown", i + 1)
+                code, i = i + 1, i + 2
+                continue
+            if a in ("-l", "-s"):
+                i += 2
+                continue
+            if a == "-i":
+                inter = True
+            elif not a.startswith("-") or a == "-":
+                break
+            i += 1
+        if code is not None:
+            return out("code", code, inter)
+        if i < n:
+            return out("unknown", i) if unk(i) else out("stdin" if words[i] == "-" else "script", i, inter)
+        return out("none", i, inter)
+    if name in ("deno", "bun"):
+        first = next((k for k in range(1, n) if not words[k].startswith("-")), None)
+        if any(words[k] in _INFO_OPTS for k in range(1, n)):
+            return out("info", 1)
+        if first is None:
+            return out("none" if name == "deno" else "info", n)
+        if unk(first):
+            return out("unknown", first)
+        return out("code", first, words[first] == "repl")
+    return None
+
+
+def _interactive(name: str, argv: list, ctx: "_Ctx") -> str | None:
+    """What this program starts that reads commands from the terminal (Codex
+    refuses it: see the section comment); None when it runs a given program
+    and exits."""
+    words = [str(a) for a in argv]
+    if name in _REPLS:
+        rest = words[1:]
+        if any(w in _INFO_OPTS for w in rest):
+            return None
+        stop = _REPLS[name]
+        if any(w in stop or any(w.startswith(s + "=") for s in stop if s.startswith("--")) for w in rest):
+            return None
+        if name in ("ipython", "lua", "luajit", "julia", "tclsh", "wish", "dc") and any(
+                not w.startswith("-") for w in rest) and "-i" not in rest:
+            return None  # a script: run, then exit
+        if name == "sqlite3" and len([w for w in rest if not w.startswith("-")]) >= 2:
+            return None  # sqlite3 DB "SQL"
+        if name in ("tmux", "screen") and rest and rest[0] not in (
+                "new", "new-session", "attach", "attach-session", "a", "at", "-S", "-r", "-x", "-R"):
+            return None
+        return f"{name}, which reads commands from the terminal"
+    got = _interp_parse(name, argv, ctx)
+    if got is None:
+        return None
+    kind = got["kind"]
+    if kind == "info":
+        return None
+    if kind in ("none", "stdin", "unknown", "unsure"):
+        return f"an interactive {name}" if kind == "none" else f"{name} reading its program from input"
+    if got["inter"]:
+        return f"an interactive {name} (it keeps reading the terminal after running its program)"
+    if kind == "module" and (got["module"] or "").split(".")[0] in _PY_INTERACTIVE_MODULES:
+        return f"{name} -m {got['module']}, which reads commands from the terminal"
+    return None
+
+
+def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
+                   ctx: "_Ctx | None" = None, upstream=None):
+    ctx = ctx if ctx is not None else _Ctx(raw)
+    _tick()
+    orig = list(argv)
+    res = _resolve(orig)
+    env, argv = res.env, res.argv
+    for k, val in env.items():
+        if k in GIT_CONFIG_FILE_ENV and val not in _EMPTY_CONFIG:
+            v.add(DENY, f"it sets {k}, which makes git read another config file (that file can "
+                        "switch off Tess's git hooks)", "hookspath")
+    if res.chdir is not None and cwd is not None:
+        cands, _ = _word_values(res.chdir, cwd, ctx)
+        cwd = os.path.normpath(os.path.join(cwd, cands[0][0])) if cands and len(cands) == 1 else None
+    targets = _write_targets(argv, orig)
+    if cwd is None:
+        # a `cd` earlier in this command (or the tool's working directory) went
+        # somewhere Tess cannot resolve
+        if any(not os.path.isabs(os.path.expanduser(str(t))) for t in targets):
+            v.add(DENY, "it writes to a relative path after a `cd` whose target is only known "
+                        "at run time, so Tess cannot check it against the protected list", "protected")
+        cwd = str(root)
+    for w in orig:  # command and process substitutions run first, in this directory
+        _check_subs(root, cwd, w, v, depth, ctx)
+    for text in res.inner:
+        _recurse(root, cwd, text, v, depth, ctx, env)
+    _check_targets(root, cwd, _redirect_targets(orig), v, ctx)
+    if not argv:
+        return
+    _check_alias_use(root, cwd, argv, v, raw, depth, ctx, upstream)
+    if not ctx.deferred and _plain_name(argv[0]) in ctx.funcs:
+        _call_function(root, cwd, str(argv[0]), argv[1:], v, raw, depth, ctx)
+    if _dynamic(argv[0]) or _braced(argv[0]) or _globbed(argv[0]):
+        return _check_dynamic_program(root, cwd, argv, v, raw, depth, ctx, upstream)
+    name = os.path.basename(str(argv[0])).lower()  # macOS finds `GIT` as git
+    if name == "hub" or (name.startswith("git-") and name not in _GIT_TOOLS):
+        argv = [_plain("git")] + ([_plain(name[4:])] if name.startswith("git-") else []) + list(argv[1:])
+        name = "git"
+    # v1.0 round 3 (B1, B3): a gated program is judged on the arguments the
+    # shell really hands it: every complete argument list its words can expand
+    # to (brace results side by side, a variable's possible values as
+    # alternatives). A word still only known at run time stays as written and
+    # goes to the fail-safe (_check_unknown_args).
+    variants = [argv]
+    if _gated(name) and any(_expands(w) for w in argv[1:]):
+        variants = _argv_variants(argv, cwd, ctx)
+        if variants is None:
+            v.add(ASK, f"the arguments it gives {name} can expand to more combinations than Tess "
+                       "checks one by one, so it cannot check them")
+            variants = [argv]
+    for var in variants:
+        _check_program(root, cwd, env, var, orig, v, raw, depth, ctx, upstream, res)
+
+
+def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: Verdict, raw: str,
+                   depth: int, ctx: "_Ctx", upstream, res: "_Cmd") -> None:
+    """The checks of one resolved program with one complete argument list."""
+    name = os.path.basename(str(argv[0])).lower()
+    _check_targets(root, cwd, _write_targets(argv, []), v, ctx)
+    _check_unknown_args(name, argv, v, ctx)
+    if _STATE.get("codex") and upstream is None and not res.via_xargs and _stdin_source(orig) is None:
+        what = _interactive(name, argv, ctx)
+        if what:
+            v.add(ASK, _INTERACTIVE_ASK.format(what=what))
+    _check_home_env(env, argv, raw, v)
+    copier = name if name == "ditto" else _writer_name(name)
+    if copier in _COPY_INTO:
+        _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
+    if INTERPRETERS.match(name):
+        _check_interpreter(root, cwd, argv, v, raw)
+    if name in SHELLS and _check_shell(root, cwd, argv, orig, v, depth, ctx, upstream):
+        return
+    if name == "eval":
+        # v1.0 round 2: what eval sets (variables, aliases, functions) stays set.
+        child = _Ctx(ctx.raw, ctx)
+        _recurse(root, cwd, " ".join(str(a) for a in _operands(argv[1:])), v, depth, ctx, into=child)
+        _merge_back(ctx, child)
+        return
+    if name == "alias":
+        _check_alias_def(root, cwd, argv, v, depth, ctx)
+    if name == "shopt" and any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", str(a)) for a in argv[1:]) and any(
+            str(a) == "expand_aliases" for a in argv[1:]):
+        v.add(ASK, "it turns on shell aliases (shopt -s expand_aliases), which let a short name run "
+                   "a different command from the one Tess reads; write the command out, or use a "
+                   "function, instead")
+    if name == "trap":
+        ops = [a for a in _operands(argv[1:]) if not str(a).startswith("-")]
+        if len(ops) >= 2 and str(ops[0]).strip():
+            _recurse(root, cwd, str(ops[0]), v, depth, ctx)  # runs later, on the signal
+    if name in ("source", ".") and len(argv) > 1:
+        _program_from(root, cwd, argv[1], v, depth, ctx)
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            "hookspath" in a.lower() for a in argv[1:] + _assigned_texts(argv[1:], cwd, ctx)):
+        v.add(DENY, "it sets core.hooksPath through the environment, which switches off "
+                    "Tess's git hooks", "hookspath")
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            re.split(r"[=\s]", a, 1)[0] in GIT_CONFIG_FILE_ENV
+            and a.partition("=")[2] not in _EMPTY_CONFIG for a in argv[1:]):
+        v.add(DENY, "it points git at another config file through the environment, which can "
+                    "switch off Tess's git hooks", "hookspath")
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            re.split(r"[=\s]", a, 1)[0] in _REDIRECT_ENV for a in argv[1:]):
+        v.add(DENY, "it points git at another work tree, git directory or index through the "
+                    "environment, where later git commands can replace Tess's hooks or gate",
+              "rollback")
+    if name in ("export", "declare", "typeset", "setenv") and any(
+            re.match(r"GIT_CONFIG_KEY_\d+=", a) and _push_config_key(a.partition("=")[2])
+            for a in argv[1:]):
+        v.add(ASK, "it sets git configuration through the environment that changes where a push "
+                   "goes or what it sends")
+    _check_key_text(cwd, argv, " ".join(argv), v, ctx)
+    # v1.0 audit (A2 inside A1's resolver): every segment the resolver yields
+    # that runs tessctl -- through `{ }`, `if/then`, wrappers, runners, `sh -c`,
+    # substitutions or the unparseable fallback -- gets the vault rule and the
+    # operator-only forms, not only the pipelines _check_operator_only reads.
+    # Integration pass 3: the words as the shell expands them (a function's
+    # "$@", variables set earlier), so `f() { ./tessctl "$@"; }; f anchor
+    # accept` is judged as `tessctl anchor accept`.
+    tess_words = _tessctl_call(_expanded_words(argv, cwd, ctx))
+    if tess_words is not None:
+        _check_vault(tess_words, v)
+        tpos = [w.lower() for w in tess_words if not w.startswith("-")]
+        if tpos[:1] == ["anchor"] and tpos[1:2] in (["accept"], ["init"]):
+            v.add(DENY, "only the operator can record Tess's safety files as approved "
+                        "(`tessctl anchor accept`, in their own terminal)", "operator")
+        if _operator_form(tess_words) and (upstream is not None or _stdin_source(orig) is not None):
+            v.add(DENY, "only the operator can answer Tess's approval prompts; this command would "
+                        "type the answer for them", "operator")
+        elif _operator_form(tess_words) and _STATE.get("codex") and not _presence_read_only(tess_words):
+            v.add(DENY, f"`tessctl {' '.join(tpos[:2])}` asks you to confirm at your own terminal, "
+                        "and in Codex an agent can type into a running command later (write_stdin) "
+                        "without Tess seeing it; run this in your own terminal", "operator")
+    if name in EXTRACTORS:
+        _check_extract(root, cwd, argv, v)
+    if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(
+            a.split("=", 1)[0] == "GIT_REPLACE_REF_BASE" for a in argv[1:])):
+        v.add(DENY, "GIT_REPLACE_REF_BASE makes git read commits through another set of replace "
+                    "refs, so HEAD may not be what it looks like", "rollback")
+    if name == "git":
+        _check_git_words(root, cwd, env, argv, v, raw, depth, ctx, res.prefix)
+    elif name == "gh":
+        _check_gh(argv, v)
+        _check_gh_input(cwd, argv, orig, v, upstream)
+    elif name == "find":
+        _check_find(root, cwd, argv, v, raw, depth, ctx)
+    elif name == "patch":
+        _check_patch_input(root, cwd, argv, orig, v)
+    elif name in ("apply_patch", "applypatch"):
+        _check_apply_patch_shell(root, cwd, argv, orig, v, upstream)
+    elif name in ("sed", "gsed"):
+        _check_sed(root, cwd, argv, v, ctx)
+    elif name in _AWK:
+        _check_awk(root, cwd, argv, v, ctx)
+    if res.via_xargs and (_writer_name(name) or name in INPLACE):
+        _check_stdin_operands(root, cwd, name, orig, v, ctx, upstream)
+    if name == "ln":
+        _record_links(cwd, argv, ctx)
+    if name not in READERS_OK_FOR_GIT_DIR and name not in ("git", "echo", "printf"):
+        for a in argv[1:]:
+            # Any separator before .git/ (Cyra M2): `sed 'w .git/config'`, `--out=.git/hooks/x`.
+            if re.search(r"(^|[^\w.-])\.git/(hooks(/|$)|config(\s|$)|info(/|$)|refs/replace(/|$))",
+                         str(a), re.IGNORECASE):
+                v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
+
+
+def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth: int,
+                           ctx: "_Ctx", upstream=None) -> None:
+    """The program is a variable, a command substitution or a brace expansion.
+    A value Tess knows is checked as that program (with the words it
+    expands to; v1.0 round 3: an empty value drops out and the next word is
+    the program). Otherwise the program is only known at run time: the
+    command is checked as if it were each program Tess stands in for it
+    (git, gh, tessctl, find, a shell, python, a file writer) and asks if any
+    of them would be stopped, or if it has no arguments (round 3 fail-safe:
+    tessctl and find joined the stand-ins)."""
+    cands, _ = _word_fields(argv[0], cwd, ctx)
+    if cands and depth < _MAX_DEPTH:
+        unsure = False
+        for cand in cands:
+            words = []  # G='git commit'; $G: two words
+            for text, pat in cand:
+                # v1.0 round 3: a glob in the program word (`/usr/bin/g[i]t`) is
+                # replaced by the names it matches; one that matches nothing now
+                # may match a file this command makes, so it is also probed.
+                found = sorted(_glob(cwd, pat)) if pat else []
+                unsure = unsure or (pat is not None and (not found or ctx.mutated))
+                words += [_field(f) for f in found] or [_field(text)]
+            if words or len(argv) > 1:
+                _check_segment(root, cwd, words + list(argv[1:]), v, raw, depth + 1, ctx, upstream)
+        if not unsure:
+            return
+    probe = Verdict()
+    if depth < _MAX_DEPTH:
+        for stand_in in ("git", "gh", "sh", "python3", "cp", "rm", "tessctl", "find"):
+            _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), probe, raw, depth + 1,
+                           _Ctx(raw, ctx))
+    why = f"it runs a program whose name is only known when the command runs ({argv[0]})"
+    if probe.level > ALLOW:
+        v.add(ASK, why + "; if that is git, gh, tessctl, find, a shell, python or a file writer, "
+                         "Tess would stop it: " + "; ".join(probe.reasons))
+    elif len(argv) == 1 or depth >= _MAX_DEPTH:
+        v.add(ASK, why + ", so Tess cannot check what it does")
+
+
+# --------------------------------------------------------------------------- aliases and functions
+# v1.0 round 2 (Cyra H1/H2): an alias or a function defined in the command
+# runs another command under a short name. An alias's command is checked
+# where it is defined and again, with the words that follow, wherever the
+# name is used (eval included); a function's body is read at its definition
+# and checked again at each call, with the call's arguments as $1 and "$@".
+
+_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
+
+
+def _plain_name(word, kinds: tuple = ("raw", "lit")) -> str | None:
+    """The word's text when it is written out (no expansion); else None."""
+    if isinstance(word, _Word) and word.parts and any(k not in kinds for k, _ in word.parts):
+        return None
+    return str(word)
+
+
+def _check_alias_def(root: Path, cwd: str, argv: list, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
+    for w in argv[1:]:
+        s = str(w)
+        if re.fullmatch(r"-[A-Za-z]*[gs][A-Za-z]*", s):
+            v.add(ASK, "it defines a global or suffix alias (alias -g / alias -s), which the shell "
+                       "expands anywhere in a command line, so the words Tess reads are not the "
+                       "ones that run; write the command out instead")
+            continue
+        if s.startswith("-") or "=" not in s:
+            continue
+        name = s.split("=", 1)[0]
+        cands, _ = _word_values(_sub_word(w, len(name) + 1), cwd, ctx, assign=True)
+        if cands is None:
+            v.add(ASK, f"it defines the shell alias {name} as a command that is only known when "
+                       "it runs, so Tess cannot check what the alias does")
+            continue
+        for text, _p in cands:
+            if text.strip():
+                _recurse(root, cwd, text, v, depth, ctx)
+
+
+def _check_alias_use(root: Path, cwd: str, argv: list, v: "Verdict", raw: str, depth: int,
+                     ctx: "_Ctx", upstream) -> None:
+    name = _plain_name(argv[0], ("raw",))
+    if not name or name not in ctx.aliases:
+        return
+    vals = ctx.aliases[name]
+    if vals is None:
+        v.add(ASK, f"it runs the shell alias {name}, whose command is only known when it runs")
+        return
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests aliases more deeply than Tess checks")
+        return
+    saved = ctx.aliases.pop(name)  # an alias is not expanded inside itself
+    try:
+        for text in vals:
+            try:
+                segs = _segments(text)
+            except ValueError:
+                v.add(ASK, f"Tess cannot read the command the alias {name} runs")
+                continue
+            if segs:
+                _check_segment(root, cwd, list(segs[-1]) + list(argv[1:]), v, raw, depth + 1, ctx,
+                               upstream)
+    finally:
+        ctx.aliases[name] = saved
+
+
+def _local_names(body: list) -> set:
+    """Variables a function body declares local (restored after the call)."""
+    out = set()
+    for kind, x in body:
+        if kind != "seg":
+            continue
+        argv = _resolve(x).argv
+        if argv and str(argv[0]) in ("local", "declare", "typeset") and not any(
+                re.fullmatch(r"-[A-Za-z]*g[A-Za-z]*", str(a)) for a in argv[1:]):
+            for a in argv[1:]:
+                m = _ASSIGN.match(str(a)) or _NAME.fullmatch(str(a))
+                if m:
+                    out.add(m.group(1) if m.re is _ASSIGN else m.group(0))
+    return out
+
+
+def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", raw: str,
+                   depth: int, ctx: "_Ctx") -> None:
+    """Check the body of a function defined earlier in the command, with the
+    call's arguments as its positional parameters (unknown when any of them
+    is only known at run time)."""
+    if depth >= _MAX_DEPTH:
+        v.add(ASK, "it nests commands (`bash -c`, `eval`, `$(...)`, functions) more deeply than "
+                   "Tess checks")
+        return
+    vals = []
+    for w in _operands(args):
+        cands, _ = _word_fields(w, cwd, ctx)
+        if cands is None or len(cands) != 1:
+            vals = None
+            break
+        for text, pat in cands[0]:
+            found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else []
+            vals += sorted(f if os.path.isabs(os.path.expanduser(pat)) else os.path.relpath(f, cwd)
+                           for f in found) or [text]
+        if len(vals) > _EXPAND_LIMIT:
+            vals = None
+            break
+    body, sink = ctx.funcs[name], ctx.call_dirs
+    saved_argv, saved_vars, saved_nonopt = ctx.argv, dict(ctx.vars), set(ctx.nonopt)
+    ctx.argv = vals
+    try:
+        _, dirs = _walk(root, body, 0, frozenset([cwd]), v, raw, depth + 1, ctx, cond0=ctx.cond_now)
+    finally:
+        ctx.argv, ctx.call_dirs = saved_argv, sink
+        for n in _local_names(body):
+            if n in saved_vars:
+                ctx.vars[n] = saved_vars[n]
+            else:
+                ctx.vars.pop(n, None)
+            (ctx.nonopt.add if n in saved_nonopt else ctx.nonopt.discard)(n)
+    if sink is not None:
+        sink.append(dirs)
+
+
+def _merge_back(ctx: "_Ctx", child: "_Ctx") -> None:
+    """What an `eval` set, kept for the words after it."""
+    for n, val in child.vars.items():
+        if ctx.vars.get(n, _UNSET) != val or (n in child.nonopt) != (n in ctx.nonopt):
+            ctx.assign(n, val, ctx.cond_now, nonopt=n in child.nonopt)
+    ctx.aliases.update(child.aliases)
+    ctx.funcs.update(child.funcs)
+    ctx.opaque = ctx.opaque or child.opaque
+    if child.argv != ctx.argv:
+        ctx.argv = None
+
+
+def _assigned_texts(args: list, cwd: str, ctx: "_Ctx") -> list:
+    """NAME=value words of export/declare with the value expanded
+    (`export GIT_CONFIG_KEY_0=$K`)."""
+    out = []
+    for w in args:
+        m = _ASSIGN.match(str(w))
+        if m and _dynamic(w):
+            cands, _ = _word_values(_sub_word(w, m.end()), cwd, ctx, assign=True)
+            out += [m.group(1) + "=" + t for t, _p in cands or []]
+    return out
+
+
+def _bind_positional(argv: list, ctx: "_Ctx") -> list:
+    """Inside a function called with known arguments: a word that is just $1
+    or "$@" becomes those arguments, so every rule reads the real words."""
+    if ctx.argv is None:
+        return argv
+    out = []
+    for w in argv:
+        ps = [(k, t) for k, t in getattr(w, "parts", ()) if not (k == "lit" and t == "")]
+        if isinstance(w, _Word) and len(ps) == 1 and (
+                (ps[0][0] == "dyn" and ps[0][1] in ("@", "*")) or
+                (ps[0][0] == "var" and ps[0][1].isdigit() and ps[0][1] != "0")):
+            cands, _ = _word_fields(w, None, ctx)
+            if cands is not None and len(cands) == 1:
+                for text, pat in cands[0]:
+                    if pat is None:
+                        out.append(_plain(text))
+                    else:  # an unquoted value is globbed, never tilde-expanded
+                        out.append(_mkword([("lit", text[:1]), ("raw", text[1:])]
+                                           if text.startswith("~") else [("raw", text)]))
+                continue
+        out.append(w)
+    return out
+
+
+def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ctx: "_Ctx | None" = None):
+    ctx = ctx if ctx is not None else _Ctx(cmd)
+    _tick()
+    _check_operator_only(cmd, v)
+    try:
+        events = _events(cmd)
+    except ValueError:
+        # Unparseable (unbalanced quotes). The shell may still run it: a quote
+        # inside a `# comment` (`rm .claude/hooks/tess-gate.py # it's`) breaks
+        # shlex but not bash. Never fail open here (v1.0 code review, HIGH):
+        # check the raw text, then re-parse with shell comments, and if the
+        # command is still undecidable ask (Claude) -- decide() turns that ask
+        # into a deny for Codex and the no-prompt modes.
+        cwd = str(root) if cwd is _NOWHERE else cwd
+        low = cmd.lower()
+        if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/(hooks|config\b)", low):
+            v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
+        for word in re.findall(r"[^\s;&|()<>'\"`]+", cmd):
+            hit = protected_hit(root, cwd, word)
+            if hit:
+                v.add(DENY, f"the command could not be parsed and names {word}, a protected "
+                            f"Tess path ({hit})", "protected")
+        if re.search(r"\bgit\b[^\n;&|]*\bpush\b", low):
+            v.add(DENY, "the command could not be parsed, so Tess cannot check what this push "
+                        "would publish", "error")
+        if re.search(r"\bgit\b[^\n;&|]*\bremote\s+(add|set-url|rename|remove|rm)\b", low):
+            v.add(ASK, "the command could not be parsed and changes where this repository pushes")
+        if re.search(r"\bgh\b[^\n;&|]*\b(auth\s+token|--show-token)", low):
+            v.add(DENY, "the command could not be parsed and prints your GitHub token", "token")
+        if re.search(r"\bgh\b[^\n;&|]*\b(repo\s+(edit|create)|api)\b", low):
+            v.add(ASK, "the command could not be parsed and may change a repository's visibility")
+        try:
+            lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
+            lx.whitespace, lx.whitespace_split, lx.commenters = " \t\r", True, "#"
+            toks, cur, segs = list(lx), [], []
+        except ValueError:
+            v.add(ASK, "the command could not be parsed (unbalanced quotes), so Tess cannot check it")
+            return
+        for tok in toks + [";"]:
+            if tok in OPERATORS:
+                segs, cur = (segs + [cur] if cur else segs), []
+            else:
+                cur.append(_mkword([("fallback", tok)]))
+        for argv in segs:
+            _check_segment(root, cwd, argv, v, cmd, depth, ctx)
+        return
+    _check_archive_pipe([x for k, x in events if k == "seg"], v)
+    start = None if cwd is _NOWHERE else (cwd or str(root))
+    _walk(root, events, 0, frozenset([start]), v, cmd, depth, ctx)
+
+
+def _run_in(state, S, F, pending, last_run):
+    if S is None:
+        return state
+    return {"&&": S, "||": F, "|": last_run}.get(pending, S | F)
+
+
+def _and_or(S, F, pending, s, f):
+    if S is None:
+        return s, f
+    if pending == "&&":
+        return s, F | f
+    if pending == "||":
+        return S | s, f
+    return S | s, F | f
+
+
+# Reserved words that open and close a compound command. The commands inside
+# if/while/until/for/select/case (and a { } group after && / ||) may not
+# run, so what they assign joins the value before them (v1.0 round 2, GPT-6 #5).
+_OPENERS = {"if", "while", "until", "case", "for", "select", "{"}
+_CLOSERS = {"fi", "done", "esac", "}"}
+
+
+def _lead_words(words: list) -> list:
+    """The reserved words a segment starts with (`then if`, `}`, `for`)."""
+    out = []
+    for w in words:
+        s = _plain_name(w, ("raw",))
+        if s is None or s not in _KEYWORDS | {"for", "select", "case"}:
+            break
+        out.append(s)
+        if s in ("for", "select", "case"):
+            break
+    return out
+
+
+def _body_end(evs: list, t: int) -> int | None:
+    """Index of the event that closes the compound command starting at evs[t]
+    (a `{ ...; }` group or a `( ... )` subshell); None if it never closes."""
+    if evs[t] == ("op", "("):
+        depth = 0
+        for m in range(t, len(evs)):
+            if evs[m][0] == "op" and evs[m][1] == "(":
+                depth += 1
+            elif evs[m][0] == "op" and evs[m][1] == ")":
+                depth -= 1
+                if depth == 0:
+                    return m
+        return None
+    if evs[t][0] != "seg" or _lead_words(evs[t][1])[:1] != ["{"]:
+        return None
+    depth = 0
+    for m in range(t, len(evs)):
+        if evs[m][0] == "seg":
+            lead = _lead_words(evs[m][1])
+            depth += lead.count("{") - lead.count("}")
+            if depth <= 0 and "}" in lead:
+                return m
+    return None
+
+
+def _func_def(events: list, i: int):
+    """(name, body events, index after) when events[i] starts a function
+    definition: `f() { ...; }`, `f() ( ... )`, `function f { ...; }`."""
+    x = events[i][1]
+    names = [_plain_name(w) for w in x]
+    if None in names[:2]:
+        return None
+    if names[:1] == ["function"] and len(names) >= 2:
+        name, rest = names[1], list(x[2:])
+    elif len(names) == 1:
+        name, rest = names[0], []
+    else:
+        return None
+    if name in _KEYWORDS or not re.fullmatch(r"[^\s$`'\"=(){};&|<>]+", name):
+        return None
+    j = i + 1
+    if events[j:j + 2] == [("op", "("), ("op", ")")] and not rest:
+        j += 2
+    elif names[0] != "function":
+        return None
+    pre = [("seg", rest)] if rest else []
+    tail = pre + events[j:]
+    t = 0 if pre else next((k for k, e in enumerate(tail) if e != ("op", "\n")), len(tail))
+    if t >= len(tail):
+        return None
+    end = _body_end(tail, t)
+    if end is None:
+        return None
+    return name, tail[t:end + 1], j + end + 1 - len(pre)
+
+
+def _walk(root: Path, events: list, i: int, start: frozenset, v: Verdict, cmd: str, depth: int,
+          ctx: "_Ctx", nested: bool = False, cond0: bool = False) -> tuple:
+    """Check events[i:] up to the matching `)` (or the end), starting in the
+    set of possible working directories `start` (None: only known at run
+    time). A `cd` moves the commands that can only run after it (`&&`); a
+    command that runs whether or not the `cd` worked (`;`, `||`) is checked in
+    both places, a subshell's `cd` and variables stay inside it, and a
+    background list's `cd` never reaches the next command. A `)` with no
+    open subshell (a `case` pattern) only separates commands. `cond0`: the
+    whole list may not run (a function body called from an && arm).
+    Returns (index after, directories after)."""
+    state = list_start = start
+    S = F = None
+    pending, last_run, prev = None, start, None
+    stack = []  # open compound commands: [may not run, (for variable, value before) or None]
+    while i < len(events):
+        kind, x = events[i]
+        if kind == "op":
+            if x == ")" and nested:
+                return i + 1, (state if S is None else S | F)
+            if x in ("&&", "||"):
+                pending = x
+            elif x in ("|", "|&"):
+                pending = "|"
+            elif x == "(":
+                run = _run_in(state, S, F, pending, last_run)
+                array = i and events[i - 1][0] == "seg" and re.fullmatch(
+                    r"[A-Za-z_][A-Za-z0-9_]*\+?=", str(events[i - 1][1][-1]))
+                saved = dict(ctx.vars)
+                i, _ = _walk(root, events, i + 1, run, v, cmd, depth, ctx, True,
+                             cond0 or any(e[0] for e in stack) or pending in ("&&", "||"))
+                ctx.vars = saved
+                if array:  # NAME=(...): an array, whose elements Tess does not track
+                    ctx.assign(re.match(r"[A-Za-z_][A-Za-z0-9_]*", array.group(0)).group(0), None, False)
+                S, F = _and_or(S, F, pending, run, run)
+                last_run, pending, prev = run, None, None
+                continue
+            else:  # ; newline & ;; ;& ;;&
+                end = state if S is None else S | F
+                state = list_start if x == "&" else end
+                list_start, S, F, pending, prev = state, None, None, None, None
+            i += 1
+            continue
+        run = _run_in(state, S, F, pending, last_run)
+        fdef = _func_def(events, i)
+        if fdef is not None:
+            name, body, after = fdef
+            ctx.funcs[name] = body
+            dctx = _Ctx(ctx.raw, ctx)
+            dctx.deferred, dctx.argv = True, None
+            _walk(root, body, 0, run, v, cmd, depth, dctx, cond0=True)
+            S, F = _and_or(S, F, pending, run, run)
+            last_run, pending, prev = run, None, None
+            i = after
+            continue
+        nxt = events[i + 1][1] if i + 1 < len(events) and events[i + 1][0] == "op" else None
+        piped = pending == "|" or nxt in ("|", "|&")
+        lead = _lead_words(x)
+        for kw in lead:
+            if kw in _CLOSERS and stack:
+                _close(ctx, stack.pop())
+        for n, kw in enumerate(lead):
+            if kw in _OPENERS:
+                loopvar = None
+                if kw == "for" and n + 1 < len(x) and _NAME.fullmatch(str(x[n + 1])):
+                    loopvar = (str(x[n + 1]), ctx.vars.get(str(x[n + 1]), _UNSET),
+                               str(x[n + 1]) in ctx.nonopt)
+                stack.append([kw != "{" or pending in ("&&", "||") or piped or nxt == "&", loopvar])
+        cond = pending in ("&&", "||") or piped or nxt == "&" or cond0 or any(e[0] for e in stack)
+        if lead and lead[-1] in ("for", "select"):
+            # the loop variable is each value in turn inside the loop, and
+            # joins the value before it after `done` (_close)
+            cond = pending in ("&&", "||") or piped or nxt == "&"
+        s, f = _run_segment(root, x, run, v, cmd, depth, ctx, prev if pending == "|" else None,
+                            piped, cond)
+        S, F = _and_or(S, F, pending, s, f)
+        last_run, pending, prev = run, None, x
+        i += 1
+    for ent in reversed(stack):
+        _close(ctx, ent)
+    return i, (state if S is None else S | F)
+
+
+def _close(ctx: "_Ctx", ent: list) -> None:
+    """After `done`: a loop variable holds its last value, or the value it had
+    before the loop when the list was empty."""
+    if ent[1] is None:
+        return
+    name, old, old_nonopt = ent[1]
+    cur, cur_nonopt = ctx.vars.get(name, _UNSET), name in ctx.nonopt
+    if old is _UNSET:
+        ctx.vars.pop(name, None)
+    else:
+        ctx.vars[name] = old
+    (ctx.nonopt.add if old_nonopt else ctx.nonopt.discard)(name)
+    ctx.assign(name, None if cur is _UNSET else cur, True, nonopt=cur_nonopt)
+
+
+def _run_segment(root: Path, argv: list, run: frozenset, v: Verdict, cmd: str, depth: int,
+                 ctx: "_Ctx", upstream, piped: bool, cond: bool) -> tuple:
+    """Check one simple command in every directory it can run in; returns the
+    directories after it succeeds and after it fails."""
+    argv = _bind_positional(argv, ctx)
+    ctx.cond_now, calls = cond, []
+    ctx.call_dirs = calls
+    if len(run) == 1:
+        _check_segment(root, next(iter(run)), argv, v, cmd, depth, ctx, upstream)
+    else:
+        verdicts = []
+        for c in sorted(run, key=lambda d: (d is None, d or "")):
+            sub = Verdict()
+            _check_segment(root, c, argv, sub, cmd, depth, ctx, upstream)
+            verdicts.append(sub)
+        for sub in verdicts:
+            for r in sub.reasons:
+                v.add(sub.level, r)
+            for a in sub.advice:
+                if a not in v.advice:
+                    v.advice.append(a)
+        if len({sub.level for sub in verdicts}) > 1 and ADVICE["cdfail"] not in v.advice:
+            v.advice.append(ADVICE["cdfail"])
+    ctx.call_dirs = None
+    res = _resolve(argv)
+    one = next(iter(run)) if len(run) == 1 else None
+    _track_vars(argv, res, one, ctx, cond)
+    name = os.path.basename(str(res.argv[0])).lower() if res.argv else ""
+    if res.argv and name not in _READONLY_PROGRAMS:
+        ctx.mutated = True
+    if calls:  # a function ran: its `cd` moves the words after it
+        after = frozenset().union(*calls)
+        return (after | run if piped else after), run
+    if name in ("cd", "pushd", "chdir", "popd"):
+        after = frozenset(None if name == "popd" else _next_cwd(root, c, argv, ctx) for c in run)
+        return (after | run if piped else after), run
+    return run, run
+
+
+# Names an arithmetic expression assigns: X=1, X+=1, X++, --X.
+_ARITH_ASSIGN = re.compile(r"([A-Za-z_]\w*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|([A-Za-z_]\w*)\s*(?:\+\+|--)|"
+                           r"(?:\+\+|--)\s*([A-Za-z_]\w*)")
+
+
+def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: bool) -> None:
+    """Variables the command sets for the words after it."""
+    argv = res.argv
+    name = os.path.basename(str(argv[0])).lower() if argv else ""
+    if not argv:
+        assigns = [w for w in orig if _ASSIGN.match(str(w)) and not _is_op(w)]
+    elif name in ("export", "declare", "typeset", "local", "readonly"):
+        assigns = [w for w in argv[1:] if _ASSIGN.match(str(w))]
+        if any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", str(w)) for w in argv[1:]):
+            ctx.opaque = True  # a nameref: assigning one name sets another
+    else:
+        assigns = []
+    for w in assigns:
+        m = _ASSIGN.match(str(w))
+        n, value = m.group(1), _sub_word(w, m.end())
+        cands, _ = _word_values(value, cwd, ctx, assign=True)
+        vals = None if cands is None else [t for t, _p in cands]
+        if m.group(2) and vals is not None:  # NAME+=value appends
+            old = _var_values(n, cwd, ctx)
+            vals = None if old is None or len(old) * len(vals) > _EXPAND_LIMIT else \
+                [o + x for o in old for x in vals]
+        nonopt = all(_nonopt_text(x) for x in vals) if vals is not None else (
+            not m.group(2) and all(_word_shape(value, ctx)) and not any(
+                k in ("lit", "raw") and re.search(r"\s", t) or
+                (k in ("var", "sub", "dyn") and not (
+                    (k == "var" and t in ctx.nonopt) or (k == "sub" and _NONOPT_SUB.match(t))
+                    or (k == "dyn" and t.startswith("#"))))
+                for k, t in getattr(value, "parts", ())))
+        ctx.assign(n, vals, cond, nonopt=nonopt)
+    # Assignments hidden in expansions and arithmetic: ${X:=v}, $((X=1)), (( X++ )).
+    for w in orig:
+        for k, t in getattr(w, "parts", ()):
+            m = re.match(r"^([A-Za-z_]\w*):?=", t) if k == "dyn" else None
+            if m:
+                ctx.assign(m.group(1), None, True)
+            if k == "arith" or (k == "sub" and t.startswith("(") and t.endswith(")")):
+                for g in _ARITH_ASSIGN.findall(t):
+                    ctx.assign(next(x for x in g if x), None, cond)
+    if name == "let":
+        for w in argv[1:]:
+            for g in _ARITH_ASSIGN.findall(str(w)):
+                ctx.assign(next(x for x in g if x), None, cond)
+    if name == "printf":
+        for k, w in enumerate(argv[1:-1], 1):
+            if str(w) == "-v" and _NAME.fullmatch(str(argv[k + 1])):
+                ctx.assign(str(argv[k + 1]), None, cond)
+    if name in ("for", "select") and len(argv) >= 2 and _NAME.fullmatch(str(argv[1])):
+        has_in = len(argv) > 2 and str(argv[2]) == "in"
+        vals = [] if has_in else (list(ctx.argv) if ctx.argv is not None else None)
+        for w in (argv[3:] if has_in else []):
+            cands, _ = _word_values(w, cwd, ctx)
+            if cands is None:
+                vals = None
+                break
+            for t, pat in cands:
+                vals += (_glob(cwd or ".", pat, _EXPAND_LIMIT + 1) if pat else []) or [t]
+            if len(vals) > _EXPAND_LIMIT:
+                vals = None
+                break
+        if vals != []:
+            ctx.assign(str(argv[1]), vals, cond)
+    if name in ("read", "mapfile", "readarray", "getopts", "select"):
+        for w in argv[1:]:
+            if _NAME.fullmatch(str(w)):
+                ctx.assign(str(w), None, False)
+    if name == "unset":
+        funcs = any(str(w) == "-f" for w in argv[1:])
+        for w in argv[1:]:
+            if not _NAME.fullmatch(str(w)):
+                continue
+            if funcs:
+                ctx.funcs.pop(str(w), None)
+            elif str(w) == "IFS":
+                if cond:
+                    ctx.vars["IFS"] = None
+                else:
+                    ctx.vars.pop("IFS", None)
+            else:
+                ctx.assign(str(w), [""], cond)
+    if name == "set":
+        words, pos = [str(a) for a in _operands(argv[1:])], None
+        if "--" in words:
+            pos = _operands(argv[1:])[words.index("--") + 1:]
+        else:
+            k = 0
+            while k < len(words) and words[k][:1] in ("-", "+"):
+                k += 2 if words[k] in ("-o", "+o") else 1
+            pos = _operands(argv[1:])[k:] or None
+        if pos is not None:
+            vals = []
+            for w in pos:
+                cands, _ = _word_fields(w, cwd, ctx)
+                if cands is None or len(cands) != 1 or cond:
+                    vals = None
+                    break
+                vals += [t for t, _p in cands[0]]
+            ctx.argv = vals
+    if name == "shift" and ctx.argv is not None:
+        k = str(argv[1]) if len(argv) > 1 else "1"
+        ctx.argv = ctx.argv[int(k):] if k.isdigit() and not cond else None
+    if name == "alias":
+        for w in argv[1:]:
+            s = str(w)
+            if s.startswith("-") or "=" not in s:
+                continue
+            an = s.split("=", 1)[0]
+            cands, _ = _word_values(_sub_word(w, len(an) + 1), cwd, ctx, assign=True)
+            vals = None if cands is None else [t for t, _p in cands]
+            old = ctx.aliases.get(an, [])
+            ctx.aliases[an] = None if vals is None or old is None else (
+                list(dict.fromkeys(old + vals)) if cond else vals)
+    if name == "unalias" and not cond:
+        if any(str(w) == "-a" for w in argv[1:]):
+            ctx.aliases.clear()
+        for w in argv[1:]:
+            ctx.aliases.pop(str(w), None)
+
+
+def _check_archive_pipe(segs: list, v: Verdict) -> None:
+    """`git archive <rev> <paths> | tar -x`: an old copy of any file, written
+    by a tool that never names it."""
+    seen_archive = False
+    for seg in segs:
+        _, argv = _strip_prefix(seg)
+        if not argv:
+            continue
+        name = os.path.basename(argv[0])
+        if name == "git":
+            words = [a for a in argv[1:] if not a.startswith("-")]
+            if "archive" in words[:3] and not any(a in ("-l", "--list") for a in argv):
+                seen_archive = True
+        elif seen_archive and name in EXTRACTORS:
+            v.add(DENY, "it unpacks `git archive` output with an extractor, which writes older "
+                        "copies of files without naming them (Tess's gate and pins included)",
+                  "rollback")
+            return
+
+
+def _next_cwd(root: Path, cur: str | None, argv: list, ctx: "_Ctx | None" = None) -> str | None:
+    """Track `cd` / `pushd` across the segments of one command (M1), so
+    `cd .git/hooks && echo x > pre-commit` is checked as a write to
+    .git/hooks/pre-commit. None = moved somewhere only known at run time."""
+    _, argv = _strip_prefix(argv)
+    if not argv or os.path.basename(str(argv[0])).lower() not in ("cd", "pushd", "chdir"):
+        return cur
+    args = [a for a in _operands(argv[1:]) if str(a) not in ("-L", "-P", "-e", "-@", "--")]
+    if not args:
+        return os.path.expanduser("~")
+    target = args[0]
+    if cur is None or str(target) == "-" or re.fullmatch(r"[+-]\d+", str(target)):
+        return None
+    cands, _ = _word_values(target, cur, ctx)
+    if not cands or len(cands) != 1:
+        return None
+    text, pat = cands[0]
+    if pat is not None:
+        found = _glob(cur, pat)
+        if len(found) != 1:
+            return None
+        text = found[0]
+    full = os.path.normpath(os.path.join(cur, text))
+    return _through_links(full, cur, ctx) if ctx is not None else full
+
+
+def _command_text(tool_input) -> str:
+    cmd = tool_input.get("command") if isinstance(tool_input, dict) else tool_input
+    if cmd is None and isinstance(tool_input, dict):
+        cmd = tool_input.get("cmd")  # Codex exec_command's own argument name
+    if isinstance(cmd, list):
+        if len(cmd) >= 3 and os.path.basename(str(cmd[0])) in SHELLS and str(cmd[1]).startswith("-"):
+            return str(cmd[2])
+        return shlex.join(str(c) for c in cmd)
+    return cmd if isinstance(cmd, str) else ""
+
+
+def _strings(obj) -> list:
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [s for val in obj.values() for s in _strings(val)]
+    if isinstance(obj, list):
+        return [s for val in obj for s in _strings(val)]
+    return []
+
+
+# --------------------------------------------------------------------------- evaluate
+
+# v1.0 audit: the whole evaluation, git and tessctl subprocesses included,
+# ends well inside the host hook timeout (120 s, of which run-pinned's anchor
+# lookup may take up to 60 s before the gate starts). Out of time is an ask
+# (a deny for Codex and the no-prompt modes), never an unchecked allow.
+GATE_BUDGET = 40.0
+MAX_COMMAND = 256 * 1024
+_NOWHERE = "\0a working directory Tess cannot resolve"
+
+
+# Codex (0.158) sends shell, exec_command and unified-exec calls to PreToolUse
+# as `Bash` with `tool_input.command` only (adapters/codex/README.md): a call's
+# own `workdir`, `tty` and later `write_stdin` input are not in the payload.
+# A workdir IS used when a payload carries one; otherwise the session cwd is
+# the only directory Tess can see (SECURITY.md, Known limits).
+# v1.0 round 3 (B5): checked per resolved program (_check_program, _interactive),
+# so `P=python3; "$P"`, `bash -c python3` and `python3 -q` are seen too.
+_INTERACTIVE_ASK = ("it starts {what}, and Codex can type into a running command later "
+                    "(write_stdin) without Tess seeing what is typed; run the commands you need "
+                    "directly instead")
+
+
+def _tool_cwd(tin, cwd: str) -> str:
+    """The directory a shell call runs in: the tool input's own working
+    directory (Codex shell/exec `workdir`) when it names one, else the
+    payload's cwd; _NOWHERE when it names one Tess cannot resolve."""
+    if not isinstance(tin, dict):
+        return cwd
+    for k in ("workdir", "cwd", "directory", "working_directory"):
+        val = tin.get(k)
+        if val in (None, ""):
+            continue
+        if not isinstance(val, str) or re.search(r"[$`]", val):
+            return _NOWHERE
+        return os.path.normpath(os.path.join(cwd, os.path.expanduser(val)))
+    return cwd
+
+
+def evaluate(data: dict, root: Path, codex: bool | None = None) -> Verdict:
+    v = Verdict()
+    codex = ("turn_id" in data) if codex is None else codex
+    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex)
+    try:
+        _evaluate(data, root, v)
+    except _GateTimeout:
+        v.add(ASK, f"Tess could not finish checking this call within {int(GATE_BUDGET)} seconds "
+                   "(a very long command, or git answering slowly), so it cannot say it is safe")
+    finally:
+        _STATE.update(deadline=None, interp={}, cmd="", codex=False)
+    return v
+
+
+def _evaluate(data: dict, root: Path, v: Verdict) -> None:
+    tool = str(data.get("tool_name") or "")
+    tin = data.get("tool_input")
+    tin = tin if tin is not None else {}
+    cwd = str(data.get("cwd") or root)
+    if tool in DISPATCH_TOOLS:
+        hits = _leak_pattern_names(root, json.dumps(tin, ensure_ascii=False), specific_only=False)
+        if hits:
+            v.add(DENY, "the dispatch carries secret-shaped value(s): " + ", ".join(hits)
+                  + ". Pass a vault:// reference instead (conductor/vault.md)", "secret")
+    elif tool in SHELL_TOOLS:
+        cmd = _command_text(tin)
+        hits = _leak_pattern_names(root, cmd, specific_only=True)
+        if hits:
+            v.add(DENY, "the command contains secret-shaped value(s): " + ", ".join(hits)
+                  + ". Read the secret from the environment or `tessctl vault exec` instead", "secret")
+        if _KEY_TEXT.search(cmd):
+            v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing "
+                        "keys there are for the operator's own tools, not for an agent", "keys")
+        if len(cmd) > MAX_COMMAND:
+            v.add(ASK, f"the command is {len(cmd)} characters long, more than Tess checks; split it "
+                       "into smaller commands, or run it yourself")
+        else:
+            _STATE["cmd"] = cmd
+            check_command(root, _tool_cwd(tin, cwd), cmd, v)
+    elif tool in READ_TOOLS:
+        if isinstance(tin, dict):
+            for k in ("file_path", "path", "notebook_path"):
+                if key_hit(cwd, tin.get(k), ancestors=(tool == "Grep" and k == "path")):
+                    v.add(DENY, f"it reads {tin.get(k)}, Tess's key directory; the signing keys "
+                                "there are for the operator's own tools, not for an agent", "keys")
+            if tool in ("Grep", "Glob") and _KEY_TEXT.search(
+                    " ".join(str(tin.get(k) or "") for k in ("pattern", "glob"))):
+                v.add(DENY, "it searches Tess's key directory (~/.config/tess)", "keys")
+    elif tool in EDIT_TOOLS:
+        paths = []
+        if isinstance(tin, dict):
+            paths += [tin[k] for k in ("file_path", "notebook_path", "path") if isinstance(tin.get(k), str)]
+        for text in _strings(tin):
+            paths += _patch_paths(text, v)
+        if not paths:
+            v.add(DENY, "Tess could not tell which files this edit changes, so it cannot check "
+                        "them against the protected list", "error")
+        _check_patch_paths(root, cwd, paths, v)
+    elif tool.startswith("mcp__"):
+        for val in _strings(tin):
+            if key_hit(cwd, val, ancestors=True) or _KEY_TEXT.search(val):
+                v.add(DENY, "it reaches Tess's key directory (~/.config/tess)", "keys")
+                break
+        if isinstance(tin, dict) and any(w in tool.lower() for w in MCP_WRITE_WORDS):
+            for k, val in tin.items():
+                if k.lower() in MCP_PATH_KEYS and isinstance(val, str):
+                    hit = protected_hit(root, cwd, val)
+                    if hit:
+                        v.add(DENY, f"it writes to {val}, a protected Tess path ({hit})", "protected")
+
+
+def decide(data: dict, root: Path, runtime: str) -> tuple:
+    """(permissionDecision or None, reason) after the Codex ask->deny conversion."""
+    is_codex = runtime == "codex" or "turn_id" in data
+    v = evaluate(data, root, codex=is_codex)
+    if v.level == ALLOW:
+        return None, ""
+    tool = str(data.get("tool_name") or "")
+    cmd = _command_text(data.get("tool_input") or {}) if tool in SHELL_TOOLS else ""
+    why = "; ".join(v.reasons)
+    mode = data.get("permission_mode")
+    if v.level == ASK and (is_codex or mode not in INTERACTIVE_MODES):
+        # L-c: only a known interactive mode pauses for the operator. A no-prompt
+        # mode, a missing mode or one Tess does not recognise gets the deny.
+        where = ("Codex" if is_codex else f"{mode} mode" if mode in NO_PROMPT_MODES
+                 else "auto mode (where Claude Code may approve it without showing you)"
+                 if mode in AUTO_APPROVE_MODES
+                 else f"an unrecognised permission mode ({str(mode)[:40]!r})")
+        switch = (", or switch Claude Code back to default mode (Shift+Tab changes the mode), "
+                  "which asks you first, and try again"
+                  if mode in AUTO_APPROVE_MODES and not is_codex else "")
+        reason = (f"TESS GATE: blocked because this needs your approval and {where} cannot pause "
+                  f"to ask: {why}. If you want it, run it yourself in your own terminal"
+                  + (f": {_short(root, cmd)}" if cmd else "") + switch + ".")
+        return "deny", reason
+    if v.level == ASK:
+        return "ask", f"TESS GATE: {why}. Approve only if you meant to."
+    fix = " ".join(v.advice)
+    return "deny", f"TESS GATE: blocked because {why}." + (f" What to do: {fix}" if fix else "")
+
+
+def _log(root: Path, data: dict, runtime: str, decision: str, reason: str) -> None:
+    try:
+        default = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "tess" / "gate-decisions.log"
+        path = Path(os.environ.get("TESS_GATE_LOG") or default)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if path.exists() and path.stat().st_size > 1_000_000:
+            os.replace(path, str(path) + ".1")
+        tool = str(data.get("tool_name") or "")
+        cmd = _command_text(data.get("tool_input") or {}) if tool in SHELL_TOOLS else ""
+        # Every free-text field passes through _redact here, at the one place the
+        # log is written, so a reason that quotes a path or value from the tool
+        # input (an edit target, an MCP path argument) cannot carry a
+        # credential into the log even if its builder did not redact it.
+        def _clean(val):
+            return _redact(root, val) if isinstance(val, str) else None
+
+        entry = {"ts": __import__("time").strftime("%Y-%m-%dT%H:%M:%S%z"), "runtime": runtime,
+                 "codex": "turn_id" in data, "session_id": _clean(data.get("session_id")),
+                 "turn_id": _clean(data.get("turn_id")), "project": str(root),
+                 "tool": _redact(root, tool), "decision": decision,
+                 "reason": _redact(root, reason)[:600], "command": _short(root, cmd)}
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:  # never let logging change or lose a decision
+        sys.stderr.write(f"tess-gate: could not write the decision log ({type(exc).__name__})\n")
+
+
+def _emit(decision: str, reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision,
+        "permissionDecisionReason": reason,
+    }}))
+
+
+def main(argv: list) -> int:
+    runtime = "claude"
+    if len(argv) >= 2 and argv[0] == "--runtime":
+        runtime = argv[1]
+    root = _root()
+    try:
+        data = json.loads(sys.stdin.read())
+        if not isinstance(data, dict):
+            raise ValueError("payload is not an object")
+    except Exception as exc:
+        _emit("deny", f"TESS GATE: blocked because the tool-call JSON was unreadable "
+                      f"({type(exc).__name__}), so the safety check could not run.")
+        return 0
+    try:
+        decision, reason = decide(data, root, runtime)
+    except Exception as exc:  # fail closed
+        decision, reason = "deny", (
+            f"TESS GATE: blocked because the safety check errored ({type(exc).__name__}). "
+            f"Check `./tessctl doctor`; if it keeps failing, run the command yourself.")
+    if decision:
+        _log(root, data, runtime, decision, reason)
+        _emit(decision, reason)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

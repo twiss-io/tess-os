@@ -56,6 +56,7 @@ import {
 import { join, resolve, dirname, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(TEST_DIR, '..'); // create-tess/
@@ -320,7 +321,7 @@ test(
     // Proves the fetch genuinely used the bundled copy, not a fallback path.
     assert.match(
       run.stdout,
-      /bundled template — no network required/,
+      /Preparing Tess OS \(no internet needed\)/,
       'the wizard must report it fetched from the bundled template, not git',
     );
 

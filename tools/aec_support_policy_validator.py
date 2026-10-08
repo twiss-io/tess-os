@@ -116,7 +116,7 @@ _PRODUCT_CONTROLS: Dict[str, Set[str]] = {
 }
 
 _DOC_MARKERS: Dict[Path, Tuple[str, ...]] = {
-    Path("README.md"): (
+    Path("docs/TECHNICAL_OVERVIEW.md"): (  # v1.0 B4: moved from README.md
         "| Agent Execution Contract governance defaults | **Planned** |",
         "| Tess Cloud | **Planned** |",
         "| Tess Vault | **Planned** |",

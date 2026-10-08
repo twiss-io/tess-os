@@ -5,7 +5,7 @@
 > `.tess/core/` is the PRISTINE source; the live tree is the resolved output.
 > Authoritative classification lives in `.tess/tess.lock` (per-file `status`/`tier`/`base_sha`).
 
-- Total core files: **959** (+5 Phase 1 — `contracts/` wired into the managed set)
+- Total core files: **983** (959 + 24 in v1.0.0: `conductor/review-and-verification.md` and the 23 files of `skills/security-audit/`)
 - Security-tier files: **6** (`conductor/guardrails.md`, `conductor/verification-routing.md`, `conductor/channel-guardrails.md`, `conductor/dispatch-brief.md`, `contracts/brief.schema.json`, `contracts/verdict.schema.json`) — the last two are new in Phase 1: the machine-checkable form of `dispatch-brief.md` and `verification-routing.md` respectively, promoted to the same tier so weakening the schema is treated as seriously as editing the prose doctrine.
 
 > **v0.2 ten-role roster.** `agents-dispatch/` now holds exactly **9** role files (ada, morwenna, leah, reid, quinn, cyra, clio, vega, iris); the other 141 former dispatch definitions became the lens library at `conductor/lenses/` (141 lenses + `README.md` index) and `conductor/roster.md` was added. Counts further down that describe 150 dispatch definitions are historical. The codex render target also compiles each installed role to `.codex/agents/<name>.toml` (untracked-render-generated).
@@ -18,7 +18,7 @@
 | `.tess/core/agents/**` | `agents/**` |
 | `.tess/core/agents-dispatch/*.md` | `.claude/agents/*.md` |
 | `.tess/core/hooks/*` | `.claude/hooks/*` (copied; the shipped hooks resolve their project root at runtime via `$CLAUDE_PROJECT_DIR`, not a render-time `{{TESS_ROOT}}` token — LOW-2, Fable review) |
-| `.tess/core/skills/**` | `.claude/skills/**` |
+| `.tess/core/skills/**` | `.claude/skills/**`; `skills/security-audit/**` ALSO to `.agents/skills/security-audit/**` (v1.0.0, codex target, byte-identical copy, untracked-render-generated) |
 | `.tess/core/settings-core.json` | `.claude/settings.json` (rendered) |
 | `.tess/core/templates/CLAUDE.md.tpl` | `CLAUDE.md` (rendered + operator/ stubs) |
 | `.tess/core/templates/claude-md/*.md` | `CLAUDE.md` (composed fragments) |
@@ -66,6 +66,7 @@
 | `conductor/playbooks/l99-merge-discipline.md` | `conductor/playbooks/l99-merge-discipline.md` | normal |
 | `conductor/playbooks/product-build-mission.md` | `conductor/playbooks/product-build-mission.md` | normal |
 | `conductor/playbooks/revenue-diagnosis.md` | `conductor/playbooks/revenue-diagnosis.md` | normal |
+| `conductor/review-and-verification.md` | `conductor/review-and-verification.md` | normal |
 | `conductor/review-output-standards.md` | `conductor/review-output-standards.md` | normal |
 | `conductor/soul.md` | `conductor/soul.md` | normal |
 | `conductor/subagent-failure-protocol.md` | `conductor/subagent-failure-protocol.md` | normal |
@@ -237,10 +238,21 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 
 | Core file | Live path | Tier |
 |---|---|---|
-| `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | normal |
-| `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | normal |
-| `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | normal |
-| `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | normal |
+| `hooks/dispatch-guard.sh` | `.claude/hooks/dispatch-guard.sh` | security |
+| `hooks/task-lock-clear.sh` | `.claude/hooks/task-lock-clear.sh` | security |
+| `hooks/task-lock-set.sh` | `.claude/hooks/task-lock-set.sh` | security |
+| `hooks/utc-local-context.sh` | `.claude/hooks/utc-local-context.sh` | security |
+| `pinned-scripts.sha256` | (none — read in place by `.claude/hooks/run-pinned.py`) | security |
+
+v0.2.1: every hook command in `settings-core.json` runs through
+`.claude/hooks/run-pinned.py`, which runs a script only when its sha256 matches
+tess.lock (directly for the four hooks above; via `pinned-scripts.sha256` for
+`run-pinned.py`, `vault-dispatch-scan.py`, `tess-gate.py` and
+`scripts/brain/**/*.py`, which have no core master). v1.0: `tess-gate.py` is the
+PreToolUse safety gate for both runtimes: Claude Code runs it from
+`settings-core.json` (`--runtime claude`) and Codex from `.codex/config.toml`
+(rendered from `templates/agents-md/codex-config.toml.tpl`), each through
+`run-pinned.py --on-fail block`. See docs/HARNESS_HARDENING.md and adapters/codex/README.md.
 
 ## skills/ — framework skills
 
@@ -253,6 +265,29 @@ Personas: README.md, ada, adrienne, alessia, alina, alouette, amandine, amara, a
 | `skills/industrial-brutalist-ui/SKILL.md` | `.claude/skills/industrial-brutalist-ui/SKILL.md` | normal |
 | `skills/minimalist-ui/SKILL.md` | `.claude/skills/minimalist-ui/SKILL.md` | normal |
 | `skills/redesign-existing-projects/SKILL.md` | `.claude/skills/redesign-existing-projects/SKILL.md` | normal |
+| `skills/security-audit/AI-AND-LLM.md` | `.claude/skills/security-audit/AI-AND-LLM.md` | normal |
+| `skills/security-audit/ATTACK-CLASSES.md` | `.claude/skills/security-audit/ATTACK-CLASSES.md` | normal |
+| `skills/security-audit/CLIENT-SIDE.md` | `.claude/skills/security-audit/CLIENT-SIDE.md` | normal |
+| `skills/security-audit/CLOUD-AND-DEPLOYMENT.md` | `.claude/skills/security-audit/CLOUD-AND-DEPLOYMENT.md` | normal |
+| `skills/security-audit/DATA-ISOLATION-AND-LIFECYCLE.md` | `.claude/skills/security-audit/DATA-ISOLATION-AND-LIFECYCLE.md` | normal |
+| `skills/security-audit/DESKTOP-MOBILE-AND-LOCAL-IPC.md` | `.claude/skills/security-audit/DESKTOP-MOBILE-AND-LOCAL-IPC.md` | normal |
+| `skills/security-audit/HUNTING.md` | `.claude/skills/security-audit/HUNTING.md` | normal |
+| `skills/security-audit/LICENSE` | `.claude/skills/security-audit/LICENSE` | normal |
+| `skills/security-audit/MEMORY-SAFETY-AND-BINARY.md` | `.claude/skills/security-audit/MEMORY-SAFETY-AND-BINARY.md` | normal |
+| `skills/security-audit/PROTOCOLS-RPC-AND-MESSAGING.md` | `.claude/skills/security-audit/PROTOCOLS-RPC-AND-MESSAGING.md` | normal |
+| `skills/security-audit/RECONNAISSANCE.md` | `.claude/skills/security-audit/RECONNAISSANCE.md` | normal |
+| `skills/security-audit/RESOURCE-EXHAUSTION-AND-AVAILABILITY.md` | `.claude/skills/security-audit/RESOURCE-EXHAUSTION-AND-AVAILABILITY.md` | normal |
+| `skills/security-audit/SKILL.md` | `.claude/skills/security-audit/SKILL.md` | normal |
+| `skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md` | `.claude/skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md` | normal |
+| `skills/security-audit/TESS.md` | `.claude/skills/security-audit/TESS.md` | normal |
+| `skills/security-audit/UPSTREAM.md` | `.claude/skills/security-audit/UPSTREAM.md` | normal |
+| `skills/security-audit/VALIDATION-AND-REPORTING.md` | `.claude/skills/security-audit/VALIDATION-AND-REPORTING.md` | normal |
+| `skills/security-audit/WEB-PROTOCOL-AND-AUTH.md` | `.claude/skills/security-audit/WEB-PROTOCOL-AND-AUTH.md` | normal |
+| `skills/security-audit/report-schema.json` | `.claude/skills/security-audit/report-schema.json` | normal |
+| `skills/security-audit/validate-coverage-ledger.cjs` | `.claude/skills/security-audit/validate-coverage-ledger.cjs` | normal |
+| `skills/security-audit/validate-coverage-ledger.test.cjs` | `.claude/skills/security-audit/validate-coverage-ledger.test.cjs` | normal |
+| `skills/security-audit/validate-findings.cjs` | `.claude/skills/security-audit/validate-findings.cjs` | normal |
+| `skills/security-audit/validate-findings.test.cjs` | `.claude/skills/security-audit/validate-findings.test.cjs` | normal |
 
 ## templates/ — entry-point template, fragments, client scaffold
 
@@ -346,4 +381,4 @@ doctrine text.
 | Core file | Live path | Tier |
 |---|---|---|
 | `MANIFEST.md` | `—` | normal |
-| `settings-core.json` | `.claude/settings.json` | normal |
+| `settings-core.json` | `.claude/settings.json` | security |

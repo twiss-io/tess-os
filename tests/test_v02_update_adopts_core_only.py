@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 
+import yaml
+
 import pytest
 
 from conftest import make_upstream
@@ -159,7 +161,8 @@ def test_update_dry_run_lists_core_only_adoptions_and_writes_nothing(
         src = tmp_path / "upstream" / key
         project.stage(key, src.read_bytes())
     (project.root / ".tess" / "staging" / "upstream-tess.lock").write_text(
-        json.dumps({"schema": 1, "files": up_lock}), encoding="utf-8")
+        # v1.0.0: tess.lock is read in its strict block form (what save_lock writes)
+        yaml.safe_dump({"schema": 1, "files": up_lock}, default_flow_style=False), encoding="utf-8")
     lock_bytes = (project.root / ".tess" / "tess.lock").read_bytes()
 
     r = run_cli(project.root, "update", "--ref", "v2.1.0", flag)
@@ -192,7 +195,10 @@ def test_adoption_keeps_what_it_cannot_prove_is_upstreams(project, gpg_key, tmp_
                                     "live_path": "conductor/new-doc.md"}})
 
     r = run_cli(project.root, "update", "--ref", "v2.1.0")
-    assert r.returncode == 0, f"update failed:\n{r.stdout}\n{r.stderr}"
+    # v0.2.1 (#193 remainder): a KEPT live file means the update is
+    # INCOMPLETE — exit non-zero, never a silent success.
+    assert r.returncode == 1, f"update should report the kept file:\n{r.stdout}\n{r.stderr}"
+    assert "update: INCOMPLETE" in r.stdout
     lock = project.lock()
 
     assert NEW_FRAG_KEY in lock["files"], "the safe core-only file was not adopted"
@@ -203,9 +209,13 @@ def test_adoption_keeps_what_it_cannot_prove_is_upstreams(project, gpg_key, tmp_
     for key in (bad, fenced):
         assert key not in lock["files"] and not project.core(key).exists(), key
         assert f"WARN  A2: not adopted {key}" in r.stdout, r.stdout
-    # the operator's file at a new live path is kept; the entry is adopted
+    # the operator's file at a new live path is kept but NOT adopted
+    # (v0.2.1, #193 remainder): no core-managed lock entry claims it, no core
+    # copy is written, and upstream's version is parked as a .tess-new file.
     assert project.read_live("conductor/new-doc.md") == "OPERATOR'S OWN FILE\n"
-    assert lock["files"][".tess/core/conductor/new-doc.md"]["live_path"] == "conductor/new-doc.md"
+    assert ".tess/core/conductor/new-doc.md" not in lock["files"]
+    assert not project.core(".tess/core/conductor/new-doc.md").exists()
+    assert project.read_live("conductor/new-doc.md.tess-new") == "UPSTREAM DOC\n"
     assert "KEEP  conductor/new-doc.md" in r.stdout
     # only the kept core file is left untracked, and doctor says so
     assert _untracked_core(project.root, lock) == [ROSTER_KEY]

@@ -44,7 +44,11 @@
 # only way to leave headless mode off. See conductor/hook-testing-protocol.md
 # and this file's companion test, tests/test_dispatch_guard_headless.py.
 
-LOCK_DIR="/tmp/tess-dispatch-locks"
+# Per-user lock dir (v0.2.1, 2026-09-29 security review): the old shared
+# /tmp/tess-dispatch-locks was world-writable, so any local user or process
+# could plant a lock that silenced dispatch-guard. The dir is now private to
+# this user (mode 700). TESS_LOCK_DIR still overrides (tests, custom setups).
+LOCK_DIR="${TESS_LOCK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tess/dispatch-locks}"
 TESS_ROOT="$CLAUDE_PROJECT_DIR"
 
 input="$(cat)"
@@ -61,7 +65,11 @@ fi
 # task-lock-set.sh / task-lock-clear.sh, which prune and ignore locks >4h old;
 # a wider 24h window would keep suppressing the warning for up to a day on a
 # leaked lock from a crashed session.
-if [ -d "$LOCK_DIR" ] && find "$LOCK_DIR" -name '*.lock' -mmin -240 2>/dev/null | grep -q .; then
+# A lock only counts when the dir is a real directory owned by this user and
+# not writable by group or others; otherwise another account could plant it.
+if [ -d "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ] \
+  && [ -n "$(find "$LOCK_DIR" -maxdepth 0 -user "$(id -u)" ! -perm -g+w ! -perm -o+w 2>/dev/null)" ] \
+  && find "$LOCK_DIR" -name '*.lock' -user "$(id -u)" -mmin -240 2>/dev/null | grep -q .; then
   exit 0
 fi
 

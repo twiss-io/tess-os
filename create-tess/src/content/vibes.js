@@ -2,7 +2,11 @@
 // map; vibe only relabels. Copy is house "never hype" standard: grounded, warm,
 // honest. Each vibe supplies the lexicon + framing for every downstream step.
 
-export const VIBE_ORDER = ['rpg', 'command', 'studio'];
+// 'plain' is the default for every new install (v1.0 e2e review, S4): no game
+// words, no "conductor", no lens lists. The other three stay as opt-in skins
+// (`--vibe rpg|command|studio`).
+export const VIBE_ORDER = ['plain', 'rpg', 'command', 'studio'];
+export const DEFAULT_VIBE = 'plain';
 
 // L3 / Lysandra #5 — the one honesty line that must surface for EVERY vibe, not
 // just Studio. The vibe is paint; the engine and the install set are identical
@@ -14,6 +18,38 @@ export const VIBE_HONESTY =
   'Same engine underneath — the vibe sets the language, not the power.';
 
 export const VIBES = {
+  // ── 2.0 Plain (default) ──────────────────────────────────────────────────
+  plain: {
+    key: 'plain',
+    label: 'Plain',
+    tag: 'Plain',
+    selectLabel: 'Plain              Plain words, no theme.',
+    selectHint: 'Plain',
+    engaged: 'Plain words it is — ready when you are.',
+    operatorTerm: '',
+    worldNoun: 'Tess OS',
+    squadNoun: 'team',
+    lore: `Tess OS gives you an assistant and a small team of AI specialists that work
+inside one folder on this computer. A few questions, then it sets itself up.`,
+    namePrompt: 'What is your name? (type it and press Enter; there is no default)',
+    nameConfirm: (op) => `Hello, ${op}.`,
+    conductorPrompt: 'What should your assistant be called? (press Enter to keep "Tess")',
+    conductorConfirm: (c) => `Your assistant is called ${c}.`,
+    pathPrompt: 'What will you use it for first?',
+    pathwayPrompt: (c) => `How should ${c} talk to you?`,
+    bakeTitle: 'Setting up Tess OS.',
+    recapVerb: 'Set it up now?',
+    outroRule: 'Ask your assistant any time to add expertise.',
+    bakeGlyph: '',
+    bakeSteps: {
+      roster: 'Adding your AI team',
+      setOperator: (x) => `Saving your name — ${x.operator}`,
+      rename: (x) => `Naming your assistant — ${x.conductor}`,
+      pathway: (x) => `Setting how ${x.conductor} talks to you`,
+      render: "Writing your assistant's instructions",
+    },
+  },
+
   // ── 2.1 RPG / Guild ──────────────────────────────────────────────────────
   rpg: {
     key: 'rpg',
@@ -22,15 +58,15 @@ export const VIBES = {
     selectLabel: 'The Guild Path     Build your squad. Grow your army.',
     selectHint: 'RPG',
     engaged: `The Guild Path — engaged.   Squads. Missions. Recruits. Your army starts small.`,
-    operatorTerm: 'Commander',
+    operatorTerm: '',
     worldNoun: 'Guild',
     squadNoun: 'squad',
     lore: `A different kind of intelligence has been running here. Not a single AI — a
 coordinated crew of specialists: strategists, engineers, researchers, operators,
-builders. Each one deployable on command. This is Tess OS. Welcome, Commander.`,
+builders. Each one ready when you need them. This is Tess OS. Welcome.`,
     namePrompt: "You'll need a name in these lands. What do they call you?",
     nameConfirm: (op) =>
-      `Commander ${op} — set. Every agent in this system answers to you.`,
+      `${op} — set. Every agent in this system answers to you.`,
     conductorPrompt: `Your conductor. This platform is Tess OS; the conductor is the command-layer
 intelligence you're about to name — the one who routes your missions and briefs
 your squad. Its default name is Tess, but this is your system.
@@ -38,17 +74,17 @@ What will you call your conductor?  (Enter to keep Tess)`,
     conductorConfirm: (c) =>
       `${c} — that's the name. Your conductor routes every mission and brings every thread back to you.`,
     pathPrompt:
-      'Your starter squad. ~150 agents stand by; you start with a few who are excellent.',
+      'Your starter squad: a crew of 9 specialists plus your assistant.',
     pathwayPrompt: (c) => `How should ${c} show up in the room?`,
     bakeTitle: 'Assembling your intelligence system.',
     recapVerb: 'Open the gates?',
-    outroRule: 'Your army grows from here.',
+    outroRule: 'Your crew grows with you.',
     // L1 — per-vibe bake-climax copy, keyed to the 5 real keystone operations.
     // The climax should read as a guild ritual, not an installer log.
     bakeGlyph: '✦',
     bakeSteps: {
       roster: 'Mustering your squad',
-      setOperator: (x) => `Marking you as ${x.operatorTerm} ${x.operator}`,
+      setOperator: (x) => `Saving your name — ${x.operator}`,
       rename: (x) => `Naming your conductor — ${x.conductor}`,
       pathway: (x) => `Attuning ${x.conductor} to your command`,
       render: 'Forging the doctrine',
@@ -63,13 +99,13 @@ What will you call your conductor?  (Enter to keep Tess)`,
     selectLabel: 'The Tactical Path  Assemble your unit. Run operations.',
     selectHint: 'Command',
     engaged: `TACTICAL PATH ENGAGED.`,
-    operatorTerm: 'Commander',
+    operatorTerm: '',
     worldNoun: 'Command',
     squadNoun: 'unit',
     lore: `INITIALISING... You are about to build a unit of specialist AI agents. A single
 command intelligence. A chain of dispatch. Nothing acts without orders. You give them.`,
-    namePrompt: 'Commander designation required. What name do you operate under?',
-    nameConfirm: (op) => `DESIGNATION SET: Commander ${op}. Every agent answers to you.`,
+    namePrompt: 'What name should your team use for you?',
+    nameConfirm: (op) => `NAME SET: ${op}. Every agent answers to you.`,
     conductorPrompt: `Designate your command intelligence. This platform is Tess OS; this is the command
 AI that runs your unit. Name it. Examples: Apex / Meridian / Zero / Sigma.
 (Enter to keep Tess)`,
@@ -84,16 +120,16 @@ AI that runs your unit. Name it. Examples: Apex / Meridian / Zero / Sigma.
     bakeGlyph: '◼',
     bakeSteps: {
       roster: 'Installing squad agents',
-      setOperator: (x) => `Writing commander profile — ${x.operator}`,
+      setOperator: (x) => `Saving your profile — ${x.operator}`,
       rename: (x) => `Designating command intelligence as ${x.conductor}`,
       pathway: (x) => `Setting register to ${x.pathwayLabel}`,
-      render: 'Rendering CLAUDE.md from operator stubs',
+      render: 'Writing your assistant\'s instructions',
     },
     // 2.2 structural signature — the only branch in any journey.
     doctrineGate: {
       title: 'COMMAND & SQUAD — PROTOCOL DOCTRINE',
       body: `Chain of authority:
-  Commander → Command AI → Orchestrators → Agents
+  You → your assistant → your crew of 9 specialists
 Every task is dispatched. Every dispatch has a brief.
 Starter squad active today. Recruit as missions expand.`,
       confirm: 'Doctrine received. Proceed to unit composition?',
@@ -113,7 +149,7 @@ Starter squad active today. Recruit as missions expand.`,
     worldNoun: 'The Studio',
     squadNoun: 'founding team',
     lore: `Most people open a terminal and get a tool. You're about to open a studio.
-Behind this prompt is a full house — around a hundred and fifty of them.
+Behind this prompt is a crew of 9 specialists plus your assistant.
 None of them work for a platform. They're about to work for you. Let's hire your team.`,
     namePrompt: 'Before we open the doors — what should the studio call you?',
     nameHint: "First name's plenty. This is how your team will address you.",
@@ -126,11 +162,11 @@ is Tess OS; this is your managing partner. What's their name?  (Enter to keep Te
     conductorConfirm: (c) => `${c}. Done — ${c} runs the floor now.`,
     pathPrompt: 'Every studio starts with one practice. What are you here to build first?',
     pathHint:
-      "You're choosing who walks in first — not who you're allowed to hire. The other ~145 are on the bench.",
+      "Every studio gets the same crew of 9 specialists plus your assistant; this only changes what they suggest first.",
     pathwayPrompt: (c) => `Same person, five ways to work. How should ${c} run with you?`,
     bakeTitle: 'Opening the studio.',
     recapVerb: 'Open the doors?',
-    outroRule: 'The rest of the house is on the bench. Bring them on as you grow.',
+    outroRule: 'Add expertise any time by asking your assistant.',
     // L1 — the agency bake reads like onboarding a firm (transcript C lexicon).
     bakeGlyph: '◐',
     bakeSteps: {

@@ -6,6 +6,8 @@ import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { parseArgs, isNonInteractive, HELP, DEFAULTS } from './args.js';
+import { CREATE_TESS_VERSION } from './version.js';
+import { installReleaseProof } from './release-proof.js';
 import {
   ensurePython3,
   clobberReason,
@@ -17,10 +19,13 @@ import {
   resolveTemplateRef,
 } from './scaffold.js';
 import { loadRoster, installSetForPath } from './roster.js';
-import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keystone.js';
+import { TEMPLATE_SOURCE_HINT } from './git-template-source.js';
+import { writeProfile, bake, check, activateGate, regenPolicyLock, recordAnchor } from './keystone.js';
 import { runJourney } from './journey.js';
 import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
 import { resolveTarget } from './target.js';
+import { gitPreflight } from './git-check.js';
+import { resolveBrainFlags, runOnboarding, printFinalScreen } from './brain.js';
 import { VIBES } from './content/vibes.js';
 import {
   validateName,
@@ -29,13 +34,14 @@ import {
   validatePath,
   validatePathway,
 } from './validate.js';
-import { c, plain, dim, accent } from './ui.js';
+import { c, plain, dim } from './ui.js';
 import {
   printBakeHeader,
-  okLine,
   makeBakeProgress,
+  printChecks,
   printGateStatus,
   printArrival,
+  PRODUCTION_NOTE,
 } from './output.js';
 
 function die(msg, code = 1) {
@@ -86,14 +92,9 @@ function resolveFromFlags(opts, roster) {
   const chk = checkConductorName(cond.value, op.value, set.installedNameSet);
   if (chk.block) die(chk.reason);
 
-  return {
-    vibe,
-    operator: op.value,
-    conductor: cond.value,
-    path,
-    pathway,
-    set,
-  };
+  const brainFlags = resolveBrainFlags(opts);
+  if (brainFlags.error) die(brainFlags.error);
+  return { vibe, operator: op.value, conductor: cond.value, path, pathway, set, ...brainFlags };
 }
 
 // The REAL directory: a symlinked --target is followed once, here, so every
@@ -114,8 +115,8 @@ function targetOrDie(raw) {
 
 export async function main(argv) {
   const opts = parseArgs(argv);
-  if (opts.help) {
-    process.stdout.write(HELP + '\n');
+  if (opts.help || opts.version) {
+    process.stdout.write((opts.help ? HELP : `create-tess ${CREATE_TESS_VERSION}`) + '\n');
     return;
   }
 
@@ -149,15 +150,22 @@ export async function main(argv) {
   // branch tip). A no-op for the bundled-default local source.
   const templateRef = resolveTemplateRef(source, opts.templateRef);
 
-  // Bootstrap gates (design doc §5.1).
-  ensurePython3();
+  // Bootstrap gates (design doc §5.1); plain-English Python message (python.js).
+  try { ensurePython3(); } catch (err) { die(err.message); }
+  const gitProblem = gitPreflight(opts, usingBundledDefault);
+  if (gitProblem) die(gitProblem);
   // Reid LOW: refuse any template source that is not an allowed transport form
   // up front (blocks `ext::`/`file://` coercion and flag-shaped argument injection
   // into `git clone`); see isSafeTemplateSource for the allowlist.
   if (!isSafeTemplateSource(source)) {
+    die(`--template-source "${source}" is not an allowed source. ${TEMPLATE_SOURCE_HINT}`);
+  }
+  // v1.0 audit: a local template folder is run as trusted code, so it must be
+  // chosen on the command line, not picked up from the environment.
+  if (!usingBundledDefault && isLocalSource(source) && opts.templateSourceFrom !== 'flag') {
     die(
-      `--template-source "${source}" is not an allowed source. Use an https://, ` +
-        `git://, or ssh:// URL, an scp-form git@host:path, or an existing local directory.`,
+      `TESS_TEMPLATE_SOURCE names a local folder (${source}). A local template is run ` +
+        `as trusted code, so name it on the command line instead: --template-source ${source}`,
     );
   }
   const refusal = clobberReason(targetDir, opts.force);
@@ -181,6 +189,7 @@ export async function main(argv) {
   let vibe;
   let checks;
   let gate;
+  let brain;
   const refuse = (refusal) => {
     rmSync(staging, { recursive: true, force: true });
     process.stdout.write(refusal.stdout);
@@ -189,7 +198,7 @@ export async function main(argv) {
   try {
     const refSuffix = templateRef ? ` @ ${templateRef}` : '';
     const fetchLabel = usingBundledDefault
-      ? 'Fetching keystone (bundled template — no network required) …'
+      ? 'Preparing Tess OS (no internet needed) …'
       : `Fetching keystone (${isLocalSource(source) ? 'local template' : 'git'}: ${source}${refSuffix}) …`;
     process.stdout.write((plain ? '' : '  ') + dim(fetchLabel) + '\n');
     fetchTemplate(source, staging, templateRef);
@@ -204,7 +213,11 @@ export async function main(argv) {
     if (isNonInteractive(opts)) {
       choices = resolveFromFlags(opts, roster);
     } else {
-      choices = await runJourney(roster);
+      if (opts.vibe !== undefined) {
+        const r = validateVibe(opts.vibe);
+        if (!r.ok) die(r.error);
+      }
+      choices = await runJourney(roster, { vibe: opts.vibe });
     }
     vibe = VIBES[choices.vibe];
 
@@ -243,6 +256,9 @@ export async function main(argv) {
       if (policyReset.changed) regenPolicyLock(targetDir);
       printBakeHeader(vibe);
       bake(targetDir, choices, makeBakeProgress(vibe));
+      // The signed release's proof, so the first push needs no verdict
+      // (release-proof.js). Only the bundled template matches it.
+      installReleaseProof(targetDir, { bundled: usingBundledDefault });
       // PREFERRED (HIGH-1): write operator/profile.json only AFTER a successful
       // bake. A failed run then leaves NO profile.json — the key clobberReason()
       // gates on — so the directory stays re-runnable.
@@ -266,28 +282,35 @@ export async function main(argv) {
       skipHooks: Boolean(opts.noGateHooks),
     });
 
+    // Second brain: init + apply, committed through the gate just installed.
+    brain = opts.noOnboarding
+      ? { status: 'skipped', commit: null, detail: '--no-onboarding' }
+      : runOnboarding(targetDir, choices, makeBakeProgress(vibe));
+
     // Integrity checks (unless skipped). check() never throws — it returns
     // booleans — so it stays outside the rollback gate.
     checks = check(targetDir, { doctor: !opts.noDoctor, verify: !opts.noVerify });
+    // v1.0.0: record the approved safety files OUTSIDE the project (the
+    // enforcement anchor, SECURITY.md), only once the install is proven to
+    // be the release (verify passed). Best-effort: a failure is reported.
+    checks.anchor = checks.verify === true ? recordAnchor(targetDir) : null;
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
 
-  if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
-  if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
+  printChecks(checks);
   printGateStatus(gate, targetDir);
   if (runState) process.stdout.write(backupNotice(runState.backup, checks));
-  process.stdout.write(
-    '  ' + (plain ? '*' : accent('★')) +
-      '  Local scaffold complete; production protection requires external custody and required GitHub checks.\n',
-  );
 
   // Arrival — the conductor speaks the operator's name back (design doc §3.6).
-  printArrival(vibe, choices, checks);
+  printArrival(vibe, choices);
+  printFinalScreen(targetDir, { mode: choices.mode, brain, checks, conductor: choices.conductor,
+    crew: choices.set.agentKeys.length,
+    productionNote: PRODUCTION_NOTE });
 
   // Non-zero exit if a requested integrity check failed (CI signal).
   if (checks.doctor === false || checks.verify === false) {
     process.exitCode = 2;
-  }
-  return { targetDir, choices: { ...choices, set: undefined }, checks, gate };
+  } else if (brain.status === 'failed') process.exitCode = 3;
+  return { targetDir, choices: { ...choices, set: undefined }, checks, gate, brain };
 }

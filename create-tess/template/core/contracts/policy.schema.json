@@ -131,6 +131,11 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "description": "Path globs that heuristically indicate this hard-floor category for THIS project. May be an EMPTY array for a category that is not path-detectable at all (e.g. 'client_external_claims' is a communication-content class, not a file-path class) — an explicit, documented non-coverage rather than a silent omission. See core/policy/policy.yaml."
+        },
+        "exclude_globs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "v1.0.0 — OPTIONAL narrow carve-out: a changed path that matches `globs` but ALSO matches one of these is NOT a hard-floor match for this rule. Exists for public, committed TEMPLATES of secret files (e.g. `.env.example`: placeholder names only, no values), which otherwise need an operator sign-off for every edit. Keep these patterns as narrow as the template naming allows. Removing a path from a floor never takes effect for the push that introduces the exclusion: `tessctl gate` still unions in the BASELINE policy's hard-floor matches."
         }
       },
       "required": ["id", "category", "description", "globs"],

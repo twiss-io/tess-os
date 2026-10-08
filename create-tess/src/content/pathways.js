@@ -25,6 +25,7 @@ export const PATHWAY_SET_LINE = {
 };
 
 function header(conductor, vibeKey, pathway) {
+  if (vibeKey === 'plain') return `${conductor}, your assistant, is ready.`;
   if (vibeKey === 'command') return `${conductor.toUpperCase()} // ACTIVE`;
   if (vibeKey === 'studio') return `${conductor} · ${pathwayLabel(pathway)}`;
   return `${conductor} — intelligence conductor — online.`;
@@ -36,9 +37,13 @@ function orchLine(orchNames) {
   return `${verb}: ${orchNames.join(' · ')}.`;
 }
 
-// ctx = { operator, conductor, vibeKey, term, squadNoun, squadNames[], orchNames[] }
+// ctx = { operator, conductor, vibeKey, squadNoun, squadNames[], orchNames[] }
 export function buildArrival(pathway, ctx) {
-  const { operator, conductor, vibeKey, term, squadNoun, squadNames, orchNames } = ctx;
+  const { operator, conductor, vibeKey, squadNoun, squadNames, orchNames } = ctx;
+  if (vibeKey === 'plain') {
+    return `${header(conductor, vibeKey, pathway)}\nHi ${operator}. Your team of ${squadNames.length} ` +
+      'specialists is set up and waiting for your first request.';
+  }
   const squad = squadNames.join(' · ');
   const head = header(conductor, vibeKey, pathway);
   const orch = orchLine(orchNames);
@@ -46,11 +51,10 @@ export function buildArrival(pathway, ctx) {
   const beats = {
     'chief-of-staff': () =>
 `${head}
-${term} ${operator}. Your ${squadNoun} is assembled and standing by:
+${operator}. Your ${squadNoun} is assembled and standing by:
   ${squad}
 ${orch}
-Briefed and ready. What's the first mission?
-▶  /add-mission [brief your first mission here]`,
+Briefed and ready for your first mission.`,
 
     'co-founder': () =>
 `${head}
@@ -59,40 +63,38 @@ Here's who's in the room with us: ${squad}.
 ${orch}
 Hand me anything — a mess or half a thought. I'll frame it, pull the right people,
 and bring you back something worth your time. And if I think we're aiming at the
-wrong thing, I'll say so before we burn a day on it. What's the first move?
-▶  /add-mission [brief]`,
+wrong thing, I'll say so before we burn a day on it. What's the first move?`,
 
     strategist: () =>
 `${head}
-${term} ${operator}. Before we move — what outcome are we optimising for?
+${operator}. Before we move — what outcome are we optimising for?
 Your ${squadNoun}: ${squad}.
 ${orch}
-Name the outcome and the constraint, and I'll sequence the crew against it.
-▶  /add-mission [brief]`,
+Name the outcome and the constraint, and I'll sequence the crew against it.`,
 
     guide: () =>
 `${head}
-${term} ${operator}. The ${squadNoun} is assembled:
+${operator}. The ${squadNoun} is assembled:
   ${squad}
 ${orch}
 Before the first mission — two questions worth sitting with: what would success
 look like, and what would failure look like? Name both, even roughly. That frame
 decides who I pull, in what order, and what I refuse to let ship. Leah moves first
-here — I'll tell you why when she does.
-▶  /add-mission [brief your first mission here]`,
+here — I'll tell you why when she does.`,
 
     operator: () =>
 `${head}
 ${operator}. ${squadNoun[0].toUpperCase() + squadNoun.slice(1)} live. Board clear.
 ACTIVE:  ${squad}
 ORCH:    ${orchNames.join(' · ') || 'none'}
-STATUS:  0 missions. Awaiting first.
-▶ /add-mission [brief]`,
+STATUS:  0 missions. Awaiting first.`,
   };
 
-  return (beats[pathway] || beats['chief-of-staff'])();
+  // An empty orchestrator line must not leave a blank gap in the greeting.
+  return (beats[pathway] || beats['chief-of-staff'])().replace(/\n{2,}/g, '\n');
 }
 
-// Shown once after the first mission — the progression hook (design doc §6.3).
-export const RECRUIT_TIP =
-  'Tip: your ten roles are all installed; add expertise with lenses.  /list-agents · /add-agent (adds a lens).';
+// Shown once under the arrival — the crew size, counted from the installed roster.
+export function crewTip(specialists) {
+  return `Tip: you have a crew of ${specialists} specialists plus your assistant. Ask your assistant any time to add expertise.`;
+}

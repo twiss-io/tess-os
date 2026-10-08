@@ -91,6 +91,19 @@ There is no self-service bootstrap path documented here. A future custody
 runbook may describe the approved ceremony after the external trust-root design
 and required GitHub enforcement are in place.
 
+## The operator's own change, on their own computer
+
+Separately from verifier keys, the operator of an install can approve their
+own deliberate change for a push from their own computer: `./tessctl gate
+approve`, run in their own terminal (never inside Claude Code or Codex, which
+Tess refuses), shows every protected file the unsent commits change and records
+an approval of exactly that content, signed with the per-machine operator key
+(`~/.config/tess/operator/key`). The local pre-push gate accepts that exact
+content and nothing else; hard-floor files are never cleared this way. It is
+not a verifier signature and creates no trust anchor in the repository: a
+`tessctl gate ci` run on another machine cannot verify it and still blocks.
+Plain-language steps: [When Tess stops a push](WHEN_TESS_STOPS_A_PUSH.md).
+
 ## Current status
 
 - A fresh `npm create tess` scaffold ships empty `verifier_keys` and

@@ -50,7 +50,7 @@ def _git(root, *args, check=True, input_text=None):
 
 
 def _init_repo(root):
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")
@@ -122,9 +122,9 @@ def test_splice_above_vault_guard_both_layers_present(engine, tmp_path):
     for hook_name in ("pre-commit", "pre-push"):
         text = (tmp_path / ".git" / "hooks" / hook_name).read_text()
         assert "# tess-gate-guard v1" in text
-        assert "# tess-vault-guard v2" in text
+        assert "# tess-vault-guard v4" in text
         # Gate installed SECOND, so it sits above (runs first).
-        assert text.index("# tess-gate-guard v1") < text.index("# tess-vault-guard v2")
+        assert text.index("# tess-gate-guard v1") < text.index("# tess-vault-guard v4")
         assert subprocess.run(["bash", "-n", str(tmp_path / ".git" / "hooks" / hook_name)]).returncode == 0
 
 
@@ -137,7 +137,7 @@ def test_install_ci_workflow_writes_template(engine, tmp_path):
     wf = tmp_path / ".github" / "workflows" / "tess-gate.yml"
     assert wf.exists()
     text = wf.read_text()
-    assert "# tess-gate-ci v3" in text
+    assert engine._GATE_CI_WORKFLOW_MARKER in text
     assert "workflow_dispatch" in text
     assert "tessctl gate ci" in text
     import yaml
@@ -195,7 +195,7 @@ def test_install_ci_workflow_upgrades_v1_to_current(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert engine._GATE_CI_WORKFLOW_MARKER in upgraded
     assert "# tess-gate-ci v1" not in upgraded
     assert "push:" in upgraded
     assert "pull_request:" in upgraded
@@ -230,7 +230,7 @@ def test_install_ci_workflow_upgrades_v2_to_v3(engine, tmp_path):
     engine._gate_install_ci_workflow(tmp_path)
 
     upgraded = (wf_dir / "tess-gate.yml").read_text()
-    assert "# tess-gate-ci v3" in upgraded
+    assert engine._GATE_CI_WORKFLOW_MARKER in upgraded
     assert "# tess-gate-ci v2" not in upgraded
     assert "steps.trusted_engine.outputs.engine_path" in upgraded
 
@@ -331,7 +331,7 @@ def test_e2e_pre_commit_hook_fires_and_allows_valid_brief(e2e_repo):
 
 def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_path):
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     push0 = _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False)
     assert push0.returncode == 0, f"baseline push should succeed:\n{push0.stdout}\n{push0.stderr}"
@@ -348,7 +348,7 @@ def test_e2e_pre_push_hook_fires_and_blocks_uncovered_prod_change(e2e_repo, tmp_
 
 def test_e2e_pre_push_hook_fires_and_allows_covered_prod_change(e2e_repo, tmp_path, engine, verifier_gpg_keys):
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     # Seed the same remote ref this test updates below.  Pushing the default
     # local branch name here and then `HEAD:main` later would make the latter
@@ -390,7 +390,7 @@ def test_e2e_git_push_no_verify_bypasses_local_hook_but_ci_would_still_catch_it(
     range independently still blocks — i.e. the backstop is real, not just
     asserted in a comment."""
     bare = tmp_path / "origin.git"
-    _git(e2e_repo, "init", "--bare", "-q", str(bare))
+    _git(e2e_repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(e2e_repo, "remote", "add", "origin", str(bare))
     base = _git(e2e_repo, "rev-parse", "HEAD").stdout.strip()
     assert _git(e2e_repo, "push", "-u", "origin", "HEAD", check=False).returncode == 0

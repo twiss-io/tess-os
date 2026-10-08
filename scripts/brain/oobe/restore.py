@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -17,11 +18,19 @@ from . import state
 
 
 def has_pyyaml() -> bool:
+    # -I -B: isolated, so a `yaml.py` (or .pth/sitecustomize) in the instance
+    # cwd can neither answer this probe nor run code; no .pyc is written.
     try:
-        done = subprocess.run(["python3", "-c", "import yaml"], capture_output=True, timeout=20)
+        done = subprocess.run([sys.executable, "-I", "-B", "-c", "import yaml"],
+                              capture_output=True, timeout=20)
         return done.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def has_vendored_yaml(root: Path) -> bool:
+    """tessctl falls back to .tess/vendor/yaml (v0.2.1), so it renders without a system PyYAML."""
+    return (root / ".tess" / "vendor" / "yaml" / "__init__.py").is_file()
 
 
 def _tessctl(root: Path, args: List[str]) -> subprocess.CompletedProcess:
@@ -42,7 +51,7 @@ def run(root: Path, dry: bool = False) -> Dict[str, str]:
         return {"result": "unchanged", "operator_name": op, "assistant_name": asst}
     if dry:
         return {"result": "would-restore", "operator_name": op, "assistant_name": asst}
-    if (root / "tessctl").exists() and has_pyyaml():
+    if (root / "tessctl").exists() and (has_vendored_yaml(root) or has_pyyaml()):
         for args in (["set-operator", op], ["rename", asst]):
             done = _tessctl(root, args)
             if done.returncode != 0:

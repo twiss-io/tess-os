@@ -29,6 +29,12 @@ from pathlib import Path
 
 import pytest
 
+# v1.0 (B4): `tessctl doctor` and `tessctl update` print a short summary by
+# default and the full per-file listing with --verbose. The suite predates the
+# short default and asserts on the full listing, so it runs verbose; the tests
+# of the short default (tests/test_v1_plain_output.py) clear this explicitly.
+os.environ.setdefault("TESS_VERBOSE", "1")
+
 # ---------------------------------------------------------------------------
 # Locate the engine + the real manifest (authoritative owned_globs/never_touch)
 # ---------------------------------------------------------------------------
@@ -416,7 +422,7 @@ def make_upstream(path: Path, gpg, tag, *, sign="signed",
             raise RuntimeError(f"git {' '.join(a)} failed: {r.stderr}")
         return r
 
-    git("init", "-q")
+    git("init", "-b", "main", "-q")
     git("config", "user.email", gpg.email)
     git("config", "user.name", "Tess Test Signer")
     git("config", "user.signingkey", gpg.fpr)
@@ -452,8 +458,11 @@ def make_upstream(path: Path, gpg, tag, *, sign="signed",
         }
         lp = path / ".tess" / "tess.lock"
         lp.parent.mkdir(parents=True, exist_ok=True)
-        # JSON is valid YAML — the engine reads tess.lock with yaml.safe_load.
-        lp.write_text(json.dumps(lock_obj, indent=2), encoding="utf-8")
+        # v1.0.0: the engine reads tess.lock in its strict block form (what
+        # save_lock writes); JSON / flow mappings are refused.
+        import yaml
+        lp.write_text(yaml.safe_dump(lock_obj, default_flow_style=False, sort_keys=False),
+                      encoding="utf-8")
 
     if unsafe_paths:
         git("-c", "core.protectHFS=false", "-c", "core.protectNTFS=false", "add", "-A")
@@ -509,3 +518,139 @@ def corrupt_tag_signature(repo_path: Path, tag: str) -> None:
         ["git", "-C", str(repo_path), "update-ref", f"refs/tags/{tag}", new_hash],
         check=True,
     )
+
+
+# --------------------------------------------------------------------------
+# Assistant-session markers (integration pass 3). tessctl's "a person must
+# type this" steps refuse when CLAUDECODE, CLAUDE_CODE_ENTRYPOINT,
+# CODEX_THREAD_ID, CODEX_SANDBOX or CODEX_SANDBOX_NETWORK_DISABLED is set.
+# The suite may run inside Claude Code or Codex, so it plays the operator's
+# own terminal: the markers are removed for the whole run and restored after.
+# A test that needs one sets it itself (tests/test_v1_audit_presence_markers.py).
+# --------------------------------------------------------------------------
+@pytest.fixture(autouse=True, scope="session")
+def _no_assistant_session_markers():
+    from _presence_pty import AGENT_SESSION_MARKERS
+    saved = {k: os.environ.pop(k) for k in AGENT_SESSION_MARKERS if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+# --------------------------------------------------------------------------
+# Brain provenance key (scripts/brain/brainlib/provenance.py): tests never
+# touch the real ~/.config/tess. One per-session key dir, outside every
+# instance, 0700; subprocesses inherit it through the environment.
+# --------------------------------------------------------------------------
+@pytest.fixture(autouse=True, scope="session")
+def _brain_key_dir(tmp_path_factory):
+    if os.environ.get("TESS_BRAIN_PROVENANCE_DIR"):
+        yield os.environ["TESS_BRAIN_PROVENANCE_DIR"]
+        return
+    d = tmp_path_factory.mktemp("tess-brain-key")
+    os.chmod(str(d), 0o700)
+    os.environ["TESS_BRAIN_PROVENANCE_DIR"] = str(d)
+    try:
+        yield str(d)
+    finally:
+        os.environ.pop("TESS_BRAIN_PROVENANCE_DIR", None)
+
+
+# ---------------------------------------------------------------------------
+# One fake OS home for the WHOLE suite (v1.0.0 audit). tessctl, the brain and
+# the hook launcher find ~/.config/tess under pwd.getpwuid(os.getuid()).pw_dir
+# and ignore $HOME (security review round 3, N-2), and the hooks run
+# `python3 -I`, which ignores PYTHONPATH, so tests/fixtures/fake_os_home could
+# not reach them: tests that ran a real install, `tessctl update` or a hook
+# recorded anchors under the REAL ~/.config/tess/projects, and this file then
+# read and deleted there at session end. Now, before any test is collected:
+#
+#   * a throwaway virtualenv (system site-packages, so PyYAML and pytest are
+#     there) carries a .pth file that points pwd.getpwuid's home at a temp
+#     folder in every interpreter it starts, `-I` included (-I skips the user
+#     site, never the interpreter's own site-packages .pth files);
+#   * sys.executable and the front of PATH name that interpreter, so
+#     `sys.executable ...`, `python3 ...` in hook commands and git hooks all
+#     use it; and this process's own pwd.getpwuid is patched the same way.
+#
+# TESS_TEST_OS_HOME (fixtures/os_home.py's per-test homes) still wins; with it
+# unset (a test that scrubs the environment) the suite home applies. Nothing
+# under the real ~/.config/tess is read, written or deleted by this file, and
+# production code has no test switch.
+# ---------------------------------------------------------------------------
+
+_OS_HOME_PATCH = '''\
+"""Test-only (tests/conftest.py): the OS user record's home is a temp folder."""
+import os
+
+
+def _install():
+    try:
+        import pwd
+    except ImportError:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(here, "tess_test_os_home.txt"), encoding="utf-8") as fh:
+            suite_home = fh.read().strip()
+    except OSError:
+        suite_home = ""
+    real = pwd.getpwuid
+
+    def fake(uid):
+        rec = real(uid)
+        home = os.environ.get("TESS_TEST_OS_HOME") or suite_home or rec.pw_dir
+        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid,
+                                  rec.pw_gecos, home, rec.pw_shell))
+
+    pwd.getpwuid = fake
+
+
+_install()
+'''
+
+
+def _suite_os_home() -> None:
+    import atexit
+    import pwd
+    import tempfile
+
+    if os.environ.get("TESS_TEST_SUITE_VENV") and \
+            os.path.realpath(sys.executable).startswith(os.path.realpath(os.environ["TESS_TEST_SUITE_VENV"])):
+        return  # a pytest run started by a test of this suite: already inside the fake home
+    home = tempfile.mkdtemp(prefix="tess-os-home-")
+    venv = tempfile.mkdtemp(prefix="tess-py-")
+    os.chmod(home, 0o700)
+    subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", "--without-pip", venv],
+                   check=True, capture_output=True)
+    bindir = os.path.join(venv, "Scripts" if os.name == "nt" else "bin")
+    py = os.path.join(bindir, "python3" if os.name != "nt" else "python.exe")
+    purelib = subprocess.run([py, "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+    with open(os.path.join(purelib, "tess_test_os_home.py"), "w", encoding="utf-8") as fh:
+        fh.write(_OS_HOME_PATCH)
+    with open(os.path.join(purelib, "tess_test_os_home.txt"), "w", encoding="utf-8") as fh:
+        fh.write(home + "\n")
+    with open(os.path.join(purelib, "tess_test_os_home.pth"), "w", encoding="utf-8") as fh:
+        fh.write("import tess_test_os_home\n")
+    os.environ["TESS_TEST_SUITE_VENV"] = venv
+    os.environ.setdefault("TESS_TEST_OS_HOME", home)
+    os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+    sys.executable = py
+    real = pwd.getpwuid
+
+    def fake(uid):
+        rec = real(uid)
+        return pwd.struct_passwd((rec.pw_name, rec.pw_passwd, rec.pw_uid, rec.pw_gid, rec.pw_gecos,
+                                  os.environ.get("TESS_TEST_OS_HOME") or home, rec.pw_shell))
+    pwd.getpwuid = fake
+    atexit.register(shutil.rmtree, venv, True)
+    atexit.register(shutil.rmtree, home, True)
+
+
+_suite_os_home()
+
+# v1.0.0 audit: a Claude Code hook treats a session whose entrypoint is sdk-* (claude -p, the Agent SDK) as
+# automation. A suite started from such a session must not pass that on to the hooks its tests run.
+os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
