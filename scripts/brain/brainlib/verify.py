@@ -240,7 +240,7 @@ def _settle(cfg: Config, cand: Dict, line: lookup.JLine, res: Result) -> None:
         res.reasons.append(doubt)
     elif confirmed_ref:
         cand["confirmed_ref"] = confirmed_ref
-    elif strict and not cfg.auto_accept:
+    elif not cfg.auto_accept:  # v1.0 allow-list fix: an agent-run `decide` (pre-approved) included
         res.status = "review"
         res.reasons.append("V12: learn.auto_accept is off; the operator confirms every decision in review")
     elif strict and not settle.settled(cfg, last_at):

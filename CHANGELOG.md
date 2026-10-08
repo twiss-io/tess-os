@@ -24,6 +24,7 @@ Integrates the five v0.2.1 fix PRs (#203 integrity, #202 safety, #204 install, #
 **Operator decisions are no longer pre-approved** (`tests/test_v1_allowlist_operator_decisions.py`)
   - Claude Code's allow list no longer pre-approves `tessbrain.py confirm` and `reject` (added in e2e round 2) or every `onboard.py` step: only `onboard.py status` stays. Confirming, rejecting, onboarding answers (principals, push remote), `add-mode`, `skip`, `apply` and `restore` now ask, so the host prompts as well as the command checking the operator's own words. Codex's rules prompt for the same commands (`confirm`, `reject`, `retract`, `promote`, `roots`, `githooks`, and `--json`/`--root` before the subcommand).
   - Inside the command, the point of change re-reads the operator's words from their source and refuses anything that is not an attested runtime transcript line or a captured turn, even if the lookup were fooled.
+  - `learn.auto_accept: "off"` now holds every decision for review, including one an agent records with the pre-approved `decide`; before, an agent-run `decide` was accepted at once.
   - A permanent test checks every allow-list entry in every tracked copy against a reviewed list of no-prompt-safe commands, and classifies every `tessbrain.py` and `onboard.py` subcommand, so a new or decision subcommand cannot reach an allow list unreviewed.
 
 **Security audit (Cloudflare method) fixes**
