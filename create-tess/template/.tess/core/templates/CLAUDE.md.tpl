@@ -62,6 +62,30 @@ Playbooks: [conductor/playbooks/](conductor/playbooks/README.md)
 
 ---
 
+## Public Preview Handoffs
+
+Dispatch preview execution using the shipped
+`python3 scripts/preview/tesspreview.py` launcher (macOS/Linux/Windows WSL;
+Python 3.9+). Installation never starts a listener. Explain LAN exposure and
+select only approved files in an isolated public build directory using repeated
+`--file`; never serve a workspace, private KB/brain, credentials or control
+state. Use `/dev/<project-slug>`, default `0.0.0.0` binding, the detected current
+LAN IPv4 address and an available port without stopping existing listeners.
+Use `--localhost-only` when LAN sharing is not wanted. Configure assets for
+base `/dev/<project-slug>/`; `--spa` supports approved SPA deep-link refreshes.
+
+Before handoff the specialist runs `verify <slug>` for both available addresses,
+all selected assets, deep links and private-path denials. Return clickable
+**This computer** and **Other computers on the same LAN** links, PID, private log
+and restart/stop commands. No usable LAN address means localhost plus an explicit
+limitation. Host-side checks never prove a second physical device was tested.
+Keep the host awake and LAN-connected; HTTP only, no public tunnels, router
+forwarding or firewall weakening. Snapshots remain fixed until explicit restart;
+re-verify after rebuild/restart. Full contract:
+[docs/LAN_PREVIEWS.md](docs/LAN_PREVIEWS.md).
+
+---
+
 ## Further Reading
 
 | Document | Purpose |

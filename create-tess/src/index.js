@@ -276,6 +276,11 @@ export async function main(argv) {
   if (checks.doctor !== null) okLine(`tessctl doctor — ${checks.doctor ? 'OK' : 'ISSUES'}`);
   if (checks.verify !== null) okLine(`tessctl verify — ${checks.verify ? 'OK' : 'ISSUES'}`);
   printGateStatus(gate, targetDir);
+  process.stdout.write(
+    '  Public preview launcher installed (not started): python3 scripts/preview/tesspreview.py --help\n' +
+    '  Start exposes only explicitly selected public files to LAN peers; --localhost-only disables LAN sharing.\n' +
+    '  Read docs/LAN_PREVIEWS.md before starting a preview.\n',
+  );
   if (runState) process.stdout.write(backupNotice(runState.backup, checks));
   process.stdout.write(
     '  ' + (plain ? '*' : accent('★')) +

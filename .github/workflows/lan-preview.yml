@@ -1,0 +1,63 @@
+name: Portable LAN preview
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/preview/**'
+      - 'tests/test_lan_preview*.py'
+      - 'create-tess/**'
+      - '.tess/core/templates/**'
+      - '.tess/tess.lock'
+      - '.github/workflows/lan-preview.yml'
+  push:
+    branches: ['main', 'codex/portable-lan-preview-*']
+    paths:
+      - 'scripts/preview/**'
+      - 'tests/test_lan_preview*.py'
+      - 'create-tess/**'
+      - '.tess/core/templates/**'
+      - '.tess/tess.lock'
+      - '.github/workflows/lan-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lan-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Intel explicitly: Python 3.9 is not assumed available on ARM macOS.
+        os: [ubuntu-24.04, macos-15-intel]
+        python: ['3.9', '3.13']
+    steps:
+      - name: Checkout reviewed candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Set up Node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+      - name: Install only selected test dependencies
+        run: python -m pip install pytest==8.4.2 PyYAML==6.0.3
+      - name: Selected preview and render tests (no signing fixtures)
+        run: python -m pytest tests/test_lan_preview.py tests/test_lan_preview_readiness.py tests/test_render.py -vv -o faulthandler_timeout=30
+      - name: Actual packed installer and bundle parity
+        run: node --test create-tess/test/lan-preview-install.test.js create-tess/test/template-drift-guard.test.js
+
+      # No publishing, privileged processes, signing suites, vault tests,
+      # credentials, verdict generation or firewall/router changes here.

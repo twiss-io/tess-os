@@ -145,6 +145,7 @@ export const EXCLUDE_DIR_PREFIXES = [
 // real scaffold (writeProfile() always wins) and closes the gap for good.
 export const EXCLUDE_REL_PATHS = new Set([
   '.github/workflows/ci.yml',
+  '.github/workflows/lan-preview.yml', // source-repo platform test CI, not adopter CI
   '.github/workflows/release.yml',
   '.github/workflows/publish-npm.yml',
   'operator/profile.json',
