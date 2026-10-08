@@ -107,7 +107,8 @@ full list is the wrong tool for a commit gate. `owned_globs` still wins
 doc-template stubs `.gitignore` re-includes.
 
 `--publish-clean` (default) checks **staged** changes
-(`git diff --cached --diff-filter=ACMR`) — this is what the pre-commit hook
+(`git diff --cached --no-renames --diff-filter=ACMRTUXB` — every status except
+deletion, so a type change to a symlink is checked too) — this is what the pre-commit hook
 actually needs: block a commit that *introduces or modifies* a private path,
 without re-flagging a pre-existing grandfathered tracked file on every
 future unrelated commit forever. `--publish-clean-all` checks the full
