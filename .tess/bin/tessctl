@@ -5585,6 +5585,15 @@ _PUBLISH_CLEAN_PRIVATE_GLOBS = [
     "**/*.age",
     ".claude/vault/**",
     "clients/*/.vault/**",
+    # v0.2.1 (2026-09-29 security review): the brain's local-only folders
+    # (brain/.private/, per-area .private/ dirs — journal, health, money
+    # details). The brain carries its own self-ignoring .gitignore there; this
+    # is the commit-side backstop if that ignore file is removed. Brain CLIENT
+    # data (brain/clients/**) is deliberately committed to the operator's
+    # private repo, so it is gated at PUSH time instead — see
+    # `tessctl doctor --publish-remote` below: it may only go to a private remote.
+    "brain/**/.private/**",
+    "**/.private/**",
 ]
 
 # Paths that would otherwise match a glob above but are deliberately shipped,
@@ -5730,6 +5739,198 @@ def _cmd_doctor_publish_clean(root: Path, scope: str = "staged") -> None:
     sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# `tessctl doctor --publish-remote REMOTE URL` — DATA-LEAK-SAFETY (v0.2.1,
+# 2026-09-29 security review, HIGH "agency client data outside the leak
+# gate"). The pre-push twin of --publish-clean: agency mode keeps real client
+# data at `brain/clients/<slug>/` (scripts/brain/modes/agency.json), which the
+# brain is DESIGNED to commit (so --publish-clean cannot block it at commit
+# time), but it must only ever reach a PRIVATE remote. Nothing stopped a
+# `git push` of that data to a public GitHub repo. This check refuses a push
+# whose commits carry any `brain/` or `clients/` data (the shipped
+# `clients/_template/` scaffold and `.gitkeep` placeholders excepted) unless
+# the destination is known to be private:
+#   * a local path / file:// remote            -> allowed (never public);
+#   * a GitHub remote + `gh` available          -> `gh api repos/O/R` decides:
+#       private -> allowed, public -> REFUSED (an allowlist cannot override);
+#   * anything else (no gh, gh error, non-GitHub host, SSH host alias)
+#       -> REFUSED unless the operator allowlisted the remote locally:
+#          `git config --add tess.privateRemote <url-or-remote-name>`
+#          (repo-local .git/config — never committed, never shipped).
+# The hook reads git's pre-push stdin (<local ref> <local sha> <remote ref>
+# <remote sha> per line). A push that only deletes refs carries no data.
+# ---------------------------------------------------------------------------
+
+_PUBLISH_REMOTE_ZERO = re.compile(r"^0+$")
+_PUBLISH_REMOTE_GITHUB = re.compile(
+    r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)"
+    r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+
+
+def _publish_remote_is_data_path(rel: str) -> bool:
+    """True for a path that is operator/client data, not framework scaffold."""
+    if os.path.basename(rel) == ".gitkeep":
+        return False
+    if rel.startswith("clients/_template/"):
+        return False
+    return rel.startswith("brain/") or rel.startswith("clients/")
+
+
+def _publish_remote_data_paths(root: Path, stdin_text: str) -> list:
+    found: list = []
+    for line in stdin_text.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or _PUBLISH_REMOTE_ZERO.match(parts[1]):
+            continue  # malformed line, or a ref deletion (no data pushed)
+        r = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "--name-only", parts[1]],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"`git ls-tree {parts[1]}` failed: {r.stderr.strip()}")
+        found += [p for p in r.stdout.splitlines() if _publish_remote_is_data_path(p)]
+    return sorted(set(found))
+
+
+def _publish_remote_visibility(url: str) -> str:
+    """'local' | 'private' | 'public' | 'unknown: <why>'."""
+    if url.startswith("file://") or url.startswith("/") or url.startswith("./") or url.startswith("../"):
+        return "local"
+    m = _PUBLISH_REMOTE_GITHUB.match(url)
+    if not m:
+        return "unknown: not a github.com URL, so its visibility cannot be checked"
+    gh = shutil.which("gh")
+    if not gh:
+        return "unknown: the GitHub CLI (gh) is not installed, so visibility cannot be checked"
+    try:
+        r = subprocess.run([gh, "api", f"repos/{m.group(1)}/{m.group(2)}", "--jq", ".private"],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unknown: `gh api` failed ({type(exc).__name__})"
+    out = r.stdout.strip().lower()
+    if r.returncode == 0 and out == "true":
+        return "private"
+    if r.returncode == 0 and out == "false":
+        return "public"
+    return "unknown: `gh api` could not read the repository (not logged in, or no access)"
+
+
+def _publish_remote_allowlisted(root: Path, remote: str, url: str) -> bool:
+    r = subprocess.run(["git", "-C", str(root), "config", "--get-all", "tess.privateRemote"],
+                       capture_output=True, text=True)
+    allowed = {v.strip() for v in r.stdout.splitlines() if v.strip()}
+    return bool(allowed & {remote, url})
+
+
+def _cmd_doctor_publish_remote(root: Path, remote: str, url: str, stdin_text: str) -> None:
+    """Pre-push body. Exit 0 = push allowed, exit 1 = refused (fail closed)."""
+    try:
+        data = _publish_remote_data_paths(root, stdin_text)
+    except RuntimeError as e:
+        sys.exit(f"tess-remote-guard: REFUSED — could not inspect the push ({e}). "
+                 f"Nothing was pushed.")
+    if not data:
+        return
+    visibility = _publish_remote_visibility(url)
+    if visibility in ("local", "private"):
+        return
+    shown = "\n".join(f"    {p}" for p in data[:10]) + (
+        f"\n    ... and {len(data) - 10} more" if len(data) > 10 else "")
+    if visibility == "public":
+        sys.exit(
+            f"tess-remote-guard: REFUSED — this push would publish your brain/client data to a "
+            f"PUBLIC GitHub repository ({url}).\n  Data in this push:\n{shown}\n"
+            f"  brain/ and clients/ hold your own and your clients' information and may only go\n"
+            f"  to a private remote. Make the repository private on GitHub, or push to a\n"
+            f"  different, private remote. Nothing was pushed. See docs/DATA_LEAK_SAFETY.md."
+        )
+    if _publish_remote_allowlisted(root, remote, url):
+        return
+    sys.exit(
+        f"tess-remote-guard: REFUSED — this push carries brain/client data and Tess could not\n"
+        f"  confirm that {url} is private ({visibility.split(': ', 1)[-1]}).\n"
+        f"  Data in this push:\n{shown}\n"
+        f"  If you are SURE this remote is private, allow it once on this machine:\n"
+        f"    git config --add tess.privateRemote {url}\n"
+        f"  (or install and log in to the GitHub CLI, `gh auth login`, so Tess can check).\n"
+        f"  Nothing was pushed. See docs/DATA_LEAK_SAFETY.md."
+    )
+
+
+_REMOTE_HOOK_MARKER_V1 = "# tess-remote-guard v1"
+_REMOTE_HOOK_END_SENTINEL = "# tess-remote-guard end"
+
+_REMOTE_HOOK_BODY = r"""set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TESSCTL="$ROOT/.tess/bin/tessctl"
+if [ ! -f "$TESSCTL" ]; then
+  echo "tess-remote-guard: $TESSCTL not found — fail-closed, refusing the push." >&2
+  exit 1
+fi
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "tess-remote-guard: no python3/python on PATH — fail-closed, refusing the push." >&2
+  exit 1
+fi
+TESS_ROOT="$ROOT" "$PYTHON_BIN" "$TESSCTL" doctor --publish-remote "${1:-}" "${2:-}"
+"""
+
+
+def _remote_hook_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        f"{_REMOTE_HOOK_MARKER_V1}\n"
+        "# Pre-push hook: refuse to push brain/ or clients/ data to a public (or\n"
+        "# unverifiable) remote. Installed by `tessctl gate install-hooks`.\n"
+        "# Runs `tessctl doctor --publish-remote`. Git feeds ref ranges on stdin.\n"
+        + _REMOTE_HOOK_BODY
+    )
+
+
+def _remote_splice_above_existing(existing: str) -> str:
+    """Stdin-preserving splice, same technique as `_gitleaks_splice_above_existing`."""
+    inner = _REMOTE_HOOK_BODY.rstrip("\n")
+    guard_block = (
+        f"{_REMOTE_HOOK_MARKER_V1}\n"
+        "# Spliced above a pre-existing hook by `tessctl gate install-hooks`.\n"
+        "# BLOCKS a push of brain/client data to a public remote; FALLS THROUGH otherwise.\n"
+        + 'REMOTE_GUARD_STDIN="$(cat; printf x)"; REMOTE_GUARD_STDIN="${REMOTE_GUARD_STDIN%x}"\n'
+        + "if printf '%s' \"$REMOTE_GUARD_STDIN\" | (\n"
+        + f"{inner}\n"
+        + "); then :; else\n"
+        + "  exit $?\n"
+        + "fi\n"
+        + f"{_REMOTE_HOOK_END_SENTINEL} — pre-existing hook follows (fed the same stdin)\n"
+    )
+    lines = existing.splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        shebang, rest = lines[0], "".join(lines[1:])
+    else:
+        shebang, rest = "#!/usr/bin/env bash\n", existing
+    if rest.strip():
+        rest = "printf '%s' \"$REMOTE_GUARD_STDIN\" | {\n" + rest.rstrip("\n") + "\n}\n"
+    return shebang + guard_block + "\n" + rest
+
+
+def _remote_install_git_hooks(root: Path) -> None:
+    git_hooks_dir = root / ".git" / "hooks"
+    if not git_hooks_dir.exists():
+        print("  NOTE: .git/hooks/ not found — git hooks not installed (no git repo here?).")
+        return
+    hook_path = git_hooks_dir / "pre-push"
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if _REMOTE_HOOK_MARKER_V1 in existing:
+            print("  git hook pre-push: tess-remote-guard already v1 (skipped)")
+            return
+        hook_path.write_text(_remote_splice_above_existing(existing), encoding="utf-8")
+        print("  NOTICE: pre-existing pre-push hook detected — the public-remote guard was "
+              "spliced ABOVE it and FALLS THROUGH on a clean result (your hook still runs).")
+    else:
+        hook_path.write_text(_remote_hook_script(), encoding="utf-8")
+    os.chmod(str(hook_path), 0o755)
+    print(f"  installed git pre-push hook (public-remote guard) at {hook_path}")
+
+
 def cmd_doctor(args, root: Path) -> None:
     """
     SHA-integrity check every core-managed file.
@@ -5741,6 +5942,10 @@ def cmd_doctor(args, root: Path) -> None:
     # "is a private path about to be committed") — handled as an early,
     # exclusive branch rather than folded into the SHA-integrity loop below,
     # so neither check's exit-code/--json contract can bleed into the other's.
+    if getattr(args, "publish_remote", None):
+        remote, url = args.publish_remote
+        _cmd_doctor_publish_remote(root, remote, url, sys.stdin.read())
+        return
     if getattr(args, "publish_clean", False):
         _cmd_doctor_publish_clean(
             root, scope="all" if getattr(args, "publish_clean_all", False) else "staged"
@@ -15447,6 +15652,7 @@ def _cmd_gate_install_hooks(args, root: Path) -> None:
     _gate_install_git_hooks(root)
     _publish_install_git_hooks(root)
     _gitleaks_install_git_hooks(root)
+    _remote_install_git_hooks(root)
     _gate_install_ci_workflow(root)
 
 
@@ -23605,6 +23811,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--publish-clean", action="store_true", dest="publish_clean",
         help="FAIL if a staged path is private overlay data (operator PII, "
              "*.local.md, kb/**, clients/**, .env*, vault) — the pre-commit hook body",
+    )
+    p_doctor.add_argument(
+        "--publish-remote", nargs=2, metavar=("REMOTE", "URL"), dest="publish_remote",
+        help="pre-push hook body: refuse to push brain/ or clients/ data (ref lines on stdin) "
+             "to a public or unverifiable remote (allow a private one: git config --add "
+             "tess.privateRemote <url>)",
     )
     p_doctor.add_argument(
         "--publish-clean-all", action="store_true", dest="publish_clean_all",

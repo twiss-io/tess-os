@@ -88,7 +88,11 @@ It scans dispatch prompts for secret-shaped patterns (GitHub tokens, Stripe keys
 age private keys, AWS access keys, PEM blocks, generic high-entropy assignments).
 
 - Exit 2 = blocked. Claude is told why and how to fix.
-- Exit 0 = allowed. The hook is fail-open by design.
+- Exit 0 = allowed (no secret-shaped value found).
+- Fail closed (v0.2.1): if the hook cannot read the tool call or errors while
+  scanning, the dispatch is blocked with a plain message, never sent unscanned.
+  It runs through `.claude/hooks/run-pinned.py`, so a copy that no longer
+  matches the release is not run and the dispatch is blocked.
 
 The hook is **defense-in-depth** — a backstop for accidents. It cannot catch
 every encoding or obfuscation. The real wall is this doctrine: emit refs, not values.

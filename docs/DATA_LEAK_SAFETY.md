@@ -144,6 +144,44 @@ If `gitleaks` is not installed locally, the hook prints a warning and lets
 the push through — CI's `secret-scan` job is the enforced backstop
 regardless of what's on a given contributor's machine.
 
+## Control 4 — the public-remote guard (push-side, brain and client data)
+
+Agency mode keeps real client data in `brain/clients/<slug>/`
+(`scripts/brain/modes/agency.json`), and the brain is meant to be committed,
+so the commit-side gate cannot block it. It may only ever reach a **private**
+remote. `tessctl gate install-hooks` installs a pre-push hook that runs:
+
+```bash
+tessctl doctor --publish-remote <remote-name> <remote-url>   # ref lines on stdin, as git gives them
+```
+
+It refuses a push whose commits contain any file under `brain/` or
+`clients/` (except the shipped `clients/_template/` scaffold and `.gitkeep`
+placeholders) unless the destination is private:
+
+| Destination | Result |
+|---|---|
+| Local path or `file://` remote | allowed |
+| GitHub remote, `gh` installed and logged in, repo is private | allowed |
+| GitHub remote, repo is public | **refused**, always (the allowlist cannot override it) |
+| No `gh`, `gh` cannot read the repo, a non-GitHub host, or an SSH host alias | **refused** unless allowlisted |
+
+To allowlist a remote you know is private, on this machine only:
+
+```bash
+git config --add tess.privateRemote git@github.com:you/your-brain.git
+```
+
+The allowlist lives in the repository's own `.git/config`: it is never
+committed and never shipped. The publish-clean gate (Control 2) also blocks
+`brain/**/.private/**` and `**/.private/**` at commit time, as a backstop to
+the brain's own self-ignoring `.private/.gitignore`.
+
+Existing installs get the new hook by re-running `tessctl gate install-hooks`.
+A push with `git push --no-verify` skips every local hook; that is why the
+shipped settings no longer pre-approve arbitrary `git` commands for agents
+(see `docs/HARNESS_HARDENING.md`).
+
 ## What this does *not* do
 
 - It does not scan file **content** for PII (names, emails, phone numbers) —
