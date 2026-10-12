@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tess-os:brain:record:1",
+  "title": "Tess brain preference / correction / fact / loop record (front matter, spec 9.3)",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "type",
+    "status"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[PCFL]-\\d{8}-\\d{4}-[a-z0-9-]+$"
+    },
+    "type": {
+      "enum": [
+        "preference",
+        "correction",
+        "fact",
+        "loop"
+      ]
+    },
+    "status": {
+      "enum": [
+        "active",
+        "superseded",
+        "retracted",
+        "proposed",
+        "waiting",
+        "done",
+        "dropped",
+        "pending-verification",
+        "unverified"
+      ]
+    },
+    "statement": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "principal": {
+      "type": "string"
+    },
+    "corrects": {
+      "type": "string"
+    },
+    "entity": {
+      "type": "string"
+    },
+    "source_kind": {
+      "enum": [
+        "principal",
+        "assistant",
+        "tool",
+        "file",
+        "external"
+      ]
+    },
+    "confidence": {
+      "type": "string"
+    },
+    "valid_from": {
+      "type": "string"
+    },
+    "valid_until": {
+      "type": "string"
+    },
+    "last_verified": {
+      "type": "string"
+    },
+    "verify_via": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "due": {
+      "type": "string"
+    },
+    "confirmed_by": {
+      "type": "string"
+    },
+    "confirmed_at": {
+      "type": "string"
+    },
+    "detected_by": {
+      "type": "string"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "verified_at": {
+      "type": "string"
+    },
+    "confirmed": {
+      "type": "boolean"
+    },
+    "supersedes": {
+      "type": "string"
+    },
+    "superseded_by": {
+      "type": "string"
+    },
+    "body_sha256": {
+      "type": "string"
+    },
+    "source_quote": {
+      "type": "string",
+      "description": "the principal's exact words (verified by V1)"
+    },
+    "source_speaker": {
+      "type": "string"
+    },
+    "source_at": {
+      "type": "string"
+    },
+    "source_ref": {
+      "type": "string",
+      "pattern": "^(brain/journal/.+\\.md#L\\d+|turns:\\d+|brain/brain\\.json#.+|)$",
+      "description": "journal path#L<n>; turns:<n> while pending-verification"
+    },
+    "source_session": {
+      "type": "string",
+      "description": "runtime:session_id"
+    }
+  }
+}
