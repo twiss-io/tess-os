@@ -53,6 +53,11 @@ jobs:
   publish:
     name: npm publish create-tess
     runs-on: ubuntu-latest
+    # The `npm-publish` environment only admits `create-tess-v*` TAG refs
+    # (deployment policy, no reviewers). npm Trusted Publishing is bound to
+    # this environment, so a branch run (or a copy of this workflow wired to
+    # another trigger) cannot obtain a publish-capable OIDC token.
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write   # required for npm Trusted Publishing (OIDC) — no token
@@ -62,6 +67,42 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Gate 0: the release key is the single root of trust (SECURITY.md,
+      # "Trust model"). Publish only from an annotated `create-tess-v*` tag
+      # signed by the Twiss Release Signing Key. The fingerprint is pinned
+      # here and the public key comes from the TESS_SIGNING_PUBKEY secret, so
+      # neither a swapped secret nor a different signer can pass. A
+      # workflow_dispatch run must also target such a tag.
+      - name: Gate 0 — tag must be signed by the Twiss release key
+        env:
+          TESS_SIGNING_PUBKEY: ${{ secrets.TESS_SIGNING_PUBKEY }}
+          RELEASE_KEY_FPR: EBEABC618C11B6A7340A7D1601DD637667B8CC89
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [[ "$GITHUB_REF_NAME" != create-tess-v* ]]; then
+            echo "::error::publish must run on a create-tess-v* tag (got ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}'). Refusing (fail closed)."
+            exit 1
+          fi
+          TAG="$GITHUB_REF_NAME"
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
+            echo "::error::'${TAG}' is not an annotated tag. Refusing to publish."
+            exit 1
+          fi
+          if [ -z "${TESS_SIGNING_PUBKEY:-}" ]; then
+            echo "::error::TESS_SIGNING_PUBKEY secret is not set. Refusing to publish."
+            exit 1
+          fi
+          GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
+          printf '%s\n' "$TESS_SIGNING_PUBKEY" | gpg --batch --quiet --import
+          out="$(git verify-tag --raw "refs/tags/${TAG}" 2>&1 || true)"
+          if grep -qE '^\[GNUPG:\] (BADSIG|ERRSIG|EXPSIG|EXPKEYSIG|REVKEYSIG)' <<<"$out" \
+             || ! grep -q "^\[GNUPG:\] VALIDSIG ${RELEASE_KEY_FPR} " <<<"$out"; then
+            echo "::error::'${TAG}' is not validly signed by the Twiss release key ${RELEASE_KEY_FPR}. Refusing to publish."
+            exit 1
+          fi
+          echo "OK: '${TAG}' is signed by ${RELEASE_KEY_FPR}."
 
       # Trusted Publishing requires npm CLI >= 11.5.1 and Node.js >= 22.14.0.
       - name: Set up Node.js

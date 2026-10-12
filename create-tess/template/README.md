@@ -21,9 +21,11 @@ store to trust blindly. And when a change needs a "prove it," Tess OS can
 hand you a real [Agent Receipt](docs/AGENT_RECEIPT_SPEC.md) — signed,
 chain-linked, and designed to be checked by a standalone verifier that
 doesn't take Tess OS's own word for it. That verifier runs today. This
-repository's policy registers one verifier key (Cyra). For v0.2.0 that key
-was held by an agent on the build machine, not by a human custodian, and the
-sign-off registry is still empty. See
+repository's policy registers one verifier key (Cyra). It belongs to the
+review automation by design, so its signature means the automated review
+passed, not that a person approved. The human root of trust is the release
+signing key; see the [Trust model](SECURITY.md#trust-model). The sign-off
+registry is still empty. See
 [Important limits today](#important-limits-today) before treating a receipt
 as a production trust guarantee.
 
@@ -85,16 +87,21 @@ around the gate.
 
 Facts for v0.2.0, re-verified on 2026-09-24:
 
-1. **The v0.2.0 approvals were signed with an agent-held key.** The Cyra
-   verifier key has no passphrase and sits on the build machine. An agent
-   that did not build the change reviewed each protected change and signed
-   the verdict with that key. No key was rotated for this release. Moving
-   the key to human custody is planned for v0.2.1.
-2. **"Only reviewed changes merge" is a process rule, not a GitHub
-   guarantee.** The `main` ruleset requires six status checks, including the
-   App-bound `tessctl gate ci`, with strict up-to-date branches and no bypass
-   actors. It requires 0 approving reviews, and the GitHub token the build
-   agents use has admin rights on the repository.
+1. **Verifier approvals are automated attestations.** The Cyra verifier key
+   has no passphrase and is used by the review automation, by design. An
+   agent that did not build the change reviews each protected change and
+   signs the verdict. A Cyra signature means the automated review passed,
+   not that a person approved. The human control is the release signing key.
+   Nothing reaches users unless it comes from a tag signed with that key, and
+   since 2026-09-29 every use of the key needs the maintainer's explicit
+   approval. (For v0.2.0 the key's passphrase could still be read without a
+   prompt.) See the [Trust model](SECURITY.md#trust-model).
+2. **Merges to `main` need no human review, by design.** The `main` ruleset
+   requires six status checks, including the App-bound `tessctl gate ci`,
+   with strict up-to-date branches and no bypass actors. It requires 0
+   approving reviews, and the GitHub token the build agents use has admin
+   rights on the repository. `main` is therefore not a release; only a signed
+   tag is.
 3. **The gate is a non-authoritative preview.** The P0 type-swap gate
    bypass (#71 lineage; its fix #181 is deferred to v0.2.1) and the A14
    multi-push policy-reduction case are still open, and the merge-admission
@@ -111,8 +118,9 @@ disclosed evidence, not a production-readiness certificate. Full detail:
 
 Do **not** generate, register, or sign an additional verifier or sign-off key
 to clear a gate, and never use the registered verifier to approve its own
-candidate. Key custody belongs to a designated human custodian. See
-[Gate operation and custody](docs/GATE_QUICKSTART.md).
+candidate. The release signing key is held by the maintainer, and every use
+needs their explicit approval. See the [Trust model](SECURITY.md#trust-model)
+and [Gate operation and custody](docs/GATE_QUICKSTART.md).
 
 ## Runtimes and enforcement
 

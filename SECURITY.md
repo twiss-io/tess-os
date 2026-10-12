@@ -41,6 +41,67 @@ A good report helps us reproduce and triage quickly:
 - We ask that you give us a **reasonable opportunity to fix** the issue before
   any public disclosure (coordinated disclosure).
 
+## Trust model
+
+**The release-signing key is the single root of trust, and signing a release tag
+is the single human step.** Everything before a release is automated: CI, the
+automated verifier verdicts, and merges to `main`. Nothing reaches users unless it
+comes from a tag signed by that key.
+
+| | |
+|---|---|
+| Key | Twiss Release Signing Key, fingerprint `EBEA BC61 8C11 B6A7 340A  7D16 01DD 6376 67B8 CC89` |
+| Public key | [`.tess/keys/twiss-release-key.asc`](.tess/keys/twiss-release-key.asc) |
+| Custody | The private key is passphrase-protected. The passphrase is stored in the maintainer's OS keychain with no pre-authorised applications, so every use needs the maintainer to approve an OS prompt on the signing machine. gpg-agent forgets it after at most 60 seconds idle (300 seconds absolute). |
+| Human step | The maintainer signs the release tag (`git tag -s`) and approves the prompt. No other step needs a person. |
+
+### What the signature gates
+
+| Channel | Check | Runs on |
+|---|---|---|
+| GitHub Release (`v*` tags) | `release.yml` Gate 1: the tag must be annotated and pass `git verify-tag` against the `TESS_SIGNING_PUBKEY` secret. | GitHub Actions |
+| npm `create-tess` (`create-tess-v*` tags) | `publish-npm.yml` Gate 0: annotated tag, `VALIDSIG` from the pinned fingerprint above. The job runs in the `npm-publish` environment, which only admits `create-tess-v*` tags, and npm Trusted Publishing is bound to that environment. | GitHub Actions |
+| `tessctl update` / `self-update` | The tag is verified in an isolated GNUPGHOME seeded only with the pinned `framework.trusted_key_fingerprint` before any file is extracted. If no fingerprint is pinned, the first key seen is recorded (trust on first use). | The user's machine |
+
+Repository rulesets back this up. `v*` and `create-tess-v*` tags cannot be moved
+or deleted by anyone, including admins. Only repository admins can create them.
+Branches named `v<digit>…` or `create-tess-v…` cannot be created, so a branch can
+never shadow a release tag.
+
+### Verifier signatures are automated attestations
+
+The registered verifier key (Cyra, `F9321F92…76E8`) belongs to an automated
+reviewer. By design it has no passphrase and is used by the review automation
+without a human in the loop. A valid Cyra verdict attests **"the automated
+review of this exact content passed"**. It does **not** mean a human approved the
+change. Earlier Reid verifier keys are retired, and no Reid key is registered in
+`policy.yaml`'s `verifier_keys`.
+
+### No required human PR review, by design
+
+The `main` ruleset requires the status checks (including the App-bound
+`tessctl gate ci`), strict up-to-date branches and no bypass actors. It requires
+**0 approving reviews**, deliberately. Review is automated. The human control sits
+at release, not at merge.
+
+### What an attacker with repository write access can and cannot do
+
+**Can:** open and merge pull requests to `main` that pass the required checks,
+including changes to workflows. Push ordinary branches. If they also control the
+review automation, produce valid Cyra verdicts. In other words, `main` can contain
+unreviewed-by-a-human code. That is why `main` is not a release.
+
+**Cannot:**
+- Create, move or delete a `v*` / `create-tess-v*` tag. Creation is admin-only, and nobody can update or delete these tags.
+- Publish `create-tess` to npm. That needs a job in the `npm-publish` environment, which only runs on `create-tess-v*` tags.
+- Get a tag accepted by `tessctl update` on a machine that pins the release fingerprint without the release key and the maintainer's approval.
+
+**Limits, stated plainly:**
+- The build automation's GitHub credentials have **admin** rights. Someone holding those credentials can create release tags and edit workflows, so the CI gates are not the last line against them. For `tessctl update` with a pinned fingerprint, the check on the user's machine still holds, because no repository change can forge the release signature.
+- GitHub Release pages and uploaded assets are not signed artifacts; the signed tag is. Verify with `git verify-tag <tag>` against the key above.
+- An unpinned `tessctl` install trusts the first signer it sees. Pin `framework.trusted_key_fingerprint` to the fingerprint above.
+- If the release key or the maintainer's machine is compromised, this model is compromised. Report suspected misuse privately (see above).
+
 ## Scope and threat model
 
 Tess OS is a local governance framework with a doctrine/roster scaffold,
