@@ -468,6 +468,29 @@ def test_infer_contract_type_by_convention(engine):
     assert engine._gate_infer_contract_type("src/prod/app.py") is None
 
 
+def test_gate_contract_validation_rejects_external_return_manifest_artifact(engine, gate_repo):
+    """Changed return manifests cannot cite an existing external host file."""
+    manifest_path = gate_repo / "missions" / "m1" / "returns" / "task.return.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        "task_id": "task",
+        "mission_id": "m1",
+        "agent": "test-agent",
+        "status": "complete",
+        "self_reported_complete": True,
+        "artifacts": [{"path": "/etc/hosts", "description": "external host file"}],
+        "claims": [{"claim": "done", "evidence": "none", "inferred": False}],
+        "flags": [],
+    }), encoding="utf-8")
+
+    violations = engine._gate_validate_contracts(
+        gate_repo, ["missions/m1/returns/task.return.json"]
+    )
+
+    assert violations
+    assert any("absolute" in violation for violation in violations)
+
+
 # ---------------------------------------------------------------------------
 # Hard floor: never satisfiable by a verdict alone; needs a sign-off artifact
 # ---------------------------------------------------------------------------
