@@ -24,6 +24,11 @@ def has_pyyaml() -> bool:
         return False
 
 
+def has_vendored_yaml(root: Path) -> bool:
+    """tessctl falls back to .tess/vendor/yaml (v0.2.1), so it renders without a system PyYAML."""
+    return (root / ".tess" / "vendor" / "yaml" / "__init__.py").is_file()
+
+
 def _tessctl(root: Path, args: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run([str(root / "tessctl")] + args, cwd=str(root), capture_output=True,
                           text=True, timeout=300)
@@ -42,7 +47,7 @@ def run(root: Path, dry: bool = False) -> Dict[str, str]:
         return {"result": "unchanged", "operator_name": op, "assistant_name": asst}
     if dry:
         return {"result": "would-restore", "operator_name": op, "assistant_name": asst}
-    if (root / "tessctl").exists() and has_pyyaml():
+    if (root / "tessctl").exists() and (has_vendored_yaml(root) or has_pyyaml()):
         for args in (["set-operator", op], ["rename", asst]):
             done = _tessctl(root, args)
             if done.returncode != 0:

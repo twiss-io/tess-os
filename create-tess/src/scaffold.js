@@ -30,6 +30,8 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isExcludedRel, makeCopyFilter } from './ignore.js';
+import { restoreGitignores } from './dotfiles.js';
+import { checkPython } from './python.js';
 import { resetPolicyFile } from './policy-reset.js';
 import { detectInstall } from './force-plan.js';
 import { CREATE_TESS_VERSION } from './version.js';
@@ -88,14 +90,12 @@ function isExcludedTopEntry(entry) {
   return isExcludedRel(entry);
 }
 
-export function ensurePython3() {
-  try {
-    execFileSync('python3', ['--version'], { stdio: 'ignore' });
-  } catch {
-    throw new Error(
-      'python3 is required (the Tess OS keystone, tessctl, is Python). Install Python 3 and retry.',
-    );
-  }
+// Presence + minimum version, in plain words (src/python.js). PyYAML is NOT
+// required: tessctl falls back to its vendored copy (.tess/vendor/yaml).
+export function ensurePython3(options) {
+  const res = checkPython(options);
+  if (!res.ok) throw new Error(res.message);
+  return res.version;
 }
 
 // Clobber-protection (design doc §5.1). Returns a reason string if the target
@@ -158,6 +158,9 @@ export function fetchTemplate(source, stagingDir, ref = null) {
         dereference: false,
       });
     }
+    // The bundled template ships `.gitignore` as `gitignore` (npm strips
+    // dotted ignore files from a tarball); put the real names back.
+    restoreGitignores(stagingDir);
     return { mode: 'local', source: abs };
   }
   // Git URL → shallow clone (pinned to `ref` when set), then strip .git +

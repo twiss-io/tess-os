@@ -147,6 +147,8 @@ export const EXCLUDE_REL_PATHS = new Set([
   '.github/workflows/ci.yml',
   '.github/workflows/release.yml',
   '.github/workflows/publish-npm.yml',
+  '.github/scripts/release_version_gate.py',
+  '.github/scripts/verify_release_tag.sh',
   'operator/profile.json',
 ]);
 

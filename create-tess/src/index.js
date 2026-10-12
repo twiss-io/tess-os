@@ -21,6 +21,7 @@ import { writeProfile, bake, check, activateGate, regenPolicyLock } from './keys
 import { runJourney } from './journey.js';
 import { preflightForce, beginWrite, rollback, verifyOnly, backupNotice } from './force-run.js';
 import { resolveTarget } from './target.js';
+import { resolveBrainFlags, runOnboarding, printFinalScreen } from './brain.js';
 import { VIBES } from './content/vibes.js';
 import {
   validateName,
@@ -86,14 +87,9 @@ function resolveFromFlags(opts, roster) {
   const chk = checkConductorName(cond.value, op.value, set.installedNameSet);
   if (chk.block) die(chk.reason);
 
-  return {
-    vibe,
-    operator: op.value,
-    conductor: cond.value,
-    path,
-    pathway,
-    set,
-  };
+  const brainFlags = resolveBrainFlags(opts);
+  if (brainFlags.error) die(brainFlags.error);
+  return { vibe, operator: op.value, conductor: cond.value, path, pathway, set, ...brainFlags };
 }
 
 // The REAL directory: a symlinked --target is followed once, here, so every
@@ -149,8 +145,8 @@ export async function main(argv) {
   // branch tip). A no-op for the bundled-default local source.
   const templateRef = resolveTemplateRef(source, opts.templateRef);
 
-  // Bootstrap gates (design doc §5.1).
-  ensurePython3();
+  // Bootstrap gates (design doc §5.1); plain-English Python message (python.js).
+  try { ensurePython3(); } catch (err) { die(err.message); }
   // Reid LOW: refuse any template source that is not an allowed transport form
   // up front (blocks `ext::`/`file://` coercion and flag-shaped argument injection
   // into `git clone`); see isSafeTemplateSource for the allowlist.
@@ -181,6 +177,7 @@ export async function main(argv) {
   let vibe;
   let checks;
   let gate;
+  let brain;
   const refuse = (refusal) => {
     rmSync(staging, { recursive: true, force: true });
     process.stdout.write(refusal.stdout);
@@ -266,6 +263,11 @@ export async function main(argv) {
       skipHooks: Boolean(opts.noGateHooks),
     });
 
+    // Second brain: init + apply, committed through the gate just installed.
+    brain = opts.noOnboarding
+      ? { status: 'skipped', commit: null, detail: '--no-onboarding' }
+      : runOnboarding(targetDir, choices, makeBakeProgress(vibe));
+
     // Integrity checks (unless skipped). check() never throws — it returns
     // booleans — so it stays outside the rollback gate.
     checks = check(targetDir, { doctor: !opts.noDoctor, verify: !opts.noVerify });
@@ -284,10 +286,11 @@ export async function main(argv) {
 
   // Arrival — the conductor speaks the operator's name back (design doc §3.6).
   printArrival(vibe, choices, checks);
+  printFinalScreen(targetDir, { mode: choices.mode, brain, checks });
 
   // Non-zero exit if a requested integrity check failed (CI signal).
   if (checks.doctor === false || checks.verify === false) {
     process.exitCode = 2;
-  }
-  return { targetDir, choices: { ...choices, set: undefined }, checks, gate };
+  } else if (brain.status === 'failed') process.exitCode = 3;
+  return { targetDir, choices: { ...choices, set: undefined }, checks, gate, brain };
 }
