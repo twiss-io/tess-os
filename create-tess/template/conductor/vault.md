@@ -17,6 +17,41 @@ A `vault://` reference is a safe, opaque pointer. The raw value never enters
 a subagent prompt, dispatch transcript, or log. This is the primary wall
 against credential leakage — not the dispatch scan hook (which is backstop only).
 
+`vault://github/token` and `github/token` are two spellings of the same
+reference. New vault entries are stored canonically as `github/token`; the
+prefix remains the recommended form in prose and dispatches because it makes
+the pointer unmistakable. Existing older entries stored with a `vault://`
+prefix continue to resolve. Review `tessctl vault migrate-refs` first, then
+use `--apply --plan <dry-run-id>` only if its dry-run plan is unambiguous —
+migration never guesses between duplicates or deletes a secret. The dry-run
+plan is bound to the encrypted vault state it inspected. Any intervening vault
+change makes that plan stale, so repeat the dry run rather than applying an
+old decision.
+
+If normal resolution refuses an ambiguous or malformed historical storage
+key, an owner can use the explicit exact-key recovery path. `tessctl vault
+recover list` is the only command that displays exact stored keys (never
+values); normal list and migration errors redact malformed decrypted keys.
+`recover get <stored-ref>` only displays a masked value; `recover exec
+--stored-ref <stored-ref> --as <ENV_VAR> -- <command>` injects it JIT into the
+named child environment; and `recover rm <stored-ref>` removes only that exact
+stored key. Recovery never guesses which duplicate to use, never automatically
+deletes one, and never prints the raw value.
+
+Historical decryptable vaults may have no layout version, a different version,
+arbitrary top-level extensions, or custom non-string metadata. Normal commands
+deliberately refuse those blobs. Exact recovery can still access or remove one
+owner-selected key while carrying every other field forward inertly. An owner
+may run `tessctl vault recover migrate`, review its non-secret dry-run plan,
+and apply that exact plan only when the entire blob is losslessly representable
+as the current layout. Anything else is never silently rewritten; use
+exact-key recovery instead.
+
+Vault identity custody is global to the local operator (`TESS_VAULT_IDENTITY`,
+the OS keychain, or the 0600 config file), while each project stores only its
+public recipient. Initialising another project reuses and verifies the existing
+identity; it never replaces it. This keeps earlier project vaults decryptable.
+
 ---
 
 ## How Agents Resolve a Ref
@@ -57,10 +92,12 @@ around: restructure the prompt to use a `vault://` ref instead.
 
 | Command | Purpose |
 |---|---|
-| `tessctl vault init` | Initialise vault (generate identity, create blob) |
+| `tessctl vault init` | Initialise vault (reuse verified global identity or create it once, then create project blob) |
 | `tessctl vault set <ref>` | Store a secret (stdin or TTY prompt — never argv) |
 | `tessctl vault get <ref>` | Display masked value (add `--reveal` for raw, pipe only) |
 | `tessctl vault list` | List all refs (no values shown) |
+| `tessctl vault migrate-refs` | Dry-run legacy `vault://` storage-key normalization; add `--apply --plan <dry-run-id>` only after review |
+| `tessctl vault recover <op>` | Explicit owner recovery: `recover list` displays exact stored keys only here; get/exec/rm act on an exact key; `recover migrate` upgrades only a lossless compatible historical blob |
 | `tessctl vault exec --ref <ref> -- <cmd>` | Inject secret into child env JIT |
 | `tessctl vault rotate <ref>` | Re-encrypt under a new value |
 | `tessctl vault rm <ref>` | Delete a ref from the vault |
