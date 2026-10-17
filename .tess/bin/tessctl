@@ -24045,6 +24045,39 @@ def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -
     return "\n".join(lines)
 
 
+def _run_child_env() -> dict:
+    """Environment for a dispatched agent CLI child (both drivers).
+    TESS_HEADLESS=1: the child has no subagent tool, so the dispatch guard
+    stays quiet. TESS_CONSULT_DEPTH: one deeper than this process, so the
+    child's own Tess gate refuses any further agent-CLI call (SECURITY.md,
+    "Nested agent CLIs")."""
+    env = dict(os.environ)
+    try:
+        depth = max(int(env.get("TESS_CONSULT_DEPTH", "0").strip() or 0), 0)
+    except ValueError:
+        depth = 1
+    env["TESS_HEADLESS"] = "1"
+    env["TESS_CONSULT_DEPTH"] = str(depth + 1)
+    return env
+
+
+def _run_in_linked_worktree(cwd: Path) -> bool:
+    """True when `cwd` is inside a linked git worktree (its git dir is not the
+    repository's common dir): a writer task's own worktree, not the main
+    checkout."""
+    try:
+        proc = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--absolute-git-dir", "--git-common-dir"],
+                              capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    lines = proc.stdout.splitlines()
+    if proc.returncode != 0 or len(lines) < 2:
+        return False
+    git_dir = os.path.realpath(lines[0])
+    common = os.path.realpath(os.path.join(str(cwd), lines[1]))
+    return git_dir != common
+
+
 #: Default least-privilege tool allowlist for a `claude -p` dispatch — a
 #: dispatched worker needs SOME tools to do real work (read sources, write
 #: its return-manifest), but a headless `-p` invocation has no TTY to
@@ -24108,7 +24141,8 @@ class ClaudeCliDriver(DispatchDriver):
         t0 = time.perf_counter()
         try:
             proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
-                                   timeout=self.timeout_s)
+                                   timeout=self.timeout_s, stdin=subprocess.DEVNULL,
+                                   env=_run_child_env())
         except subprocess.TimeoutExpired:
             return {
                 "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
@@ -24149,8 +24183,8 @@ class ClaudeCliDriver(DispatchDriver):
 
 
 class CodexExecDriver(DispatchDriver):
-    """Tier B dispatch driver — `codex exec --experimental-json --output-schema
-    <file>`. Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md's CLI capability table
+    """Tier B dispatch driver — `codex exec --json --output-schema <file>`
+    (`--experimental-json` is the hidden older name of `--json`). Spec: docs/ULTIMATE_FRAMEWORK_PLAN.md's CLI capability table
     ("codex exec --experimental-json (non-interactive, JSON event stream;
     verified)" + "codex exec accepts an output-schema file (outputSchemaFile
     in the exec SDK; verified)").
@@ -24162,7 +24196,15 @@ class CodexExecDriver(DispatchDriver):
     message if `codex` is absent, exactly like ClaudeCliDriver does for
     `claude`. FakeDriver's tests are what actually exercise `tessctl run`'s
     logic end-to-end in this PR; a live codex smoke run is a documented
-    follow-up once the binary is available in a build/CI environment."""
+    follow-up once the binary is available in a build/CI environment.
+
+    v1.0 (nested agent CLIs): every call names its sandbox. A verifier, or a
+    worker whose cwd is not its own linked worktree, runs `-s read-only` and
+    hands its artifact back as the final message, which codex itself writes
+    to the contracted path (`-o`); only a worker in its own worktree gets
+    `-s workspace-write`. stdin is closed (`codex exec` with stdin open
+    waits for input forever), and the child gets TESS_HEADLESS=1 and
+    TESS_CONSULT_DEPTH (_run_child_env)."""
 
     name = "codex"
 
@@ -24182,7 +24224,16 @@ class CodexExecDriver(DispatchDriver):
             }
 
         prompt = _run_build_dispatch_prompt(brief, output_schema)
-        cmd = [self.binary, "exec", "--experimental-json"]
+        writer = (brief.get("_contract_type") != "verdict" and _run_in_linked_worktree(self.cwd))
+        cmd = [self.binary, "exec", "--json", "-s", "workspace-write" if writer else "read-only"]
+        if not writer:
+            out_path = Path(brief.get("_root") or self.cwd) / brief.get("_return_manifest_path", "")
+            cmd += ["-o", str(out_path)]
+            prompt += (
+                "\n\n## Your sandbox is read-only\nYou cannot write files. End with the JSON document "
+                "itself as your final message and nothing else; codex writes your final message to "
+                f"`{brief.get('_return_manifest_path', '')}` for you."
+            )
         schema_file = None
         if output_schema is not None:
             fd, schema_file = tempfile.mkstemp(suffix=".schema.json", prefix="tessctl-run-")
@@ -24195,7 +24246,8 @@ class CodexExecDriver(DispatchDriver):
         try:
             try:
                 proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
-                                       timeout=self.timeout_s)
+                                       timeout=self.timeout_s, stdin=subprocess.DEVNULL,
+                                       env=_run_child_env())
             except subprocess.TimeoutExpired:
                 return {
                     "ok": False, "timed_out": True, "exit_code": None, "final_text": "",

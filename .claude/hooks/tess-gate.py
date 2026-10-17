@@ -1160,7 +1160,8 @@ def _interesting(word) -> bool:
     low = os.path.basename(str(word)).lower()
     return (_dynamic(word) or low in _NAMED or low in WRITERS or low in INPLACE or low in SHELLS
             or low in EXTRACTORS or low in _WRAP or low in _SUB_RUNNERS or low in _STRING_RUNNERS
-            or _writer_name(low) or bool(INTERPRETERS.match(low)) or low.startswith("git-"))
+            or _writer_name(low) or bool(INTERPRETERS.match(low)) or low.startswith("git-")
+            or _agent_name(low) is not None)
 
 
 def _skip_options(argv: list, i: int, prog: str) -> tuple:
@@ -1328,6 +1329,10 @@ ADVICE = {
              "`tessctl vault exec` for a secret.",
     "secret": "Keep secrets out of commands and dispatches: read them from the environment, "
               "`tessctl vault exec`, or a vault:// reference.",
+    "agentcli": "Run the child agent in a read-only form (claude -p --tools \"\" or "
+                "--permission-mode plan, codex exec -s read-only, gemini -p --approval-mode plan), "
+                "dispatch the work to a subagent instead, or start the agent yourself in your own "
+                "terminal.",
     "push": "Push to a private remote, or follow the steps above.",
     "error": "Try a simpler command. If it keeps failing, run `./tessctl doctor`, or run the "
              "command yourself outside the agent.",
@@ -2184,7 +2189,10 @@ _CLONE_VALS = ("--branch", "--origin", "--config", "--upload-pack", "--depth", "
                "--reference-if-able")
 _REDIRECT_ENV = {"GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}
 _SAME_SOURCE = {"HEAD", "@"}
-_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+# git's empty-tree id, a public constant; the file names `sourcegraph-amp`, a
+# keyword of gitleaks' sourcegraph-access-token rule, which then reads any
+# 40-hex value here as a token
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # gitleaks:allow
 _RESUME = ("--abort", "--continue", "--skip", "--quit", "--edit-todo", "--resolved",
            "--show-current-patch")
 # Short options that take a value, per subcommand (`cherry-pick -s` is signoff, not a strategy).
@@ -5149,7 +5157,7 @@ _VARIANT_LIMIT = 16
 def _gated(name: str) -> bool:
     return bool(name in _GATED_NAMED or _writer_name(name) or name in INPLACE or name in _OUTPUT_OPTS
                 or name in EXTRACTORS or name in SHELLS or name in _VAULT_SHELLS
-                or INTERPRETERS.match(name) or name in _REPLS)
+                or INTERPRETERS.match(name) or name in _REPLS or _agent_name(name) is not None)
 
 
 def _word_items(word) -> list:
@@ -5281,6 +5289,24 @@ def _check_unknown_args(name: str, argv: list, v: Verdict, ctx: "_Ctx") -> None:
             v.add(ASK, f"it gives gh an argument that is only known when the command runs "
                        f"({argv[unk[0]]}), so Tess cannot check it does not print your token or "
                        "change a repository's visibility")
+        return
+    if _agent_name(name):
+        # an agent CLI: a word that could be an option could switch off its
+        # approvals or Tess's hooks in the child (see _check_agent_cli)
+        ended = False
+        for i in range(1, len(argv)):
+            if i in slots:
+                continue
+            if str(argv[i]) == "--" and not _unknown_word(argv[i], ctx):
+                ended = True
+                continue
+            if i in unk:
+                one, lead = _unknown_shape(argv[i], ctx)
+                if not lead and (not ended or not one):
+                    v.add(ASK, f"it gives {name} an argument that is only known when the command runs "
+                               f"({argv[i]}); it could be an option that switches off the child agent's "
+                               "approvals or Tess's hooks, so Tess cannot check what the agent may do")
+                    return
         return
     if name in SHELLS or name in _VAULT_SHELLS or INTERPRETERS.match(name):
         got = _interp_parse(name, argv, ctx)
@@ -5642,6 +5668,550 @@ def _interactive(name: str, argv: list, ctx: "_Ctx") -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- nested agent CLIs (v1.0)
+# An agent CLI (claude, codex, gemini, ...) started from a shell call is a new
+# agent with its own permissions. Before this section the gate allowed every
+# one of them, so `claude --dangerously-skip-permissions -p "..."` or `codex
+# exec -s workspace-write "..."` started a child that could write anything,
+# and the child loads Tess's hooks only if nothing on its command line skips
+# them. The rule (SECURITY.md, "Nested agent CLIs"):
+#   * deny: an approval bypass (yolo, skip-permissions, a bypass permission or
+#     sandbox mode), and a flag that skips Tess's hooks or settings unless the
+#     run has no tools at all; a call made inside a peer call
+#     (TESS_CONSULT_DEPTH >= 1, or a runtime started inside another runtime's
+#     session); a prompt carrying a secret-shaped value;
+#   * allow: only a provably read-only, non-interactive run (claude -p with no
+#     tools, plan mode, or Read/Grep/Glob only; codex exec -s read-only;
+#     gemini -p --approval-mode plan) and --help / --version;
+#   * ask (deny in Codex and the no-prompt modes): every other run, including
+#     an interactive session.
+# Flag names were checked against `claude --help` (2.1.300) and `codex --help`
+# / `codex exec --help` (0.158.0). Gemini's are from its documentation and are
+# not verified on a real install; the other CLIs get the generic rule.
+_AGENT_CLIS = {"claude", "codex", "gemini", "agy", "antigravity", "opencode", "aider", "cursor-agent",
+               "amp", "goose", "copilot", "qwen", "kiro-cli", "jules", "cline", "droid", "crush", "devin"}
+_AGENT_ALIASES = {"claude-code": "claude", "codex-cli": "codex", "gemini-cli": "gemini",
+                  "qwen-code": "qwen", "opencode-ai": "opencode", "aider-chat": "aider",
+                  "copilot-cli": "copilot", "sourcegraph-amp": "amp", "goose-cli": "goose"}
+# The runtimes whose nesting marks a session an agent started (the same set and
+# rule as scripts/brain/brainlib/hooks.py `nested_runtime`).
+_RUNTIME_EXES = ("claude", "codex", "gemini")
+_AGENT_INFO = {"-h", "--help", "-v", "-V", "--version", "help"}
+
+
+def _agent_name(name: str) -> str | None:
+    """The agent CLI `name` runs (npx/bunx package spellings and @version
+    suffixes included), or None."""
+    low = name.lower()
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        low = low[:-len(suffix)] if low.endswith(suffix) else low
+    if "@" in low[1:]:
+        low = low[0] + low[1:].split("@", 1)[0]
+    low = _AGENT_ALIASES.get(low, low)
+    return low if low in _AGENT_CLIS else None
+
+
+def _consult_depth() -> int:
+    """TESS_CONSULT_DEPTH of this process (set by tessctl's dispatch drivers in
+    every child they start); a value that is set but not a number counts as 1."""
+    val = os.environ.get("TESS_CONSULT_DEPTH", "").strip()
+    if not val:
+        return 0
+    try:
+        return max(int(val), 0)
+    except ValueError:
+        return 1
+
+
+def _ancestry(limit: int = 40) -> list:
+    """Lower-cased program names of this process's ancestors, parent first."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True,
+                             timeout=3).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            procs[int(parts[0])] = (int(parts[1]), parts[2].strip())
+    names, pid, seen = [], os.getppid(), set()
+    while pid in procs and pid not in seen and len(names) < limit:
+        seen.add(pid)
+        pid, comm = procs[pid]
+        names.append(os.path.basename(comm).lower())
+    return names
+
+
+def _nested_runtime() -> str:
+    """'' unless this gate runs for a runtime that was itself started from
+    inside another agent session: two separate runs of runtime programs with
+    something else (the agent's shell) between them."""
+    if _STATE.get("nested") is None:
+        groups, prev = [], False
+        for n in _ancestry():
+            cur = n in _RUNTIME_EXES
+            if cur and not prev:
+                groups.append(n)
+            prev = cur
+        _STATE["nested"] = ("a %s session started from inside a %s session" % (groups[0], groups[1])
+                            if len(groups) >= 2 else "")
+    return _STATE["nested"]
+
+
+class _AgentRun:
+    """What one agent CLI call would start, as the per-CLI parsers read it."""
+
+    def __init__(self):
+        self.deny, self.skip, self.ask = [], [], []
+        self.info = self.headless = self.readonly = self.toolless = False
+        self.targets = []  # words naming a file the CLI itself writes
+        self.hint = ""
+
+
+def _agent_opts(args: list, values: dict, flags: set, shorts_attach: bool = True):
+    """Split an agent CLI's arguments into options and positionals.
+    `values`: option -> 1 (one value), "?" (optional value), "+" (values
+    until the next option). Yields (option, [value words]) and (None, word);
+    an option not in either table comes back as ("?" + option, [])."""
+    i, out, ended = 0, [], False
+    while i < len(args):
+        w, s = args[i], str(args[i])
+        if ended or s == "-" or not s.startswith("-"):
+            out.append((None, w))
+            i += 1
+            continue
+        if s == "--":
+            ended = True
+            i += 1
+            continue
+        name, eq, val = s.partition("=") if s.startswith("--") else (s, "", "")
+        if not eq and not s.startswith("--") and len(s) > 2:
+            if s[:2] in values and shorts_attach:  # -sread-only, -s=read-only
+                name, eq, val = s[:2], "=", s[2:].lstrip("=")
+            elif all("-" + c in flags for c in s[1:]):  # -pc
+                out += [("-" + c, []) for c in s[1:]]
+                i += 1
+                continue
+        if name in values:
+            kind = values[name]
+            if eq:
+                out.append((name, [_field(val)]))
+                i += 1
+                continue
+            got, i = [], i + 1
+            while i < len(args) and (kind == "+" or not got):
+                nxt = str(args[i])
+                if kind == 1 and not got:
+                    got.append(args[i])
+                elif nxt.startswith("-") and nxt not in ("", "-"):
+                    break
+                else:
+                    got.append(args[i])
+                i += 1
+                if kind == "?":
+                    break
+            out.append((name, got))
+            continue
+        out.append((name if name in flags else "?" + name, [_field(val)] if eq else []))
+        i += 1
+    return out
+
+
+def _agent_secret(root: Path, agent: str, argv: list, orig: list, run: _AgentRun) -> None:
+    text = _STATE.get("cmd") or " ".join(str(a) for a in orig)
+    src = _stdin_source(orig)
+    if src and src[0] == "heredoc":
+        text += "\n" + str(src[1])
+    hits = _leak_pattern_names(root, text, specific_only=False)
+    if hits:
+        run.deny.append(f"the prompt it hands {agent} carries secret-shaped value(s): " + ", ".join(hits)
+                        + "; a child agent's prompt is logged and sent to its model provider")
+
+
+_CLAUDE_VALUES = {"--add-dir": "+", "--agent": 1, "--agents": 1, "--allowedTools": "+",
+                  "--allowed-tools": "+", "--append-system-prompt": 1, "--append-system-prompt-file": 1,
+                  "--autocompact": 1, "--betas": "+", "--cloud": "?", "--debug": "?", "-d": "?",
+                  "--debug-file": 1, "--disallowedTools": "+", "--disallowed-tools": "+", "--effort": 1,
+                  "--environment": 1, "--fallback-model": 1, "--file": "+", "--from-pr": "?",
+                  "--input-format": 1, "--json-schema": 1, "--max-budget-usd": 1, "--mcp-config": "+",
+                  "--model": 1, "-n": 1, "--name": 1, "--output-format": 1, "--permission-mode": 1,
+                  "--permission-prompts": 1, "--plugin-dir": 1, "--plugin-url": 1,
+                  "--prompt-suggestions": "?", "--remote-control": "?",
+                  "--remote-control-session-name-prefix": 1, "-r": "?", "--resume": "?",
+                  "--session-id": 1, "--setting-sources": 1, "--settings": 1, "--system-prompt": 1,
+                  "--system-prompt-file": 1, "--system-prompt-snapshot": 1, "--teleport": "?",
+                  "--tmux": "?", "--tools": "+", "-w": "?", "--worktree": "?"}
+_CLAUDE_FLAGS = {"-p", "--print", "-c", "--continue", "--verbose", "--bare", "--safe-mode", "--restricted",
+                 "--strict-mcp-config", "--no-session-persistence", "--include-partial-messages",
+                 "--include-hook-events", "--replay-user-messages", "--fork-session",
+                 "--forward-subagent-text", "--disable-slash-commands",
+                 "--exclude-dynamic-system-prompt-sections", "--ax-screen-reader", "--brief", "--chrome",
+                 "--no-chrome", "--ide", "--bg", "--background", "--desktop",
+                 "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+                 "-h", "--help", "-v", "--version"}
+_CLAUDE_BYPASS = ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions")
+_CLAUDE_BYPASS_MODES = {"bypasspermissions", "dontask", "auto"}
+# Options that start something other than a plain local run, or add tools,
+# agents or file writes Tess cannot see from here: never "provably read-only".
+_CLAUDE_NOT_RO = {"--agent", "--agents", "--plugin-dir", "--plugin-url", "--chrome", "--ide", "--bg",
+                  "--background", "--desktop", "--cloud", "--remote-control", "--teleport", "--from-pr",
+                  "--environment", "-w", "--worktree", "--tmux", "--file"}
+_CLAUDE_INFO_SUBS = {("doctor",), ("auth", "status"), ("mcp", "list"), ("mcp", "get"), ("logs",)}
+_CLAUDE_SUBS = {"agents", "attach", "auth", "auto-mode", "doctor", "gateway", "import", "install", "logs",
+                "mcp", "plugin", "plugins", "purge", "respawn", "rm", "setup-token", "stop", "kill",
+                "ultrareview", "update", "upgrade"}
+_RO_TOOLS = {"read", "grep", "glob", "ls"}
+
+
+def _tool_names(vals: list) -> list:
+    """Tool names in --tools / --allowed-tools values ("Read,Grep", "Read(src/**)")."""
+    names = []
+    for v in vals:
+        names += [re.sub(r"\(.*$", "", t).strip() for t in re.split(r"[,\s]+", str(v)) if t.strip()]
+    return names
+
+
+def _empty_mcp(cwd: str, vals: list) -> bool:
+    """Every --mcp-config value is a JSON object (inline or a readable file) with no servers."""
+    for v in vals:
+        s = str(v).strip()
+        try:
+            if not s.startswith("{"):
+                path = os.path.join(cwd, os.path.expanduser(s))
+                if os.path.getsize(path) > 65536:
+                    return False
+                with open(path, encoding="utf-8") as fh:
+                    s = fh.read()
+            data = json.loads(s)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict) or data.get("mcpServers") not in (None, {}):
+            return False
+    return True
+
+
+def _parse_claude(root: Path, cwd: str, args: list, env: dict, run: _AgentRun) -> None:
+    words = [str(a) for a in args]
+    if words and words[0] in _CLAUDE_SUBS:
+        pos = tuple(w for w in words if not w.startswith("-"))[:2]
+        if pos[:1] in _CLAUDE_INFO_SUBS or pos in _CLAUDE_INFO_SUBS or any(w in _AGENT_INFO for w in words[1:]):
+            run.info = True
+        else:
+            run.ask.append(f"`claude {words[0]}` changes Claude Code's own setup or sessions")
+        return
+    opts = _agent_opts(args, _CLAUDE_VALUES, _CLAUDE_FLAGS)
+    names = [o for o, _ in opts if o]
+    if names and all(o in _AGENT_INFO for o in names):
+        run.info = True
+        return
+    tools = allowed = perm = None
+    mcp, safe, bare, strict = [], False, False, False
+    for o, vals in opts:
+        if o is None:
+            continue
+        val = str(vals[0]) if vals else ""
+        if o.startswith("?"):
+            if any(b.startswith(o[1:]) and len(o) > 6 for b in _CLAUDE_BYPASS):
+                run.deny.append(f"it passes {o[1:]}, an abbreviation of claude's permission bypass")
+            else:
+                run.ask.append(f"it passes {o[1:]}, a claude option Tess does not know")
+        elif o in _CLAUDE_BYPASS:
+            run.deny.append(f"it passes {o}, which switches off every permission check in the child")
+        elif o == "--permission-mode":
+            perm = val.lower()
+            if perm in _CLAUDE_BYPASS_MODES:
+                run.deny.append(f"it starts claude in {val} permission mode, where the child does not "
+                                "stop to ask before it acts")
+            elif perm == "acceptedits":
+                run.ask.append("it starts claude in acceptEdits mode, which writes files without asking")
+            elif perm not in ("plan", "default", "manual"):
+                run.ask.append(f"it starts claude in a permission mode Tess does not know ({val})")
+        elif o in ("-p", "--print"):
+            run.headless = True
+        elif o == "--tools":
+            tools = (tools or []) + _tool_names(vals)
+            if len(vals) > 1 and not str(vals[0]):
+                run.hint = (" (--tools takes every word up to the next option, so the words after "
+                            "--tools \"\" are read as tool names: put the prompt before --tools)")
+        elif o in ("--allowed-tools", "--allowedTools"):
+            allowed = (allowed or []) + _tool_names(vals)
+        elif o == "--mcp-config":
+            mcp += vals
+        elif o == "--safe-mode":
+            safe = True
+            run.skip.append(o)
+        elif o == "--bare":
+            bare = True
+            run.skip.append(o)
+        elif o == "--restricted":
+            run.skip.append(o)
+        elif o == "--strict-mcp-config":
+            strict = True
+        elif o == "--settings":
+            full = os.path.realpath(os.path.join(cwd, os.path.expanduser(val)))
+            own = {os.path.realpath(os.path.join(str(root), ".claude", f))
+                   for f in ("settings.json", "settings.local.json")}
+            if full not in own:
+                run.skip.append(f"--settings {val[:60]}")
+        elif o == "--setting-sources":
+            if "project" not in [s.strip() for s in val.split(",")]:
+                run.skip.append(f"--setting-sources {val}")
+        elif o == "--debug-file":
+            run.targets += vals
+        elif o == "--file":
+            run.targets += [_field(str(s).split(":", 1)[1]) for s in vals if ":" in str(s)]
+        if o in _CLAUDE_NOT_RO:
+            run.ask.append(f"it passes {o}, which adds tools, agents or sessions Tess cannot check here")
+    for k in ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"):
+        if env.get(k, "") not in ("", "0"):
+            run.skip.append(f"{k}={env[k]}")
+            safe = safe or k == "CLAUDE_CODE_SAFE_MODE"
+            bare = bare or k == "CLAUDE_CODE_SIMPLE"
+    extra = bool(mcp) and not (strict and _empty_mcp(cwd, mcp))
+    no_tools = tools is not None and not tools and not extra
+    run.toolless = no_tools and (safe or bare or strict)
+    if mcp and extra:
+        run.ask.append("it loads MCP servers (--mcp-config), whose tools Tess cannot check here")
+    tools_ro = tools is not None and all(t.lower() in _RO_TOOLS for t in tools) and not extra
+    allowed_ro = bool(allowed) and all(t.lower() in _RO_TOOLS for t in allowed)
+    run.readonly = no_tools or tools_ro or perm == "plan" or (allowed_ro and perm in (None, "default",
+                                                                                      "manual"))
+
+
+_CODEX_VALUES = {"-c": 1, "--config": 1, "--enable": 1, "--disable": 1, "--remote": 1,
+                 "--remote-auth-token-env": 1, "-i": "+", "--image": "+", "-m": 1, "--model": 1,
+                 "--local-provider": 1, "-p": 1, "--profile": 1, "-s": 1, "--sandbox": 1, "-C": 1,
+                 "--cd": 1, "--add-dir": 1, "-a": 1, "--ask-for-approval": 1, "--thread-source": 1,
+                 "--output-schema": 1, "--color": 1, "-o": 1, "--output-last-message": 1}
+_CODEX_FLAGS = {"--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
+                "--dangerously-bypass-hook-trust", "--worktree", "--search", "--no-alt-screen", "--no-daemon",
+                "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
+                "--experimental-json", "--yolo", "--full-auto", "-h", "--help", "-V", "--version"}
+# --yolo and --experimental-json are hidden aliases in 0.158; --full-auto is
+# gone from 0.158 but older releases still take it.
+_CODEX_BYPASS = {"--dangerously-bypass-approvals-and-sandbox", "--yolo", "--approve-for-me",
+                 "--dangerously-bypass-hook-trust", "--ignore-rules", "--full-auto"}
+_CODEX_SUBS = {"exec", "e", "review", "login", "logout", "mcp", "mcp-server", "plugin", "app-server",
+               "remote-control", "app", "completion", "update", "doctor", "sandbox", "debug", "apply", "a",
+               "resume", "queue", "archive", "delete", "migrate-rollouts", "unarchive", "fork", "cloud",
+               "exec-server", "features", "help", "agents"}
+_CODEX_INFO_SUBS = {("completion",), ("doctor",), ("help",), ("features", "list"), ("login", "status"),
+                    ("mcp", "list"), ("mcp", "get")}
+_CODEX_SAFE_KEYS = {"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity",
+                    "hide_agent_reasoning", "show_raw_agent_reasoning", "model_provider"}
+
+
+def _codex_config(o: str, val: str, run: _AgentRun) -> None:
+    key, _eq, cval = val.partition("=")
+    key, cval = key.strip(), cval.strip().strip("\"'").lower()
+    if key == "sandbox_mode" and cval in ("workspace-write", "danger-full-access"):
+        run.deny.append(f"it sets {key}={cval}, a codex sandbox that lets the child write")
+    elif re.search(r"hook|rules|trust|execpolicy", key, re.IGNORECASE):
+        run.skip.append(f"{o} {val[:60]}")
+    elif o in ("-c", "--config") and key in _CODEX_SAFE_KEYS:
+        return
+    else:
+        run.ask.append(f"it changes codex configuration ({o} {val[:60]}) in a way Tess cannot check here")
+
+
+def _parse_codex(args: list, env: dict, run: _AgentRun) -> None:
+    opts = _agent_opts(args, _CODEX_VALUES, _CODEX_FLAGS)
+    pos = [str(w) for o, w in opts if o is None]
+    names = [o for o, _ in opts if o]
+    first = next((k for k, (o, _w) in enumerate(opts) if o is None), None)
+    sub = pos[0] if pos and pos[0] in _CODEX_SUBS else None
+    if names and all(o in _AGENT_INFO for o in names) and (not pos or (sub and len(pos) == 1)):
+        run.info = True
+        return
+    if sub and (tuple(pos[:1]) in _CODEX_INFO_SUBS or tuple(pos[:2]) in _CODEX_INFO_SUBS):
+        run.info = True
+    exec_sub = sub in ("exec", "e")
+    inner = pos[1] if exec_sub and len(pos) > 1 and pos[1] in ("resume", "fork", "review", "help") else None
+    sandbox = None
+    for k, (o, vals) in enumerate(opts):
+        if o is None:
+            continue
+        val = str(vals[0]) if vals else ""
+        after_exec = exec_sub and first is not None and k > first
+        if o.startswith("?"):
+            if any(b.startswith(o[1:]) and len(o) > 6 for b in _CODEX_BYPASS):
+                run.deny.append(f"it passes {o[1:]}, an abbreviation of a codex approval bypass")
+            else:
+                run.ask.append(f"it passes {o[1:]}, a codex option Tess does not know")
+        elif o in _CODEX_BYPASS:
+            run.deny.append(f"it passes {o}, which lets the child run without codex's approvals, sandbox, "
+                            "rules or hook checks")
+        elif o in ("-s", "--sandbox"):
+            if val in ("workspace-write", "danger-full-access"):
+                run.deny.append(f"it starts codex with the {val} sandbox, so the child can write")
+            elif after_exec:
+                sandbox = val
+        elif o in ("-c", "--config", "--enable", "--disable"):
+            _codex_config(o, val, run)
+        elif o == "--ignore-user-config":
+            run.skip.append(o)
+        elif o in ("-p", "--profile", "--add-dir", "--worktree", "--remote", "--remote-auth-token-env"):
+            run.ask.append(f"it passes {o}, which can give the child another configuration or more "
+                           "places to write")
+        elif o in ("-o", "--output-last-message"):
+            run.targets += vals
+    if env.get("CODEX_HOME"):
+        run.skip.append(f"CODEX_HOME={env['CODEX_HOME'][:60]}")
+    if run.info:
+        return
+    if sub is None or sub in ("resume", "fork"):
+        return  # the interactive TUI
+    if not exec_sub or inner:
+        run.headless = True
+        run.ask.append(f"`codex {' '.join(pos[:2])}` is not a read-only codex exec run")
+        return
+    run.headless = True
+    run.readonly = sandbox == "read-only"
+    # a read-only sandbox is enforced by the OS whatever hooks the child loads
+    run.toolless = run.readonly
+
+
+_GEMINI_VALUES = {"-m": 1, "--model": 1, "-p": 1, "--prompt": 1, "-i": 1, "--prompt-interactive": 1,
+                  "--approval-mode": 1, "--allowed-tools": "+", "--allowed-mcp-server-names": "+",
+                  "-e": "+", "--extensions": "+", "--include-directories": "+", "-o": 1,
+                  "--output-format": 1, "--sandbox-image": 1, "--proxy": 1, "-r": 1, "--resume": 1,
+                  "--delete-session": 1, "--telemetry-target": 1, "--telemetry-otlp-endpoint": 1,
+                  "--telemetry-outfile": 1}
+_GEMINI_FLAGS = {"-y", "--yolo", "-s", "--sandbox", "-d", "--debug", "-a", "--all-files", "--checkpointing",
+                 "--experimental-acp", "--screen-reader", "-l", "--list-extensions", "--list-sessions",
+                 "--show-memory-usage", "--telemetry", "-h", "--help", "-v", "--version"}
+_GEMINI_RO_TOOLS = {"read_file", "read_many_files", "glob", "search_file_content", "grep_search",
+                    "list_directory", "ls"}
+
+
+def _parse_gemini(args: list, run: _AgentRun) -> None:
+    """Unverified: gemini is not installed where this was written; flags are
+    from its documentation (docs/cli/configuration.md)."""
+    words = [str(a) for a in args]
+    if words and words[0] in ("mcp", "extensions", "skills", "hooks"):
+        if words[1:2] == ["list"] or any(w in _AGENT_INFO for w in words[1:]):
+            run.info = True
+        else:
+            run.ask.append(f"`gemini {words[0]}` changes gemini's own setup")
+        return
+    opts = _agent_opts(args, _GEMINI_VALUES, _GEMINI_FLAGS)
+    names = [o for o, _ in opts if o]
+    if names and all(o in _AGENT_INFO for o in names) and not any(o is None for o, _ in opts):
+        run.info = True
+        return
+    mode, prompt, interactive = None, any(o is None for o, _ in opts), False
+    for o, vals in opts:
+        val = str(vals[0]) if vals else ""
+        if o is None:
+            continue
+        if o.startswith("?"):
+            run.ask.append(f"it passes {o[1:]}, a gemini option Tess does not know")
+        elif o in ("-y", "--yolo"):
+            run.deny.append(f"it passes {o}, which approves every tool call in the child")
+        elif o == "--approval-mode":
+            mode = val.lower().replace("-", "_")
+            if mode in ("yolo", "auto_edit"):
+                run.deny.append(f"it starts gemini in {val} approval mode, which approves the child's "
+                                "edits or every tool call")
+        elif o in ("-p", "--prompt"):
+            prompt = True
+        elif o in ("-i", "--prompt-interactive"):
+            interactive = True
+        elif o == "--allowed-tools":
+            if not all(t.lower() in _GEMINI_RO_TOOLS for t in _tool_names(vals)):
+                run.ask.append("it pre-approves gemini tools that can write or run commands")
+        elif o in ("-e", "--extensions", "--allowed-mcp-server-names", "--experimental-acp"):
+            run.ask.append(f"it passes {o}, which adds tools or a server mode Tess cannot check here")
+        elif o == "--telemetry-outfile":
+            run.targets += vals
+    run.headless = prompt and not interactive
+    run.readonly = run.headless and mode == "plan"
+
+
+# Generic rule for the agent CLIs Tess does not parse: options whose name says
+# they approve everything are refused; anything else asks.
+_GENERIC_BYPASS = re.compile(r"^--?[\w-]*(yolo|dangerous|skip[-_]?permissions|bypass|allow[-_]all|"
+                             r"yes[-_]always|full[-_]auto|auto[-_]?approve|approve[-_]all|no[-_]?confirm|"
+                             r"trust[-_]all)[\w-]*$", re.IGNORECASE)
+_GENERIC_BYPASS_EXACT = {"aider": {"--yes"}, "cursor-agent": {"-f", "--force"}, "qwen": {"-y"},
+                         "droid": {"--auto"}, "goose": set()}
+
+
+def _parse_generic(agent: str, args: list, env: dict, run: _AgentRun) -> None:
+    words = [str(a) for a in args]
+    if words and all(w in _AGENT_INFO for w in words):
+        run.info = True
+        return
+    for w in words:
+        if w == "--":
+            break
+        name, _eq, val = w.partition("=")
+        if _GENERIC_BYPASS.match(name) or name in _GENERIC_BYPASS_EXACT.get(agent, ()) or (
+                name == "--approval-mode" and val.lower() in ("yolo", "auto-edit", "auto_edit")):
+            run.deny.append(f"it passes {w}, which approves the child agent's actions without asking")
+    for i, w in enumerate(words[:-1]):
+        if w == "--approval-mode" and words[i + 1].lower() in ("yolo", "auto-edit", "auto_edit"):
+            run.deny.append(f"it starts {agent} in {words[i + 1]} approval mode")
+    if env.get("GOOSE_MODE", "").lower() in ("auto", "smart_approve"):
+        run.deny.append(f"it sets GOOSE_MODE={env['GOOSE_MODE']}, which approves goose's tool calls")
+    run.ask.append(f"Tess does not read {agent}'s options, so it cannot prove this run is read-only")
+
+
+def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, env: dict, v: Verdict,
+                     ctx: "_Ctx", res: "_Cmd") -> None:
+    """Judge one agent CLI call (see the section comment)."""
+    slots = _redirect_slots(argv)
+    args = [argv[i] for i in range(1, len(argv)) if i not in slots]
+    run = _AgentRun()
+    if agent == "claude":
+        _parse_claude(root, cwd, args, env, run)
+    elif agent == "codex":
+        _parse_codex(args, env, run)
+    elif agent == "gemini":
+        _parse_gemini(args, run)
+    else:
+        _parse_generic(agent, args, env, run)
+    _check_targets(root, cwd, run.targets, v, ctx)
+    if run.info and not run.deny:
+        return
+    depth = _consult_depth()
+    if depth >= 1 or "TESS_CONSULT_DEPTH" in env:
+        why = (f"this session already runs inside a peer call (TESS_CONSULT_DEPTH={depth})" if depth >= 1
+               else "it sets TESS_CONSULT_DEPTH itself, which only Tess's dispatch drivers set")
+        v.add(DENY, f"it starts {agent}, and {why}; a peer call may not start another agent", "agentcli")
+    else:
+        nested = _nested_runtime()
+        if nested:
+            v.add(DENY, f"it starts {agent} from {nested}; a peer call may not start another agent",
+                  "agentcli")
+    _agent_secret(root, agent, argv, orig, run)
+    for why in run.deny:
+        v.add(DENY, why, "secret" if "secret-shaped" in why else "agentcli")
+    if run.skip and not run.toolless:
+        v.add(DENY, f"it starts {agent} with {', '.join(run.skip)}, which skips Tess's hooks or settings in "
+                    "the child, and the child still has tools" + run.hint, "agentcli")
+    if run.deny or (run.skip and not run.toolless):
+        return
+    if res.via_xargs:
+        v.add(ASK, f"xargs adds arguments to {agent} that Tess cannot see, so it cannot prove the run "
+                   "read-only")
+    elif run.readonly and run.headless and not run.ask:
+        return
+    if run.ask:
+        v.add(ASK, f"it starts the agent CLI {agent}: " + "; ".join(dict.fromkeys(run.ask)))
+    elif not run.headless:
+        v.add(ASK, f"it starts an interactive {agent} session, a new agent with its own permissions "
+                   "(Codex could also type into it later without Tess seeing)")
+    elif not run.readonly:
+        v.add(ASK, f"it starts a headless {agent} run that is not provably read-only; only "
+                   + {"claude": "claude -p with --tools \"\", --permission-mode plan or "
+                                "--allowed-tools limited to Read/Grep/Glob",
+                      "codex": "codex exec -s read-only",
+                      "gemini": "gemini -p --approval-mode plan"}.get(agent, "a read-only form")
+                   + " runs without asking")
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
                    ctx: "_Ctx | None" = None, upstream=None):
     ctx = ctx if ctx is not None else _Ctx(raw)
@@ -5702,6 +6272,9 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     name = os.path.basename(str(argv[0])).lower()
     _check_targets(root, cwd, _write_targets(argv, []), v, ctx)
     _check_unknown_args(name, argv, v, ctx)
+    agent = _agent_name(name)
+    if agent:
+        _check_agent_cli(root, cwd, agent, argv, orig, env, v, ctx, res)
     if _STATE.get("codex") and upstream is None and not res.via_xargs and _stdin_source(orig) is None:
         what = _interactive(name, argv, ctx)
         if what:
@@ -5813,12 +6386,15 @@ _GLOB_PROGRAM_EXTRA = {"python", "python3", "pypy3", "node", "nodejs", "deno", "
 
 def _glob_program_names(pat: str) -> list:
     """The gated program names a glob in the program word can match
-    (`/usr/bin/g[i]t` -> git), case-insensitive as macOS finds `GIT`."""
+    (`/usr/bin/g[i]t` -> git), case-insensitive as macOS finds `GIT`.
+    Agent CLIs count too (`cl?ude --dangerously-skip-permissions` is judged
+    as claude, with its bypass checks), whether or not one is installed."""
     base = pat.rsplit("/", 1)[-1].lower()
     if not base:
         return []
     names = (_GATED_NAMED | SHELLS | _VAULT_SHELLS | WRITERS | _EXTRA_WRITERS | INPLACE | EXTRACTORS
-             | WRAPPERS | set(_REPLS) | set(_OUTPUT_OPTS) | _GLOB_PROGRAM_EXTRA)
+             | WRAPPERS | set(_REPLS) | set(_OUTPUT_OPTS) | _GLOB_PROGRAM_EXTRA
+             | _AGENT_CLIS | set(_AGENT_ALIASES))
     return sorted(n for n in names if fnmatch.fnmatchcase(n, base))
 
 
@@ -5866,10 +6442,20 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
         for stand_in in ("git", "gh", "sh", "python3", "cp", "rm", "tessctl", "find"):
             _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), probe, raw, depth + 1,
                            _Ctx(raw, ctx))
+    # v1.0 (nested agent CLIs): an agent CLI stands in too, but only its
+    # refusals count (a bypass or hook-skipping flag); any other words would
+    # make every unknown program with arguments ask.
+    agent_probe = Verdict()
+    if depth < _MAX_DEPTH:
+        for stand_in in ("claude", "codex", "gemini"):
+            _check_segment(root, cwd, [_plain(stand_in)] + list(argv[1:]), agent_probe, raw, depth + 1,
+                           _Ctx(raw, ctx))
+    if agent_probe.level == DENY:
+        probe.add(ASK, "; ".join(agent_probe.reasons))
     why = f"it runs a program whose name is only known when the command runs ({argv[0]})"
     if probe.level > ALLOW:
-        v.add(ASK, why + "; if that is git, gh, tessctl, find, a shell, python or a file writer, "
-                         "Tess would stop it: " + "; ".join(probe.reasons))
+        v.add(ASK, why + "; if that is git, gh, tessctl, find, a shell, python, a file writer or an "
+                         "agent CLI, Tess would stop it: " + "; ".join(probe.reasons))
     elif len(argv) == 1 or depth >= _MAX_DEPTH:
         v.add(ASK, why + ", so Tess cannot check what it does")
 
@@ -6554,7 +7140,7 @@ def _tool_cwd(tin, cwd: str) -> str:
 def evaluate(data: dict, root: Path, codex: bool | None = None) -> Verdict:
     v = Verdict()
     codex = ("turn_id" in data) if codex is None else codex
-    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex)
+    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex, nested=None)
     try:
         _evaluate(data, root, v)
     except _GateTimeout:
