@@ -240,10 +240,20 @@ security reviews; they are stated so nobody relies on a check that is not there.
   known at run time is asked about for `git config`, `-c` and the commands
   `--no-verify` belongs to, not for every git command. A target whose fixed part
   is a folder outside the project is allowed only when the run-time part cannot
-  hold a `/` (`/tmp/build-$$`, `$RANDOM`, `${#X}`, `$((...))`, `$(date +%s)`, a
-  user or host name, a commit id); `/tmp/build-$ID`, where a value holding `../`
-  could climb back into the project, asks (since the v1.0 run-escalation
-  review). `cd` with CDPATH set (inherited, assigned, exported or given as a
+  hold a `/` (`/tmp/build-$$`, `${#X}`, `$((...))`, `$(date +%s)`, a user or
+  host name, a commit id, and `$RANDOM`, `$SECONDS`, `$LINENO` and the other
+  shell-set variables only while nothing can rebind them); `/tmp/build-$ID`,
+  where a value holding `../` could climb back into the project, asks (since
+  the v1.0 run-escalation review). A shell-set variable is no longer trusted
+  (since the v1.0.x review, Cyra N1) when any part of the command, including a
+  subshell, a function, or an `eval` or `sh -c` body, unsets, assigns, reads
+  into or otherwise binds it (`unset RANDOM; read RANDOM < f` makes `$RANDOM`
+  any text, `../` included), when a builtin that binds variables gets a name
+  only known at run time, when the command sources a file or runs a command
+  named by a variable, or when the gate's environment gives it a value that is
+  not a plain number; then the rule above applies and it asks. Likewise
+  `$(date ...)` is not trusted when the command defines a function or alias of
+  that name or changes `PATH`. `cd` with CDPATH set (inherited, assigned, exported or given as a
   prefix) counts as a `cd` only known at run time, unless its target starts
   with `/`, `./` or `../`. A symbolic link's relative target is read from the
   link's own folder (`ln -s ../../../CLAUDE.md missions/m1/returns/t.json`
@@ -340,15 +350,25 @@ security reviews; they are stated so nobody relies on a check that is not there.
   1), when the command sets `TESS_CONSULT_DEPTH` itself, or when the gate's
   process ancestry shows a runtime started inside another runtime's session
   (the same rule as the brain's `nested_runtime`). `tessctl run` is itself an
-  agent-CLI launch (since the v1.0 run-escalation review): every spelling
-  (`./tessctl`, `.tess/bin/tessctl`, `python3 [-I] .tess/bin/tessctl`, through
-  a shell, wrapper or runner) that can dispatch the claude or codex driver
-  (claude when `--driver` is left out; the last `--driver`, or a unique prefix
-  such as `--dri`, decides) asks in Claude Code, is refused in Codex and the
-  no-prompt modes, and is refused inside a peer call; only `--driver fake` and
-  `--help` stay allowed. tessctl also refuses to dispatch when its own
-  `TESS_CONSULT_DEPTH` is 1 or more, so a call the gate did not see still
-  cannot nest. A codex worker never writes: every codex dispatch, worker or
+  agent-CLI launch (since the v1.0 run-escalation review): every spelling the
+  gate can read in the command (`./tessctl`, `.tess/bin/tessctl`, `python3
+  [-I] .tess/bin/tessctl`, through a shell, wrapper or runner, and since the
+  v1.0.x review through `xargs`, which can add `run` or a later `--driver`
+  from its input, so `xargs ./tessctl` is treated like `xargs codex`) that can
+  dispatch the claude or codex driver (claude when `--driver` is left out; the
+  last `--driver`, or a unique prefix such as `--dri`, decides) asks in Claude
+  Code, is refused in Codex and the no-prompt modes, and is refused inside a
+  peer call; only `--driver fake` and `--help` stay allowed. tessctl also
+  refuses to dispatch when its own `TESS_CONSULT_DEPTH` is 1 or more, so a
+  call the gate did not see cannot nest, but only while `TESS_CONSULT_DEPTH`
+  survives: a child that unsets or resets it in the environment it hands to
+  tessctl is no longer known to be inside a peer call. Residual: the gate does
+  not parse arbitrary interpreter programs, so a program that builds the
+  `tessctl run` command at run time inside an interpreter (`python3 -c` that
+  joins the words) is judged only by the interpreter rules and can be allowed;
+  there Claude Code's own permission prompt still applies when the gate
+  allows, and tessctl's own depth check still holds while the variable
+  survives. A codex worker never writes: every codex dispatch, worker or
   verifier, runs `-s read-only` and returns its artifact as its final message.
   `-o` is written by the codex harness outside its sandbox and follows
   symlinks, so it points into a fresh private folder (`tempfile.mkdtemp`, mode

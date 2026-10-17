@@ -3693,6 +3693,66 @@ _SLASHFREE_SUB = re.compile(
     r"git\s+rev-parse\s+(--short(=\d+)?\s+)?(HEAD|@))\s*$")
 _DOTDOT = re.compile(r"(^|/)\.\.(/|$)")
 
+# v1.0.x (Cyra N1): those variables hold no "/" only while the shell keeps
+# them special. `unset RANDOM; read RANDOM < f` (or a plain assignment,
+# declare, export, local, printf -v, mapfile, getopts, a for loop, a function,
+# an eval / sh -c body, a value from the environment) makes $RANDOM whatever
+# the command wants. So a variable is trusted only when no part of the command
+# can bind it: its name appears nowhere except as `$NAME` / `${NAME}` (quotes
+# and backslashes removed first, so `RAN""DOM` is RANDOM), no builtin that
+# binds a variable gets a name only known at run time (`read ${n}DOM`), no
+# command word is only known at run time (`$c $n`), nothing is sourced, and
+# the gate's own environment does not carry it. When unsure, it is not
+# trusted, and the F6 rule applies (ask in Claude Code, deny in Codex).
+_BINDERS = re.compile(
+    r"(?<![\w./-])(unset|read|readarray|mapfile|declare|typeset|local|export|readonly|getopts|let|"
+    r"eval|trap|alias|coproc|printf|wait|enable|builtin|command)(?![\w./-])([^;&|\n]*)")
+_BINDER_OPT = {"printf": re.compile(r"(?<!\S)-\w*v"), "wait": re.compile(r"(?<!\S)-\w*p")}
+_SOURCES = re.compile(r"(?<![\w./-])(source|enable)(?![\w./-])|"
+                      r"(?:^|[;&|(){}\n]|(?<![\w-])(?:then|do|else|elif|builtin|command)\s)\s*\.\s+\S")
+_DYN_CMD = re.compile(r"(?:^|[;&|(){}\n]|(?<![\w-])(?:then|do|else|elif|time|!|builtin|command|exec|"
+                      r"nohup|env)\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*[$`]")
+_DYN_TEXT = re.compile(r"[$`{*?\[~]")
+
+
+def _flat_shell(text: str) -> str:
+    return re.sub(r"\\\n", "", text).replace("\\", "").replace("'", "").replace('"', "")
+
+
+def _rebound(name: str, ctx: "_Ctx") -> bool:
+    """True when this command may change `name` (see above), or Tess is unsure."""
+    if name in ctx.vars or ctx.opaque or not os.environ.get(name, "0").isdigit():
+        return True  # a value from the environment counts only when it is a plain number
+    for text in dict.fromkeys((ctx.raw or "", _STATE.get("cmd") or "")):
+        flat = _flat_shell(text)
+        refs = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?!\w)", "", flat)
+        if re.search(r"(?<!\w)" + name + r"(?!\w)", refs) or re.search(r"\$\{![^}]*=", flat):
+            return True
+        if _SOURCES.search(flat) or _DYN_CMD.search(flat):
+            return True
+        for m in _BINDERS.finditer(flat):
+            opt = _BINDER_OPT.get(m.group(1))
+            if (opt is None or opt.search(m.group(2))) and _DYN_TEXT.search(m.group(2)):
+                return True
+    return False
+
+
+def _slash_free_sub(t: str, ctx: "_Ctx") -> bool:
+    """`$(date +%s)` and the like, unless this command can make the program
+    name run something else (a function or alias of that name, PATH changed)."""
+    if not _SLASHFREE_SUB.match(t):
+        return False
+    prog = t.split()[0]
+    if prog in ctx.funcs or prog in ctx.aliases:
+        return False
+    for text in dict.fromkeys((ctx.raw or "", _STATE.get("cmd") or "")):
+        flat = _flat_shell(text)
+        if (re.search(r"(?<![\w./-])" + re.escape(prog) + r"\s*\(\s*\)", flat)
+                or re.search(r"(?<!\w)function\s+" + re.escape(prog) + r"(?![\w.-])", flat)
+                or re.search(r"(?<![\w./-])(alias|hash)(?![\w./-])", flat) or _rebound("PATH", ctx)):
+            return False
+    return True
+
 
 def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
     """True only when every part of `word` that is known only at run time
@@ -3709,8 +3769,8 @@ def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
             vals = _var_values(t, cwd, ctx)
             if vals is not None:
                 known = "\n".join(vals)
-            elif t in _SLASHFREE_VARS:
-                seen = True
+            elif t in _SLASHFREE_VARS and not _rebound(t, ctx):
+                seen = True  # Cyra N1: only while nothing in the command can rebind it
             else:
                 return False
         elif k == "dyn":
@@ -3722,7 +3782,7 @@ def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
             vals = _sub_values(t, cwd)
             if vals is not None:
                 known = "\n".join(vals)
-            elif (t.startswith("(") and t.endswith(")")) or _SLASHFREE_SUB.match(t):
+            elif (t.startswith("(") and t.endswith(")")) or _slash_free_sub(t, ctx):
                 seen = True  # $((arithmetic)), or a value with no "/"
             else:
                 return False
@@ -6603,13 +6663,27 @@ def _tessctl_run_driver(words: list) -> str | None:
     return driver if driver in ("claude", "codex") else "?"
 
 
-def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx") -> None:
+_XARGS_REPLACE = re.compile(r"^(-[A-Za-z]*[IiJ]|--replace(=|$))")
+
+
+def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx", res: "_Cmd | None" = None) -> None:
+    via_xargs = res is not None and res.via_xargs
+    if via_xargs:
+        # v1.0.x (Cyra N2): xargs adds words from its input that Tess cannot
+        # see (`echo run | xargs ./tessctl`, or a later `--driver claude`); with
+        # -I/-J/--replace it can put them anywhere. Treated like `xargs codex`.
+        tail = ["$XARGS_INPUT"]
+        replace = any(_XARGS_REPLACE.match(str(w)) for w in res.prefix)
+        words = tail if replace else list(words) + tail
     driver = _tessctl_run_driver(words)
     if driver is None or driver == "fake":
         return
     what = ("`tessctl run` (the claude driver unless --driver says otherwise)" if driver == "claude"
             else "`tessctl run --driver codex`" if driver == "codex"
             else "`tessctl run` with a driver Tess cannot pin down")
+    if via_xargs:
+        what = ("tessctl through xargs, which adds words Tess cannot see and so can make it "
+                + what)
     depth = _consult_depth()
     if depth >= 1 or "TESS_CONSULT_DEPTH" in env or "TESS_CONSULT_DEPTH" in ctx.vars:
         why = (f"this session already runs inside a peer call (TESS_CONSULT_DEPTH={depth})" if depth >= 1
@@ -6750,7 +6824,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     tess_words = _tessctl_call(_expanded_words(argv, cwd, ctx))
     if tess_words is not None:
         _check_vault(tess_words, v)
-        _check_tessctl_run(env, tess_words, v, ctx)
+        _check_tessctl_run(env, tess_words, v, ctx, res)
         tpos = [w.lower() for w in tess_words if not w.startswith("-")]
         if tpos[:1] == ["anchor"] and tpos[1:2] in (["accept"], ["init"]):
             v.add(DENY, "only the operator can record Tess's safety files as approved "
