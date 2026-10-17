@@ -43,6 +43,9 @@
 # (including the string "0") counts as set — unset or empty ("") is the
 # only way to leave headless mode off. See conductor/hook-testing-protocol.md
 # and this file's companion test, tests/test_dispatch_guard_headless.py.
+# TESS_DISPATCHED=1 (set by `tessctl run` in every child it dispatches, v1.0
+# run-escalation review) counts the same here: the child is a dispatched
+# specialist. Unlike TESS_HEADLESS it does not silence the brain hooks.
 
 # Per-user lock dir (v0.2.1, 2026-09-29 security review): the old shared
 # /tmp/tess-dispatch-locks was world-writable, so any local user or process
@@ -56,7 +59,7 @@ input="$(cat)"
 # Headless / no-subagent-available context — see header comment. Checked
 # FIRST, ahead of the dispatch-lock check, since a headless harness cannot
 # have a valid dispatch lock in the first place and this must win regardless.
-if [ -n "${TESS_HEADLESS:-}" ] || [ -n "${TESS_NO_SUBAGENTS:-}" ]; then
+if [ -n "${TESS_HEADLESS:-}" ] || [ -n "${TESS_NO_SUBAGENTS:-}" ] || [ -n "${TESS_DISPATCHED:-}" ]; then
   exit 0
 fi
 

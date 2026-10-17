@@ -381,8 +381,10 @@ def _security_tier_paths(root: Path) -> set:
         if key in _LOCK_CACHE:
             return set(_LOCK_CACHE[key])
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return set()
+    # v1.0 run-escalation review (2b): a tess.lock that exists but cannot be
+    # read is an error (decide() then refuses), never "no security-tier files".
     found = _parse_security_tier(text)
     _LOCK_CACHE.clear()
     _LOCK_CACHE[key] = frozenset(found)
@@ -2213,6 +2215,27 @@ def _git_ro(cwd: str, *args) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def _git_unanswered(cwd: str) -> bool:
+    """v1.0 run-escalation review (2b): True when `cwd` is inside a git
+    repository (a `.git` entry here or above) but git does not answer the
+    gate's questions (it fails or times out). A "no" from a git query is only
+    a "no" when git answers at all; otherwise the caller asks. Outside a
+    repository the git command fails on its own."""
+    p = os.path.abspath(cwd)
+    while True:
+        if os.path.lexists(os.path.join(p, ".git")):
+            break
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+    return _git_ro(cwd, "rev-parse", "--git-dir") is None
+
+
+_NO_GIT_ANSWER = ("git did not answer Tess's question about {what} (it failed or timed out), so Tess "
+                  "cannot check what this changes")
+
+
 def _tree(cwd: str, rev: str) -> str | None:
     if not rev or rev.startswith("-") or "\n" in rev:
         return None
@@ -2395,6 +2418,9 @@ def _git_reset(root, cwd, rest, v):
         rev, specs = (pos[0] if pos else "HEAD"), after
     elif pos and _tree(cwd, pos[0]):
         rev, specs = pos[0], pos[1:]
+    elif pos and not os.path.lexists(os.path.join(cwd, pos[0])) and _git_unanswered(cwd):
+        # 2b: not a file here and git could not say whether it is a commit
+        return v.add(ASK, _NO_GIT_ANSWER.format(what=f"`{pos[0]}`"))
     else:
         rev, specs = "HEAD", pos
     if specs:
@@ -2412,7 +2438,10 @@ def _git_head_ref(root, cwd, sub, rest, v):
     opts, pos, _, _ = _parse(rest, "m", ("--message",))
     if len(pos) < 2 or "-d" in opts or "--delete" in opts:
         return
-    current = (_git_ro(cwd, "symbolic-ref", "-q", "HEAD") or "").strip()
+    cur = _git_ro(cwd, "symbolic-ref", "-q", "HEAD")
+    if cur is None and sub == "update-ref" and pos[0] != "HEAD" and _git_unanswered(cwd):
+        return v.add(ASK, _NO_GIT_ANSWER.format(what="the checked-out branch"))  # 2b
+    current = (cur or "").strip()
     if pos[0] == "HEAD" or (sub == "update-ref" and current and pos[0] == current):
         _move_to(root, cwd, pos[1], v, f"git {sub}")
 
@@ -2455,6 +2484,8 @@ def _git_stash(root, cwd, rest, v):
         refs[0] if refs and rest[0] != "branch" else "stash@{0}")
     ref = f"stash@{{{ref}}}" if ref.isdigit() else ref
     if ref == "stash@{0}" and _git_ro(cwd, "rev-parse", "--verify", "--quiet", "refs/stash") is None:
+        if _git_unanswered(cwd):
+            return v.add(ASK, _NO_GIT_ANSWER.format(what="the stash"))  # 2b
         return  # no stash: git reports it and changes nothing
     changed = _changed_protected(root, cwd, ref + "^1", ref)
     if changed is not None and _tree(cwd, ref + "^3"):
@@ -2673,7 +2704,11 @@ def _check_git_tree_writes(root: Path, cwd: str | None, sub: str, rest: list, v:
     if cwd is None:
         return v.add(DENY, f"`git {sub}` runs in a directory known only at run time (-C), so Tess "
                            "cannot check what it writes", "rollback")
-    if sub != "clone" and _has_replace_refs(cwd):
+    replace_refs = _has_replace_refs(cwd) if sub != "clone" else False
+    if replace_refs is None and _git_unanswered(cwd):
+        # 2b: a repository, but git did not say whether replace refs exist
+        v.add(ASK, _NO_GIT_ANSWER.format(what="git replace refs"))  # and keep checking
+    if replace_refs:
         # v1.0.0: with replace refs, HEAD and the index no longer mean what they
         # say, so even the "restore from HEAD" undo is not the same source.
         # (No answer = not a repository: the git command fails on its own.)
@@ -3645,17 +3680,75 @@ def _word_values(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND
     return flat, None
 
 
-def _may_reach(root: Path, cwd: str | None, prefix: str) -> bool:
+# v1.0 run-escalation review (Cyra F6): a run-time part after a fixed folder
+# outside the project keeps the path there only when it cannot hold a "/":
+# `/var/tmp/build-$ID` reaches the project when ID is `x/../../<project>/CLAUDE.md`.
+# These are the run-time values that never hold one (numbers, a date in a
+# slash-free format, a user or host name, a commit id).
+_SLASHFREE_VARS = {"RANDOM", "SRANDOM", "SECONDS", "LINENO", "UID", "EUID", "PPID", "BASHPID",
+                   "EPOCHSECONDS", "EPOCHREALTIME", "HISTCMD", "OPTIND", "SHLVL", "COLUMNS", "LINES"}
+_SLASHFREE_SUB = re.compile(
+    r"^\s*(date(\s+-u)?\s+(['\"]?)\+(%[sYmdHMSjNFTyeIpaAbBkluUVwWGgCzZn%]|[-_:,A-Za-z0-9])*\3|"
+    r"id\s+-[ugGnr]+|whoami|hostname(\s+-s)?|uuidgen|nproc|"
+    r"git\s+rev-parse\s+(--short(=\d+)?\s+)?(HEAD|@))\s*$")
+_DOTDOT = re.compile(r"(^|/)\.\.(/|$)")
+
+
+def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
+    """True only when every part of `word` that is known only at run time
+    provably holds no "/" (so it cannot climb out of the fixed folder in front
+    of it), and no known text after the first such part has a ".." step."""
+    if ctx is None or not isinstance(word, _Word) or isinstance(word, _Field) or not word.parts:
+        return False
+    seen = False
+    for k, t in word.parts:
+        known = None
+        if k in ("lit", "raw"):
+            known = t
+        elif k == "var":
+            vals = _var_values(t, cwd, ctx)
+            if vals is not None:
+                known = "\n".join(vals)
+            elif t in _SLASHFREE_VARS:
+                seen = True
+            else:
+                return False
+        elif k == "dyn":
+            if t in ("$", "!", "?", "#") or t.startswith("[") or (t.startswith("#") and _NAME.fullmatch(t[1:])):
+                seen = True
+            else:
+                return False
+        elif k == "sub":
+            vals = _sub_values(t, cwd)
+            if vals is not None:
+                known = "\n".join(vals)
+            elif (t.startswith("(") and t.endswith(")")) or _SLASHFREE_SUB.match(t):
+                seen = True  # $((arithmetic)), or a value with no "/"
+            else:
+                return False
+        elif k == "arith":
+            seen = True
+        else:
+            return False
+        if seen and known is not None and _DOTDOT.search(known):
+            return False
+    return True
+
+
+def _may_reach(root: Path, cwd: str | None, prefix: str, word=None, ctx: "_Ctx | None" = None) -> bool:
     """False only when the text in front of a run-time part fixes a directory
-    outside the project and not above it (`/tmp/build-$ID`)."""
+    outside the project and not above it, AND the run-time part cannot hold a
+    "/" (`/tmp/build-$$`; not `/tmp/build-$ID`, Cyra F6)."""
     base = os.path.realpath(str(root))
     if "/" in prefix:
         head = prefix.rsplit("/", 1)[0] or "/"
         real = os.path.realpath(os.path.join(cwd or base, os.path.expanduser(head)))
     else:
         real = os.path.realpath(cwd or base)
-    return (_within(real, base) is not None or _within(base, real) is not None
-            or control_file_hit(root, real, real) is not None)
+    if (_within(real, base) is not None or _within(base, real) is not None
+            or control_file_hit(root, real, real) is not None):
+        return True
+    return not _slash_free_runtime(word, cwd, ctx)
 
 
 def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
@@ -3712,7 +3805,7 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
     if cands is None:
         if ctx.deferred and _positional_only(word):
             return  # a function's "$1": checked again at each call, with its arguments
-        if _may_reach(root, cwd, prefix):
+        if _may_reach(root, cwd, prefix, word, ctx):
             v.add(ASK, f"it writes to {word}, a path that is only known when the command runs "
                        "(or that expands to more names than Tess checks one by one), so Tess "
                        "cannot check it against its protected files")
@@ -4423,6 +4516,23 @@ def _check_patch_input(root: Path, cwd: str, argv: list, orig: list, v: "Verdict
 def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
     """Remember the links `ln` makes, so a later write through one in the same
     command (`ln -s . x && cp y x/CLAUDE.md`) is checked where it lands."""
+    for link, target in _ln_links(cwd, argv, ctx)[1]:
+        ctx.links[link] = target
+
+
+def _ln_symlink_targets(cwd: str, argv: list, ctx: "_Ctx") -> list:
+    """v1.0 run-escalation review (Cyra F4a): where each symbolic link `ln -s`
+    makes really points. A relative target resolves from the LINK's folder,
+    not from the working directory (`ln -s ../../../CLAUDE.md
+    missions/m1/returns/t.json` points at the project's CLAUDE.md), so the
+    operand check, which reads it from the working directory, misses it."""
+    sym, pairs = _ln_links(cwd, argv, ctx)
+    return [_plain(target) for _link, target in pairs if sym and target]
+
+
+def _ln_links(cwd: str, argv: list, ctx: "_Ctx") -> tuple:
+    """(symbolic, [(absolute link path, absolute target or None), ...]) for
+    the links one `ln` call makes."""
     args, tdir, ops, i = _operands(argv[1:]), None, [], 0
     sym = any(re.match(r"^-[A-Za-z]*s", str(a)) or str(a) == "--symbolic" for a in args)
     while i < len(args):
@@ -4453,6 +4563,7 @@ def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
                  for t in ops[:-1]] if dest_abs else []
     else:
         pairs = []
+    out = []
     for t, link in pairs:
         if not link or "\0" in link:
             continue
@@ -4460,7 +4571,8 @@ def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
         tv = val(t)
         target = None if tv is None else os.path.normpath(
             os.path.join(os.path.dirname(link) if sym else cwd, os.path.expanduser(tv)))
-        ctx.links[link] = target
+        out.append((link, target))
+    return sym, out
 
 
 # v1.0 final review (GPT-6 #7, #8, #13): a find expression is evaluated the
@@ -4801,7 +4913,7 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
     for s in starts:
         cands, prefix = _word_values(s, cwd, ctx)
         if cands is None:
-            if _may_reach(root, cwd, prefix):
+            if _may_reach(root, cwd, prefix, s, ctx):
                 v.add(ASK, f"`find` changes files under {s}, a directory only known when the command "
                            "runs, so Tess cannot check them")
             continue
@@ -4859,11 +4971,25 @@ def _interp_code(argv: list, raw: str) -> str:
     return raw
 
 
+# v1.0 run-escalation review (Cyra F4c): a link made from inline code points
+# wherever its (relative) target resolves from the LINK's folder, which the
+# token scan below (cwd-relative) cannot work out; a later write through it
+# lands there. Asks.
+_INTERP_LINK = re.compile(
+    r"\bos\.(symlink|link|symlinkat|linkat)\b|\.(symlink_to|hardlink_to|link_to)\s*\(|"
+    r"\.(symlink|link)(Sync)?\s*\(|\bfs(?:\.promises)?\.(symlink|link)(Sync)?\b|\bFile\.(symlink|link)\b|\bFileUtils\.(ln|ln_s|ln_sf)\b|"
+    r"\bDeno\.(symlink|link)(Sync)?\b|(?<![\w.$])(symlink|link)\s*\(")
+
+
 def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
     """Best effort (M1): an inline program that names a protected path and
     calls a write-shaped API. A script FILE is not read; the ship gate stays
     the wall."""
     code = str(_interp_code(argv, raw))
+    if _INTERP_LINK.search(code):
+        v.add(ASK, f"an inline {os.path.basename(str(argv[0]))} program makes a file link, and Tess "
+                   "cannot work out where a link's target resolves from the link's own folder, so a "
+                   "later write through it could land on a protected file")
     if not _INTERP_WRITE.search(code):
         return
     # v1.0 audit: each distinct token is checked once, and one evaluation
@@ -6212,6 +6338,294 @@ def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, e
                    + " runs without asking")
 
 
+# --------------------------------------------------------------------------- SQL shells (v1.0 run-escalation, Cyra F5)
+# sqlite3 and duckdb write files: the database operand (created or changed),
+# the dot-commands .output/.once/.save/.backup/.clone/.open/.log/.trace,
+# .import's source, and the SQL `VACUUM INTO`, `ATTACH`, duckdb `COPY ... TO`
+# and `EXPORT DATABASE`, and sqlite's writefile(). Each target is checked
+# against the protected list. `.shell`/`.system` and `.output |cmd` run a
+# command, checked as one. SQL Tess cannot read (from stdin it cannot see, a
+# file, `.read`, `-init`, a value only known at run time, load_extension,
+# `.cd`, `.archive`) asks. ~/.sqliterc / ~/.duckdbrc run first; they are read
+# too.
+_SQL_CLIS = {"sqlite3", "sqlite", "duckdb"}
+_SQL_CMD_OPTS = {"-cmd", "-c", "-s"}
+_SQL_FILE_OPTS = {"-init", "-f"}
+_SQL_VALUE_OPTS = {"-separator", "-newline", "-nullvalue", "-vfs", "-mmap", "-heap", "-maxsize",
+                   "-escape", "-nonce", "-pcachetrace", "-memtrace"}
+_SQL_VALUE2_OPTS = {"-lookaside", "-pagecache"}
+_SQL_DOT_FILE = ("output", "once", "save", "backup", "clone", "open", "log", "trace", "import", "excel")
+_SQL_DOT_ASK = ("read", "cd", "load", "archive", "ar")
+_SQL_DOT_SHELL = ("shell", "system")
+_SQL_TARGET_SQL = (
+    (re.compile(r"(?is)\bvacuum\b[^;]*?\binto\s+"), "VACUUM INTO"),
+    (re.compile(r"(?is)\battach\s+(?:database\s+)?(?:if\s+not\s+exists\s+)?(?:\(\s*)?"), "ATTACH"),
+    (re.compile(r"(?is)\bcopy\b[^;]*?\bto\s+(?:\(\s*)?"), "COPY ... TO"),
+    (re.compile(r"(?is)\bexport\s+database\s+(?:\(\s*)?"), "EXPORT DATABASE"),
+    (re.compile(r"(?is)\bwritefile\s*\(\s*"), "writefile()"),
+)
+_SQL_ASK_SQL = re.compile(r"(?is)\bload_extension\s*\(|\bedit\s*\(")
+
+
+def _sql_literal(text: str, i: int) -> str | None:
+    """The SQL string literal at text[i] ('' doubles a quote), or None when
+    what is there is not one plain literal (an expression, a parameter)."""
+    if i >= len(text) or text[i] not in "'\"":
+        return None
+    q, out, j = text[i], [], i + 1
+    while j < len(text):
+        if text[j] == q:
+            if j + 1 < len(text) and text[j + 1] == q:
+                out.append(q)
+                j += 2
+                continue
+            rest = text[j + 1:].lstrip()
+            return None if rest.startswith("||") else "".join(out)
+        out.append(text[j])
+        j += 1
+    return None
+
+
+def _sql_path(lit: str) -> str | None:
+    """A database / file name as sqlite opens it: file: URIs reduced to their
+    path; None for an in-memory or temporary database."""
+    if lit.startswith("file:"):
+        lit = lit[5:].split("?", 1)[0].split("#", 1)[0]
+        if lit.startswith("//"):
+            lit = "/" + lit[2:].split("/", 1)[-1] if not lit.startswith("///") else lit[2:]
+    return None if lit in ("", ":memory:") or lit.startswith(":memory:") else lit
+
+
+def _sql_scan(root: Path, cwd: str, prog: str, text: str, v: "Verdict", depth: int, ctx: "_Ctx",
+              one_arg: bool) -> None:
+    """Check one SQL/dot-command input. `one_arg`: a command-line argument
+    (one dot-command, or SQL); otherwise input lines."""
+    if one_arg:
+        chunks = [text]
+    else:
+        chunks = text.split("\n")
+    sql = []
+    for ch in chunks:
+        if ch.lstrip().startswith("."):
+            _sql_dot(root, cwd, prog, ch.lstrip(), v, depth, ctx)
+        else:
+            sql.append(ch)
+    body = "\n".join(sql)
+    if _SQL_ASK_SQL.search(body):
+        v.add(ASK, f"its {prog} SQL loads an extension or opens an editor, which Tess cannot check")
+    for pat, what in _SQL_TARGET_SQL:
+        for m in pat.finditer(body):
+            lit = _sql_literal(body, m.end())
+            if lit is None:
+                v.add(ASK, f"its {prog} SQL ({what}) writes to a file named by an expression Tess "
+                           "cannot work out, so it cannot check it against its protected files")
+                continue
+            path = _sql_path(lit)
+            if path:
+                targets = [path] + ([path.rstrip("/") + "/load.sql"] if what == "EXPORT DATABASE" else [])
+                _check_targets(root, cwd, [_plain(t) for t in targets], v, ctx)
+
+
+def _sql_dot(root: Path, cwd: str, prog: str, line: str, v: "Verdict", depth: int, ctx: "_Ctx") -> None:
+    try:
+        words = shlex.split(line)
+    except ValueError:
+        v.add(ASK, f"Tess could not read the {prog} dot-command {line[:40]!r}")
+        return
+    if not words:
+        return
+    cmd = words[0][1:].lower()
+    args = words[1:]
+    if not cmd:
+        return
+    # the shell takes an abbreviation; a prefix of a writing command counts as it
+    hit = lambda names: any(n.startswith(cmd) for n in names)  # noqa: E731
+    if hit(_SQL_DOT_SHELL):
+        rest = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else ""
+        if rest:
+            _recurse(root, cwd, rest, v, depth, ctx)
+    if hit(("read",)) and args and args[0].startswith("|"):
+        _recurse(root, cwd, " ".join(args)[1:], v, depth, ctx)
+    elif hit(_SQL_DOT_ASK):
+        v.add(ASK, f"it runs the {prog} dot-command .{cmd}, which reads SQL or code from elsewhere "
+                   "or changes the folder later file names are relative to, so Tess cannot check "
+                   "what it writes")
+    if hit(_SQL_DOT_FILE):
+        ops, i = [], 0
+        while i < len(args):
+            a = args[i]
+            if a.startswith("-"):
+                i += 2 if a in ("--skip", "--schema", "--maxsize") else 1
+                continue
+            ops.append(a)
+            i += 1
+        if not ops:
+            return
+        if ops[0].startswith("|"):
+            _recurse(root, cwd, " ".join(ops)[1:], v, depth, ctx)
+            return
+        files = [ops[0]] if hit(("import",)) and not hit(("output", "once", "open")) else [ops[-1]]
+        files = [f for f in files if f.lower() not in ("off", "on", "stdout", "stderr")]
+        _check_targets(root, cwd, [_plain(p) for f in files for p in [_sql_path(f)] if p], v, ctx)
+
+
+def _check_sql_cli(root: Path, cwd: str, name: str, argv: list, orig: list, v: "Verdict", depth: int,
+                   ctx: "_Ctx", upstream, env: dict) -> None:
+    prog = name
+    args = _operands(argv[1:])
+    db, cmds, init_given, i, positional_sql = None, [], False, 0, 0
+    while i < len(args):
+        a, s = args[i], str(args[i])
+        opt = "-" + s.lstrip("-") if s.startswith("-") and s not in ("-", "--") else None
+        if opt is not None:
+            o = opt.split("=", 1)[0]
+            glued = opt.split("=", 1)[1] if "=" in opt else None
+            nxt = (_field(glued) if glued is not None else (args[i + 1] if i + 1 < len(args) else None))
+            step = 1 if glued is not None else 2
+            if o in _SQL_CMD_OPTS:
+                if nxt is not None:
+                    cmds.append(nxt)
+                i += step
+            elif o in _SQL_FILE_OPTS:
+                init_given = True
+                v.add(ASK, f"{prog} {o} runs SQL from a file Tess does not read, so it cannot check "
+                           "which files that SQL writes")
+                i += step
+            elif o in _SQL_VALUE_OPTS:
+                i += step
+            elif o in _SQL_VALUE2_OPTS:
+                i += 3
+            elif o in ("-a", "-archive") or o.startswith("-A"):
+                v.add(ASK, f"{prog} archive mode can write the files it extracts, which Tess cannot list")
+                i += 1
+            else:
+                i += 1
+            continue
+        if db is None:
+            db = a
+        else:
+            cmds.append(a)
+            positional_sql += 1
+        i += 1
+    if db is not None:
+        cands, _p = _word_values(db, cwd, ctx)
+        if cands is None:
+            _check_target(root, cwd, db, v, ctx)
+        else:
+            _check_targets(root, cwd, [_plain(p) for t, _pat in cands for p in [_sql_path(t)] if p], v, ctx)
+    sources = []
+    for c in cmds:
+        cands, _p = _word_values(c, cwd, ctx)
+        if cands is None:
+            v.add(ASK, f"it gives {prog} SQL that is only known when the command runs ({c}), so Tess "
+                       "cannot check which files it writes")
+            continue
+        sources += [(t, True) for t, _pat in cands]
+    if positional_sql == 0:  # SQL comes from stdin
+        src = _stdin_source(orig)
+        if src is not None and src[0] in ("heredoc", "herestring") and not (
+                src[0] == "herestring" and _dynamic(src[1])):
+            sources.append((str(src[1]), False))
+        elif src is not None:
+            v.add(ASK, f"{prog} reads SQL from {'a file' if src[0] == 'file' else 'input'} Tess does not "
+                       "read, so it cannot check which files that SQL writes (.output, VACUUM INTO, ATTACH)")
+        elif upstream is not None:
+            up = _upstream_words(upstream)
+            if up is None:
+                v.add(ASK, f"{prog} reads SQL from a pipe Tess cannot read, so it cannot check which "
+                           "files that SQL writes (.output, VACUUM INTO, ATTACH)")
+            else:
+                sources.append(("\n".join(up), False))
+    if "HOME" in env or "HOME" in ctx.vars:
+        v.add(ASK, f"it points HOME elsewhere for {prog}, which then runs that folder's start-up SQL "
+                   "file, which Tess does not read")
+    elif not init_given:
+        rc = os.path.join(os.environ.get("HOME") or _os_home(), ".duckdbrc" if prog == "duckdb" else ".sqliterc")
+        try:
+            with open(rc, encoding="utf-8", errors="replace") as fh:
+                sources.append((fh.read(1_000_000), False))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            v.add(ASK, f"{prog} first runs {rc}, which Tess cannot read")
+    for text, one in sources:
+        _sql_scan(root, cwd, prog, text, v, depth, ctx, one)
+
+
+# v1.0 run-escalation review (Cyra F2): `tessctl run` dispatches a claude or
+# codex agent for every task and verifier in a crew-plan (claude when --driver
+# is left out), with no TTY, so it is an agent-CLI launch like `claude -p`:
+# it asks in Claude Code, is refused in Codex and the no-prompt modes, and is
+# refused inside a peer call (TESS_CONSULT_DEPTH >= 1, or a runtime started
+# inside another runtime's session). Only `--driver fake` (no agent) and
+# `--help` stay allowed. tessctl refuses the same dispatch itself when its own
+# TESS_CONSULT_DEPTH is 1 or more, for a call this gate did not see.
+_RUN_OTHER_LONG = ("--timeout", "--fake-script", "--by", "--json", "--help")
+_RUNTIME_TEXT = re.compile(r"[$`*?[]")
+
+
+def _tessctl_run_driver(words: list) -> str | None:
+    """None when these tessctl words do not run `tessctl run` (or only print
+    its help); else the driver it dispatches: 'fake', 'claude', 'codex', or
+    '?' when Tess cannot pin it down. argparse takes the last --driver, and a
+    unique prefix (`--dri codex`); the default is claude."""
+    i = 0
+    while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        if words[i] in ("-h", "--help"):
+            return None
+        i += 1
+    if i < len(words) and words[i] == "--":
+        i += 1
+    if i >= len(words):
+        return None
+    sub = words[i]
+    if _RUNTIME_TEXT.search(sub):
+        return "?"
+    if sub != "run":
+        return None
+    rest, driver, j = words[i + 1:], "claude", 0
+    while j < len(rest):
+        w = rest[j]
+        if w == "--":
+            break
+        if w in ("-h", "--help"):
+            return None
+        name, eq, val = w.partition("=") if w.startswith("--") else (w, "", "")
+        if len(name) >= 3 and "--driver".startswith(name) and not any(o.startswith(name) for o in _RUN_OTHER_LONG):
+            driver = val if eq else (rest[j + 1] if j + 1 < len(rest) else "")
+            j += 1 if eq else 2
+            continue
+        if _RUNTIME_TEXT.search(w) and w.startswith(("-", "$", "`")):
+            driver = "?"  # a word only known at run time could be another --driver
+        j += 1
+    if driver == "fake":
+        return "fake"
+    return driver if driver in ("claude", "codex") else "?"
+
+
+def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx") -> None:
+    driver = _tessctl_run_driver(words)
+    if driver is None or driver == "fake":
+        return
+    what = ("`tessctl run` (the claude driver unless --driver says otherwise)" if driver == "claude"
+            else "`tessctl run --driver codex`" if driver == "codex"
+            else "`tessctl run` with a driver Tess cannot pin down")
+    depth = _consult_depth()
+    if depth >= 1 or "TESS_CONSULT_DEPTH" in env or "TESS_CONSULT_DEPTH" in ctx.vars:
+        why = (f"this session already runs inside a peer call (TESS_CONSULT_DEPTH={depth})" if depth >= 1
+               else "it sets TESS_CONSULT_DEPTH itself, which only Tess's dispatch drivers set")
+        v.add(DENY, f"{what} dispatches agents, and {why}; a peer call may not start another agent",
+              "agentcli")
+        return
+    nested = _nested_runtime()
+    if nested:
+        v.add(DENY, f"{what} dispatches agents from {nested}; a peer call may not start another agent",
+              "agentcli")
+        return
+    v.add(ASK, f"{what} dispatches headless agents that work in this project with their own "
+               "permissions, one per crew-plan task and verifier")
+
+
 def _check_segment(root: Path, cwd: str | None, argv: list, v: Verdict, raw: str, depth: int,
                    ctx: "_Ctx | None" = None, upstream=None):
     ctx = ctx if ctx is not None else _Ctx(raw)
@@ -6336,6 +6750,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
     tess_words = _tessctl_call(_expanded_words(argv, cwd, ctx))
     if tess_words is not None:
         _check_vault(tess_words, v)
+        _check_tessctl_run(env, tess_words, v, ctx)
         tpos = [w.lower() for w in tess_words if not w.startswith("-")]
         if tpos[:1] == ["anchor"] and tpos[1:2] in (["accept"], ["init"]):
             v.add(DENY, "only the operator can record Tess's safety files as approved "
@@ -6349,6 +6764,8 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
                         "without Tess seeing it; run this in your own terminal", "operator")
     if name in EXTRACTORS:
         _check_extract(root, cwd, argv, v)
+    if name in _SQL_CLIS:
+        _check_sql_cli(root, cwd, name, argv, orig, v, depth, ctx, upstream, env)
     if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(
             a.split("=", 1)[0] == "GIT_REPLACE_REF_BASE" for a in argv[1:])):
         v.add(DENY, "GIT_REPLACE_REF_BASE makes git read commits through another set of replace "
@@ -6370,6 +6787,8 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         _check_awk(root, cwd, argv, v, ctx)
     if res.via_xargs and (_writer_name(name) or name in INPLACE):
         _check_stdin_operands(root, cwd, name, orig, v, ctx, upstream)
+    if _writer_name(name) == "ln":
+        _check_targets(root, cwd, _ln_symlink_targets(cwd, argv, ctx), v, ctx)
     if name == "ln":
         _record_links(cwd, argv, ctx)
     if name not in READERS_OK_FOR_GIT_DIR and name not in ("git", "echo", "printf"):
@@ -7051,10 +7470,31 @@ def _check_archive_pipe(segs: list, v: Verdict) -> None:
             return
 
 
+def _cdpath_in_force(argv: list, ctx: "_Ctx | None") -> bool:
+    """v1.0 run-escalation review (Cyra F4b): CDPATH (zsh: cdpath) may be set
+    for this `cd` -- inherited from the environment, assigned or exported
+    earlier in the command, or given as a prefix assignment -- so a relative
+    `cd hooks` can land in any folder CDPATH names. Only a value the gate
+    knows to be empty leaves it off."""
+    env, _ = _strip_prefix(argv)
+    for name, val in env.items():
+        if name in ("CDPATH", "cdpath"):
+            return str(val).strip(": ") not in ("", "''", '""')
+    if ctx is not None:
+        for name in ("CDPATH", "cdpath"):
+            if name in ctx.vars:
+                vals = ctx.vars[name]
+                return vals is None or any(str(x).strip(": ") for x in vals)
+        if re.search(r"(?i)cdpath", ctx.raw):
+            return True  # set some other way (typeset, an array, eval): assume it is
+    return bool(os.environ.get("CDPATH", "").strip(": "))
+
+
 def _next_cwd(root: Path, cur: str | None, argv: list, ctx: "_Ctx | None" = None) -> str | None:
     """Track `cd` / `pushd` across the segments of one command (M1), so
     `cd .git/hooks && echo x > pre-commit` is checked as a write to
     .git/hooks/pre-commit. None = moved somewhere only known at run time."""
+    argv_full = argv
     _, argv = _strip_prefix(argv)
     if not argv or os.path.basename(str(argv[0])).lower() not in ("cd", "pushd", "chdir"):
         return cur
@@ -7068,6 +7508,8 @@ def _next_cwd(root: Path, cur: str | None, argv: list, ctx: "_Ctx | None" = None
     if not cands or len(cands) != 1:
         return None
     text, pat = cands[0]
+    if _cdpath_in_force(argv_full, ctx) and not re.match(r"^(/|\.\.?(/|$))", text):
+        return None  # Cyra F4b: CDPATH picks the folder at run time
     if pat is not None:
         found = _glob(cur, pat)
         if len(found) != 1:
@@ -7209,7 +7651,17 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
 
 
 def decide(data: dict, root: Path, runtime: str) -> tuple:
-    """(permissionDecision or None, reason) after the Codex ask->deny conversion."""
+    """(permissionDecision or None, reason) after the Codex ask->deny conversion.
+    v1.0 run-escalation review (2b): any error inside the evaluation ends in a
+    deny here, never in an allow (None) or an exception the caller must catch."""
+    try:
+        return _decide(data, root, runtime)
+    except Exception as exc:  # fail closed
+        return "deny", (f"TESS GATE: blocked because the safety check errored ({type(exc).__name__}). "
+                        "Check `./tessctl doctor`; if it keeps failing, run the command yourself.")
+
+
+def _decide(data: dict, root: Path, runtime: str) -> tuple:
     is_codex = runtime == "codex" or "turn_id" in data
     v = evaluate(data, root, codex=is_codex)
     if v.level == ALLOW:

@@ -417,7 +417,7 @@ ALLOWED = [
     "SHA=$(git rev-parse HEAD); git show --stat \"$SHA\"",
     "for f in src/*.py; do cp \"$f\" /tmp/backup/; done",
     "cleanup() { rm -rf @OUT@/build-$$; }; trap cleanup EXIT",
-    "rm -rf \"@OUT@/build-$ID\"",
+    "rm -rf \"@OUT@/build-$$\"",
     "export PATH=\"$HOME/.local/bin:$PATH\"",
     "curl -H \"Authorization: Bearer $TOKEN\" https://example.com/x",
     "python3 -m pytest \"$TESTS\"",
@@ -455,7 +455,7 @@ def test_ordinary_command_stays_allowed(proj, cmd):
 @pytest.mark.parametrize("ok, bad", [
     ("git checkout -b \"feature/$NAME\"", "git checkout \"$REV\" -- CLAUDE.md"),
     ("git log --author=\"$A\"", "git log \"$A\""),
-    ("rm -rf \"@OUT@/build-$ID\"", "rm -rf \"$DIR\""),
+    ("rm -rf \"@OUT@/build-$$\"", "rm -rf \"$DIR\""),
     ("\"$PY\" -m pytest", "\"$PY\" -rf CLAUDE.md"),
     ("find . -name \"$P\" -print", "find . -name \"$P\" -delete"),
     ("sed -n '/x/p' README.md", "sed -n \"/$PAT/p\" README.md"),

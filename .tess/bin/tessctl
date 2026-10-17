@@ -23997,7 +23997,8 @@ def _run_parse_stream_json_lines(text: str) -> list:
     return events
 
 
-def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -> str:
+def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None,
+                               write_to: str | None = None) -> str:
     """Renders an augmented brief dict into one plain-text prompt for a
     CLI-driven dispatch. Both ClaudeCliDriver and CodexExecDriver use this —
     Codex ALSO gets `output_schema` natively via `--output-schema`; this
@@ -24028,14 +24029,27 @@ def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -
     lines.append("")
     lines.append(f"## Escalation trigger\n{brief.get('escalation_trigger', '')}")
     lines.append("")
-    lines.append(
-        "## MANDATORY: write your return manifest here\n"
-        f"You MUST write a JSON file at the EXACT repo-relative path "
-        f"`{brief.get('_return_manifest_path', '')}` before finishing, conforming to the contract "
-        f"type `{brief.get('_contract_type', '')}` (schema below, if provided). Do not report "
-        f"done without writing this file at this exact path — the conductor reads this file "
-        f"itself from disk and never trusts your summary."
-    )
+    if write_to is None:
+        lines.append(
+            "## MANDATORY: write your return manifest here\n"
+            f"You MUST write a JSON file at the EXACT repo-relative path "
+            f"`{brief.get('_return_manifest_path', '')}` before finishing, conforming to the contract "
+            f"type `{brief.get('_contract_type', '')}` (schema below, if provided). Do not report "
+            f"done without writing this file at this exact path — the conductor reads this file "
+            f"itself from disk and never trusts your summary."
+        )
+    else:
+        # v1.0 run-escalation (Cyra F3): the child writes into its own private
+        # folder outside the project; tessctl installs the file at
+        # `_return_manifest_path` itself, without following symlinks.
+        lines.append(
+            "## MANDATORY: write your return manifest here\n"
+            f"You MUST write a JSON file at the EXACT absolute path `{write_to}` before finishing, "
+            f"conforming to the contract type `{brief.get('_contract_type', '')}` (schema below, if "
+            f"provided). Write it there and nowhere else (not inside the project): the conductor "
+            f"reads that file itself, installs it at `{brief.get('_return_manifest_path', '')}`, and "
+            f"never trusts your summary."
+        )
     if output_schema is not None:
         lines.append("")
         lines.append("## JSON Schema your written file must satisfy")
@@ -24045,37 +24059,246 @@ def _run_build_dispatch_prompt(brief: dict, output_schema: dict | None = None) -
     return "\n".join(lines)
 
 
+def _run_consult_depth() -> int:
+    """TESS_CONSULT_DEPTH of THIS process: 0 when unset or empty; a value that
+    is set but not a number counts as 1 (the gate's own rule, _consult_depth)."""
+    val = os.environ.get("TESS_CONSULT_DEPTH", "").strip()
+    if not val:
+        return 0
+    try:
+        return max(int(val), 0)
+    except ValueError:
+        return 1
+
+
+def _run_refuse_nested_dispatch(driver: str) -> None:
+    """v1.0 run-escalation review (Cyra F2): `tessctl run` started inside a
+    peer call (TESS_CONSULT_DEPTH >= 1: a dispatched worker or verifier, or
+    anything one of them started) never dispatches another agent. The gate
+    refuses the `tessctl run` call itself there; this is the same rule inside
+    tessctl, for a call the gate did not see."""
+    depth = _run_consult_depth()
+    if depth >= 1:
+        raise RunError(
+            f"tessctl run: refusing to dispatch a {driver} agent: this process already runs inside "
+            f"a peer call (TESS_CONSULT_DEPTH={os.environ.get('TESS_CONSULT_DEPTH', '')!r}), and a "
+            f"dispatched agent may not start another (SECURITY.md, 'Nested agent CLIs')"
+        )
+
+
 def _run_child_env() -> dict:
     """Environment for a dispatched agent CLI child (both drivers).
-    TESS_HEADLESS=1: the child has no subagent tool, so the dispatch guard
-    stays quiet. TESS_CONSULT_DEPTH: one deeper than this process, so the
-    child's own Tess gate refuses any further agent-CLI call (SECURITY.md,
-    "Nested agent CLIs")."""
+
+    Refuses (RunError) when this process is itself inside a peer call.
+    TESS_CONSULT_DEPTH=1 in the child, so the child's own Tess gate refuses
+    any further agent-CLI call (SECURITY.md, "Nested agent CLIs").
+    TESS_DISPATCHED=1 tells the dispatch guard the child is a dispatched
+    specialist (it executes directly; no "dispatch instead" warning). It is
+    deliberately NOT TESS_HEADLESS, which also silences every brain hook: a
+    dispatched child's session sync and provenance are recorded like any
+    other session's (Cyra F2). An inherited TESS_HEADLESS is removed for the
+    same reason."""
+    _run_refuse_nested_dispatch("child")
     env = dict(os.environ)
-    try:
-        depth = max(int(env.get("TESS_CONSULT_DEPTH", "0").strip() or 0), 0)
-    except ValueError:
-        depth = 1
-    env["TESS_HEADLESS"] = "1"
-    env["TESS_CONSULT_DEPTH"] = str(depth + 1)
+    env.pop("TESS_HEADLESS", None)
+    env["TESS_DISPATCHED"] = "1"
+    env["TESS_CONSULT_DEPTH"] = "1"
     return env
 
 
-def _run_in_linked_worktree(cwd: Path) -> bool:
-    """True when `cwd` is inside a linked git worktree (its git dir is not the
-    repository's common dir): a writer task's own worktree, not the main
-    checkout."""
+# ---------------------------------------------------------------------------
+# Returned artifacts are installed by tessctl, never written in place by the
+# child (v1.0 run-escalation review, Cyra F1 + F3).
+#
+# A dispatched child writes its return manifest / verdict into a fresh private
+# directory OUTSIDE the project (`tempfile.mkdtemp`, mode 0700): codex through
+# `-o` (written by the codex harness itself, outside its read-only sandbox,
+# following symlinks), claude through its Write tool with `--add-dir`. tessctl
+# then lstat()s that file, refuses a symlink or anything that is not a regular
+# file, and installs the bytes at missions/<id>/returns/<name> without
+# following a symlink anywhere on the way: every directory below the project
+# root is opened with O_DIRECTORY|O_NOFOLLOW relative to its parent, the bytes
+# go to a fresh O_EXCL|O_NOFOLLOW temp file in that directory, and os.replace
+# swaps it in (rename never follows a symlink at the destination; it replaces
+# the link). A link planted at the return path while the child runs is
+# replaced, never written through; a parent directory swapped for a link is
+# refused.
+# ---------------------------------------------------------------------------
+
+#: The largest return artifact tessctl installs (a return manifest or verdict
+#: is a small JSON document).
+RUN_ARTIFACT_MAX_BYTES = 8 * 1024 * 1024
+
+# Open flags that some platforms lack (0 there). hasattr, not getattr: the
+# adapter-manifest validator reads this region and treats getattr() as dynamic
+# reflection.
+_RUN_O_O_NOFOLLOW = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+_RUN_O_O_DIRECTORY = os.O_DIRECTORY if hasattr(os, "O_DIRECTORY") else 0
+_RUN_O_O_CLOEXEC = os.O_CLOEXEC if hasattr(os, "O_CLOEXEC") else 0
+_RUN_O_O_BINARY = os.O_BINARY if hasattr(os, "O_BINARY") else 0
+
+_RUN_DIR_FLAGS = os.O_RDONLY | _RUN_O_O_DIRECTORY | _RUN_O_O_NOFOLLOW | _RUN_O_O_CLOEXEC
+# os.replace takes the same src_dir_fd/dst_dir_fd as os.rename (CPython lists
+# only rename in supports_dir_fd).
+_RUN_DIR_FD_OK = all(f in os.supports_dir_fd for f in (os.open, os.mkdir, os.unlink, os.stat, os.rename))
+
+
+def _run_private_tmpdir(root: Path) -> Path:
+    """A fresh mode-0700 directory outside the project for one dispatch's
+    returned artifact. Refused when the system temp folder is inside the
+    project (TMPDIR pointed into it): the child must never write in place."""
+    d = Path(tempfile.mkdtemp(prefix="tessctl-run-"))
+    real, base = os.path.realpath(str(d)), os.path.realpath(str(root))
+    if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+        shutil.rmtree(str(d), ignore_errors=True)
+        raise RunError(
+            "tessctl run: refusing to dispatch: the temporary folder is inside the project "
+            f"({real}); set TMPDIR to a folder outside it"
+        )
+    return d
+
+
+def _run_lexical_parts(path_rel: str) -> list:
+    """The components of a repo-relative missions/ path, checked WITHOUT
+    touching the filesystem: relative, under missions/, no '.', '..' or empty
+    component. RunError ('escapes') otherwise."""
+    text = str(path_rel).replace("\\", "/")
+    parts = text.split("/")
+    if (os.path.isabs(str(path_rel)) or len(parts) < 2 or parts[0] != MISSIONS_DIR
+            or any(p in ("", ".", "..") for p in parts)):
+        raise RunError(
+            f"tessctl run: refusing to write {path_rel!r}: it escapes {MISSIONS_DIR}/ "
+            f"(containment check, fail-closed)"
+        )
+    return parts
+
+
+def _run_open_dir_nofollow(root: Path, dirs: list, *, create: bool) -> int:
+    """An fd for root/<dirs...>, each component opened relative to its parent
+    with O_DIRECTORY|O_NOFOLLOW (created 0755 when missing and `create`).
+    RunError when a component is a symlink or not a directory."""
+    dfd = os.open(str(root), os.O_RDONLY | _RUN_O_O_DIRECTORY | _RUN_O_O_CLOEXEC)
     try:
-        proc = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--absolute-git-dir", "--git-common-dir"],
-                              capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
+        for comp in dirs:
+            try:
+                nfd = os.open(comp, _RUN_DIR_FLAGS, dir_fd=dfd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(comp, 0o755, dir_fd=dfd)
+                except FileExistsError:
+                    pass
+                nfd = os.open(comp, _RUN_DIR_FLAGS, dir_fd=dfd)
+            except OSError as e:
+                raise RunError(
+                    f"tessctl run: refusing to write under {'/'.join(dirs)}: {comp!r} is a symlink or "
+                    f"not a directory ({e.strerror}); returned artifacts are never written through a link"
+                )
+            os.close(dfd)
+            dfd = nfd
+    except BaseException:
+        os.close(dfd)
+        raise
+    return dfd
+
+
+def _run_safe_write(root: Path, path_rel: str, data: bytes) -> Path:
+    """Writes `data` at root/<path_rel> (under missions/) without following a
+    symlink in any component, atomically (temp file + os.replace). Returns the
+    written Path."""
+    parts = _run_lexical_parts(path_rel)
+    dirs, name = parts[:-1], parts[-1]
+    if not _RUN_DIR_FD_OK:  # no dir_fd support (Windows): best effort, lstat each component
+        cur = Path(root)
+        for comp in dirs:
+            cur = cur / comp
+            if cur.is_symlink() or (cur.exists() and not cur.is_dir()):
+                raise RunError(f"tessctl run: refusing to write under {cur}: a symlink or not a directory")
+            cur.mkdir(exist_ok=True)
+        tmp = cur / f".{name}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _RUN_O_O_BINARY, 0o644)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(str(tmp), str(cur / name))
+        return cur / name
+    dfd = _run_open_dir_nofollow(root, dirs, create=True)
+    tmp = f".{name}.{secrets.token_hex(8)}.tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _RUN_O_O_NOFOLLOW
+                     | _RUN_O_O_CLOEXEC, 0o644, dir_fd=dfd)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            try:
+                st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            except FileNotFoundError:
+                st = None
+            if st is not None and stat.S_ISDIR(st.st_mode):
+                raise RunError(f"tessctl run: refusing to write {path_rel!r}: a directory is in the way")
+            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=dfd)
+            raise
+    finally:
+        os.close(dfd)
+    return Path(root) / Path(*parts)
+
+
+def _run_safe_unlink(root: Path, path_rel: str) -> bool:
+    """Removes root/<path_rel> (under missions/) without following a symlink:
+    a link there is removed itself. False when nothing was there."""
+    parts = _run_lexical_parts(path_rel)
+    dirs, name = parts[:-1], parts[-1]
+    if not _RUN_DIR_FD_OK:
+        p = Path(root).joinpath(*parts)
+        if not p.exists() and not p.is_symlink():
+            return False
+        p.unlink()
+        return True
+    try:
+        dfd = _run_open_dir_nofollow(root, dirs, create=False)
+    except FileNotFoundError:
         return False
-    lines = proc.stdout.splitlines()
-    if proc.returncode != 0 or len(lines) < 2:
+    try:
+        try:
+            os.unlink(name, dir_fd=dfd)
+        except FileNotFoundError:
+            return False
+    finally:
+        os.close(dfd)
+    return True
+
+
+def _run_install_artifact(root: Path, src: Path, path_rel: str) -> bool:
+    """Installs the child's returned artifact `src` (in its private temp
+    folder) at root/<path_rel>. False when the child wrote nothing; RunError
+    when `src` is a symlink, not a regular file, or too large."""
+    try:
+        st = os.lstat(str(src))
+    except FileNotFoundError:
         return False
-    git_dir = os.path.realpath(lines[0])
-    common = os.path.realpath(os.path.join(str(cwd), lines[1]))
-    return git_dir != common
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise RunError(
+            f"tessctl run: refusing the returned artifact for {path_rel!r}: the child left a "
+            f"{'symlink' if stat.S_ISLNK(st.st_mode) else 'non-regular file'} instead of a file"
+        )
+    fd = os.open(str(src), os.O_RDONLY | _RUN_O_O_NOFOLLOW | _RUN_O_O_CLOEXEC
+                 | _RUN_O_O_BINARY)
+    with os.fdopen(fd, "rb") as fh:
+        fst = os.fstat(fh.fileno())
+        if not stat.S_ISREG(fst.st_mode) or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+            raise RunError(f"tessctl run: refusing the returned artifact for {path_rel!r}: it changed "
+                           f"while being read")
+        data = fh.read(RUN_ARTIFACT_MAX_BYTES + 1)
+    if len(data) > RUN_ARTIFACT_MAX_BYTES:
+        raise RunError(f"tessctl run: refusing the returned artifact for {path_rel!r}: larger than "
+                       f"{RUN_ARTIFACT_MAX_BYTES} bytes")
+    _run_safe_write(root, path_rel, data)
+    return True
 
 
 #: Default least-privilege tool allowlist for a `claude -p` dispatch — a
@@ -24133,22 +24356,34 @@ class ClaudeCliDriver(DispatchDriver):
                 "error": f"'{self.binary}' not found on PATH", "events": [],
             }
 
-        prompt = _run_build_dispatch_prompt(brief, output_schema)
-        cmd = [self.binary, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+        env = _run_child_env()  # refuses inside a peer call (Cyra F2), before anything else
+        root = Path(brief.get("_root") or self.cwd)
+        path_rel = brief.get("_return_manifest_path", "")
+        _run_lexical_parts(path_rel)
+        # Cyra F3: the child writes its artifact into a private folder outside
+        # the project (granted with --add-dir); tessctl installs it afterwards
+        # without following symlinks (_run_install_artifact).
+        work = _run_private_tmpdir(root)
+        out_file = work / path_rel.rsplit("/", 1)[-1]
+        prompt = _run_build_dispatch_prompt(brief, output_schema, write_to=str(out_file))
+        cmd = [self.binary, "-p", prompt, "--add-dir", str(work), "--output-format", "stream-json", "--verbose"]
         if self.allowed_tools:
             cmd += ["--allowed-tools", " ".join(self.allowed_tools)]
         cmd += self.extra_args
         t0 = time.perf_counter()
         try:
-            proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
-                                   timeout=self.timeout_s, stdin=subprocess.DEVNULL,
-                                   env=_run_child_env())
-        except subprocess.TimeoutExpired:
-            return {
-                "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
-                "cost_usd": None, "duration_s": time.perf_counter() - t0,
-                "error": f"'{self.binary} -p' timed out after {self.timeout_s}s", "events": [],
-            }
+            try:
+                proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
+                                       timeout=self.timeout_s, stdin=subprocess.DEVNULL, env=env)
+            except subprocess.TimeoutExpired:
+                return {
+                    "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
+                    "cost_usd": None, "duration_s": time.perf_counter() - t0,
+                    "error": f"'{self.binary} -p' timed out after {self.timeout_s}s", "events": [],
+                }
+            _run_install_artifact(root, out_file, path_rel)
+        finally:
+            shutil.rmtree(str(work), ignore_errors=True)
         duration = time.perf_counter() - t0
 
         events = _run_parse_stream_json_lines(proc.stdout)
@@ -24198,13 +24433,14 @@ class CodexExecDriver(DispatchDriver):
     logic end-to-end in this PR; a live codex smoke run is a documented
     follow-up once the binary is available in a build/CI environment.
 
-    v1.0 (nested agent CLIs): every call names its sandbox. A verifier, or a
-    worker whose cwd is not its own linked worktree, runs `-s read-only` and
-    hands its artifact back as the final message, which codex itself writes
-    to the contracted path (`-o`); only a worker in its own worktree gets
-    `-s workspace-write`. stdin is closed (`codex exec` with stdin open
-    waits for input forever), and the child gets TESS_HEADLESS=1 and
-    TESS_CONSULT_DEPTH (_run_child_env)."""
+    v1.0 (nested agent CLIs, run-escalation review): every call, worker or
+    verifier, runs `-s read-only` and hands its artifact back as its final
+    message, which codex saves (`-o`) into a private folder outside the
+    project; tessctl installs it at the contracted path without following
+    symlinks. A codex worker never writes in the project. stdin is closed
+    (`codex exec` with stdin open waits for input forever), and the child
+    gets TESS_DISPATCHED=1 and TESS_CONSULT_DEPTH=1 (_run_child_env), which
+    also refuses to dispatch from inside a peer call."""
 
     name = "codex"
 
@@ -24223,43 +24459,52 @@ class CodexExecDriver(DispatchDriver):
                 "error": f"'{self.binary}' not found on PATH", "events": [],
             }
 
+        env = _run_child_env()  # refuses inside a peer call (Cyra F2), before anything else
+        root = Path(brief.get("_root") or self.cwd)
+        path_rel = brief.get("_return_manifest_path", "")
+        _run_lexical_parts(path_rel)
         prompt = _run_build_dispatch_prompt(brief, output_schema)
-        writer = (brief.get("_contract_type") != "verdict" and _run_in_linked_worktree(self.cwd))
-        cmd = [self.binary, "exec", "--json", "-s", "workspace-write" if writer else "read-only"]
-        if not writer:
-            out_path = Path(brief.get("_root") or self.cwd) / brief.get("_return_manifest_path", "")
-            cmd += ["-o", str(out_path)]
-            prompt += (
-                "\n\n## Your sandbox is read-only\nYou cannot write files. End with the JSON document "
-                "itself as your final message and nothing else; codex writes your final message to "
-                f"`{brief.get('_return_manifest_path', '')}` for you."
-            )
-        schema_file = None
+        # Cyra F1: every codex dispatch, worker or verifier, runs `-s read-only`.
+        # `self.cwd` is the Tess root, so the old "is cwd a linked worktree"
+        # test only asked whether the Tess checkout itself was a linked
+        # worktree, and handed a worker workspace-write over the whole
+        # project. A codex worker never writes; it returns its result. (No
+        # per-task worktree exists. If one is ever added, tessctl itself must
+        # create it, refuse it when it is the project root, and compare the
+        # two by st_dev/st_ino, never by path text, before granting more
+        # than read-only.)
+        # Cyra F3: `-o` is written by the codex harness OUTSIDE its sandbox and
+        # follows symlinks, so it points into a fresh private folder outside
+        # the project; tessctl installs the file at the contracted path
+        # without following symlinks (_run_install_artifact).
+        work = _run_private_tmpdir(root)
+        out_file = work / path_rel.rsplit("/", 1)[-1]
+        cmd = [self.binary, "exec", "--json", "-s", "read-only", "-o", str(out_file)]
+        prompt += (
+            "\n\n## Your sandbox is read-only\nYou cannot write files. End with the JSON document "
+            "itself as your final message and nothing else; codex saves your final message and "
+            f"the conductor installs it at `{path_rel}` for you."
+        )
         if output_schema is not None:
-            fd, schema_file = tempfile.mkstemp(suffix=".schema.json", prefix="tessctl-run-")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(output_schema, f)
-            cmd += ["--output-schema", schema_file]
+            schema_file = work / "output.schema.json"
+            schema_file.write_text(json.dumps(output_schema), encoding="utf-8")
+            cmd += ["--output-schema", str(schema_file)]
         cmd += self.extra_args + [prompt]
 
         t0 = time.perf_counter()
         try:
             try:
                 proc = subprocess.run(cmd, cwd=str(self.cwd), capture_output=True, text=True,
-                                       timeout=self.timeout_s, stdin=subprocess.DEVNULL,
-                                       env=_run_child_env())
+                                       timeout=self.timeout_s, stdin=subprocess.DEVNULL, env=env)
             except subprocess.TimeoutExpired:
                 return {
                     "ok": False, "timed_out": True, "exit_code": None, "final_text": "",
                     "cost_usd": None, "duration_s": time.perf_counter() - t0,
                     "error": f"'{self.binary} exec' timed out after {self.timeout_s}s", "events": [],
                 }
+            _run_install_artifact(root, out_file, path_rel)
         finally:
-            if schema_file:
-                try:
-                    os.unlink(schema_file)
-                except OSError:
-                    pass
+            shutil.rmtree(str(work), ignore_errors=True)
         duration = time.perf_counter() - t0
 
         events = _run_parse_stream_json_lines(proc.stdout)
@@ -25141,7 +25386,10 @@ def _run_write_escalation(root: Path, mission_id: str, task_id: str, reason: str
             lines.append(f"- actual_verifier_label: {safe_details['actual_verifier_label']}")
         lines.append("")
     body = "\n".join(lines)
-    path.write_text(f"---\n{fm_text}---\n\n{body}", encoding="utf-8")
+    # Cyra F3: written without following a symlink planted at (or above) the
+    # escalation path while a dispatched child ran.
+    _run_safe_write(root, f"{MISSIONS_DIR}/{mission_id}/escalations/{path.name}",
+                    f"---\n{fm_text}---\n\n{body}".encode("utf-8"))
 
     mission = _read_mission_record(root, mission_id)
     mission["state"] = "code-red"
@@ -25174,11 +25422,13 @@ def _run_clear_stale_artifact(root: Path, path_rel: str) -> None:
     pre-existing file cannot be removed — per Fable's fix language, 'fail
     the stage if it can't be removed,' never silently proceed with an
     unknown-provenance file still on disk."""
-    path = _run_assert_contained(root, path_rel, what="clear stale artifact before dispatch")  # HIGH-3
-    if not path.exists() and not path.is_symlink():
-        return
+    # HIGH-3: the folder holding the artifact must resolve inside missions/;
+    # the artifact itself is removed WITHOUT following it (Cyra F3: a symlink
+    # planted at the contracted path is removed as a link, never resolved).
+    _run_lexical_parts(path_rel)
+    _run_assert_contained(root, path_rel.rsplit("/", 1)[0], what="clear stale artifact before dispatch")
     try:
-        path.unlink()
+        _run_safe_unlink(root, path_rel)
     except OSError as e:
         raise RunError(
             f"tessctl run: refusing to dispatch — could not remove the pre-existing artifact "
@@ -25450,6 +25700,8 @@ def _run_build_driver(args, root: Path) -> DispatchDriver:
         raise RunError(f"tessctl run: unknown --driver {name!r} (expected {', '.join(sorted(RUN_DRIVERS))})")
     timeout_s = getattr(args, "timeout", None) or 600.0
 
+    if name != "fake":
+        _run_refuse_nested_dispatch(name)  # Cyra F2: never dispatch from inside a peer call
     if name == "fake":
         script = {}
         script_path = getattr(args, "fake_script", None)

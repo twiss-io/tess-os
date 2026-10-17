@@ -259,7 +259,7 @@ def test_a_target_known_only_at_run_time_asks(proj, cmd):
     "git log --oneline -3 | cat", "printf '%s\\n' a b | sort -o /tmp/sorted.txt",
     "uv run pytest -q", "timeout 60 python3 script.py", "\"$PY\" -m pytest",
     "echo x > \"$TMPDIR/foo\"", "cd clients/acme && echo x > CLAUDE.md",
-    "rm -f /nonexistent-tess/build-$ID.log", "(( n = 1 + 2 ))",
+    "rm -f \"/nonexistent-tess/build-$RANDOM.log\"", "(( n = 1 + 2 ))",  # F6: "$ID" (could hold "/") now asks
     "find src -name '*.tmp' -exec sh -c 'rm \"$1\"' _ {} \\;",
 ])
 def test_ordinary_commands_stay_allowed(proj, cmd, monkeypatch):
