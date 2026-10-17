@@ -278,9 +278,66 @@ security reviews; they are stated so nobody relies on a check that is not there.
   item above), a script's own arguments, and a find test when find only prints.
   A program whose own name is only known at run time is checked as each program
   the gate stands in for it (git, gh, tessctl, find, a shell, python, a file
-  writer) and asks if any of them would be stopped or if it has no arguments.
+  writer) and asks if any of them would be stopped or if it has no arguments;
+  it is also checked as claude, codex and gemini, and asks if one of them would
+  be refused (a bypass or hook-skipping flag).
   Which positions decide is set per program family in the gate; a program the
   gate has no rules for is not covered by it (the item above).
+- **Nested agent CLIs: a child agent starts only in a read-only form.** Since
+  v1.0.0 the gate treats agent CLIs as gated programs: `claude`, `codex`,
+  `gemini`, `agy`, `opencode`, `aider`, `cursor-agent`, `amp`, `goose`,
+  `copilot`, `qwen`, `kiro-cli`, `jules`, `cline`, `droid`, `crush` and
+  `devin`, found through wrappers, runners (`npx @anthropic-ai/claude-code`),
+  paths, variables and `sh -c` like every other gated program. Before this an
+  agent could start `claude --dangerously-skip-permissions -p ...` or `codex
+  exec -s workspace-write ...`, a child that writes anything, and the child
+  loads Tess's hooks only when nothing on its command line skips them.
+  Refused in both runtimes: an approval bypass (claude
+  `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`,
+  `--permission-mode bypassPermissions|dontAsk|auto`; codex
+  `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`,
+  `--dangerously-bypass-hook-trust`, `--ignore-rules`, `--full-auto`,
+  `-s/--sandbox workspace-write|danger-full-access`, `-c
+  sandbox_mode=...`; gemini `--yolo`, `--approval-mode yolo|auto_edit`; any
+  `--yolo`/`--dangerously-*`/`--skip-permissions`-style option of the other
+  CLIs); a flag that skips Tess's hooks or settings (`--bare`, `--safe-mode`,
+  `--restricted`, `--settings` other than the project's own file,
+  `--setting-sources` without `project`, `CLAUDE_CODE_SIMPLE`,
+  `CLAUDE_CODE_SAFE_MODE`; codex `--ignore-user-config`, `CODEX_HOME`, `-c`
+  hook, rules or trust keys) unless the run has no tools (`--tools ""` with
+  `--safe-mode`, `--bare` or `--strict-mcp-config`) or runs in codex's
+  read-only sandbox, which the OS enforces whatever hooks the child loads; a
+  prompt carrying a secret-shaped value (the dispatch scanner's full pattern
+  set, over the whole command and any here-document); and every agent-CLI
+  call made inside a peer call. Allowed: `--help`/`--version` and listing
+  subcommands, and only provably read-only, non-interactive runs: `claude -p`
+  with `--tools ""`, with `--tools` or `--allowed-tools` limited to
+  Read/Grep/Glob, or with `--permission-mode plan`; `codex exec -s read-only`
+  (the sandbox named after `exec`; `--ephemeral`, `-m`, `--json`, `-o` to an
+  unprotected file are fine); `gemini -p --approval-mode plan`. Every other
+  run asks in Claude Code and is refused in Codex and the no-prompt modes,
+  and so is an interactive session (as for a REPL, Codex could type into it
+  later). An option Tess does not know, an option word only known at run
+  time, or arguments added by `xargs` also ask. Recursion: a call is "inside
+  a peer call" when the gate's own process has `TESS_CONSULT_DEPTH` of 1 or
+  more (set by `tessctl run`'s claude and codex drivers in every child,
+  together with `TESS_HEADLESS=1`; a value that is not a number counts as
+  1), when the command sets `TESS_CONSULT_DEPTH` itself, or when the gate's
+  process ancestry shows a runtime started inside another runtime's session
+  (the same rule as the brain's `nested_runtime`). The codex driver now names
+  its sandbox on every call (`-s read-only` for a verifier, and for a worker
+  outside its own linked worktree, which hands its artifact back through
+  `-o`; `-s workspace-write` only for a worker in its own worktree) and closes
+  stdin, since `codex exec` with stdin open waits forever. Limits: claude and
+  codex flags were checked against `claude --help` 2.1.300 and `codex exec
+  --help` 0.158.0; gemini's are from its documentation and are not verified on
+  a real install; the other CLIs get a generic rule (bypass-shaped options
+  refused, anything else asks). An `--allowed-tools` or plan-mode run still
+  trusts the child's own permission settings and its Tess hooks. A runtime
+  launched through a script file or an interpreter (`node .../cli.js`), or a
+  nested session whose process tree hides its parent, is not recognised. An
+  unknown program name with an agent's arguments asks only when those
+  arguments would be refused.
 - **Codex runs Tess's gate only when it runs project hooks at all.** In an
   untrusted project, or before the operator approves the Tess hooks in `/hooks`
   (and again after an update changes their hash), Codex runs no Tess hook and only
