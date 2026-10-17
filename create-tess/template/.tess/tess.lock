@@ -17,7 +17,7 @@ framework:
   upstream_digest: null
   trusted_key_fingerprint: EBEABC618C11B6A7340A7D1601DD637667B8CC89
   trusted_ssh_key_fingerprint: SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
-  last_updated: '2026-10-08T09:26:25.668624Z'
+  last_updated: '2026-10-17T06:24:07.923410Z'
 files:
   .tess/core/MANIFEST.md:
     status: core-managed
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:d155c3f7dac96c6c275c5709661b9a822d2a8d1223f7c2b600ece961ff53e94a
+    base_sha: sha256:9f15b2c5ece3796eac4b915fa1a538bde28ad76dac923cdab98743e3e2a1eff8
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:

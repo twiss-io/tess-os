@@ -319,7 +319,7 @@ BENIGN = [
     "for d in */; do echo \"$d\"; done",
     "x=$(pwd); echo $x",
     "f() { rm -f \"$1\"; }; f notes.txt",
-    "cleanup() { rm -rf /tmp/build-$$; }; trap cleanup EXIT",
+    "cleanup() { rm -rf @OUT@/build-$$; }; trap cleanup EXIT",
     "PY=python3; $PY -m pytest -q",
     "for f in src/*.py; do if grep -q TODO \"$f\"; then echo \"$f\"; fi; done",
     "git commit -F \"$MSGFILE\"",
@@ -333,13 +333,16 @@ BENIGN = [
     "python3 - <<'PY'\nprint('hi')\nPY",
     "git commit -m \"$(printf 'feat: x\\n\\nbody')\"",
     "mkdir -p out/{1..100}",
-    "rm -f /tmp/cache-{1..5000}.tmp",
+    "rm -f @OUT@/cache-{1..5000}.tmp",
     "X=notes.txt; if [ -f \"$X\" ]; then cp \"$X\" /tmp/; fi",
 ]
 
 
 @pytest.mark.parametrize("cmd", BENIGN)
 def test_ordinary_scripting_stays_allowed(proj, cmd, monkeypatch):
+    # A run-time path under /tmp is outside the project only where /tmp is not
+    # above it (pytest's tmp_path is under /tmp on Linux): use a sibling.
+    cmd = cmd.replace("@OUT@", str(proj[0].parent / "outside"))
     v = _eval(proj, cmd, monkeypatch)
     assert v.level == G.ALLOW, (cmd, v.reasons)
 

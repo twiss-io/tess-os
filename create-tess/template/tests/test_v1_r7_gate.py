@@ -358,7 +358,51 @@ def test_globbed_program_word_is_resolved(proj):
         assert _eval(proj, ok).level == G.ALLOW, ok
 
 
+@pytest.mark.parametrize("files", [(), ("git",), ("gio", "git"), ("gio",)])
+def test_globbed_program_word_decision_does_not_depend_on_the_disk(proj, files):
+    """`<dir>/gi? commit --no-verify` is refused whatever `<dir>` holds. Where
+    glib is installed, `/usr/bin/gi?` matches `gio git` and the shell runs gio
+    with git as an argument; the gate used to judge only that and allow it, so
+    the same command was refused on one host and allowed on another."""
+    d = proj[0].parent / ("bin-" + "-".join(files or ("none",)))
+    d.mkdir(exist_ok=True)
+    for f in files:
+        (d / f).write_text("#!/bin/sh\n")
+        (d / f).chmod(0o755)
+    for pat in (f"{d}/gi?", f"{d}/g[i]t", f"{d}/GI?", f"{d}/g*t"):
+        cmd = f"{pat} commit --no-verify -m x"
+        assert _eval(proj, cmd).level == G.DENY, (cmd, _eval(proj, cmd).reasons)
+        assert _codex(proj, cmd) == "deny", cmd
+        cmd = f"P='{pat}'; $P commit --no-verify -m x"
+        assert _eval(proj, cmd).level == G.DENY, cmd
+    assert _eval(proj, f"{d}/r[m] -f CLAUDE.md").level == G.DENY
+    assert _eval(proj, f"{d}/gi? status").level == G.ALLOW
+
+
 # ------------------------------------------------------------------ the fail-safe does not over-block
+
+def _outside(proj) -> Path:
+    """A directory outside the project and not above it. `/tmp` will not do:
+    pytest's tmp_path is under /tmp on Linux, so there /tmp is an ancestor of
+    the project and a run-time path under it may name a project file."""
+    return proj[0].parent / "outside"
+
+
+def _out(proj, cmd: str) -> str:
+    return cmd.replace("@OUT@", str(_outside(proj)))
+
+
+@pytest.mark.parametrize("cmd", [
+    "cleanup() { rm -rf @UP@/build-$$; }; trap cleanup EXIT",
+    "rm -rf \"@UP@/build-$ID\"",
+    "rm -f @UP@/cache-{1..5000}.tmp",
+])
+def test_run_time_path_under_an_ancestor_of_the_project_is_not_allowed(proj, cmd):
+    """The same commands, aimed at a directory ABOVE the project (what /tmp is
+    on Linux CI), are not allowed: `$ID` may hold `../proj/CLAUDE.md`."""
+    cmd = cmd.replace("@UP@", str(proj[0].parent))
+    assert _eval(proj, cmd).level > G.ALLOW, cmd
+
 
 ALLOWED = [
     "git commit -m \"$MSG\"",
@@ -372,8 +416,8 @@ ALLOWED = [
     "git tag -a \"v$VERSION\" -m Release",
     "SHA=$(git rev-parse HEAD); git show --stat \"$SHA\"",
     "for f in src/*.py; do cp \"$f\" /tmp/backup/; done",
-    "cleanup() { rm -rf /tmp/build-$$; }; trap cleanup EXIT",
-    "rm -rf \"/tmp/build-$ID\"",
+    "cleanup() { rm -rf @OUT@/build-$$; }; trap cleanup EXIT",
+    "rm -rf \"@OUT@/build-$ID\"",
     "export PATH=\"$HOME/.local/bin:$PATH\"",
     "curl -H \"Authorization: Bearer $TOKEN\" https://example.com/x",
     "python3 -m pytest \"$TESTS\"",
@@ -390,7 +434,7 @@ ALLOWED = [
     "awk -F, '{print $2 > \"/tmp/out.csv\"}' README.md",
     "touch notes-{a,b,c}.txt",
     "mkdir -p dist/{js,css}",
-    "rm -f /tmp/cache-{1..5000}.tmp",
+    "rm -f @OUT@/cache-{1..5000}.tmp",
     "$(echo git) status",
     "x=$(echo hello); echo $x",
     "D=$(mktemp -d); cp src/app.py \"$D/\"",
@@ -403,6 +447,7 @@ ALLOWED = [
 
 @pytest.mark.parametrize("cmd", ALLOWED)
 def test_ordinary_command_stays_allowed(proj, cmd):
+    cmd = _out(proj, cmd)
     v = _eval(proj, cmd)
     assert v.level == G.ALLOW, (cmd, v.reasons)
 
@@ -410,7 +455,7 @@ def test_ordinary_command_stays_allowed(proj, cmd):
 @pytest.mark.parametrize("ok, bad", [
     ("git checkout -b \"feature/$NAME\"", "git checkout \"$REV\" -- CLAUDE.md"),
     ("git log --author=\"$A\"", "git log \"$A\""),
-    ("rm -rf \"/tmp/build-$ID\"", "rm -rf \"$DIR\""),
+    ("rm -rf \"@OUT@/build-$ID\"", "rm -rf \"$DIR\""),
     ("\"$PY\" -m pytest", "\"$PY\" -rf CLAUDE.md"),
     ("find . -name \"$P\" -print", "find . -name \"$P\" -delete"),
     ("sed -n '/x/p' README.md", "sed -n \"/$PAT/p\" README.md"),
@@ -418,6 +463,7 @@ def test_ordinary_command_stays_allowed(proj, cmd):
     ("S=README.md; sed -n 1p \"$S\"", "S=CLAUDE.md; sed -i '' 's/a/b/' \"$S\""),
 ])
 def test_plain_command_allowed_dangerous_neighbour_refused(proj, ok, bad):
+    ok = _out(proj, ok)
     assert _eval(proj, ok).level == G.ALLOW, (ok, _eval(proj, ok).reasons)
     assert _eval(proj, bad).level > G.ALLOW, bad
 

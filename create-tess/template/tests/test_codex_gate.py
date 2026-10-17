@@ -76,6 +76,11 @@ def proj(tmp_path):
     (root / "src" / "app.py").write_text("print('hi')\n")
     if HAS_GIT:
         _git(tmp_path, "init", "-b", "main", "-q", str(root))
+        # No background `git maintenance run --auto --detach` after the commit:
+        # it keeps writing into .git (maintenance.lock, bitmap temp files)
+        # after `git commit` returns, and a test that removes .git races it.
+        _git(root, "config", "maintenance.auto", "false")
+        _git(root, "config", "gc.auto", "0")
         _git(root, "add", "-A")
         _git(root, "-c", "user.email=t@tess.test", "-c", "user.name=T", "-c",
              "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "init")
