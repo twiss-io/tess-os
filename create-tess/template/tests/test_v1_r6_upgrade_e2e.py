@@ -101,7 +101,9 @@ def _release_upstream(tmp: Path, ssh_fp: str, signers: str, gpg, ssh_key: Path) 
     _git(src, "init", "-q", "-b", "main")
     for k, v in (("user.email", "release@tess.test"), ("user.name", "Release"),
                  ("commit.gpgsign", "false"), ("tag.gpgsign", "false"),
-                 ("user.signingkey", gpg.fpr)):
+                 ("user.signingkey", gpg.fpr),
+                 # no detached `git maintenance run --auto` racing rmtree(src)
+                 ("maintenance.auto", "false"), ("gc.auto", "0")):
         _git(src, "config", k, v)
     _git(src, "add", "-A")
     _git(src, "commit", "-q", "-m", "release 1.0.0")

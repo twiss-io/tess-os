@@ -5807,6 +5807,21 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
                 v.add(DENY, f"it touches {a}; Tess's git hooks and git config are off limits", "hookspath")
 
 
+_GLOB_PROGRAM_EXTRA = {"python", "python3", "pypy3", "node", "nodejs", "deno", "bun", "perl",
+                       "ruby", "php", "osascript", "hub"}
+
+
+def _glob_program_names(pat: str) -> list:
+    """The gated program names a glob in the program word can match
+    (`/usr/bin/g[i]t` -> git), case-insensitive as macOS finds `GIT`."""
+    base = pat.rsplit("/", 1)[-1].lower()
+    if not base:
+        return []
+    names = (_GATED_NAMED | SHELLS | _VAULT_SHELLS | WRITERS | _EXTRA_WRITERS | INPLACE | EXTRACTORS
+             | WRAPPERS | set(_REPLS) | set(_OUTPUT_OPTS) | _GLOB_PROGRAM_EXTRA)
+    return sorted(n for n in names if fnmatch.fnmatchcase(n, base))
+
+
 def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth: int,
                            ctx: "_Ctx", upstream=None) -> None:
     """The program is a variable, a command substitution or a brace expansion.
@@ -5822,15 +5837,28 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
         unsure = False
         for cand in cands:
             words = []  # G='git commit'; $G: two words
+            prog_pat, after = None, 0
             for text, pat in cand:
                 # v1.0 round 3: a glob in the program word (`/usr/bin/g[i]t`) is
                 # replaced by the names it matches; one that matches nothing now
                 # may match a file this command makes, so it is also probed.
                 found = sorted(_glob(cwd, pat)) if pat else []
                 unsure = unsure or (pat is not None and (not found or ctx.mutated))
+                if not words and pat is not None:
+                    prog_pat = pat
                 words += [_field(f) for f in found] or [_field(text)]
+                if prog_pat is not None and not after:
+                    after = len(words)
             if words or len(argv) > 1:
                 _check_segment(root, cwd, words + list(argv[1:]), v, raw, depth + 1, ctx, upstream)
+            # v1.0 CI: the names a globbed program word matches depend on the
+            # host (`/usr/bin/gi?` is `gio git` where glib is installed, so the
+            # shell runs gio). The decision must not: the word is also judged as
+            # every gated program whose name it can match, whatever is on disk.
+            if prog_pat is not None:
+                rest = words[after:] + list(argv[1:])
+                for name in _glob_program_names(prog_pat):
+                    _check_segment(root, cwd, [_plain(name)] + rest, v, raw, depth + 1, ctx, upstream)
         if not unsure:
             return
     probe = Verdict()
