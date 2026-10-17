@@ -5631,7 +5631,7 @@ files:
   .tess/core/hooks/dispatch-guard.sh:
     status: core-managed
     tier: security
-    base_sha: sha256:5ebd28d03dd123d222c51327e4428a81699a90112939fc95855f370b9c8ed60d
+    base_sha: sha256:0fee442b703c82f295320a8e1ef7b479930c096f8d05ac4426c796154b6ce579
     live_path: .claude/hooks/dispatch-guard.sh
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/core/hooks/task-lock-clear.sh:
@@ -6101,7 +6101,7 @@ files:
   .tess/core/pinned-scripts.sha256:
     status: core-managed
     tier: security
-    base_sha: sha256:76fc74f66c5196875d5f26d9785c3fda7715ea0ff94b8d44f4aed8bd612d2328
+    base_sha: sha256:f7c4148568d8e28c85509e14763c0bbc32915d8ad75018542848c8b2551bccc1
     live_path: null
     last_updated: '2026-09-28T17:49:44.108190Z'
   .tess/vendor/README.md:

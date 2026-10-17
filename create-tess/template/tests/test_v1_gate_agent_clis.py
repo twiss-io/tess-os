@@ -491,39 +491,51 @@ def test_codex_driver_outside_a_linked_worktree_runs_read_only(engine, tmp_path,
     assert cmd[:2] == ["codex", "exec"] or cmd[1] == "exec"
     assert cmd[cmd.index("-s") + 1] == "read-only"
     assert "workspace-write" not in cmd and "--full-auto" not in cmd
-    assert cmd[cmd.index("-o") + 1] == str(tmp_path / "missions/m/returns/t.json")
+    # v1.0 run-escalation (Cyra F3): -o goes to a private folder outside the
+    # project; tessctl installs the file itself (tests/test_v1_run_escalation.py).
+    out = cmd[cmd.index("-o") + 1]
+    assert not os.path.realpath(out).startswith(os.path.realpath(str(tmp_path)) + os.sep)
+    assert os.path.basename(out) == "t.json"
     assert kw["stdin"] is subprocess.DEVNULL
-    assert kw["env"]["TESS_HEADLESS"] == "1" and kw["env"]["TESS_CONSULT_DEPTH"] == "1"
+    assert kw["env"]["TESS_DISPATCHED"] == "1" and kw["env"]["TESS_CONSULT_DEPTH"] == "1"
+    assert "TESS_HEADLESS" not in kw["env"]
     assert "read-only" in cmd[-1]  # the prompt tells the child how to hand back its artifact
 
 
 @pytest.mark.skipif(not HAS_GIT, reason="git not installed")
-def test_codex_driver_writer_in_its_own_worktree_gets_workspace_write(engine, tmp_path, monkeypatch):
+def test_codex_driver_never_gets_workspace_write_even_in_a_linked_worktree(engine, tmp_path, monkeypatch):
+    # v1.0 run-escalation (Cyra F1): the driver's cwd is the Tess root, so the
+    # old linked-worktree test granted workspace-write over the whole project
+    # whenever the Tess checkout itself was a linked worktree.
     main = tmp_path / "main"
     subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
     subprocess.run(["git", "-C", str(main), "-c", "user.email=t@t", "-c", "user.name=t", "-c",
                     "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
     wt = tmp_path / "wt"
     subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "task", str(wt)], check=True)
-    monkeypatch.setenv("TESS_CONSULT_DEPTH", "2")
+    monkeypatch.setenv("TESS_CONSULT_DEPTH", "0")
     calls = _capture(engine, monkeypatch)
-    engine.CodexExecDriver(cwd=wt).dispatch(_brief(wt, "return-manifest"))
-    cmd, kw = calls[0]
-    assert cmd[cmd.index("-s") + 1] == "workspace-write" and "-o" not in cmd
-    assert kw["env"]["TESS_CONSULT_DEPTH"] == "3"
-    # a verifier in that same worktree still runs read-only
-    engine.CodexExecDriver(cwd=wt).dispatch(_brief(wt, "verdict"))
-    assert calls[1][0][calls[1][0].index("-s") + 1] == "read-only"
-    # the main checkout is not the worker's own worktree
-    engine.CodexExecDriver(cwd=main).dispatch(_brief(main, "return-manifest"))
-    assert calls[2][0][calls[2][0].index("-s") + 1] == "read-only"
+    for cwd in (wt, main):
+        for contract in ("return-manifest", "verdict"):
+            engine.CodexExecDriver(cwd=cwd).dispatch(_brief(cwd, contract))
+    assert len(calls) == 4
+    for cmd, kw in calls:
+        assert cmd[cmd.index("-s") + 1] == "read-only" and "workspace-write" not in cmd and "-o" in cmd
+        assert kw["env"]["TESS_CONSULT_DEPTH"] == "1"
+    # inside a peer call the driver refuses to dispatch at all
+    monkeypatch.setenv("TESS_CONSULT_DEPTH", "2")
+    with pytest.raises(engine.RunError, match="peer call"):
+        engine.CodexExecDriver(cwd=wt).dispatch(_brief(wt, "return-manifest"))
+    assert len(calls) == 4
 
 
 def test_claude_driver_child_env_and_closed_stdin(engine, tmp_path, monkeypatch):
     monkeypatch.delenv("TESS_CONSULT_DEPTH", raising=False)
+    monkeypatch.setenv("TESS_HEADLESS", "1")  # an inherited value does not reach the child
     calls = _capture(engine, monkeypatch)
     engine.ClaudeCliDriver(cwd=tmp_path).dispatch(_brief(tmp_path, "return-manifest"))
     cmd, kw = calls[0]
     assert "--dangerously-skip-permissions" not in cmd
     assert kw["stdin"] is subprocess.DEVNULL
-    assert kw["env"]["TESS_HEADLESS"] == "1" and kw["env"]["TESS_CONSULT_DEPTH"] == "1"
+    assert kw["env"]["TESS_DISPATCHED"] == "1" and kw["env"]["TESS_CONSULT_DEPTH"] == "1"
+    assert "TESS_HEADLESS" not in kw["env"]

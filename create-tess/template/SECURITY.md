@@ -238,11 +238,26 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (Codex, and Claude Code's no-prompt modes). Aliases and functions defined
   outside the command (a shell startup file) are not seen, and a git option only
   known at run time is asked about for `git config`, `-c` and the commands
-  `--no-verify` belongs to, not for every git command. Two gaps remain: a target whose fixed part is a
-  folder outside the project (`/tmp/build-$ID`) is allowed, although a value
-  holding `../` could climb back into it (or, unquoted, a space could add
-  another path); and a program the gate has no rules for
-  (a formatter, a build tool) can still write the files its own options name.
+  `--no-verify` belongs to, not for every git command. A target whose fixed part
+  is a folder outside the project is allowed only when the run-time part cannot
+  hold a `/` (`/tmp/build-$$`, `$RANDOM`, `${#X}`, `$((...))`, `$(date +%s)`, a
+  user or host name, a commit id); `/tmp/build-$ID`, where a value holding `../`
+  could climb back into the project, asks (since the v1.0 run-escalation
+  review). `cd` with CDPATH set (inherited, assigned, exported or given as a
+  prefix) counts as a `cd` only known at run time, unless its target starts
+  with `/`, `./` or `../`. A symbolic link's relative target is read from the
+  link's own folder (`ln -s ../../../CLAUDE.md missions/m1/returns/t.json`
+  points at the project's `CLAUDE.md` and is refused); a link made from inline
+  interpreter code (`os.symlink`, `Path.symlink_to`, `fs.symlinkSync`) asks.
+  `sqlite3` and `duckdb` are writers: the database operand, `.output`, `.once`,
+  `.save`, `.backup`, `.clone`, `.open`, `.log`, `.import`, `VACUUM INTO`,
+  `ATTACH`, `COPY ... TO`, `EXPORT DATABASE` and `writefile()` are checked against
+  the protected list, `.shell`/`.system` and `.output |cmd` are checked as
+  commands, `~/.sqliterc`/`~/.duckdbrc` are read, and SQL Tess cannot read
+  (stdin it cannot see, a file, `.read`, `-init`, a run-time value,
+  `load_extension`, `.cd`) asks. One gap remains: a program the gate has no
+  rules for (a formatter, a build tool) can still write the files its own
+  options name.
   When `cd dir; <write>` is used and the `cd` could fail, the write is checked
   in both places; `cd dir && <write>` checks it only in `dir`. `find -delete` and
   `find -exec` are checked against the files find would match (its `-name`,
@@ -274,8 +289,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   in Codex and the no-prompt modes; it is never allowed. Positions that cannot
   change those decisions stay allowed: a commit message after `-m`, a branch
   name after `checkout -b`, a value after `--author=`, a quoted path whose fixed
-  part is a folder outside the project (`/tmp/build-$ID`, the gap named in the
-  item above), a script's own arguments, and a find test when find only prints.
+  part is a folder outside the project and whose run-time part cannot hold a
+  `/` (`/tmp/build-$$`, the item above), a script's own arguments, and a find test when find only prints.
   A program whose own name is only known at run time is checked as each program
   the gate stands in for it (git, gh, tessctl, find, a shell, python, a file
   writer) and asks if any of them would be stopped or if it has no arguments;
@@ -321,14 +336,36 @@ security reviews; they are stated so nobody relies on a check that is not there.
   time, or arguments added by `xargs` also ask. Recursion: a call is "inside
   a peer call" when the gate's own process has `TESS_CONSULT_DEPTH` of 1 or
   more (set by `tessctl run`'s claude and codex drivers in every child,
-  together with `TESS_HEADLESS=1`; a value that is not a number counts as
+  together with `TESS_DISPATCHED=1`; a value that is not a number counts as
   1), when the command sets `TESS_CONSULT_DEPTH` itself, or when the gate's
   process ancestry shows a runtime started inside another runtime's session
-  (the same rule as the brain's `nested_runtime`). The codex driver now names
-  its sandbox on every call (`-s read-only` for a verifier, and for a worker
-  outside its own linked worktree, which hands its artifact back through
-  `-o`; `-s workspace-write` only for a worker in its own worktree) and closes
-  stdin, since `codex exec` with stdin open waits forever. Limits: claude and
+  (the same rule as the brain's `nested_runtime`). `tessctl run` is itself an
+  agent-CLI launch (since the v1.0 run-escalation review): every spelling
+  (`./tessctl`, `.tess/bin/tessctl`, `python3 [-I] .tess/bin/tessctl`, through
+  a shell, wrapper or runner) that can dispatch the claude or codex driver
+  (claude when `--driver` is left out; the last `--driver`, or a unique prefix
+  such as `--dri`, decides) asks in Claude Code, is refused in Codex and the
+  no-prompt modes, and is refused inside a peer call; only `--driver fake` and
+  `--help` stay allowed. tessctl also refuses to dispatch when its own
+  `TESS_CONSULT_DEPTH` is 1 or more, so a call the gate did not see still
+  cannot nest. A codex worker never writes: every codex dispatch, worker or
+  verifier, runs `-s read-only` and returns its artifact as its final message.
+  `-o` is written by the codex harness outside its sandbox and follows
+  symlinks, so it points into a fresh private folder (`tempfile.mkdtemp`, mode
+  0700) outside the project; the claude driver's child writes its artifact
+  there too (`--add-dir`). tessctl then refuses a symlink or anything that is
+  not a regular file, and installs the bytes at `missions/<id>/returns/`
+  without following a symlink anywhere on the way (each folder opened with
+  `O_NOFOLLOW` relative to its parent, an `O_EXCL` temp file, then
+  `os.replace`): a link planted at the return path while the child runs is
+  replaced, never written through, and a returns folder swapped for a link is
+  refused. Escalation records are written the same way. Both drivers close
+  stdin, since `codex exec` with stdin open waits forever. Children get
+  `TESS_DISPATCHED=1`, not `TESS_HEADLESS=1`, so the brain hooks keep recording
+  their session sync and provenance; the dispatch guard treats either as "a
+  dispatched specialist". If a per-task worktree is ever added, tessctl must
+  create it itself, refuse it when it is the project root, and compare the two
+  by `st_dev`/`st_ino` before a codex worker gets more than `-s read-only`. Limits: claude and
   codex flags were checked against `claude --help` 2.1.300 and `codex exec
   --help` 0.158.0; gemini's are from its documentation and are not verified on
   a real install; the other CLIs get a generic rule (bypass-shaped options
