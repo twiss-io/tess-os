@@ -19911,12 +19911,50 @@ ANCHOR_FILES = (
     ".tess/core/policy/policy.yaml", ".tess/bin/tessctl", "tessctl",
     ".tess/keys/twiss-release-key.asc", ".tess/keys/twiss-release-allowed-signers",
     MANIFEST_FILE,
+    # v1.0.x (Quinn GAP-1): Claude Code's local override can switch every hook
+    # off (`disableAllHooks`). Anchored by content; see ANCHOR_LOCAL_SETTINGS.
+    ".claude/settings.local.json",
 )
 # v1.0 final review round 3 (C1): files added to ANCHOR_FILES after anchors
 # already existed. An anchor written by an earlier release has no record of
 # them; the next verified update records them as they are then (a first
 # record, never a re-blessing of a change against an earlier record).
-ANCHOR_FIRST_RECORD = (MANIFEST_FILE,)
+ANCHOR_FIRST_RECORD = (MANIFEST_FILE, ".claude/settings.local.json")
+# v1.0.x (Quinn GAP-1): .claude/settings.local.json is the operator's own file
+# (personal permission rules; Claude Code writes "don't ask again" answers to
+# it) and is normally absent, yet one key in it, disableAllHooks, turns Tess's
+# gate off. So it is anchored by its ENFORCEMENT CONTENT, not its bytes: the
+# JSON object without the permission-rule lists below, and a missing file
+# counts as `{}`. Adding or removing a permission rule, or deleting the file
+# when it held nothing else, is not a change; any other key (disableAllHooks,
+# hooks, env, defaultMode, ...), text that is not a JSON object, or a symlink
+# or folder in its place, is. Kept identical in .claude/hooks/run-pinned.py.
+# `tessctl restore` puts back only those other keys and keeps the operator's
+# current permission rules.
+ANCHOR_LOCAL_SETTINGS = ".claude/settings.local.json"
+ANCHOR_LOCAL_PERMISSION_KEYS = ("allow", "ask", "deny", "additionalDirectories")
+
+
+def anchor_local_settings_digest(data: "bytes | None") -> str:
+    """The anchored digest of .claude/settings.local.json (None: no file)."""
+    doc: object = {}
+    if data is not None:
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return "raw:" + hashlib.sha256(data).hexdigest()
+        if not isinstance(doc, dict):
+            return "raw:" + hashlib.sha256(data).hexdigest()
+        doc = dict(doc)
+        perms = doc.get("permissions")
+        if isinstance(perms, dict):
+            perms = {k: v for k, v in perms.items() if k not in ANCHOR_LOCAL_PERMISSION_KEYS}
+            if perms:
+                doc["permissions"] = perms
+            else:
+                del doc["permissions"]
+    text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "settings:" + hashlib.sha256(text.encode("ascii")).hexdigest()
 ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
 ANCHOR_GIT_PREFIX = "git-hooks/"
 ANCHOR_GIT_MARKER = "# tess-"
@@ -20197,10 +20235,22 @@ def lock_projection(text: str) -> str:
 _anchor_lock_projection = lock_projection   # the name tests and callers use
 
 
-def _anchor_digest(rel: str, data: bytes) -> str:
+def _anchor_digest(rel: str, data: bytes | None) -> str | None:
+    """The anchored digest of `data`; None for a file that is not there
+    (except .claude/settings.local.json, whose absence counts as `{}`)."""
+    if rel == ANCHOR_LOCAL_SETTINGS:
+        return anchor_local_settings_digest(data)
+    if data is None:
+        return None
     if rel == LOCK_FILE:
         return _anchor_lock_projection(data.decode("utf-8", "replace"))
     return hashlib.sha256(data).hexdigest()
+
+
+def _anchor_local_absent(root: Path) -> bool:
+    """True when .claude/settings.local.json is truly absent (not a symlink,
+    a folder or an unreadable file in its place)."""
+    return not os.path.lexists(str(root / ANCHOR_LOCAL_SETTINGS))
 
 
 def _anchor_read(path: Path | None) -> bytes | None:
@@ -20220,6 +20270,8 @@ def _anchor_current(root: Path) -> dict:
         data = _anchor_read(root / rel)
         if data is not None:
             out[rel] = data
+        elif rel == ANCHOR_LOCAL_SETTINGS and _anchor_local_absent(root):
+            out[rel] = None  # recorded as "no file" (counts as `{}`)
     for name in ANCHOR_GIT_HOOKS:
         rel = ANCHOR_GIT_PREFIX + name
         data = _anchor_read(_anchor_file_path(root, rel))
@@ -20301,9 +20353,14 @@ def _anchor_state(root: Path) -> AnchorState:
     problems = []
     for rel, rec in sorted(doc["files"].items()):
         want = rec.get("sha256") if isinstance(rec, dict) else None
+        if rel == ANCHOR_LOCAL_SETTINGS and _anchor_local_absent(root):
+            if want != anchor_local_settings_digest(None):
+                problems.append(f"{rel} has changed")  # removed while it held more than permission rules
+            continue
         data = _anchor_read(_anchor_file_path(root, rel))
         if data is None:
-            problems.append(f"{rel} is missing")
+            problems.append(f"{rel} is missing" if rel != ANCHOR_LOCAL_SETTINGS else
+                            f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or _anchor_digest(rel, data) != want:
             problems.append(f"{rel} has changed")
     return AnchorState("mismatch" if problems else "ok", doc, problems, str(pdir / "anchor.json"))
@@ -20339,6 +20396,10 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
     After a verified release run (`update` / `self-update`, v1.0.0 GPT-6 final
     F2): `carry` = the previously approved records kept as they are, `accept`
     = {rel: bytes} of the files that run wrote; nothing else is recorded."""
+    if accept is None and ANCHOR_LOCAL_SETTINGS in ANCHOR_FILES and not _anchor_local_absent(root) \
+            and _anchor_read(root / ANCHOR_LOCAL_SETTINGS) is None:
+        raise ValueError(f"{ANCHOR_LOCAL_SETTINGS} is a symlink, a folder or unreadable; Claude "
+                         f"Code would follow it, so replace it with a regular file first")
     pid = _anchor_project_id(root) or ("path-" + _anchor_path_key(root))
     tess_dir = _anchor_tess_dir()
     projects, blobs = tess_dir / "projects", tess_dir / "anchor-blobs"
@@ -20357,6 +20418,10 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
     files = {rel: dict(rec) for rel, rec in (carry or {}).items()
              if isinstance(rec, dict) and rec.get("sha256")}
     for rel, data in sorted(items.items()):
+        if data is None:
+            if rel == ANCHOR_LOCAL_SETTINGS:
+                files[rel] = {"sha256": anchor_local_settings_digest(None), "absent": True}
+            continue
         raw = hashlib.sha256(data).hexdigest()
         blob = blobs / raw
         if _anchor_read(blob) is None or hashlib.sha256(blob.read_bytes()).hexdigest() != raw:
@@ -20443,11 +20508,12 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
             data, rec = current.get(rel), old.get(rel)
             path = _anchor_file_path(root, rel)
             wrote = _RELEASE_WRITES.get(os.path.realpath(str(path))) if path is not None else None
+            now = _anchor_digest(rel, data) if rel in current else None
             if data is not None and wrote is not None and hashlib.sha256(data).hexdigest() == wrote:
                 accept[rel] = data
-            elif rec is not None and (data is None or _anchor_digest(rel, data) != rec.get("sha256")):
+            elif rec is not None and (now is None or now != rec.get("sha256")):
                 changed.append(rel)
-            elif rec is None and data is not None and rel in ANCHOR_FIRST_RECORD:
+            elif rec is None and rel in current and rel in ANCHOR_FIRST_RECORD:
                 accept[rel] = data
                 print(f"  NOTE  Tess now also protects {rel}; recorded it as it is now. To "
                       f"change it later, edit it yourself and run `tessctl anchor accept` in "
@@ -20476,6 +20542,15 @@ def _anchor_restore(root: Path, dry_run: bool = False) -> list:
     for rel, rec in sorted(st.doc["files"].items()):
         path = _anchor_file_path(root, rel)
         data = _anchor_read(path)
+        if rel == ANCHOR_LOCAL_SETTINGS:
+            absent = _anchor_local_absent(root)
+            if (absent or data is not None) and _anchor_digest(rel, None if absent else data) == \
+                    rec.get("sha256"):
+                continue
+            why = _anchor_restore_local_settings(root, rec, data, blobs, dry_run)
+            if why:
+                failed.append(f"{rel}: {why}")
+            continue
         if data is not None and _anchor_digest(rel, data) == rec.get("sha256"):
             continue
         blob = _anchor_read(blobs / str(rec.get("blob") or "-")) if re.fullmatch(
@@ -20504,6 +20579,59 @@ def _anchor_restore(root: Path, dry_run: bool = False) -> list:
     return failed
 
 
+def _anchor_restore_local_settings(root: Path, rec: dict, data: bytes | None, blobs: Path,
+                                   dry_run: bool) -> str | None:
+    """Put back the approved enforcement content of .claude/settings.local.json
+    (every key except the permission-rule lists), keeping the operator's
+    current permission rules. None when done, else why not."""
+    path = root / ANCHOR_LOCAL_SETTINGS
+    if not _anchor_local_absent(root) and data is None:
+        return "something other than a file is in the way"
+    if rec.get("absent"):
+        approved = {}
+    else:
+        raw = str(rec.get("blob") or "")
+        blob = _anchor_read(blobs / raw) if re.fullmatch(r"[0-9a-f]{64}", raw) else None
+        try:
+            approved = json.loads(blob.decode("utf-8")) if blob is not None and \
+                hashlib.sha256(blob).hexdigest() == raw else None
+        except (UnicodeDecodeError, ValueError):
+            approved = None
+        if not isinstance(approved, dict):
+            return "the approved copy is not available"
+    keep = {}
+    try:
+        cur = json.loads(data.decode("utf-8")) if data is not None else {}
+    except (UnicodeDecodeError, ValueError):
+        cur = {}
+    if isinstance(cur, dict) and isinstance(cur.get("permissions"), dict):
+        keep = {k: v for k, v in cur["permissions"].items() if k in ANCHOR_LOCAL_PERMISSION_KEYS}
+    new = dict(approved)
+    if isinstance(approved.get("permissions"), dict):
+        perms = {k: v for k, v in approved["permissions"].items()
+                 if k not in ANCHOR_LOCAL_PERMISSION_KEYS}
+        perms.update(keep)
+        if perms:
+            new["permissions"] = perms
+        else:
+            new.pop("permissions")
+    elif "permissions" not in approved and keep:
+        new["permissions"] = keep
+    if dry_run:
+        print(f"  WOULD RESTORE  {ANCHOR_LOCAL_SETTINGS}  (the approved settings; your "
+              f"permission rules are kept)")
+        return None
+    if not new and rec.get("absent"):
+        path.unlink()
+        print(f"  restored {ANCHOR_LOCAL_SETTINGS}  (removed: the approved state is no file)")
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(path, (json.dumps(new, indent=2) + "\n").encode("utf-8"), mode=0o644)
+    print(f"  restored {ANCHOR_LOCAL_SETTINGS}  (the approved settings; your permission "
+          f"rules are kept)")
+    return None
+
+
 def _anchor_tty() -> bool:
     try:
         return bool(sys.stdin is not None and sys.stdin.isatty()
@@ -20519,10 +20647,19 @@ def _anchor_show_changes(root: Path, st: AnchorState) -> None:
     current = _anchor_current(root)
     for rel in sorted(set(anchored) | set(current)):
         rec, now = anchored.get(rel), current.get(rel)
-        if rec is not None and now is not None and _anchor_digest(rel, now) == rec.get("sha256"):
+        if rec is not None and rel in current and _anchor_digest(rel, now) == rec.get("sha256"):
             continue
         if rec is None:
             print(f"\n  NEW   {rel} (will be recorded)")
+            continue
+        if rel == ANCHOR_LOCAL_SETTINGS and rel not in current:
+            print(f"\n  CHANGED  {rel} (a symlink, a folder or unreadable; replace it with a "
+                  f"regular file)")
+            continue
+        if rel == ANCHOR_LOCAL_SETTINGS and (now is None or rec.get("absent")):
+            print(f"\n  CHANGED  {rel}" + (" (now: no file)" if now is None else ""))
+            for ln in ([] if now is None else now.decode("utf-8", "replace").splitlines()[:200]):
+                print("    +" + ln)
             continue
         if now is None:
             print(f"\n  GONE  {rel} (will no longer be checked)")

@@ -93,7 +93,11 @@ Bash(git status:*)  Bash(git branch --list:*)
 Every other git command (commit, push, fetch, config, checkout, reset, ...)
 goes through Claude Code's normal permission prompt, so the operator sees it
 first. If you want broader rules on your own machine, put them in
-`.claude/settings.local.json`, which is yours and never shipped.
+`.claude/settings.local.json`, which is yours and never shipped. Permission
+rules there change freely; any other key there (for example `disableAllHooks`,
+which switches Tess's gate off) is a safety setting Tess anchors since v1.0.x,
+so changing it stops Tess until you run `tessctl anchor accept` in your own
+terminal (SECURITY.md).
 
 `git diff`, `git log` and `git show` were removed from the allow list in the
 v1.0 security review, round 2 (H-A). They accept `--output=<file>`, which

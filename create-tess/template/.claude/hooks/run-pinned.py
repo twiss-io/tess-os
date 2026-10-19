@@ -398,7 +398,43 @@ ANCHOR_FILES = (
     # render_targets.enabled decide what tessctl writes and what doctor,
     # verify, update and the publish-clean gate inspect.
     "tess.manifest.json",
+    # v1.0.x (Quinn GAP-1): Claude Code's local override can switch every hook
+    # off (`disableAllHooks`). Anchored by content; see ANCHOR_LOCAL_SETTINGS.
+    ".claude/settings.local.json",
 )
+# v1.0.x (Quinn GAP-1): .claude/settings.local.json is the operator's own file
+# (personal permission rules; Claude Code writes "don't ask again" answers to
+# it) and is normally absent, yet one key in it, disableAllHooks, turns Tess's
+# gate off. So it is anchored by its ENFORCEMENT CONTENT, not its bytes: the
+# JSON object without the permission-rule lists below, and a missing file
+# counts as `{}`. Adding or removing a permission rule, or deleting the file
+# when it held nothing else, is not a change; any other key (disableAllHooks,
+# hooks, env, defaultMode, ...), text that is not a JSON object, or a symlink
+# or folder in its place, is. Kept identical in .tess/bin/tessctl.
+ANCHOR_LOCAL_SETTINGS = ".claude/settings.local.json"
+ANCHOR_LOCAL_PERMISSION_KEYS = ("allow", "ask", "deny", "additionalDirectories")
+
+
+def anchor_local_settings_digest(data: "bytes | None") -> str:
+    """The anchored digest of .claude/settings.local.json (None: no file)."""
+    doc: object = {}
+    if data is not None:
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return "raw:" + hashlib.sha256(data).hexdigest()
+        if not isinstance(doc, dict):
+            return "raw:" + hashlib.sha256(data).hexdigest()
+        doc = dict(doc)
+        perms = doc.get("permissions")
+        if isinstance(perms, dict):
+            perms = {k: v for k, v in perms.items() if k not in ANCHOR_LOCAL_PERMISSION_KEYS}
+            if perms:
+                doc["permissions"] = perms
+            else:
+                del doc["permissions"]
+    text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "settings:" + hashlib.sha256(text.encode("ascii")).hexdigest()
 # Git hooks Tess installs (gate, vault, public-remote and brain guards); anchored
 # when present with a Tess marker at anchor time, keyed "git-hooks/<name>".
 ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
@@ -670,6 +706,8 @@ def lock_projection(text: str) -> str:
 def anchor_digest(rel: str, data: bytes) -> str:
     if rel == LOCK_REL:
         return lock_projection(data.decode("utf-8", "replace"))
+    if rel == ANCHOR_LOCAL_SETTINGS:
+        return anchor_local_settings_digest(data)
     return hashlib.sha256(data).hexdigest()
 
 
@@ -771,9 +809,14 @@ def anchor_problems(root: Path, doc: dict) -> list:
     for rel, rec in sorted(doc["files"].items()):
         want = rec.get("sha256") if isinstance(rec, dict) else None
         path = anchor_file_path(root, rel)
+        if rel == ANCHOR_LOCAL_SETTINGS and path is not None and not os.path.lexists(str(path)):
+            if want != anchor_local_settings_digest(None):
+                out.append(f"{rel} has changed")  # removed while it held more than permission rules
+            continue
         data = anchor_read_file(path) if path else None
         if data is None:
-            out.append(f"{rel} is missing")
+            out.append(f"{rel} is missing" if rel != ANCHOR_LOCAL_SETTINGS else
+                       f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or anchor_digest(rel, data) != want:
             out.append(f"{rel} has changed")
     return out

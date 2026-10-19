@@ -253,7 +253,25 @@ security reviews; they are stated so nobody relies on a check that is not there.
   named by a variable, or when the gate's environment gives it a value that is
   not a plain number; then the rule above applies and it asks. Likewise
   `$(date ...)` is not trusted when the command defines a function or alias of
-  that name or changes `PATH`. `cd` with CDPATH set (inherited, assigned, exported or given as a
+  that name or changes `PATH`. Since the v1.0.x QA review (Quinn), only a
+  `PATH` change in the command counts there: before, the `PATH` the gate itself
+  ran with made every `$(date +%s)`, `$(id -u)`, `$(whoami)`, `$(hostname)`,
+  `$(uuidgen)` and `$(git rev-parse HEAD)` ask (GAP-2). A builtin that binds
+  variables rebinds one only through a name position only known at run time
+  (`read $n`, `declare ${n}DOM=1`, `printf -v $x`), any nameref (`declare -n`,
+  `local -n`), or an option only known at run time; a run-time value or
+  redirection (`export PATH="$HOME/bin:$PATH"`, `read -r x < "$f"`) no longer
+  counts (GAP-3). `eval`, `trap`, `alias`, `let`, `coproc`, `command`, `builtin`
+  and `enable` with any run-time text, and every `source` / `.`, still count.
+  The fixed folder is also followed through symbolic links (GAP-1, a gap that
+  existed before N1 and since the run-escalation review): a link this command
+  makes, or one already on disk, at or below the run-time part
+  (`ln -s "$PWD" /var/tmp/b-0 && echo x > "/var/tmp/b-$?/.claude/settings.local.json"`)
+  that lands in the project, above it, or on a control file asks, as the
+  literal path `/var/tmp/b-0/...` is denied; so does any `ln` whose link path
+  is only known at run time, and a folder with more than 4096 entries to look
+  through. This is a check when the gate runs, not an OS boundary: a link made
+  after it (by another program) still races it. `cd` with CDPATH set (inherited, assigned, exported or given as a
   prefix) counts as a `cd` only known at run time, unless its target starts
   with `/`, `./` or `../`. A symbolic link's relative target is read from the
   link's own folder (`ln -s ../../../CLAUDE.md missions/m1/returns/t.json`
@@ -496,6 +514,28 @@ security reviews; they are stated so nobody relies on a check that is not there.
   adoption recomputed from the proven release's own manifest. An install whose
   anchor predates this has the manifest recorded, as it is then, by its next
   verified update (or by `tessctl anchor accept`).
+- **`.claude/settings.local.json` is anchored by its content (since v1.0.x, Quinn
+  GAP-1).** `{"disableAllHooks": true}` there switches every Claude Code hook
+  off, Tess's gate included, and before this only a `tessctl doctor` run you
+  started noticed it. The file is yours and is normally absent, and Claude Code
+  writes your "don't ask again" answers to it, so the anchor records what it
+  ENFORCES: the JSON object without the permission-rule lists
+  (`permissions.allow`, `ask`, `deny`, `additionalDirectories`), with a missing
+  file counted as `{}`. Adding or removing permission rules, or deleting a file
+  that held only them, changes nothing; any other key (`disableAllHooks`,
+  `hooks`, `env`, `permissions.defaultMode`, ...), text that is not a JSON
+  object, or a symlink or folder in its place is a changed safety file: the
+  next Tess hook stops (in a session where Claude Code's hooks still run, and in
+  Codex), the Tess git hooks refuse commits and pushes, and `doctor`, `verify`,
+  `anchor status` and `scripts/tess hooks-status` report it. A Claude Code
+  session whose hooks that key has already switched off runs no Tess hook, so
+  the stop shows in those other places, not in that session. To change it on
+  purpose, run `tessctl anchor accept` in your own terminal; `tessctl restore`
+  puts back the approved keys and keeps your current permission rules. An
+  install anchored before this has the file recorded, as it is then, by its
+  next verified update (or by `tessctl anchor accept`). Claude Code's own
+  "allow" rules there do not override Tess's denials; whether they skip
+  Claude Code's prompt for a gate "ask" is Claude Code's behaviour, not Tess's.
 - **The learning loop authenticates where your words came from; it cannot see
   who typed them.** A line counts as your own words only when a hook, running
   outside the agent's sandbox, took it from the runtime's own transcript store

@@ -3721,7 +3721,13 @@ def _flat_shell(text: str) -> str:
 
 def _rebound(name: str, ctx: "_Ctx") -> bool:
     """True when this command may change `name` (see above), or Tess is unsure."""
-    if name in ctx.vars or ctx.opaque or not os.environ.get(name, "0").isdigit():
+    if name in ctx.vars or ctx.opaque:
+        return True
+    # v1.0.x (Quinn GAP-2): only the shell-set numeric variables are checked
+    # against the gate's environment. PATH is never all digits, so the old
+    # unscoped test made `_rebound("PATH")` always true and every
+    # `$(date +%s)` after a safe prefix asked.
+    if name in _SLASHFREE_VARS and not os.environ.get(name, "0").isdigit():
         return True  # a value from the environment counts only when it is a plain number
     for text in dict.fromkeys((ctx.raw or "", _STATE.get("cmd") or "")):
         flat = _flat_shell(text)
@@ -3731,9 +3737,45 @@ def _rebound(name: str, ctx: "_Ctx") -> bool:
         if _SOURCES.search(flat) or _DYN_CMD.search(flat):
             return True
         for m in _BINDERS.finditer(flat):
-            opt = _BINDER_OPT.get(m.group(1))
-            if (opt is None or opt.search(m.group(2))) and _DYN_TEXT.search(m.group(2)):
+            if _binder_may_name(m.group(1), m.group(2)):
                 return True
+    return False
+
+
+# v1.0.x (Quinn GAP-3): a builtin that binds variables rebinds `name` only when
+# one of its NAME positions is only known at run time (`read $n`, `declare
+# ${n}DOM=1`, `printf -v $x`). A run-time VALUE (`export PATH="$HOME/bin:$PATH"`,
+# `local x="$y"`) or redirection target (`read -r x < "$f"`) names nothing. The
+# builtins that run text as code (eval, trap, alias, let, coproc, command,
+# builtin, enable) keep the stricter rule: any run-time text at all. A nameref
+# (`declare -n`, `local -n`, `typeset -n`) turns a value into a name, so any
+# nameref distrusts every variable; so does an option only known at run time
+# (`declare -$o r=...`). `source` / `.` are never relaxed (_SOURCES above).
+_BINDER_NAMES_ONLY = {"unset", "read", "readarray", "mapfile", "declare", "typeset", "local",
+                      "export", "readonly", "getopts", "printf", "wait"}
+_BINDER_NAMEREF = {"declare", "typeset", "local"}
+_REDIR_TOKEN = re.compile(r"\d*(?:<<<|<<-?|&>>?|[<>]{1,2}[&|]?)\s*\S+")
+
+
+def _binder_may_name(word: str, arg: str) -> bool:
+    """True when binder `word` with argument text `arg` may bind a variable
+    whose name is only known at run time, or Tess is unsure."""
+    if word not in _BINDER_NAMES_ONLY:
+        return bool(_DYN_TEXT.search(arg))
+    opt = _BINDER_OPT.get(word)
+    if opt is not None and not opt.search(arg):
+        return False  # printf without -v / wait without -p binds no variable
+    toks = _REDIR_TOKEN.sub(" ", arg).split()
+    for tok in toks:
+        if tok.startswith("-") or tok.startswith("+"):
+            if _DYN_TEXT.search(tok):
+                return True  # an option only known at run time
+            if word in _BINDER_NAMEREF and "n" in tok[1:]:
+                return True  # a nameref: its value is a name
+            continue
+        head = tok.split("=", 1)[0]
+        if _DYN_TEXT.search(head):
+            return True
     return False
 
 
@@ -3808,7 +3850,137 @@ def _may_reach(root: Path, cwd: str | None, prefix: str, word=None, ctx: "_Ctx |
     if (_within(real, base) is not None or _within(base, real) is not None
             or control_file_hit(root, real, real) is not None):
         return True
-    return not _slash_free_runtime(word, cwd, ctx)
+    if not _slash_free_runtime(word, cwd, ctx):
+        return True
+    return _link_may_redirect(root, cwd, word, ctx)
+
+
+# v1.0.x (Quinn GAP-1, present before N1): a slash-free run-time part keeps
+# the path inside the fixed folder in front of it only while nothing in that
+# folder REDIRECTS it. `ln -s "$PWD" /var/tmp/b-0 && echo x >
+# "/var/tmp/b-$?/.claude/settings.local.json"` ($? is 0 after the ln), or the
+# same write through a link already on disk, reached the project with an
+# allow, while the literal spelling `/var/tmp/b-0/...` was resolved through
+# the link and denied. So before the fast path allows, every name the path
+# can take is matched against the links this command makes and the links on
+# disk, and a link landing in the project, above it, or on a control file
+# makes it ask (deny in Codex), as the literal path does. A link whose own
+# path is only known at run time (`ln -s "$PWD" "/var/tmp/b-$$"`) cannot be
+# matched, so it always asks. Bounded: more than _LINK_SCAN_LIMIT directory
+# entries to look at asks too. Not an OS boundary: a link made after the gate
+# runs still races it.
+_RUNTIME_LINK = "\0runtime-link"  # ctx.links key: a link whose path is unknown
+_LINK_SCAN_LIMIT = 4096
+
+
+def _runtime_shapes(word, cwd: str | None, ctx: "_Ctx", cap: int = 16):
+    """Glob patterns for every path `word` can name: known text escaped, each
+    part known only at run time a `*` (it holds no "/", _slash_free_runtime).
+    None when Tess cannot tell."""
+    import glob as _g
+    outs = [""]
+    for i, (k, t) in enumerate(word.parts):
+        if k == "lit":
+            alts = [_g.escape(t)]
+        elif k == "raw":
+            if i == 0 and t.startswith("~"):
+                t = os.path.expanduser(t)
+            # A brace group (`cache-{1..5000}`) matches like `*` when it holds no "/".
+            prev = None
+            while prev != t:
+                prev, t = t, re.sub(r"\{[^{}/]*\}", "*", t)
+            if re.search(r"[{}]", t):
+                return None
+            alts = [t]
+        elif k == "var":
+            vals = _var_values(t, cwd, ctx)
+            alts = ["*"] if vals is None else [_g.escape(v) for v in vals]
+        elif k == "sub":
+            vals = _sub_values(t, cwd)
+            alts = ["*"] if vals is None else [_g.escape(v) for v in vals]
+        elif k in ("dyn", "arith"):
+            alts = ["*"]
+        else:
+            return None
+        outs = [o + a for o in outs for a in alts]
+        if len(outs) > cap:
+            return None
+    return outs
+
+
+def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") -> bool:
+    """True when a symlink this command makes, or one on disk, may send the
+    path `word` names into the project, above it, or onto a control file
+    (see above), or Tess cannot tell."""
+    if ctx is None or not isinstance(word, _Word):
+        return True
+    if _RUNTIME_LINK in ctx.links:
+        return True
+    shapes = _runtime_shapes(word, cwd, ctx)
+    if shapes is None:
+        return True
+    import glob as _g
+    base = os.path.realpath(str(root))
+
+    def lands(path: str) -> bool:
+        real = os.path.realpath(path)
+        return (_within(real, base) is not None or _within(base, real) is not None
+                or control_file_hit(root, real, real) is not None)
+
+    def fits(name: str, pat: str) -> bool:
+        return fnmatch.fnmatchcase(name.lower(), pat.lower())  # case-insensitive volumes too
+
+    budget = [_LINK_SCAN_LIMIT]
+
+    def walk(start: str, via: bool, segs: list) -> bool:
+        """Follow `segs` (glob patterns) from `start` on disk. Once a step
+        passes through a symlink at or after the first run-time part, every
+        path below it is checked where it really lands."""
+        paths, dynamic = [(start, via)], False
+        for seg in segs:
+            magic = _g.has_magic(seg)
+            dynamic = dynamic or magic
+            nxt = []
+            for p, v in paths:
+                if not magic:
+                    cands = [os.path.join(p, seg)]
+                else:
+                    cands = []
+                    try:
+                        with os.scandir(p) as it:
+                            for e in it:
+                                budget[0] -= 1
+                                if budget[0] < 0:
+                                    return True
+                                if fits(e.name, seg):
+                                    cands.append(os.path.join(p, e.name))
+                    except OSError:
+                        continue
+                for q in cands:
+                    v2 = v or (dynamic and os.path.islink(q))
+                    if v2 and lands(q):
+                        return True
+                    nxt.append((q, v2))
+            paths = nxt
+            if not paths:
+                break
+        return False
+
+    for shape in shapes:
+        full = shape if shape.startswith("/") else _g.escape(cwd or base).rstrip("/") + "/" + shape
+        segs = [p for p in full.split("/") if p not in ("", ".")]
+        nsegs = [p for p in os.path.normpath(full).split("/") if p]  # ctx.links keys are normalised
+        # Links this command makes earlier (`ln -s "$PWD" /var/tmp/b-0 && ...`).
+        for link, target in ctx.links.items():
+            lsegs = [p for p in link.split("/") if p]
+            if len(lsegs) <= len(nsegs) and all(fits(a, b) for a, b in zip(lsegs, nsegs)):
+                dest = None if target is None else _through_links(target, os.sep, ctx)
+                if dest is None or lands(dest) or walk(dest, True, nsegs[len(lsegs):]):
+                    return True
+        # Links already on disk at or below the first run-time part.
+        if walk(os.sep, False, segs):
+            return True
+    return False
 
 
 def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
@@ -4578,6 +4750,13 @@ def _record_links(cwd: str, argv: list, ctx: "_Ctx") -> None:
     command (`ln -s . x && cp y x/CLAUDE.md`) is checked where it lands."""
     for link, target in _ln_links(cwd, argv, ctx)[1]:
         ctx.links[link] = target
+    # v1.0.x (Quinn GAP-1): a link whose own path is only known at run time
+    # (`ln -s "$PWD" "/var/tmp/b-$$"`) is not in the list above; mark it, so a
+    # later write through a run-time path does not take the fast path.
+    unknown: list = []
+    _ln_links(cwd, argv, ctx, unknown)
+    if unknown:
+        ctx.links[_RUNTIME_LINK] = None
 
 
 def _ln_symlink_targets(cwd: str, argv: list, ctx: "_Ctx") -> list:
@@ -4590,9 +4769,11 @@ def _ln_symlink_targets(cwd: str, argv: list, ctx: "_Ctx") -> list:
     return [_plain(target) for _link, target in pairs if sym and target]
 
 
-def _ln_links(cwd: str, argv: list, ctx: "_Ctx") -> tuple:
+def _ln_links(cwd: str, argv: list, ctx: "_Ctx", unknown: "list | None" = None) -> tuple:
     """(symbolic, [(absolute link path, absolute target or None), ...]) for
-    the links one `ln` call makes."""
+    the links one `ln` call makes. A link whose own path is only known at run
+    time is left out of the list and, when `unknown` is given, its target
+    operand is appended to it."""
     args, tdir, ops, i = _operands(argv[1:]), None, [], 0
     sym = any(re.match(r"^-[A-Za-z]*s", str(a)) or str(a) == "--symbolic" for a in args)
     while i < len(args):
@@ -4624,8 +4805,13 @@ def _ln_links(cwd: str, argv: list, ctx: "_Ctx") -> tuple:
     else:
         pairs = []
     out = []
+    if unknown is not None and len(pairs) < (len(ops) if tdir is not None or len(ops) == 1
+                                             else len(ops) - 1):
+        unknown.extend(ops)  # `ln -s a b c` into a folder only known at run time
     for t, link in pairs:
         if not link or "\0" in link:
+            if unknown is not None:
+                unknown.append(t)
             continue
         link = os.path.normpath(os.path.join(cwd, link))
         tv = val(t)
