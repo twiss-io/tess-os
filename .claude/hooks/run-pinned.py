@@ -819,6 +819,11 @@ def anchor_problems(root: Path, doc: dict) -> list:
                        f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or anchor_digest(rel, data) != want:
             out.append(f"{rel} has changed")
+            if rel == ANCHOR_LOCAL_SETTINGS:
+                out.append("(Claude Code also writes your answers to its project MCP server "
+                           "approval prompt there: if you just approved or rejected a server "
+                           "from .mcp.json, that is this change; `tessctl anchor accept` "
+                           "records it)")
     return out
 
 

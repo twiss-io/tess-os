@@ -19955,6 +19955,40 @@ def anchor_local_settings_digest(data: "bytes | None") -> str:
                 del doc["permissions"]
     text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return "settings:" + hashlib.sha256(text.encode("ascii")).hexdigest()
+# v1.0.x (Quinn, first record): the first record of settings.local.json blesses
+# whatever is in it. An enforcing key already there (disableAllHooks above all)
+# is named loudly, never recorded in silence.
+def anchor_local_enforcing_keys(data: "bytes | None") -> list:
+    """The keys of .claude/settings.local.json other than permission rules."""
+    if data is None:
+        return []
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return ["(text that is not JSON)"]
+    if not isinstance(doc, dict):
+        return ["(JSON that is not an object)"]
+    keys = [k for k in doc if k != "permissions"]
+    perms = doc.get("permissions")
+    if isinstance(perms, dict):
+        keys += [f"permissions.{k}" for k in perms if k not in ANCHOR_LOCAL_PERMISSION_KEYS]
+    elif "permissions" in doc:
+        keys.append("permissions")
+    return sorted(keys)
+
+
+def _anchor_local_first_record_warning(root: Path) -> None:
+    keys = anchor_local_enforcing_keys(_anchor_read(root / ANCHOR_LOCAL_SETTINGS))
+    if not keys:
+        return
+    off = " disableAllHooks switches every Tess check in Claude Code OFF." \
+        if "disableAllHooks" in keys else ""
+    print(f"  WARNING  {ANCHOR_LOCAL_SETTINGS} already sets {', '.join(keys)}, and Tess has "
+          f"recorded it as approved as it is now.{off} If you did not add "
+          f"{'these' if len(keys) > 1 else 'this'} yourself, run `tessctl doctor`, remove "
+          f"what you did not add, then run `tessctl anchor accept` in your own terminal.")
+
+
 ANCHOR_GIT_HOOKS = ("pre-commit", "pre-push", "post-merge")
 ANCHOR_GIT_PREFIX = "git-hooks/"
 ANCHOR_GIT_MARKER = "# tess-"
@@ -20363,6 +20397,11 @@ def _anchor_state(root: Path) -> AnchorState:
                             f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or _anchor_digest(rel, data) != want:
             problems.append(f"{rel} has changed")
+            if rel == ANCHOR_LOCAL_SETTINGS:
+                problems.append("(Claude Code also writes your answers to its project MCP server "
+                                "approval prompt there: if you just approved or rejected a server "
+                                "from .mcp.json, that is this change; `tessctl anchor accept` "
+                                "records it)")
     return AnchorState("mismatch" if problems else "ok", doc, problems, str(pdir / "anchor.json"))
 
 
@@ -20499,11 +20538,12 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
             print("  WARN  Tess's safety files were NOT recorded: `tessctl verify` does not "
                   "pass. Fix what it reports, then run `tessctl anchor init`.")
             return
-        carry, accept = None, None
+        carry, accept, first_local = None, None, True
     else:
         old = st.doc["files"]
         current = _anchor_current(root)
         accept, changed = {}, []
+        first_local = False
         for rel in sorted(set(old) | set(current)):
             data, rec = current.get(rel), old.get(rel)
             path = _anchor_file_path(root, rel)
@@ -20518,6 +20558,8 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
                 print(f"  NOTE  Tess now also protects {rel}; recorded it as it is now. To "
                       f"change it later, edit it yourself and run `tessctl anchor accept` in "
                       f"your own terminal.")
+                if rel == ANCHOR_LOCAL_SETTINGS:
+                    first_local = True
         if changed:
             sys.exit(f"tessctl {verb}: STOPPED — the release was applied, but these safety files "
                      f"changed in a way the release did not, so Tess did NOT record them as "
@@ -20530,6 +20572,8 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
               f"run `tessctl anchor accept` in your own terminal")
         return
     print(f"  recorded Tess's safety files (enforcement anchor) → {where}")
+    if first_local:
+        _anchor_local_first_record_warning(root)
 
 
 def _anchor_restore(root: Path, dry_run: bool = False) -> list:
@@ -20710,6 +20754,7 @@ def cmd_anchor(args, root: Path) -> None:
         except (OSError, ValueError) as e:
             sys.exit(f"tessctl anchor init: could not record the safety files ({e})")
         print(f"anchor: recorded Tess's safety files → {where}")
+        _anchor_local_first_record_warning(root)
         return
     if sub != "accept":
         sys.exit("tessctl anchor: choose status | accept | init")
