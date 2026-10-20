@@ -217,3 +217,49 @@ def test_the_real_hooks_stop_on_it_and_not_on_permission_rules(request):
     assert "safety files: back to the approved copies" in r.stdout, r.stdout + r.stderr
     assert json.loads((root / LOCAL).read_text()) == {"permissions": {"allow": ["Bash(ls:*)"]}}
     assert _claude(root, "ls")[0:2] == (0, None)
+
+
+# v1.0.x (Quinn, fix/v1-n1-gaps @ 9fba9a8, section 3): the first record blessed
+# an enforcing key already in the file (disableAllHooks above all) in silence.
+def test_a_first_record_names_an_enforcing_key_loudly(anchored, engine, capsys):
+    root = anchored
+    st = engine._anchor_state(root)
+    doc = dict(st.doc)
+    doc["files"] = {k: v for k, v in doc["files"].items() if k != LOCAL}
+    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    _write(root, {"disableAllHooks": True, "permissions": {"allow": ["Bash(ls)"]}})
+    engine._anchor_after_release(root, "update")
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "disableAllHooks" in out and "tessctl doctor" in out, out
+    assert "Bash(ls)" not in out, "permission rules are the operator's own; never named"
+
+
+def test_enforcing_keys_are_everything_but_permission_rules(engine):
+    f = engine.anchor_local_enforcing_keys
+    assert f(None) == [] and f(b"{}") == []
+    assert f(b'{"permissions": {"allow": ["x"], "deny": []}}') == []
+    assert f(b'{"disableAllHooks": true, "permissions": {"defaultMode": "x", "allow": []}}') == [
+        "disableAllHooks", "permissions.defaultMode"]
+    assert f(b'{"enabledMcpjsonServers": ["a"]}') == ["enabledMcpjsonServers"]
+    assert f(b"not json") and f(b"[1]")
+
+
+def test_a_first_record_of_rules_only_stays_quiet(anchored, engine, capsys):
+    root = anchored
+    st = engine._anchor_state(root)
+    doc = dict(st.doc)
+    doc["files"] = {k: v for k, v in doc["files"].items() if k != LOCAL}
+    engine._anchor_write_private(type(root)(st.where), (json.dumps(doc) + "\n").encode())
+    _write(root, {"permissions": {"allow": ["Bash(ls)"]}})
+    engine._anchor_after_release(root, "update")
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_the_stop_names_project_mcp_approvals(anchored, engine):
+    # Claude Code writes the .mcp.json approval dialog's answer to this file
+    # (settings reference: enabledMcpjsonServers), so the stop must say so.
+    root = anchored
+    _write(root, {"enabledMcpjsonServers": ["memory"]})
+    for problems in (_launcher_problems(root), engine._anchor_state(root).problems):
+        assert f"{LOCAL} has changed" in problems
+        assert any("MCP server" in p and "anchor accept" in p for p in problems), problems

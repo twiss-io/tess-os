@@ -270,8 +270,35 @@ security reviews; they are stated so nobody relies on a check that is not there.
   that lands in the project, above it, or on a control file asks, as the
   literal path `/var/tmp/b-0/...` is denied; so does any `ln` whose link path
   is only known at run time, and a folder with more than 4096 entries to look
-  through. This is a check when the gate runs, not an OS boundary: a link made
-  after it (by another program) still races it. `cd` with CDPATH set (inherited, assigned, exported or given as a
+  through. Since the v1.0.x QA review of 9fba9a8 (Quinn R1-R5), the same check
+  also holds where the earlier one had holes, and the literal and run-time
+  spellings of a path decide alike:
+  a folder the gate cannot list (mode 111, which the shell can still walk
+  through) counts as possibly holding such a link and asks (R1); a run-time
+  part that can expand to nothing (`$!`, `$(date +%n)`, a missing program, any
+  variable) is also checked with its path component dropped
+  (`/w/$(date +)/sub` is `/w/sub`), and only `$?`, `$$`, `$#`, `${#X}` and
+  arithmetic count as never empty; `$(date +FMT)` is trusted only when FMT
+  prints a character (R2); a command word that is a glob (`r?ad`, `[u]nset`,
+  `c?`) is judged as every builtin it can match, so it can rebind `$RANDOM`,
+  move the folder like `cd`, or run like `eval` (R3); a glob step that can
+  match `..` (`.*`, which bash up to 5.1 matches against `..`) is checked as
+  `..` in a written path and asks after a run-time part, and a `..` after a
+  link is followed on disk (R4); and `mv`, `cp -P`/`-R`/`-a`/`-d`, `rsync`,
+  `ditto` and the extractors (`tar -x`, `unzip`, `cpio`, `pax`) in the same
+  command count as making every link they can carry: each link found in the
+  source, or listed in a readable archive, is recorded like one `ln` makes,
+  and a source or archive Tess cannot read in full counts as a link to
+  anywhere under the destination (R5). As a backstop, a write whose path ENDS
+  in one of Tess's enforcement files (`.claude/settings.json`,
+  `.claude/settings.local.json`, `.claude/hooks/...`, `.codex/config.toml`,
+  `.codex/hooks.json`, `.codex/rules/...`, `.gemini/settings.json`,
+  `.tess/bin/...`, `.tess/core/...`, `.tess/tess.lock`, `.git/hooks/...`) asks
+  wherever the folders in front of it lead, including in another project.
+  This is a check when the gate runs, not an OS boundary: a link made after it
+  runs, or by a program the gate has no rule for (an interpreter's
+  `os.symlink` written to a file, a build tool, a `git checkout` of a tracked
+  symlink, another process), still races it. `cd` with CDPATH set (inherited, assigned, exported or given as a
   prefix) counts as a `cd` only known at run time, unless its target starts
   with `/`, `./` or `../`. A symbolic link's relative target is read from the
   link's own folder (`ln -s ../../../CLAUDE.md missions/m1/returns/t.json`
@@ -533,7 +560,15 @@ security reviews; they are stated so nobody relies on a check that is not there.
   purpose, run `tessctl anchor accept` in your own terminal; `tessctl restore`
   puts back the approved keys and keeps your current permission rules. An
   install anchored before this has the file recorded, as it is then, by its
-  next verified update (or by `tessctl anchor accept`). Claude Code's own
+  next verified update (or by `tessctl anchor accept`); when that first record
+  (or `tessctl anchor init`) finds a key other than permission rules already
+  there, it prints a WARNING naming each one (and says plainly that
+  `disableAllHooks` switches Tess off) and points to `tessctl doctor`. Approving
+  a project MCP server in Claude Code's dialog writes `enabledMcpjsonServers`
+  (or `disabledMcpjsonServers`, or `enableAllProjectMcpServers`) to this file,
+  so Tess stops after such an approval until you run `tessctl anchor accept`:
+  `.mcp.json` is not protected or anchored, so an approved server name is not
+  enough to know what that server runs. Claude Code's own
   "allow" rules there do not override Tess's denials; whether they skip
   Claude Code's prompt for a gate "ask" is Claude Code's behaviour, not Tess's.
 - **The learning loop authenticates where your words came from; it cannot see
