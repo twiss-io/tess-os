@@ -299,7 +299,9 @@ security reviews; they are stated so nobody relies on a check that is not there.
   is checked through `realpath` too. Since the v1.0.x QA review of 7de6eef
   (Quinn B1), a run-time part that may be empty is carried as a separate piece
   of the path's shape, never as a character inside it, so a folder whose name
-  holds any character (control characters included) is matched as itself; and
+  holds any character (control characters included) is matched as itself; an
+  argument holding a NUL character (`$'\x00'`), which the shell cuts short,
+  asks; and
   the commands that write INTO a folder they are given (`tar -x -C`,
   `unzip -d`, `ditto`, `cp -R`, `rsync`, `mv` into a folder, `find -delete`)
   follow a link made earlier in the same command, and an extractor's or
