@@ -133,9 +133,18 @@ def test_sentinels_runtime_links_are_kept_apart_from_link_paths(proj):  # noqa: 
     assert ctx.rt_links and all(not k.startswith("\0") for k in ctx.links)
 
 
-def test_sentinels_a_nul_in_a_link_name_counts_as_unknown(proj, W):  # noqa: F811
-    # bash cuts a value at NUL; Tess does not model that, so it never allows.
-    _never_allow(proj, W, 'ln -s "$PWD" "@W/e/"$\'n\\x00x\' && rm -rf "@W/e/n/CLAUDE.md"')
+@pytest.mark.parametrize("cmd", [
+    'ln -s "$PWD" "@W/e/"$\'n\\x00x\' && rm -rf "@W/e/n/CLAUDE.md"',
+    "rm -rf $'.claude\\x00x'",
+    "rm -f $'CLAUDE.md\\x00.bak'",
+    "echo '{}' > $'.claude/settings.local.json\\x00.txt'",
+    'true; rm -rf "@W/k/b-$?/"$\'.claude\\x00x\'',
+])
+def test_sentinels_a_nul_in_an_argument_never_allows(proj, W, cmd):  # noqa: F811
+    # bash drops the rest of a $'...' text at NUL and a program gets the text up
+    # to it; Tess does not model either, so the command never allows (on every
+    # Python: 3.9's realpath accepts the NUL that 3.13's rejects).
+    _never_allow(proj, W, cmd)
 
 
 def test_sentinels_dotdot_check_models_an_empty_part(proj, W):  # noqa: F811

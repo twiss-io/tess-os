@@ -4196,10 +4196,19 @@ def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
     return None
 
 
+# attempt 3 (sentinel audit): a NUL character in a word is cut short by the
+# shell (bash drops the rest of the $'...' text; a program receives the text
+# up to it), which Tess does not model, so such a command never allows.
+_NUL_ASK = ("an argument holds a NUL character, which the shell cuts short, so Tess cannot tell "
+            "which file or option it names; write it without the NUL")
+
+
 def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None:
     if isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts):
         return  # >(cmd): a pipe to a command checked on its own
     cands, prefix = _word_values(word, cwd, ctx)
+    if "\0" in str(word) or any("\0" in t for t, _p in cands or []):
+        v.add(ASK, _NUL_ASK)
     _check_control_suffix(word, cands, v, cwd, ctx)
     if cands is None:
         if ctx.deferred and _positional_only(word):
@@ -7598,6 +7607,8 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
                    depth: int, ctx: "_Ctx", upstream, res: "_Cmd") -> None:
     """The checks of one resolved program with one complete argument list."""
     name = os.path.basename(str(argv[0])).lower()
+    if any("\0" in str(a) for a in list(argv) + list(orig or [])):
+        v.add(ASK, _NUL_ASK)
     _check_targets(root, cwd, _write_targets(argv, []), v, ctx)
     _check_unknown_args(name, argv, v, ctx)
     agent = _agent_name(name)
