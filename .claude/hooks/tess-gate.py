@@ -3219,6 +3219,10 @@ class _Ctx:
         self.raw = raw if parent is None else parent.raw
         self.vars = dict(parent.vars) if parent is not None else {}
         self.links = parent.links if parent is not None else {}
+        # v1.0.x (attempt 3, sentinel audit): the folders under which this
+        # command makes a link whose own path is only known at run time. Kept
+        # apart from `links` (it used to be a NUL-prefixed key in it).
+        self.rt_links = parent.rt_links if parent is not None else []
         self.mutated = parent.mutated if parent is not None else False
         self.aliases = dict(parent.aliases) if parent is not None else {}
         self.funcs = dict(parent.funcs) if parent is not None else {}
@@ -3825,15 +3829,10 @@ def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
     of it), and no known text after the first such part has a ".." step."""
     if ctx is None or not isinstance(word, _Word) or isinstance(word, _Field) or not word.parts:
         return False
-    seen, after = False, ""
+    seen, afters, tails = False, None, [""]
+    esc = lambda x: re.sub(r"([*?\[])", r"[\1]", x)  # noqa: E731
     for k, t in word.parts:
         known = None
-        if seen:
-            # v1.0.x (Quinn R4): a glob step after the run-time part that can
-            # match `..` (`"/w/b-$?"/.*/lnk`) counts as a `..` step.
-            after += re.sub(r"([*?\[])", r"[\1]", t) if k == "lit" else t if k == "raw" else "R"
-            if any(_glob_may_be_dotdot(s) for s in after.split("/")):
-                return False
         if k in ("lit", "raw"):
             known = t
         elif k == "var":
@@ -3862,6 +3861,35 @@ def _slash_free_runtime(word, cwd: str | None, ctx: "_Ctx | None") -> bool:
         else:
             return False
         if seen and known is not None and _DOTDOT.search(known):
+            return False
+        if seen and k not in ("lit", "raw") and known is not None and any(
+                _DOTDOT.search(x) for x in known.split("\n")):
+            return False  # each value on its own (they were joined by newlines)
+        # v1.0.x (Quinn R4; attempt 3): a glob step at or after the run-time part
+        # that can match `..` (`"/w/b-$?"/.*/lnk`, `"/w/b-$?/.$!."`) counts as a
+        # `..` step. Each run-time part is matched as what it can be: one or
+        # more characters that are not "." or "/" (`[!./]`, a pattern, never a
+        # stand-in character), or nothing when it may be empty.
+        if k == "lit":
+            alts = [esc(t)]
+        elif k == "raw":
+            alts = [t]
+        elif known is not None:
+            alts = [esc(x) for x in known.split("\n")]
+        else:
+            alts = ["[!./]"] + ([] if _never_empty(k, t, ctx) else [""])
+        if afters is None:
+            if not seen:
+                # the text in front of the run-time part, in its own component
+                tails = list(dict.fromkeys((a + b).rsplit("/", 1)[-1] for a in tails for b in alts))
+                if len(tails) > 64:
+                    return False
+                continue
+            afters = tails
+        afters = list(dict.fromkeys(a + b for a in afters for b in alts))
+        if len(afters) > 64:
+            return False  # more spellings than Tess checks: unsure
+        if any(_glob_may_be_dotdot(s) for a in afters for s in a.split("/")):
             return False
     return True
 
@@ -3895,12 +3923,24 @@ def _may_reach(root: Path, cwd: str | None, prefix: str, word=None, ctx: "_Ctx |
 # disk, and a link landing in the project, above it, or on a control file
 # makes it ask (deny in Codex), as the literal path does. A link whose own
 # path is only known at run time (`ln -s "$PWD" "/var/tmp/b-$$"`) cannot be
-# matched, so it always asks. Bounded: more than _LINK_SCAN_LIMIT directory
-# entries to look at asks too. Not an OS boundary: a link made after the gate
-# runs still races it.
-_RUNTIME_LINK = "\0runtime-link"  # ctx.links key: a link whose path is unknown
+# matched, so it always asks (ctx.rt_links). Bounded: more than
+# _LINK_SCAN_LIMIT directory entries to look at asks too. Not an OS boundary:
+# a link made after the gate runs still races it.
 _LINK_SCAN_LIMIT = 4096
-_EMPTY_MARK = "\x01"  # in a shape: a run-time part that may expand to nothing
+
+
+class _Empty:
+    """v1.0.x (Quinn B1): a piece of a run-time shape that stands for a part
+    that may expand to nothing. It is a separate piece, never a character
+    inside the pattern text, so no path can spell it: every character a path
+    holds (control characters included) is matched as itself."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<empty>"
+
+
+_EMPTY = _Empty()
 
 
 def _glob_may_be_dotdot(seg: str) -> bool:
@@ -3925,40 +3965,84 @@ def _never_empty(k: str, t: str, ctx: "_Ctx") -> bool:
     return False
 
 
-def _runtime_shapes(word, cwd: str | None, ctx: "_Ctx", cap: int = 16):
-    """Glob patterns for every path `word` can name: known text escaped, each
-    part known only at run time a `*` (it holds no "/", _slash_free_runtime),
-    or _EMPTY_MARK when it may be empty. None when Tess cannot tell."""
+def _value_alts(vals: list, word, i: int) -> list:
+    """Shape pieces for the known values of a variable or substitution: each
+    value as itself, and, when it is not inside double quotes, also as the
+    glob bash makes of it (attempt 3: `X='[x]'; ... $X/...` globs)."""
     import glob as _g
-    outs = [""]
+    quoted = bool(word.q[i]) if i < len(getattr(word, "q", ())) else False
+    out = []
+    for v in vals:
+        out.append(_g.escape(v) or _EMPTY)
+        if not quoted and _g.has_magic(v):
+            out.append(v)
+    return list(dict.fromkeys(out))
+
+
+def _runtime_shapes(word, cwd: str | None, ctx: "_Ctx", cap: int = 16):
+    """Every path `word` can name, as a tuple of pieces: glob text (known text
+    escaped, each part known only at run time a `*`: it holds no "/",
+    _slash_free_runtime) or _EMPTY where a run-time part may expand to
+    nothing. None when Tess cannot tell."""
+    import glob as _g
+    outs = [()]
     for i, (k, t) in enumerate(word.parts):
         if k == "lit":
             alts = [_g.escape(t)]
         elif k == "raw":
             if i == 0 and t.startswith("~"):
                 t = os.path.expanduser(t)
-            # A brace group (`cache-{1..5000}`) matches like `*` when it holds no "/".
-            prev = None
-            while prev != t:
-                prev, t = t, re.sub(r"\{[^{}/]*\}", "*", t)
-            if re.search(r"[{}]", t):
-                return None
-            alts = [t]
+            # attempt 3: a glob that matches nothing stays as written (bash's
+            # default), so `[x]` also names a folder called `[x]`.
+            alts = []
+            for a in ([t, _g.escape(t)] if _g.has_magic(t) else [t]):
+                # A brace group (`cache-{1..5000}`) matches like `*` when it holds no "/".
+                prev = None
+                while prev != a:
+                    prev, a = a, re.sub(r"\{[^{}/]*\}", "*", a)
+                if re.search(r"[{}]", a):
+                    return None
+                alts.append(a)
+            alts = list(dict.fromkeys(alts))
         elif k == "var":
             vals = _var_values(t, cwd, ctx)
-            alts = ["*", _EMPTY_MARK] if vals is None else [_g.escape(v) or _EMPTY_MARK for v in vals]
+            alts = ["*", _EMPTY] if vals is None else _value_alts(vals, word, i)
         elif k == "sub":
             vals = _sub_values(t, cwd)
-            alts = (["*"] + ([] if _never_empty(k, t, ctx) else [_EMPTY_MARK]) if vals is None
-                    else [_g.escape(v) or _EMPTY_MARK for v in vals])
+            alts = (["*"] + ([] if _never_empty(k, t, ctx) else [_EMPTY]) if vals is None
+                    else _value_alts(vals, word, i))
         elif k in ("dyn", "arith"):
-            alts = ["*"] + ([] if _never_empty(k, t, ctx) else [_EMPTY_MARK])
+            alts = ["*"] + ([] if _never_empty(k, t, ctx) else [_EMPTY])
         else:
             return None
-        outs = list(dict.fromkeys(o + a for o in outs for a in alts))
+        outs = list(dict.fromkeys(o + (a,) for o in outs for a in alts))
         if len(outs) > cap:
             return None
     return outs
+
+
+def _shape_text(shape) -> str:
+    """The glob text of a shape, with every part that may be empty empty."""
+    return "".join(p for p in shape if p is not _EMPTY)
+
+
+def _shape_segments(shape) -> list:
+    """[(glob text, may_be_empty)] per path component of a shape. The flag is
+    set when a part that may be empty falls in that component; such a
+    component starts the run-time stretch, and is no step at all when it has
+    no text of its own (`/o7/$(date +)/sub` is `/o7/sub`)."""
+    segs, cur, flag = [], "", False
+    for p in shape:
+        if p is _EMPTY:
+            flag = True
+            continue
+        bits = p.split("/")
+        for b in bits[:-1]:
+            segs.append((cur + b, flag))
+            cur, flag = "", False
+        cur += bits[-1]
+    segs.append((cur, flag))
+    return [(t, f) for t, f in segs if f or t not in ("", ".")]
 
 
 def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") -> bool:
@@ -3967,7 +4051,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
     (see above), or Tess cannot tell."""
     if ctx is None or not isinstance(word, _Word):
         return True
-    if _RUNTIME_LINK in ctx.links:
+    if ctx.rt_links:
         return True
     shapes = _runtime_shapes(word, cwd, ctx)
     if shapes is None:
@@ -3986,17 +4070,16 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
     budget = [_LINK_SCAN_LIMIT]
 
     def walk(start: str, via: bool, segs: list) -> bool:
-        """Follow `segs` (glob patterns) from `start` on disk. Once a step
-        passes through a symlink (or a `..`) at or after the first run-time
-        part, every path below it is checked where it really lands. A
-        segment holding _EMPTY_MARK came from a run-time part that may be
-        empty: it starts the run-time stretch, and is no step at all when
-        nothing else is left of it (`/o7/$(date +)/sub` is `/o7/sub`)."""
+        """Follow `segs` ((glob pattern, may_be_empty) pairs) from `start` on
+        disk. Once a step passes through a symlink (or a `..`) at or after the
+        first run-time part, every path below it is checked where it really
+        lands. A segment flagged may-be-empty came from a run-time part that
+        may expand to nothing: it starts the run-time stretch, and is no step
+        at all when it has no text of its own."""
         paths, dynamic = [(start, via)], False
-        for seg in segs:
-            if _EMPTY_MARK in seg:
+        for seg, empty in segs:
+            if empty:
                 dynamic = True
-                seg = seg.replace(_EMPTY_MARK, "")
                 if not seg:
                     continue
             magic = _g.has_magic(seg)
@@ -4046,17 +4129,19 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
 
     for shape in shapes:
         # An empty part in front makes `$!/x` the absolute path `/x`.
-        absolute = shape.replace(_EMPTY_MARK, "").startswith("/")
-        full = shape if absolute else _g.escape(cwd or base).rstrip("/") + "/" + shape
-        segs = [p for p in full.split("/") if p not in ("", ".")]
+        text = _shape_text(shape)
+        if not text.startswith("/"):
+            shape = (_g.escape(cwd or base).rstrip("/") + "/",) + shape
+            text = _shape_text(shape)
+        segs = _shape_segments(shape)
         # ctx.links keys are normalised; an empty part is no step there
-        nsegs = [p for p in os.path.normpath(full.replace(_EMPTY_MARK, "")).split("/") if p]
+        nsegs = [p for p in os.path.normpath(text).split("/") if p]
         # Links this command makes earlier (`ln -s "$PWD" /var/tmp/b-0 && ...`).
         for link, target in ctx.links.items():
             lsegs = [p for p in link.split("/") if p]
             if len(lsegs) <= len(nsegs) and all(fits(a, b) for a, b in zip(lsegs, nsegs)):
                 dest = None if target is None else _through_links(target, os.sep, ctx)
-                if dest is None or lands(dest) or walk(dest, True, nsegs[len(lsegs):]):
+                if dest is None or lands(dest) or walk(dest, True, [(p, False) for p in nsegs[len(lsegs):]]):
                     return True
         # Links already on disk at or below the first run-time part.
         if walk(os.sep, False, segs):
@@ -4115,7 +4200,7 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
     if isinstance(word, _Word) and word.parts and all(k == "proc" for k, _ in word.parts):
         return  # >(cmd): a pipe to a command checked on its own
     cands, prefix = _word_values(word, cwd, ctx)
-    _check_control_suffix(word, cands, v)
+    _check_control_suffix(word, cands, v, cwd, ctx)
     if cands is None:
         if ctx.deferred and _positional_only(word):
             return  # a function's "$1": checked again at each call, with its arguments
@@ -4177,8 +4262,18 @@ _CONTROL_SUFFIXES = (".claude/settings.json", ".claude/settings.local.json", ".c
                      ".git/hooks/**")
 
 
+# v1.0.x (Quinn B1 part 2, attempt 3): the folders that hold those files. An
+# operation whose path ENDS on one of them (deleting, moving, copying or
+# extracting into, linking, changing permissions) can replace every control
+# file inside at once, so it asks too, wherever the folders in front lead.
+# `.tess/core`, `.tess/bin` and `.git/hooks` are covered by the `/**` entries.
+_CONTROL_DIRS = (".claude", ".codex", ".gemini", ".tess")
+
+
 def _control_suffix(path: str) -> str | None:
     comps = [c for c in re.sub(r"\\(.)", r"\1", path).lower().split("/") if c not in ("", ".")]
+    if comps and any(_seg_match(d, comps[-1]) for d in _CONTROL_DIRS):
+        return next(d for d in _CONTROL_DIRS if _seg_match(d, comps[-1])) + "/"
     for entry in _CONTROL_SUFFIXES:
         tree = entry.endswith("/**")
         eparts = (entry[:-3] if tree else entry).split("/")
@@ -4189,15 +4284,29 @@ def _control_suffix(path: str) -> str | None:
     return None
 
 
-def _check_control_suffix(word, cands, v: "Verdict") -> None:
+def _word_suffix_hit(word, cands, cwd: str | None, ctx: "_Ctx | None") -> str | None:
+    """The control file or folder that a path `word` can END on: its text as
+    written, every value it can take, and, when part of it is only known at
+    run time, every shape it can have (variables set earlier in the command
+    expanded, each run-time part as `*` or empty)."""
     texts = [str(word)] + [t for t, _p in cands or []]
+    if cands is None and ctx is not None and isinstance(word, _Word) and not isinstance(word, _Field) \
+            and word.parts:
+        texts += [_shape_text(sh) for sh in _runtime_shapes(word, cwd, ctx, cap=64) or []]
     for t in texts:
         hit = _control_suffix(t)
         if hit:
-            v.add(ASK, f"it writes to {word}, whose name ends in one of Tess's enforcement files "
-                       f"({hit}); where the folders in front of it lead decides whether it switches "
-                       "Tess's checks off, so Tess asks")
-            return
+            return hit
+    return None
+
+
+def _check_control_suffix(word, cands, v: "Verdict", cwd: str | None = None,
+                          ctx: "_Ctx | None" = None) -> None:
+    hit = _word_suffix_hit(word, cands, cwd, ctx)
+    if hit:
+        v.add(ASK, f"it writes to {word}, whose name ends in one of Tess's enforcement files or "
+                   f"the folders that hold them ({hit}); where the folders in front of it lead "
+                   "decides whether it switches Tess's checks off, so Tess asks")
 
 
 def _positional_only(word) -> bool:
@@ -4320,6 +4429,8 @@ def _write_targets(argv: list, orig: list | None = None) -> list:
     elif name in INPLACE and any(re.match(r"^-[A-Za-z]*i", str(a)) or str(a).startswith("--in-place")
                                  for a in args):
         out += ops
+    if name in EXTRACTORS:
+        out += _extract_dest_words(argv, "/")  # attempt 3: run-time and linked folders
     if name in ("sed", "gsed"):
         out += [_plain(t) for t in _sed_program(argv[1:], None)[0]]
     return out + _output_targets(name, args)
@@ -4905,28 +5016,28 @@ def _mark_runtime_link(cwd: str, words: list, ctx: "_Ctx") -> None:
     """Record that this command makes a link whose own path is only known at
     run time, somewhere below the fixed folder in front of one of `words`
     (v1.0.x, Quinn R5: the literal spelling `b-0` of `b-$?` must ask too)."""
-    ctx.links[_RUNTIME_LINK] = None
+    n = len(ctx.rt_links)
     for w in words:
         if not isinstance(w, _Word):
-            ctx.links[_RUNTIME_LINK + "\0" + os.path.normpath(os.path.join(cwd, str(w)))] = None
+            ctx.rt_links.append(os.path.normpath(os.path.join(cwd, str(w))))
             continue
         cands, prefix = _word_values(w, cwd, ctx)
         texts = [t for t, _p in cands] if cands is not None else [prefix.rsplit("/", 1)[0] + "/"
                                                                   if "/" in prefix else ""]
         for t in texts:
             head = os.path.normpath(os.path.join(cwd, os.path.expanduser(t))) if t else os.sep
-            ctx.links[_RUNTIME_LINK + "\0" + head] = None
+            ctx.rt_links.append(head)
+    if len(ctx.rt_links) == n:
+        ctx.rt_links.append(os.sep)  # no folder known: anywhere
 
 
 def _runtime_link_over(full: str, ctx: "_Ctx") -> bool:
     """A link whose path is only known at run time may sit on `full`'s way."""
     real = os.path.realpath(full)
-    for key in ctx.links:
-        if key.startswith(_RUNTIME_LINK + "\0"):
-            head = key[len(_RUNTIME_LINK) + 1:]
-            if (os.path.normpath(full) + os.sep).startswith(head.rstrip(os.sep) + os.sep) or \
-                    _within(real, os.path.realpath(head)) is not None:
-                return True
+    for head in ctx.rt_links:
+        if (os.path.normpath(full) + os.sep).startswith(head.rstrip(os.sep) + os.sep) or \
+                _within(real, os.path.realpath(head)) is not None:
+            return True
     return False
 
 
@@ -4953,15 +5064,13 @@ def _record_planted_links(cwd: str, name: str, argv: list, ctx: "_Ctx") -> None:
     elif name in _LINK_KEEPING_COPIERS and not (name == "ditto" and _extract_plan(argv, cwd)):
         recursive, target, ops = _copy_plan(name, argv[1:])
     elif name in EXTRACTORS:
-        plan = _extract_plan([str(a) for a in argv], cwd)
-        if plan is None:
-            return
-        dest, archive, odd = plan
-        links = None if odd or archive is None else _archive_links(archive)
-        if links is None:
-            ctx.links[os.path.normpath(dest)] = None
-        for member, linkname in links or []:
-            _plant(os.path.normpath(os.path.join(dest, member)), linkname, ctx)
+        for plan in _extract_plans([str(a) for a in argv], cwd):
+            dest, archive, odd = plan
+            links = None if odd or archive is None else _archive_links(archive)
+            if links is None:
+                ctx.links[os.path.normpath(dest)] = None
+            for member, linkname in links or []:
+                _plant(os.path.normpath(os.path.join(dest, member)), linkname, ctx)
         return
     else:
         return
@@ -5004,7 +5113,7 @@ def _links_in_sources(srcs: list, cwd: str, ctx: "_Ctx") -> "list | None":
         full = os.path.normpath(os.path.join(cwd, os.path.expanduser(str(s))))
         if _through_links(full, cwd, ctx) != full or any(
                 k == full or k.startswith(full.rstrip(os.sep) + os.sep) for k in ctx.links
-                if not k.startswith(_RUNTIME_LINK)) or _runtime_link_over(full, ctx):
+                ) or _runtime_link_over(full, ctx):
             return None  # it is, or holds, a link made earlier in this command
         if os.path.islink(full):
             try:
@@ -5101,17 +5210,25 @@ def _ln_links(cwd: str, argv: list, ctx: "_Ctx", unknown: "list | None" = None) 
 
     def val(w):
         cands, _ = _word_values(w, cwd, ctx)
-        return cands[0][0] if cands and len(cands) == 1 else None
+        # A value holding NUL is cut there by the shell; Tess does not model
+        # that, so it counts as unknown (attempt 3, sentinel audit).
+        return cands[0][0] if cands and len(cands) == 1 and "\0" not in cands[0][0] else None
+
+    def name_in(d, t):
+        # None (unknown) when the folder or the source name is not known; this
+        # used to be a NUL placeholder inside the path text.
+        tv = val(t)
+        return None if d is None or not tv else os.path.join(d, os.path.basename(tv))
 
     if tdir is not None:
-        pairs = [(t, os.path.join(val(tdir) or "\0", os.path.basename(val(t) or "\0"))) for t in ops]
+        pairs = [(t, name_in(val(tdir), t)) for t in ops]
     elif len(ops) == 1:
-        pairs = [(ops[0], os.path.basename(val(ops[0]) or "\0"))]
+        pairs = [(ops[0], name_in("", ops[0]) or None)]
     elif len(ops) >= 2:
         dest = val(ops[-1])
         dest_abs = os.path.join(cwd, dest) if dest else None
         many = len(ops) > 2 or (dest_abs and os.path.isdir(dest_abs) and not os.path.islink(dest_abs))
-        pairs = [(t, os.path.join(dest_abs, os.path.basename(val(t) or "\0")) if many else dest_abs)
+        pairs = [(t, name_in(dest_abs, t) if many else dest_abs)
                  for t in ops[:-1]] if dest_abs else []
     else:
         pairs = []
@@ -5120,7 +5237,7 @@ def _ln_links(cwd: str, argv: list, ctx: "_Ctx", unknown: "list | None" = None) 
                                              else len(ops) - 1):
         unknown.extend(ops)  # `ln -s a b c` into a folder only known at run time
     for t, link in pairs:
-        if not link or "\0" in link:
+        if not link:
             if unknown is not None:
                 unknown.append(t)
             continue
@@ -5450,6 +5567,36 @@ def _find_control_entries(root: Path, start: str, top: str, maxdepth) -> list | 
     return out
 
 
+def _find_may_change_control(root: Path, folder: str, tree, maxdepth, mindepth) -> bool:
+    """`find <x>/<folder> ...` (folder: ".claude/", ...): whether the expression
+    can change the folder itself or a control file in it, judged on the
+    control files' names (those Tess declares, and the ones the project has)."""
+    base = folder.rstrip("/")
+    rels = [""]
+    for entry in _CONTROL_SUFFIXES:
+        if not entry.lower().startswith(base + "/"):
+            continue
+        rest = entry[len(base) + 1:]
+        if rest.endswith("/**"):
+            rest = rest[:-3]
+            rels.append(rest)
+            folder_path = os.path.join(str(root), base, rest)
+            names = _tree_names(folder_path, 512) if os.path.isdir(folder_path) else []
+            if names is None:
+                return True  # cannot list the project's own copy: unsure
+            rels += [rest + "/" + n for n in names]
+        else:
+            rels.append(rest)
+    for rel in dict.fromkeys(rels):
+        d = 0 if not rel else rel.count("/") + 1
+        if d < mindepth or (maxdepth is not None and d > maxdepth):
+            continue
+        shown = os.path.join("/" + base, rel) if rel else "/" + base
+        if tree is None or _find_eval(tree, shown, shown, d == 0)[1]:
+            return True
+    return False
+
+
 def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict", ctx: "_Ctx",
                     depth_first: bool = False) -> None:
     words = [str(w) for w in expr]
@@ -5469,6 +5616,14 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
     seen = 0
     for s in starts:
         cands, prefix = _word_values(s, cwd, ctx)
+        # v1.0.x (attempt 3, backstop): find changing files under a control
+        # folder (or file) asks wherever the folders in front of it lead.
+        hit = _word_suffix_hit(s, cands, cwd, ctx)
+        if hit and (not hit.endswith("/") or _find_may_change_control(root, hit, tree, maxdepth, mindepth)):
+            v.add(ASK, f"`find` changes files under {s}, which ends in one of Tess's enforcement "
+                       f"files or the folders that hold them ({hit}); where the folders in front of "
+                       "it lead decides whether it switches Tess's checks off, so Tess asks")
+            # no return: a start that reaches the project is still refused below
         if cands is None:
             if _may_reach(root, cwd, prefix, s, ctx):
                 v.add(ASK, f"`find` changes files under {s}, a directory only known when the command "
@@ -5477,44 +5632,52 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
         for text, pat in cands:
             for start in (_glob(cwd, pat) if pat else []) or [text]:
                 top = os.path.normpath(os.path.join(cwd, os.path.expanduser(start)))
-                base = os.path.realpath(str(root))
-                real = os.path.realpath(top)
-                entries = None
-                if _within(real, base) is None and _within(base, real) is None:
-                    # Outside the project: only the control files there matter.
-                    entries = _find_control_entries(root, start, top, maxdepth)
-                    if entries is not None:
-                        entries = [(top, start, 0)] + entries
-                if entries is None:
-                    entries = [(top, start, 0)]
-                    for dirpath, dirnames, filenames in ([] if pruned(top, start, 0) else os.walk(top)):
-                        rel = os.path.relpath(dirpath, top)
-                        d = 0 if rel == "." else rel.count(os.sep) + 1
-                        if maxdepth is not None and d + 1 > maxdepth:
-                            dirnames[:] = []
+                # v1.0.x (attempt 3): a link made earlier in the command is
+                # followed, as the shell will (`ln -s "$PWD" /w/d && find /w/d/x -delete`).
+                through = _through_links(top, cwd, ctx)
+                if through is None or _runtime_link_over(top, ctx):
+                    v.add(ASK, f"`find` changes files under {start} through a link this command "
+                               "makes, so Tess cannot check them")
+                # the path as written and where the link leads: never fewer checks
+                for top in dict.fromkeys([top] + ([through] if through else [])):
+                    base = os.path.realpath(str(root))
+                    real = os.path.realpath(top)
+                    entries = None
+                    if _within(real, base) is None and _within(base, real) is None:
+                        # Outside the project: only the control files there matter.
+                        entries = _find_control_entries(root, start, top, maxdepth)
+                        if entries is not None:
+                            entries = [(top, start, 0)] + entries
+                    if entries is None:
+                        entries = [(top, start, 0)]
+                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0) else os.walk(top)):
+                            rel = os.path.relpath(dirpath, top)
+                            d = 0 if rel == "." else rel.count(os.sep) + 1
+                            if maxdepth is not None and d + 1 > maxdepth:
+                                dirnames[:] = []
+                                continue
+                            shown_dir = start if rel == "." else os.path.join(start, rel)
+                            entries += [(os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)
+                                        for n in dirnames + filenames]
+                            dirnames[:] = [n for n in dirnames if not pruned(
+                                os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)]
+                            seen += len(dirnames) + len(filenames)
+                            if seen > _FIND_LIMIT:
+                                v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
+                                           "check them against its protected files")
+                                return
+                            _tick()
+                    for path, shown, d in entries:
+                        if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
                             continue
-                        shown_dir = start if rel == "." else os.path.join(start, rel)
-                        entries += [(os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)
-                                    for n in dirnames + filenames]
-                        dirnames[:] = [n for n in dirnames if not pruned(
-                            os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)]
-                        seen += len(dirnames) + len(filenames)
-                        if seen > _FIND_LIMIT:
-                            v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
-                                       "check them against its protected files")
+                        hit = protected_hit(root, cwd, path)
+                        if hit:
+                            v.add(DENY, f"`find` would change {shown}, a protected Tess path ({hit})", "protected")
                             return
-                        _tick()
-                for path, shown, d in entries:
-                    if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
-                        continue
-                    hit = protected_hit(root, cwd, path)
-                    if hit:
-                        v.add(DENY, f"`find` would change {shown}, a protected Tess path ({hit})", "protected")
-                        return
-                    if key_hit(cwd, path):
-                        v.add(DENY, f"`find` would change {shown}, in Tess's key directory; the signing "
-                                    "keys there are for the operator's own tools, not for an agent", "keys")
-                        return
+                        if key_hit(cwd, path):
+                            v.add(DENY, f"`find` would change {shown}, in Tess's key directory; the signing "
+                                        "keys there are for the operator's own tools, not for an agent", "keys")
+                            return
 
 
 def _interp_code(argv: list, raw: str) -> str:
@@ -5601,15 +5764,89 @@ _TAR_VALS = ("--file", "--directory", "--exclude", "--files-from", "--transform"
              "--info-script", "--new-volume-script", "--checkpoint-action")
 
 
-def _extract_plan(argv: list, cwd: str) -> tuple | None:
+_TAR_OLD_VALUES = "bCfITXgKLNV"
+
+
+def _tar_oldstyle(args: list) -> list:
+    """Old-style `tar xfC a.tar dir`: each letter that takes a value takes the
+    next argument, in order (attempt 3: `xfC` gave `-f` the value "C" and
+    lost the -C folder). Values stay the words they were."""
+    if not args or str(args[0]).startswith("-"):
+        return list(args)
+    out, rest = [], list(args[1:])
+    for ch in str(args[0]):
+        out.append("-" + ch)
+        if ch in _TAR_OLD_VALUES and rest:
+            out.append(rest.pop(0))
+    return out + rest
+
+
+def _extract_dest_words(argv: list, cwd: str) -> list:
+    """v1.0.x (attempt 3): the destination folder WORDS of an extractor that
+    writes files, so they get the write-target checks (a run-time part, a link
+    on disk or made earlier in the command, the control-folder backstop)."""
+    if _extract_plan([str(a) for a in argv], cwd) is None:
+        return []
+    name = os.path.basename(str(argv[0]))
+    args = [a for a in argv[1:] if str(a) not in REDIRECTS]
+    out = []
+    if name in ("tar", "gtar", "bsdtar"):
+        args = _tar_oldstyle(args)
+        i = 0
+        while i < len(args):
+            a, s = args[i], str(args[i])
+            if s == "--":
+                break
+            if s.startswith("--"):
+                opt, eq, _v = s.partition("=")
+                full = _abbrev(opt, *_TAR_VALS)
+                if full == "--directory":
+                    out.append(_sub_word(a, len(opt) + 1) if eq else (args[i + 1] if i + 1 < len(args) else None))
+                if full and not eq:
+                    i += 1
+            elif s.startswith("-") and len(s) > 1:
+                for k, ch in enumerate(s[1:], 1):
+                    if ch in "fCTXs":
+                        if ch == "C":
+                            out.append(_sub_word(a, k + 1) if s[k + 1:] else
+                                       (args[i + 1] if i + 1 < len(args) else None))
+                        if not s[k + 1:]:
+                            i += 1
+                        break
+            i += 1
+    elif name == "unzip":
+        for i, a in enumerate(args):
+            s = str(a)
+            if s.startswith("-d"):
+                out.append(_sub_word(a, 2) if len(s) > 2 else (args[i + 1] if i + 1 < len(args) else None))
+    elif name in ("ditto", "cpio", "pax"):
+        pos = [a for a in args if not str(a).startswith("-")]
+        out += pos[-1:]
+    return [w for w in out if w is not None]
+
+
+def _extract_plans(argv: list, cwd: str) -> list:
+    """Every reading of an extractor segment that writes files: the plan, and
+    for an old-style tar bundle also the reading 7de6eef used (the first
+    letter's value is the rest of the bundle). Checking both never gives
+    fewer checks than before (attempt 3)."""
+    plans = [_extract_plan(argv, cwd), _extract_plan(argv, cwd, legacy=True)]
+    return [p for p in dict.fromkeys(plans) if p is not None]
+
+
+def _extract_plan(argv: list, cwd: str, legacy: bool = False) -> tuple | None:
     """(destination dir, archive file | None, names unknowable) for an
     extractor segment that writes files; None when it only lists or prints."""
     name = os.path.basename(argv[0])
     args = [a for a in argv[1:] if a not in REDIRECTS]
     join = lambda d: d if os.path.isabs(os.path.expanduser(d)) else os.path.join(cwd, d)  # noqa: E731
     if name in ("tar", "gtar", "bsdtar"):
-        if args and not args[0].startswith("-"):
-            args = ["-" + args[0]] + args[1:]  # old-style `tar xzf file`
+        if legacy:
+            if not args or args[0].startswith("-"):
+                return None  # same as the plan
+            args = ["-" + args[0]] + args[1:]
+        else:
+            args = _tar_oldstyle(args)
         opts, pos, _, _ = _parse(args, "fCTXs", _TAR_VALS)
         flags = "".join(k[1:] for k in opts if re.fullmatch(r"-[A-Za-z]", k))
         if not ("x" in flags or any(str(k).startswith(("--extract", "--get")) for k in opts)):
@@ -5654,29 +5891,53 @@ def _archive_members(archive: str, tool: str) -> list | None:
     return [ln for ln in r.stdout.splitlines() if ln] if r.returncode == 0 else None
 
 
-def _check_extract(root: Path, cwd: str, argv: list, v: Verdict):
+def _check_extract(root: Path, cwd: str, argv: list, v: Verdict, ctx: "_Ctx | None" = None):
     """v1.0.0 final reviews: an archive extractor writes files the command
     text does not name (`git archive <old> .claude/hooks | tar -x`)."""
-    plan = _extract_plan(argv, cwd)
-    if plan is None:
-        return
+    for plan in _extract_plans(argv, cwd):
+        _check_extract_plan(root, cwd, argv, v, ctx, plan)
+
+
+def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan) -> None:
     dest, archive, odd = plan
-    rel = _rel_to_root(root, cwd, dest)
-    if rel is None:
-        return  # outside the project
     tool = os.path.basename(argv[0])
     members = None if odd or archive is None else _archive_members(archive, tool)
-    if members is None:
-        if rel == "." or _glob_hit(rel, _protected_globs(root)) or rel.split("/")[0] in {
-                r.split("/")[0] for r in PROTECTED_DIR_ROOTS}:
-            v.add(DENY, f"`{tool}` extracts files Tess cannot list into {dest}, which holds "
-                        "protected Tess files", "protected")
-        return
-    for m in members:
-        hit = protected_hit(root, dest, m.lstrip("/") if not m.startswith("/") else m)
+    # v1.0.x (attempt 3, backstop): a member that lands on a control file or
+    # folder asks wherever the destination leads (a link Tess cannot see).
+    unresolved = ctx is not None and any(
+        _word_values(w, cwd, ctx)[0] is None for w in _extract_dest_words(argv, cwd))
+    for m in [""] + (members or [] if unresolved else []):
+        hit = _control_suffix(os.path.join(dest, m) if m else dest)
         if hit:
-            v.add(DENY, f"`{tool}` extracts {m} ({hit}), a protected Tess path", "protected")
-            return
+            v.add(ASK, f"`{tool}` extracts {m or 'files'} into {dest}, which ends in one of Tess's "
+                       f"enforcement files or the folders that hold them ({hit}); where the folders "
+                       "in front of it lead decides whether it switches Tess's checks off, so Tess asks")
+            break
+    # v1.0.x (attempt 3): a link made earlier in the same command is followed,
+    # as the shell will (`ln -s "$PWD" /w/d && tar -x -C /w/d`).
+    through = None
+    if ctx is not None:
+        through = _through_links(dest, cwd, ctx)
+        if through is None or _runtime_link_over(dest, ctx):
+            v.add(ASK, f"`{tool}` extracts into {dest} through a link this command makes, so Tess "
+                       "cannot check what it writes")
+    dests = [dest] + ([through] if ctx is not None and through and through != dest else [])
+    for dest in dests:  # the path as written and where the link leads: never fewer checks
+        rel = _rel_to_root(root, cwd, dest)
+        if rel is None:
+            continue  # outside the project
+        if members is None:
+            if rel == "." or _glob_hit(rel, _protected_globs(root)) or rel.split("/")[0] in {
+                    r.split("/")[0] for r in PROTECTED_DIR_ROOTS}:
+                v.add(DENY, f"`{tool}` extracts files Tess cannot list into {dest}, which holds "
+                            "protected Tess files", "protected")
+                return
+            continue
+        for m in members:
+            hit = protected_hit(root, dest, m.lstrip("/") if not m.startswith("/") else m)
+            if hit:
+                v.add(DENY, f"`{tool}` extracts {m} ({hit}), a protected Tess path", "protected")
+                return
 
 
 # --------------------------------------------------------------------------- copies into the project root (v1.0 audit, integration)
@@ -5754,6 +6015,77 @@ def _remote(text: str) -> bool:
     return bool(re.match(r"^[^/]*[^/\\]:", text)) and not text.startswith(("./", "/", "~"))
 
 
+def _tree_names(path: str, limit: int = _LINK_SCAN_LIMIT) -> "list | None":
+    """Every path below the folder `path`, relative to it, without following
+    links; None when there are more than `limit` or one cannot be listed."""
+    out, stack = [], [path]
+    while stack:
+        d = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    out.append(os.path.relpath(e.path, path))
+                    if len(out) > limit:
+                        return None
+                    if e.is_dir(follow_symlinks=False):
+                        stack.append(e.path)
+        except OSError:
+            return None
+    return out
+
+
+def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
+    """v1.0.x (Quinn B1 part 2, attempt 3): the paths a copy, move or link
+    writes INTO its target folder (`target/<source name>`, and for a folder
+    copied whole or by its contents, every path inside it). One that ends on a
+    control file or folder asks wherever the target leads (a link Tess cannot
+    see): `cp -R x/.claude /w/d/`, `rsync -a x/ /w/d/` with x/.claude inside.
+    A source only known at run time is not listed here (SECURITY.md)."""
+    recursive, target, ops = _copy_plan(name, _operands(argv[1:]))
+    if target is None:
+        return
+    keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
+    tvals, _ = _word_values(target, cwd, ctx)
+    if tvals is not None:
+        targets = [t for t, _p in tvals if not _remote(t)]
+    elif isinstance(target, _Word) and not isinstance(target, _Field) and target.parts:
+        targets = [_shape_text(sh) for sh in _runtime_shapes(target, cwd, ctx, cap=64) or []]
+    else:
+        targets = []
+    if not targets:
+        return  # nothing known about the target: _check_target asks
+    # A target written out in full is resolved on disk and through the links
+    # this command makes (_check_copy_into); what a folder copied into it
+    # holds is looked at only when the target is known only at run time, so
+    # `cp -R tpl/. /tmp/elsewhere` stays an ordinary copy.
+    unresolved = tvals is None
+    for op in ops:
+        vals, _ = _word_values(op, cwd, ctx)
+        srcs = []
+        for text, pat in vals or []:
+            srcs += (_glob(cwd, pat) if pat else []) or [text]
+        for src in srcs:
+            if _remote(src):
+                continue
+            full = os.path.join(cwd, os.path.expanduser(src))
+            leaf = os.path.basename(src.rstrip("/"))
+            whole = leaf not in (".", "..", "") and not (name == "ditto" and not keep_parent)
+            contents = src.endswith("/") or leaf in (".", "..", "") or (name == "ditto" and not keep_parent)
+            names = [leaf] if whole else []
+            if unresolved and (recursive or name == "ditto") and name != "ln" and os.path.isdir(full):
+                inner = _tree_names(full) or []
+                names += ([leaf + "/" + n for n in inner] if whole else []) + (inner if contents else [])
+            for t in targets:
+                for n in names:
+                    hit = _control_suffix(t.rstrip("/") + "/" + n)
+                    if hit:
+                        verb = {"mv": "moves", "ln": "links"}.get(name, "copies")
+                        v.add(ASK, f"it {verb} {src} into {t}, which puts {n} there, one of Tess's "
+                                   f"enforcement files or the folders that hold them ({hit}); where "
+                                   f"{t} leads decides whether it switches Tess's checks off, so Tess asks")
+                        return
+
+
 def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx",
                      via_xargs: bool) -> None:
     if name == "ditto" and any(re.fullmatch(r"-[A-Za-z]*[cxk][A-Za-z]*", str(a)) for a in argv[1:]):
@@ -5762,6 +6094,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
     keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
     if target is None:
         return
+    _check_copy_written(cwd, name, argv, v, ctx)
     cands, _ = _word_values(target, cwd, ctx)
     if not cands:
         return  # a target known only at run time: _check_target asks
@@ -5770,18 +6103,28 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
     for text, _pat in cands:
         if _remote(text):
             continue
-        real = os.path.realpath(os.path.join(cwd, os.path.expanduser(text)))
-        if _within(base, real) is not None:  # the project root, or a folder above it
-            dests.append((text, real))
+        # v1.0.x (attempt 3): a link made earlier in the same command is
+        # followed, as the shell will (`ln -s "$PWD" /w/d && cp -R x/. /w/d/`).
+        written = os.path.join(cwd, os.path.expanduser(text))
+        full = _through_links(written, cwd, ctx)
+        if full is None or _runtime_link_over(written, ctx):
+            v.add(ASK, f"it copies into {text} through a link this command makes, so Tess cannot "
+                       "check what it overwrites")
+        # the path as written and where the link leads: never fewer checks
+        for real in dict.fromkeys([os.path.realpath(written)] + ([os.path.realpath(full)] if full else [])):
+            if _within(base, real) is not None:  # the project root, or a folder above it
+                dests.append((text, real))
     if not dests:
         return
     here = "the project folder" if any(_within(r, base) == "." for _t, r in dests) else \
         "a folder that holds the project"
-    why = (f"it copies the contents of \0SRC into {dests[0][0]}, {here}, so it can overwrite any "
-           "protected Tess file there (hooks, gate, CLAUDE.md, AGENTS.md...) without naming it; "
-           "copy into a sub-folder instead, or copy the files you need by name")
+    def why(src) -> str:
+        # A function, not a placeholder inside the text (attempt 3, sentinel audit).
+        return (f"it copies the contents of {src} into {dests[0][0]}, {here}, so it can overwrite any "
+                "protected Tess file there (hooks, gate, CLAUDE.md, AGENTS.md...) without naming it; "
+                "copy into a sub-folder instead, or copy the files you need by name")
     if via_xargs or not ops:
-        v.add(ASK, why.replace("\0SRC", "the paths it reads from its input"))
+        v.add(ASK, why("the paths it reads from its input"))
         return
     for op in ops:
         vals, _ = _word_values(op, cwd, ctx)
@@ -5790,7 +6133,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
             texts += (_glob(cwd, pat) if pat else []) or [text]
         for text in (texts if vals else [None]):
             if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
-                v.add(ASK, why.replace("\0SRC", str(op)))  # which files is only known at run time
+                v.add(ASK, why(op))  # which files is only known at run time
                 return
             full = os.path.join(cwd, os.path.expanduser(text))
             leaf = os.path.basename(text.rstrip("/"))
@@ -5799,13 +6142,13 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
             else:
                 contents = text.endswith("/") or leaf in (".", "..", "")
             if recursive and contents:
-                v.add(ASK, why.replace("\0SRC", str(op)))
+                v.add(ASK, why(op))
                 return
             for _t, real in dests:
                 written = os.path.join(real, leaf) if leaf not in (".", "..", "") else real
                 if _within(base, os.path.realpath(written)) is not None:
                     if recursive:
-                        v.add(ASK, why.replace("\0SRC", str(op)))
+                        v.add(ASK, why(op))
                         return
                     continue
                 hit = protected_hit(root, cwd, written)
@@ -7334,7 +7677,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
                         "and in Codex an agent can type into a running command later (write_stdin) "
                         "without Tess seeing it; run this in your own terminal", "operator")
     if name in EXTRACTORS:
-        _check_extract(root, cwd, argv, v)
+        _check_extract(root, cwd, argv, v, ctx)
     if name in _SQL_CLIS:
         _check_sql_cli(root, cwd, name, argv, orig, v, depth, ctx, upstream, env)
     if "GIT_REPLACE_REF_BASE" in env or (name in ("export", "declare", "typeset", "setenv") and any(

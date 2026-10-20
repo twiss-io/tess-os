@@ -256,7 +256,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   that name or changes `PATH`. Since the v1.0.x QA review (Quinn), only a
   `PATH` change in the command counts there: before, the `PATH` the gate itself
   ran with made every `$(date +%s)`, `$(id -u)`, `$(whoami)`, `$(hostname)`,
-  `$(uuidgen)` and `$(git rev-parse HEAD)` ask (GAP-2). A builtin that binds
+  `$(uuidgen)` and `$(git rev-parse HEAD)` ask (GAP-2). These substitutions are
+  trusted by the program's NAME (Quinn N1): a program of that name placed
+  earlier on `PATH` by an earlier command (in a folder such as `~/.local/bin`)
+  is not seen, and can print a `/` or `..`; that is the same limit as a script
+  the gate cannot see inside. A builtin that binds
   variables rebinds one only through a name position only known at run time
   (`read $n`, `declare ${n}DOM=1`, `printf -v $x`), any nameref (`declare -n`,
   `local -n`), or an option only known at run time; a run-time value or
@@ -289,12 +293,39 @@ security reviews; they are stated so nobody relies on a check that is not there.
   command count as making every link they can carry: each link found in the
   source, or listed in a readable archive, is recorded like one `ln` makes,
   and a source or archive Tess cannot read in full counts as a link to
-  anywhere under the destination (R5). As a backstop, a write whose path ENDS
-  in one of Tess's enforcement files (`.claude/settings.json`,
-  `.claude/settings.local.json`, `.claude/hooks/...`, `.codex/config.toml`,
-  `.codex/hooks.json`, `.codex/rules/...`, `.gemini/settings.json`,
-  `.tess/bin/...`, `.tess/core/...`, `.tess/tess.lock`, `.git/hooks/...`) asks
-  wherever the folders in front of it lead, including in another project.
+  anywhere under the destination (R5). A link this command makes is resolved
+  by name, the way `ln` records it: a `..` after such a link is followed in
+  that record by name, not on disk (Quinn D1); a path that also exists on disk
+  is checked through `realpath` too. Since the v1.0.x QA review of 7de6eef
+  (Quinn B1), a run-time part that may be empty is carried as a separate piece
+  of the path's shape, never as a character inside it, so a folder whose name
+  holds any character (control characters included) is matched as itself; and
+  the commands that write INTO a folder they are given (`tar -x -C`,
+  `unzip -d`, `ditto`, `cp -R`, `rsync`, `mv` into a folder, `find -delete`)
+  follow a link made earlier in the same command, and an extractor's or
+  `ditto`'s folder only known at run time is checked like any other run-time
+  path. As a backstop, a write whose path ENDS in one of Tess's enforcement
+  files (`.claude/settings.json`, `.claude/settings.local.json`,
+  `.claude/hooks/...`, `.codex/config.toml`, `.codex/hooks.json`,
+  `.codex/rules/...`, `.gemini/settings.json`, `.tess/bin/...`,
+  `.tess/core/...`, `.tess/tess.lock`, `.git/hooks/...`) or in a folder that
+  holds them (`.claude`, `.codex`, `.gemini`, `.tess`) asks wherever the
+  folders in front of it lead, including in another project: deleting,
+  moving, copying or extracting into, linking or changing permissions on such
+  a folder, `find` changing files under one when its tests can match a
+  control file's name (`find ~/.claude -name '*.log' -delete` stays allowed),
+  and a copy, move or link that puts such a file or folder in its target by
+  name (`cp -R x/.claude /w/d/`). When the target is only known at run time,
+  the folder copied into it and the archive extracted into it are also looked
+  inside (`rsync -a x/ "/w/b-$?/"` with `x/.claude` in it, an archive holding
+  `.claude/settings.json`); a target written out in full is resolved on disk
+  and through the links the command makes instead, so ordinary backups and
+  unpacks to `/tmp` stay allowed. The names are matched as the shell can
+  spell them (quoting, a variable set earlier in the command, a brace, a
+  glob, any letter case). A source only known at run time, a source tree of
+  more than 4096 entries, and an archive Tess cannot list (one read from
+  standard input) are not looked inside; the checks above still apply to
+  where they are written.
   This is a check when the gate runs, not an OS boundary: a link made after it
   runs, or by a program the gate has no rule for (an interpreter's
   `os.symlink` written to a file, a build tool, a `git checkout` of a tracked
@@ -568,7 +599,11 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (or `disabledMcpjsonServers`, or `enableAllProjectMcpServers`) to this file,
   so Tess stops after such an approval until you run `tessctl anchor accept`:
   `.mcp.json` is not protected or anchored, so an approved server name is not
-  enough to know what that server runs. Claude Code's own
+  enough to know what that server runs. The stop says the change may be your
+  MCP approval only when those three keys are all that changed; `anchor
+  accept` lists every key other than permission rules by name above the diff,
+  says which of them changed, never cuts what it shows without saying so, and
+  shows control and escape characters from the files escaped. Claude Code's own
   "allow" rules there do not override Tess's denials; whether they skip
   Claude Code's prompt for a gate "ask" is Claude Code's behaviour, not Tess's.
 - **The learning loop authenticates where your words came from; it cannot see

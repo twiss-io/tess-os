@@ -803,6 +803,53 @@ def anchor_mark_seen(root: Path) -> None:
         pass
 
 
+# v1.0.x (attempt 3, Quinn C4): the stop names the MCP approval prompt only
+# when the keys that changed are nothing but its keys. Kept identical in
+# .tess/bin/tessctl (anchor_local_key_values / anchor_local_changed_keys).
+ANCHOR_MCP_APPROVAL_KEYS = ("enabledMcpjsonServers", "disabledMcpjsonServers",
+                            "enableAllProjectMcpServers")
+
+
+def anchor_local_key_values(data: "bytes | None") -> "dict | None":
+    """{(section, key): value} for the keys of settings.local.json other than
+    permission rules; None when not a JSON object, {} for no file."""
+    if data is None:
+        return {}
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    out = {("", k): v for k, v in doc.items() if k != "permissions"}
+    perms = doc.get("permissions")
+    if isinstance(perms, dict):
+        out.update({("permissions", k): v for k, v in perms.items() if k not in ANCHOR_LOCAL_PERMISSION_KEYS})
+    elif "permissions" in doc:
+        out[("", "permissions")] = perms
+    return out
+
+
+def anchor_local_mcp_only(rec, data: "bytes | None") -> bool:
+    """True only when every key that changed since the approved record is an
+    MCP approval key. False when Tess cannot tell (no approved copy)."""
+    if isinstance(rec, dict) and rec.get("absent"):
+        old = None
+    else:
+        blob = str(rec.get("blob") or "") if isinstance(rec, dict) else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", blob):
+            return False
+        old = anchor_read_file(anchor_base().parent / "anchor-blobs" / blob)
+        if old is None:
+            return False
+    a, b = anchor_local_key_values(old), anchor_local_key_values(data)
+    if a is None or b is None:
+        return False
+    missing = object()
+    changed = [k for k in set(a) | set(b) if a.get(k, missing) != b.get(k, missing)]
+    return bool(changed) and all(sec == "" and k in ANCHOR_MCP_APPROVAL_KEYS for sec, k in changed)
+
+
 def anchor_problems(root: Path, doc: dict) -> list:
     """Plain lines, one per anchored file that is missing or changed."""
     out = []
@@ -819,7 +866,7 @@ def anchor_problems(root: Path, doc: dict) -> list:
                        f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or anchor_digest(rel, data) != want:
             out.append(f"{rel} has changed")
-            if rel == ANCHOR_LOCAL_SETTINGS:
+            if rel == ANCHOR_LOCAL_SETTINGS and anchor_local_mcp_only(rec, data):
                 out.append("(Claude Code also writes your answers to its project MCP server "
                            "approval prompt there: if you just approved or rejected a server "
                            "from .mcp.json, that is this change; `tessctl anchor accept` "

@@ -19977,13 +19977,82 @@ def anchor_local_enforcing_keys(data: "bytes | None") -> list:
     return sorted(keys)
 
 
+# v1.0.x (attempt 3, Quinn C1-C4): Claude Code writes the operator's answers to
+# the .mcp.json server approval prompt into settings.local.json under these keys.
+ANCHOR_MCP_APPROVAL_KEYS = ("enabledMcpjsonServers", "disabledMcpjsonServers",
+                            "enableAllProjectMcpServers")
+
+
+def anchor_local_key_values(data: "bytes | None") -> "dict | None":
+    """{(section, key): value} for every key of settings.local.json other than
+    permission rules (section "" for top level, "permissions" inside it). The
+    section is kept apart from the name, so no key can pose as another. None
+    when the text is not a JSON object; {} for no file."""
+    if data is None:
+        return {}
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    out = {("", k): v for k, v in doc.items() if k != "permissions"}
+    perms = doc.get("permissions")
+    if isinstance(perms, dict):
+        out.update({("permissions", k): v for k, v in perms.items() if k not in ANCHOR_LOCAL_PERMISSION_KEYS})
+    elif "permissions" in doc:
+        out[("", "permissions")] = perms
+    return out
+
+
+def anchor_local_changed_keys(old: "bytes | None", new: "bytes | None") -> "list | None":
+    """The (section, key) pairs whose values differ between two versions of
+    settings.local.json; None when either version is not a JSON object."""
+    a, b = anchor_local_key_values(old), anchor_local_key_values(new)
+    if a is None or b is None:
+        return None
+    missing = object()
+    return sorted(k for k in set(a) | set(b) if a.get(k, missing) != b.get(k, missing))
+
+
+def anchor_local_mcp_only(changed: "list | None") -> bool:
+    """True only when every changed key is one of the MCP approval keys."""
+    return bool(changed) and all(sec == "" and k in ANCHOR_MCP_APPROVAL_KEYS for sec, k in changed)
+
+
+def anchor_key_label(key) -> str:
+    """A key for display: JSON-quoted, so control characters and escapes in a
+    name the file controls are shown escaped, never sent to the terminal."""
+    sec, k = key if isinstance(key, tuple) else ("", key)
+    return (json.dumps(sec) + "." if sec else "") + json.dumps(k)
+
+
+_ANCHOR_SAFE_KEEP = {"\t"}
+
+
+def anchor_safe_text(text: str) -> str:
+    """`text` with every character that is not printable (C0/C1 controls,
+    escape, line and paragraph separators, bidi overrides and other format
+    characters) shown as an escape (\\xNN, \\uNNNN), so file content cannot
+    move the cursor, erase lines or reorder what the operator reads."""
+    out = []
+    for ch in text:
+        if ch.isprintable() or ch in _ANCHOR_SAFE_KEEP:
+            out.append(ch)
+        else:
+            n = ord(ch)
+            out.append(f"\\x{n:02x}" if n < 0x100 else f"\\u{n:04x}" if n < 0x10000 else f"\\U{n:08x}")
+    return "".join(out)
+
+
 def _anchor_local_first_record_warning(root: Path) -> None:
     keys = anchor_local_enforcing_keys(_anchor_read(root / ANCHOR_LOCAL_SETTINGS))
     if not keys:
         return
     off = " disableAllHooks switches every Tess check in Claude Code OFF." \
         if "disableAllHooks" in keys else ""
-    print(f"  WARNING  {ANCHOR_LOCAL_SETTINGS} already sets {', '.join(keys)}, and Tess has "
+    shown = ", ".join(json.dumps(k) for k in keys)  # escaped: the file controls these names
+    print(f"  WARNING  {ANCHOR_LOCAL_SETTINGS} already sets {shown}, and Tess has "
           f"recorded it as approved as it is now.{off} If you did not add "
           f"{'these' if len(keys) > 1 else 'this'} yourself, run `tessctl doctor`, remove "
           f"what you did not add, then run `tessctl anchor accept` in your own terminal.")
@@ -20397,7 +20466,8 @@ def _anchor_state(root: Path) -> AnchorState:
                             f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or _anchor_digest(rel, data) != want:
             problems.append(f"{rel} has changed")
-            if rel == ANCHOR_LOCAL_SETTINGS:
+            if rel == ANCHOR_LOCAL_SETTINGS and anchor_local_mcp_only(_anchor_local_changes(rec, data)):
+                # Only when the change is nothing but MCP approval keys (Quinn C4).
                 problems.append("(Claude Code also writes your answers to its project MCP server "
                                 "approval prompt there: if you just approved or rejected a server "
                                 "from .mcp.json, that is this change; `tessctl anchor accept` "
@@ -20684,42 +20754,98 @@ def _anchor_tty() -> bool:
         return False
 
 
+def _anchor_old_bytes(rec) -> "bytes | None":
+    """The approved bytes of an anchored file; None when there are none (a
+    record of no file, or the stored copy is missing)."""
+    if not isinstance(rec, dict) or rec.get("absent"):
+        return None
+    blob = str(rec.get("blob") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", blob):
+        return None
+    return _anchor_read(_anchor_tess_dir() / "anchor-blobs" / blob)
+
+
+def _anchor_local_changes(rec, now: "bytes | None") -> "list | None":
+    """The settings.local.json keys that changed since the approved record;
+    None when Tess cannot tell (the approved copy is missing or not JSON)."""
+    if isinstance(rec, dict) and rec.get("absent"):
+        return anchor_local_changed_keys(None, now)
+    old = _anchor_old_bytes(rec)
+    return None if old is None else anchor_local_changed_keys(old, now)
+
+
+_ANCHOR_SHOW_LINES = 200
+
+
+def _anchor_print_lines(lines: list, prefix: str) -> None:
+    """Print up to _ANCHOR_SHOW_LINES lines, each made safe for the terminal,
+    and say how many more there are: never cut short in silence (Quinn C1)."""
+    for ln in lines[:_ANCHOR_SHOW_LINES]:
+        print(prefix + anchor_safe_text(ln))
+    if len(lines) > _ANCHOR_SHOW_LINES:
+        print(f"    ... {len(lines) - _ANCHOR_SHOW_LINES} more line(s) not shown; every key other "
+              "than permission rules is listed above")
+
+
+def _anchor_local_key_summary(rec, now: "bytes | None") -> None:
+    """For settings.local.json, every key other than permission rules, by
+    name, above the diff, and which of them changed (Quinn C1/C4)."""
+    vals = anchor_local_key_values(now)
+    if vals is None:
+        print("    The file is not a JSON object; Claude Code may ignore or misread all of it.")
+        return
+    keys = sorted(vals)
+    print("    Keys other than permission rules: "
+          + (", ".join(anchor_key_label(k) for k in keys) if keys else "(none)"))
+    if any(k == ("", "disableAllHooks") for k in keys):
+        print("    disableAllHooks switches every Tess check in Claude Code OFF.")
+    changed = _anchor_local_changes(rec, now)
+    if changed is not None:
+        print("    Changed since the approved record: "
+              + (", ".join(anchor_key_label(k) for k in changed) if changed else "(only permission rules)"))
+        if anchor_local_mcp_only(changed):
+            print("    These are Claude Code's answers to the .mcp.json server approval prompt.")
+        elif changed:
+            print("    Approving or rejecting an MCP server changes only "
+                  + ", ".join(json.dumps(k) for k in ANCHOR_MCP_APPROVAL_KEYS)
+                  + "; anything else above was not written by that prompt.")
+
+
 def _anchor_show_changes(root: Path, st: AnchorState) -> None:
     import difflib
-    blobs = _anchor_tess_dir() / "anchor-blobs"
     anchored = (st.doc or {}).get("files") or {}
     current = _anchor_current(root)
     for rel in sorted(set(anchored) | set(current)):
         rec, now = anchored.get(rel), current.get(rel)
         if rec is not None and rel in current and _anchor_digest(rel, now) == rec.get("sha256"):
             continue
+        shown = anchor_safe_text(rel)
         if rec is None:
-            print(f"\n  NEW   {rel} (will be recorded)")
+            print(f"\n  NEW   {shown} (will be recorded)")
             continue
         if rel == ANCHOR_LOCAL_SETTINGS and rel not in current:
-            print(f"\n  CHANGED  {rel} (a symlink, a folder or unreadable; replace it with a "
+            print(f"\n  CHANGED  {shown} (a symlink, a folder or unreadable; replace it with a "
                   f"regular file)")
             continue
         if rel == ANCHOR_LOCAL_SETTINGS and (now is None or rec.get("absent")):
-            print(f"\n  CHANGED  {rel}" + (" (now: no file)" if now is None else ""))
-            for ln in ([] if now is None else now.decode("utf-8", "replace").splitlines()[:200]):
-                print("    +" + ln)
+            print(f"\n  CHANGED  {shown}" + (" (now: no file)" if now is None else ""))
+            if now is not None:
+                _anchor_local_key_summary(rec, now)
+                _anchor_print_lines(now.decode("utf-8", "replace").splitlines(), "    +")
             continue
         if now is None:
-            print(f"\n  GONE  {rel} (will no longer be checked)")
+            print(f"\n  GONE  {shown} (will no longer be checked)")
             continue
-        print(f"\n  CHANGED  {rel}")
-        old = _anchor_read(blobs / str(rec.get("blob") or "-"))
+        print(f"\n  CHANGED  {shown}")
+        if rel == ANCHOR_LOCAL_SETTINGS:
+            _anchor_local_key_summary(rec, now)
+        old = _anchor_old_bytes(rec)
         try:
             a, b = (old or b"").decode("utf-8").splitlines(), now.decode("utf-8").splitlines()
         except UnicodeDecodeError:
             print("    (binary content)")
             continue
-        lines = list(difflib.unified_diff(a, b, "approved", "now", lineterm="", n=2))
-        for ln in lines[:200]:
-            print("    " + ln)
-        if len(lines) > 200:
-            print(f"    ... {len(lines) - 200} more diff line(s)")
+        _anchor_print_lines(list(difflib.unified_diff(a, b, "approved", "now", lineterm="", n=2)), "    ")
 
 
 def cmd_anchor(args, root: Path) -> None:
@@ -20768,7 +20894,7 @@ def cmd_anchor(args, root: Path) -> None:
         return
     print("tessctl anchor accept: these safety files differ from the approved record"
           + ("" if st.state != "lost" else " (the record itself is missing or unreadable: "
-             + "; ".join(st.problems) + ")") + ":")
+             + anchor_safe_text("; ".join(st.problems)) + ")") + ":")
     _anchor_show_changes(root, st)
     print(f"\nIf you made these changes on purpose, type exactly:  {ANCHOR_CONFIRM}\n"
           "To stop without recording anything, press Enter.")
