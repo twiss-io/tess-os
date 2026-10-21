@@ -4407,6 +4407,12 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                                 if budget[0] < 0:
                                     return True
                                 dn[:] = [d for d in dn if not d.startswith(".")]
+                                # 1.0.x (Reid E4): a link to a file, or a dangling
+                                # one, is listed with the files, not the folders.
+                                if "***" in seg and any(
+                                        os.path.islink(os.path.join(dp, f))
+                                        for f in fn if not f.startswith(".")):
+                                    return True
                                 for d in list(dn):
                                     q = os.path.join(dp, d)
                                     if os.path.islink(q):
@@ -6000,7 +6006,16 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                             entries = [(top, start, 0)] + entries
                     if entries is None:
                         entries = [(top, start, 0)]
-                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0) else os.walk(top)):
+                        # 1.0.x (Reid E2): a folder Tess cannot list may hold
+                        # protected paths; "could not look" is not "nothing
+                        # there". A start that is missing, or is a file, is not.
+                        unlisted = []
+
+                        def _walk_error(e, _u=unlisted):
+                            if not isinstance(e, (FileNotFoundError, NotADirectoryError)):
+                                _u.append(e)
+                        for dirpath, dirnames, filenames in ([] if pruned(top, start, 0)
+                                                             else os.walk(top, onerror=_walk_error)):
                             rel = os.path.relpath(dirpath, top)
                             d = 0 if rel == "." else rel.count(os.sep) + 1
                             if maxdepth is not None and d + 1 > maxdepth:
@@ -6016,7 +6031,12 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                                 v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
                                            "check them against its protected files")
                                 return
+                            if maxdepth is not None and d + 2 > maxdepth:
+                                dirnames[:] = []  # find never lists below here (E2: nor does Tess)
                             _tick()
+                        if unlisted:
+                            v.add(ASK, f"`find` changes files under {start}, which holds a folder Tess "
+                                       "cannot list, so it cannot check them against its protected files")
                     for path, shown, d in entries:
                         if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
                             continue
@@ -6282,7 +6302,9 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             if sp.truncated:
                 v.add(ASK, f"`{tool}` extracts into {t}, a glob that matches more names than Tess "
                            "lists one by one, so Tess cannot check every one")
-            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in list(sp)[:-1]]
+            # 1.0.x (Reid E3): every match, by value; the text as written may
+            # also be one of the matches, so it is not always last.
+            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in sp if x != t]
     dests = []
     for d in dict.fromkeys(spelled):
         dests.append(d)
