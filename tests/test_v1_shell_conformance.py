@@ -67,9 +67,15 @@ def world():
 
 @pytest.fixture
 def gate_env(world, monkeypatch):
-    gate, pristine, _work = world
-    monkeypatch.setenv("HOME", pristine["H"])
-    monkeypatch.setenv("TMPDIR", pristine["T"])
+    gate, pristine, work = world
+    # round 4b (Reid H1): the gate decides against the same home and temp
+    # folder the shells use: the per-run copy (fresh_copy always reuses
+    # work/run), never the pristine tree or the real OS-record home.
+    run = os.path.realpath(str(work)) + "/run"
+    monkeypatch.setenv("HOME", run + "/home")
+    monkeypatch.setenv("TMPDIR", run + "/tmp")
+    monkeypatch.setattr(gate, "_os_home", lambda: run + "/home", raising=False)
+    getattr(gate, "_CONTROL_CACHE", {}).clear()
     for k in ("XDG_CONFIG_HOME", "TESS_BRAIN_PROVENANCE_DIR", "GIT_DIR", "GIT_WORK_TREE",
               "TESS_CONSULT_DEPTH", "CDPATH", "TESS_HEADLESS", "TESS_DISPATCHED", *SLASHFREE):
         monkeypatch.delenv(k, raising=False)
@@ -181,15 +187,52 @@ def test_a_run_that_times_out_is_a_failure_never_a_pass(tmp_path, monkeypatch):
         sc._rmtree(base)
 
 
-def test_control_paths_exclude_only_the_object_store_and_restore_snapshots():
-    class Model:
-        @staticmethod
-        def protected_hit(root, cwd, path):
-            return "x" if "CLAUDE" in path or "/.git/" in path else None
-    s = {"P": "/S/proj"}
-    assert sc.controlled(".git/objects/ab/cd", Model, s) is False
-    assert sc.controlled(".tess/snapshots/t/.claude/settings.json", Model, s) is False
-    assert sc.controlled(".tess/snapshots", Model, s) is False
-    for rel in (".git/config", ".git/hooks/pre-commit", ".claude/settings.local.json",
-                ".tess/tess.lock", ".tess/core/x", "CLAUDE.md", ".github/workflows/ci.yml"):
-        assert sc.controlled(rel, Model, s) is True, rel
+def _instances(glob_entry: str) -> list:
+    """Concrete paths one entry of the gate's protected list names."""
+    base = glob_entry[:-3] if glob_entry.endswith("/**") else glob_entry
+    base = base.replace("*", "x").replace("?", "x")
+    return [base, base + "/x/y"] if glob_entry.endswith("/**") else [base]
+
+
+def test_control_paths_are_the_gates_own_list_minus_what_git_writes(tmp_path):
+    """round 4b (Reid H2): every path the gate protects counts in a replay,
+    except the exact set git itself writes during an allowed commit, branch
+    or tag. Derived from the gate module, so the two cannot drift."""
+    gate = sc.load_gate()
+    p = tmp_path / "proj"
+    (p / ".git").mkdir(parents=True)
+    (p / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    s = {"P": str(p), "H": str(tmp_path / "home")}
+    for g in gate.PROTECTED_GLOBS:
+        for rel in _instances(g):
+            want = not sc._git_normal_write(rel, s)
+            assert sc.controlled(rel, gate, s) is want, (g, rel)
+    # what the round-4 filter hid: each counts now
+    for rel in (".git/info/grafts", ".git/info/sparse-checkout", ".git/refs/replace/abc",
+                ".git/packed-refs", ".git/worktrees/w/HEAD", ".tess/snapshots/t/.claude/settings.json",
+                ".git/config", ".git/hooks/pre-commit", ".claude/settings.local.json", "CLAUDE.md",
+                ".tess/tess.lock", ".github/workflows/ci.yml", "scripts/brain/x.py"):
+        assert sc.controlled(rel, gate, s) is True, rel
+    for rel in (".git/objects/ab/cd", ".git/index", ".git/refs/heads/main", ".git/refs/tags/v1",
+                ".git/logs/HEAD", ".git/HEAD", "src/a.py", "notes.md"):
+        assert sc.controlled(rel, gate, s) is False, rel
+    # HEAD counts once it no longer names a local branch
+    (p / ".git" / "HEAD").write_text("ref: refs/remotes/x\n")
+    assert sc.controlled(".git/HEAD", gate, s) is True
+
+
+def test_home_control_files_are_the_gates_own_list(tmp_path, monkeypatch):
+    """round 4b (Reid H1): user-level control files and the key folder in the
+    sandbox home count, by the gate's control_file_hit and key_hit."""
+    gate = sc.load_gate()
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(gate, "_os_home", lambda: home)
+    gate._CONTROL_CACHE.clear()
+    s = {"P": str(tmp_path / "proj"), "H": home}
+    for rel in (".gitconfig", ".config/git/config", ".claude/settings.json", ".claude.json",
+                ".codex/config.toml", ".codex/rules/x", ".config/tess/operator.key") + sc.HOME_CONTROL:
+        assert sc.home_controlled(rel, gate, s) is True, rel
+    for rel in (".cache/pip/x", ".zsh_history", "notes.txt"):
+        assert sc.home_controlled(rel, gate, s) is False, rel

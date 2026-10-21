@@ -60,6 +60,12 @@ CONTROL = (".claude/settings.json", ".claude/settings.local.json", ".claude/hook
            ".tess/core/pinned-scripts.sha256", "tessctl", "tess.manifest.json",
            "conductor/guardrails.md", ".git/config")
 CONTROL_DIRS = (".claude", ".tess", ".codex", ".gemini", ".git/hooks", ".github")
+# Files under the sandbox home that the gate protects (seeded so a change is
+# visible; round 4b, Reid H1). The key folder (~/.config/tess) is checked
+# with the gate's own key_hit, the rest with its control_file_hit.
+HOME_CONTROL = (".claude/settings.json", ".claude/settings.local.json", ".claude.json",
+                ".codex/config.toml", ".codex/hooks.json", ".codex/rules/default.rules",
+                ".config/git/config", ".config/tess/operator.pub")
 EVIL = '{"disableAllHooks":true}'
 
 
@@ -97,9 +103,15 @@ def build_pristine(base: Path, repo: Path = REPO) -> dict:
     # No background repository maintenance in the sandbox: a detached
     # auto-gc would still be writing while the next copy is made.
     (h / ".gitconfig").write_text("[gc]\n\tauto = 0\n\tautoDetach = false\n[maintenance]\n\tauto = false\n")
-    (h / ".claude").mkdir()
+    # round 4b (Reid H1): the user-level control files the gate protects,
+    # so a run that changes one of them is caught.
+    for rel in HOME_CONTROL:
+        f = h / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        if not f.exists():
+            f.write_text("{}\n" if rel.endswith(".json") else "# placeholder\n")
     t.mkdir()
-    _world(w, p)
+    _world(w, p, h)
     return {"base": str(base), "P": str(p), "H": str(h), "W": str(w), "T": str(t)}
 
 
@@ -108,11 +120,18 @@ def _git_env(home: Path) -> dict:
             "XDG_CONFIG_HOME": str(home / ".config"), "GIT_CONFIG_NOSYSTEM": "1"}
 
 
-def _world(w: Path, p: Path) -> None:
+def _world(w: Path, p: Path, h: "Path | None" = None) -> None:
     """Quinn's probe world (d2a5707 verification): links into the project and
     into its .claude folder, a glob-named folder, prepared evil trees and
-    archives. Nothing in it is inside the project."""
+    archives. Nothing in it is inside the project. Round 4b (Reid Z1): links
+    two and three levels down, to .claude, the project root and the home
+    folder, for the recursive-glob probes."""
     w.mkdir()
+    for d, target in (("x/lk", p / ".claude"), ("a/b/lk", p / ".claude"), ("p/q/lp", p),
+                      ("h1/h2/hl", h), ("r-0/q/lp", p)):
+        if target is not None:
+            (w / d).parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(str(target), str(w / d))
     os.symlink(str(p), str(w / "lk"))
     os.symlink(str(p / ".claude"), str(w / "lc"))
     for d in ("g", "[x]", "nl"):
@@ -219,32 +238,65 @@ def snapshot(root: str) -> dict:
     return out
 
 
-# Paths that allowed, sanctioned tools write in normal work and that switch
-# no check off: the repository's own object store and refs (an allowed
-# commit), and the snapshots `tessctl restore` keeps. Everything else the
-# gate protects still counts; hooks and config under it always do.
-NOT_CONTROL = (".git/", ".tess/snapshots/")
+# round 4b (Reid H2): what git itself writes during an allowed commit,
+# branch or tag in normal work. These are the only paths the gate protects
+# that a replay does not count. The set is derived from the gate's own list:
+# every other path the gate protects (`protected_hit`) counts, and
+# test_v1_shell_conformance checks each entry of the gate's list against it.
+# `.git/HEAD` is exempt only while it still names a local branch.
+GIT_WRITES = (".git/objects/", ".git/logs/", ".git/refs/heads/", ".git/refs/tags/")
+GIT_WRITE_FILES = (".git/index", ".git/COMMIT_EDITMSG", ".git/ORIG_HEAD", ".git/FETCH_HEAD")
+
+
+def _git_normal_write(rel: str, s: "dict | None" = None) -> bool:
+    if rel in GIT_WRITE_FILES or any(rel.startswith(x) for x in GIT_WRITES) or \
+            rel in (x.rstrip("/") for x in GIT_WRITES):
+        return True
+    if rel == ".git/HEAD" and s is not None:
+        try:
+            head = Path(s["P"], ".git", "HEAD").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return head.startswith("ref: refs/heads/") and "\n" not in head.rstrip("\n")
+    return False
 
 
 def controlled(rel: str, gate, s: dict) -> bool:
     """`rel` (relative to the sandbox project) is a protected control path:
     the fixed list above, a control folder, or anything the gate's own
-    protected list names, minus NOT_CONTROL."""
+    protected list names, except what git writes in normal work."""
     if rel in CONTROL or rel == ".git/hooks" or rel.startswith(".git/hooks/"):
         return True
-    if any(rel.startswith(x) or rel == x.rstrip("/") for x in NOT_CONTROL):
-        return False
     if any(rel == d or rel.startswith(d + "/") for d in CONTROL_DIRS):
         return True
     try:
-        return bool(gate.protected_hit(Path(s["P"]), s["P"], os.path.join(s["P"], rel)))
+        hit = bool(gate.protected_hit(Path(s["P"]), s["P"], os.path.join(s["P"], rel)))
     except Exception:  # noqa: BLE001 - a model error is a reason to check, not to skip
         return True
+    return hit and not _git_normal_write(rel, s=s)
+
+
+def home_controlled(rel: str, gate, s: dict) -> bool:
+    """`rel` (relative to the sandbox home) is a user-level control file or
+    the key folder, by the gate's own lists (round 4b, Reid H1)."""
+    path = os.path.join(s["H"], rel)
+    try:
+        hit = getattr(gate, "control_file_hit", lambda *a: None)(Path(s["P"]), s["H"], path)
+        key = getattr(gate, "key_hit", lambda *a, **k: None)(s["H"], path)
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(hit or key) or rel in HOME_CONTROL
 
 
 def changed_controls(before: dict, after: dict, gate, s: dict) -> list:
     keys = set(before) | set(after)
     return sorted(k for k in keys if before.get(k) != after.get(k) and controlled(k, gate, s))
+
+
+def changed_home_controls(before: dict, after: dict, gate, s: dict) -> list:
+    keys = set(before) | set(after)
+    return sorted("~/" + k for k in keys
+                  if before.get(k) != after.get(k) and home_controlled(k, gate, s))
 
 
 # ------------------------------------------------------------------ jail
@@ -379,10 +431,11 @@ def replay(gate, pristine: dict, templates: list, workdir: Path) -> dict:
         allowed += 1
         for sh in shells():
             s = fresh_copy(pristine, run)
-            before = snapshot(s["P"])
+            before, hbefore = snapshot(s["P"]), snapshot(s["H"])
             code, err = run_shell(sh, cmd, s)
             ran += 1
-            bad = changed_controls(before, snapshot(s["P"]), gate, s)
+            bad = changed_controls(before, snapshot(s["P"]), gate, s) + \
+                changed_home_controls(hbefore, snapshot(s["H"]), gate, s)
             calls = Path(s["base"]) / ".stubs-called"
             if calls.exists():
                 stubbed.append((tid, sh, sorted(set(calls.read_text().split()))))

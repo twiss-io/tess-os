@@ -866,6 +866,7 @@ def _glob_recursive(pat: str, limit: int) -> tuple:
     k = next(i for i, x in enumerate(segs) if _GLOB_CHARS.search(x))
     head = os.sep.join(segs[:k]) or os.sep
     pats = [x for x in segs[k:] if x]
+    trail = pat.endswith(os.sep)
     out, budget = [], _GLOB_WALK_LIMIT
     if not os.path.isdir(head):
         return [], False
@@ -881,15 +882,39 @@ def _glob_recursive(pat: str, limit: int) -> tuple:
                 out.append(q)
                 if len(out) > limit:
                     return out[:limit], True
+            if os.path.islink(q) and _link_crossed(names, pats, trail):
+                # round 4b (Reid Z1): the shell's walk goes on through this
+                # link and Tess's does not, so the listing is incomplete: the
+                # caller asks (Claude) / refuses (Codex).
+                return out[:limit], True
     return out, False
+
+
+def _link_crossed(names: list, pats: list, trail: bool) -> bool:
+    """True when the shell's recursive glob goes on below the link at path
+    steps `names` (round 4b, Reid Z1). Measured on zsh 5.9 and bash 3.2: a
+    plain `**` step never recurses into a link in zsh, a `***` step does;
+    any step that names the link enters it when a step (or a trailing `/`)
+    follows. Without globstar, bash reads `**` and `***` as `*`, one step
+    that names whatever it matches, links included."""
+    for i, p in enumerate(pats):
+        if p == "***" and _parts_match(names, pats[:i + 1]) == "full":
+            return True  # `***/` follows links: it crosses this one
+        one = "*" if p in ("**", "***") else p  # bash without globstar: one step
+        if (i < len(pats) - 1 or trail) and _seg_match(names[-1], one) and \
+                _parts_match(names[:-1], pats[:i]) == "full":
+            return True  # a step names the link and the walk goes on below it
+    return False
 
 
 def _parts_match(names: list, pats: list) -> "str | None":
     """How the glob steps `pats` meet the path steps `names`: "full" (they
     name it), "prefix" (they name a folder above it), "beyond" (they name
-    something below it), or None. A `**` step is any number of steps, never
-    a hidden one (zsh, bash globstar); others match one step as the shell
-    does (round 4: no enumeration, so no cap)."""
+    something below it), or None. A `**` or `***` step is any number of
+    steps, never a hidden one (zsh, bash globstar); others match one step as
+    the shell does (round 4: no enumeration, so no cap). Round 4b: a step
+    that only holds `**` (`x**`, `.**`) is one step in zsh; it is read both
+    ways, so it matches at least what either reading names."""
     memo = {}
 
     def go(i, j):
@@ -901,12 +926,14 @@ def _parts_match(names: list, pats: list) -> "str | None":
             res.add("full" if j == len(names) else "prefix")
         elif j == len(names):
             res.add("beyond")
-            if pats[i] == "**":
+            if "**" in pats[i]:
                 res |= go(i + 1, j)
-        elif pats[i] == "**":
+        elif "**" in pats[i]:
             res |= go(i + 1, j)
             if not names[j].startswith("."):
                 res |= go(i, j + 1)
+            if pats[i] not in ("**", "***") and _seg_match(names[j], pats[i]):
+                res |= go(i + 1, j + 1)
         elif _seg_match(names[j], pats[i]):
             res |= go(i + 1, j + 1)
         memo[key] = res
@@ -4368,6 +4395,27 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                         # may still hold a link the shell walks through. "Could
                         # not look" is not "nothing there": unsure, so it asks.
                         return True
+                    if "**" in seg and os.path.isdir(p):
+                        # round 4b (Reid Z1): a recursive step is any number of
+                        # folders: every folder below `p` (links are not
+                        # entered by `**`; `***` enters them, so one is unsure).
+                        cands.append(p)  # no folder at all
+                        try:
+                            for dp, dn, fn in os.walk(p, followlinks=False,
+                                                      onerror=lambda e: (_ for _ in ()).throw(e)):
+                                budget[0] -= len(dn) + len(fn)
+                                if budget[0] < 0:
+                                    return True
+                                dn[:] = [d for d in dn if not d.startswith(".")]
+                                for d in list(dn):
+                                    q = os.path.join(dp, d)
+                                    if os.path.islink(q):
+                                        if "***" in seg:
+                                            return True
+                                        continue
+                                    cands.append(q)
+                        except OSError:
+                            return True
                 for q in cands:
                     v2 = v or (dynamic and (v_step or q.endswith(os.sep + "..") or os.path.islink(q)))
                     if v2 and lands(q):
@@ -4474,7 +4522,7 @@ def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
         eparts = entry.split("/")
         # round 4 (conformance): a `**` step (zsh, bash globstar) is any
         # number of folders (matched without enumerating, so with no cap).
-        how = _parts_match(eparts, ["**" if "**" in p else p for p in pparts])
+        how = _parts_match(eparts, pparts)  # round 4b: `x**` read both ways there
         if how in ("full", "prefix"):
             return g  # the entry, or a directory holding it
         if how == "beyond" and g.endswith("/**"):
@@ -8276,11 +8324,13 @@ def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", ra
         if cands is None or len(cands) != 1:
             vals = None
             break
+        cut = False
         for text, pat in cands[0]:
             found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else _Matches()
+            cut = cut or found.truncated  # round 4b (Reid E1): any field, not only the last
             vals += sorted(f if os.path.isabs(os.path.expanduser(pat)) else os.path.relpath(f, cwd)
                            for f in found) or [text]
-        if len(vals) > _EXPAND_LIMIT or found.truncated:
+        if len(vals) > _EXPAND_LIMIT or cut:
             vals = None
             break
     body, sink = ctx.funcs[name], ctx.call_dirs
@@ -8363,6 +8413,8 @@ _SET_SAFE_OPTS = {"errexit", "nounset", "xtrace", "verbose", "pipefail", "errtra
                   "noclobber", "histexpand", "err_exit", "no_unset", "pipe_fail", "warn_create_global"}
 _OPTION_CMDS = {"setopt", "unsetopt", "shopt", "emulate", "enable", "disable", "zmodload"}
 _PAREN_OK_BEFORE = _KEYWORDS | {"then", "do", "else", "elif", "time", "coproc"}
+# Reserved words that may come before an array assignment in command position.
+_PAREN_LEAD_WORDS = {"{", "!", "if", "then", "else", "elif", "do", "while", "until"}
 _DECLARERS = {"declare", "typeset", "local", "export", "readonly", "integer", "float"}
 _ASSIGN_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$")
 
@@ -8374,10 +8426,13 @@ def _paren_ok(words: list, nxt) -> bool:
         return _NAME.fullmatch(words[-1].replace("-", "_").replace(".", "_")) is not None
     if all(w in _PAREN_OK_BEFORE for w in words):
         return True  # a subshell after reserved words (`then (`, `! (`, `time (`)
+    lead = 0
+    while lead < len(words) - 1 and words[lead] in _PAREN_LEAD_WORDS:
+        lead += 1  # round 4b (Reid U3): `then arr=(`, `do arr=(`, `{ arr=(`
     if _ASSIGN_WORD.match(words[-1]):
         # an array value: in assignment position, or after a declaration
         # builtin whose other words are options or assignments
-        head = words[:-1]
+        head = words[lead:-1]
         if all("=" in w and _ASSIGN_WORD.match(w.split("=", 1)[0] + "=") for w in head):
             return True
         if head and head[0] in _DECLARERS and all(
