@@ -225,7 +225,9 @@ INPLACE = {"sed", "gsed", "perl", "ruby"}
 READERS_OK_FOR_GIT_DIR = {"ls", "cat", "head", "tail", "stat", "file", "test", "[",
                           "grep", "rg", "wc", "shasum", "sha256sum", "diff", "less"}
 OPERATORS = {";", "&&", "||", "|", "&", "(", ")", "\n", "|&", ";;", ";&", ";;&"}
-REDIRECTS = {">", ">>", ">|", "&>", "&>>", "<>"}
+REDIRECTS = {">", ">>", ">|", "&>", "&>>", "<>",
+             # round 4 (conformance): zsh's clobber forms write the next word
+             ">!", ">>!", ">>|", "&>!", "&>|", "&>>!", "&>>|", ">&!", ">&|"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--exec-path", "--config-env", "--super-prefix", "--list-cmds"}
 PUSH_VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
@@ -728,12 +730,54 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
                 return
 
 
+def _shell_glob(pat: str) -> str:
+    """round 4 (conformance): a shell glob as Python's fnmatch reads it. bash
+    and zsh negate a bracket expression with `^` as well as `!`, and know
+    `[:class:]`, `[=c=]` and `[.c.]` inside one; fnmatch reads those as
+    literal characters, so it missed names the shell matches. `[^` becomes
+    `[!`, and a bracket expression holding a class becomes `?` (any one
+    character: never fewer names than the shell)."""
+    if "[" not in pat:
+        return pat
+    out, i, n = [], 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c != "[":
+            out.append(c)
+            i += 1
+            continue
+        j, neg = i + 1, ""
+        if j < n and pat[j] in "!^":
+            neg, j = "!", j + 1
+        start, cls = j, False
+        if j < n and pat[j] == "]":
+            j += 1
+        while j < n and pat[j] != "]":
+            if pat[j] == "[" and j + 1 < n and pat[j + 1] in ":=.":
+                end = pat.find(pat[j + 1] + "]", j + 2)
+                if end < 0:
+                    break
+                cls, j = True, end + 2
+                continue
+            j += 1
+        if j >= n:
+            out.append("[[]")  # no closing bracket: a literal `[`, as in the shell
+            i += 1
+            continue
+        out.append("?" if cls else "[" + neg + pat[start:j] + "]")
+        i = j + 1
+    return "".join(out)
+
+
 def _glob(cwd: str, pattern: str, limit: int = 200) -> list:
     import glob as _g
-    pat = _expand(pattern)
+    import itertools
+    pat = _shell_glob(_expand(pattern))
     pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
     try:
-        return _g.glob(pat, recursive=False)[:limit]
+        # round 4 (conformance): zsh's `**/` (and bash's with globstar) walks
+        # every folder below; Python's recursive glob does the same.
+        return list(itertools.islice(_g.iglob(pat, recursive="**" in pat), limit))
     except Exception:
         return []
 
@@ -748,9 +792,11 @@ def _glob(cwd: str, pattern: str, limit: int = 200) -> list:
 
 _PUNCT = ";&|()<>\n"
 # Longest first: what the shell reads as one operator or redirection.
-_OPS = (";;&", ";;", ";&", "&&", "||", "|&", "&>>", "&>", ">>", "<<<", "<<-", "<<", ">|", "<>",
+_OPS = (";;&", ";;", ";&", "&&", "||", "|&", "&>>!", "&>>|", "&>!", "&>|", ">>!", ">>|", ">&!", ">&|",
+        "&>>", "&>", ">>", "<<<", "<<-", "<<", ">|", ">!", "<>",
         ">&", "<&", ";", "&", "|", "(", ")", "<", ">", "\n")
-_REDIR_OPS = {">", ">>", ">|", "&>", "&>>", "<>", ">&", "<&", "<", "<<", "<<-", "<<<"}
+_REDIR_OPS = {">", ">>", ">|", "&>", "&>>", "<>", ">&", "<&", "<", "<<", "<<-", "<<<",
+              ">!", ">>!", ">>|", "&>!", "&>|", "&>>!", "&>>|", ">&!", ">&|"}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ANSI_C = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b",
            "f": "\f", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
@@ -771,6 +817,8 @@ class _Word(str):
     parts: tuple = ()
     q: tuple = ()
     body = None
+    # round 4 (Quinn X): a $'...' escape in it that bash and zsh decode differently
+    ansi_amb = False
 
 
 def _mkword(parts, op: bool = False) -> "_Word":
@@ -881,25 +929,50 @@ def _close_brace(s: str, i: int) -> int:
     raise ValueError("No closing brace")
 
 
+# v1.0.x (round 4, Quinn X): bash and zsh decode $'...' alike only for the
+# escapes below. Everything else differs between them (measured on bash 3.2,
+# bash 5 and zsh 5.9): zsh drops the backslash of an unknown escape (`\.` is
+# `.` there, `\.` in bash); `\x` with no hex digit is NUL in zsh; bash
+# decodes `\x{HH}` and zsh does not; bash 3.2 does not decode `\u` / `\U`;
+# `\c` and `\C` / `\M` mean different things; and a numeric escape above
+# 0x7f gives a raw byte, not the character Tess would model. A word holding
+# any of those is flagged (a structured flag on the word, never a character in
+# its text) and the command asks (Claude) / is refused (Codex).
+_ANSI_C_SAME = re.compile(r"x[0-9A-Fa-f]{1,2}|[0-7]{1,3}")
+
+
 def _ansi_c(s: str, i: int) -> tuple:
-    """(index after the closing quote, decoded text) of a $'...' string."""
-    out = []
+    """(index after the closing quote, decoded text, ambiguous) of a $'...'
+    string. `ambiguous` is True when bash and zsh may decode it differently;
+    the text is then bash's reading."""
+    out, amb = [], False
     while i < len(s):
         c = s[i]
         if c == "'":
-            return i + 1, "".join(out)
+            return i + 1, "".join(out), amb
         if c == "\\" and i + 1 < len(s):
             d = s[i + 1]
-            m = re.match(r"x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3})|c(.)",
-                         s[i + 1:])
             if d in _ANSI_C:
                 out.append(_ANSI_C[d])
                 i += 2
                 continue
+            same = _ANSI_C_SAME.match(s, i + 1)
+            if same:
+                t = same.group(0)
+                n = int(t[1:], 16) if t[0] == "x" else int(t, 8)
+                amb = amb or n > 0x7F
+                out.append(chr(n))
+                i += 1 + len(t)
+                continue
+            amb = True  # every other escape: the two shells disagree
+            m = re.match(r"x\{([0-9A-Fa-f]+)\}|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c(.)", s[i + 1:])
+            if m and (m.group(1) or m.group(2) or m.group(3)):
+                n = int(m.group(1) or m.group(2) or m.group(3), 16)
+                out.append(chr(n) if n <= 0x10FFFF else "\ufffd")
+                i += 1 + m.end()
+                continue
             if m:
-                num = m.group(1) or m.group(2) or m.group(3)
-                out.append(chr(int(num, 16)) if num else chr(int(m.group(4), 8)) if m.group(4)
-                           else chr(ord(m.group(5)) & 0x1f))
+                out.append(chr(ord(m.group(4)) & 0x1f))
                 i += 1 + m.end()
                 continue
             out.append("\\" + d)
@@ -930,11 +1003,22 @@ def _scan_dollar(s: str, i: int, add, quoted: bool) -> int:
         add("var" if _NAME.fullmatch(inner) or inner.isdigit() else "dyn", inner, quoted)
         return j + 1
     if nxt == "'" and not quoted:
-        j, text = _ansi_c(s, i + 2)
+        j, text, amb = _ansi_c(s, i + 2)
         add("lit", text)
+        if amb:
+            add("ansi-amb", "")  # a flag on the word (see _ansi_c), not a part
         return j
     if nxt == '"' and not quoted:
         return _scan_dquote(s, i + 2, add)
+    if nxt in "=~^" and i + 2 < len(s) and (s[i + 2] == "{" or _NAME.match(s, i + 2)):
+        # round 4 (conformance): zsh's $=x (split), $~x (glob) and $^x flags
+        # change how the value expands; bash reads `$` then text. Unknown.
+        if s[i + 2] == "{":
+            j = _close_brace(s, i + 2) + 1
+        else:
+            j = _NAME.match(s, i + 2).end()
+        add("dyn", s[i + 1:j], quoted)
+        return j
     m = _NAME.match(s, i + 1)
     if m:
         add("var", m.group(0), quoted)
@@ -989,12 +1073,41 @@ def _read_heredocs(s: str, i: int, toks: list, docs: list) -> int:
     return i
 
 
+# round 4 (conformance): forms at the start of a word whose value the shells
+# take from state Tess cannot see. `~-`, `~+N`, `~N` (OLDPWD and the folder
+# stack, bash and zsh), `~name` (a zsh named folder: any variable holding an
+# absolute path, or `hash -d`, before the user of that name) and zsh's
+# `=cmd` (the path of a program on PATH). Each becomes a part only known at
+# run time, so the fail-safe applies.
+_TILDE_KNOWN = re.compile(r"~\+?(?=/|$)")
+_ZSH_EQUALS = re.compile(r"=[^=\s/][^/]*")
+
+
+def _word_start_forms(parts: list, toks: list) -> None:
+    if not parts or parts[0][0] != "raw":
+        return
+    if toks and toks[-1].op and str(toks[-1]) in _REDIR_OPS and str(toks[-1]).startswith("<"):
+        return  # `<<~x` style delimiters and input files are only read
+    text = parts[0][1]
+    m = None
+    if text.startswith("~") and not _TILDE_KNOWN.match(text):
+        m = re.match(r"~[^/]*", text)
+    elif _ZSH_EQUALS.match(text):
+        m = _ZSH_EQUALS.match(text)
+    if m:
+        rest = text[m.end():]
+        parts[0:1] = [["dyn", m.group(0), False]] + ([["raw", rest, False]] if rest else [])
+
+
 def _scan(cmd: str) -> list:
     """The words and operators of `cmd` (see _Word). Raises ValueError on
     unbalanced quotes, as shlex does."""
-    toks, docs, state = [], [], {"parts": None}
+    toks, docs, state = [], [], {"parts": None, "amb": False}
 
     def add(kind, text, quoted=False):
+        if kind == "ansi-amb":
+            state["amb"] = True  # round 4 (Quinn X): a flag on the word, not a part
+            return
         parts = state["parts"]
         if parts is None:
             parts = state["parts"] = []
@@ -1005,8 +1118,10 @@ def _scan(cmd: str) -> list:
 
     def end():
         if state["parts"] is not None:
+            _word_start_forms(state["parts"], toks)
             toks.append(_mkword(state["parts"]))
-        state["parts"] = None
+            toks[-1].ansi_amb = state["amb"]
+        state["parts"], state["amb"] = None, False
 
     i = 0
     while i < len(cmd):
@@ -1115,6 +1230,8 @@ _WRAP = {
     "sudo": ("ugChDprtTU", ("--user", "--group", "--close-from", "--host", "--chdir", "--prompt",
                             "--role", "--type", "--command-timeout", "--other-user"), 0),
     "doas": ("uC", (), 0), "nocorrect": ("", (), 0), "noglob": ("", (), 0),
+    # round 4 (conformance): zsh's `repeat N cmd` and `- cmd` run cmd
+    "repeat": ("", (), 1), "-": ("", (), 0),
     "timeout": ("sk", ("--signal", "--kill-after"), 1), "gtimeout": ("sk", ("--signal", "--kill-after"), 1),
     "xargs": ("adEIJLnPRSs", ("--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
                               "--process-slot-var"), 0),
@@ -3573,7 +3690,7 @@ def _split_fields(chunks: list, ifs) -> list | None:
                 cur[2] = cur[2] or bool(_GLOB_CHARS.search(piece))
     if cur is not None:
         fields.append(cur)
-    return [(f[0], f[1] if f[2] else None) for f in fields]
+    return [(f[0], _shell_glob(f[1]) if f[2] else None) for f in fields]
 
 
 def _word_fields(word, cwd: str | None, ctx: "_Ctx | None", limit: int = _EXPAND_LIMIT,
@@ -3737,7 +3854,7 @@ def _glob_builtins(pat: str, names=None) -> set:
     if "/" in pat:
         return set()  # a path runs a file, never a builtin
     return {n for n in (names or _SHELL_STATE_BUILTINS | _CD_BUILTINS)
-            if fnmatch.fnmatchcase(n, pat) or fnmatch.fnmatchcase(n, pat.lower())}
+            if fnmatch.fnmatchcase(n, _shell_glob(pat)) or fnmatch.fnmatchcase(n, _shell_glob(pat).lower())}
 
 
 def _flat_shell(text: str) -> str:
@@ -3947,7 +4064,7 @@ def _glob_may_be_dotdot(seg: str) -> bool:
     """v1.0.x (Quinn R4): a glob path segment that can match `..`. bash up to
     5.1 matches `.*` (and `.?`, `.[.]`, ...) against `..`; a pattern that does
     not start with a written dot never matches a leading dot."""
-    return seg[:1] in (".", "[", "\\") and fnmatch.fnmatchcase("..", seg.replace("\\", ""))
+    return seg[:1] in (".", "[", "\\") and fnmatch.fnmatchcase("..", _shell_glob(seg.replace("\\", "")))
 
 
 def _never_empty(k: str, t: str, ctx: "_Ctx") -> bool:
@@ -4065,7 +4182,7 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
                 or control_file_hit(root, real, real) is not None)
 
     def fits(name: str, pat: str) -> bool:
-        return fnmatch.fnmatchcase(name.lower(), pat.lower())  # case-insensitive volumes too
+        return fnmatch.fnmatchcase(name.lower(), _shell_glob(pat).lower())  # case-insensitive volumes too
 
     budget = [_LINK_SCAN_LIMIT]
 
@@ -4149,26 +4266,54 @@ def _link_may_redirect(root: Path, cwd: str | None, word, ctx: "_Ctx | None") ->
     return False
 
 
+def _link_fits(full: str, link: str) -> bool:
+    """v1.0.x (round 4, Quinn G2): `full` is the link path `link` or lies below
+    it, in any spelling the shell can reach it by once `ln` has run: the same
+    letters in another case (case-insensitive volumes) or a glob component
+    that matches the link's component. Over-matching only adds checks."""
+    if full == link or full.startswith(link.rstrip(os.sep) + os.sep):
+        return True
+    lsegs = [p for p in link.split(os.sep) if p]
+    fsegs = [p for p in full.split(os.sep) if p]
+    if len(fsegs) < len(lsegs):
+        return False
+    return all(_seg_fits(a, b) for a, b in zip(lsegs, fsegs))
+
+
+def _seg_fits(a: str, b: str) -> bool:
+    """One path component `a` and `b` can name the same entry: equal in any
+    case, or either one a glob the other matches (round 4, Quinn G2)."""
+    a, b = a.lower(), b.lower()
+    return a == b or bool(_GLOB_CHARS.search(b) and fnmatch.fnmatchcase(a, _shell_glob(b))) or bool(
+        _GLOB_CHARS.search(a) and fnmatch.fnmatchcase(b, _shell_glob(a)))
+
+
 def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
     """`path` with the symlinks this command creates earlier followed; None
-    when one points somewhere only known at run time."""
+    when one points somewhere only known at run time, or (round 4, Quinn G2)
+    when a respelled path fits more than one of them."""
     full = os.path.normpath(os.path.join(cwd, path))
     for _ in range(8):
-        for link, target in ctx.links.items():
-            if full == link or full.startswith(link + os.sep):
-                if target is None:
-                    return None
-                full = os.path.normpath(target + full[len(link):])
-                break
-        else:
+        exact = [(link, t) for link, t in ctx.links.items()
+                 if full == link or full.startswith(link + os.sep)]
+        fuzzy = exact or [(link, t) for link, t in ctx.links.items() if _link_fits(full, link)]
+        if not fuzzy:
             return full
+        if len({t for _l, t in fuzzy}) > 1 and not exact:
+            return None  # a glob or case respelling that fits several links: unsure
+        link, target = fuzzy[0]
+        if target is None:
+            return None
+        depth = len([p for p in link.split(os.sep) if p])
+        rest = [p for p in full.split(os.sep) if p][depth:]
+        full = os.path.normpath(os.path.join(target, *rest)) if rest else os.path.normpath(target)
     return full
 
 
 def _seg_match(name: str, pat: str) -> bool:
     if name.startswith(".") and not pat.startswith("."):
         return False  # a glob does not match a dot file unless it starts with a dot
-    return fnmatch.fnmatchcase(name.lower(), pat.lower())
+    return fnmatch.fnmatchcase(name.lower(), _shell_glob(pat).lower())
 
 
 def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
@@ -4188,17 +4333,37 @@ def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
         if _GLOB_CHARS.search(entry):
             continue
         eparts = entry.split("/")
-        if len(pparts) <= len(eparts) and all(_seg_match(e, p) for e, p in zip(eparts, pparts)):
-            return g  # the entry, or a directory holding it
-        if g.endswith("/**") and len(pparts) > len(eparts) and all(
-                _seg_match(e, p) for e, p in zip(eparts, pparts)):
-            return g  # a file inside a protected directory
+        # round 4 (conformance): a `**` step (zsh, bash globstar) is any
+        # number of folders; each way it can stand is checked.
+        for pp in _starstar_spellings(pparts, len(eparts) + 1):
+            if len(pp) <= len(eparts) and all(_seg_match(e, p) for e, p in zip(eparts, pp)):
+                return g  # the entry, or a directory holding it
+            if g.endswith("/**") and len(pp) > len(eparts) and all(
+                    _seg_match(e, p) for e, p in zip(eparts, pp)):
+                return g  # a file inside a protected directory
     return None
+
+
+def _starstar_spellings(parts: list, most: int) -> list:
+    """`parts` with each `**` step replaced by 0..`most` `*` steps (bounded)."""
+    out = [[]]
+    for p in parts:
+        if "**" in p:
+            out = [o + ["*"] * k for o in out for k in range(most + 1)]
+        else:
+            out = [o + [p] for o in out]
+        if len(out) > 256:
+            return out[:256]
+    return out
 
 
 # attempt 3 (sentinel audit): a NUL character in a word is cut short by the
 # shell (bash drops the rest of the $'...' text; a program receives the text
 # up to it), which Tess does not model, so such a command never allows.
+_ANSI_AMB_ASK = ("a $'...' string uses an escape that bash and zsh decode differently (an unknown "
+                 "escape such as `\\.`, `\\x{..}`, a bare `\\x`, `\\u`, `\\U`, `\\c`, or a byte above "
+                 "0x7f), so Tess cannot tell which file or option it names; write the characters "
+                 "themselves, or use one of \\n \\t \\xHH \\NNN")
 _NUL_ASK = ("an argument holds a NUL character, which the shell cuts short, so Tess cannot tell "
             "which file or option it names; write it without the NUL")
 
@@ -5045,7 +5210,8 @@ def _runtime_link_over(full: str, ctx: "_Ctx") -> bool:
     real = os.path.realpath(full)
     for head in ctx.rt_links:
         if (os.path.normpath(full) + os.sep).startswith(head.rstrip(os.sep) + os.sep) or \
-                _within(real, os.path.realpath(head)) is not None:
+                _within(real, os.path.realpath(head)) is not None or \
+                _link_fits(os.path.normpath(full), os.path.normpath(head)):  # round 4 (G2)
             return True
     return False
 
@@ -5121,8 +5287,8 @@ def _links_in_sources(srcs: list, cwd: str, ctx: "_Ctx") -> "list | None":
     for s in srcs:
         full = os.path.normpath(os.path.join(cwd, os.path.expanduser(str(s))))
         if _through_links(full, cwd, ctx) != full or any(
-                k == full or k.startswith(full.rstrip(os.sep) + os.sep) for k in ctx.links
-                ) or _runtime_link_over(full, ctx):
+                k == full or k.startswith(full.rstrip(os.sep) + os.sep) or _link_fits(k, full)
+                for k in ctx.links) or _runtime_link_over(full, ctx):
             return None  # it is, or holds, a link made earlier in this command
         if os.path.islink(full):
             try:
@@ -5414,6 +5580,7 @@ def _find_test(op: str, pat: str, path: str, shown: str, start: bool = False) ->
             return frozenset([bool(re.fullmatch(pat, subject, re.I if low else 0))])
         except re.error:
             return _MAYBE
+    pat = _shell_glob(pat)  # round 4: find's fnmatch(3) knows `[^...]` and `[:class:]`
     return frozenset([fnmatch.fnmatchcase(subject.lower() if low else subject,
                                           pat.lower() if low else pat)])
 
@@ -5924,13 +6091,26 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             break
     # v1.0.x (attempt 3): a link made earlier in the same command is followed,
     # as the shell will (`ln -s "$PWD" /w/d && tar -x -C /w/d`).
-    through = None
-    if ctx is not None:
-        through = _through_links(dest, cwd, ctx)
-        if through is None or _runtime_link_over(dest, ctx):
-            v.add(ASK, f"`{tool}` extracts into {dest} through a link this command makes, so Tess "
-                       "cannot check what it writes")
-    dests = [dest] + ([through] if ctx is not None and through and through != dest else [])
+    # round 4 (Quinn G1): a glob destination is checked at every path it
+    # matches on disk, as well as at the text as written.
+    spelled = [dest]
+    for w in _extract_dest_words(argv, cwd):
+        vals, _ = _word_values(w, cwd, ctx)
+        for t, p in vals or []:
+            if _unmatched_dest_glob(cwd, p, ctx):
+                v.add(ASK, _DEST_GLOB_ASK.format(dest=t))
+            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x)
+                        for x in _dest_spellings(cwd, t, p)[:-1]]
+    dests = []
+    for d in dict.fromkeys(spelled):
+        dests.append(d)
+        if ctx is not None:
+            through = _through_links(d, cwd, ctx)
+            if through is None or _runtime_link_over(d, ctx):
+                v.add(ASK, f"`{tool}` extracts into {d} through a link this command makes, so Tess "
+                           "cannot check what it writes")
+            elif through != d:
+                dests.append(through)
     for dest in dests:  # the path as written and where the link leads: never fewer checks
         rel = _rel_to_root(root, cwd, dest)
         if rel is None:
@@ -6043,6 +6223,35 @@ def _tree_names(path: str, limit: int = _LINK_SCAN_LIMIT) -> "list | None":
     return out
 
 
+def _dest_spellings(cwd: str, text: str, pat: "str | None") -> list:
+    """v1.0.x (round 4, Quinn G1): every path a folder-level writer's
+    destination word names when the shell runs it: the matches of its glob on
+    disk (also with `..` steps resolved by name, as `x/../pro[j]` reads once
+    `x` exists), then the text as written. Never fewer paths than the text."""
+    out = []
+    if pat:
+        out += _glob(cwd, pat)
+        exp = _expand(pat)
+        joined = exp if os.path.isabs(exp) else os.path.join(cwd or os.getcwd(), exp)
+        if ".." in joined.split("/"):
+            out += _glob(cwd, os.path.normpath(joined))
+    return list(dict.fromkeys(out + [text]))
+
+
+_DEST_GLOB_ASK = ("it writes into {dest}, a glob that matches nothing yet, in a command that also "
+                  "makes a link; the shell matches it after the link exists, so Tess cannot tell "
+                  "where it writes")
+
+
+def _unmatched_dest_glob(cwd: str, pat: "str | None", ctx: "_Ctx | None") -> bool:
+    """round 4 (Quinn G1): a destination glob that matches nothing when the
+    gate runs, in a command that makes a link (whose name the glob may match
+    by the time the shell expands it)."""
+    if not pat or ctx is None or not (ctx.links or ctx.rt_links):
+        return False
+    return len(_dest_spellings(cwd, pat, pat)) <= 1
+
+
 def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
     """v1.0.x (Quinn B1 part 2, attempt 3): the paths a copy, move or link
     writes INTO its target folder (`target/<source name>`, and for a folder
@@ -6056,7 +6265,8 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
     keep_parent = "--keepParent" in [str(a) for a in argv[1:]]
     tvals, _ = _word_values(target, cwd, ctx)
     if tvals is not None:
-        targets = [t for t, _p in tvals if not _remote(t)]
+        # round 4 (Quinn G1): a glob target is checked at every path it matches
+        targets = [d for t, p in tvals if not _remote(t) for d in _dest_spellings(cwd, t, p)]
     elif isinstance(target, _Word) and not isinstance(target, _Field) and target.parts:
         targets = [_shape_text(sh) for sh in _runtime_shapes(target, cwd, ctx, cap=64) or []]
     else:
@@ -6109,20 +6319,25 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
         return  # a target known only at run time: _check_target asks
     base = os.path.realpath(str(root))
     dests = []
-    for text, _pat in cands:
+    for text, pat in cands:
         if _remote(text):
             continue
-        # v1.0.x (attempt 3): a link made earlier in the same command is
-        # followed, as the shell will (`ln -s "$PWD" /w/d && cp -R x/. /w/d/`).
-        written = os.path.join(cwd, os.path.expanduser(text))
-        full = _through_links(written, cwd, ctx)
-        if full is None or _runtime_link_over(written, ctx):
-            v.add(ASK, f"it copies into {text} through a link this command makes, so Tess cannot "
-                       "check what it overwrites")
-        # the path as written and where the link leads: never fewer checks
-        for real in dict.fromkeys([os.path.realpath(written)] + ([os.path.realpath(full)] if full else [])):
-            if _within(base, real) is not None:  # the project root, or a folder above it
-                dests.append((text, real))
+        if _unmatched_dest_glob(cwd, pat, ctx):
+            v.add(ASK, _DEST_GLOB_ASK.format(dest=text))
+        # round 4 (Quinn G1): a glob destination is checked at every path it
+        # matches on disk, as well as at the text as written.
+        for spelled in _dest_spellings(cwd, text, pat):
+            # v1.0.x (attempt 3): a link made earlier in the same command is
+            # followed, as the shell will (`ln -s "$PWD" /w/d && cp -R x/. /w/d/`).
+            written = os.path.join(cwd, os.path.expanduser(spelled))
+            full = _through_links(written, cwd, ctx)
+            if full is None or _runtime_link_over(written, ctx):
+                v.add(ASK, f"it copies into {text} through a link this command makes, so Tess cannot "
+                           "check what it overwrites")
+            # the path as written and where the link leads: never fewer checks
+            for real in dict.fromkeys([os.path.realpath(written)] + ([os.path.realpath(full)] if full else [])):
+                if _within(base, real) is not None:  # the project root, or a folder above it
+                    dests.append((text, real))
     if not dests:
         return
     here = "the project folder" if any(_within(r, base) == "." for _t, r in dests) else \
@@ -7744,7 +7959,7 @@ def _glob_program_names(pat: str) -> list:
     if "/" not in pat:
         # v1.0.x (Quinn R3): a bare globbed word may be a builtin (`ev?l`, `sour?e`).
         names = names | _SHELL_STATE_BUILTINS | _CD_BUILTINS
-    return sorted(n for n in names if fnmatch.fnmatchcase(n, base))
+    return sorted(n for n in names if fnmatch.fnmatchcase(n, _shell_glob(base)))
 
 
 def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: str, depth: int,
@@ -7977,6 +8192,113 @@ def _bind_positional(argv: list, ctx: "_Ctx") -> list:
     return out
 
 
+# round 4 (conformance harness): shell syntax whose meaning differs between
+# bash and zsh, or that changes how later words expand, in ways Tess does not
+# model. Each one asks (Claude) / is refused (Codex).
+_PAREN_ASK = ("a `(` comes inside a command's arguments: zsh reads it as part of a file-name "
+              "pattern (alternatives, or glob qualifiers that can run code) and bash refuses it, "
+              "so Tess cannot tell which files it names; quote it")
+_OPTION_ASK = ("it changes a shell option ({opt}) that alters how later words expand (dot files, "
+               "recursion, letter case, extended patterns, splitting), which Tess does not model; "
+               "run the option change on its own, or leave it out")
+# `set` flags and options that do not change how words expand.
+_SET_SAFE_FLAGS = set("euxvETCH")
+_SET_SAFE_OPTS = {"errexit", "nounset", "xtrace", "verbose", "pipefail", "errtrace", "functrace",
+                  "noclobber", "histexpand", "err_exit", "no_unset", "pipe_fail", "warn_create_global"}
+_OPTION_CMDS = {"setopt", "unsetopt", "shopt", "emulate", "enable", "disable", "zmodload"}
+_PAREN_OK_BEFORE = _KEYWORDS | {"then", "do", "else", "elif", "time", "in", "[[", "coproc"}
+
+
+def _option_change(argv: list) -> "str | None":
+    """The shell-option change this segment makes, or None."""
+    words = [str(w) for w in argv if not (_is_op(w) and str(w) in _REDIR_OPS)]
+    for w in words:
+        if re.match(r"^(options|GLOBIGNORE|BASHOPTS|SHELLOPTS|GLOB_DOTS|ZLE_\w*)(\[|=|\+=)", w):
+            return w.split("=", 1)[0]
+    _env, rest = _strip_prefix(argv)
+    rest = [str(w) for w in rest if not (_is_op(w) and str(w) in _REDIR_OPS)]
+    if not rest:
+        return None
+    name = os.path.basename(rest[0])
+    args = rest[1:]
+    if name in _OPTION_CMDS:
+        if name == "shopt" and (not args or any(a in ("-q", "-p") for a in args)) and not any(
+                a in ("-s", "-u") for a in args):
+            return None  # only reads the options
+        if name in ("setopt", "unsetopt") and not args:
+            return None
+        if name in ("enable", "disable") and not any(a.startswith("-") for a in args):
+            return None if name == "enable" and not args else name
+        return f"{name} {' '.join(args)}".strip()
+    if name == "set":
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--" or not re.match(r"^[-+]", a):
+                return None  # the rest are positional parameters
+            if a in ("-o", "+o"):
+                if i + 1 < len(args) and args[i + 1].lower().replace("_", "") not in {
+                        o.replace("_", "") for o in _SET_SAFE_OPTS}:
+                    return f"set {a} {args[i + 1]}"
+                i += 2
+                continue
+            if set(a[1:]) - _SET_SAFE_FLAGS - {"o"}:
+                return f"set {a}"
+            if "o" in a[1:]:
+                nxt = args[i + 1] if i + 1 < len(args) else ""
+                if nxt.lower().replace("_", "") not in {o.replace("_", "") for o in _SET_SAFE_OPTS}:
+                    return f"set {a} {nxt}".strip()
+                i += 1
+            i += 1
+    return None
+
+
+# Builtins that take a variable NAME (or an arithmetic expression): bash
+# expands a `$(...)` written inside a quoted subscript there when it runs
+# (`read 'a[$(cmd)]'`, `printf -v 'a[$(cmd)]'`, `let 'x=a[$(cmd)]'`).
+_NAME_TAKERS = {"let", "printf", "declare", "typeset", "local", "export", "readonly", "read",
+                "unset", "getopts", "mapfile", "readarray", "wait", "test", "[", "[[", "print",
+                "vared", "zparseopts", "integer", "float"}
+_SUBSCRIPT_ASK = ("{name} gets a subscript or expression holding `$(`, `${{` or a backtick as "
+                  "text; the shell runs it when it evaluates the name, so Tess cannot check it")
+_HASH_ASK = "`hash` rebinds a command name to another program, which Tess does not follow"
+
+
+def _literal_code(word) -> bool:
+    """Text (quoted or not) that the shell's own evaluator would expand."""
+    texts = [t for k, t in getattr(word, "parts", ()) if k in ("lit", "raw", "fallback")] \
+        if isinstance(word, _Word) else [str(word)]
+    return any(re.search(r"\$\(|\$\{|`", t) for t in texts) and "[" in str(word) or \
+        any(re.search(r"\$\(|`", t) for t in texts if "(" in t and "=" in t)
+
+
+def _check_shell_model(events: list, v: "Verdict") -> None:
+    prev = None
+    for n, (kind, x) in enumerate(events):
+        if kind == "seg":
+            opt = _option_change(x)
+            if opt:
+                v.add(ASK, _OPTION_ASK.format(opt=opt[:60]))
+            _env, rest = _strip_prefix(x)
+            rest = [w for w in rest if not (_is_op(w) and str(w) in _REDIR_OPS)]
+            name = os.path.basename(str(rest[0])) if rest else ""
+            if name in _NAME_TAKERS and any(_literal_code(w) for w in rest[1:]):
+                v.add(ASK, _SUBSCRIPT_ASK.format(name=f"`{name}`"))
+            if name == "hash" and any(str(w) == "-p" or "=" in str(w) for w in rest[1:]):
+                v.add(ASK, _HASH_ASK)
+        elif x == "(" and prev is not None and prev[0] == "seg" and prev[1]:
+            words = [str(w) for w in prev[1]]
+            nxt = events[n + 1] if n + 1 < len(events) else None
+            if nxt == ("op", ")"):
+                pass  # f () { ...; }: a function definition
+            elif words[-1].endswith("=") or all(w in _PAREN_OK_BEFORE for w in words) or \
+                    words[0] in ("case", "[["):
+                pass  # an array value, a subshell after a reserved word, a case pattern
+            else:
+                v.add(ASK, _PAREN_ASK)
+        prev = (kind, x)
+
+
 def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ctx: "_Ctx | None" = None):
     ctx = ctx if ctx is not None else _Ctx(cmd)
     _tick()
@@ -7992,6 +8314,11 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
         # into a deny for Codex and the no-prompt modes.
         cwd = str(root) if cwd is _NOWHERE else cwd
         low = cmd.lower()
+        if "$'" in cmd:
+            # round 4 (Quinn X): the fallback reader below does not decode
+            # $'...' at all, so what such a word names is unknown.
+            v.add(ASK, "the command could not be parsed and holds a $'...' string, which Tess "
+                       "cannot decode without parsing it")
         if "--no-verify" in low or "hookspath" in low or re.search(r"\.git/(hooks|config\b)", low):
             v.add(DENY, "the command could not be parsed and mentions a git hook bypass", "error")
         for word in re.findall(r"[^\s;&|()<>'\"`]+", cmd):
@@ -8023,6 +8350,9 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
         for argv in segs:
             _check_segment(root, cwd, argv, v, cmd, depth, ctx)
         return
+    if any(getattr(w, "ansi_amb", False) for k, x in events if k == "seg" for w in x):
+        v.add(ASK, _ANSI_AMB_ASK)
+    _check_shell_model(events, v)
     _check_archive_pipe([x for k, x in events if k == "seg"], v)
     start = None if cwd is _NOWHERE else (cwd or str(root))
     _walk(root, events, 0, frozenset([start]), v, cmd, depth, ctx)
