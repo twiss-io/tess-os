@@ -88,7 +88,7 @@ def _report(res: dict) -> str:
              f"({res['allowed']} allowed commands, {res['ran']} shell runs):"]
     for f in res["failures"]:  # every failure, never a cut-down list
         lines.append(f"  [{f['id']}] {os.path.basename(f['shell'])} {'/'.join(f['decisions'])} "
-                     f"changed {f['changed']}: {f['command']!r}")
+                     f"exit {f['exit']} changed {f['changed']}: {f['command']!r}")
     return "\n".join(lines)
 
 
