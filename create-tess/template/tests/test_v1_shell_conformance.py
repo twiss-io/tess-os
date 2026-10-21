@@ -179,3 +179,17 @@ def test_a_run_that_times_out_is_a_failure_never_a_pass(tmp_path, monkeypatch):
         assert res["failures"] and res["failures"][0]["changed"] == ["<timed out: the run did not finish>"]
     finally:
         sc._rmtree(base)
+
+
+def test_control_paths_exclude_only_the_object_store_and_restore_snapshots():
+    class Model:
+        @staticmethod
+        def protected_hit(root, cwd, path):
+            return "x" if "CLAUDE" in path or "/.git/" in path else None
+    s = {"P": "/S/proj"}
+    assert sc.controlled(".git/objects/ab/cd", Model, s) is False
+    assert sc.controlled(".tess/snapshots/t/.claude/settings.json", Model, s) is False
+    assert sc.controlled(".tess/snapshots", Model, s) is False
+    for rel in (".git/config", ".git/hooks/pre-commit", ".claude/settings.local.json",
+                ".tess/tess.lock", ".tess/core/x", "CLAUDE.md", ".github/workflows/ci.yml"):
+        assert sc.controlled(rel, Model, s) is True, rel

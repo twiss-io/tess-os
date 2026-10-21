@@ -41,6 +41,7 @@ import subprocess
 import tarfile
 import io
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -93,6 +94,9 @@ def build_pristine(base: Path, repo: Path = REPO) -> dict:
     (p / "src" / "a.py").write_text("print(1)\n")
     subprocess.run(["git", "init", "-q", "-b", "main", str(p)], check=True, env=_git_env(h))
     (h / ".config").mkdir(parents=True)
+    # No background repository maintenance in the sandbox: a detached
+    # auto-gc would still be writing while the next copy is made.
+    (h / ".gitconfig").write_text("[gc]\n\tauto = 0\n\tautoDetach = false\n[maintenance]\n\tauto = false\n")
     (h / ".claude").mkdir()
     t.mkdir()
     _world(w, p)
@@ -140,8 +144,13 @@ def fresh_copy(pristine: dict, run: Path) -> dict:
     """A copy of the pristine sandbox at `run`, links kept as links. Links
     that point into the pristine tree are re-pointed into the copy."""
     run = Path(os.path.realpath(run.parent)) / run.name  # the jail matches real paths
-    if run.exists():
+    for _ in range(20):
+        if not os.path.lexists(run):
+            break
         _rmtree(run)
+        time.sleep(0.1)
+    if os.path.lexists(run):
+        raise RuntimeError(f"could not clear {run} for the next run")
     shutil.copytree(pristine["base"], run, symlinks=True)
     old, new = pristine["base"], str(run)
     for dirpath, dirnames, filenames in os.walk(run):
@@ -210,11 +219,22 @@ def snapshot(root: str) -> dict:
     return out
 
 
+# Paths that allowed, sanctioned tools write in normal work and that switch
+# no check off: the repository's own object store and refs (an allowed
+# commit), and the snapshots `tessctl restore` keeps. Everything else the
+# gate protects still counts; hooks and config under it always do.
+NOT_CONTROL = (".git/", ".tess/snapshots/")
+
+
 def controlled(rel: str, gate, s: dict) -> bool:
     """`rel` (relative to the sandbox project) is a protected control path:
     the fixed list above, a control folder, or anything the gate's own
-    protected list names."""
-    if rel in CONTROL or any(rel == d or rel.startswith(d + "/") for d in CONTROL_DIRS):
+    protected list names, minus NOT_CONTROL."""
+    if rel in CONTROL or rel == ".git/hooks" or rel.startswith(".git/hooks/"):
+        return True
+    if any(rel.startswith(x) or rel == x.rstrip("/") for x in NOT_CONTROL):
+        return False
+    if any(rel == d or rel.startswith(d + "/") for d in CONTROL_DIRS):
         return True
     try:
         return bool(gate.protected_hit(Path(s["P"]), s["P"], os.path.join(s["P"], rel)))
@@ -288,11 +308,18 @@ def run_shell(shell: str, cmd: str, s: dict) -> tuple:
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
     try:
         _out, err = proc.communicate(timeout=TIMEOUT)
-        return proc.returncode, (err or b"")[-300:].decode("utf-8", "replace")
+        code = proc.returncode
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)  # only the group this harness started
+        code, err = "timeout", b""
+    try:
+        # Only the group this harness started: also stops anything the
+        # command left running in the background before the next copy.
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    if code == "timeout":
         proc.communicate()
-        return "timeout", ""
+    return code, (err or b"")[-300:].decode("utf-8", "replace")
 
 
 def confinement_self_test(s: dict) -> None:
