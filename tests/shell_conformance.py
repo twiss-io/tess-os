@@ -46,7 +46,11 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-TIMEOUT = 10
+# Seconds one shell run may take. A run killed at the limit is a failure
+# (it may have gone on to change files, and a killed tessctl leaves its
+# update lock behind); 30 s leaves room for a whole-tree `tessctl` command
+# on a slow CI runner.
+TIMEOUT = 30
 # Programs that act outside a folder no matter where they run.
 STUBS = ("curl", "wget", "ssh", "scp", "sftp", "nc", "ncat", "telnet", "ftp", "open", "osascript",
          "defaults", "launchctl", "security", "pbcopy", "pbpaste", "say", "systemctl", "sudo",
@@ -563,7 +567,7 @@ def replay(gate, pristine: dict, templates: list, workdir: Path) -> dict:
                 stubbed.append((tid, sh, sorted(set(calls.read_text().split()))))
             if code == "timeout":
                 # it may have gone on to change files after the kill: not clean
-                bad = bad or ["<timed out: the run did not finish>"]
+                bad = bad + ["<timed out: the run did not finish>"]
             if bad:
                 failures.append({"id": tid, "shell": sh, "decisions": dec, "changed": bad,
                                  "exit": code, "command": template})
