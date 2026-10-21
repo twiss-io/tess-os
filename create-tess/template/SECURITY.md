@@ -347,6 +347,12 @@ security reviews; they are stated so nobody relies on a check that is not there.
   1000 names, more than 20000 entries walked, or a folder it cannot read), a
   chain of links made in the command longer than 8, or more expansions than
   it checks one by one asks (Codex: refuses); none is read as "nothing there".
+  A `# comment` is read both ways: as the shell reads it (dropped to the end
+  of the line, before quotes are paired) and as words, and both readings are
+  checked, so a quote inside a comment (`# it's`) cannot pair with one on a
+  later line and hide the commands between them. A command that does not
+  parse is checked without its comments with every rule above; when it still
+  does not parse, it asks. An error inside the gate is a deny.
   Since round 4 the gate also asks (Codex: refuses) on shell syntax whose
   meaning it does not model, found by comparing its decisions with real bash
   and zsh (the conformance harness, below): a `(` inside a command's
