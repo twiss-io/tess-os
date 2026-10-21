@@ -345,6 +345,7 @@ security reviews; they are stated so nobody relies on a check that is not there.
   input) ask when the target is only known at run time. Every limit the gate
   works within fails safe the same way: a glob listing cut short (more than
   1000 names, more than 20000 entries walked, or a folder it cannot read), a
+  folder `find`'s walk cannot read (1.0.x), a
   chain of links made in the command longer than 8, or more expansions than
   it checks one by one asks (Codex: refuses); none is read as "nothing there".
   A `# comment` is read both ways: as the shell reads it (dropped to the end
@@ -373,17 +374,27 @@ security reviews; they are stated so nobody relies on a check that is not there.
   later step that names a link, such as `**/<link>/...` or `**/l*/...`, enters
   it; bash without `globstar` reads `**` as `*`, which names a link one level
   down), the listing counts as cut short and the command asks (Codex:
-  refuses) (round 4b).
+  refuses) (round 4b). Below a run-time path part, any link under a `***/`
+  step (to a folder, to a file, or dangling) counts as unsure and asks (1.0.x).
   Real-shell conformance (round 4): `tests/test_v1_shell_conformance.py`
   runs every command the gate allows from its attack corpus and from the
   commands the test suite hands it in real bash and zsh, inside a disposable
   sandbox jailed by `sandbox-exec` (macOS) or `bwrap` (Linux), and fails if a
   protected control file changes: anything on the gate's own protected list
-  except the files git itself writes in an allowed commit, branch or tag (its
-  objects, logs, local branch and tag refs, the index, and `HEAD` while it
-  names a local branch), and, in the sandbox home the gate also decides
-  against, the user-level control files and the key folder (round 4b). It
-  runs in CI on both systems. It finds
+  except the files git itself writes in an allowed commit, branch or tag
+  (`.git/objects/` other than `.git/objects/info/`, `.git/logs/`,
+  `.git/refs/heads/`, `.git/refs/tags/`, `.git/index`, `.git/COMMIT_EDITMSG`,
+  `.git/ORIG_HEAD`, `.git/FETCH_HEAD`, and `.git/HEAD` while it names a local
+  branch), and, in the sandbox home the gate also decides against, the
+  user-level control files and the key folder (round 4b). Two sanctioned
+  writers are not counted, each by the gate's or tessctl's own rules: a change
+  to the sandbox home's global git config in which every key added, changed or
+  removed is one the gate allows through `git config --global` in Claude
+  Code's default and acceptEdits modes and in Codex; and a new `tessctl
+  restore` snapshot folder whose every file is an exact copy (kind, mode and
+  content) of the project file it names, and whose manifest matches the
+  project as it was before the run (1.0.x adds the mode). It runs in CI on
+  both systems. It finds
   divergences in the commands it is given; a spelling no corpus holds can
   still differ.
   This is a check when the gate runs, not an OS boundary: a link made after it
