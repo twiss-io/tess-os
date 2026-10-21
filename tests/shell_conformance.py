@@ -91,7 +91,7 @@ def build_pristine(base: Path, repo: Path = REPO) -> dict:
     (p / "notes.md").write_text("notes\n")
     (p / "src").mkdir()
     (p / "src" / "a.py").write_text("print(1)\n")
-    subprocess.run(["git", "init", "-q", str(p)], check=True, env=_git_env(h))
+    subprocess.run(["git", "init", "-q", "-b", "main", str(p)], check=True, env=_git_env(h))
     (h / ".config").mkdir(parents=True)
     (h / ".claude").mkdir()
     t.mkdir()

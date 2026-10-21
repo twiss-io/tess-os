@@ -134,8 +134,9 @@ G2 = [
 ]
 
 X = [
-    ("NS9-cd-md \\x{0}", "cd $'@W/nl\\x{0}/q' && rm -f b-0/CLAUDE.md", DENY),
-    ("NS9-cd-cp \\x{0}", "cd $'@W/nl\\x{0}/q' && cp -R @W/evil/. b-0/", DENY),
+    # ask on Python 3.9 (the NUL rule), deny on 3.12+ (realpath also errors): never allow
+    ("NS9-cd-md \\x{0}", "cd $'@W/nl\\x{0}/q' && rm -f b-0/CLAUDE.md", "ask-or-deny"),
+    ("NS9-cd-cp \\x{0}", "cd $'@W/nl\\x{0}/q' && cp -R @W/evil/. b-0/", "ask-or-deny"),
     ("X1-cp-contents-dot", "cp -R @W/evil/. $'\\x{2e}'/", ASK),
     ("X2-redir-local", "printf '{\"disableAllHooks\":true}' > $'\\x{2e}claude/settings.local.json'", DENY),
     ("X2b-redir-settings", "printf '{\"disableAllHooks\":true}' > $'\\x{2e}claude/settings.json'", DENY),
@@ -233,7 +234,8 @@ def test_g2_same_command_link_in_any_spelling(proj, W, cid, cmd, want):  # noqa:
 
 @pytest.mark.parametrize("cid,cmd,want", X, ids=_ids(X))
 def test_x_ansi_c_escapes_the_shells_decode_differently(proj, W, cid, cmd, want):  # noqa: F811
-    assert _all(proj, _fill(cmd, proj, W)) == want
+    got = _all(proj, _fill(cmd, proj, W))
+    assert got in (ASK, DENY) if want == "ask-or-deny" else got == want
 
 
 @pytest.mark.parametrize("cid,cmd,want", SHELL, ids=_ids(SHELL))
