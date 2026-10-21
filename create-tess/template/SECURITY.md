@@ -365,14 +365,25 @@ security reviews; they are stated so nobody relies on a check that is not there.
   values only the running shell knows (`~-`, `~+N`, `~N`, zsh's `~name`
   named folders, zsh's `=cmd`, `$=x`, `$~x`). zsh's clobber redirections
   (`>!`, `>>!`, `&>|`, `>>|`) are read as writes, zsh's `repeat N` and `-`
-  as the command after them, a `**` step (zsh, bash `globstar`) as any number
-  of folders, and bracket expressions as the shells read them (`[^...]` is
-  `[!...]`; `[[:class:]]`, `[[=c=]]` and `[[.c.]]` match any one character).
+  as the command after them, a `**` or `***` step (zsh, bash `globstar`) as
+  any number of folders, and bracket expressions as the shells read them
+  (`[^...]` is `[!...]`; `[[:class:]]`, `[[=c=]]` and `[[.c.]]` match any one
+  character). Tess walks a recursive glob without following symbolic links.
+  Where the shell would go on through a link (zsh's `***/` follows links; a
+  later step that names a link, such as `**/<link>/...` or `**/l*/...`, enters
+  it; bash without `globstar` reads `**` as `*`, which names a link one level
+  down), the listing counts as cut short and the command asks (Codex:
+  refuses) (round 4b).
   Real-shell conformance (round 4): `tests/test_v1_shell_conformance.py`
   runs every command the gate allows from its attack corpus and from the
   commands the test suite hands it in real bash and zsh, inside a disposable
   sandbox jailed by `sandbox-exec` (macOS) or `bwrap` (Linux), and fails if a
-  protected control file changes. It runs in CI on both systems. It finds
+  protected control file changes: anything on the gate's own protected list
+  except the files git itself writes in an allowed commit, branch or tag (its
+  objects, logs, local branch and tag refs, the index, and `HEAD` while it
+  names a local branch), and, in the sandbox home the gate also decides
+  against, the user-level control files and the key folder (round 4b). It
+  runs in CI on both systems. It finds
   divergences in the commands it is given; a spelling no corpus holds can
   still differ.
   This is a check when the gate runs, not an OS boundary: a link made after it
