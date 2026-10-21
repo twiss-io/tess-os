@@ -723,11 +723,15 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
             if text != str(a):
                 parts |= {text, text.split("=", 1)[-1]}
         for part in parts:
-            if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or (
-                    any(c in part for c in "*?[") and any(key_hit(cwd, g) for g in _glob(cwd, part))):
+            globbed = _glob(cwd, part) if any(c in part for c in "*?[") else _Matches()
+            if _KEY_TEXT.search(part) or key_hit(cwd, part, ancestors=recursive) or any(
+                    key_hit(cwd, g) for g in globbed):
                 v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
                             "the operator's own tools, not for an agent", "keys")
                 return
+            if globbed.truncated:  # round 4: names Tess did not see may include it
+                v.add(ASK, f"{a} matches more names than Tess lists one by one (or a folder it "
+                           "cannot read), so Tess cannot tell whether it reaches its key directory")
 
 
 def _shell_glob(pat: str) -> str:
@@ -769,17 +773,150 @@ def _shell_glob(pat: str) -> str:
     return "".join(out)
 
 
-def _glob(cwd: str, pattern: str, limit: int = 200) -> list:
-    import glob as _g
-    import itertools
+class _Matches(list):
+    """Glob matches. `truncated` (a flag, never an entry in the list) is True
+    when the listing stopped at a limit, could not be read, or ran out of
+    budget: a caller then has NOT seen every name and must fail safe (round
+    4, resource caps never fail open)."""
+    truncated = False
+
+
+_GLOB_WALK_LIMIT = 20000  # directory entries one glob may look at
+_GLOB_LIMIT = 1000  # names one glob may return
+
+
+def _glob(cwd: str, pattern: str, limit: "int | None" = None) -> "_Matches":
+    """The paths `pattern` matches, as the shell globs it. Round 4: a
+    folder that cannot be listed, a listing over budget, or more matches
+    than `limit` set `truncated` (Python's glob skipped unreadable folders
+    silently, which read as "nothing there")."""
+    limit = _GLOB_LIMIT if limit is None else limit
     pat = _shell_glob(_expand(pattern))
     pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
+    out = _Matches()
     try:
-        # round 4 (conformance): zsh's `**/` (and bash's with globstar) walks
-        # every folder below; Python's recursive glob does the same.
-        return list(itertools.islice(_g.iglob(pat, recursive="**" in pat), limit))
+        if any("**" in seg for seg in pat.split(os.sep)):
+            # round 4 (conformance): zsh's `**/` (bash's with globstar) is any
+            # number of folders; walked here with a budget, links not followed.
+            found, cut = _glob_recursive(pat, limit)
+        else:
+            found, cut = _glob_segments(pat, limit)
     except Exception:
-        return []
+        found, cut = [], True  # could not list: unsure, never "nothing there"
+    out.extend(found[:limit])
+    out.truncated = cut or len(found) > limit
+    return out
+
+
+def _glob_segments(pat: str, limit: int) -> tuple:
+    """(matches, truncated) of an absolute pattern, one step at a time."""
+    segs = pat.split(os.sep)
+    trail = segs[-1] == "" and len(segs) > 1
+    segs = [x for x in segs[1:] if x] if pat.startswith(os.sep) else [x for x in segs if x]
+    paths, budget, cut = [os.sep], [_GLOB_WALK_LIMIT], False
+    for n, seg in enumerate(segs):
+        last = n == len(segs) - 1
+        nxt = []
+        for p in paths:
+            if not _GLOB_CHARS.search(seg):
+                q = os.path.join(p, seg)
+                if os.path.lexists(q) if last and not trail else os.path.isdir(q):
+                    nxt.append(q)
+                continue
+            try:
+                with os.scandir(p) as it:
+                    for e in it:
+                        budget[0] -= 1
+                        if budget[0] < 0:
+                            return nxt, True
+                        if _seg_match(e.name, seg) and (last and not trail or os.path.isdir(e.path)):
+                            nxt.append(e.path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                cut = True  # a folder Tess cannot list may hold a match
+        paths = nxt
+        if len(paths) > limit * 4 or not paths:
+            cut = cut or len(paths) > limit * 4
+            break
+    return [q + (os.sep if trail else "") for q in sorted(paths)] if paths != [os.sep] else [], cut
+
+
+def _any_glob(cwd: str, pat: str, test) -> bool:
+    """True when `test` holds for a name `pat` matches, or when the listing
+    was cut short (round 4: an unseen name counts as a hit)."""
+    found = _glob(cwd, pat)
+    return found.truncated or any(test(g) for g in found)
+
+
+def _glob_or_text(cwd: str, text: str, pat: "str | None", v: "Verdict | None" = None,
+                  what: str = "") -> list:
+    """The names a word globs to, or its text when it globs to none. When
+    the listing was cut short, `v` gets an ask (round 4)."""
+    found = _glob(cwd, pat) if pat else _Matches()
+    if found.truncated and v is not None:
+        v.add(ASK, f"{what or text} matches more names than Tess lists one by one (or a folder "
+                   "it cannot read), so Tess cannot check every one")
+    return list(found) or [text]
+
+
+def _glob_recursive(pat: str, limit: int) -> tuple:
+    """(matches, truncated) of an absolute pattern holding a `**` step."""
+    segs = pat.split(os.sep)
+    k = next(i for i, x in enumerate(segs) if _GLOB_CHARS.search(x))
+    head = os.sep.join(segs[:k]) or os.sep
+    pats = [x for x in segs[k:] if x]
+    out, budget = [], _GLOB_WALK_LIMIT
+    if not os.path.isdir(head):
+        return [], False
+    for dirpath, dirnames, filenames in os.walk(head, followlinks=False,
+                                                onerror=lambda e: (_ for _ in ()).throw(e)):
+        for n in dirnames + filenames:
+            budget -= 1
+            if budget < 0:
+                return out[:limit], True
+            q = os.path.join(dirpath, n)
+            names = os.path.relpath(q, head).split(os.sep)
+            if _parts_match(names, pats) == "full":
+                out.append(q)
+                if len(out) > limit:
+                    return out[:limit], True
+    return out, False
+
+
+def _parts_match(names: list, pats: list) -> "str | None":
+    """How the glob steps `pats` meet the path steps `names`: "full" (they
+    name it), "prefix" (they name a folder above it), "beyond" (they name
+    something below it), or None. A `**` step is any number of steps, never
+    a hidden one (zsh, bash globstar); others match one step as the shell
+    does (round 4: no enumeration, so no cap)."""
+    memo = {}
+
+    def go(i, j):
+        key = (i, j)
+        if key in memo:
+            return memo[key]
+        res = set()
+        if i == len(pats):
+            res.add("full" if j == len(names) else "prefix")
+        elif j == len(names):
+            res.add("beyond")
+            if pats[i] == "**":
+                res |= go(i + 1, j)
+        elif pats[i] == "**":
+            res |= go(i + 1, j)
+            if not names[j].startswith("."):
+                res |= go(i, j + 1)
+        elif _seg_match(names[j], pats[i]):
+            res |= go(i + 1, j + 1)
+        memo[key] = res
+        return res
+
+    got = go(0, 0)
+    for kind in ("full", "prefix", "beyond"):
+        if kind in got:
+            return kind
+    return None
 
 
 # --------------------------------------------------------------------------- shell parsing
@@ -1080,14 +1217,14 @@ def _read_heredocs(s: str, i: int, toks: list, docs: list) -> int:
 # `=cmd` (the path of a program on PATH). Each becomes a part only known at
 # run time, so the fail-safe applies.
 _TILDE_KNOWN = re.compile(r"~\+?(?=/|$)")
-_ZSH_EQUALS = re.compile(r"=[^=\s/][^/]*")
+_ZSH_EQUALS = re.compile(r"=[^=\s][^/]*")
 
 
 def _word_start_forms(parts: list, toks: list) -> None:
     if not parts or parts[0][0] != "raw":
         return
-    if toks and toks[-1].op and str(toks[-1]) in _REDIR_OPS and str(toks[-1]).startswith("<"):
-        return  # `<<~x` style delimiters and input files are only read
+    if toks and toks[-1].op and str(toks[-1]) in ("<<", "<<-"):
+        return  # a here-document delimiter is never expanded
     text = parts[0][1]
     m = None
     if text.startswith("~") and not _TILDE_KNOWN.match(text):
@@ -2065,8 +2202,8 @@ def _check_git_words(root: Path, cwd: str, env: dict, argv: list, v: "Verdict", 
             for text, pat in cand:
                 # `touch ./--no-verify; git commit *`: a glob can name a file
                 # that git reads as an option.
-                risky = pat is not None and pat[:1] in "*?[" and (ctx.mutated or any(
-                    os.path.basename(g).startswith("-") for g in _glob(cwd, pat, _EXPAND_LIMIT)))
+                risky = pat is not None and pat[:1] in "*?[" and (ctx.mutated or _any_glob(
+                    cwd, pat, lambda g: os.path.basename(g).startswith("-")))
                 fields.append(_unk(_plain(text), ctx, unsafe=True) if risky else text)
             alts.append(fields)
         per_word.append(alts or [[]])
@@ -4307,7 +4444,9 @@ def _through_links(path: str, cwd: str, ctx: "_Ctx") -> str | None:
         depth = len([p for p in link.split(os.sep) if p])
         rest = [p for p in full.split(os.sep) if p][depth:]
         full = os.path.normpath(os.path.join(target, *rest)) if rest else os.path.normpath(target)
-    return full
+    # round 4: still on a link after 8 hops (a chain or a loop): unsure, so
+    # the caller asks; never the path half-followed.
+    return None
 
 
 def _seg_match(name: str, pat: str) -> bool:
@@ -4334,27 +4473,13 @@ def _pattern_hit(root: Path, cwd: str, pat: str) -> str | None:
             continue
         eparts = entry.split("/")
         # round 4 (conformance): a `**` step (zsh, bash globstar) is any
-        # number of folders; each way it can stand is checked.
-        for pp in _starstar_spellings(pparts, len(eparts) + 1):
-            if len(pp) <= len(eparts) and all(_seg_match(e, p) for e, p in zip(eparts, pp)):
-                return g  # the entry, or a directory holding it
-            if g.endswith("/**") and len(pp) > len(eparts) and all(
-                    _seg_match(e, p) for e, p in zip(eparts, pp)):
-                return g  # a file inside a protected directory
+        # number of folders (matched without enumerating, so with no cap).
+        how = _parts_match(eparts, ["**" if "**" in p else p for p in pparts])
+        if how in ("full", "prefix"):
+            return g  # the entry, or a directory holding it
+        if how == "beyond" and g.endswith("/**"):
+            return g  # a file inside a protected directory
     return None
-
-
-def _starstar_spellings(parts: list, most: int) -> list:
-    """`parts` with each `**` step replaced by 0..`most` `*` steps (bounded)."""
-    out = [[]]
-    for p in parts:
-        if "**" in p:
-            out = [o + ["*"] * k for o in out for k in range(most + 1)]
-        else:
-            out = [o + [p] for o in out]
-        if len(out) > 256:
-            return out[:256]
-    return out
 
 
 # attempt 3 (sentinel audit): a NUL character in a word is cut short by the
@@ -4384,9 +4509,9 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
                        "cannot check it against its protected files")
         return
     for text, pat in cands:
-        paths = (_glob(cwd, pat) if pat else []) or [text]
+        paths = _glob_or_text(cwd, text, pat, v, f"it writes to {word}, which")
         if pat:
-            paths += _dotdot_spellings(cwd, pat)  # Quinn R4: `.*` may be `..`
+            paths += _dotdot_spellings(cwd, pat, v=v)  # Quinn R4: `.*` may be `..`
         for p in paths:
             full = _through_links(p, cwd, ctx)
             if full is None:
@@ -4410,7 +4535,7 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
             return
 
 
-def _dotdot_spellings(cwd: str, pat: str, cap: int = 3) -> list:
+def _dotdot_spellings(cwd: str, pat: str, cap: int = 3, v: "Verdict | None" = None) -> list:
     """v1.0.x (Quinn R4): the paths a glob names when its steps that can match
     `..` (`.*`, `.?`) do (bash up to 5.1 matches `.*` against `..`)."""
     segs = pat.split("/")
@@ -4422,7 +4547,7 @@ def _dotdot_spellings(cwd: str, pat: str, cap: int = 3) -> list:
             if mask >> b & 1:
                 alt[i] = ".."
         p = "/".join(alt)
-        out += (_glob(cwd, p) if _GLOB_CHARS.search(p) else []) or [p]
+        out += _glob_or_text(cwd, p, p if _GLOB_CHARS.search(p) else None, v)
     return out
 
 
@@ -5258,8 +5383,9 @@ def _record_planted_links(cwd: str, name: str, argv: list, ctx: "_Ctx") -> None:
     dests = [os.path.normpath(os.path.join(cwd, os.path.expanduser(t))) for t, _p in tvals]
     for op in ops:
         cands, _ = _word_values(op, cwd, ctx)
-        srcs = None if cands is None else [p for t, pat in cands
-                                           for p in ((_glob(cwd, pat) if pat else []) or [t])]
+        srcs = None if cands is None else [p for t, pat in cands for p in _glob_or_text(cwd, t, pat)]
+        if cands is not None and any(pat and _glob(cwd, pat).truncated for _t, pat in cands):
+            srcs = None  # round 4: a source listing cut short may hide a link
         found = None if srcs is None else _links_in_sources(srcs, cwd, ctx)
         for d in dests:
             if found is None:
@@ -5806,7 +5932,7 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                            "runs, so Tess cannot check them")
             continue
         for text, pat in cands:
-            for start in (_glob(cwd, pat) if pat else []) or [text]:
+            for start in _glob_or_text(cwd, text, pat, v, f"`find` starts at {s}, which"):
                 top = os.path.normpath(os.path.join(cwd, os.path.expanduser(start)))
                 # v1.0.x (attempt 3): a link made earlier in the command is
                 # followed, as the shell will (`ln -s "$PWD" /w/d && find /w/d/x -delete`).
@@ -6082,6 +6208,11 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
     # folder asks wherever the destination leads (a link Tess cannot see).
     unresolved = ctx is not None and any(
         _word_values(w, cwd, ctx)[0] is None for w in _extract_dest_words(argv, cwd))
+    if unresolved and members is None:
+        # round 4: an archive Tess cannot list, into a place only known at run
+        # time: what it holds is unknown, never treated as clean.
+        v.add(ASK, f"`{tool}` extracts an archive Tess cannot list into a place only known when "
+                   "the command runs")
     for m in [""] + (members or [] if unresolved else []):
         hit = _control_suffix(os.path.join(dest, m) if m else dest)
         if hit:
@@ -6099,8 +6230,11 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
         for t, p in vals or []:
             if _unmatched_dest_glob(cwd, p, ctx):
                 v.add(ASK, _DEST_GLOB_ASK.format(dest=t))
-            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x)
-                        for x in _dest_spellings(cwd, t, p)[:-1]]
+            sp = _dest_spellings(cwd, t, p)
+            if sp.truncated:
+                v.add(ASK, f"`{tool}` extracts into {t}, a glob that matches more names than Tess "
+                           "lists one by one, so Tess cannot check every one")
+            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in list(sp)[:-1]]
     dests = []
     for d in dict.fromkeys(spelled):
         dests.append(d)
@@ -6228,14 +6362,20 @@ def _dest_spellings(cwd: str, text: str, pat: "str | None") -> list:
     destination word names when the shell runs it: the matches of its glob on
     disk (also with `..` steps resolved by name, as `x/../pro[j]` reads once
     `x` exists), then the text as written. Never fewer paths than the text."""
-    out = []
+    out = _Matches()
     if pat:
-        out += _glob(cwd, pat)
+        found = _glob(cwd, pat)
+        out += found
+        out.truncated = found.truncated
         exp = _expand(pat)
         joined = exp if os.path.isabs(exp) else os.path.join(cwd or os.getcwd(), exp)
         if ".." in joined.split("/"):
-            out += _glob(cwd, os.path.normpath(joined))
-    return list(dict.fromkeys(out + [text]))
+            found = _glob(cwd, os.path.normpath(joined))
+            out += found
+            out.truncated = out.truncated or found.truncated
+    res = _Matches(dict.fromkeys(list(out) + [text]))
+    res.truncated = out.truncated
+    return res
 
 
 _DEST_GLOB_ASK = ("it writes into {dest}, a glob that matches nothing yet, in a command that also "
@@ -6249,7 +6389,8 @@ def _unmatched_dest_glob(cwd: str, pat: "str | None", ctx: "_Ctx | None") -> boo
     by the time the shell expands it)."""
     if not pat or ctx is None or not (ctx.links or ctx.rt_links):
         return False
-    return len(_dest_spellings(cwd, pat, pat)) <= 1
+    found = _dest_spellings(cwd, pat, pat)
+    return found.truncated or len(found) <= 1
 
 
 def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ctx") -> None:
@@ -6266,7 +6407,11 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
     tvals, _ = _word_values(target, cwd, ctx)
     if tvals is not None:
         # round 4 (Quinn G1): a glob target is checked at every path it matches
-        targets = [d for t, p in tvals if not _remote(t) for d in _dest_spellings(cwd, t, p)]
+        spelled = [(_dest_spellings(cwd, t, p), t) for t, p in tvals if not _remote(t)]
+        if any(sp.truncated for sp, _t in spelled):
+            v.add(ASK, f"it copies into {target}, a glob that matches more names than Tess lists "
+                       "one by one, so Tess cannot check every one")
+        targets = [d for sp, _t in spelled for d in sp]
     elif isinstance(target, _Word) and not isinstance(target, _Field) and target.parts:
         targets = [_shape_text(sh) for sh in _runtime_shapes(target, cwd, ctx, cap=64) or []]
     else:
@@ -6282,7 +6427,7 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
         vals, _ = _word_values(op, cwd, ctx)
         srcs = []
         for text, pat in vals or []:
-            srcs += (_glob(cwd, pat) if pat else []) or [text]
+            srcs += _glob_or_text(cwd, text, pat, v, f"it copies {op}, which")
         for src in srcs:
             if _remote(src):
                 continue
@@ -6292,7 +6437,13 @@ def _check_copy_written(cwd: str, name: str, argv: list, v: "Verdict", ctx: "_Ct
             contents = src.endswith("/") or leaf in (".", "..", "") or (name == "ditto" and not keep_parent)
             names = [leaf] if whole else []
             if unresolved and (recursive or name == "ditto") and name != "ln" and os.path.isdir(full):
-                inner = _tree_names(full) or []
+                inner = _tree_names(full)
+                if inner is None:
+                    # round 4: a tree Tess cannot list in full is never treated as clean
+                    v.add(ASK, f"it copies {src}, a folder too large for Tess to list (or one it "
+                               "cannot read), into a place only known when the command runs")
+                    return
+
                 names += ([leaf + "/" + n for n in inner] if whole else []) + (inner if contents else [])
             for t in targets:
                 for n in names:
@@ -6326,7 +6477,11 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
             v.add(ASK, _DEST_GLOB_ASK.format(dest=text))
         # round 4 (Quinn G1): a glob destination is checked at every path it
         # matches on disk, as well as at the text as written.
-        for spelled in _dest_spellings(cwd, text, pat):
+        spellings = _dest_spellings(cwd, text, pat)
+        if spellings.truncated:
+            v.add(ASK, f"it copies into {text}, a glob that matches more names than Tess lists one "
+                       "by one, so Tess cannot check every one")
+        for spelled in spellings:
             # v1.0.x (attempt 3): a link made earlier in the same command is
             # followed, as the shell will (`ln -s "$PWD" /w/d && cp -R x/. /w/d/`).
             written = os.path.join(cwd, os.path.expanduser(spelled))
@@ -6354,7 +6509,7 @@ def _check_copy_into(root: Path, cwd: str, name: str, argv: list, v: "Verdict", 
         vals, _ = _word_values(op, cwd, ctx)
         texts = []
         for text, pat in vals or []:
-            texts += (_glob(cwd, pat) if pat else []) or [text]
+            texts += _glob_or_text(cwd, text, pat, v, f"it copies {op}, which")
         for text in (texts if vals else [None]):
             if text is None or _remote(text) or text == "{}" or _GLOB_CHARS.search(os.path.basename(text)):
                 v.add(ASK, why(op))  # which files is only known at run time
@@ -7982,8 +8137,9 @@ def _check_dynamic_program(root: Path, cwd: str, argv: list, v: Verdict, raw: st
                 # v1.0 round 3: a glob in the program word (`/usr/bin/g[i]t`) is
                 # replaced by the names it matches; one that matches nothing now
                 # may match a file this command makes, so it is also probed.
-                found = sorted(_glob(cwd, pat)) if pat else []
-                unsure = unsure or (pat is not None and (not found or ctx.mutated))
+                globbed = _glob(cwd, pat) if pat else _Matches()
+                found = sorted(globbed)
+                unsure = unsure or (pat is not None and (not found or ctx.mutated or globbed.truncated))
                 if not words and pat is not None:
                     prog_pat = pat
                 words += [_field(f) for f in found] or [_field(text)]
@@ -8121,10 +8277,10 @@ def _call_function(root: Path, cwd: str, name: str, args: list, v: "Verdict", ra
             vals = None
             break
         for text, pat in cands[0]:
-            found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else []
+            found = _glob(cwd, pat, _EXPAND_LIMIT + 1) if pat else _Matches()
             vals += sorted(f if os.path.isabs(os.path.expanduser(pat)) else os.path.relpath(f, cwd)
                            for f in found) or [text]
-        if len(vals) > _EXPAND_LIMIT:
+        if len(vals) > _EXPAND_LIMIT or found.truncated:
             vals = None
             break
     body, sink = ctx.funcs[name], ctx.call_dirs
@@ -8206,7 +8362,33 @@ _SET_SAFE_FLAGS = set("euxvETCH")
 _SET_SAFE_OPTS = {"errexit", "nounset", "xtrace", "verbose", "pipefail", "errtrace", "functrace",
                   "noclobber", "histexpand", "err_exit", "no_unset", "pipe_fail", "warn_create_global"}
 _OPTION_CMDS = {"setopt", "unsetopt", "shopt", "emulate", "enable", "disable", "zmodload"}
-_PAREN_OK_BEFORE = _KEYWORDS | {"then", "do", "else", "elif", "time", "in", "[[", "coproc"}
+_PAREN_OK_BEFORE = _KEYWORDS | {"then", "do", "else", "elif", "time", "coproc"}
+_DECLARERS = {"declare", "typeset", "local", "export", "readonly", "integer", "float"}
+_ASSIGN_WORD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$")
+
+
+def _paren_ok(words: list, nxt) -> bool:
+    """A `(` after the words of `words` that both shells read as ordinary
+    syntax, with every word accounted for (round 4: anything else asks)."""
+    if nxt == ("op", ")") and (len(words) == 1 or (len(words) == 2 and words[0] == "function")):
+        return _NAME.fullmatch(words[-1].replace("-", "_").replace(".", "_")) is not None
+    if all(w in _PAREN_OK_BEFORE for w in words):
+        return True  # a subshell after reserved words (`then (`, `! (`, `time (`)
+    if _ASSIGN_WORD.match(words[-1]):
+        # an array value: in assignment position, or after a declaration
+        # builtin whose other words are options or assignments
+        head = words[:-1]
+        if all("=" in w and _ASSIGN_WORD.match(w.split("=", 1)[0] + "=") for w in head):
+            return True
+        if head and head[0] in _DECLARERS and all(
+                w.startswith(("-", "+")) or ("=" in w and _ASSIGN_WORD.match(w.split("=", 1)[0] + "="))
+                for w in head[1:]):
+            return True
+    if words[0] == "case" and words[-1] == "in" and len(words) == 3:
+        return True  # case WORD in (pattern) ...
+    if words[0] == "[[" and "]]" not in words:
+        return True  # grouping inside [[ ... ]]
+    return False
 
 
 def _option_change(argv: list) -> "str | None":
@@ -8289,12 +8471,7 @@ def _check_shell_model(events: list, v: "Verdict") -> None:
         elif x == "(" and prev is not None and prev[0] == "seg" and prev[1]:
             words = [str(w) for w in prev[1]]
             nxt = events[n + 1] if n + 1 < len(events) else None
-            if nxt == ("op", ")"):
-                pass  # f () { ...; }: a function definition
-            elif words[-1].endswith("=") or all(w in _PAREN_OK_BEFORE for w in words) or \
-                    words[0] in ("case", "[["):
-                pass  # an array value, a subshell after a reserved word, a case pattern
-            else:
+            if not _paren_ok(words, nxt):
                 v.add(ASK, _PAREN_ASK)
         prev = (kind, x)
 
@@ -8655,9 +8832,12 @@ def _track_vars(orig: list, res: "_Cmd", cwd: str | None, ctx: "_Ctx", cond: boo
             if cands is None:
                 vals = None
                 break
+            cut = False
             for t, pat in cands:
-                vals += (_glob(cwd or ".", pat, _EXPAND_LIMIT + 1) if pat else []) or [t]
-            if len(vals) > _EXPAND_LIMIT:
+                found = _glob(cwd or ".", pat, _EXPAND_LIMIT + 1) if pat else _Matches()
+                cut = cut or found.truncated
+                vals += list(found) or [t]
+            if len(vals) > _EXPAND_LIMIT or cut:
                 vals = None
                 break
         if vals != []:
@@ -8781,7 +8961,7 @@ def _next_cwd(root: Path, cur: str | None, argv: list, ctx: "_Ctx | None" = None
         return None  # Cyra F4b: CDPATH picks the folder at run time
     if pat is not None:
         found = _glob(cur, pat)
-        if len(found) != 1:
+        if len(found) != 1 or found.truncated:
             return None
         text = found[0]
     full = os.path.normpath(os.path.join(cur, text))

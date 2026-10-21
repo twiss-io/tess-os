@@ -283,3 +283,128 @@ def test_shell_bracket_forms(pat, want):
     ("/w/out", "/w/out/n2", False)])
 def test_link_fits_by_case_and_glob(full, link, want):
     assert G._link_fits(full, link) is want
+
+
+# ------------------------------------------------------------------ fail-safe limits (round 4 review)
+# Every limit the round-4 code added or touched fails safe when it is hit:
+# ask in Claude Code, deny in Codex; never allow, never "nothing there".
+def _files(d, names):
+    d.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (d / n).write_text("x")
+    return d
+
+
+def test_glob_over_its_limit_is_marked_truncated(tmp_path, monkeypatch):
+    _files(tmp_path / "m", [f"f{i}" for i in range(5)])
+    monkeypatch.setattr(G, "_GLOB_LIMIT", 3)
+    got = G._glob(str(tmp_path), "m/*")
+    assert len(got) == 3 and got.truncated
+
+
+@pytest.mark.parametrize("pat", ["m/*", "**/f1"])
+def test_glob_over_its_walk_budget_is_marked_truncated(tmp_path, monkeypatch, pat):
+    _files(tmp_path / "m", [f"f{i}" for i in range(5)])
+    monkeypatch.setattr(G, "_GLOB_WALK_LIMIT", 2)
+    assert G._glob(str(tmp_path), pat).truncated
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any folder")
+def test_glob_through_an_unreadable_folder_is_marked_truncated(tmp_path):
+    _files(tmp_path / "locked" / "in", ["CLAUDE.md"])
+    os.chmod(tmp_path / "locked", 0)
+    try:
+        assert G._glob(str(tmp_path), "locked/*").truncated
+        assert G._glob(str(tmp_path), "locked/**/x").truncated
+    finally:
+        os.chmod(tmp_path / "locked", 0o700)
+
+
+def test_a_write_target_glob_over_the_limit_asks(proj, W, monkeypatch):  # noqa: F811
+    _files(W / "many", [f"f{i}" for i in range(6)])
+    assert _all(proj, f"rm -f {W}/many/*") == ALLOW
+    monkeypatch.setattr(G, "_GLOB_LIMIT", 3)
+    assert _all(proj, f"rm -f {W}/many/*") == ASK
+
+
+def test_a_copy_destination_glob_over_the_limit_asks(proj, W, monkeypatch):  # noqa: F811
+    for i in range(6):
+        (W / "dests" / f"d{i}").mkdir(parents=True, exist_ok=True)
+    assert _all(proj, f"cp -R {W}/evil2/. {W}/dests/d*/") == ALLOW
+    monkeypatch.setattr(G, "_GLOB_LIMIT", 3)
+    assert _all(proj, f"cp -R {W}/evil2/. {W}/dests/d*/") == ASK
+
+
+def test_a_recursive_glob_over_its_walk_budget_asks(proj, W, monkeypatch):  # noqa: F811
+    _files(W / "deep" / "a" / "b", ["x", "y", "z"])
+    assert _all(proj, f"rm -f {W}/deep/**/x") == ALLOW
+    monkeypatch.setattr(G, "_GLOB_WALK_LIMIT", 2)
+    assert _all(proj, f"rm -f {W}/deep/**/x") == ASK
+
+
+def test_many_recursive_steps_are_matched_without_a_cap():
+    assert G._parts_match(["CLAUDE.md"], ["**"] * 7 + ["CLAUDE.md"]) == "full"
+    assert G._parts_match(["a", "b", "c", "d", "e", "f", "g", "CLAUDE.md"], ["**"] * 9 + ["CLAUDE.md"]) == "full"
+    assert G._parts_match([".claude", "x"], ["**", "x"]) is None  # `**` skips hidden folders
+
+
+def test_many_recursive_steps_still_hit_a_protected_file(proj, W):  # noqa: F811
+    assert _all(proj, "rm -f " + "**/" * 7 + "CLAUDE.md") == DENY
+
+
+def test_a_link_chain_longer_than_the_hop_limit_is_unsure():
+    ctx = G._Ctx("")
+    for i in range(10):
+        ctx.links[f"/w/h{i + 1}"] = f"/w/h{i}"
+    assert G._through_links("/w/h3/x", "/", ctx) == "/w/h0/x"
+    assert G._through_links("/w/h10/x", "/", ctx) is None
+
+
+def test_a_copy_through_a_link_chain_past_the_hop_limit_asks(proj, W):  # noqa: F811
+    chain = " && ".join(f"ln -s {W}/out/h{i} {W}/out/h{i + 1}" for i in range(10))
+    cmd = f'ln -s "$PWD" {W}/out/h0 && {chain} && cp -R {W}/evil2/. {W}/out/h10/'
+    assert _all(proj, cmd) in (ASK, DENY)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any folder")
+def test_a_copied_tree_tess_cannot_list_into_a_runtime_target_asks(proj, W):  # noqa: F811
+    src = W / "srcro"
+    _files(src, ["a.txt"])
+    _files(src / "sealed", ["b.txt"])
+    cmd = f'true; cp -R {src}/. "{W}/out/b-$?/"'
+    assert _all(proj, cmd) == ALLOW
+    os.chmod(src / "sealed", 0)
+    try:
+        assert _all(proj, cmd) == ASK
+    finally:
+        os.chmod(src / "sealed", 0o700)
+
+
+def test_an_archive_tess_cannot_list_into_a_runtime_target_asks(proj, W):  # noqa: F811
+    assert _all(proj, f'true; cat {W}/b.tar | tar -xf - -C "{W}/out/b-$?"') == ASK
+
+
+# ------------------------------------------------------------------ exemptions cover the whole command
+@pytest.mark.parametrize("cmd,want", [
+    ("f() { echo; }", ALLOW), ("function f () { :; }", ALLOW), ("a=(1 2)", ALLOW),
+    ("declare -a a=(1 2)", ALLOW), ("local -r a=(x) 2>/dev/null", ALLOW),
+    ("if true; then (ls); fi", ALLOW), ("time (ls)", ALLOW), ("[[ ( -n a ) ]]", ALLOW),
+    ("case a in (a) ls;; esac", ALLOW),
+    ("f g () { :; }", ASK), ("rm -rf x=(.claude|y)", ASK), ("echo a=(x)", ASK),
+    ("[[ a ]] (b|c)", ASK), ("in (x)", ASK), ("ls =(echo)", ASK)])
+def test_paren_exemptions_hold_only_for_their_whole_form(proj, W, cmd, want):  # noqa: F811
+    assert _all(proj, cmd) == want
+
+
+@pytest.mark.parametrize("cmd,want", [
+    ("set -euo pipefail; ls", ALLOW), ("set -e; set +x; ls", ALLOW), ("set -- a b; ls", ALLOW),
+    ("shopt -q extglob; ls", ALLOW), ("set -eo globdots; ls", ASK), ("set -e -o globdots; ls", ASK),
+    ("shopt -qs dotglob; ls", ASK), ("shopt -os noglob; ls", ASK), ("set -o; ls", ALLOW),
+    ("builtin set -o globdots; ls", ASK), ("eval 'setopt globdots'; ls", ASK)])
+def test_option_allowances_cover_every_word(proj, W, cmd, want):  # noqa: F811
+    assert _all(proj, cmd) == want
+
+
+@pytest.mark.parametrize("cmd", ["cat <> ~-/CLAUDE.md", "echo x >| ~-/CLAUDE.md", "rm -f =/bin/x"])
+def test_word_start_forms_are_unknown_in_every_write_position(proj, W, cmd):  # noqa: F811
+    assert _all(proj, cmd) != ALLOW

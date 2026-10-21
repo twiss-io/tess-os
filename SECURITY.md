@@ -338,10 +338,15 @@ security reviews; they are stated so nobody relies on a check that is not there.
   steps resolved by name), as well as at the text as written, and a glob that
   matches nothing yet, in a command that also makes a link, asks. The names are matched as the shell can
   spell them (quoting, a variable set earlier in the command, a brace, a
-  glob, any letter case). A source only known at run time, a source tree of
-  more than 4096 entries, and an archive Tess cannot list (one read from
-  standard input) are not looked inside; the checks above still apply to
-  where they are written.
+  glob, any letter case). A source only known at run time is not looked
+  inside; the checks above still apply to where it is written. Since round 4,
+  a source tree Tess cannot list in full (more than 4096 entries, or a folder
+  it cannot read) and an archive it cannot list (one read from standard
+  input) ask when the target is only known at run time. Every limit the gate
+  works within fails safe the same way: a glob listing cut short (more than
+  1000 names, more than 20000 entries walked, or a folder it cannot read), a
+  chain of links made in the command longer than 8, or more expansions than
+  it checks one by one asks (Codex: refuses); none is read as "nothing there".
   Since round 4 the gate also asks (Codex: refuses) on shell syntax whose
   meaning it does not model, found by comparing its decisions with real bash
   and zsh (the conformance harness, below): a `(` inside a command's
