@@ -408,3 +408,41 @@ def test_option_allowances_cover_every_word(proj, W, cmd, want):  # noqa: F811
 @pytest.mark.parametrize("cmd", ["cat <> ~-/CLAUDE.md", "echo x >| ~-/CLAUDE.md", "rm -f =/bin/x"])
 def test_word_start_forms_are_unknown_in_every_write_position(proj, W, cmd):  # noqa: F811
     assert _all(proj, cmd) != ALLOW
+
+
+# ------------------------------------------------------------------ comments and the unparseable path
+# bash drops a `# comment` before it reads quotes; the gate's scanner has no
+# comments. Both readings are now checked, and an unparseable command is read
+# without its comments, getting every round-4 rule.
+@pytest.mark.parametrize("cmd,want", [
+    ("echo hi # it's\nprintf x > .claude/settings.local.json # x'", DENY),
+    ("ls # don't\nrm -f CLAUDE.md # it's", DENY),
+    ("cp notes.md ~1/x # it's", ASK),
+    ("setopt globdots; ls # it's", ASK),
+    ("rm -rf (.claude|x) # it's", ASK),
+    ("echo x >! CLAUDE.md # it's", DENY),
+    ("printf x > $'\\.claude/settings.local.json' # it's", ASK),
+    ("rm -f ${=F", ASK),
+    ("echo hi # it's", ALLOW),
+    ("echo hi # it's\necho there # don't", ALLOW),
+    ("echo \"x # y\" > notes5.md # it's", ALLOW),
+    ("cat <<EOF > notes6.md\nit's # fine\nEOF\necho ok", ALLOW),
+    ("echo a#b $# ${#x}", ALLOW)])
+def test_comment_readings_and_the_unparseable_path(proj, W, cmd, want):  # noqa: F811
+    got = _all(proj, cmd)
+    assert got == want if want == ALLOW else got != ALLOW, (cmd, got)
+
+
+@pytest.mark.parametrize("cmd,stripped", [
+    ("echo hi # it's", "echo hi "), ("a # x\nb # y", "a \nb "), ("echo '#' x", "echo '#' x"),
+    ("echo a#b", "echo a#b"), ("cat <<E\n# body\nE\nls # c", "cat <<E\n# body\nE\nls "),
+    ("echo 'unclosed", None)])
+def test_strip_comments_reads_as_the_shell(cmd, stripped):
+    assert G._strip_comments(cmd) == stripped
+
+
+def test_an_error_inside_the_gate_never_allows(proj, W, monkeypatch):  # noqa: F811
+    def boom(*a, **k):
+        raise RuntimeError("model error")
+    monkeypatch.setattr(G, "_check_shell_model", boom)
+    assert _all(proj, "ls") == DENY  # decide() turns any error into a deny

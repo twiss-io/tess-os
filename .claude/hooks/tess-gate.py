@@ -8476,6 +8476,79 @@ def _check_shell_model(events: list, v: "Verdict") -> None:
         prev = (kind, x)
 
 
+def _strip_comments(cmd: str) -> "str | None":
+    """round 4 (parser differential): `cmd` as the shell reads it, without
+    its comments: an unquoted `#` at the start of a word runs to the end of
+    the line. Quotes, `$'...'`, `$(...)`, backticks and here-document bodies
+    are copied as they are. None when the text does not read cleanly that
+    way (the caller then asks). The gate's own scanner has no comments, so a
+    quote inside a comment (`# it's`) could pair with one on a later line and
+    hide the commands between them inside one quoted word."""
+    noop = lambda *a, **k: None  # noqa: E731
+    out, i, n, start, changed, docs = [], 0, len(cmd), True, False, []
+    try:
+        while i < n:
+            c = cmd[i]
+            if c == "#" and start:
+                j = cmd.find("\n", i)
+                i, changed = (n if j < 0 else j), True
+                continue
+            if c == "\n" and docs:
+                out.append(c)
+                i += 1
+                for delim, strip in docs:  # here-document bodies are data
+                    while i < n:
+                        j = cmd.find("\n", i)
+                        j = n if j < 0 else j
+                        line = cmd[i:j]
+                        out.append(cmd[i:j + 1])
+                        i = j + 1
+                        if (line.lstrip("\t") if strip else line) == delim:
+                            break
+                docs, start = [], True
+                continue
+            if c in " \t\r\n;&|()<>":
+                if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                    k = i + (3 if cmd.startswith("<<-", i) else 2)
+                    m = re.match(r"[ \t]*((?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|()<>])+)", cmd[k:])
+                    if m:
+                        docs.append((re.sub(r"[\\'\"]", "", m.group(1)), cmd.startswith("<<-", i)))
+                        out.append(cmd[i:k + m.end()])
+                        i, start = k + m.end(), False
+                        continue
+                out.append(c)
+                i, start = i + 1, True
+                continue
+            start = False
+            if c == "\\":
+                out.append(cmd[i:i + 2])
+                i += 2
+            elif c == "'":
+                j = cmd.find("'", i + 1)
+                if j < 0:
+                    return None
+                out.append(cmd[i:j + 1])
+                i = j + 1
+            elif c == '"':
+                j = _scan_dquote(cmd, i + 1, noop)
+                out.append(cmd[i:j])
+                i = j
+            elif c == "$":
+                j = _scan_dollar(cmd, i, noop, False)
+                out.append(cmd[i:j])
+                i = j
+            elif c == "`":
+                j = _close_backtick(cmd, i)
+                out.append(cmd[i:j + 1])
+                i = j + 1
+            else:
+                out.append(c)
+                i += 1
+    except ValueError:
+        return None
+    return "".join(out) if changed else cmd
+
+
 def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ctx: "_Ctx | None" = None):
     ctx = ctx if ctx is not None else _Ctx(cmd)
     _tick()
@@ -8512,6 +8585,17 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
             v.add(DENY, "the command could not be parsed and prints your GitHub token", "token")
         if re.search(r"\bgh\b[^\n;&|]*\b(repo\s+(edit|create)|api)\b", low):
             v.add(ASK, "the command could not be parsed and may change a repository's visibility")
+        # round 4 (parser differential): the shell drops a `# comment` before
+        # it reads quotes. When removing comments the way it does makes the
+        # command readable, it gets every check (the round-4 shell-model rules
+        # included); otherwise the reader below sees only part of the shell's
+        # meaning, so the command asks whatever that reader finds.
+        stripped = _strip_comments(cmd)
+        if stripped is not None and stripped != cmd:
+            check_command(root, cwd, stripped, v, depth, ctx)
+            return
+        v.add(ASK, "the command could not be parsed as the shell reads it, so Tess cannot check "
+                   "all of it")
         try:
             lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
             lx.whitespace, lx.whitespace_split, lx.commenters = " \t\r", True, "#"
@@ -8527,6 +8611,14 @@ def check_command(root: Path, cwd: str, cmd: str, v: Verdict, depth: int = 0, ct
         for argv in segs:
             _check_segment(root, cwd, argv, v, cmd, depth, ctx)
         return
+    # round 4 (parser differential): the shell's reading without comments is
+    # checked too; both readings count, so neither can hide a command.
+    stripped = _strip_comments(cmd)
+    if stripped is None:
+        v.add(ASK, "Tess reads this command two ways (with and without what may be a `#` "
+                   "comment) and one of them does not parse, so it cannot check what runs")
+    elif stripped != cmd:
+        check_command(root, cwd, stripped, v, depth, _Ctx(stripped, ctx) if ctx is not None else None)
     if any(getattr(w, "ansi_amb", False) for k, x in events if k == "seg" for w in x):
         v.add(ASK, _ANSI_AMB_ASK)
     _check_shell_model(events, v)
