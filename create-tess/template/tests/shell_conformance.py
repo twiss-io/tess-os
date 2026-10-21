@@ -233,7 +233,9 @@ def _stub_dir(base: Path) -> str:
     d.mkdir(exist_ok=True)
     for n in STUBS:
         f = d / n
-        f.write_text("#!/bin/sh\nexit 0\n")
+        # A stub records that it ran: such a run is reported as not fully
+        # exercised (the real program's effect was not tried), never hidden.
+        f.write_text(f'#!/bin/sh\necho {n} >> "{base}/.stubs-called"\nexit 0\n')
         f.chmod(0o755)
     return str(d)
 
@@ -339,7 +341,7 @@ def decisions(gate, cmd: str, s: dict) -> tuple:
 def replay(gate, pristine: dict, templates: list, workdir: Path) -> dict:
     """Run every template the gate allows (in any of the three modes) in each
     shell. Returns {"ran": n, "allowed": n, "failures": [...]}."""
-    failures, ran, allowed = [], 0, 0
+    failures, ran, allowed, stubbed = [], 0, 0, []
     run = workdir / "run"
     for tid, template in templates:
         s = fresh_copy(pristine, run)
@@ -354,12 +356,18 @@ def replay(gate, pristine: dict, templates: list, workdir: Path) -> dict:
             code, err = run_shell(sh, cmd, s)
             ran += 1
             bad = changed_controls(before, snapshot(s["P"]), gate, s)
+            calls = Path(s["base"]) / ".stubs-called"
+            if calls.exists():
+                stubbed.append((tid, sh, sorted(set(calls.read_text().split()))))
+            if code == "timeout":
+                # it may have gone on to change files after the kill: not clean
+                bad = bad or ["<timed out: the run did not finish>"]
             if bad:
-                failures.append({"id": tid, "shell": sh, "decisions": dec, "changed": bad[:8],
+                failures.append({"id": tid, "shell": sh, "decisions": dec, "changed": bad,
                                  "exit": code, "command": template})
     if run.exists():
         _rmtree(run)
-    return {"ran": ran, "allowed": allowed, "failures": failures}
+    return {"ran": ran, "allowed": allowed, "failures": failures, "stubbed": stubbed}
 
 
 def load_harvest(path: str) -> list:
@@ -370,8 +378,8 @@ def load_harvest(path: str) -> list:
         for line in fh:
             r = json.loads(line)
             cmd = r.get("cmd")
-            if not isinstance(cmd, str) or r.get("d") != "allow":
-                continue
+            if not isinstance(cmd, str):
+                continue  # every recorded command is decided again in the sandbox
             for real, ph in sorted(((r.get("root"), "@P"), (r.get("root_raw"), "@P"),
                                     (r.get("home"), "@H"), (r.get("tmp"), "@T"),
                                     (r.get("repo"), "@P")),

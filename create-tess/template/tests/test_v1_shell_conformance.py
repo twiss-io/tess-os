@@ -80,10 +80,16 @@ def gate_env(world, monkeypatch):
 def _report(res: dict) -> str:
     lines = [f"{len(res['failures'])} run(s) changed a protected file "
              f"({res['allowed']} allowed commands, {res['ran']} shell runs):"]
-    for f in res["failures"][:60]:
+    for f in res["failures"]:  # every failure, never a cut-down list
         lines.append(f"  [{f['id']}] {os.path.basename(f['shell'])} {'/'.join(f['decisions'])} "
-                     f"changed {f['changed']}: {f['command'][:160]!r}")
+                     f"changed {f['changed']}: {f['command']!r}")
     return "\n".join(lines)
+
+
+def _stub_note(res: dict) -> str:
+    return (f"{len(res['stubbed'])} run(s) called a stubbed program (network, preferences, agent "
+            "CLIs, package managers); their control files were still checked: "
+            + ", ".join(f"{t}:{os.path.basename(sh)}:{'+'.join(n)}" for t, sh, n in res["stubbed"]))
 
 
 # ------------------------------------------------------------------ always on
@@ -109,8 +115,11 @@ def test_harvest_maps_recorded_folders_to_placeholders(tmp_path):
     rec = {"t": "x", "cmd": "cp -R /r/p/. /t/q && cat /h/f && ls /repo", "d": "allow",
            "root": "/r/p", "root_raw": "/r/p", "home": "/h", "tmp": "/t", "repo": "/repo"}
     f = tmp_path / "c.jsonl"
-    f.write_text(json.dumps(rec) + "\n" + json.dumps({**rec, "d": "ask", "cmd": "rm x"}) + "\n")
-    assert sc.load_harvest(str(f)) == [("harvest:x", "cp -R @P/. @T/q && cat @H/f && ls @P")]
+    f.write_text(json.dumps(rec) + "\n" + json.dumps({**rec, "d": "ask", "cmd": "rm x"}) + "\n"
+                 + json.dumps(rec) + "\n")
+    # every recorded command (whatever it was decided there) is decided again; duplicates once
+    assert sc.load_harvest(str(f)) == [("harvest:x", "cp -R @P/. @T/q && cat @H/f && ls @P"),
+                                       ("harvest:x", "rm x")]
 
 
 # ------------------------------------------------------------------ real shells
@@ -124,6 +133,7 @@ def test_attack_and_everyday_corpus_conforms(gate_env):
     cases = json.loads(CORPUS.read_text(encoding="utf-8"))["cases"]
     res = sc.replay(gate, pristine, sorted(cases.items()), work)
     print(f"\ncurated corpus: {len(cases)} commands, {res['allowed']} allowed, {res['ran']} shell runs")
+    print(_stub_note(res))
     assert not res["failures"], _report(res)
     assert res["ran"] > 0
 
@@ -145,4 +155,27 @@ def test_recorded_test_suite_corpus_conforms(gate_env):
         _cannot(f"no recorded commands in {where}")
     res = sc.replay(gate, pristine, templates, work)
     print(f"\nrecorded corpus: {len(templates)} commands, {res['allowed']} allowed, {res['ran']} shell runs")
+    print(_stub_note(res))
     assert not res["failures"], _report(res)
+
+
+def test_a_run_that_times_out_is_a_failure_never_a_pass(tmp_path, monkeypatch):
+    """A killed run may have gone on to change files: it is reported."""
+    class AllowAll:
+        @staticmethod
+        def decide(data, root, runtime):
+            return None, ""
+
+        @staticmethod
+        def protected_hit(root, cwd, path):
+            return None
+
+    base = Path(tempfile.mkdtemp(prefix="tess-conf-unit-"))
+    try:
+        pristine = sc.build_pristine(base / "pristine")
+        monkeypatch.setattr(sc, "shells", lambda: ["/bin/sh"])
+        monkeypatch.setattr(sc, "run_shell", lambda sh, cmd, s: ("timeout", ""))
+        res = sc.replay(AllowAll, pristine, [("t1", "sleep 100")], base)
+        assert res["failures"] and res["failures"][0]["changed"] == ["<timed out: the run did not finish>"]
+    finally:
+        sc._rmtree(base)
