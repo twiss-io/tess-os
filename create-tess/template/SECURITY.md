@@ -300,11 +300,21 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (Quinn B1), a run-time part that may be empty is carried as a separate piece
   of the path's shape, never as a character inside it, so a folder whose name
   holds any character (control characters included) is matched as itself; an
-  argument holding a NUL character (`$'\x00'`), which the shell cuts short,
-  asks; and
+  argument holding a NUL character, which the shell cuts short, asks; and since
+  the v1.0.x round-4 review of d2a5707 (Quinn X), a `$'...'` string asks
+  whenever it uses an escape that bash and zsh decode differently (an unknown
+  escape such as `\.`, which zsh reads as `.` and bash as `\.`; `\x{..}`; a
+  bare `\x`, which zsh reads as NUL; `\u`, `\U`, `\c`, `\C`, `\M`; a byte
+  above 0x7f). Only `\n`-style letter escapes, `\xHH` and `\NNN` are decoded,
+  as both shells decode them, so a NUL written with any escape either shell
+  decodes (`\0`, `\x00`, `\x{0}`, a bare `\x`) asks. A command Tess cannot
+  parse that holds `$'...'` asks too. And
   the commands that write INTO a folder they are given (`tar -x -C`,
   `unzip -d`, `ditto`, `cp -R`, `rsync`, `mv` into a folder, `find -delete`)
-  follow a link made earlier in the same command, and an extractor's or
+  follow a link made earlier in the same command, in any spelling the shell
+  reaches it by once it exists: the name as `ln` made it, another letter case,
+  or a glob that matches it (round 4, Quinn G2; a respelling that fits several
+  such links asks), and an extractor's or
   `ditto`'s folder only known at run time is checked like any other run-time
   path. As a backstop, a write whose path ENDS in one of Tess's enforcement
   files (`.claude/settings.json`, `.claude/settings.local.json`,
@@ -322,12 +332,38 @@ security reviews; they are stated so nobody relies on a check that is not there.
   inside (`rsync -a x/ "/w/b-$?/"` with `x/.claude` in it, an archive holding
   `.claude/settings.json`); a target written out in full is resolved on disk
   and through the links the command makes instead, so ordinary backups and
-  unpacks to `/tmp` stay allowed. The names are matched as the shell can
+  unpacks to `/tmp` stay allowed. A target spelled with a glob counts as
+  written out in full only through what the glob matches: since round 4
+  (Quinn G1) it is checked at every path it matches on disk (also with `..`
+  steps resolved by name), as well as at the text as written, and a glob that
+  matches nothing yet, in a command that also makes a link, asks. The names are matched as the shell can
   spell them (quoting, a variable set earlier in the command, a brace, a
   glob, any letter case). A source only known at run time, a source tree of
   more than 4096 entries, and an archive Tess cannot list (one read from
   standard input) are not looked inside; the checks above still apply to
   where they are written.
+  Since round 4 the gate also asks (Codex: refuses) on shell syntax whose
+  meaning it does not model, found by comparing its decisions with real bash
+  and zsh (the conformance harness, below): a `(` inside a command's
+  arguments (zsh alternatives and glob qualifiers, which can run code; bash
+  refuses it); a command that changes a shell option affecting expansion
+  (`setopt`, `unsetopt`, `shopt -s`/`-u`, `set -o` other than `errexit`,
+  `nounset`, `xtrace`, `pipefail` and similar, `emulate`, `GLOBIGNORE`); a
+  quoted `$(...)` given inside a subscript to a builtin that evaluates names
+  (`read`, `printf -v`, `let`, `declare`, `unset`, `test`); `hash -p`; and
+  values only the running shell knows (`~-`, `~+N`, `~N`, zsh's `~name`
+  named folders, zsh's `=cmd`, `$=x`, `$~x`). zsh's clobber redirections
+  (`>!`, `>>!`, `&>|`, `>>|`) are read as writes, zsh's `repeat N` and `-`
+  as the command after them, a `**` step (zsh, bash `globstar`) as any number
+  of folders, and bracket expressions as the shells read them (`[^...]` is
+  `[!...]`; `[[:class:]]`, `[[=c=]]` and `[[.c.]]` match any one character).
+  Real-shell conformance (round 4): `tests/test_v1_shell_conformance.py`
+  runs every command the gate allows from its attack corpus and from the
+  commands the test suite hands it in real bash and zsh, inside a disposable
+  sandbox jailed by `sandbox-exec` (macOS) or `bwrap` (Linux), and fails if a
+  protected control file changes. It runs in CI on both systems. It finds
+  divergences in the commands it is given; a spelling no corpus holds can
+  still differ.
   This is a check when the gate runs, not an OS boundary: a link made after it
   runs, or by a program the gate has no rule for (an interpreter's
   `os.symlink` written to a file, a build tool, a `git checkout` of a tracked
