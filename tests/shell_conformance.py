@@ -290,13 +290,135 @@ def home_controlled(rel: str, gate, s: dict) -> bool:
 
 def changed_controls(before: dict, after: dict, gate, s: dict) -> list:
     keys = set(before) | set(after)
-    return sorted(k for k in keys if before.get(k) != after.get(k) and controlled(k, gate, s))
+    return sorted(k for k in keys if before.get(k) != after.get(k) and controlled(k, gate, s)
+                  and not _true_snapshot(k, before, after, s.get("P")))
 
 
-def changed_home_controls(before: dict, after: dict, gate, s: dict) -> list:
+SNAPSHOTS = ".tess/snapshots/"
+
+
+def _true_snapshot(rel: str, before: dict, after: dict, root: "str | None" = None) -> bool:
+    """A new entry in a new `.tess/snapshots/<id>/` that is an exact copy of
+    the project file it names as it was before the run: what `tessctl`
+    itself writes before a restore. Anything else there (a changed or
+    removed snapshot, or content that was not in the project) counts, since
+    `rollback` would restore it (round 4b, Reid H2)."""
+    if rel == SNAPSHOTS.rstrip("/"):
+        return before.get(rel) is None and (after.get(rel) or ("",))[0] == "dir"
+    if not rel.startswith(SNAPSHOTS) or before.get(rel) is not None or rel not in after:
+        return False
+    parts = rel[len(SNAPSHOTS):].split("/", 1)
+    if any(k.startswith(SNAPSHOTS + parts[0] + "/") or k == SNAPSHOTS + parts[0] for k in before):
+        return False  # an existing snapshot folder changed
+    new = after[rel]
+    if len(parts) == 1 or new[0] == "dir":
+        return new[0] == "dir"
+    if parts[1] == "manifest.json":
+        return root is not None and _true_manifest(os.path.join(root, rel), before)
+    old = before.get(parts[1])
+    return old is not None and old[0] == new[0] and old[-1] == new[-1]
+
+
+def _true_manifest(path: str, before: dict) -> bool:
+    """tessctl's snapshot manifest, every entry of which matches the project
+    as it was before the run (so a rollback from it restores, or deletes,
+    nothing the run did not)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            man = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(man, dict):
+        return False
+    for rel, e in man.items():
+        if not isinstance(e, dict):
+            return False
+        if e.get("out_of_tree"):
+            continue
+        old = before.get(rel)
+        if not e.get("existed"):
+            if old is not None:
+                return False
+        elif e.get("is_symlink"):
+            if old != ("link", e.get("link_target")):
+                return False
+        elif e.get("is_dir"):
+            if old is None or old[0] != "dir":
+                return False
+        elif old is None or old[0] != "file" or e.get("sha256") != "sha256:" + old[-1]:
+            return False
+    return True
+
+
+def changed_home_controls(before: dict, after: dict, gate, s: dict,
+                          git_before: "dict | None" = None) -> list:
     keys = set(before) | set(after)
     return sorted("~/" + k for k in keys
-                  if before.get(k) != after.get(k) and home_controlled(k, gate, s))
+                  if before.get(k) != after.get(k) and home_controlled(k, gate, s)
+                  and not (k in HOME_GIT_CONFIGS and git_before is not None
+                           and _sanctioned_git_config(gate, s, k, git_before.get(k))))
+
+
+# The user-level git configs. The gate lets an agent set an ordinary key in
+# them with `git config --global <key> <value>` (and refuses a direct write
+# of the file), so a replay counts a change there unless every key it adds,
+# changes or removes is one the gate itself allows through that route.
+HOME_GIT_CONFIGS = (".gitconfig", ".config/git/config")
+
+
+def git_config_texts(s: dict) -> dict:
+    out = {}
+    for rel in HOME_GIT_CONFIGS:
+        try:
+            out[rel] = Path(s["H"], rel).read_bytes()
+        except OSError:
+            out[rel] = None
+    return out
+
+
+def _config_entries(path: str, s: dict) -> "list | None":
+    """`key=value` lines of a git config file by git's own parser, or None
+    when git cannot read it (then the change counts)."""
+    if not os.path.exists(path):
+        return []
+    try:
+        res = subprocess.run(["git", "config", "--file", path, "--list"], capture_output=True,
+                             timeout=10, env=_git_env(Path(s["H"])), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout.decode("utf-8", "replace").splitlines()
+
+
+def _sanctioned_git_config(gate, s: dict, rel: str, before: "bytes | None") -> bool:
+    """Every key the run added, changed or removed in the home git config
+    `rel` is one the gate allows to set (or unset) with `git config --global`
+    in all three modes; anything else, or a file git cannot read, counts."""
+    import shlex
+    from collections import Counter
+    old_path = os.path.join(s["T"], ".conformance-config-before")
+    if before is None:
+        old: "list | None" = []
+    else:
+        Path(old_path).write_bytes(before)
+        old = _config_entries(old_path, s)
+        os.unlink(old_path)
+    new = _config_entries(os.path.join(s["H"], rel), s)
+    if old is None or new is None:
+        return False
+    cmds, set_keys = [], set()
+    for line in (Counter(new) - Counter(old)):
+        key, _, val = line.partition("=")
+        set_keys.add(key)
+        cmds.append(f"git config --global {shlex.quote(key)} {shlex.quote(val)}")
+    for line in (Counter(old) - Counter(new)):
+        if line.partition("=")[0] not in set_keys:  # a changed value is one set
+            cmds.append(f"git config --global --unset {shlex.quote(line.partition('=')[0])}")
+    try:
+        return all(d == "allow" for c in cmds for d in decisions(gate, c, s))
+    except Exception:  # noqa: BLE001 - a model error is a reason to count it
+        return False
 
 
 # ------------------------------------------------------------------ jail
@@ -431,11 +553,11 @@ def replay(gate, pristine: dict, templates: list, workdir: Path) -> dict:
         allowed += 1
         for sh in shells():
             s = fresh_copy(pristine, run)
-            before, hbefore = snapshot(s["P"]), snapshot(s["H"])
+            before, hbefore, gbefore = snapshot(s["P"]), snapshot(s["H"]), git_config_texts(s)
             code, err = run_shell(sh, cmd, s)
             ran += 1
             bad = changed_controls(before, snapshot(s["P"]), gate, s) + \
-                changed_home_controls(hbefore, snapshot(s["H"]), gate, s)
+                changed_home_controls(hbefore, snapshot(s["H"]), gate, s, gbefore)
             calls = Path(s["base"]) / ".stubs-called"
             if calls.exists():
                 stubbed.append((tid, sh, sorted(set(calls.read_text().split()))))
