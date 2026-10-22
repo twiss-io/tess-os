@@ -89,6 +89,19 @@ jobs:
             exit 1
           fi
 
+      # E8: the gate's hook tests share fake OS homes and anchors; a parallel run
+      # once hid a "no decision" behind a test-isolation fault. Run every
+      # gate-loading test file under pytest-xdist too (the step above runs them
+      # serially), and the OS-home consistency test with two workers.
+      - name: Gate tests under pytest-xdist (E8)
+        run: |
+          set -euo pipefail
+          files="$( { grep -lE 'tess-gate\.py|run-pinned\.py|from test_codex_gate import|from test_v1_claude_gate_parity import' tests/*.py; \
+                     printf '%s\n' tests/test_v1_gate_git_routes.py tests/test_v1_b1_hook_and_anchor_display.py tests/test_e8_fail_closed.py; } | sort -u )"
+          echo "$files" | wc -l
+          python -m pytest -q -rs -p no:cacheprovider -n 4 $files
+          python -m pytest -q -rs -p no:cacheprovider -n 2 tests/test_e8_suite_os_home_consistency.py
+
       - name: Upload the recorded gate corpus
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

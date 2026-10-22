@@ -33,9 +33,30 @@ from test_v1_r3_gate_rollback import _claude, _codex, _fill, repo  # noqa: F401 
 
 pytestmark = pytest.mark.skipif(not HAS_GIT, reason="needs git")
 
-# the OS user record's home, as the gate resolves it (in this suite: the fake home tests/conftest.py sets up)
-HOME_ANCHOR = os.path.join(__import__("pwd").getpwuid(os.getuid()).pw_dir, ".config", "tess", "projects", "x",
-                           "anchor.json")
+# the OS user record's home, as the gate resolves it (in this suite: the fake home tests/conftest.py sets up).
+# E8: resolved when a test runs, never at import, and never in a test id: under pytest-xdist each worker has
+# its own home, and an id that names it differs between workers (xdist then refuses to run).
+def _home_anchor() -> str:
+    return os.path.join(__import__("pwd").getpwuid(os.getuid()).pw_dir, ".config", "tess", "projects", "x",
+                        "anchor.json")
+
+
+def _hook_os_home(root) -> str:
+    """The OS home the Codex hook's interpreter sees: `python3 -I` with the scrubbed env of
+    test_codex_gate._hook, which takes what the OS user record says (the suite's .pth fake)."""
+    return subprocess.run(["python3", "-I", "-c", "import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)"],
+                          capture_output=True, text=True, check=True,
+                          env={"HOME": str(root / "home"), "PATH": os.environ["PATH"]}).stdout.strip()
+
+
+def _assert_same_os_home(root, anchor: str) -> None:
+    """E8 precondition: the anchor this test names must be under the key directory the hooks resolve.
+    A mismatch is a test-isolation fault; it must never read as "the gate allowed it"."""
+    hook_home = _hook_os_home(root)
+    assert anchor.startswith(os.path.join(hook_home, ".config", "tess") + os.sep), (
+        "test isolation error (E8): this process and the hook's interpreter see different OS homes",
+        anchor, hook_home)
+
 
 DENY_BOTH = [
     "git replace HEAD evil",
@@ -74,7 +95,7 @@ DENY_BOTH = [
     "pax -r < x.pax",
     "ditto evil_dir .",
     "ditto -x -k evil.zip .",
-    f"echo x > {HOME_ANCHOR}",
+    "echo x > {anchor}",  # E8: filled per test; the per-worker home must not be in the test id
     "rm -rf ~/.config/tess/projects",
     "mkdir -p ~/.config/tess/projects/x && cp a.json ~/.config/tess/projects/x/anchor.json",
     "./tessctl anchor accept",
@@ -143,6 +164,10 @@ def routes(repo):  # noqa: F811
 @pytest.mark.parametrize("cmd", DENY_BOTH)
 def test_denied_in_both_runtimes(routes, cmd):
     root, old = routes
+    if "{anchor}" in cmd:
+        anchor = _home_anchor()
+        _assert_same_os_home(root, anchor)
+        cmd = cmd.replace("{anchor}", anchor)
     cmd = _fill(root, old, cmd)
     assert _claude(root, cmd) == "deny", cmd
     assert _codex(root, cmd) == "deny", cmd
@@ -183,6 +208,10 @@ def test_edit_tools_cannot_write_the_anchor(routes):
     root, _ = routes
     import json
     from test_v1_claude_gate_parity import _gate_hook
+    HOME_ANCHOR = _home_anchor()
+    # E8: the anchor must be the one the Codex hook's interpreter sees (it runs with a scrubbed env),
+    # or a "no decision" here is a test-isolation fault, not a gate verdict.
+    _assert_same_os_home(root, HOME_ANCHOR)
     for tool, tin in (("Write", {"file_path": HOME_ANCHOR, "content": "{}"}),
                       ("Edit", {"file_path": HOME_ANCHOR, "old_string": "a", "new_string": "b"})):
         payload = {"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(root),

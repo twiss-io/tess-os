@@ -352,7 +352,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   checked, so a quote inside a comment (`# it's`) cannot pair with one on a
   later line and hide the commands between them. A command that does not
   parse is checked without its comments with every rule above; when it still
-  does not parse, it asks. An error inside the gate is a deny.
+  does not parse, it asks. An error inside the gate is a deny, in Claude Code
+  too (a deny, not an ask), and so is a stop signal (SIGTERM, SIGHUP, SIGINT).
   Since round 4 the gate also asks (Codex: refuses) on shell syntax whose
   meaning it does not model, found by comparing its decisions with real bash
   and zsh (the conformance harness, below): a `(` inside a command's
@@ -416,7 +417,12 @@ security reviews; they are stated so nobody relies on a check that is not there.
   read the way Codex reads them (lines split on newlines, trimmed of every
   Unicode space). The whole check has a 40-second budget (inside
   the 120-second hook timeout, after up to 60 seconds of the launcher's own
-  check); a call it cannot finish in time asks, or is refused in Codex.
+  check); a call it cannot finish in time asks, or is refused in Codex. The
+  budget is checked inside every loop whose length grows with the input, so a
+  very large edit or MCP payload ends in that ask too. Behind it, the launcher
+  (`run-pinned.py --on-fail block`) stops the whole hook at 100 seconds and
+  turns a gate that crashes, is killed or exits with any status but 0 or 2 into
+  a block (exit 2), so the hook never ends without a decision (E8).
 - **The gate's fail-safe: what it cannot read, it never allows.** Since v1.0.0
   (round 3) this rule is stated once and enforced on every program the gate has
   rules for (git, gh, tessctl, the file writers and editors, find, sed, awk,
@@ -555,8 +561,14 @@ security reviews; they are stated so nobody relies on a check that is not there.
   call's own `workdir` is used when a payload carries one, and otherwise relative
   paths are judged from the session folder, so a relative write in an
   `exec_command` whose `workdir` is a protected folder is not seen by the gate (the
-  git hooks and the ship gate still are). A hook that times out or
-  crashes in the host fails open for that call. Details:
+  git hooks and the ship gate still are). Both hosts treat a hook that times
+  out or crashes as no decision and run the call; the launcher therefore ends
+  every gate run in a decision before the 120-second host timeout (see the
+  budget above), and Claude Code 2.1.295 or later also blocks on a failed gate
+  hook (`"onFailure": "block"`; older versions ignore the key and still run
+  the hook). What remains is the launcher process itself being killed or the
+  host stalling before it starts: Claude Code 2.1.295+ blocks that call,
+  Codex and older Claude Code versions run it. Details:
   [adapters/CONFORMANCE.md](adapters/CONFORMANCE.md), Codex row.
 - **Tess's safety files are anchored outside the repository; the anchor is not an
   OS boundary.** The gate decides from command text, and its pins
