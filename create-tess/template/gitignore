@@ -128,6 +128,10 @@ channels/
 .tess/trace/runs/*
 !.tess/trace/runs/.gitkeep
 .tess/update.lock
+# Hook heartbeat (scripts/brain/brainlib/hooksalive.py): which sessions Tess's
+# hooks ran in; read by `scripts/tess hooks-status`. Machine-local, never shared.
+.tess/state/hooks-alive.json
+.tess/state/hooks-alive.json.*.tmp
 
 # ─────────────────────────────────────────────────────────────
 # Phase 0.1 — cross-harness shared-brain state root (docs/STATE_LAYER.md).
@@ -244,3 +248,7 @@ brain/life/areas/money/*
 .obsidian/workspace.json
 .obsidian/workspaces.json
 # <<< tess-brain <<<
+
+# create-tess: the release proof publish-npm.yml builds from the signed tag
+# (create-tess/scripts/build-release-proof.py); generated, never committed.
+/create-tess/release-proof.json

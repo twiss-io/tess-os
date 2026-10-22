@@ -38,7 +38,8 @@ import pytest
 from conftest import REPO_ROOT
 
 CONFORMANCE = REPO_ROOT / "adapters" / "CONFORMANCE.md"
-README = REPO_ROOT / "README.md"
+# v1.0 (B4): the runtime table moved from README.md to the technical overview.
+README = REPO_ROOT / "docs" / "TECHNICAL_OVERVIEW.md"
 STATUS = REPO_ROOT / "docs" / "STATUS.md"
 
 _CONF_HEADER = ["Runtime", "Tess target", "Level", "How it reads Tess", "Why this level (limits)", "Docs"]

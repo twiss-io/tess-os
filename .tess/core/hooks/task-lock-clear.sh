@@ -13,7 +13,11 @@
 # STALE-LOCK SAFETY: locks older than 4 hours (240 min) are stale — reaped
 # here on every invocation and IGNORED by dispatch-guard.sh.
 
-LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
+# Per-user lock dir (v0.2.1, 2026-09-29 security review): the old shared
+# /tmp/tess-dispatch-locks was world-writable, so any local user or process
+# could plant a lock that silenced dispatch-guard. The dir is now private to
+# this user (mode 700). TESS_LOCK_DIR still overrides (tests, custom setups).
+LOCK_DIR="${TESS_LOCK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tess/dispatch-locks}"
 STALE_MIN=240
 
 input="$(cat)"

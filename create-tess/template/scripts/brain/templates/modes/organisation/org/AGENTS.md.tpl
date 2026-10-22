@@ -40,7 +40,7 @@ verify_via: operator
 - A seat has exactly one holder; decisions follow the seat's decision rights.
 - People files hold work facts only: never pay, performance, health, family or government IDs.
 - Other people's words are recorded as facts unless they are a principal in `brain/brain.json`.
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 - Secrets, government IDs, pay, health or HR records and contract files never go here: write a pointer to where they live.
 
 ## Decisions (latest 5 accepted)

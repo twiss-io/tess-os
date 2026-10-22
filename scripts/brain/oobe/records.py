@@ -112,6 +112,22 @@ def mode_decision(plan: scaffold.Plan, brain: Dict[str, Any], ctx: Dict[str, Any
     return rid
 
 
+def seal_created(root: Path, rels: List[str]) -> None:
+    """Seal the decision files onboarding just wrote (brainlib/records.py seals: a record file no seal
+    vouches for is only ever `proposed`). Skipped when ws-learn is not installed."""
+    try:
+        from brainlib import records as learn_records
+        from brainlib.config import Config
+    except ImportError:
+        return
+    try:
+        cfg = Config(root)
+        for rel in rels:
+            learn_records.seal_file(cfg, Path(root) / rel)
+    except Exception as exc:  # noqa: BLE001 - logged; the record then waits for review instead
+        state.log_error(root, "sealing onboarding records failed: %s" % exc, "apply")
+
+
 def probe_seed(plan: scaffold.Plan, brain: Dict[str, Any], rid: Optional[str]) -> None:
     ents = entity_ids(plan.root, brain)
     mode_entry = answers.answered(brain).get("mode") or {}

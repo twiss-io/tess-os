@@ -1,0 +1,8 @@
+# Twiss Release Signing Key (SSH): PUBLIC key, OpenSSH allowed_signers format.
+# tessctl update/self-update and the ship gate use it to check the SSH release
+# signature inside each release tag (ssh-keygen -Y verify, namespace
+# "tess-release"), so updates verify on machines without gpg. Its fingerprint
+# is pinned in .tess/tess.lock framework.trusted_ssh_key_fingerprint:
+#   SHA256:2G0Xp5X+54NdmGbIOBhWicNlhU/Law9WpWisuAitBoI
+# Exactly one entry. See SECURITY.md ("Release signatures").
+twiss-release namespaces="tess-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN/Sl88mgPwBkzhalPjJcNNkw8qgMQNV0Ls6bzNs8zDS

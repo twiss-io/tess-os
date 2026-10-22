@@ -267,7 +267,7 @@ def test_candidate_key_rollback_cannot_bypass_base_key_bytes_or_revocation(engin
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    git("init")
+    git("init", "-b", "main")
     key_path = repo / ".tess" / "keys" / "verifiers" / "reid.asc"
     key_path.parent.mkdir(parents=True)
     baseline_bytes = b"BASE public key with revocation material\n"
@@ -327,7 +327,7 @@ def test_baseline_key_loader_rejects_traversal_and_symlink_entries(engine, tmp_p
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    git("init")
+    git("init", "-b", "main")
     target = repo / "trusted.asc"
     target.write_bytes(b"not a key; no crypto is exercised\n")
     key_path = repo / ".tess" / "keys" / "verifiers" / "reid.asc"
@@ -401,7 +401,7 @@ def test_candidate_signoff_key_rollback_cannot_bypass_base_bytes_or_revocation(e
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    git("init")
+    git("init", "-b", "main")
     key_path = repo / ".tess" / "keys" / "signoffs" / "xavier.asc"
     key_path.parent.mkdir(parents=True)
     baseline_bytes = b"BASE signoff public key with revocation material\n"
@@ -461,7 +461,7 @@ def test_signoff_key_loader_rejects_missing_base_blob(engine, tmp_path):
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    git("init")
+    git("init", "-b", "main")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "empty base")
     base = git("rev-parse", "HEAD")
     policy = _signoff_policy({

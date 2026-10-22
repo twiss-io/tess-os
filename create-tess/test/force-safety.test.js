@@ -32,6 +32,7 @@ import {
   backupDirs,
   brokenTemplate,
 } from './force-helpers.js';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
 const NOT_SUPPORTED = `not supported in create-tess ${PKG_VERSION}`;
 

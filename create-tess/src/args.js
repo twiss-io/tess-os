@@ -27,12 +27,12 @@
 export const DEFAULTS = {
   operator: 'Operator',
   conductor: 'Tess',
-  vibe: 'rpg',
+  vibe: 'plain',
   path: 'founders',
   pathway: 'chief-of-staff',
 };
 
-export const VIBES = ['rpg', 'command', 'studio'];
+export const VIBES = ['plain', 'rpg', 'command', 'studio'];
 export const PATHS = ['founders', 'builders', 'operators'];
 export const PATHWAYS = [
   'chief-of-staff',
@@ -54,6 +54,8 @@ const VALUE_ALIASES = {
   '--template-ref': 'templateRef',
   '--target': 'target',
   '--dir': 'target',
+  '--mode': 'mode',
+  '--preset': 'preset',
 };
 
 const BOOL_ALIASES = {
@@ -64,8 +66,11 @@ const BOOL_ALIASES = {
   '--no-verify': 'noVerify',
   '--no-git-init': 'noGitInit',
   '--no-gate-hooks': 'noGateHooks',
+  '--no-onboarding': 'noOnboarding',
   '--help': 'help',
   '-h': 'help',
+  '--version': 'version',
+  '-v': 'version',
 };
 
 export function parseArgs(argv) {
@@ -76,8 +81,13 @@ export function parseArgs(argv) {
     noVerify: false,
     noGitInit: false,
     noGateHooks: false,
+    noOnboarding: false,
     help: false,
     templateSource: process.env.TESS_TEMPLATE_SOURCE || null,
+    // v1.0 audit: 'flag' when --template-source was typed on the command line,
+    // 'env' when it only came from TESS_TEMPLATE_SOURCE (index.js refuses a
+    // local folder from the environment alone).
+    templateSourceFrom: process.env.TESS_TEMPLATE_SOURCE ? 'env' : null,
     templateRef: process.env.TESS_TEMPLATE_REF || null,
     target: null,
   };
@@ -116,6 +126,7 @@ export function parseArgs(argv) {
         val = argv[++i];
       }
       opts[key] = val;
+      if (key === 'templateSource') opts.templateSourceFrom = 'flag';
       continue;
     }
     if (token.startsWith('-')) {
@@ -137,14 +148,15 @@ export function isNonInteractive(opts) {
 }
 
 export const HELP = `
-create-tess — the gamified first-run wizard for Tess OS
+create-tess — the setup wizard for Tess OS
 
 USAGE
   npm create tess [target] [options]
   npx create-tess [target] [options]
 
 INTERACTIVE
-  Run with no flags inside a TTY for the full gamified journey.
+  Run with no flags inside a terminal: a few plain questions, then setup.
+  Prefer a themed setup? Add --vibe rpg, --vibe command or --vibe studio.
 
 NON-INTERACTIVE (CI / power users)
   npm create tess my-os -- --yes \\
@@ -154,11 +166,18 @@ NON-INTERACTIVE (CI / power users)
 OPTIONS
   --operator, --name <text>      operator name (default: Operator)
   --conductor, --assistant <t>   conductor name (default: Tess)
-  --vibe <rpg|command|studio>    narrative skin (default: rpg)
-  --path <founders|builders|operators>   starter path: same ten roles on every path,
+  --vibe <plain|rpg|command|studio>  wording of the setup (default: plain;
+                                 the others are opt-in themes)
+  --path <founders|builders|operators>   starter path: same crew of 9 on every path,
                                  only the suggested lenses differ (default: founders)
   --pathway <key>                conductor persona (default: chief-of-staff)
                                  chief-of-staff|co-founder|strategist|guide|operator
+  --mode <personal|agency|organisation>  who this is for: just you, your business
+                                 with clients, or a team (default: personal)
+  --preset <none|solo-consultant|startup>  optional starter kit: solo-consultant
+                                 (agency only) or startup (organisation only)
+  --no-onboarding                do not set up the second brain now; Tess
+                                 offers it the first time you open the folder
   --target, --dir <path>         target directory (default: cwd)
   --template-source <url|path>   OPT-IN: fetch the Tess OS template from this
                                  git URL or local path instead of the copy
@@ -180,4 +199,5 @@ OPTIONS
   --no-gate-hooks                skip tessctl gate install-hooks (default: on)
   --yes, -y                      run fully unattended with defaults for unset flags
   --help, -h                     show this help
+  --version, -v                  print the create-tess version
 `;

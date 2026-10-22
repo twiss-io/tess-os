@@ -13,11 +13,33 @@ Trademarks: "Tess", "Twiss", "Tess OS", and "Twiss Vault" are trademarks of
 Twiss — not licensed by Apache-2.0. See TRADEMARK.md.
 
 ================================================================================
+Vendored third-party code (copied into this repository, unmodified)
+================================================================================
+
+  security-audit skill  (Cloudflare)
+    Cloudflare's open-source security-audit method: the skill instructions,
+    report schema and the two JSON validators (validate-findings.cjs,
+    validate-coverage-ledger.cjs) with their tests. Vendored byte for byte at
+    upstream commit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 (2026-09-14).
+    Location: .tess/core/skills/security-audit/ (rendered to
+    .claude/skills/security-audit/ and .agents/skills/security-audit/).
+    Copyright (c) 2025-2026 Cloudflare, Inc.
+    License: MIT (full text: .tess/core/skills/security-audit/LICENSE).
+    Project: https://github.com/cloudflare/security-audit-skill
+    Provenance and update steps: .tess/core/skills/security-audit/UPSTREAM.md.
+
+  PyYAML 6.0.3  (pure-Python lib/yaml, fallback only)
+    Used by the engine to read tess.lock / tess.manifest.json when the system
+    has no PyYAML installed. Location: .tess/vendor/yaml/ (see
+    .tess/vendor/README.md). License: MIT (.tess/vendor/yaml/LICENSE).
+    Project: https://pyyaml.org/
+
+================================================================================
 Third-party dependencies (NOT vendored — installed by the operator)
 ================================================================================
 
-Tess OS ships ZERO third-party code in this repository. The components below are
-external dependencies resolved at install/run time, not copied into the tree.
+The components below are external dependencies resolved at install/run time,
+not copied into the tree.
 
 --- Vault crypto backend (Python `tessctl vault`) ---
 
@@ -36,7 +58,8 @@ external dependencies resolved at install/run time, not copied into the tree.
     Project: https://github.com/FiloSottile/age
 
   PyYAML
-    Used by the engine to read tess.lock / tess.manifest.json.
+    Used by the engine to read tess.lock / tess.manifest.json when installed
+    (the vendored copy above is the fallback).
     License: MIT.
     Project: https://pyyaml.org/
 

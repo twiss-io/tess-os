@@ -131,7 +131,7 @@ def _self_verify(tmp_chain_path: Path, trust_entries: list[tuple[str, str, str]]
     same way examples/receipt-demo/build_demo.py already runs it, and the
     same way any external party would. Raises EmitRefused unless the
     result is chain_intact: true."""
-    args = [sys.executable, str(RECEIPT_VERIFY_CLI), "verify-chain", str(tmp_chain_path), "--json"]
+    args = [sys.executable, "-I", "-B", str(RECEIPT_VERIFY_CLI), "verify-chain", str(tmp_chain_path), "--json"]
     for name, fingerprint, keyfile in trust_entries:
         args += ["--trust", name, fingerprint, keyfile]
     result = subprocess.run(args, capture_output=True, text=True)

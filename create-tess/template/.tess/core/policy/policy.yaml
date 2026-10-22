@@ -114,7 +114,11 @@ policy:
         wrapper: the workflow gates its trigger FILE but was not gating the
         CODE that file invokes) and the hard-floor SIGN-OFF ARTIFACT
         DIRECTORY (.tess/gate/signoffs/**: a sign-off used to be an
-        unauthenticated JSON file any agent could write). Silently weakening
+        unauthenticated JSON file any agent could write), PLUS — v0.2.1
+        (2026-09-29 review, CRITICAL) — the pristine core mirror
+        (.tess/core/**) and its pin file (.tess/tess.lock): together they are
+        what doctor/verify compare the live security doctrine against, so an
+        unreviewed edit to both could re-bless tampered doctrine. Silently weakening
         any of these is exactly as consequential as an unreviewed production
         change — treat edits here as prod_touching.
       globs:
@@ -131,6 +135,63 @@ policy:
         - .tess/bin/**
         - tessctl
         - .tess/gate/signoffs/**
+        # v1.0.1 (GPT-6 review round 2, HIGH): operator approvals of a
+        # release's rule changes. The gate accepts one without a verdict only
+        # when its HMAC verifies under the operator's own key (tessctl).
+        - .tess/gate/policy-approvals/**
+        - .tess/core/**
+        - .tess/tess.lock
+        # v1.0 final review round 3 (C1): the install's manifest decides what
+        # tessctl may write, what doctor/verify/update inspect (owned_globs,
+        # never_touch, render_targets.enabled) and what the publish-clean
+        # gate exempts, so it is enforcement configuration. The gate denies
+        # assistant edits and the enforcement anchor records it.
+        - tess.manifest.json
+        # v0.2.1 (2026-09-29 security review, MEDIUM "hooks run agent-editable
+        # code"): everything a Claude Code hook executes or is wired by. Hooks
+        # run automatically on every session/prompt/tool call, so an edit here
+        # changes what runs without anyone invoking it — same weight as an
+        # engine edit. run-pinned.py refuses to run a copy that no longer
+        # matches tess.lock; this glob gates re-pinning it.
+        - .claude/hooks/**
+        - .tess/core/hooks/**
+        - .claude/settings.json
+        - .tess/core/settings-core.json
+        - .tess/core/pinned-scripts.sha256
+        - scripts/brain/**
+        # v1.0.1 (2026-09-29 Codex review, HIGH): third-party code the engine
+        # imports from the working tree (the vendored PyYAML). The engine also
+        # refuses to load it unless every file matches hashes embedded in
+        # .tess/bin/tessctl, and tess.lock pins each file.
+        - .tess/vendor/**
+        # v1.0 security review round 2 (M-5): the maintainer release tooling.
+        # sign-release-tag.sh runs while the release signing keys are unlocked,
+        # so an unreviewed edit could sign attacker-chosen content. CODEOWNERS
+        # decides who must review these paths, so it is gated the same way.
+        - scripts/release/**
+        - .github/CODEOWNERS
+        # v1.0 security audit: the release workflows' helper scripts (run by
+        # release.yml, and by publish-npm.yml inside the job holding
+        # id-token: write), gated like the workflows that call them.
+        - .github/scripts/**
+        # v1.0 security audit (integration): tessctl's working folders, read
+        # back as trusted input by update (.tess/staging), approve and resolve
+        # (.tess/quarantine, .tess/conflicts) and rollback (.tess/snapshots).
+        - .tess/staging/**
+        - .tess/quarantine/**
+        - .tess/conflicts/**
+        - .tess/snapshots/**
+        # v1.0 security audit: the boot launcher. Every session runs
+        # `python3 scripts/tess hooks-status` first, with no prompt (settings
+        # allow-list), and that puts scripts/ first on sys.path, so a new
+        # top-level module there (scripts/json.py) would run in its place.
+        - scripts/tess
+        - scripts/*.py
+        - scripts/*.pyc
+        - scripts/*.pyw
+        - scripts/*.so
+        - scripts/*.pth
+        - scripts/*/__init__.py
       classification: [prod_touching]
       require_verdict: true
       allowed_verifiers: [Reid, Cyra]
@@ -236,12 +297,21 @@ policy:
         key in signoff_keys below — an unsigned/hand-authored/forged
         sign-off can no longer clear this floor (see signoff_keys' own
         custody-boundary comment).
+        v1.0.0: committed `.env` TEMPLATES (`.env.example`,
+        `.env.<name>.example`) are excluded. They hold placeholder names, no
+        values, and are public by design; requiring a signed sign-off for
+        every edit made any release that touched one unmergeable. Real
+        secret files (`.env`, `.env.local`, `.env.production`, ...), the age
+        identities and everything under `secrets/` stay covered.
       globs:
         - "**/*.env"
         - "**/*.env.*"
         - "**/vault.age"
         - "**/*identity.age"
         - "**/secrets/**"
+      exclude_globs:
+        - "**/*.env.example"
+        - "**/*.env.*.example"
 
     - id: money-movement
       category: money_movement

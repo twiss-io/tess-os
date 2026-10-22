@@ -9,7 +9,7 @@ The roster is the same for every use case: **{{ASSISTANT_NAME}} (the conductor, 
 | Researcher | `leah` | Read-only plus web; cites every source |
 | Code reviewer | `reid` | Read-only; mandatory verifier for diffs |
 | QA | `quinn` | Runs tests; no source edits, no push/merge |
-| Security + approval signer | `cyra` | Read-only review; signs verdicts via `tessctl verdict sign` |
+| Security + approval signer | `cyra` | Read-only review; drafts the verdict, which the operator signs at their own terminal (`tessctl verdict sign`) |
 | Scribe | `clio` | Writes only to brain paths; every claim links to its source |
 | Release / devops | `vega` | Push, tag, publish — only behind the gate |
 | Designer | `iris` | Frontend and design, design skills attached |

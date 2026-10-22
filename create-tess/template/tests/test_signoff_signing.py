@@ -74,7 +74,7 @@ def _git(root, *args, check=True, input_text=None):
 
 
 def _init_repo(root):
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")
@@ -97,7 +97,23 @@ def _base_signoff(rule_id="money", category="money_movement", authorized_by="Xav
         "authorized_by": authorized_by,
         "rationale": "Reviewed out-of-band; approved.",
         "authorized_at": "2026-07-08T00:00:00Z",
+        # v1.0 audit: a sign-off names the exact content it approves.
+        "artifact_hashes": {"payments/charge.py": "1" * 40},
     }
+
+
+def _sign_at_terminal(engine, monkeypatch, root, signoff_path, key, name="Xavier"):
+    """`tessctl gate signoff sign` as a person at a terminal would run it
+    (v1.0 audit: a terminal and a typed confirmation). The test keys have no
+    passphrase, which signing now refuses; that refusal is tested in
+    tests/test_v1_audit_policy_vault.py, so here the key counts as protected."""
+    import argparse
+    import io
+    monkeypatch.setattr(engine, "_signer_is_terminal", lambda: True)
+    monkeypatch.setattr(engine, "_signer_key_protection", lambda grip, home: "P")
+    monkeypatch.setattr(engine.sys, "stdin", io.StringIO(f"sign as {name}\n"))
+    engine._cmd_gate_signoff_sign(argparse.Namespace(
+        file=str(signoff_path), key_id=key.fpr, gnupg_home=str(key.home), output=None), root)
 
 
 def _policy_dict(hard_floor_globs, signoff_keys):
@@ -238,7 +254,7 @@ def test_editing_the_engine_with_no_verdict_is_blocked_on_real_shipped_policy(si
 # CLI round-trip: `tessctl gate signoff sign` / `tessctl gate signoff verify`
 # ---------------------------------------------------------------------------
 
-def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys):
+def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys, engine, monkeypatch, capsys):
     root = project.root
     shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
     (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
@@ -251,12 +267,8 @@ def test_cli_sign_then_verify_round_trip(project, run_cli, verifier_gpg_keys):
     signoff_path.parent.mkdir(parents=True)
     signoff_path.write_text(json.dumps(_base_signoff()), encoding="utf-8")
 
-    r_sign = run_cli(
-        root, "gate", "signoff", "sign", str(signoff_path),
-        "--key-id", key.fpr, "--gnupg-home", str(key.home),
-    )
-    assert r_sign.returncode == 0, r_sign.stdout + r_sign.stderr
-    assert "signed" in r_sign.stdout.lower()
+    _sign_at_terminal(engine, monkeypatch, root, signoff_path, key)
+    assert "signed" in capsys.readouterr().out.lower()
 
     r_verify = run_cli(root, "gate", "signoff", "verify", str(signoff_path), "--rule-id", "money", "--json")
     assert r_verify.returncode == 0, r_verify.stdout + r_verify.stderr
@@ -325,17 +337,18 @@ def test_cli_sign_rejects_missing_authorized_by(project, run_cli, verifier_gpg_k
     assert "authorized_by" in (r.stdout + r.stderr)
 
 
-def test_cli_sign_produces_valid_signature_block(project, run_cli, verifier_gpg_keys):
+def test_cli_sign_produces_valid_signature_block(project, run_cli, verifier_gpg_keys, engine, monkeypatch):
     root = project.root
     key = verifier_gpg_keys["Reid"]
+    shutil.copytree(CONTRACTS_SRC, root / "core" / "contracts")
+    (root / "core" / "policy").mkdir(parents=True, exist_ok=True)
+    rel = _bundle_signoff_key(root, "Xavier", key)
+    policy = _policy_dict(["payments/**"], {"Xavier": {"fingerprint": key.fpr, "public_key_file": rel}})
+    (root / "core" / "policy" / "policy.yaml").write_text(yaml.safe_dump(policy), encoding="utf-8")
     signoff_path = root / "money.signoff.json"
     signoff_path.write_text(json.dumps(_base_signoff()), encoding="utf-8")
 
-    r = run_cli(
-        root, "gate", "signoff", "sign", str(signoff_path),
-        "--key-id", key.fpr, "--gnupg-home", str(key.home),
-    )
-    assert r.returncode == 0, r.stdout + r.stderr
+    _sign_at_terminal(engine, monkeypatch, root, signoff_path, key)
     data = json.loads(signoff_path.read_text(encoding="utf-8"))
     sig = data["signature"]
     assert sig["algorithm"] == "gpg-detached-armor"

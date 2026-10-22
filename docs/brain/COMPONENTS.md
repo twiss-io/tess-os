@@ -242,7 +242,7 @@ Essential 2 / useful 5 / optional 0 / cut 3. Reliability proven 4 / likely 0 / u
 | Codex hooks (.codex/hooks.json) | `(absent)` | n/a | Codex loads <repo>/.codex/hooks.json or [hooks] in config.toml | n/a | n/a | none | unproven | useful | missing | add | v0.2.0 |
 | Output-path / placement guard | `(missing; the reference instance has a local output-path guard)` | PreToolUse Write\\|Edit | PreToolUse apply_patch | BeforeTool | n/a | mechanical | unproven | useful | missing | defer | v0.2.1+ |
 | utc-local-context.sh | `.claude/hooks/utc-local-context.sh` | UserPromptSubmit, plain stdout reaches the model | n/a | n/a | n/a | mechanical | proven | useful | outdated | rework | v0.2.1+ |
-| vault-dispatch-scan.py | `.claude/hooks/vault-dispatch-scan.py (NOT in .tess/core/hooks, NOT in tess.lock)` | Blocks | n/a | n/a | n/a | mechanical | proven | useful | outdated | rework | v0.2.1+ |
+| vault-dispatch-scan.py | `.claude/hooks/vault-dispatch-scan.py (no .tess/core master; pinned via .tess/core/pinned-scripts.sha256 from v0.2.1)` | Blocks | n/a | n/a | n/a | mechanical | proven | useful | outdated | rework | v0.2.1+ |
 | dispatch-guard.sh | `.claude/hooks/dispatch-guard.sh` | Fires on every main-session Bash/Edit/Write | n/a | n/a | n/a | mechanical | broken | cut | wrong | cut | v0.2.0 + v0.2.1 |
 | task-lock-clear.sh | `.claude/hooks/task-lock-clear.sh` | Fires | n/a | n/a | n/a | mechanical | proven | cut | outdated | cut | v0.2.1+ |
 | task-lock-set.sh | `.claude/hooks/task-lock-set.sh` | Fires | n/a | n/a | n/a | mechanical | proven | cut | outdated | cut | v0.2.1+ |

@@ -1,6 +1,6 @@
 {
   "name": "create-tess",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Local-first setup wizard for Tess OS, a governed coding-agent harness with fail-closed review boundaries.",
   "type": "module",
   "license": "Apache-2.0",
@@ -11,6 +11,7 @@
     "bin",
     "src",
     "template",
+    "release-proof.json",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -21,7 +22,7 @@
   "scripts": {
     "start": "node bin/create-tess.mjs",
     "smoke": "node bin/create-tess.mjs",
-    "test": "node --test test/*.test.js",
+    "test": "node test/anchor-cleanup.js run",
     "build-template": "node scripts/build-template.mjs",
     "prepack": "node scripts/build-template.mjs"
   },

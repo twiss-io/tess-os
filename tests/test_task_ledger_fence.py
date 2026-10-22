@@ -67,7 +67,7 @@ def real_git_root(tmp_path):
     issue #110 gap: gitignore must hold even with the opt-in hook absent)."""
     root = tmp_path / "os"
     root.mkdir()
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")

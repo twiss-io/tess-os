@@ -11,7 +11,11 @@
 # dispatch-guard.sh. A leaked lock from a crashed session must not permanently
 # suppress dispatch-guard.
 
-LOCK_DIR="${TESS_LOCK_DIR:-/tmp/tess-dispatch-locks}"
+# Per-user lock dir (v0.2.1, 2026-09-29 security review): the old shared
+# /tmp/tess-dispatch-locks was world-writable, so any local user or process
+# could plant a lock that silenced dispatch-guard. The dir is now private to
+# this user (mode 700). TESS_LOCK_DIR still overrides (tests, custom setups).
+LOCK_DIR="${TESS_LOCK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tess/dispatch-locks}"
 STALE_MIN=240
 
 input="$(cat)"
@@ -21,7 +25,8 @@ sid="$(printf '%s' "$input" | jq -r '.session_id // "global"' 2>/dev/null)" || s
 sid="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')"
 [ -n "$sid" ] || sid="global"
 
-mkdir -p "$LOCK_DIR" 2>/dev/null || exit 0
+( umask 077; mkdir -p "$LOCK_DIR" ) 2>/dev/null || exit 0
+chmod 700 "$LOCK_DIR" 2>/dev/null
 
 # Prune stale locks (>4h old, e.g. from crashed sessions) so a dead lock
 # cannot strand and permanently silence or trip the guards.

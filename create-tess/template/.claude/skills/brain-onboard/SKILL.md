@@ -70,9 +70,10 @@ status `pending-verification`, the operator's step-1 words as its quote),
 and commits `brain/` and `memory/projects/` through the installed gate
 hooks. Then tell the operator, briefly: what was created, three things to
 try ("Tell me about <client>", "What did we decide about X?", "From now on,
-..."), and the one-time seed push they run themselves after reading
-`git log`: `git push --no-verify -u origin main`. You never run
-`--no-verify` yourself and never push to a public remote.
+..."), and that the work is saved in git on this computer. Pushing the folder to a remote is
+refused by the ship-gate until the project has its own reviewer keys
+(docs/brain/ONBOARDING.md, section 8); to keep a copy elsewhere, back up the
+folder. Never skip or disable the safety checks, and never push to a public remote.
 
 Exit code 3 means "not ready" (answer the remaining steps) or "source repo".
 Exit code 4 means git or tessctl failed: show the operator the message.
@@ -80,7 +81,7 @@ Exit code 4 means git or tessctl failed: show the operator the message.
 ## 4. Trust steps, one line per runtime they use
 
 - **Claude Code**: one workspace-trust click. It enables the brain hooks (onboarding reminder, capture) and the tool permissions; CLAUDE.md, commands and skills work without it.
-- **Codex CLI**: nothing is needed to start. Optional: trust the project and approve the Tess hooks in `/hooks` for per-turn capture; approval is pinned to the hook text, so re-approve after an update.
+- **Codex CLI**: REQUIRED, once: trust the folder, then type `/hooks` in Codex and approve Tess's hooks; Codex asks again after each Tess update. Tess's safety checks (secret scan, protected files, push guard) and conversation capture run in Codex only after that. Until they are approved, every first reply starts with the warning from `python3 scripts/tess hooks-status`.
 - **Gemini CLI**: one folder-trust click. It loads GEMINI.md and the `/tess:*` commands; `.agents/skills` works without it.
 - **Kimi and other AGENTS.md tools**: nothing to configure; Tess works from AGENTS.md instructions only.
 
@@ -95,4 +96,4 @@ Exit code 4 means git or tessctl failed: show the operator the message.
 - New client, person, project, area, unit or seat: `python3 scripts/brain/onboard.py add client "Name"` (project needs `--in <client-slug>` in agency mode). It writes the index line first, creates only, and prints `skipped (exists)` for anything already there.
 - Another mode: `python3 scripts/brain/onboard.py add-mode organisation --quote "THEIR EXACT WORDS"`. Nothing is moved or renamed; a decision is recorded.
 - Fresh clone missing `operator/profile.json`: `python3 scripts/brain/onboard.py restore`.
-- Saving later work: skill `brain-save` (`python3 scripts/brain/tessbrain.py status`) when that tool exists; otherwise commit the `brain/` paths with git.
+- Saving later work: commit the `brain/` paths with git.

@@ -69,7 +69,7 @@ def test_signed_tag_is_accepted_and_extracted(project, gpg_key, tmp_path):
 def test_lightweight_unsigned_tag_is_rejected(project, gpg_key, tmp_path):
     up = make_upstream(tmp_path / "up_lw", gpg_key, "v2.0.0", sign="lightweight")
     _lock_with_upstream(project, up)
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match="SECURITY REJECT") as ei:
         project.mod.fetch_to_staging(project.root, "v2.0.0")
     assert "SECURITY REJECT" in str(ei.value)
     # No extraction took place.
@@ -82,7 +82,7 @@ def test_annotated_unsigned_tag_is_rejected(project, gpg_key, tmp_path):
     _lock_with_upstream(project, up)
     # allow_tofu=True so we reach the signature check (not the empty-pin refuse);
     # an annotated-but-unsigned tag must still be REJECTED, nothing extracted.
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match="SECURITY REJECT") as ei:
         project.mod.fetch_to_staging(project.root, "v2.0.0", allow_tofu=True)
     assert "SECURITY REJECT" in str(ei.value)
 
@@ -99,7 +99,7 @@ def test_pinned_wrong_fingerprint_is_rejected(project, gpg_key, tmp_path):
     up = make_upstream(tmp_path / "up_pin_bad", gpg_key, "v2.0.0", sign="signed")
     # Pin a fingerprint that does NOT match the real signing key.
     _lock_with_upstream(project, up, fingerprint="DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF")
-    with pytest.raises(SystemExit) as ei:
+    with pytest.raises(SystemExit, match=r"(?i)wrong key|SECURITY REJECT") as ei:
         project.mod.fetch_to_staging(project.root, "v2.0.0")
     assert "wrong key" in str(ei.value).lower() or "SECURITY REJECT" in str(ei.value)
     staged = [p for p in (project.root / ".tess" / "staging").rglob("*") if p.is_file()]

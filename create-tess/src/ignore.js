@@ -147,6 +147,13 @@ export const EXCLUDE_REL_PATHS = new Set([
   '.github/workflows/ci.yml',
   '.github/workflows/release.yml',
   '.github/workflows/publish-npm.yml',
+  '.github/scripts/release_version_gate.py',
+  '.github/scripts/verify_release_tag.sh',
+  '.github/scripts/verify_release_ssh_sig.sh',
+  // Maintainer-only: signs tess-os release tags with the Twiss release key.
+  'scripts/release/sign-release-tag.sh',
+  // Maintainer-only: names the tess-os maintainers as required reviewers.
+  '.github/CODEOWNERS',
   'operator/profile.json',
 ]);
 

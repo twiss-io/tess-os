@@ -1,0 +1,170 @@
+"""Materialise a fixture Tess instance for the ws-learn tests and smokes.
+
+    python3 tests/fixtures/brain_learn/fxlib.py make <dir> [--no-git]
+
+Copies instance/ (START-HERE + two fictional entities) and brain.json into
+<dir>, then `git init` + one commit so status/save have a baseline.
+"""
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+GIT_ID = ["-c", "user.name=probe", "-c", "user.email=probe@example.invalid", "-c", "commit.gpgsign=false"]
+
+
+def make(dest, git=True, brain_json=None):
+    os.makedirs(dest, exist_ok=True)
+    shutil.copytree(os.path.join(HERE, "instance", "brain"), os.path.join(dest, "brain"), dirs_exist_ok=True)
+    shutil.copy(brain_json or os.path.join(HERE, "brain.json"), os.path.join(dest, "brain", "brain.json"))
+    os.makedirs(os.path.join(dest, "memory", "projects"), exist_ok=True)
+    if git:
+        run(dest, "init", "-q", "-b", "main")
+        run(dest, "config", "user.email", "probe@example.invalid")  # the typing speaker is 'probe' (git_emails)
+        run(dest, "config", "user.name", "probe")
+        run(dest, "add", "-A")
+        run(dest, *GIT_ID, "commit", "-q", "-m", "fixture seed")
+    return dest
+
+
+def run(dest, *args):
+    return subprocess.run(["git", "-C", dest] + list(args), check=True, capture_output=True, text=True)
+
+
+def planted_github_token():
+    """Built at run time so no secret-shaped literal is ever committed."""
+    return "ghp_" + "Q" * 36
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "make":
+        print(make(sys.argv[2], git="--no-git" not in sys.argv))
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+TESSBRAIN = os.path.join(REPO, "scripts", "brain", "tessbrain.py")
+CLAUDE_DIR = os.path.join(HERE, "claude")
+CODEX_HOME = os.path.join(HERE, "codexhome")
+CODEX_CWD = "/tmp/tess-brain-fx"
+
+
+def cli(root, *args, stdin=None, env=None, timeout=120):
+    """Run tessbrain.py against an instance root; returns CompletedProcess."""
+    e = dict(os.environ)
+    e.setdefault("TESS_BRAIN_NO_BACKFILL", "1")
+    none = os.path.join(str(root), ".no-such-home")  # hermetic: never sweep the real ~/.codex or ~/.gemini
+    e.setdefault("CODEX_HOME", none)
+    e.setdefault("GEMINI_CLI_HOME", none)
+    e.setdefault("CLAUDE_CONFIG_DIR", none)
+    e.update(env or {})
+    args = [str(a) for a in args]
+    if "--claude-dir" in args and "CLAUDE_CONFIG_DIR" not in (env or {}):
+        e["CLAUDE_CONFIG_DIR"] = claude_store_for(root, args[args.index("--claude-dir") + 1])
+    # v1.0.0 audit: --codex-home / --gemini-home must name this machine's own runtime home (CODEX_HOME /
+    # GEMINI_CLI_HOME), like --claude-dir: a fixture folder is made that home, never a bypass
+    for opt, var in (("--codex-home", "CODEX_HOME"), ("--gemini-home", "GEMINI_CLI_HOME")):
+        if opt in args and var not in (env or {}):
+            e[var] = args[args.index(opt) + 1]
+    return subprocess.run([sys.executable, TESSBRAIN, "--root", str(root)] + args,
+                          input=stdin, capture_output=True, text=True, env=e, timeout=timeout)
+
+
+def claude_store_for(root, claude_dir):
+    """A CLAUDE_CONFIG_DIR whose projects/<this instance> IS `claude_dir` (a symlink to it).
+
+    v1.0.0 item e: `sync --claude-dir` only accepts Claude's own transcript folder for the instance, so a
+    fixture folder is made that folder the way an operator's CLAUDE_CONFIG_DIR would, never by a bypass."""
+    import hashlib
+    sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
+    from brainlib.parsers.claude import project_slug
+    real = os.path.realpath(str(claude_dir))
+    home = os.path.realpath(str(root)) + ".claude-cfg-" + hashlib.sha256(real.encode()).hexdigest()[:10]
+    for p in {str(root), os.path.realpath(str(root))}:
+        link = os.path.join(home, "projects", project_slug(p))
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if not os.path.lexists(link):
+            os.symlink(real, link)
+    return home
+
+
+def add_root(root, path):
+    """What `tessbrain.py roots add <path>` stores once the operator types "yes" at a terminal (roots.py).
+    Written in-process, into the per-project state outside the instance (TESS_BRAIN_PROVENANCE_DIR in tests)."""
+    sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
+    from brainlib import roots
+    from brainlib.config import Config
+    cfg = Config(root)
+    roots.save(cfg, roots.extra(cfg) + [os.path.realpath(path)])
+
+
+def sync_fixture(root, *extra):
+    add_root(root, CODEX_CWD)  # the fixture's Codex rollouts ran in CODEX_CWD (a moved-repo root)
+    return cli(root, "sync", "--claude-dir", CLAUDE_DIR, "--codex-home", CODEX_HOME, *extra)
+
+
+def commit_all(root, msg="probe"):
+    run(root, "add", "-A")
+    return run(root, *GIT_ID, "commit", "-q", "--allow-empty", "-m", msg)
+
+
+def claude_session(path, sid, turns, start_minute=0, cwd="/work/fx"):
+    """Write a synthetic Claude transcript. turns: [(role, text)] with role in
+    user | assistant | chan:<user_id> (a plugin-injected channel turn, never journaled). One minute apart,
+    starting 2026-09-24T06:<start_minute>Z (14:<start_minute> SGT)."""
+    import json as _json
+    recs = []
+    for i, (role, text) in enumerate(turns):
+        ts = "2026-09-24T06:%02d:00.000Z" % (start_minute + i)
+        base = {"sessionId": sid, "timestamp": ts, "cwd": cwd, "version": "2.1.281", "gitBranch": "main",
+                "uuid": "u-%s-%d" % (sid[:4], i), "isSidechain": False}
+        if role == "assistant":
+            base.update(type="assistant", message={"role": "assistant", "content": [{"type": "text", "text": text}]})
+        elif role.startswith("chan:"):
+            uid = role[5:]
+            body = ('<channel source="plugin:chat:chat" chat_id="-1" message_id="%d" user="u%s" '
+                    'user_id="%s" ts="%s">%s</channel>' % (i, uid, uid, ts, text))
+            base.update(type="user", isMeta=True, promptSource="system", message={"role": "user", "content": body})
+        else:
+            base.update(type="user", promptSource="typed", message={"role": "user", "content": text})
+        recs.append(base)
+    os.makedirs(os.path.dirname(str(path)), exist_ok=True)
+    with open(str(path), "a", encoding="utf-8") as fh:
+        for r in recs:
+            fh.write(_json.dumps(r) + "\n")
+    return path
+
+
+def sync_dir(root, claude_dir, *extra, env=None):
+    """sync against one Claude transcript dir, with no Codex/Gemini sweep."""
+    none = os.path.join(str(root), ".no-such-home")
+    return cli(root, "sync", "--claude-dir", str(claude_dir), "--codex-home", none, "--gemini-home", none,
+               *extra, env=env)
+
+
+def journal_of(root, sid):
+    import glob
+    hits = glob.glob(os.path.join(str(root), "brain", "journal", "*", "*", "*", "*-%s.md" % sid[:8]))
+    return hits[0] if hits else None
+
+
+def note(root, speaker, text, env=None):
+    """`journal note --speaker`: how another principal's words enter in these tests (held for review)."""
+    return cli(root, "--json", "journal", "note", "--speaker", speaker, "--text", text, env=env)
+
+
+def operator_says(path, sid, text, at=None, cwd="/work/fx"):
+    """The operator types `text` in session `sid` NOW (after `review` or a tool result showed an item):
+    one user record appended to the transcript. Confirmations must be later than the showing (confirm.py)."""
+    import datetime as _dt
+    import json as _json
+    ts = at or (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    rec = {"type": "user", "sessionId": sid, "timestamp": ts, "cwd": cwd, "version": "2.1.281", "gitBranch": "main",
+           "uuid": "u-%s-say-%s" % (sid[:4], ts), "isSidechain": False, "promptSource": "typed",
+           "message": {"role": "user", "content": text}}
+    with open(str(path), "a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(rec) + "\n")
+    return path

@@ -42,7 +42,7 @@ def _git(root, *args, check=True, input_text=None):
 
 
 def _init_repo(root):
-    _git(root, "init", "-q")
+    _git(root, "init", "-b", "main", "-q")
     _git(root, "config", "user.email", "test@tess.test")
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "commit.gpgsign", "false")
@@ -110,7 +110,7 @@ def push_repo(tmp_path):
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
-    _git(repo, "init", "--bare", "-q", str(bare))
+    _git(repo, "init", "-b", "main", "--bare", "-q", str(bare))
     _git(repo, "remote", "add", "origin", str(bare))
     assert _git(repo, "push", "-u", "origin", "HEAD:main", check=False).returncode == 0
     return repo

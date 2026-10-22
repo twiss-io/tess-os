@@ -25,7 +25,7 @@ A review/verification node is a **mandatory predecessor of any externally-visibl
 |---|---|---|---|
 | Code diff / PR | **Reid** | Logic, security smells, test coverage, style; severity tiers per [review-output-standards.md](review-output-standards.md) | The actual diff read via Glob/Grep — not the conductor's description |
 | Release readiness | **Quinn** | Tests executed and passing (quoted output); edge cases; environment parity | CI run results, actual test output |
-| Security, and changes to protected paths | **Cyra** (signs the verdict with `tessctl verdict sign`) | Attack surface, auth checks, data isolation, reverse-direction tests; anything that weakens the gate, lock or hooks | Code read + Bash-executed bypass demonstration where possible |
+| Security, and changes to protected paths | **Cyra** (drafts the verdict; the operator signs it at their own terminal with `tessctl verdict sign`) | Attack surface, auth checks, data isolation, reverse-direction tests; anything that weakens the gate, lock or hooks | Code read + Bash-executed bypass demonstration where possible |
 | Research / intelligence claims | **Reid** + `verity` lens | Assumption inventory, confidence calibration, counter-interpretation | Primary sources — not the research summary |
 | Evidence / source quality | **Reid** + `maialen` lens | Source credibility, evidence hierarchy, confidence gap | Original sources |
 | Creative outputs | **Reid** + `lysandra` lens (Iris supplies rendered evidence) | Specificity, coherence, brand alignment, taste | The actual output file |
@@ -39,6 +39,27 @@ Verifiers are three roles (Reid, Quinn, Cyra, see [roster.md](roster.md)); the d
 Verifier briefs must include **primary artifacts** — the diff, the logs, the URLs, the file paths — **never Tess's summary of those artifacts.** A verifier that reads the orchestrator's summary inherits the orchestrator's confabulations and verifies nothing.
 
 Verifier briefs follow the [dispatch-brief.md](dispatch-brief.md) contract like any other dispatch.
+
+---
+
+## Disprove Before Fix
+
+Verification is not a formality after the build. Per
+[review-and-verification.md](review-and-verification.md):
+
+- Every review or audit candidate goes to a fresh verifier from the table above
+  (one who did not raise it) whose job is to disprove it, **before** any fix is
+  dispatched. Only a confirmed finding gets a severity and a fix;
+  needs_validation names the exact missing fact and carries no severity.
+- Each fix goes to a separate fresh verifier (not its builder, not the verifier
+  that confirmed the finding), who checks it enforces the rule at the last
+  trusted decision point and ships with a regression test.
+- A verifier that runs the code under review does so under the execution-safety
+  rules there: sandbox, no external network, scratch `HOME` and temp folder,
+  read-only target, resource limits, never the operator's real home folder.
+
+These add to the mandatory scope above; they never replace a mandatory
+verifier or its signed verdict.
 
 ---
 
@@ -62,6 +83,7 @@ Verification needs isolation (read-only, or tests without source edits) and an a
 
 ## CHANGELOG
 
+- **v1.0.0 (2026-09-30)** — Added "Disprove Before Fix": candidates are disproved by a fresh verifier before any fix, each fix gets a separate fresh verifier, and code runs under the execution-safety rules of review-and-verification.md. Routing table, mandatory scope and signed-verdict rules unchanged.
 - **v0.2.0 (2026-09-24)** — Header no longer points at an internal audit file that Tess OS does not ship. Routing table and rules unchanged.
 - **2026-06-10 Tess OS reform (operator-authorized)** — File created. Codifies the mandatory verification routing table (Reid/Quinn/Cyra/Verity/Maialen/Lysandra), the mandatory scope (prod-touching, client-facing, externally-visible, irreversible-decision-informing; discretionary otherwise), the primary-artifacts-only verifier brief standard, verdict format per review-output-standards.md, and the failed-verification → retry-protocol wiring. Source: audit memo B3, S3, G3, Decisions 4(b)/8(b).
-- **v0.2 ten-role roster** — Verifiers are the three roles Reid, Quinn and Cyra. Research, evidence and creative verification are Reid with the `verity`, `maialen` or `lysandra` lens. Cyra covers protected-path changes and signs verdicts. Schema enums keep the older names for backward compatibility. See roster.md.
+- **v0.2 ten-role roster** — Verifiers are the three roles Reid, Quinn and Cyra. Research, evidence and creative verification are Reid with the `verity`, `maialen` or `lysandra` lens. Cyra covers protected-path changes and drafts the verdicts the operator signs. Schema enums keep the older names for backward compatibility. See roster.md.

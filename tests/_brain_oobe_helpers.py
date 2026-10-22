@@ -45,6 +45,16 @@ def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
                           env=env(), check=check)
 
 
+def init_repo(root: Path) -> None:
+    """`git init` with no background maintenance: `git commit` can start a
+    detached `git maintenance run --auto` that repacks and prunes loose
+    objects after it returns, racing a later `git clone` of this repo (CI:
+    "failed to copy file to .../clone/.git/objects/..") or its removal."""
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "maintenance.auto", "false")
+    git(root, "config", "gc.auto", "0")
+
+
 def onboard(root: Path, *args: str, stdin: Optional[str] = None,
             extra_env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(root / "scripts" / "brain" / "onboard.py")] + list(args),
@@ -67,7 +77,7 @@ def mini_instance(tmp: Path, profile: Optional[dict] = None, source_repo: bool =
     if source_repo:
         (root / "create-tess").mkdir()
         (root / "create-tess" / "package.json").write_text("{}\n")
-    git(root, "init", "-q", "-b", "main")
+    init_repo(root)
     return root
 
 
@@ -88,7 +98,7 @@ def full_instance(tmp: Path, operator: str = "Probe") -> Path:
         shutil.copy2(str(REPO_ROOT / rel), str(dest))
     (root / "operator" / "profile.json").write_text(json.dumps(
         {"operator_name": operator, "assistant_name": "Tess", "pathway": "chief-of-staff"}))
-    git(root, "init", "-q", "-b", "main")
+    init_repo(root)
     done = subprocess.run([sys.executable, str(root / ".tess" / "bin" / "tessctl"), "gate", "install-hooks"],
                           cwd=str(root), capture_output=True, text=True, env=env({"TESS_ROOT": str(root)}))
     assert done.returncode == 0, done.stdout + done.stderr

@@ -26,6 +26,7 @@ import sys
 import pytest
 
 from conftest import ENGINE_SRC, make_upstream, ns
+from fixtures.os_home import operator_home  # noqa: F401 — autouse: anchors go to a fake OS home
 
 ORIGINAL = ENGINE_SRC.read_bytes()
 
@@ -115,6 +116,9 @@ def test_self_update_backup_is_overwritten_on_second_hop(project, gpg_key, tmp_p
     )
     project.framework["upstream"] = str(up2)
     project.write()
+    # v1.0.0 (GPT-6 final F1): framework.upstream is anchored now, so moving
+    # it by hand is a safety change the operator accepts (`anchor accept`).
+    project.mod._anchor_write(project.root, "accept")
 
     project.mod.cmd_self_update(ns(ref="v2.0.2", to=None, trust_on_first_use=False), project.root)
     assert marker2 in engine_path.read_bytes()

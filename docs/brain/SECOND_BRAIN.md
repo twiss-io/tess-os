@@ -23,10 +23,15 @@ this folder when the learning tools are installed.
   pass the instance's pre-commit gate. Framework paths (`conductor/`, `agents/`,
   `.claude/`, ...) belong to Tess OS and are refreshed by updates; `brain/` is
   never touched by an update (checked by `tests/test_brain_upgrade_safety.py`).
-- **Runtime memories are caches.** New installs turn Claude Code's auto memory
-  off at project level (`"autoMemoryEnabled": false` in `.claude/settings.json`),
-  so there is one brain, not two. Codex memories and Gemini Auto Memory are off
-  by default.
+- **Runtime memories are caches.** Claude Code's auto memory is ON at project
+  level (`"autoMemoryEnabled": true` in `.claude/settings.json`) from v0.2.1,
+  as a cache, until automatic conversation and decision capture into `brain/`
+  ships (#195). Until then it keeps useful context between sessions that would
+  otherwise be lost. It is still a cache, not the brain: it is private to one
+  machine and one runtime, no other agent can read it, and it can be pruned at
+  any time. Durable facts, decisions and client knowledge must still be written
+  to `brain/` (and committed) before anyone calls them saved. Codex memories
+  and Gemini Auto Memory are off by default.
 - **Routing, not recall.** A zero-context agent reaches every fact the same
   way: the BOOT block in `CLAUDE.md` / `AGENTS.md`, then `brain/START-HERE.md`
   (the map), then the entity's `AGENTS.md` (which starts with `# START HERE`),
@@ -60,11 +65,10 @@ A piece of work is saved only when all four are true:
 1. it is in its owning folder under `brain/` (or `memory/projects/`);
 2. it is linked from that entity's START HERE, or from a generated index;
 3. it is committed;
-4. it is pushed to the instance's private remote.
+4. it is pushed to the instance's private remote, when the instance has one.
 
-When the learning tools are installed, `python3 scripts/brain/tessbrain.py status`
-checks all four and names what is missing; the `brain-save` skill runs it
-before an agent says "saved".
+Before an agent says "saved" it checks `git status` (and `git log @{u}..`
+when there is a remote). A save checker is coming with the learning loop.
 
 ## Principals and quotes
 
@@ -112,13 +116,14 @@ Labels used across these docs:
 Conversation capture, decision capture and verification are covered in
 `LEARNING.md` / `RUNTIMES.md` when the learning tools are installed.
 
-## Known gaps in v0.2.0
+## Known gaps
 
-- **Seed push.** The first push of a new instance is refused by the ship-gate
-  (`COVERING_APPROVAL_MISSING`: instances have no verifier keys). The operator
-  runs `git push --no-verify -u origin main` once, after reading `git log`.
-  Tess never runs `--no-verify`. Later brain pushes pass, because brain paths
-  are outside the gate's approval requirement.
+- **Pushing to a remote.** The first push of a folder made with
+  `npm create tess` passes the ship-gate (it carries the signed release's
+  proof). A push that changes a protected Tess file is refused until the
+  project has its own reviewer keys (`COVERING_APPROVAL_MISSING`). Work is
+  saved in git locally; back up the folder to keep a copy elsewhere
+  ([ONBOARDING.md](ONBOARDING.md), section 8). Tess never skips the check.
 - **Placement rows.** The file-placement tables in `CLAUDE.md` and `AGENTS.md`
   still say `kb/` and `clients/<Client>/kb/`. The BOOT block overrides them
   (`brain/kb/`, `brain/clients/<slug>/kb/`), because the old paths are refused

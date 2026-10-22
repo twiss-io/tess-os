@@ -45,6 +45,19 @@ The Trust Center must not claim that it has enabled protection until the
 repository host enforces the gate as a required status check. A green local
 command or an advisory GitHub Actions run is not enforcement.
 
+## The operator's own change (v1.0)
+
+A fresh install still has no verifier key, and nothing here creates one. What
+v1.0 adds is narrower: `tessctl gate approve` lets the operator, at their own
+terminal (refused inside Claude Code and Codex, and without a real terminal),
+approve exactly the content of their own change to protected files for a push
+from that computer. The approval is an HMAC under the per-machine operator key
+(`~/.config/tess/operator/key`, outside the repository, the same key that signs
+policy-rule approvals) and is stored outside the repository. It registers
+nothing in policy, signs no verdict, and cannot be verified anywhere the key is
+absent, so `tessctl gate ci` on another machine still fails closed. It does not
+clear hard-floor rules.
+
 ## Deliberately undecided
 
 The following require a user-present key-custody design and a human custodian's decision;

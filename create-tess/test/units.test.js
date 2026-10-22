@@ -222,6 +222,11 @@ test('P0 G-01: verifier/signoff key material is excluded from scaffold; the rele
     false,
     'the bundled release-verification key must still ship — it is not a per-project trust anchor',
   );
+  assert.equal(
+    isExcludedRel('.tess/keys/twiss-release-allowed-signers'),
+    false,
+    'the bundled SSH release-verification key must ship too (gpg-less installs verify updates with it)',
+  );
 });
 
 // B3 (gap-loop R2) — the scaffold copies `.github/workflows/` verbatim, so
@@ -663,8 +668,12 @@ test('resolveTemplateRef: the default source pins to DEFAULT_TEMPLATE_REF when n
   );
 });
 
-test('DEFAULT_TEMPLATE_REF pins the opt-in git fetch to the v0.2.0 release tag, not the never-cut create-tess-v0.1.2', () => {
-  assert.equal(DEFAULT_TEMPLATE_REF, 'v0.2.0');
+test('DEFAULT_TEMPLATE_REF pins the opt-in git fetch to this package\'s own framework release tag (v<package.json version>)', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(pkg.version, /^\d+\.\d+\.\d+/, 'package.json must carry a semver version');
+  assert.equal(DEFAULT_TEMPLATE_REF, `v${pkg.version}`);
+  assert.notEqual(DEFAULT_TEMPLATE_REF, 'v0.2.0', 'the stale 0.2.0 pin must not come back');
+  assert.ok(!DEFAULT_TEMPLATE_REF.startsWith('create-tess-'), 'pin the framework tag, never the create-tess-v* tag');
 });
 
 test('resolveTemplateRef: a custom --template-source is left unpinned (its own branch tip) unless a ref is explicitly given', () => {

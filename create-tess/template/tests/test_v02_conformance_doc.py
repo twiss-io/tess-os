@@ -13,7 +13,7 @@ enforcement level, and it cannot drift from the render-target registry.
     it also holds once another target (e.g. gemini) is registered and its
     row is updated in the same change.
   * A row that names a key which is NOT registered is a false claim.
-  * Claude Code is the only Enforced runtime; every row cites at least one
+  * Claude Code and Codex (once trusted + /hooks approved) are the only Enforced runtimes; every row cites at least one
     https documentation link; runtimes this release did not verify (Cline,
     Roo Code) are labelled `unverified`, not given a level.
   * The page carries no local paths and no byte counts of a live instance.
@@ -92,14 +92,19 @@ def test_no_row_claims_an_unregistered_render_target(engine):
             )
 
 
-def test_claude_code_is_the_only_enforced_runtime():
+def test_claude_code_and_codex_are_the_only_enforced_runtimes():
     enforced = [r["Runtime"] for r in _runtime_rows() if r["Level"] == "Enforced"]
-    assert enforced == ["Claude Code"], enforced
+    assert enforced == ["Claude Code", "OpenAI Codex CLI"], enforced
+    codex = next(r for r in _runtime_rows() if r["Runtime"] == "OpenAI Codex CLI")
+    # Codex runs project hooks only after the one-time trust + /hooks approval;
+    # the Enforced claim must say so in the same row.
+    assert "Enforced once the project is trusted and Tess hooks are approved in `/hooks`" in (
+        codex["Why this level (limits)"])
 
 
 def test_levels_for_the_runtimes_the_analysis_verified():
     levels = {r["Runtime"]: r["Level"] for r in _runtime_rows()}
-    assert levels["OpenAI Codex CLI"] == "Partial"
+    assert levels["OpenAI Codex CLI"] == "Enforced"
     assert levels["GitHub Copilot CLI"] == "Partial"
     assert levels["Cursor (IDE and CLI)"] == "Partial"
     for advisory in ("OpenCode", "Amp", "Google Jules", "Aider", "Kiro", "Qwen Code"):

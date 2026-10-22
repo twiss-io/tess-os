@@ -33,7 +33,12 @@ import {
 import { join, resolve, relative, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import './anchor-cleanup.js'; // v1.0.0: drop real-home anchors of removed temp installs
 
+// v1.0 (B4): `tessctl doctor` prints a short summary by default; these tests read
+// its full per-file counts (e.g. "core tamper: 0"), so the tessctl runs here are verbose,
+// as in tests/conftest.py. The wizard's own output is unaffected (it never prints doctor's).
+process.env.TESS_VERBOSE = '1';
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(TEST_DIR, '..'); // create-tess/
 const ENTRY = join(PKG_DIR, 'bin', 'create-tess.mjs');
@@ -238,11 +243,13 @@ for (const combo of COMBOS) {
       encoding: 'utf8',
     });
     assert.equal(branch.stdout.trim(), 'main', 'git init must set the initial branch to main');
-    const log = spawnSync('git', ['log', '--oneline'], { cwd: target, encoding: 'utf8' });
-    assert.notEqual(
-      log.status,
-      0,
-      'the fresh repo must have ZERO commits — the template\'s own history must never leak in',
+    // v0.2.1: the wizard runs onboarding, which makes exactly ONE commit (the
+    // instance's own seed). The template's own history must never leak in.
+    const log = spawnSync('git', ['log', '--format=%s'], { cwd: target, encoding: 'utf8' });
+    assert.equal(
+      log.stdout.trim(),
+      'tess: seed instance + second brain (onboarding)',
+      'the fresh repo must hold only its own seed commit — the template\'s own history must never leak in',
     );
 
     for (const hook of ['pre-commit', 'pre-push']) {
@@ -256,28 +263,30 @@ for (const combo of COMBOS) {
       'the gate CI workflow must be installed by install-hooks',
     );
 
-    // A successful local scaffold must not be presented as production-ready.
-    // It must disclose the expected fail-closed result and hand custody back
-    // to the project's key-custody owner without suggesting a bypass or
-    // self-bootstrap path.
+    // A successful local scaffold must not be presented as production-ready,
+    // but it says so in ONE plain line that points at SECURITY.md (the custody
+    // and fail-closed detail lives there) — never a wall of gate jargon, and
+    // never a bypass or self-bootstrap path.
     assert.match(
       run.stdout,
-      /Local scaffold ready; protected production work remains blocked/,
+      /Using Tess OS to guard real production code needs extra setup first: see SECURITY\.md in the folder\./,
       'success path must distinguish local setup from production protection',
     );
-    assert.match(
-      run.stdout,
-      /no covering APPROVE verdict\s+found/,
-      'success path must disclose the expected fail-closed result',
-    );
-    assert.match(
-      run.stdout,
-      /escalate to your project's\s+key-custody owner/,
-      "must return custody to the project's key-custody owner",
-    );
-    for (const unsafeGuidance of ['git push --no-verify', 'onboard a real verifier', 'verdict keygen']) {
+    assert.ok(existsSync(join(target, 'SECURITY.md')), 'the SECURITY.md the final screen points at must ship');
+    for (const unsafeGuidance of ['--no-verify', 'onboard a real verifier', 'verdict keygen']) {
       assert.doesNotMatch(run.stdout, new RegExp(unsafeGuidance));
     }
+    // B4 plain-words bar: no stale counts, no rank jargon, no custody jargon.
+    for (const jargon of [/~150/, /150 agents/, /orchestrators loaded/, /ten roles/i, /Commander/, /key-custody/, /APPROVE verdict/]) {
+      assert.doesNotMatch(run.stdout, jargon, `wizard output must not say ${jargon}`);
+    }
+    const folder = target.split(/[\\/]/).pop();
+    assert.ok(
+      run.stdout.includes('What to do next:\n  In this terminal, type these two lines, pressing Return after each:\n      cd ') &&
+        run.stdout.includes(`(Or open the folder "${folder}" in Claude Code or Codex and say hi.)`),
+      `the final screen must name the folder and the one next step\n${run.stdout}`,
+    );
+    assert.match(run.stdout, /a crew of 9 specialists plus your assistant/);
 
     // B3 (gap-loop R2) — the produced instance must NOT inherit this repo's
     // OWN framework-internal CI (its pytest suite, its release-cut pipeline,
@@ -480,7 +489,7 @@ test('gate activation: --no-git-init/--no-gate-hooks skip activation and print m
   assert.ok(!existsSync(join(target, '.git')), '--no-git-init must skip git init');
   assert.match(
     run.stdout,
-    /ship-gate is NOT fully enforcing yet/,
+    /The safety checks that run on every save are not on yet/,
     'must surface the fallback warning when activation is skipped',
   );
   assert.match(run.stdout, /1\. cd /, 'fallback must include a numbered cd step');
@@ -533,7 +542,7 @@ test('gate activation: an already-git target is detected and left untouched (hoo
   );
   assert.match(
     run.stdout,
-    /git repository — already present/,
+    /Your folder already had a git history \(left untouched\)/,
     'must report that the existing repo was detected and left alone',
   );
   // Hooks still get installed into the existing .git/hooks.

@@ -29,7 +29,7 @@ Project: {{name}}.
 | Notes | this file, `## Now` |
 
 ## Rules for this entity
-- Record decisions with the principal's exact words (skill brain-decide); never a paraphrase, a question or your own suggestion.
+- Record decisions with the principal's exact words (in `brain/decisions/`); never a paraphrase, a question or your own suggestion.
 
 ## Decisions (latest 5 accepted)
 <!-- tess:gen:decisions:start -->

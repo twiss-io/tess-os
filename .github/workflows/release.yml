@@ -15,18 +15,22 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: Gated release
+  # v1.0.0 security review (M5): every gate runs in this READ-ONLY job, and its
+  # checkout keeps no credentials, so no test, script or dependency it runs
+  # ever holds a write token. Only the `release` job below, which runs no
+  # project code, gets contents: write.
+  gates:
+    name: Release gates (read-only)
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # required to publish the GitHub Release
-      pull-requests: write  # gitleaks-action summary
+      contents: read
     steps:
       - name: Checkout (full history + tags)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       # actions/checkout re-points refs/tags/<tag> at the tagged COMMIT
       # (it fetches +<sha>:refs/tags/<tag>), so an annotated tag arrives as a
@@ -76,8 +80,32 @@ jobs:
           git verify-tag "$TAG"
           echo "OK: '$TAG' signature cryptographically verified against the provisioned key."
 
+      # Gate 1b — the signer must be the PINNED release key (tess.lock
+      # framework.trusted_key_fingerprint), not merely whatever key the
+      # TESS_SIGNING_PUBKEY secret holds.
+      - name: Gate 1b — tag signed by the pinned release key
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .github/scripts/verify_release_tag.sh "$TAG"
+
+      # Gate 1d — the tag must ALSO carry the SSH release signature (pinned
+      # tess.lock framework.trusted_ssh_key_fingerprint) over the manifest of
+      # this exact tag + commit + tree. Installs without gpg verify updates
+      # with it (`ssh-keygen -Y verify`), so a release without it must not ship.
+      - name: Gate 1d — tag carries the pinned SSH release signature
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .github/scripts/verify_release_ssh_sig.sh "$TAG"
+
+      # Gate 1c — tag, both package.json files, tess.lock framework.version
+      # and a CHANGELOG section must all name the same version (fails, never warns).
+      - name: Gate 1c — every version agrees with the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/scripts/release_version_gate.py "$TAG"
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
           cache: pip
@@ -88,9 +116,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      # Gate 2 — the full test suite must pass.
+      # Gate 2 — the full test suite must pass, and the first-push release
+      # proof (tests/test_v1_first_push_release_proof.py) must RUN: it skips
+      # without create-tess/node_modules, so install it first and refuse a skip.
       - name: Gate 2 — full test suite (pytest)
-        run: python -m pytest
+        run: |
+          set -euo pipefail
+          npm ci --prefix create-tess
+          python -m pytest -rs | tee "$RUNNER_TEMP/pytest.log"
+          if grep -E "SKIPPED.*test_v1_first_push_release_proof" "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::tests/test_v1_first_push_release_proof.py was skipped; it must run before a release"
+            exit 1
+          fi
+
+      - name: Gate 2b — tessctl doctor
+        env:
+          TESS_ROOT: ${{ github.workspace }}
+        run: python3 -I -B .tess/bin/tessctl doctor
+
+      - name: Gate 2c — tessctl verify
+        env:
+          TESS_ROOT: ${{ github.workspace }}
+        run: python3 -I -B .tess/bin/tessctl verify
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      # Gate 2d — the wizard's own suite, which includes a scaffold from the
+      # real `npm pack` tarball (.gitignore restored, private paths ignored).
+      - name: Gate 2d — create-tess tests (npm test)
+        working-directory: create-tess
+        run: |
+          npm ci
+          npm test
+
+      # Gate 2e — fresh install from the packed tarball, onboarding, first
+      # commit through the gate, doctor/verify (tests/test_brain_fresh_install_e2e.py).
+      - name: Gate 2e — fresh-install e2e from the packed tarball
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack"
+          (cd create-tess && npm pack --pack-destination "$RUNNER_TEMP/pack" >/dev/null)
+          export TESS_E2E_TARBALL="$(ls "$RUNNER_TEMP"/pack/create-tess-*.tgz)"
+          TESS_BRAIN_E2E=1 python -m pytest -q tests/test_brain_fresh_install_e2e.py
 
       # Gate 3 — no secret content anywhere in the history.
       #
@@ -98,11 +168,17 @@ jobs:
       # a paid GITLEAKS_LICENSE secret for GitHub *organization*-owned repos (this
       # repo is org-owned), so the wrapper is not used. The CLI is free and applies
       # the committed .gitleaks.toml allowlist to the full git history.
+      # L3 (v1.0.0 security review): the tarball must match the pinned sha256
+      # (gitleaks_8.30.1_checksums.txt; the GitHub release asset digest agrees).
       - name: Install gitleaks
         run: |
+          set -euo pipefail
           GITLEAKS_VERSION=8.30.1
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C /usr/local/bin gitleaks
           gitleaks version
 
       # Scans the full history reachable from the tag. Without --log-opts,
@@ -178,6 +254,18 @@ jobs:
           print(f'OK: vault.registry.json passes --strict schema check.')
           "
 
+  release:
+    name: Publish the GitHub Release
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # required to publish the GitHub Release
+    steps:
+      - name: Checkout the tag (release notes source; no credentials kept)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
       # The release notes are the curated summary of this version's CHANGELOG
       # section: the text between the release-notes markers inside
       # '## [<version>]'. Without markers, the whole section is used (capped
@@ -195,8 +283,8 @@ jobs:
           text = open("CHANGELOG.md", encoding="utf-8").read()
           m = re.search(r"^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
           if not m:
-              body = f"See CHANGELOG.md (no '## [{version}]' section found)."
-              print(f"::warning::no CHANGELOG section for {version}")
+              print(f"::error::no CHANGELOG section for {version}")
+              sys.exit(1)
           else:
               section = m.group(1)
               c = re.search(r"<!-- release-notes:start -->\n(.*?)<!-- release-notes:end -->", section, re.S)
@@ -210,7 +298,7 @@ jobs:
       # All gates passed — publish the release. This step only runs because
       # every preceding gate succeeded (steps fail fast), so the release is gated.
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true

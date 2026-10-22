@@ -51,8 +51,8 @@ def message(root: Path) -> Optional[str]:
         text = ("ONBOARDING PENDING (step %d/%d): greet the operator as %s and continue the "
                 "brain-onboard interview before anything else (skill brain-onboard). This line is "
                 "the current onboarding status: your reply to the operator's message, even \"hi\", "
-                "ends with this step's question, asked now without running a tool first (if they "
-                "asked you something, answer it in a line or two before the question); record "
+                "ends with this step's question, asked now with no tool call first except the BOOT `python3 scripts/tess hooks-status` "
+                "check (if they asked you something, answer it in a line or two before the question); record "
                 "their answer with `python3 scripts/brain/onboard.py answer`."
                 % (step, state.TOTAL_STEPS, who))
         text += " Question for step %d: %s" % (step, answers.question_for(step, brain or {}))
@@ -85,6 +85,13 @@ def session_start(root: Path, runtime: str) -> int:
         text = unreadable_line(root)
     if not text:
         return 0
+    if runtime == "codex" and text.startswith("ONBOARDING PENDING"):
+        # v0.2.1 Codex parity: live runs (gpt-5.5, codex-cli 0.145) read "without
+        # running a tool first" as "no tools at all" and dropped the operator's
+        # task (1 of 3 runs answered only the step question). Claude's text is
+        # unchanged.
+        text += (" If their message is a task, do the task first with the tools it needs, "
+                 "then end your reply with the step question.")
     nonce = os.environ.get("TESS_BRAIN_TEST_NONCE")
     if nonce:
         text += " (test nonce: %s)" % nonce

@@ -42,6 +42,7 @@ from conftest import REPO_ROOT
 _AGENTS_MD_FRAGMENT_FILES = [
     "AGENTS.md.tpl",
     "codex-config.toml.tpl",
+    "codex-tess.rules.tpl",  # v1.0: Codex prefix rules (tess-gate backstop)
     "gate-compliance.md",
     "harness-note.md",
     "session-memory.md",

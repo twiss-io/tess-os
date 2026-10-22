@@ -12,9 +12,11 @@ provider-complete. This page answers two separate questions:
    [`manifests/`](manifests/). They record evidence and limits and never
    grant permissions or change the gate.
 
-Claude Code is the reference runtime and the only one where Tess's gates run
-as designed. Every other runtime is weaker, and this page says how. It is not
-a parity claim.
+Claude Code is the reference runtime, where Tess's gates run as designed.
+Since v1.0 Codex also runs a Tess gate of its own (after a one-time trust and
+`/hooks` approval); it covers different ground from the Claude hooks, as the
+Codex row says. Every other runtime is weaker, and this page says how. It is
+not a parity claim.
 
 ## 1. Runtime enforcement
 
@@ -44,8 +46,8 @@ runtimes change quickly, so re-check before relying on a row.
 
 | Runtime | Tess target | Level | How it reads Tess | Why this level (limits) | Docs |
 |---|---|---|---|---|---|
-| Claude Code | `claude-code` | Enforced | `CLAUDE.md` (plus cwd ancestors, `.claude/rules/`), `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, and the hooks in `.claude/settings.json`. | Reference runtime. All shipped hooks run natively (PreToolUse on `Task\|Agent` and on `Bash\|Edit\|Write`; PostToolUse, SessionEnd, UserPromptSubmit); exit 2 or `permissionDecision: "deny"` blocks. `dispatch-guard.sh` only warns by design. It reads `AGENTS.md` only when no `CLAUDE.md` exists, so in a Tess install it ignores `AGENTS.md`. It does not read `.agents/skills/`. | [memory](https://code.claude.com/docs/en/memory.md), [hooks](https://code.claude.com/docs/en/hooks.md), [skills](https://code.claude.com/docs/en/skills.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md) |
-| OpenAI Codex CLI | `codex` | Partial | `AGENTS.md` (root to cwd, one file per directory, 32 KiB cap), the 26 commands as `.agents/skills/tess-*/SKILL.md` (explicit-only via `agents/openai.yaml`, run with `$tess-<command>`), and `.codex/config.toml` (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`). | Doctrine loads natively. Enforcement is Codex's own sandbox and approval policy from the rendered `.codex/config.toml`, which Codex loads only for a trusted project. Tess renders no `.codex/hooks.json` in this release, so no Tess hook runs. Codex hooks exist but require hash-based trust review, fail open for unsupported outputs, and the docs call them "a useful guardrail, not a complete enforcement boundary". A project-scoped `.codex/prompts/` is never loaded, which is why the commands are skills. | [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md), [skills](https://learn.chatgpt.com/docs/build-skills.md), [hooks](https://learn.chatgpt.com/docs/hooks.md), [config](https://learn.chatgpt.com/docs/config-file/config-reference.md), [openai/codex#9848](https://github.com/openai/codex/issues/9848) |
+| Claude Code | `claude-code` | Enforced | `CLAUDE.md` (plus cwd ancestors, `.claude/rules/`), `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, and the hooks in `.claude/settings.json`. | Reference runtime. All shipped hooks run natively (PreToolUse on `Task\|Agent`, on `Bash\|Edit\|Write` and, since v1.0, the Tess safety gate on `Bash\|Edit\|Write\|MultiEdit\|NotebookEdit`; PostToolUse, SessionEnd, UserPromptSubmit); exit 2 or `permissionDecision: "deny"` blocks, `"ask"` asks the user. `dispatch-guard.sh` only warns by design. Since v1.0 Tess's PreToolUse safety gate (`.claude/hooks/tess-gate.py`, sha-pinned, run through `run-pinned.py --on-fail block`) runs on every `Bash`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` call and blocks edits to Tess's security-tier and enforcement files, `--no-verify`/`core.hooksPath` bypasses, `gh auth token`, secret-shaped values in commands, and a push of brain/ or clients/ data to a public or unverifiable remote; force pushes, remote changes and visibility changes ask you first (denied in `bypassPermissions`/`dontAsk` mode, which cannot ask). Checked live with Claude Code 2.1.284 in a fresh install on 2026-09-29: `git commit --no-verify` and an Edit to `conductor/guardrails.md` were blocked by the Tess gate (its decision log recorded both). The hooks also run in `claude -p` in a folder that was never trusted, but the project's tool allow list does not (see docs/brain/ONBOARDING.md). The shell checks read the command text: an inline `python -c`/`node -e`/`perl -e` program (or a heredoc fed to one) that names a protected path and calls a write-shaped API is denied best effort, and so are `GIT_CONFIG_*` assignments and git `include.*`/`includeIf.*`/`alias.*` config writes; a script file an interpreter runs and commands assembled at run time are not seen. An agent cannot fake a terminal or type `accept v<N>` to answer `tessctl update` or `tessctl approve` for the operator. The ship gate in git and CI stays the wall. It reads `AGENTS.md` only when no `CLAUDE.md` exists, so in a Tess install it ignores `AGENTS.md`. It does not read `.agents/skills/`. | [memory](https://code.claude.com/docs/en/memory.md), [hooks](https://code.claude.com/docs/en/hooks.md), [skills](https://code.claude.com/docs/en/skills.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md) |
+| OpenAI Codex CLI | `codex` | Enforced | `AGENTS.md` (root to cwd, one file per directory, `project_doc_max_bytes` cap, 32 KiB by default), the installed roles as custom agents in `.codex/agents/<role>.toml` (spawned with `spawn_agent` + `agent_type` when the operator asks for a role; `AGENTS.md` names the roles and the spawn rules), the 26 commands as `.agents/skills/tess-*/SKILL.md` (explicit-only via `agents/openai.yaml`, run with `$tess-<command>`), `.codex/config.toml` (`approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`, the SessionStart onboarding hook, and the v1.0 PreToolUse safety gate), and `.codex/rules/tess.rules` (prefix-rule backstop). | **Enforced once the project is trusted and Tess hooks are approved in `/hooks`** (the one-time setup below). The README and STATUS runtime tables must agree with this row (`tests/test_v02_readme_conformance_levels.py`). Doctrine and roles load natively. Since v1.0 a Tess PreToolUse hook runs on every shell command (`Bash`, covering shell and `exec_command`), file edit (`apply_patch`), subagent spawn (`spawn_agent`) and MCP tool call. It runs `.claude/hooks/tess-gate.py` through the sha-pinned `run-pinned.py --on-fail block`, so a missing, edited or unpinned script blocks the call. It denies: secret-shaped values in commands and dispatches; edits to Tess's security-tier and enforcement files; `--no-verify`, `git commit -n` and `core.hooksPath` bypasses; `gh auth token`; and a push that would publish brain/ or clients/ data to a public or unverifiable remote (the pre-push guard's own check). Codex cannot ask from a hook (an "ask" fails the hook and runs the command), so force pushes, remote changes and visibility changes are denied with a message telling the user to run them. Checked live with codex-cli 0.158.0 and `gpt-6-astra` on 2026-09-29: `git commit --no-verify` and an `apply_patch` to `conductor/guardrails.md` were blocked, and a normal edit and commit went through ([codex/README.md](codex/README.md)). **One-time setup**: Codex runs project hooks and rules only in a trusted project, and only after the operator approves the Tess hooks in `/hooks`; approval is pinned to the hook's hash, so re-approve after a Tess update. Until then Codex's sandbox and approval settings apply, and nothing Tess ships blocks a call. **Limits**: the shell checks read the command text. Since the v1.0.0 security review they also deny `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_PARAMETERS` assignments, git `include.*`/`includeIf.*`/`alias.*` config writes, writes after a `cd` into a protected directory (the working directory is tracked across `cd`), and, best effort, an inline `python -c`/`node -e`/`perl -e` program (or a heredoc fed to one) that names a protected path and calls a write-shaped API; a script file an interpreter runs, commands assembled at run time and other interpreter writes are still not seen. Codex `write_stdin` (typed input sent into an already-open unified-exec shell) does not run PreToolUse again, so anything typed into a shell the gate already allowed is never checked. A PreToolUse hook that times out (the gate's limit is 120 s) or crashes in the host fails OPEN in Codex for that call; `run-pinned.py --on-fail block` covers a missing or edited script, not a hook the host itself gives up on. Hosted tools (web search) skip hooks; the Claude-only warn hooks (dispatch-guard, task locks, UTC context) are not rendered because the Codex target uses the worker profile; the docs call Codex hooks "a useful guardrail, not a complete enforcement boundary". The ship gate in git and CI stays the wall. | [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md), [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents.md), [skills](https://learn.chatgpt.com/docs/build-skills.md), [hooks](https://learn.chatgpt.com/docs/hooks.md), [rules](https://learn.chatgpt.com/docs/agent-configuration/rules.md), [config](https://learn.chatgpt.com/docs/config-file/config-reference.md), [openai/codex#9848](https://github.com/openai/codex/issues/9848) |
 | Any AGENTS.md reader (generic) | `generic` | Advisory | `AGENTS.md` plus a plain `prompts/<command>.md` mirror with no harness-specific frontmatter. | Text only: nothing in the generic output can block a tool call. Use it for runtimes with no Tess target. | [agents.md](https://agents.md/) |
 | GitHub Copilot CLI | none (reads `claude-code` output) | Partial | Loads `CLAUDE.md`, `AGENTS.md`, `.github/instructions`, `.claude/agents`, `.claude/commands`, `.claude/skills`, `.agents/skills` and the hooks in `.claude/settings.json`. | Tess's Claude hooks run. Command `preToolUse` hooks fail closed on a crash or non-zero exit, but timeouts always fail open. The Copilot cloud agent reads only `.github/hooks/*.json`, which Tess does not render. It merges `CLAUDE.md` and `AGENTS.md`, so doctrine loads twice. | [custom instructions](https://docs.github.com/en/copilot/reference/custom-instructions-support), [hooks](https://docs.github.com/en/copilot/reference/hooks-reference), [CLI config](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference) |
 | Cursor (IDE and CLI) | none (reads `claude-code` output) | Partial | `CLAUDE.md` (always applied) and `AGENTS.md`, `.claude/agents`, `.claude/skills`, `.agents/skills`, and the hooks in `.claude/settings.json` ("Include Third-Party Plugins, Skills, and Other Configs", on by default). | Claude hooks map onto 8 Cursor events; Notification and PermissionRequest are unsupported and Glob is unmapped. Exit 2 blocks, but crashes, timeouts and other non-zero exits fail open unless `failClosed: true`, which exists only in the native `.cursor/hooks.json`. Whether hook payloads carry Claude tool names is unverified. Doctrine loads twice. | [rules](https://cursor.com/docs/rules.md), [third-party hooks](https://cursor.com/docs/reference/third-party-hooks.md), [hooks](https://cursor.com/docs/hooks.md), [skills](https://cursor.com/docs/skills.md) |
@@ -73,7 +75,8 @@ and `generic`). Runtimes resolve the pair differently:
   `AGENTS.override.md` or `.agents/`
   ([memory](https://code.claude.com/docs/en/memory.md)).
 - **Codex** reads `AGENTS.override.md` or `AGENTS.md`, one file per
-  directory from the git root down to cwd, root first, up to 32 KiB in total.
+  directory from the git root down to cwd, root first, up to
+  `project_doc_max_bytes` in total (32 KiB by default).
   A user `~/.codex/AGENTS.md` counts toward the same cap
   ([AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md)).
 - **Cursor and the Copilot CLI** load both files, so the doctrine appears
@@ -108,13 +111,20 @@ description.
 
 ### What does not translate
 
-These six areas are Claude Code features or have no common format. Nothing in
-this release renders them for another runtime.
+These six areas are Claude Code features or have no common format. Apart
+from the Codex safety gate in item 1, nothing in this release renders them for
+another runtime.
 
-1. **Safety-gate hooks.** Tess's gates are Claude `PreToolUse` hooks. Codex
-   matches `Edit|Write` to `apply_patch`, whose input carries the patch text,
-   not a `file_path`, so path allowlists do not port unchanged; unsupported
-   outputs fail open and hosted tools skip hooks
+1. **Safety-gate hooks.** Tess's gates are Claude `PreToolUse` hooks; since
+   v1.0 the same `.claude/hooks/tess-gate.py` runs in Claude Code
+   (`--runtime claude`, where an "ask" asks). The
+   `codex` target is the one exception: since v1.0 it renders its own
+   PreToolUse gate (`.claude/hooks/tess-gate.py`) that reads Codex's payloads
+   (`apply_patch` input carries the patch text, not a `file_path`, so the gate
+   parses the patch's file headers) and sends every "ask" as "deny", because
+   Codex fails an "ask" open. Codex also fails open when a hook times out
+   or crashes, and `write_stdin` input to an already-running unified-exec
+   shell never reaches PreToolUse. Hosted tools still skip hooks
    ([Codex hooks](https://learn.chatgpt.com/docs/hooks.md)). Gemini uses
    different event names, tool names and a `decision` key, with no subagent
    events ([Gemini hooks](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)).
@@ -138,7 +148,8 @@ this release renders them for another runtime.
    OpenCode `permission`, Amp `mcpPermissions`. Gemini's project policy tier
    is documented as non-functional
    ([policy engine](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/policy-engine.md)).
-   Tess renders only Claude's settings and Codex's `config.toml`.
+   Tess renders only Claude's settings and Codex's `config.toml` and
+   `.codex/rules/tess.rules`.
 4. **Commands.** There is no universal slash-command format. Agent Skills are
    the closest shared unit ([agentskills.io](https://agentskills.io)), and
    manual-only invocation is runtime-specific (`disable-model-invocation` in

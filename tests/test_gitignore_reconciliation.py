@@ -196,7 +196,7 @@ def fresh_checkout(tmp_path):
     .tess/state/{memory,tasks,ledger,locks}/.gitkeep scaffold create-tess
     ships, committed as the starting point — i.e. what a real fresh
     instance's tracked history looks like before any real data is written."""
-    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "init", "-b", "main", "-q")
     _git(tmp_path, "config", "user.email", "test@tess.test")
     _git(tmp_path, "config", "user.name", "Test")
     shutil.copy2(REPO_ROOT / ".gitignore", tmp_path / ".gitignore")

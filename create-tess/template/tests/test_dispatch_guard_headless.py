@@ -26,10 +26,11 @@ so a regression in the actual shipped hook is what gets caught:
   * the two shipped copies (.claude/hooks/ live mirror + .tess/core/hooks/
     core master) stay byte-identical.
 
-A pre-existing dispatch-in-flight lock (LOCK_DIR="/tmp/tess-dispatch-locks",
-hardcoded in the hook, shared with the running host) is NOT touched or
-asserted on by these tests — mutating a real, shared /tmp path from a test
-suite is unsafe on a machine that may have a genuine dispatch in flight.
+A pre-existing dispatch-in-flight lock (LOCK_DIR, per-user since v0.2.1:
+${XDG_CACHE_HOME:-$HOME/.cache}/tess/dispatch-locks, shared with the running
+host's sessions) is NOT touched or asserted on by these tests — mutating the
+real lock dir from a test suite is unsafe on a machine that may have a genuine
+dispatch in flight (tests/test_hook_pinning.py covers it via TESS_LOCK_DIR).
 That suppression path is unchanged by this fix (the headless check runs
 strictly BEFORE it) and is exercised structurally by reading the script's
 source below instead of by mutating shared state.

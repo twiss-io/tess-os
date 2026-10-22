@@ -4,7 +4,7 @@
 // 300-line quality gate; no behaviour change.
 import { resolve, relative } from 'node:path';
 import { squadDisplayNames } from './roster.js';
-import { buildArrival, RECRUIT_TIP } from './content/pathways.js';
+import { buildArrival, crewTip } from './content/pathways.js';
 import { c, plain, dim, bold } from './ui.js';
 
 export function printBakeHeader(vibe) {
@@ -15,6 +15,12 @@ export function printBakeHeader(vibe) {
 // A plain "done" line for the post-bake integrity checks.
 export function okLine(label) {
   process.stdout.write(`  ${plain ? '[ok]' : c.green('✓')} ${label}\n`);
+}
+
+// A pass/fail line for a post-bake check: never "[ok]" in front of a failure.
+export function checkLine(passed, okLabel, failLabel) {
+  if (passed) okLine(okLabel);
+  else process.stdout.write(`  ${plain ? '[!!]' : c.red('✗')} ${failLabel}\n`);
 }
 
 // L1 — a vibe-aware bake-step printer: prefixes each completed step with the
@@ -36,37 +42,30 @@ export function relTargetHint(targetDir) {
 }
 
 // A fresh scaffold always ships with empty verifier/sign-off registries —
-// fail-closed by design, not a gap: create-tess resets them to empty on
-// every scaffold, regardless of what the SOURCE repo's own policy currently
-// contains (see policy-reset.js). The maintainer repo (twiss-io/tess-os)
-// separately registers its own verifiers, in its own policy.yaml, to govern
-// its own development — that registration is never carried into a
-// scaffolded project. Local hooks and a rendered workflow are useful setup,
-// but they do not establish the external trust anchor or required GitHub
-// enforcement a production gate needs. Say that plainly at the point an
-// operator would otherwise mistake a successful scaffold for production
-// readiness.
-export function printFirstPushNotice() {
-  const bang = plain ? '!' : c.yellow('!');
-  process.stdout.write(
-    `\n  ${bang} Local scaffold ready; protected production work remains blocked.\n`,
-  );
-  process.stdout.write(
-    dim(
-      '    This project ships with empty policy registries — fail-closed by\n' +
-        '    design: you register your own verifier and sign-off keys. (The\n' +
-        '    framework maintainer repository separately registers its own\n' +
-        '    verifiers, in its own policy, to govern its own development — that\n' +
-        '    registration is never carried into a scaffolded project.) So\n' +
-        '    a first governed push can fail closed with no covering APPROVE verdict\n' +
-        '    found. Do not bypass or disable the hook to represent a change as\n' +
-        '    protected, or create, register, or sign review authority from this\n' +
-        '    candidate repository. Record the\n' +
-        "    gate output and base/head references, then escalate to your project's\n" +
-        '    key-custody owner for an external custody decision and required\n' +
-        '    GitHub-check enforcement.\n',
-    ),
-  );
+// fail-closed by design (policy-reset.js). Local hooks are useful setup, but
+// they are not the external trust anchor a production gate needs. The detail
+// (the expected "no covering APPROVE verdict found" block, key custody,
+// required GitHub checks) lives in SECURITY.md and docs/GATE_QUICKSTART.md;
+// the wizard says it in one plain line so a successful setup is never
+// mistaken for production protection, without burying the next step.
+export const PRODUCTION_NOTE =
+  'Using Tess OS to guard real production code needs extra setup first: see SECURITY.md in the folder.';
+
+// The post-bake integrity checks, in plain words (the tessctl verb in brackets
+// is for whoever helps the operator if a check fails).
+export function printChecks(checks) {
+  if (checks.doctor !== null) {
+    checkLine(checks.doctor, 'Checked every Tess OS file: all in place (tessctl doctor OK)',
+      'Checked every Tess OS file: problems found (tessctl doctor ISSUES)');
+  }
+  if (checks.verify !== null) {
+    checkLine(checks.verify, 'Checked the install matches the release (tessctl verify OK)',
+      'Checked the install matches the release: it does not (tessctl verify ISSUES)');
+  }
+  if (checks.anchor !== null && checks.anchor !== undefined) {
+    checkLine(checks.anchor, 'Recorded your safety files outside the folder (tessctl anchor OK)',
+      'Could not record your safety files outside the folder (run `./tessctl anchor accept`)');
+  }
 }
 
 // Report whether the ship-gate is actually live after scaffold. Prints a
@@ -75,12 +74,7 @@ export function printFirstPushNotice() {
 // it falls back to explicit, copy-pasteable numbered next-steps — the
 // acceptable minimum when automatic activation doesn't land clean.
 export function printGateStatus(gate, targetDir) {
-  if (gate.gitInit === 'done') okLine('git init — repository created');
-  else if (gate.gitInit === 'already') okLine('git repository — already present (left untouched)');
-
-  if (gate.hooksInstalled === true && gate.gitHooksLive) {
-    okLine('tessctl gate install-hooks — pre-commit/pre-push hooks + CI workflow live');
-  }
+  if (gate.gitInit === 'already') okLine('Your folder already had a git history (left untouched)');
 
   const gateNotLive =
     gate.gitInit === 'failed' ||
@@ -89,14 +83,11 @@ export function printGateStatus(gate, targetDir) {
     gate.gitInit === 'skipped' ||
     gate.hooksInstalled === 'skipped';
 
-  if (!gateNotLive) {
-    printFirstPushNotice();
-    return;
-  }
+  if (!gateNotLive) return;
 
   const hint = relTargetHint(targetDir);
   process.stdout.write(
-    `\n  ${plain ? '!' : c.yellow('!')} The ship-gate is NOT fully enforcing yet — activate it yourself:\n`,
+    `\n  ${plain ? '!' : c.yellow('!')} The safety checks that run on every save are not on yet. To turn them on, run:\n`,
   );
   if (gate.error) process.stdout.write(dim(`    ${gate.error.split('\n')[0]}\n`));
   const steps = [];
@@ -106,20 +97,21 @@ export function printGateStatus(gate, targetDir) {
   steps.forEach((s, i) => process.stdout.write(`    ${i + 1}. ${s}\n`));
 }
 
-export function printArrival(vibe, choices, checks) {
+export function printArrival(vibe, choices) {
+  // The plain setup ends on the final screen alone: no second greeting, no
+  // list of team names (v1.0 e2e review, S4).
+  if (vibe.key === 'plain') return;
   const ctx = {
     operator: choices.operator,
     conductor: choices.conductor,
     vibeKey: choices.vibe,
-    term: vibe.operatorTerm,
     squadNoun: vibe.squadNoun,
     squadNames: squadDisplayNames(choices.set),
     orchNames: choices.set.orchDisplay,
   };
   const rule = plain ? '='.repeat(57) : '─'.repeat(57);
-  const dr = checks.doctor === false ? ' (doctor reported issues — run `tessctl render` after resolving)' : '';
   process.stdout.write(`\n${rule}\n`);
   process.stdout.write(buildArrival(choices.pathway, ctx) + '\n');
   process.stdout.write(`${rule}\n`);
-  process.stdout.write(dim(RECRUIT_TIP) + dr + '\n');
+  process.stdout.write(dim(crewTip(ctx.squadNames.length)) + '\n');
 }
