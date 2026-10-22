@@ -109,6 +109,7 @@ unreviewed-by-a-human code. That is why `main` is not a release.
 
 **Limits, stated plainly:**
 - The build automation's GitHub credentials have **admin** rights. Someone holding those credentials can create release tags and edit workflows, so the CI gates are not the last line against them. For `tessctl update` with a pinned fingerprint, the check on the user's machine still holds, because no repository change can forge the release signature.
+- npm publishing has no such check on the user's machine. The `npm-publish` environment admits any `create-tess-v*` tag, and the workflow that runs is the one at the tagged commit, so someone holding those admin credentials can tag a commit whose `publish-npm.yml` has no Gate 0 and publish `create-tess` without the release key; `npm create tess` then runs that code, and npm provenance is the only check left.
 - GitHub Release pages and uploaded assets are not signed artifacts; the signed tag is. Verify with `git verify-tag <tag>` against the key above.
 - An unpinned `tessctl` install refuses to update; with `--trust-on-first-use` it trusts the first signer it sees. Keep `framework.trusted_key_fingerprint` pinned to the fingerprint above.
 - If the release key or the maintainer's machine is compromised, this model is compromised. Report suspected misuse privately (see above).
@@ -672,7 +673,23 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (`~/.claude/projects`, `$CODEX_HOME/sessions`, `~/.gemini/tmp`) and signed it
   into the ledger under `~/.config/tess/brain/`. `sync --transcript` accepts
   only files inside that store; `--claude-dir`, `--codex-home` and
-  `--gemini-home` with any other folder need you at a terminal typing yes. A
+  `--gemini-home` with any other folder need you at a terminal typing yes.
+  That terminal check is weaker than it reads in 1.0.0: the store is found
+  from `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME` and `$HOME` in the
+  environment of the command that runs the sync, and the check compares a
+  folder with that same store. A sync started with one of those variables
+  pointed at another folder therefore journals that folder as your words
+  with no terminal and no question, and the gate does not refuse the three
+  runtime variables (it refuses `HOME` and `TESS_BRAIN_PROVENANCE_DIR`). In
+  the same way, the brain's hook handler (`tessbrain.py hook ...`) trusts
+  whatever its caller sends, so an agent shell outside a sandbox that runs
+  it with a prompt it wrote records that prompt as yours. Until the 1.0.x
+  fix, "the runtime's own transcript store" and "only a hook" hold in a
+  sandboxed shell (the Codex sandbox cannot write the ledger, as below);
+  in Claude Code, which runs commands without a sandbox by default, they
+  rest on Claude Code's own permission prompt for a command that moves
+  those variables or runs the hook handler (Tess pre-approves neither), and
+  a permission mode that does not ask removes them. A
   shell that cannot write the ledger (the Codex sandbox) can read the brain key
   but never mints evidence: captured turns, journal lines and accepted-record
   seals are never taken from the in-repo outbox, a sync there journals nothing
