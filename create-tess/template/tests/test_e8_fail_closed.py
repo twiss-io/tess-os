@@ -154,7 +154,15 @@ def _start_hook(runtime: str, root: Path) -> subprocess.Popen:
         cmd = _claude_gate_cmd()
         env = {**os.environ, "CLAUDE_PROJECT_DIR": str(root), "TESS_GATE_LOG": os.devnull}
     return subprocess.Popen(["sh", "-c", cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, cwd=str(root), env=env)
+                            stderr=subprocess.PIPE, text=True, cwd=str(root), env=env,
+                            preexec_fn=_default_stop_signals)
+
+
+def _default_stop_signals():
+    # A suite started with nohup or in a background job inherits SIGHUP/SIGINT as ignored, and
+    # an ignored signal never reaches the gate: T5 would then pass without testing anything.
+    for name in ("SIGTERM", "SIGHUP", "SIGINT"):
+        signal.signal(getattr(signal, name), signal.SIG_DFL)
 
 
 def _processes() -> dict:
