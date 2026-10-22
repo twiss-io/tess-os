@@ -55,11 +55,11 @@ CODEX_CWD = "/tmp/tess-brain-fx"
 def cli(root, *args, stdin=None, env=None, timeout=120, witness=True):
     """Run tessbrain.py against an instance root; returns CompletedProcess.
 
-    1.0.x (B-1): a transcript home named only in a command's environment is not trusted; the runtime's
-    own hook must have seen it (or, for a Codex / Gemini home, the operator confirmed it at a terminal).
-    The fixture folders this helper makes a runtime's home are recorded the way that hook would
-    (witness_home); a home the caller passes in `env` is recorded too unless witness=False, which
-    tests use to play an agent that names a folder only in its own shell."""
+    1.0.x (B-1): a transcript home named only in a command's environment is not trusted until the
+    operator confirms it at a real terminal (stores.json). The fixture folders this helper makes a
+    runtime's home are recorded as that confirmation would record them (witness_home); a home the
+    caller passes in `env` is recorded too unless witness=False, which tests use to play an agent that
+    names a folder only in its own shell."""
     e = dict(os.environ)
     e.setdefault("TESS_BRAIN_NO_BACKFILL", "1")
     none = os.path.realpath(str(root)) + ".no-such-home"  # hermetic, and outside the instance: never sweep the real ~/.codex or ~/.gemini
@@ -85,8 +85,9 @@ def cli(root, *args, stdin=None, env=None, timeout=120, witness=True):
 
 
 def witness_home(root, runtime, home, env=None):
-    """What a runtime hook records once it ran with `home` as its transcript home (hooks.witness_store),
-    written in-process into the per-project state outside the instance (TESS_BRAIN_PROVENANCE_DIR)."""
+    """What the operator's "yes" at a terminal records for a moved runtime home
+    (commands._operator_trusts_env_homes), written in-process into the per-project state outside the
+    instance (TESS_BRAIN_PROVENANCE_DIR)."""
     sys.path.insert(0, os.path.join(REPO, "scripts", "brain"))
     from brainlib import sync
     from brainlib.config import Config
