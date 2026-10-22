@@ -129,6 +129,8 @@ def pinned(tmp_path):
         shutil.copy2(REPO / rel, root / rel)
     shutil.copytree(REPO / "scripts/brain", root / "scripts/brain", ignore=ign)
     fxlib.make(str(root))
+    # 1.0.x (B-1): the operator confirmed this moved Claude home at a terminal (a hook never trusts one)
+    fxlib.witness_home(root, "claude", str(root.parent / "claude-cfg"))
     return root
 
 
