@@ -121,6 +121,30 @@ def automation_reason(runtime: str, data: Dict) -> str:
     return nested_runtime()
 
 
+def witness_store(cfg: Config, runtime: str) -> bool:
+    """1.0.x (Cyra B-1): a hook runs in the runtime's own environment, so a transcript home it names
+    (CLAUDE_CONFIG_DIR, CODEX_HOME, or $HOME) is where this runtime really keeps its transcripts:
+    record it as trusted (sync.trusted_homes). Never for a session started by automation (`claude -p`,
+    the Agent SDK, or a runtime nested inside another agent session), and never from a shell that
+    cannot write the external state (a sandbox). True when the home is trusted afterwards."""
+    from . import extstate, sync
+    if runtime not in ("claude", "codex"):
+        return False
+    home = os.path.realpath(str(sync.env_home(runtime)))
+    if home in sync.trusted_homes(cfg, runtime):
+        return True
+    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
+    if runtime == "claude" and ep.startswith("sdk"):
+        return False
+    why = nested_runtime()
+    if why:
+        log_error(cfg, "hook: not trusting the %s transcript home %s: %s" % (runtime, home, why))
+        return False
+    if not extstate.writable(cfg):
+        return False
+    return sync.record_home(cfg, runtime, home)
+
+
 def _mark_automation(cfg: Config, runtime: str, data: Dict, why: str) -> None:
     from . import provenance
     provenance.mark_automation(cfg, runtime, str(data.get("session_id") or ""), str(data.get("transcript_path") or ""),
@@ -225,6 +249,7 @@ def dispatch(root, event: str, runtime: str) -> int:
             return 0
         from . import provenance  # hooks run outside the agent's sandbox: drain what a sandboxed shell queued
         provenance.prepare(cfg)
+        witness_store(cfg, runtime)  # before stop/session-start spawn the sync that reads the store
         {"session-start": session_start, "prompt": prompt, "stop": stop}[event](cfg, runtime, data)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
         log_error(cfg, "hook %s (%s) failed" % (event, runtime), exc)

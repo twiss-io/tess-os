@@ -105,6 +105,12 @@ def test_f1_home_overrides_are_accepted_only_when_they_are_the_runtimes_own(tmp_
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gem"))
     assert sync.home_problem(cfg, None, None) == ""
+    # 1.0.x (Cyra B-1): a home named only in this process's environment is not the runtime's own
+    assert "Codex home" in sync.home_problem(cfg, str(tmp_path / "codex"), None)
+    assert "Gemini home" in sync.home_problem(cfg, None, str(tmp_path / "gem"))
+    # ... until the runtime's hook saw it (Codex) or the operator confirmed it at a terminal (stores.json)
+    assert sync.record_home(cfg, "codex", str(tmp_path / "codex"))
+    assert sync.record_home(cfg, "gemini", str(tmp_path / "gem"))
     assert sync.home_problem(cfg, str(tmp_path / "codex"), str(tmp_path / "gem")) == ""
     assert "Codex home" in sync.home_problem(cfg, str(tmp_path / "other"), None)
     assert "Gemini home" in sync.home_problem(cfg, None, str(tmp_path / "other"))

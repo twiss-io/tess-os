@@ -6080,6 +6080,10 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
         v.add(ASK, f"an inline {os.path.basename(str(argv[0]))} program makes a file link, and Tess "
                    "cannot work out where a link's target resolves from the link's own folder, so a "
                    "later write through it could land on a protected file")
+    inline = code is not raw or not [a for a in argv[1:] if not str(a).startswith("-")]
+    if inline and _BRAIN_PROGRAM.search(code) and _BRAIN_HOOK_WORD.search(code):
+        # 1.0.x (Cyra B-2): the brain's hook handlers, reached from inline code.
+        v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
     if not _INTERP_WRITE.search(code):
         return
     # v1.0 audit: each distinct token is checked once, and one evaluation
@@ -6107,6 +6111,66 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
 
 _HOME_ENV = ("HOME", "XDG_CONFIG_HOME")
 _KEY_TOOLS = re.compile(r"(?<![\w.-])(git|tessctl|tessbrain(\.py)?)(?![\w-])")
+# 1.0.x (Cyra B-1): the runtime variables that say where Claude Code, Codex
+# and Gemini CLI keep their transcripts. The brain journals the transcripts it
+# finds there as the operator's words, so moving one for a brain command would
+# let an agent pick which conversations count as the operator's.
+_BRAIN_STORE_ENV = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME")
+_BRAIN_PROGRAM = re.compile(r"(?<![\w.-])(tessbrain(\.py)?|onboard\.py|brainlib|oobe)(?![\w-])")
+_BRAIN_SCRIPTS = ("tessbrain", "tessbrain.py", "onboard.py")
+_BRAIN_HOOK_WORD = re.compile(r"(?<![\w-])(hooks?|dispatch)(?![\w-])")
+_BRAIN_HOOK_DENY = ("it runs the brain's hook handler from an agent's shell. Only Claude Code and "
+                    "Codex run that handler, as a hook; run by an agent, it would record words the "
+                    "agent wrote as yours")
+
+
+def _check_brain_store_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
+    """1.0.x (Cyra B-1): CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_CLI_HOME moved
+    for a brain command, as HOME is for git, tessctl and tessbrain."""
+    name = os.path.basename(str(argv[0]))
+    if name in ("export", "declare", "typeset", "setenv"):
+        moved = [str(a).partition("=")[0] for a in argv[1:]
+                 if str(a).partition("=")[0] in _BRAIN_STORE_ENV and "=" in str(a)]
+        tool = _BRAIN_PROGRAM.search(raw)
+    else:
+        moved = [k for k in env if k in _BRAIN_STORE_ENV]
+        tool = _BRAIN_PROGRAM.search(" ".join(str(a) for a in argv))
+    if moved and tool:
+        v.add(DENY, f"it sets {', '.join(moved)} for {tool.group(1)}; a moved transcript folder "
+                    "would let the agent choose which conversations the brain records as yours",
+              "envhome")
+
+
+def _check_brain_hook(argv: list, v: Verdict) -> None:
+    """1.0.x (Cyra B-2): `tessbrain.py hook ...` / `onboard.py hook ...` run
+    from an agent's shell, directly or through the pinned launcher. The
+    handler trusts whatever its caller sends, so it is denied: real hooks never
+    come through a shell tool. A subcommand only known at run time asks."""
+    words = [str(a) for a in argv]
+    prog = os.path.basename(words[0]).lower() if words else ""
+    if prog not in _BRAIN_SCRIPTS and not INTERPRETERS.match(prog):
+        return
+    for i, w in enumerate(words):
+        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS:
+            continue
+        rest, j = words[i + 1:], 0
+        while j < len(rest):
+            a = rest[j]
+            if a == "--root" or a == "--roo" or a == "--ro":
+                j += 2
+                continue
+            if a.startswith("-"):
+                j += 1
+                continue
+            break
+        if j >= len(rest):
+            continue
+        sub = rest[j]
+        if sub.lower() == "hook":
+            v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
+        elif _expands(argv[i + 1 + j]) or _dynamic(argv[i + 1 + j]):
+            v.add(ASK, "the brain subcommand it runs is only known at run time, so Tess cannot "
+                       "tell whether it runs the brain's hook handler")
 
 
 def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
@@ -6268,6 +6332,15 @@ def _check_extract(root: Path, cwd: str, argv: list, v: Verdict, ctx: "_Ctx | No
         _check_extract_plan(root, cwd, argv, v, ctx, plan)
 
 
+def _glob_dest_spellings(sp, cwd: str) -> list:
+    """Every spelling of an extract destination glob, made absolute.
+
+    1.0.x (Reid E3, N2): every match, by value, and the text as written too
+    when it is itself one of them: a superset of the matches by construction
+    (the caller drops duplicates)."""
+    return [x if os.path.isabs(x) else os.path.join(cwd, x) for x in sp]
+
+
 def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan) -> None:
     dest, archive, odd = plan
     tool = os.path.basename(argv[0])
@@ -6302,9 +6375,7 @@ def _check_extract_plan(root: Path, cwd: str, argv: list, v: Verdict, ctx, plan)
             if sp.truncated:
                 v.add(ASK, f"`{tool}` extracts into {t}, a glob that matches more names than Tess "
                            "lists one by one, so Tess cannot check every one")
-            # 1.0.x (Reid E3): every match, by value; the text as written may
-            # also be one of the matches, so it is not always last.
-            spelled += [x if os.path.isabs(x) else os.path.join(cwd, x) for x in sp if x != t]
+            spelled += _glob_dest_spellings(sp, cwd)
     dests = []
     for d in dict.fromkeys(spelled):
         dests.append(d)
@@ -8059,6 +8130,8 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
     _check_home_env(env, argv, raw, v)
+    _check_brain_store_env(env, argv, raw, v)
+    _check_brain_hook(argv, v)
     copier = name if name == "ditto" else _writer_name(name)
     if copier in _COPY_INTO:
         _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)

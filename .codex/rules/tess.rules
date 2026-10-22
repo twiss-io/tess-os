@@ -185,6 +185,18 @@ prefix_rule(
     not_match = ["python3 scripts/brain/tessbrain.py review", "python3 scripts/brain/tessbrain.py status"],
 )
 
+# 1.0.x (Cyra B-2). The brain's hook handlers are run by Codex and Claude Code
+# themselves, as hooks, never by an agent's shell: run by an agent, the
+# handler would record words the agent wrote as the operator's. The gate
+# (tess-gate.py) refuses these too; this rule is the backstop.
+prefix_rule(
+    pattern = ["python3", ["scripts/brain/tessbrain.py", "./scripts/brain/tessbrain.py", "scripts/brain/onboard.py", "./scripts/brain/onboard.py"], "hook"],
+    decision = "forbidden",
+    justification = "The brain's hook handler runs only as a Codex or Claude Code hook. Run from an agent's shell, it would record words the agent wrote as the operator's.",
+    match = ["python3 scripts/brain/tessbrain.py hook prompt --runtime codex", "python3 scripts/brain/onboard.py hook session-start"],
+    not_match = ["python3 scripts/brain/tessbrain.py status", "python3 scripts/brain/onboard.py status --json"],
+)
+
 prefix_rule(
     pattern = ["python3", ["scripts/brain/tessbrain.py", "./scripts/brain/tessbrain.py"], ["--json", "--root"]],
     decision = "prompt",
