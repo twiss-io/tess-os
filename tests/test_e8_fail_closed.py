@@ -402,10 +402,12 @@ def test_iterative_strings_keeps_document_order():
     for _ in range(300):
         obj = build(0)
         assert gate._strings(obj) == _strings_old(obj)
+    # Deep nesting: the iterative walk has no recursion limit (the old recursive one, used above as
+    # the reference, would overflow Python 3.9's stack here, so the expected value is written out).
     deep = "x"
-    for _ in range(500):
+    for _ in range(5000):
         deep = [deep, {"a": "y"}]
-    assert gate._strings(deep) == _strings_old(deep)
+    assert gate._strings(deep) == ["x"] + ["y"] * 5000
 
 
 def test_block_mode_claude_hooks_also_ask_the_host_to_block_on_failure():
