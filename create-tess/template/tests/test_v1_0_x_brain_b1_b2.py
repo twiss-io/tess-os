@@ -503,3 +503,18 @@ def test_n2_an_extract_destination_glob_keeps_every_match():
 def test_the_changelog_and_security_name_b1_b2():
     sec = (REPO / "SECURITY.md").read_text(encoding="utf-8")
     assert re.search(r"CLAUDE_CONFIG_DIR", sec) and "stores.json" in sec
+
+
+@pytest.mark.parametrize("script,args", [("tessbrain.py", ["status"]), ("onboard.py", ["status", "--json"])])
+def test_an_allowed_brain_command_writes_no_bytecode_into_scripts_brain(tmp_path, script, args):
+    """The gate allows these commands, so they must change no protected file: Python's bytecode cache
+    under scripts/brain/ is one (the real-shell conformance harness counts it)."""
+    import shutil
+    import subprocess
+    root = tmp_path / "inst"
+    shutil.copytree(REPO / "scripts" / "brain", root / "scripts" / "brain",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+    subprocess.run([sys.executable, str(root / "scripts" / "brain" / script)] + args, cwd=str(root),
+                   env=env, capture_output=True, text=True, timeout=120)
+    assert not list((root / "scripts" / "brain").rglob("__pycache__"))
