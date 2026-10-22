@@ -687,14 +687,19 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `--gemini-home` with any other folder need you at a terminal typing yes.
   The store is the runtime's home under your OS user record
   (`~/.claude`, `~/.codex`, `~/.gemini` from the user database, never
-  `$HOME`), plus a home that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` moves only
-  once Claude Code's or Codex's own hook has run with it (a hook runs in the
-  runtime's environment, which an agent's shell cannot change), and a Codex
-  or Gemini home you confirmed at a terminal. Tess keeps that list in
-  `stores.json` next to the ledger, outside the repo. A folder named only
-  in the environment of the command that runs the sync is not journaled
-  and its lines never count as yours; a hook of a session started by
-  automation or nested inside another agent session does not add its home.
+  `$HOME`), plus a home that `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
+  `GEMINI_CLI_HOME` moves only once you confirmed it, typing yes when
+  `tessbrain.py sync` asks at a real terminal outside Claude Code and Codex
+  (a confirmed `--codex-home` / `--gemini-home` counts too). Tess keeps that
+  list in `stores.json` next to the ledger, outside the repo; a list it
+  cannot read, or that is not private to you, trusts nothing. A hook never
+  adds a home: its environment is not proof, since an agent can start a
+  runtime or run the handler with any value. A folder named only in the
+  environment of the command that runs the sync is not journaled and its
+  lines never count as yours. A captured prompt counts as yours only when
+  every automation check ran: a hook that cannot read its process
+  ancestry or the session's transcript, whose check fails, or whose input
+  is not a prompt string records the turn as automation, or not at all.
   The gate refuses the brain's hook handler (`tessbrain.py hook ...`,
   `onboard.py hook ...`) under any program it can see run it, and a moved
   `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME` on a command that

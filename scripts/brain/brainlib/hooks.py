@@ -109,40 +109,24 @@ def automation_reason(runtime: str, data: Dict) -> str:
     a runtime an agent started from its own shell send prompts a program or an agent chose. Signals: Claude
     Code's entrypoint for this process, the session's own transcript markers (parsers), and a runtime
     running inside another runtime's session (process ancestry)."""
-    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
-    if runtime == "claude" and ep.startswith("sdk"):
-        return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
-    path = str(data.get("transcript_path") or "")
-    if path and os.path.isfile(path):
-        from .parsers import transcript_automation
-        why = transcript_automation(runtime, path)
-        if why:
-            return why
-    return nested_runtime()
-
-
-def witness_store(cfg: Config, runtime: str) -> bool:
-    """1.0.x (Cyra B-1): a hook runs in the runtime's own environment, so a transcript home it names
-    (CLAUDE_CONFIG_DIR, CODEX_HOME, or $HOME) is where this runtime really keeps its transcripts:
-    record it as trusted (sync.trusted_homes). Never for a session started by automation (`claude -p`,
-    the Agent SDK, or a runtime nested inside another agent session), and never from a shell that
-    cannot write the external state (a sandbox). True when the home is trusted afterwards."""
-    from . import extstate, sync
-    if runtime not in ("claude", "codex"):
-        return False
-    home = os.path.realpath(str(sync.env_home(runtime)))
-    if home in sync.trusted_homes(cfg, runtime):
-        return True
-    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
-    if runtime == "claude" and ep.startswith("sdk"):
-        return False
-    why = nested_runtime()
-    if why:
-        log_error(cfg, "hook: not trusting the %s transcript home %s: %s" % (runtime, home, why))
-        return False
-    if not extstate.writable(cfg):
-        return False
-    return sync.record_home(cfg, runtime, home)
+    try:
+        ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip()
+        if runtime == "claude" and ep.startswith("sdk"):
+            return "Claude Code entrypoint %s (claude -p or the Agent SDK)" % ep
+        path = str(data.get("transcript_path") or "")
+        if path and os.path.isfile(path):
+            from .parsers import transcript_automation
+            why = transcript_automation(runtime, path)
+            if why:
+                return why
+        # 1.0.x (fail closed): a turn counts as the operator's only when every check could run.
+        # No process ancestry (no `ps`, or no parent found) is not proof of a top-level session.
+        names = _ancestry()
+        if not names:
+            return "the hook could not read its process ancestry, so it cannot rule out automation"
+        return nested_runtime(names)
+    except Exception as exc:  # noqa: BLE001 - an automation check that failed proves nothing
+        return "the automation check failed (%s)" % type(exc).__name__
 
 
 def _mark_automation(cfg: Config, runtime: str, data: Dict, why: str) -> None:
@@ -188,7 +172,10 @@ def session_start(cfg: Config, runtime: str, data: Dict) -> None:
 
 
 def prompt(cfg: Config, runtime: str, data: Dict) -> None:
-    text = str(data.get("prompt") or "")
+    raw = data.get("prompt")
+    if not isinstance(raw, str):  # 1.0.x (fail closed): only a prompt string is a typed turn
+        return
+    text = raw
     if not text.strip() or _INJECTED.search(text):  # plugin-injected text is not the operator typing
         return
     why = automation_reason(runtime, data)
@@ -249,7 +236,6 @@ def dispatch(root, event: str, runtime: str) -> int:
             return 0
         from . import provenance  # hooks run outside the agent's sandbox: drain what a sandboxed shell queued
         provenance.prepare(cfg)
-        witness_store(cfg, runtime)  # before stop/session-start spawn the sync that reads the store
         {"session-start": session_start, "prompt": prompt, "stop": stop}[event](cfg, runtime, data)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
         log_error(cfg, "hook %s (%s) failed" % (event, runtime), exc)

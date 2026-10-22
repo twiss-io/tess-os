@@ -324,35 +324,153 @@ def test_b1_a_claude_dir_under_a_store_named_only_by_the_agent_is_refused(brain)
     assert not _principal_attested(inst, "other planted plan")
 
 
-def test_b1_a_store_a_real_hook_saw_is_attested(brain):
-    """The runtime's own moved store (its hook ran with it) still journals the operator's words."""
+def _hook_with(inst, store, sid, text, **env):
+    t = _say(store / "projects", inst, sid, text)
+    data = {"session_id": sid, "transcript_path": str(t), "cwd": str(inst), "prompt": "hello"}
+    e = {"CLAUDE_CONFIG_DIR": str(store), "TESS_BRAIN_HOOK_INLINE": "1"}
+    e.update(env)
+    for ev in ("prompt", "stop"):
+        r = fxlib.cli(inst, "hook", ev, "--runtime", "claude", stdin=json.dumps(data), env=e, witness=False)
+        assert r.returncode == 0
+    return t
+
+
+def _trusted_homes(inst, runtime="claude"):
+    sys.path.insert(0, os.path.join(str(REPO), "scripts", "brain"))
+    from brainlib import sync
+    from brainlib.config import Config
+    return sync.trusted_homes(Config(inst), runtime)
+
+
+def test_b1_a_hook_never_makes_a_moved_store_trusted(brain):
+    """Fail closed: a hook's environment is not proof (an agent can run the handler, or start a runtime,
+    with any value), so a hook neither attests a moved store nor records it for later syncs."""
+    inst, tmp = brain
+    store = tmp / "hook-cfg"
+    _hook_with(inst, store, "b1hook", "We decided to keep the weekly review.")
+    assert not _principal_attested(inst, "weekly review")
+    assert os.path.realpath(str(store)) not in _trusted_homes(inst)
+    fxlib.cli(inst, "sync", "--runtime", "claude", env={"CLAUDE_CONFIG_DIR": str(store)}, witness=False)
+    assert not _principal_attested(inst, "weekly review")  # nothing carried over to a later sync
+
+
+def test_b1_a_store_the_operator_confirmed_is_attested(brain):
+    """Positive control: once the operator confirmed the moved home at a terminal, it journals."""
     inst, tmp = brain
     store = tmp / "real-cfg"
-    t = _say(store / "projects", inst, "b1real", "We decided to keep the weekly review.")
-    data = {"session_id": "b1real", "transcript_path": str(t), "cwd": str(inst), "prompt": "hello"}
-    r = fxlib.cli(inst, "hook", "prompt", "--runtime", "claude", stdin=json.dumps(data),
-                  env={"CLAUDE_CONFIG_DIR": str(store), "TESS_BRAIN_HOOK_INLINE": "1"}, witness=False)
-    assert r.returncode == 0
-    r = fxlib.cli(inst, "hook", "stop", "--runtime", "claude", stdin=json.dumps(data),
-                  env={"CLAUDE_CONFIG_DIR": str(store), "TESS_BRAIN_HOOK_INLINE": "1"}, witness=False)
-    assert r.returncode == 0
-    assert _principal_attested(inst, "weekly review")
+    _hook_with(inst, store, "b1real", "We decided to keep the monthly review.")
+    fxlib.witness_home(inst, "claude", str(store))
+    r = fxlib.cli(inst, "sync", "--runtime", "claude", env={"CLAUDE_CONFIG_DIR": str(store)}, witness=False)
+    assert r.returncode in (0, 3), r.stdout + r.stderr
+    assert _principal_attested(inst, "monthly review")
 
 
-def test_b1_a_nested_runtime_hook_does_not_vouch_for_its_store(brain, monkeypatch):
+def test_b1_the_terminal_question_is_never_asked_inside_a_session_or_a_pipe(brain):
+    inst, tmp = brain
+    store = tmp / "ask-cfg"
+    for env in ({"CLAUDECODE": "1"}, {}):
+        r = fxlib.cli(inst, "sync", "--runtime", "claude", stdin="yes\n", witness=False,
+                      env=dict(env, CLAUDE_CONFIG_DIR=str(store)))
+        assert 'Type "yes"' not in r.stdout
+    assert os.path.realpath(str(store)) not in _trusted_homes(inst)
+
+
+@pytest.mark.parametrize("bad", ["mode", "inside", "garbage", "list", "relative"])
+def test_b1_a_doubtful_stores_file_trusts_nothing(brain, bad):
     sys.path.insert(0, os.path.join(str(REPO), "scripts", "brain"))
-    from brainlib import hooks, sync
+    from brainlib import extstate, sync
     from brainlib.config import Config
     inst, tmp = brain
     cfg = Config(inst)
-    store = tmp / "nested-cfg"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(store))
-    monkeypatch.setattr(hooks, "_ancestry", lambda limit=40: ["zsh", "claude", "zsh", "claude", "login"])
-    hooks.witness_store(cfg, "claude")
-    assert os.path.realpath(str(store)) not in sync.trusted_homes(cfg, "claude")
-    monkeypatch.setattr(hooks, "_ancestry", lambda limit=40: ["zsh", "claude", "login"])
-    hooks.witness_store(cfg, "claude")
-    assert os.path.realpath(str(store)) in sync.trusted_homes(cfg, "claude")
+    home = str(tmp / "doubt-cfg")
+    assert sync.record_home(cfg, "claude", home)
+    assert os.path.realpath(home) in sync.trusted_homes(cfg, "claude")
+    p = extstate.project_dir(cfg) / sync.STORES_FILE
+    if bad == "mode":
+        os.chmod(str(p), 0o644)
+    elif bad == "inside":
+        p.write_text(json.dumps({"claude": [str(inst / "x")]}))
+    elif bad == "garbage":
+        p.write_text("{not json")
+    elif bad == "list":
+        p.write_text(json.dumps([home]))
+    else:
+        p.write_text(json.dumps({"claude": ["doubt-cfg"]}))
+    assert os.path.realpath(home) not in sync.trusted_homes(cfg, "claude")
+
+
+# ---------------------------------------------------------------- B-2: a turn is the operator's only when proven
+def _prompt_turn(inst, monkeypatch, data, ancestry):
+    sys.path.insert(0, os.path.join(str(REPO), "scripts", "brain"))
+    from brainlib import hooks, turns
+    from brainlib.config import Config
+    cfg = Config(inst)
+    monkeypatch.setattr(hooks, "_ancestry", ancestry)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    hooks.prompt(cfg, "claude", data)
+    rows = turns.read(cfg, limit=None)
+    return rows[-1] if rows else None
+
+
+TOP_LEVEL = ["zsh", "claude", "login"]
+
+
+def test_b2_control_a_top_level_prompt_is_the_operators(brain, monkeypatch):
+    inst, _ = brain
+    row = _prompt_turn(inst, monkeypatch, {"prompt": "hello there", "session_id": "s1"},
+                       lambda limit=40: list(TOP_LEVEL))
+    assert row and row["principal"] is True
+
+
+@pytest.mark.parametrize("names", [[], None])
+def test_b2_no_process_ancestry_is_not_proof(brain, monkeypatch, names):
+    inst, _ = brain
+    row = _prompt_turn(inst, monkeypatch, {"prompt": "hello there", "session_id": "s2"},
+                       lambda limit=40: names)
+    assert row and row["principal"] is False
+
+
+def test_b2_a_failing_automation_check_is_not_proof(brain, monkeypatch):
+    inst, _ = brain
+
+    def boom(limit=40):
+        raise RuntimeError("x")
+    row = _prompt_turn(inst, monkeypatch, {"prompt": "hello there", "session_id": "s3"}, boom)
+    assert row and row["principal"] is False
+
+
+def test_b2_an_unreadable_transcript_is_not_proof(brain, monkeypatch):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    inst, tmp = brain
+    t = tmp / "t.jsonl"
+    t.write_text("{}\n")
+    os.chmod(str(t), 0)
+    try:
+        row = _prompt_turn(inst, monkeypatch, {"prompt": "hello there", "session_id": "s4",
+                                               "transcript_path": str(t)}, lambda limit=40: list(TOP_LEVEL))
+    finally:
+        os.chmod(str(t), 0o600)
+    assert row and row["principal"] is False
+
+
+def test_b2_a_nested_session_is_not_the_operator(brain, monkeypatch):
+    inst, _ = brain
+    row = _prompt_turn(inst, monkeypatch, {"prompt": "hello there", "session_id": "s5"},
+                       lambda limit=40: ["zsh", "claude", "zsh", "claude", "login"])
+    assert row and row["principal"] is False
+
+
+@pytest.mark.parametrize("stdin", ["", "not json", "[1, 2]", "{\"prompt\": 7}"])
+def test_b2_unreadable_hook_input_records_nothing_as_the_operator(brain, stdin):
+    inst, _ = brain
+    r = fxlib.cli(inst, "hook", "prompt", "--runtime", "claude", stdin=stdin, witness=False)
+    assert r.returncode == 0
+    sys.path.insert(0, os.path.join(str(REPO), "scripts", "brain"))
+    from brainlib import turns
+    from brainlib.config import Config
+    assert not [x for x in turns.read(Config(inst), limit=None) if x.get("principal")]
+
 
 
 def test_b1_home_is_read_from_the_os_user_record(brain, monkeypatch):

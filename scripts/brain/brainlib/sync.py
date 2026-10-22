@@ -73,9 +73,11 @@ def vetted(cfg: Config, runtime: str, paths: List[str], also_cwd: List[str], sto
 # --gemini-home checks compared against that same folder, so a command that
 # moved one of them chose which files were attested as the operator's words.
 # Now the trusted homes are the one under the OS user record's home, plus a
-# moved home only once a real runtime hook saw it in the runtime's own
-# environment (hooks.witness_store) or the operator confirmed it at a terminal
-# (Codex / Gemini homes). Both are kept outside the repo, in stores.json.
+# moved home only once the operator confirmed it at a real terminal outside
+# any assistant session (commands._operator_trusts_env_homes, or a confirmed
+# --codex-home / --gemini-home), kept outside the repo in stores.json. Nothing
+# a hook or an agent's shell does adds a home: a hook's environment is not
+# proof (an agent can run the handler, or start a runtime, with any value).
 STORES_FILE = "stores.json"
 STORE_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "gemini": "GEMINI_CLI_HOME"}
 _STORE_SUB = {"claude": ("projects",), "codex": ("sessions",), "gemini": (".gemini", "tmp")}
@@ -107,7 +109,8 @@ def _stores_path(cfg: Config) -> Optional[Path]:
 
 
 def witnessed_homes(cfg: Config, runtime: str) -> List[str]:
-    """Moved homes a hook saw (or the operator confirmed) for `runtime`; [] when none or unsafe."""
+    """Moved homes the operator confirmed at a terminal for `runtime`; [] when none, or on any doubt
+    (unreadable, not 0600 and ours, not a JSON object, a path inside the instance)."""
     p = _stores_path(cfg)
     if p is None or not p.is_file():
         return []
@@ -213,9 +216,9 @@ def home_problem(cfg: Config, codex_home: Optional[str], gemini_home: Optional[s
 def _untrusted_env(cfg: Config, runtime: str) -> None:
     home = env_home(runtime)
     if not _home_trusted(cfg, runtime, home):
-        log_error(cfg, "sync: not journaling %s transcripts from %s: no %s hook has run with it and you have "
-                       "not confirmed it, so its conversations do not count as yours"
-                  % (runtime, store_of(runtime, home), runtime))
+        log_error(cfg, "sync: not journaling %s transcripts from %s: you have not confirmed it at a terminal "
+                       "(run `tessbrain.py sync` yourself, outside Claude Code and Codex), so its "
+                       "conversations do not count as yours" % (runtime, store_of(runtime, home)))
 
 
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
