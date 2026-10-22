@@ -14,9 +14,14 @@ B-1  The folder whose transcripts count as "the runtime's own store" followed
          runtime's own environment (stores.json, outside the repo). A store
          an agent names in its own shell is not attested.
 B-2  The brain's hook handler (`tessbrain.py hook ...`, `onboard.py hook ...`)
-     trusts its caller. The gate now refuses it from an agent's shell,
-     directly, through the pinned launcher, or from inline interpreter code;
-     the Codex rules forbid it too.
+     trusts its caller. The gate now refuses it under any program it can see
+     run it (directly, the pinned launcher, sh -c, find -exec, an unknown
+     program), and the Codex rules forbid it too.
+B-1/B-2 (no enumeration): where the gate cannot show a command leaves the
+     hook handler and the transcript-folder variables alone, it asks (Codex:
+     refuses). The text a program is handed is read whatever the program is:
+     inline code of listed and unlisted interpreters, heredocs, here-strings,
+     xargs, eval, printed text in a pipe.
 N2   An extract destination glob keeps every one of its matches (a superset
      of the old list by construction).
 
@@ -68,9 +73,59 @@ B2_DENIED = [
     "python3 -I -B scripts/brain/tessbrain.py hook prompt",
     "env TESS_X=1 " + TB + " hook prompt",
     "bash -c '" + TB + " hook prompt'",
+    "find . -maxdepth 0 -exec " + TB + " hook prompt \\;",
+    "P=python3; $P scripts/brain/tessbrain.py hook prompt",
+    "python3 -m runpy scripts/brain/tessbrain.py hook prompt",
+    "python3 scripts/brain/tess'brain'.py ho\"ok\" prompt",
+    "myinterp scripts/brain/tessbrain.py hook prompt",  # a program Tess has never heard of
+]
+
+
+def _no_error(proj, cmd):  # noqa: F811
+    """A refusal must come from a rule, never from the gate failing closed on its own error."""
+    for rt, mode in (("claude", "default"), ("codex", None)):
+        why = _decide(proj, cmd, rt, mode)[1]
+        assert "safety check errored" not in why, (cmd, why)
+
+
+# Code the gate can read but cannot analyse: inline programs of any interpreter (listed or not),
+# heredocs, here-strings, pipes of printed text, programs that run a command string. None of these
+# is matched by interpreter name or flag; the text they are handed names the brain's code.
+B2_UNSHOWN = [
     "python3 -c 'import sys; sys.path.insert(0, \"scripts/brain\"); from brainlib import hooks; "
     "hooks.dispatch(\".\", \"prompt\", \"claude\")'",
+    "python3 -c 'import importlib; importlib.import_module(\"brain\" + \"lib.hooks\")'",
+    "python3 -c 'import importlib; importlib.import_module(\"brain\" \"lib.hooks\")'",
+    "python3 -c 'import runpy; runpy.run_path(\"scripts/brain/tessbrain.py\")'",
+    "ruby -e 'system(\"python3\", \"scripts/brain/tessbrain.py\", \"hook\", \"prompt\")'",
+    "perl -e 'system(\"" + TB + " hook prompt\")'",
+    "node -e 'require(\"child_process\").execSync(\"" + TB + " hook prompt\")'",
+    "lua -e 'os.execute(\"" + TB + " hook prompt\")'",
+    "deno eval 'Deno.run({cmd: [\"python3\", \"scripts/brain/tessbrain.py\", \"hook\"]})'",
+    "bun -e 'Bun.spawn([\"python3\", \"scripts/brain/onboard.py\", \"hook\", \"session-start\"])'",
+    "php -r 'passthru(\"python3 scripts/brain/onboard.py hook session-start\");'",
+    "osascript -e 'do shell script \"" + TB + " hook prompt\"'",
+    "pwsh -c '" + TB + " hook prompt'",
+    "gawk 'BEGIN{system(\"" + TB + " hook prompt\")}'",
+    "myinterp --run '" + TB + " hook prompt'",  # unlisted interpreter
+    "zzlang -x 'load brainlib.hooks'",  # unlisted interpreter and flag
+    "echo '" + TB + " hook prompt' | tclsh",
+    "python3 - <<'PY'\nimport sys\nsys.path.insert(0, 'scripts/brain')\nfrom brainlib import hooks\nPY",
+    "python3 <<< 'from brainlib import hooks'",
+    "echo hook | xargs " + TB,
+    "X='" + TB + " hook prompt'; eval \"$X\"",
 ]
+
+
+@pytest.mark.parametrize("cmd", B2_UNSHOWN)
+def test_b2_code_naming_the_brain_that_tess_cannot_analyse_asks(proj, cmd):  # noqa: F811
+    assert _all(proj, cmd) in (ASK, DENY)
+    _no_error(proj, cmd)
+
+
+def test_b2_denials_are_rules_not_errors(proj):  # noqa: F811
+    for cmd in B2_DENIED:
+        _no_error(proj, cmd)
 
 
 @pytest.mark.parametrize("cmd", B2_DENIED)
@@ -89,6 +144,15 @@ B2_NEIGHBOURS = [
     TB + " review --json",
     OB + " status --json",
     "grep -n hook scripts/brain/tessbrain.py",
+    "grep -n hook scripts/brain/tessbrain.py | head -3",
+    "cat scripts/brain/brainlib/hooks.py",
+    "git diff -- scripts/brain/brainlib/hooks.py",
+    "python3 -c 'print(1 + 1)'",
+    "node -e 'console.log(1)'",
+    "python3 -m pytest -q tests/test_brain_hooks.py",
+    "echo hello | wc -l",
+    "cd scripts/brain && python3 tessbrain.py status",
+    LAUNCH + " scripts/brain/tessbrain.py sync",
 ]
 
 
@@ -124,12 +188,31 @@ B1_DENIED = [
 @pytest.mark.parametrize("cmd", B1_DENIED)
 def test_b1_a_brain_command_never_gets_a_moved_transcript_store(proj, cmd):  # noqa: F811
     assert _all(proj, cmd) == DENY
+    _no_error(proj, cmd)
+
+
+B1_UNSHOWN = [
+    "export CLAUDE_CONFIG_DIR=/tmp/b1",
+    "CLAUDE_CONFIG_DIR=/tmp/b1 make sync",
+    "CODEX_HOME=/tmp/b1 ./run-something",
+    "ruby -e 'ENV[\"CODEX_HOME\"] = \"/tmp/b1\"'",
+    "python3 -c 'import os; os.environ[\"GEMINI_CLI_HOME\"] = \"/tmp/b1\"'",
+    "zzlang -x 'setenv CLAUDE_CONFIG_DIR /tmp/b1'",
+]
+
+
+@pytest.mark.parametrize("cmd", B1_UNSHOWN)
+def test_b1_a_transcript_folder_variable_tess_cannot_follow_asks(proj, cmd):  # noqa: F811
+    assert _all(proj, cmd) in (ASK, DENY)
+    _no_error(proj, cmd)
 
 
 B1_NEIGHBOURS = [
     "CLAUDE_CONFIG_DIR=/tmp/b1 git status",
     "CLAUDE_CONFIG_DIR=/tmp/b1 ls",
     "echo $CODEX_HOME",
+    "unset CODEX_HOME",
+    "CODEX_HOME=/tmp/b1 codex --version",
 ]
 
 
