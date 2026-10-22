@@ -695,17 +695,23 @@ security reviews; they are stated so nobody relies on a check that is not there.
   in the environment of the command that runs the sync is not journaled
   and its lines never count as yours; a hook of a session started by
   automation or nested inside another agent session does not add its home.
-  The gate refuses `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `GEMINI_CLI_HOME`
-  on a brain command (as it refuses `HOME` and
-  `TESS_BRAIN_PROVENANCE_DIR`), and refuses the brain's hook handler
-  (`tessbrain.py hook ...`, `onboard.py hook ...`) from an agent's shell,
-  directly, through the pinned launcher or from inline interpreter code,
-  in every permission mode; the Codex rules forbid it too. The handler
-  itself still trusts whatever its caller sends, so a route the gate
-  cannot see (a program the agent assembles at run time) is covered only
-  by the first bullet above. (1.0.0 said this held through the terminal
-  check alone; it did not, since that check compared a folder with the
-  store the same command's environment named.) A
+  The gate refuses the brain's hook handler (`tessbrain.py hook ...`,
+  `onboard.py hook ...`) under any program it can see run it, and a moved
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME` on a command that
+  names the brain, in every permission mode; the Codex rules forbid the
+  handler too. Where the gate cannot show that a command leaves the handler
+  and those variables alone, it asks (Codex: refuses). That rule does not
+  depend on knowing the interpreter: whatever text a program is handed
+  (inline code of any interpreter, a heredoc or here-string, a command
+  string for `sh -c`, `xargs` or `find -exec`, text printed into a pipe) is
+  read, and a mention of the brain's code or of one of those variables asks,
+  unless the program only reads or prints its operands, or is the brain CLI
+  with a written-out subcommand other than `hook`. Code the command does not
+  contain (a script file, a module it imports, another program's output) is
+  not visible to the gate; for that, the first bullet above applies. (1.0.0
+  said the store held through the terminal check alone; it did not, since
+  that check compared a folder with the store the same command's
+  environment named.) A
   shell that cannot write the ledger (the Codex sandbox) can read the brain key
   but never mints evidence: captured turns, journal lines and accepted-record
   seals are never taken from the in-repo outbox, a sync there journals nothing

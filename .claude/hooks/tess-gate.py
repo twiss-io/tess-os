@@ -1626,6 +1626,11 @@ ADVICE = {
     "rollback": "Protected Tess files come back only from HEAD (`git restore --source=HEAD -- "
                 "<path>`) or through a reviewed release (`./tessctl update`). To check out an "
                 "older copy on purpose, run the git command yourself outside the agent.",
+    "brainhook": "Claude Code and Codex run the brain's hooks themselves; there is nothing to run "
+                 "by hand. To record something you said, use `tessbrain.py decide` or `remember`.",
+    "brainstore": "Run brain commands with the runtime's normal transcript folder. A moved folder "
+                  "counts once that runtime's own hook has run with it, or once you confirm it "
+                  "at your own terminal.",
     "envhome": "Run git and tessctl with your normal HOME and XDG_CONFIG_HOME; Tess finds the "
                "operator's key directory from the OS user record either way.",
     "vault": "The raw value stays out of this session (conductor/vault.md). Pass the ref to a "
@@ -6080,10 +6085,6 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
         v.add(ASK, f"an inline {os.path.basename(str(argv[0]))} program makes a file link, and Tess "
                    "cannot work out where a link's target resolves from the link's own folder, so a "
                    "later write through it could land on a protected file")
-    inline = code is not raw or not [a for a in argv[1:] if not str(a).startswith("-")]
-    if inline and _BRAIN_PROGRAM.search(code) and _BRAIN_HOOK_WORD.search(code):
-        # 1.0.x (Cyra B-2): the brain's hook handlers, reached from inline code.
-        v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
     if not _INTERP_WRITE.search(code):
         return
     # v1.0 audit: each distinct token is checked once, and one evaluation
@@ -6111,66 +6112,123 @@ def _check_interpreter(root: Path, cwd: str, argv: list, v: Verdict, raw: str):
 
 _HOME_ENV = ("HOME", "XDG_CONFIG_HOME")
 _KEY_TOOLS = re.compile(r"(?<![\w.-])(git|tessctl|tessbrain(\.py)?)(?![\w-])")
-# 1.0.x (Cyra B-1): the runtime variables that say where Claude Code, Codex
-# and Gemini CLI keep their transcripts. The brain journals the transcripts it
-# finds there as the operator's words, so moving one for a brain command would
-# let an agent pick which conversations count as the operator's.
+# 1.0.x (Cyra B-1, B-2): the brain's capture surface. Policy: input an agent
+# controls must never make the brain journal transcript lines as the
+# operator's words. Two things on a command line can do that: running the
+# brain's hook handler (it trusts its caller), and moving the folder the brain
+# takes as a runtime's own transcript store. The decision does NOT depend on
+# a list of interpreters, flags or spellings that run code:
+#   * DENY what the gate can parse as such: a word naming the brain's
+#     scripts followed by the literal `hook` subcommand, under ANY program;
+#     a store variable moved for a command that names the brain.
+#   * ASK (Codex: refuse) whenever the gate cannot show the command leaves
+#     that surface alone: every word a program receives (inline code of any
+#     interpreter, known or not, a heredoc or here-string it reads, an
+#     argument to xargs, find -exec, sh -c, ...) is read as text, and a
+#     mention of the brain's code or of a store variable asks, unless the
+#     program is one that only reads or prints (_BRAIN_TEXT_ONLY, a fixed
+#     allowlist: anything not on it asks) or the brain CLI itself with a
+#     literal subcommand other than `hook`.
+# The text is matched after dropping quotes, backslashes, `+`, `.` joins and
+# white space, so a name split across string pieces still counts. Code the
+# command does not contain (a script file, a module it imports, a program's
+# output piped in) is not visible to the gate; SECURITY.md states that limit.
 _BRAIN_STORE_ENV = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME")
-_BRAIN_PROGRAM = re.compile(r"(?<![\w.-])(tessbrain(\.py)?|onboard\.py|brainlib|oobe)(?![\w-])")
 _BRAIN_SCRIPTS = ("tessbrain", "tessbrain.py", "onboard.py")
-_BRAIN_HOOK_WORD = re.compile(r"(?<![\w-])(hooks?|dispatch)(?![\w-])")
+_BRAIN_CODE = re.compile(r"tessbrain|brainlib|onboard(?:\.py|py)|oobe(?:/|\.|)hook")
+_BRAIN_ENV_TEXT = re.compile(r"claude_?config_?dir|codex_?home|gemini_?cli_?home")
+_BRAIN_SQUEEZE = re.compile(r"[\s'\"\\+`]+|\$'|\.\.")
+# Programs that only read, list or print their operands; never run them.
+_BRAIN_TEXT_ONLY = {"echo", "printf", "true", "false", ":", "pwd", "ls", "cat", "test", "[",
+                    "grep", "egrep", "fgrep", "rg", "ag", "head", "tail", "wc", "stat", "which",
+                    "type", "less", "more", "diff", "cmp", "sort", "uniq", "cut", "tr", "basename",
+                    "dirname", "realpath", "readlink", "file", "shasum", "sha256sum", "sha1sum",
+                    "md5", "md5sum", "git", "cd", "pushd", "popd", "sleep", "date"}
+# A runtime CLI given its own store variable is judged by the agent-CLI checks.
+_BRAIN_OWN_RUNTIME = {"CLAUDE_CONFIG_DIR": "claude", "CODEX_HOME": "codex", "GEMINI_CLI_HOME": "gemini"}
 _BRAIN_HOOK_DENY = ("it runs the brain's hook handler from an agent's shell. Only Claude Code and "
                     "Codex run that handler, as a hook; run by an agent, it would record words the "
                     "agent wrote as yours")
+_BRAIN_TEXT_ASK = ("it hands {what} to {prog}, and Tess cannot tell whether that runs the brain's "
+                   "hook handler or moves the folder the brain reads your conversations from")
 
 
-def _check_brain_store_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
-    """1.0.x (Cyra B-1): CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_CLI_HOME moved
-    for a brain command, as HOME is for git, tessctl and tessbrain."""
-    name = os.path.basename(str(argv[0]))
-    if name in ("export", "declare", "typeset", "setenv"):
-        moved = [str(a).partition("=")[0] for a in argv[1:]
-                 if str(a).partition("=")[0] in _BRAIN_STORE_ENV and "=" in str(a)]
-        tool = _BRAIN_PROGRAM.search(raw)
-    else:
-        moved = [k for k in env if k in _BRAIN_STORE_ENV]
-        tool = _BRAIN_PROGRAM.search(" ".join(str(a) for a in argv))
-    if moved and tool:
-        v.add(DENY, f"it sets {', '.join(moved)} for {tool.group(1)}; a moved transcript folder "
-                    "would let the agent choose which conversations the brain records as yours",
-              "envhome")
+def _brain_squeeze(text: str) -> str:
+    return _BRAIN_SQUEEZE.sub("", str(text).lower())
 
 
-def _check_brain_hook(argv: list, v: Verdict) -> None:
-    """1.0.x (Cyra B-2): `tessbrain.py hook ...` / `onboard.py hook ...` run
-    from an agent's shell, directly or through the pinned launcher. The
-    handler trusts whatever its caller sends, so it is denied: real hooks never
-    come through a shell tool. A subcommand only known at run time asks."""
+def _brain_cli_sub(words: list, i: int):
+    """(subcommand word, its index) after the brain script at words[i], skipping
+    the global options; (None, None) when there is none."""
+    j = i + 1
+    while j < len(words):
+        a = str(words[j])
+        if a in ("--root", "--roo", "--ro"):
+            j += 2
+            continue
+        if a.startswith("-"):
+            j += 1
+            continue
+        return a, j
+    return None, None
+
+
+def _check_brain_surface(env: dict, argv: list, orig, name: str, raw: str, v: Verdict) -> None:
+    """1.0.x (Cyra B-1, B-2): see the block comment above."""
     words = [str(a) for a in argv]
-    prog = os.path.basename(words[0]).lower() if words else ""
-    if prog not in _BRAIN_SCRIPTS and not INTERPRETERS.match(prog):
-        return
+    agent = _agent_name(name)
+    if name in ("export", "declare", "typeset", "readonly", "local", "setenv"):
+        set_here = [w.partition("=")[0] for w in words[1:] if w.partition("=")[0] in _BRAIN_STORE_ENV]
+        if set_here and _BRAIN_CODE.search(_brain_squeeze(raw)):
+            v.add(DENY, f"it sets {', '.join(set_here)} in a command that runs the brain; a moved "
+                        "transcript folder would let the agent choose which conversations the brain "
+                        "records as yours", "brainstore")
+    # (1) store variables set for this program
+    moved = [k for k in env if k in _BRAIN_STORE_ENV and _BRAIN_OWN_RUNTIME[k] != agent]
+    names_brain = any(_BRAIN_CODE.search(_brain_squeeze(w)) for w in words)
+    if moved:
+        if names_brain:
+            v.add(DENY, f"it sets {', '.join(moved)} for a brain command; a moved transcript folder "
+                        "would let the agent choose which conversations the brain records as yours",
+                  "brainstore")
+        elif name not in _BRAIN_TEXT_ONLY:
+            v.add(ASK, _BRAIN_TEXT_ASK.format(what=", ".join(moved), prog=name or "a program"))
+    # (2) the brain's own scripts, under any program
+    cli_ok = False
     for i, w in enumerate(words):
         if os.path.basename(w).lower() not in _BRAIN_SCRIPTS:
             continue
-        rest, j = words[i + 1:], 0
-        while j < len(rest):
-            a = rest[j]
-            if a == "--root" or a == "--roo" or a == "--ro":
-                j += 2
-                continue
-            if a.startswith("-"):
-                j += 1
-                continue
-            break
-        if j >= len(rest):
-            continue
-        sub = rest[j]
-        if sub.lower() == "hook":
+        sub, j = _brain_cli_sub(words, i)
+        if sub is not None and sub.lower() == "hook":
             v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
-        elif _expands(argv[i + 1 + j]) or _dynamic(argv[i + 1 + j]):
-            v.add(ASK, "the brain subcommand it runs is only known at run time, so Tess cannot "
-                       "tell whether it runs the brain's hook handler")
+        elif sub is None or _expands(argv[j]) or _dynamic(argv[j]):
+            if name not in _BRAIN_TEXT_ONLY:
+                v.add(ASK, "the brain subcommand it runs is not written out in the command, so Tess "
+                           "cannot tell whether it runs the brain's hook handler")
+        elif i == 0 or INTERPRETERS.match(name) or name in _BRAIN_SCRIPTS:
+            cli_ok = True
+    if cli_ok:
+        return
+    if name in _BRAIN_TEXT_ONLY:
+        # Text it prints can still reach a program through a pipe (`echo ... | tclsh`).
+        if name in ("echo", "printf") and "|" in raw and any(
+                _BRAIN_CODE.search(_brain_squeeze(w)) or _BRAIN_ENV_TEXT.search(_brain_squeeze(w))
+                for w in words[1:]):
+            v.add(ASK, _BRAIN_TEXT_ASK.format(what="text naming the brain's code or a "
+                                                   "transcript-folder variable, through a pipe,",
+                                              prog="the next program"))
+        return
+    # (3) everything else this program is handed, read as text
+    src = _stdin_source(orig) if orig is not None else None
+    texts = words[1:] + ([str(src[1])] if src and src[0] in ("heredoc", "herestring") else [])
+    squeezed = _brain_squeeze(" ".join(texts))
+    hits = []
+    if _BRAIN_CODE.search(squeezed):
+        hits.append("text naming the brain's code")
+    if _BRAIN_ENV_TEXT.search(squeezed) and name not in ("unset",):
+        hits.append("text naming a transcript-folder variable")
+    if hits:
+        v.add(ASK, _BRAIN_TEXT_ASK.format(what=" and ".join(hits), prog=name or "a program"))
 
 
 def _check_home_env(env: dict, argv: list, raw: str, v: Verdict) -> None:
@@ -8130,8 +8188,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
     _check_home_env(env, argv, raw, v)
-    _check_brain_store_env(env, argv, raw, v)
-    _check_brain_hook(argv, v)
+    _check_brain_surface(env, argv, orig, name, raw, v)
     copier = name if name == "ditto" else _writer_name(name)
     if copier in _COPY_INTO:
         _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
