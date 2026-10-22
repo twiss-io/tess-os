@@ -6140,12 +6140,10 @@ _BRAIN_ENV_TEXT = re.compile(r"claude_?config_?dir|codex_?home|gemini_?cli_?home
 _BRAIN_SQUEEZE = re.compile(r"[\s'\"\\+`]+|\$'|\.\.")
 # Programs that only read, list or print their operands; never run them.
 _BRAIN_TEXT_ONLY = {"echo", "printf", "true", "false", ":", "pwd", "ls", "cat", "test", "[",
-                    "grep", "egrep", "fgrep", "rg", "ag", "head", "tail", "wc", "stat", "which",
-                    "type", "less", "more", "diff", "cmp", "sort", "uniq", "cut", "tr", "basename",
-                    "dirname", "realpath", "readlink", "file", "shasum", "sha256sum", "sha1sum",
-                    "md5", "md5sum", "git", "cd", "pushd", "popd", "sleep", "date"}
-# A runtime CLI given its own store variable is judged by the agent-CLI checks.
-_BRAIN_OWN_RUNTIME = {"CLAUDE_CONFIG_DIR": "claude", "CODEX_HOME": "codex", "GEMINI_CLI_HOME": "gemini"}
+                    "grep", "egrep", "fgrep", "head", "tail", "wc", "stat", "which", "type",
+                    "diff", "cmp", "cut", "tr", "uniq", "basename", "dirname", "realpath",
+                    "readlink", "shasum", "sha256sum", "sha1sum", "md5", "md5sum", "cd", "sleep",
+                    "date"}
 _BRAIN_HOOK_DENY = ("it runs the brain's hook handler from an agent's shell. Only Claude Code and "
                     "Codex run that handler, as a hook; run by an agent, it would record words the "
                     "agent wrote as yours")
@@ -6173,60 +6171,105 @@ def _brain_cli_sub(words: list, i: int):
     return None, None
 
 
-def _check_brain_surface(env: dict, argv: list, orig, name: str, raw: str, v: Verdict) -> None:
-    """1.0.x (Cyra B-1, B-2): see the block comment above."""
+def _brain_names(text: str) -> list:
+    """What `text` names of the brain's capture surface (after _brain_squeeze)."""
+    sq = _brain_squeeze(text)
+    out = []
+    if _BRAIN_CODE.search(sq):
+        out.append("text naming the brain's code")
+    if _BRAIN_ENV_TEXT.search(sq):
+        out.append("text naming a transcript-folder variable")
+    return out
+
+
+def _brain_store_text(cmd: str) -> list:
+    """Store variables a whole command names other than by reading them
+    (`$NAME`, `${NAME}`). Any other spelling (an assignment, a prefix, `export`,
+    `read`, `printf -v`, `${NAME:=x}`, a name inside inline code or a string)
+    may set it, so the caller asks. Matched case-blind, across quotes and `+`."""
+    sq = _brain_squeeze(cmd)
+    sq = re.sub(r"\$\{(claude_?config_?dir|codex_?home|gemini_?cli_?home)\}"
+                r"|\$(claude_?config_?dir|codex_?home|gemini_?cli_?home)(?![\w=])", " ", sq)
+    return sorted({m.group(0) for m in _BRAIN_ENV_TEXT.finditer(sq)})
+
+
+def _brain_cli_ok(root: Path, cwd, argv: list, words: list, name: str) -> bool:
+    """True only for the brain CLI itself, run plainly: the project's own
+    scripts/brain/<script> as the program, as an interpreter's first operand
+    (interpreter flags limited to -I -B -u -E -s -S), or behind the pinned
+    launcher; a literal subcommand other than `hook`; nothing after it only
+    known at run time. Anything else is read as text (_check_brain_surface)."""
+    def own(w):
+        if os.path.basename(w).lower() not in _BRAIN_SCRIPTS or _dynamic(w) or _expands(w):
+            return False
+        real = os.path.realpath(os.path.join(cwd or str(root), w))
+        return os.path.dirname(real) == os.path.realpath(str(root / "scripts" / "brain"))
+    if not words:
+        return False
+    if own(words[0]):
+        i = 0
+    elif INTERPRETERS.match(name) and name.startswith("python"):
+        j = 1
+        while j < len(words) and words[j] in ("-I", "-B", "-u", "-E", "-s", "-S", "-IB", "-BI"):
+            j += 1
+        if j >= len(words):
+            return False
+        if own(words[j]):
+            i = j
+        elif os.path.realpath(os.path.join(cwd or str(root), words[j])) == \
+                os.path.realpath(str(root / LAUNCHER_REL)) and "--" in words[j:]:
+            k = words.index("--", j) + 1
+            if k >= len(words) or not own(words[k]):
+                return False
+            i = k
+        else:
+            return False
+    else:
+        return False
+    sub, j = _brain_cli_sub(words, i)
+    if sub is None or sub.lower() == "hook":
+        return False
+    return not any(_dynamic(a) or _expands(a) for a in argv[i + 1:])
+
+
+def _check_brain_surface(root: Path, cwd, env: dict, argv: list, orig, name: str, raw: str,
+                         upstream, v: Verdict) -> None:
+    """1.0.x (Cyra B-1, B-2): see the block comment above. Every exemption
+    here covers the whole segment: its environment prefix, every word, its
+    here-document or here-string and the text piped into it."""
     words = [str(a) for a in argv]
-    agent = _agent_name(name)
-    if name in ("export", "declare", "typeset", "readonly", "local", "setenv"):
-        set_here = [w.partition("=")[0] for w in words[1:] if w.partition("=")[0] in _BRAIN_STORE_ENV]
-        if set_here and _BRAIN_CODE.search(_brain_squeeze(raw)):
-            v.add(DENY, f"it sets {', '.join(set_here)} in a command that runs the brain; a moved "
-                        "transcript folder would let the agent choose which conversations the brain "
-                        "records as yours", "brainstore")
-    # (1) store variables set for this program
-    moved = [k for k in env if k in _BRAIN_STORE_ENV and _BRAIN_OWN_RUNTIME[k] != agent]
-    names_brain = any(_BRAIN_CODE.search(_brain_squeeze(w)) for w in words)
-    if moved:
-        if names_brain:
-            v.add(DENY, f"it sets {', '.join(moved)} for a brain command; a moved transcript folder "
-                        "would let the agent choose which conversations the brain records as yours",
-                  "brainstore")
-        elif name not in _BRAIN_TEXT_ONLY:
-            v.add(ASK, _BRAIN_TEXT_ASK.format(what=", ".join(moved), prog=name or "a program"))
-    # (2) the brain's own scripts, under any program
-    cli_ok = False
+    env_text = " ".join(f"{k}={env[k]}" for k in env)
+    names_brain = any(_BRAIN_CODE.search(_brain_squeeze(w)) for w in words + [env_text, raw])
+    # (1) store variables: set for, or by, this segment
+    moved = [k for k in env if k in _BRAIN_STORE_ENV]
+    set_here = [w.partition("=")[0] for w in words[1:] if w.partition("=")[0] in _BRAIN_STORE_ENV] \
+        if name in ("export", "declare", "typeset", "readonly", "local", "setenv") else []
+    if (moved or set_here) and names_brain:
+        v.add(DENY, f"it sets {', '.join(moved + set_here)} in a command that runs the brain; a moved "
+                    "transcript folder would let the agent choose which conversations the brain "
+                    "records as yours", "brainstore")
+    # (2) the brain's own scripts named as a word, under any program
     for i, w in enumerate(words):
         if os.path.basename(w).lower() not in _BRAIN_SCRIPTS:
             continue
         sub, j = _brain_cli_sub(words, i)
         if sub is not None and sub.lower() == "hook":
             v.add(DENY, _BRAIN_HOOK_DENY, "brainhook")
-        elif sub is None or _expands(argv[j]) or _dynamic(argv[j]):
-            if name not in _BRAIN_TEXT_ONLY:
-                v.add(ASK, "the brain subcommand it runs is not written out in the command, so Tess "
-                           "cannot tell whether it runs the brain's hook handler")
-        elif i == 0 or INTERPRETERS.match(name) or name in _BRAIN_SCRIPTS:
-            cli_ok = True
-    if cli_ok:
+    if not env and _brain_cli_ok(root, cwd, argv, words, name):
         return
-    if name in _BRAIN_TEXT_ONLY:
-        # Text it prints can still reach a program through a pipe (`echo ... | tclsh`).
-        if name in ("echo", "printf") and "|" in raw and any(
-                _BRAIN_CODE.search(_brain_squeeze(w)) or _BRAIN_ENV_TEXT.search(_brain_squeeze(w))
-                for w in words[1:]):
-            v.add(ASK, _BRAIN_TEXT_ASK.format(what="text naming the brain's code or a "
-                                                   "transcript-folder variable, through a pipe,",
-                                              prog="the next program"))
-        return
-    # (3) everything else this program is handed, read as text
+    # (3) everything this segment is handed, read as text, whatever the program
     src = _stdin_source(orig) if orig is not None else None
-    texts = words[1:] + ([str(src[1])] if src and src[0] in ("heredoc", "herestring") else [])
-    squeezed = _brain_squeeze(" ".join(texts))
-    hits = []
-    if _BRAIN_CODE.search(squeezed):
-        hits.append("text naming the brain's code")
-    if _BRAIN_ENV_TEXT.search(squeezed) and name not in ("unset",):
-        hits.append("text naming a transcript-folder variable")
+    texts = words + [env_text] + ([str(src[1])] if src and src[0] in ("heredoc", "herestring") else [])
+    piped = []
+    if upstream is not None:
+        up = _resolve(upstream).argv
+        piped = [str(a) for a in up] + list(_upstream_words(upstream) or [])
+    plain = (name in _BRAIN_TEXT_ONLY and not env
+             and not (name == "printf" and any(w.startswith("-v") for w in words[1:])))
+    hits = _brain_names(" ".join(texts))
+    if plain:
+        return  # reads or prints its words; text it prints is judged where it is piped
+    hits = sorted(set(hits + _brain_names(" ".join(piped))))
     if hits:
         v.add(ASK, _BRAIN_TEXT_ASK.format(what=" and ".join(hits), prog=name or "a program"))
 
@@ -8188,7 +8231,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
         if what:
             v.add(ASK, _INTERACTIVE_ASK.format(what=what))
     _check_home_env(env, argv, raw, v)
-    _check_brain_surface(env, argv, orig, name, raw, v)
+    _check_brain_surface(root, cwd, env, argv, orig, name, raw, upstream, v)
     copier = name if name == "ditto" else _writer_name(name)
     if copier in _COPY_INTO:
         _check_copy_into(root, cwd, copier, argv, v, ctx, res.via_xargs)
@@ -9360,6 +9403,12 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
         if _KEY_TEXT.search(cmd):
             v.add(DENY, "it reads or writes Tess's key directory (~/.config/tess); the signing "
                         "keys there are for the operator's own tools, not for an agent", "keys")
+        named = _brain_store_text(cmd)
+        if named:
+            # 1.0.x (B-1): any spelling that may set a transcript-folder variable asks
+            v.add(ASK, "it names " + ", ".join(n.upper() for n in named) + " other than by reading "
+                       "it, and Tess cannot follow every way that sets it; a moved transcript folder "
+                       "would let the agent choose which conversations the brain records as yours")
         if len(cmd) > MAX_COMMAND:
             v.add(ASK, f"the command is {len(cmd)} characters long, more than Tess checks; split it "
                        "into smaller commands, or run it yourself")

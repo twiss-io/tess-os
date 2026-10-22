@@ -123,6 +123,34 @@ def test_b2_code_naming_the_brain_that_tess_cannot_analyse_asks(proj, cmd):  # n
     _no_error(proj, cmd)
 
 
+# The brain CLI's own exemption covers the whole segment: options, environment
+# prefix, run-time words, chained parts and the script's real location.
+B2_EXEMPTION_ESCAPES = [
+    "python3 -c 'from brainlib import hooks' scripts/brain/tessbrain.py status",
+    "python3 -X importtime scripts/brain/tessbrain.py status",
+    "python3 /tmp/b2/tessbrain.py status",
+    "/tmp/b2/tessbrain.py status",
+    "TESS_X=1 " + TB + " status",
+    "PYTHONPATH=/tmp/b2 " + TB + " status",
+    "PYTHONSTARTUP=/tmp/b2/s.py " + TB + " status",
+    TB + " recall \"$(python3 -c 'import brainlib.hooks')\"",
+    TB + " recall \"$Q\"",
+    TB + " status && python3 -c 'import brainlib'",
+    TB + " status; zzlang -x 'brainlib.hooks.dispatch()'",
+    "cat scripts/brain/tessbrain.py | python3 - hook prompt",
+    "ls scripts/brain/brainlib | sh",
+    "git diff -- scripts/brain/brainlib/hooks.py",  # git runs pagers, diff drivers and aliases
+    "rg --pre 'python3 scripts/brain/tessbrain.py' x",
+    "sort --compress-program=tessbrain x",
+]
+
+
+@pytest.mark.parametrize("cmd", B2_EXEMPTION_ESCAPES)
+def test_b2_the_cli_exemption_covers_the_whole_command(proj, cmd):  # noqa: F811
+    assert _all(proj, cmd) in (ASK, DENY)
+    _no_error(proj, cmd)
+
+
 def test_b2_denials_are_rules_not_errors(proj):  # noqa: F811
     for cmd in B2_DENIED:
         _no_error(proj, cmd)
@@ -146,7 +174,6 @@ B2_NEIGHBOURS = [
     "grep -n hook scripts/brain/tessbrain.py",
     "grep -n hook scripts/brain/tessbrain.py | head -3",
     "cat scripts/brain/brainlib/hooks.py",
-    "git diff -- scripts/brain/brainlib/hooks.py",
     "python3 -c 'print(1 + 1)'",
     "node -e 'console.log(1)'",
     "python3 -m pytest -q tests/test_brain_hooks.py",
@@ -201,6 +228,23 @@ B1_UNSHOWN = [
 ]
 
 
+B1_UNSHOWN += [
+    # every spelling that may set a transcript-folder variable, for any program, runtimes included
+    "CLAUDE_CONFIG_DIR=/tmp/b1 git status",
+    "CLAUDE_CONFIG_DIR=/tmp/b1 ls",
+    "CODEX_HOME=/tmp/b1 codex --version",
+    "CODEX_HOME=/tmp/ch codex exec -m gpt-5.5 -s read-only x </dev/null",
+    "set -a; CODEX_HOME=/tmp/b1; " + TB + " sync",
+    "CODEX_HOME=/tmp/b1",
+    "read CODEX_HOME < /tmp/b1/f; export CODEX_HOME",
+    "printf -v CODEX_HOME /tmp/b1",
+    ": ${CODEX_HOME:=/tmp/b1}",
+    "declare -x GEMINI_CLI_HOME=/tmp/b1",
+    "eval 'CLAUDE_' 'CONFIG_DIR=/tmp/b1'",
+    "python3 -c 'import os; os.environ[\"CODEX_\" + \"HOME\"] = \"/tmp/b1\"'",
+]
+
+
 @pytest.mark.parametrize("cmd", B1_UNSHOWN)
 def test_b1_a_transcript_folder_variable_tess_cannot_follow_asks(proj, cmd):  # noqa: F811
     assert _all(proj, cmd) in (ASK, DENY)
@@ -208,11 +252,9 @@ def test_b1_a_transcript_folder_variable_tess_cannot_follow_asks(proj, cmd):  # 
 
 
 B1_NEIGHBOURS = [
-    "CLAUDE_CONFIG_DIR=/tmp/b1 git status",
-    "CLAUDE_CONFIG_DIR=/tmp/b1 ls",
     "echo $CODEX_HOME",
-    "unset CODEX_HOME",
-    "CODEX_HOME=/tmp/b1 codex --version",
+    'echo "${CLAUDE_CONFIG_DIR}"',
+    'ls "$CODEX_HOME/sessions"',
 ]
 
 

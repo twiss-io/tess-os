@@ -316,7 +316,7 @@ CONTROLS_ALLOWED = [
     # tests/smoke/brain_*_live.sh
     "codex exec -m gpt-5.5 -s read-only x </dev/null",
     "codex exec --ephemeral --ignore-user-config -m gpt-5.5 -s read-only x </dev/null",
-    "CODEX_HOME=/tmp/ch codex exec -m gpt-5.5 -s read-only x </dev/null",
+    # 1.0.x (Cyra B-1): `CODEX_HOME=... codex exec ...` now asks; tests/test_v1_0_x_brain_b1_b2.py
     # hook-skipping with no tools at all
     "claude --bare -p x --tools ''",
 ]

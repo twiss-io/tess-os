@@ -705,8 +705,14 @@ security reviews; they are stated so nobody relies on a check that is not there.
   (inline code of any interpreter, a heredoc or here-string, a command
   string for `sh -c`, `xargs` or `find -exec`, text printed into a pipe) is
   read, and a mention of the brain's code or of one of those variables asks,
-  unless the program only reads or prints its operands, or is the brain CLI
-  with a written-out subcommand other than `hook`. Code the command does not
+  unless the program only reads or prints its operands (with no
+  environment prefix), or is the project's own brain CLI run plainly (no
+  environment prefix, no extra interpreter options, nothing only known at
+  run time) with a written-out subcommand other than `hook`. Any spelling
+  that may set one of those variables (a prefix, `export`, `read`,
+  `printf -v`, `${NAME:=...}`, a name inside inline code) asks, whatever the
+  program, Claude Code and Codex included; reading one (`$NAME`) does not.
+  Code the command does not
   contain (a script file, a module it imports, another program's output) is
   not visible to the gate; for that, the first bullet above applies. (1.0.0
   said the store held through the terminal check alone; it did not, since
