@@ -38,6 +38,12 @@ def cmd_sync(cfg: Config, a) -> Out:
             return 1, {"error": "refused: %s. Only you, at a terminal outside Claude Code and Codex, can journal "
                                 "another folder of conversations as your own words; an agent or a pipe cannot"
                                 % homes}
+    if ok and homes:
+        # 1.0.x (B-1): a Codex or Gemini home the operator confirmed here is theirs from now on, as one a
+        # runtime hook saw is (stores.json, outside the repo). A --claude-dir stays a one-off.
+        for rt, h in (("codex", a.codex_home), ("gemini", a.gemini_home)):
+            if h and sync.home_problem(cfg, h if rt == "codex" else None, h if rt == "gemini" else None):
+                sync.record_home(cfg, rt, h)
     res = sync.run(cfg, a.runtime, a.claude_dir, a.codex_home, a.transcript, a.days, wait=not a.no_wait,
                    gemini_home=a.gemini_home, claude_dir_confirmed=ok and bool(why),
                    homes_confirmed=ok and bool(homes))

@@ -681,26 +681,31 @@ security reviews; they are stated so nobody relies on a check that is not there.
 - **The learning loop authenticates where your words came from; it cannot see
   who typed them.** A line counts as your own words only when a hook, running
   outside the agent's sandbox, took it from the runtime's own transcript store
-  (`~/.claude/projects`, `$CODEX_HOME/sessions`, `~/.gemini/tmp`) and signed it
+  (`~/.claude/projects`, `~/.codex/sessions`, `~/.gemini/tmp`) and signed it
   into the ledger under `~/.config/tess/brain/`. `sync --transcript` accepts
   only files inside that store; `--claude-dir`, `--codex-home` and
   `--gemini-home` with any other folder need you at a terminal typing yes.
-  That terminal check is weaker than it reads in 1.0.0: the store is found
-  from `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME` and `$HOME` in the
-  environment of the command that runs the sync, and the check compares a
-  folder with that same store. A sync started with one of those variables
-  pointed at another folder therefore journals that folder as your words
-  with no terminal and no question, and the gate does not refuse the three
-  runtime variables (it refuses `HOME` and `TESS_BRAIN_PROVENANCE_DIR`). In
-  the same way, the brain's hook handler (`tessbrain.py hook ...`) trusts
-  whatever its caller sends, so an agent shell outside a sandbox that runs
-  it with a prompt it wrote records that prompt as yours. Until the 1.0.x
-  fix, "the runtime's own transcript store" and "only a hook" hold in a
-  sandboxed shell (the Codex sandbox cannot write the ledger, as below);
-  in Claude Code, which runs commands without a sandbox by default, they
-  rest on Claude Code's own permission prompt for a command that moves
-  those variables or runs the hook handler (Tess pre-approves neither), and
-  a permission mode that does not ask removes them. A
+  The store is the runtime's home under your OS user record
+  (`~/.claude`, `~/.codex`, `~/.gemini` from the user database, never
+  `$HOME`), plus a home that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` moves only
+  once Claude Code's or Codex's own hook has run with it (a hook runs in the
+  runtime's environment, which an agent's shell cannot change), and a Codex
+  or Gemini home you confirmed at a terminal. Tess keeps that list in
+  `stores.json` next to the ledger, outside the repo. A folder named only
+  in the environment of the command that runs the sync is not journaled
+  and its lines never count as yours; a hook of a session started by
+  automation or nested inside another agent session does not add its home.
+  The gate refuses `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `GEMINI_CLI_HOME`
+  on a brain command (as it refuses `HOME` and
+  `TESS_BRAIN_PROVENANCE_DIR`), and refuses the brain's hook handler
+  (`tessbrain.py hook ...`, `onboard.py hook ...`) from an agent's shell,
+  directly, through the pinned launcher or from inline interpreter code,
+  in every permission mode; the Codex rules forbid it too. The handler
+  itself still trusts whatever its caller sends, so a route the gate
+  cannot see (a program the agent assembles at run time) is covered only
+  by the first bullet above. (1.0.0 said this held through the terminal
+  check alone; it did not, since that check compared a folder with the
+  store the same command's environment named.) A
   shell that cannot write the ledger (the Codex sandbox) can read the brain key
   but never mints evidence: captured turns, journal lines and accepted-record
   seals are never taken from the in-repo outbox, a sync there journals nothing

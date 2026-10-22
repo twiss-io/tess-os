@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import claims, cues, entities, guards, inbox, index, journal, lookup, promote, provenance, records, roots, switch
-from .config import Config, iso, log_error, read_json, write_json
+from .config import Config, iso, log_error, os_user_home, read_json, write_json
 from .parsers import claude, codex, gemini
 
 try:
@@ -67,9 +67,99 @@ def vetted(cfg: Config, runtime: str, paths: List[str], also_cwd: List[str], sto
     return out
 
 
-def _claude_store(claude_dir: Optional[str]) -> List[Path]:
-    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")) / "projects"
-    return [base] + ([Path(claude_dir)] if claude_dir else [])
+# 1.0.x (Cyra B-1): where each runtime keeps its transcripts. The store was
+# taken from CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_CLI_HOME (or $HOME) of
+# whatever process ran the sync, and the --claude-dir / --codex-home /
+# --gemini-home checks compared against that same folder, so a command that
+# moved one of them chose which files were attested as the operator's words.
+# Now the trusted homes are the one under the OS user record's home, plus a
+# moved home only once a real runtime hook saw it in the runtime's own
+# environment (hooks.witness_store) or the operator confirmed it at a terminal
+# (Codex / Gemini homes). Both are kept outside the repo, in stores.json.
+STORES_FILE = "stores.json"
+STORE_ENV = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "gemini": "GEMINI_CLI_HOME"}
+_STORE_SUB = {"claude": ("projects",), "codex": ("sessions",), "gemini": (".gemini", "tmp")}
+
+
+def default_home(runtime: str) -> Path:
+    """The runtime's home under the OS user record (no environment variable consulted)."""
+    h = os_user_home()
+    return h / ".claude" if runtime == "claude" else h / ".codex" if runtime == "codex" else h
+
+
+def env_home(runtime: str) -> Path:
+    """The home this process's environment names for the runtime (what the runtime itself would use)."""
+    v = os.environ.get(STORE_ENV[runtime])
+    if v:
+        return Path(v)
+    return Path.home() / ".claude" if runtime == "claude" else Path.home() / ".codex" \
+        if runtime == "codex" else Path.home()
+
+
+def store_of(runtime: str, home) -> Path:
+    return Path(str(home)).joinpath(*_STORE_SUB[runtime])
+
+
+def _stores_path(cfg: Config) -> Optional[Path]:
+    from . import extstate
+    d = extstate.project_dir(cfg)
+    return (d / STORES_FILE) if d is not None else None
+
+
+def witnessed_homes(cfg: Config, runtime: str) -> List[str]:
+    """Moved homes a hook saw (or the operator confirmed) for `runtime`; [] when none or unsafe."""
+    p = _stores_path(cfg)
+    if p is None or not p.is_file():
+        return []
+    why = provenance._owned_private(p, 0o077)
+    if why:
+        log_error(cfg, "sync: ignoring %s: %s" % (p, why))
+        return []
+    data = read_json(p, {})
+    out: List[str] = []
+    for h in ((data.get(runtime) if isinstance(data, dict) else None) or []):
+        h = str(h)
+        if not os.path.isabs(h) or provenance._inside(h, str(cfg.root)) or os.path.realpath(h) == os.sep:
+            continue
+        out.append(os.path.realpath(h))
+    return out
+
+
+def trusted_homes(cfg: Config, runtime: str) -> List[str]:
+    out = [os.path.realpath(str(default_home(runtime)))]
+    for h in witnessed_homes(cfg, runtime):
+        if h not in out:
+            out.append(h)
+    return out
+
+
+def record_home(cfg: Config, runtime: str, home: str) -> bool:
+    """Add `home` to the trusted homes of `runtime` (stores.json, 0600, outside the repo)."""
+    p = _stores_path(cfg)
+    real = os.path.realpath(str(home))
+    if p is None or runtime not in STORE_ENV or provenance._inside(real, str(cfg.root)) or real == os.sep:
+        return False
+    data = read_json(p, {}) if p.is_file() else {}
+    data = data if isinstance(data, dict) else {}
+    homes = [str(h) for h in (data.get(runtime) or []) if isinstance(h, str)]
+    if real in homes:
+        return True
+    data[runtime] = homes + [real]
+    tmp = p.with_name(STORES_FILE + ".tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            import json
+            json.dump(data, fh, indent=2)
+        os.replace(str(tmp), str(p))
+    except OSError as exc:
+        log_error(cfg, "sync: could not record the %s home %s" % (runtime, real), exc)
+        return False
+    return True
+
+
+def _home_trusted(cfg: Config, runtime: str, home) -> bool:
+    return os.path.realpath(str(home)) in trusted_homes(cfg, runtime)
 
 
 def claude_dir_problem(cfg: Config, claude_dir: Optional[str]) -> str:
@@ -78,67 +168,94 @@ def claude_dir_problem(cfg: Config, claude_dir: Optional[str]) -> str:
     v1.0.0 item e: every *.jsonl in a --claude-dir was journaled, and attested as the operator's own
     words, with no check of where it came from, so an agent could write a folder of made-up
     conversations (with "confirm D-...") and sync it. Now only the runtime's own store for this project
-    counts; any other folder needs the operator at a terminal (tessbrain sync asks, like `roots add`)."""
+    counts; any other folder needs the operator at a terminal (tessbrain sync asks, like `roots add`).
+    1.0.x (B-1): "own" is a trusted Claude home, never one named only in this process's environment."""
     if not claude_dir:
         return ""
     real = os.path.realpath(claude_dir)
-    own = [os.path.realpath(str(d)) for d in claude.default_dirs(cfg.root)]
+    own: List[str] = []
+    for h in trusted_homes(cfg, "claude"):
+        own += [os.path.realpath(str(d)) for d in claude.default_dirs(cfg.root, store_of("claude", h))]
     if real in own:
         return ""
     return ("%s is not Claude's own transcript folder for this project (%s)"
             % (claude_dir, own[0] if own else "~/.claude/projects/<project>"))
 
 
-def own_store(runtime: str, claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
+def own_store(cfg: Config, runtime: str, claude_dir: Optional[str] = None, codex_home: Optional[str] = None,
               gemini_home: Optional[str] = None) -> List[Path]:
     """The runtime's own transcript store: the only place whose files are attested as this instance's
-    conversations. Overrides are passed here only once the operator allowed them at a terminal."""
-    if runtime == "codex":
-        return [codex.codex_home(codex_home) / "sessions"]
-    if runtime == "gemini":
-        return [gemini.gemini_dir(gemini_home) / "tmp"]
-    return _claude_store(claude_dir)
+    conversations. Overrides are passed here only once they are trusted or the operator allowed them at
+    a terminal."""
+    if runtime == "codex" and codex_home:
+        return [store_of("codex", codex_home)]
+    if runtime == "gemini" and gemini_home:
+        return [store_of("gemini", gemini_home)]
+    out = [store_of(runtime, h) for h in trusted_homes(cfg, runtime)]
+    return out + ([Path(claude_dir)] if runtime == "claude" and claude_dir else [])
 
 
 def home_problem(cfg: Config, codex_home: Optional[str], gemini_home: Optional[str]) -> str:
-    """'' when --codex-home / --gemini-home are absent or name this machine's own runtime home, else why.
+    """'' when --codex-home / --gemini-home are absent or name a trusted home of that runtime, else why.
 
     v1.0.0 audit (unbound transcript source): like --claude-dir before item e, these chose the folder whose
     files were journaled and attested as the operator's own words, so an agent could sync a folder of
-    made-up rollouts. Any other folder now needs the operator at a terminal (tessbrain sync asks)."""
+    made-up rollouts. Any other folder now needs the operator at a terminal (tessbrain sync asks).
+    1.0.x (B-1): a home named only in this process's environment is not trusted."""
     out = []
-    if codex_home and os.path.realpath(str(codex.codex_home(codex_home))) != \
-            os.path.realpath(str(codex.codex_home(None))):
-        out.append("%s is not this machine's Codex home (%s)" % (codex_home, codex.codex_home(None)))
-    if gemini_home and os.path.realpath(str(gemini.gemini_dir(gemini_home))) != \
-            os.path.realpath(str(gemini.gemini_dir(None))):
-        out.append("%s is not this machine's Gemini home (%s)" % (gemini_home, gemini.gemini_dir(None).parent))
+    if codex_home and not _home_trusted(cfg, "codex", codex_home):
+        out.append("%s is not this machine's Codex home (%s)" % (codex_home, default_home("codex")))
+    if gemini_home and not _home_trusted(cfg, "gemini", gemini_home):
+        out.append("%s is not this machine's Gemini home (%s)" % (gemini_home, default_home("gemini")))
     return "; ".join(out)
+
+
+def _untrusted_env(cfg: Config, runtime: str) -> None:
+    home = env_home(runtime)
+    if not _home_trusted(cfg, runtime, home):
+        log_error(cfg, "sync: not journaling %s transcripts from %s: no %s hook has run with it and you have "
+                       "not confirmed it, so its conversations do not count as yours"
+                  % (runtime, store_of(runtime, home), runtime))
 
 
 def sources(cfg: Config, runtime: str, claude_dir: Optional[str], codex_home: Optional[str],
             days: Optional[int], deadline: Optional[float] = None, gemini_home: Optional[str] = None):
-    """[(transcript, parser, the runtime store it was found in)]."""
+    """[(transcript, parser, the runtime store it was found in)]. Discovery looks only in trusted
+    homes (1.0.x, B-1), or in a folder passed on the command line once it was allowed."""
     out = []
     also_cwd = roots.extra(cfg)  # operator-added, outside the repo; never brain.json (GPT-6 round 2, R6)
     cutoff = time.time() - days * 86400 if days else None
     if runtime in ("all", "claude"):
-        store = own_store("claude", claude_dir=claude_dir)
+        store = own_store(cfg, "claude", claude_dir=claude_dir)
         known = [str(p) for p in vetted(cfg, "claude", _known(cfg, "claude"), also_cwd, store)]
-        for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, known):
+        if not claude_dir:
+            _untrusted_env(cfg, "claude")
+        bases = None if claude_dir else [store_of("claude", h) for h in trusted_homes(cfg, "claude")]
+        for p in claude.discover(cfg.root, Path(claude_dir) if claude_dir else None, known, bases=bases):
             if cutoff is None or p.stat().st_mtime >= cutoff:
                 out.append((p, claude.parse, store))
     if runtime in ("all", "codex"):
-        paths = codex.discover(cfg.root, codex_home, also_cwd, days, deadline)
+        if not codex_home:
+            _untrusted_env(cfg, "codex")
+        homes = [codex_home] if codex_home else trusted_homes(cfg, "codex")
+        paths: List[Path] = []
+        for h in homes:
+            paths += [p for p in codex.discover(cfg.root, h, also_cwd, days, deadline) if p not in paths]
         seen = {os.path.realpath(str(p)) for p in paths}
-        store = own_store("codex", codex_home=codex_home)
+        store = own_store(cfg, "codex", codex_home=codex_home)
         for p in vetted(cfg, "codex", _known(cfg, "codex"), also_cwd, store):
             if str(p) not in seen:
                 paths.append(p)
         out.extend((p, codex.parse, store) for p in paths)
     if runtime in ("all", "gemini"):
-        store = own_store("gemini", gemini_home=gemini_home)
-        for p in gemini.discover(cfg.root, gemini_home, also_cwd):
+        if not gemini_home:
+            _untrusted_env(cfg, "gemini")
+        store = own_store(cfg, "gemini", gemini_home=gemini_home)
+        homes = [gemini_home] if gemini_home else trusted_homes(cfg, "gemini")
+        found: List[Path] = []
+        for h in homes:
+            found += [p for p in gemini.discover(cfg.root, h, also_cwd) if p not in found]
+        for p in found:
             if cutoff is None or p.stat().st_mtime >= cutoff:
                 out.append((p, gemini.parse, store))
     return out
@@ -281,7 +398,7 @@ def _run_locked(cfg, runtime, claude_dir, codex_home, transcript, days, gemini_h
         # agent-written file elsewhere whose recorded cwd happens to name this instance.
         parser = {"codex": codex.parse, "gemini": gemini.parse}.get(runtime, claude.parse)
         rt = runtime if runtime in ("codex", "gemini") else "claude"
-        store = own_store(rt)
+        store = own_store(cfg, rt)
         srcs = [(p, parser, store) for p in vetted(cfg, rt, [transcript], roots.extra(cfg), store)]
     else:
         srcs = sources(cfg, runtime, claude_dir, codex_home, days, gemini_home=gemini_home)
