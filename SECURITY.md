@@ -696,6 +696,24 @@ security reviews; they are stated so nobody relies on a check that is not there.
   adoption recomputed from the proven release's own manifest. An install whose
   anchor predates this has the manifest recorded, as it is then, by its next
   verified update (or by `tessctl anchor accept`).
+- **Peer consults are review-only and count toward the agent budget (1.0.0).**
+  A peer agent may be consulted only in a provably read-only, non-interactive
+  form (see "Nested agent CLIs"); a call made inside a peer call is refused,
+  so a peer cannot write or start another agent. Every Agent, Task or
+  spawn_agent dispatch, every agent-CLI run (not `--help`/`--version`) and
+  every `tessctl run` counts toward a budget of three agents per task: a Codex
+  turn, or in Claude Code the work after each operator prompt (a
+  UserPromptSubmit hook marks it; without the mark the whole session counts).
+  A call that would take the task past three agents asks in Claude Code and is
+  refused in Codex and the no-prompt modes. The counter is kept per session in
+  `~/.config/tess/agent-budget/` under the OS user record's home (0600 files
+  in a 0700 folder, locked while updated; the gate refuses that folder to
+  agents); a counter Tess cannot read or update asks. Limits: a call Tess
+  refuses for another reason is not counted, a call it asks about is counted
+  whether or not you approve it, `tessctl run` counts as one agent although it
+  may dispatch several (it always asks), and a payload without a session id
+  (not something either runtime sends) is not counted. Subagents a workflow
+  tool starts outside these hooks are not seen.
 - **Optional OS file lock: `tessctl harden` (1.0.0, off by default).** `tessctl
   harden on`, run by you in your own terminal, sets the operating system's
   root-owned immutable flag on the files only Tess writes (`.claude/settings.json`,

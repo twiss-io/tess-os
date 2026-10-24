@@ -323,7 +323,8 @@ def test_verify_lock_check_and_hooks_status_work(upgraded):
 
 
 def _claude_gate(inst: Path, command: str):
-    cmd = next(c for c in _hook_commands(inst) if "tess-gate.py --runtime claude" in c)
+    cmd = next(c for c in _hook_commands(inst)
+               if "tess-gate.py --runtime claude" in c and "--task-start" not in c)
     payload = {"hook_event_name": "PreToolUse", "session_id": "r6", "tool_name": "Bash",
                "tool_input": {"command": command}, "cwd": str(inst)}
     r = subprocess.run(["sh", "-c", cmd], input=json.dumps(payload), capture_output=True,

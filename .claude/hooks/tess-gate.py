@@ -157,11 +157,13 @@ guard in front of it.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -8039,6 +8041,120 @@ def _nested_runtime() -> str:
     return _STATE["nested"]
 
 
+
+# --------------------------------------------------------------------------- agent budget (1.0.0)
+# Section 2 (operator decision, 22 Oct): a peer agent may be consulted for
+# REVIEW ONLY, and every peer call counts toward the budget of at most three
+# agents per task (conductor/orchestration-budget.md), together with the
+# subagents the runtime dispatches. Review-only is the nested-agent rule above:
+# without asking, only a provably read-only, non-interactive run is allowed
+# (claude -p with no tools, plan mode or Read/Grep/Glob only; codex exec -s
+# read-only; gemini plan mode), and a call made inside a peer call is refused,
+# so a peer can neither write nor start another agent. The budget:
+#   * counted per task: in Codex a task is a turn (turn_id); in Claude Code it
+#     starts at each operator prompt (`tess-gate.py --task-start`, a
+#     UserPromptSubmit hook); without that mark it is the whole session
+#     (stricter);
+#   * counted: an Agent/Task/spawn_agent dispatch, an agent-CLI run (not
+#     --help/--version), and `tessctl run` (which also always asks);
+#   * a call that would take the task past three agents asks (Claude Code;
+#     Codex and the no-prompt modes refuse), so only the operator can approve
+#     more; a call Tess refuses for another reason is not counted;
+#   * the counter lives in ~/.config/tess/agent-budget/ under the OS user
+#     record's home (a folder the gate refuses to agents), one file per
+#     session, locked while it is updated; a counter Tess cannot read or write
+#     asks. A payload with no session_id is not a runtime call and is not
+#     counted.
+AGENT_BUDGET = 3
+
+
+def _budget_file(session) -> "str | None":
+    if not isinstance(session, str) or not session.strip():
+        return None
+    name = hashlib.sha256(session.encode("utf-8", "surrogateescape")).hexdigest()[:32]
+    return os.path.join(_os_home(), ".config", "tess", "agent-budget", name + ".json")
+
+
+def _budget_open(path: str) -> int:
+    """An exclusively locked descriptor on the counter file (created 0600 in a
+    0700 folder of this user's; a symlink or a foreign folder is an error)."""
+    import fcntl
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode) or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+        raise OSError("the agent budget folder is not this user's own folder")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _budget_rw(fd: int, doc: "dict | None" = None) -> dict:
+    """Read the counter (doc None) or replace it with `doc`."""
+    if doc is None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, 65536)
+        try:
+            got = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+        except (UnicodeDecodeError, ValueError):
+            got = {"used": AGENT_BUDGET}  # unreadable: count the budget as spent
+        return got if isinstance(got, dict) else {"used": AGENT_BUDGET}
+    data = (json.dumps(doc, sort_keys=True) + "\n").encode("utf-8")
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, data)
+    return doc
+
+
+def task_start(data: dict) -> None:
+    """UserPromptSubmit (Claude Code): the operator's prompt starts a new task
+    with a fresh agent budget."""
+    path = _budget_file(data.get("session_id"))
+    if path is None:
+        return
+    fd = _budget_open(path)
+    try:
+        _budget_rw(fd, {"task": "prompt:" + os.urandom(8).hex(), "used": 0})
+    finally:
+        os.close(fd)
+
+
+def _budget_charge(data: dict, codex: bool, n: int, v: "Verdict") -> None:
+    """Count `n` agents against this task's budget; past it, ask."""
+    path = _budget_file(data.get("session_id"))
+    if path is None:
+        return
+    turn = data.get("turn_id") if codex else None
+    try:
+        fd = _budget_open(path)
+        try:
+            doc = _budget_rw(fd)
+            if turn not in (None, "") and doc.get("task") != f"turn:{turn}":
+                doc = {"task": f"turn:{turn}", "used": 0}
+            elif "task" not in doc:
+                doc = dict(doc, task="session")
+            used = doc.get("used", 0)  # a new counter starts at 0; a bad value counts as spent
+            used = used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else AGENT_BUDGET
+            if used + n > AGENT_BUDGET:
+                v.add(ASK, f"it starts {n} agent(s), and this task has already used {min(used, AGENT_BUDGET)} "
+                           f"of its {AGENT_BUDGET}-agent budget (dispatched subagents and peer consults count "
+                           "alike; conductor/orchestration-budget.md); approve only if this task needs more")
+            if v.level != DENY:
+                _budget_rw(fd, dict(doc, used=used + n))
+        finally:
+            os.close(fd)
+    except _GateTimeout:
+        raise
+    except (OSError, ImportError) as exc:
+        v.add(ASK, f"it starts an agent, and Tess could not read or update this task's agent budget "
+                   f"({type(exc).__name__}), so it cannot tell whether the {AGENT_BUDGET}-agent budget "
+                   "is spent")
+
+
 class _AgentRun:
     """What one agent CLI call would start, as the per-CLI parsers read it."""
 
@@ -8464,6 +8580,7 @@ def _check_agent_cli(root: Path, cwd: str, agent: str, argv: list, orig: list, e
     _check_targets(root, cwd, run.targets, v, ctx)
     if run.info and not run.deny:
         return
+    _STATE["agents"] = _STATE.get("agents", 0) + 1  # 1.0.0: counts toward the task's agent budget
     depth = _consult_depth()
     if depth >= 1 or "TESS_CONSULT_DEPTH" in env:
         why = (f"this session already runs inside a peer call (TESS_CONSULT_DEPTH={depth})" if depth >= 1
@@ -8792,6 +8909,7 @@ def _check_tessctl_run(env: dict, words: list, v: Verdict, ctx: "_Ctx", res: "_C
     driver = _tessctl_run_driver(words)
     if driver is None or driver == "fake":
         return
+    _STATE["agents"] = _STATE.get("agents", 0) + 1  # 1.0.0: counts toward the task's agent budget
     what = ("`tessctl run` (the claude driver unless --driver says otherwise)" if driver == "claude"
             else "`tessctl run --driver codex`" if driver == "codex"
             else "`tessctl run` with a driver Tess cannot pin down")
@@ -10095,14 +10213,16 @@ def evaluate(data: dict, root: Path, codex: bool | None = None) -> Verdict:
     codex = ("turn_id" in data) if codex is None else codex
     # 1.0.0 (U1/U2): the link-scan and fast-check caches live for one gate run only.
     _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex, nested=None,
-                  linkscan={}, fastclear={})
+                  linkscan={}, fastclear={}, agents=0)
     try:
         _evaluate(data, root, v)
+        if _STATE.get("agents"):
+            _budget_charge(data, codex, _STATE["agents"], v)
     except _GateTimeout:
         v.add(ASK, f"Tess could not finish checking this call within {int(GATE_BUDGET)} seconds "
                    "(a very long command, or git answering slowly), so it cannot say it is safe")
     finally:
-        _STATE.update(deadline=None, interp={}, cmd="", codex=False, linkscan={}, fastclear={})
+        _STATE.update(deadline=None, interp={}, cmd="", codex=False, linkscan={}, fastclear={}, agents=0)
     return v
 
 
@@ -10112,6 +10232,7 @@ def _evaluate(data: dict, root: Path, v: Verdict) -> None:
     tin = tin if tin is not None else {}
     cwd = str(data.get("cwd") or root)
     if tool in DISPATCH_TOOLS:
+        _STATE["agents"] = _STATE.get("agents", 0) + 1  # 1.0.0: counts toward the task's agent budget
         hits = _leak_pattern_names(root, json.dumps(tin, ensure_ascii=False), specific_only=False)
         if hits:
             v.add(DENY, "the dispatch carries secret-shaped value(s): " + ", ".join(hits)
@@ -10286,6 +10407,16 @@ _ERRORED = ("TESS GATE: blocked because the safety check errored ({}). "
 
 
 def main(argv: list) -> int:
+    if "--task-start" in argv:
+        # 1.0.0: UserPromptSubmit marks a new task (fresh agent budget). It
+        # prints nothing and never blocks the prompt.
+        try:
+            data = json.loads(sys.stdin.read())
+            if isinstance(data, dict):
+                task_start(data)
+        except Exception as exc:  # noqa: BLE001 -- a missed mark only makes counting stricter
+            sys.stderr.write(f"tess-gate: could not mark a new task ({type(exc).__name__})\n")
+        return 0
     _catch_signals()
     runtime = "claude"
     if len(argv) >= 2 and argv[0] == "--runtime":

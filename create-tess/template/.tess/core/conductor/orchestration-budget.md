@@ -11,9 +11,14 @@ Agent fan-out is the largest cost in this system. Each spawned agent reloads the
 | Question, lookup, known answer, one-file change | One agent, or answer directly from doctrine/memory |
 | Normal build or fix | One builder + one verifier |
 | Wide audit, migration, multi-area build | A workflow, and only when the operator asks for breadth or the work truly spans independent areas |
-- Default cap: **6 concurrent agents** per workflow unless the operator raises it.
+- **Budget: at most three agents per task**, counted in total, not concurrently (section 2a). A workflow that needs more runs only when the operator asks for that breadth; then the default cap is **6 concurrent agents** per workflow unless the operator raises it.
 - Declare **model and effort per agent**: the cheaper model at normal effort for mechanical work (grep, git, formatting, file moves, measurements); the top model only for design, security review and hard judgement.
 - A session setting such as "ultracode"/maximum effort multiplies every rule above. When the operator reports usage running out, drop to normal effort and say so.
+
+## 2a. Agent budget and peer consults (enforced, 1.0.0)
+- A task may use **at most three agents per task**: dispatched subagents (Agent, Task, spawn_agent), `tessctl run`, and peer consults all count alike. A task is the work after one operator prompt (Claude Code) or one turn (Codex).
+- A peer agent (another runtime's CLI, such as `codex exec` or `claude -p`) may be consulted for **review only**: it runs read-only and non-interactive (`codex exec -s read-only`, `claude -p` in plan mode or with no tools or only Read/Grep/Glob, `gemini -p --approval-mode plan`), it cannot write, and it cannot start another agent or escalate.
+- The safety gate enforces both: a write-capable or approval-bypassing peer run asks or is refused, a call made inside a peer call is refused, and a call that would take the task past three agents asks in Claude Code (only the operator can approve more) and is refused in Codex.
 
 ## 3. Verification is proportional
 The mandatory verifier applies to production-touching, client-facing and externally visible outputs (see verification-routing). Internal drafts, research notes and reversible local changes get the builder's own tests, not a second agent. **Never re-verify a head that has not changed.** A retry needs a changed brief.

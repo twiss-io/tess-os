@@ -72,7 +72,10 @@ def test_prompt_hooks_are_the_utc_context_then_capture(settings):
     hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]
     assert [h["command"] for h in hooks] == [
         'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn -- '
-        '.claude/hooks/utc-local-context.sh', LEARN % "prompt"]
+        '.claude/hooks/utc-local-context.sh', LEARN % "prompt",
+        # 1.0.0: the operator's prompt starts a new task (agent budget)
+        'python3 -I -B "$CLAUDE_PROJECT_DIR/.claude/hooks/run-pinned.py" --on-fail warn -- '
+        '.claude/hooks/tess-gate.py --runtime claude --task-start']
 
 
 def test_stop_and_session_end_hand_the_transcript_to_the_pinned_sync(settings):

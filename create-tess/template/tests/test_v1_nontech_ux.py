@@ -166,7 +166,11 @@ def test_refusal_doc_exists_with_the_sections_the_messages_name():
 
 
 def _claude_gate_hook(settings: dict) -> dict:
+    """The gate hook for the tool calls (1.0.0: the dispatch tools Task/Agent
+    also reach the gate, in their own block, for the agent budget)."""
     for entry in settings["hooks"]["PreToolUse"]:
+        if entry.get("matcher") == "^(Task|Agent)$":
+            continue
         for hook in entry["hooks"]:
             if "tess-gate.py" in hook["command"]:
                 return {"matcher": entry["matcher"], **hook}
