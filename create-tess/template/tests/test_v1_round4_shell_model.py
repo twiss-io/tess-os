@@ -155,8 +155,11 @@ SHELL = [
     ("Z-alt", "rm -f CLAUDE.m(d)", ASK),
     ("Z-alt3", "cp @W/evil/CLAUDE.md CLAUDE.(md)", ASK),
     ("Z-rec", "rm -f **/CLAUDE.md", DENY),
-    ("Z-rec2", "rm -f ./**/tess-gate.py", DENY),
-    ("Z-rec3", "cp @W/evil3/tess-gate.py **/hooks/", DENY),
+    # 1.0.0 (U1): a recursive glob is decided from the files on disk; no name
+    # here matches one (real bash 3.2 and zsh 5.9: "no matches found"), so
+    # these allow. Z-rec (a real CLAUDE.md) stays a deny.
+    ("Z-rec2", "rm -f ./**/tess-gate.py", ALLOW),
+    ("Z-rec3", "cp @W/evil3/tess-gate.py **/hooks/", ALLOW),
     ("Z-tilde-dirs", "pushd @W && cp @W/evil/CLAUDE.md ~-/", ASK),
     ("Z-neg", "rm -f [^n]*.md", DENY),
     ("Z-param-glob2", "F='CLAUDE.m?'; rm -f $~F", ASK),
@@ -188,7 +191,7 @@ SHELL = [
     ("V-unset-arr", "unset 'a[$(rm -f CLAUDE.md)]'", ASK),
     ("V-zsh-autocd", "setopt autocd; .claude", ASK),
     ("V-hashcmd", "hash -p /bin/rm cat; cat CLAUDE.md", ASK),
-    ("SS-rm-pycache", "rm -rf **/__pycache__", DENY),
+    ("SS-rm-pycache", "rm -rf **/__pycache__", ALLOW),  # 1.0.0 (U1): nothing protected on disk
 ]
 
 CONTROL = [

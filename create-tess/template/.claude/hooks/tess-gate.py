@@ -715,7 +715,8 @@ def key_hit(cwd: str, path: str, ancestors: bool = False) -> str | None:
     return None
 
 
-def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None) -> None:
+def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None,
+                    root: "Path | None" = None) -> None:
     """Bash: any argument (or `--opt=value` value) that reaches the key
     directory, or command text that names it (an inline `python -c open(...)`)."""
     if _KEY_TEXT.search(raw):
@@ -746,7 +747,9 @@ def _check_key_text(cwd: str, argv: list, raw: str, v, ctx: "_Ctx | None" = None
                 v.add(DENY, f"it reaches {a}, Tess's key directory; the signing keys there are for "
                             "the operator's own tools, not for an agent", "keys")
                 return
-            if globbed.truncated:  # round 4: names Tess did not see may include it
+            # round 4: names Tess did not see may include it. 1.0.0 (U2, U7):
+            # not when no name under the pattern's folder can leave the project.
+            if globbed.truncated and not _key_listing_safe(root, cwd, part, globbed):
                 v.add(ASK, f"{a} matches more names than Tess lists one by one (or a folder it "
                            "cannot read), so Tess cannot tell whether it reaches its key directory")
 
@@ -796,20 +799,30 @@ class _Matches(list):
     """Glob matches. `truncated` (a flag, never an entry in the list) is True
     when the listing stopped at a limit, could not be read, or ran out of
     budget: a caller then has NOT seen every name and must fail safe (round
-    4, resource caps never fail open)."""
+    4, resource caps never fail open). 1.0.0 (U1/U2): `cause` says why:
+    "limit" (more names or entries than the budget), "link" (the shell's
+    walk goes on through a link Tess's does not follow) or "unreadable"."""
     truncated = False
+    cause = None
 
 
 _GLOB_WALK_LIMIT = 20000  # directory entries one glob may look at
 _GLOB_LIMIT = 1000  # names one glob may return
+# 1.0.0 (U1/U2): a listing inside the project that only ran past the limits
+# above is listed again with these (a dependency tree such as node_modules
+# holds tens of thousands of entries). Never used outside the project, and
+# never for a folder Tess cannot read or a link it does not follow.
+_BIG_WALK_LIMIT = 200000
+_BIG_GLOB_LIMIT = 100000
 
 
-def _glob(cwd: str, pattern: str, limit: "int | None" = None) -> "_Matches":
+def _glob(cwd: str, pattern: str, limit: "int | None" = None, walk: "int | None" = None) -> "_Matches":
     """The paths `pattern` matches, as the shell globs it. Round 4: a
     folder that cannot be listed, a listing over budget, or more matches
     than `limit` set `truncated` (Python's glob skipped unreadable folders
     silently, which read as "nothing there")."""
     limit = _GLOB_LIMIT if limit is None else limit
+    walk = _GLOB_WALK_LIMIT if walk is None else walk
     pat = _shell_glob(_expand(pattern))
     pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
     out = _Matches()
@@ -817,24 +830,27 @@ def _glob(cwd: str, pattern: str, limit: "int | None" = None) -> "_Matches":
         if any("**" in seg for seg in pat.split(os.sep)):
             # round 4 (conformance): zsh's `**/` (bash's with globstar) is any
             # number of folders; walked here with a budget, links not followed.
-            found, cut = _glob_recursive(pat, limit)
+            found, cut = _glob_recursive(pat, limit, walk)
         else:
-            found, cut = _glob_segments(pat, limit)
+            found, cut = _glob_segments(pat, limit, walk)
     except _GateTimeout:  # E8: out of time is the gate's ASK, not "could not list"
         raise
     except Exception:
-        found, cut = [], True  # could not list: unsure, never "nothing there"
+        found, cut = [], "unreadable"  # could not list: unsure, never "nothing there"
     out.extend(found[:limit])
-    out.truncated = cut or len(found) > limit
+    out.truncated = bool(cut) or len(found) > limit
+    if out.truncated:
+        out.cause = cut if isinstance(cut, str) else "limit"
     return out
 
 
-def _glob_segments(pat: str, limit: int) -> tuple:
-    """(matches, truncated) of an absolute pattern, one step at a time."""
+def _glob_segments(pat: str, limit: int, walk: int = _GLOB_WALK_LIMIT) -> tuple:
+    """(matches, truncated) of an absolute pattern, one step at a time.
+    `truncated` is False, "limit" or "unreadable" (1.0.0: the cause)."""
     segs = pat.split(os.sep)
     trail = segs[-1] == "" and len(segs) > 1
     segs = [x for x in segs[1:] if x] if pat.startswith(os.sep) else [x for x in segs if x]
-    paths, budget, cut = [os.sep], [_GLOB_WALK_LIMIT], False
+    paths, budget, cut = [os.sep], [walk], False
     for n, seg in enumerate(segs):
         _tick()  # E8: budget check per iteration
         last = n == len(segs) - 1
@@ -852,16 +868,16 @@ def _glob_segments(pat: str, limit: int) -> tuple:
                         _tick()  # E8: budget check per iteration
                         budget[0] -= 1
                         if budget[0] < 0:
-                            return nxt, True
+                            return nxt, cut or "limit"
                         if _seg_match(e.name, seg) and (last and not trail or os.path.isdir(e.path)):
                             nxt.append(e.path)
             except (FileNotFoundError, NotADirectoryError):
                 continue
             except OSError:
-                cut = True  # a folder Tess cannot list may hold a match
+                cut = "unreadable"  # a folder Tess cannot list may hold a match
         paths = nxt
         if len(paths) > limit * 4 or not paths:
-            cut = cut or len(paths) > limit * 4
+            cut = cut or ("limit" if len(paths) > limit * 4 else False)
             break
     return [q + (os.sep if trail else "") for q in sorted(paths)] if paths != [os.sep] else [], cut
 
@@ -884,14 +900,16 @@ def _glob_or_text(cwd: str, text: str, pat: "str | None", v: "Verdict | None" = 
     return list(found) or [text]
 
 
-def _glob_recursive(pat: str, limit: int) -> tuple:
-    """(matches, truncated) of an absolute pattern holding a `**` step."""
+def _glob_recursive(pat: str, limit: int, walk: int = _GLOB_WALK_LIMIT) -> tuple:
+    """(matches, truncated) of an absolute pattern holding a `**` step.
+    `truncated` is False, "limit" or "link" (1.0.0: the cause); a folder
+    that cannot be listed raises, which _glob reads as "unreadable"."""
     segs = pat.split(os.sep)
     k = next(i for i, x in enumerate(segs) if _GLOB_CHARS.search(x))
     head = os.sep.join(segs[:k]) or os.sep
     pats = [x for x in segs[k:] if x]
     trail = pat.endswith(os.sep)
-    out, budget = [], _GLOB_WALK_LIMIT
+    out, budget = [], walk
     if not os.path.isdir(head):
         return [], False
     for dirpath, dirnames, filenames in os.walk(head, followlinks=False,
@@ -901,18 +919,18 @@ def _glob_recursive(pat: str, limit: int) -> tuple:
             _tick()  # E8: budget check per iteration
             budget -= 1
             if budget < 0:
-                return out[:limit], True
+                return out[:limit], "limit"
             q = os.path.join(dirpath, n)
             names = os.path.relpath(q, head).split(os.sep)
             if _parts_match(names, pats) == "full":
                 out.append(q)
                 if len(out) > limit:
-                    return out[:limit], True
+                    return out[:limit], "limit"
             if os.path.islink(q) and _link_crossed(names, pats, trail):
                 # round 4b (Reid Z1): the shell's walk goes on through this
                 # link and Tess's does not, so the listing is incomplete: the
                 # caller asks (Claude) / refuses (Codex).
-                return out[:limit], True
+                return out[:limit], "link"
     return out, False
 
 
@@ -971,6 +989,292 @@ def _parts_match(names: list, pats: list) -> "str | None":
         if kind in got:
             return kind
     return None
+
+
+# --------------------------------------------------------------------------- 1.0.0 usability (U1, U2, U7)
+# Reid's round-4 usability items, approved for 1.0.0 (Xavier, 22 Oct: "soften
+# the node_modules / recursive-delete prompts"):
+#   U1  a delete or chmod whose target is a recursive glob (`rm -rf
+#       **/__pycache__`) was refused from the text alone, because `**` can
+#       spell a folder inside every protected folder. Now it is decided from
+#       the on-disk listing when that listing is complete, crosses no link
+#       and nothing earlier in the command changed files; any real match of
+#       a protected path is still refused. When Tess cannot decide from the
+#       listing, it asks instead of refusing, and names the `find` form.
+#   U2  read-only commands over a big listing (`ls node_modules/*`, `grep x
+#       **/*.py` in a JS project) asked "cannot tell whether it reaches its
+#       key directory". When the pattern's fixed folder is inside the project
+#       (no link on it), the key directory is not inside the project, and
+#       every link under that folder (followed, if it stays inside the
+#       project) resolves inside the project, no name the glob matches can
+#       reach the key directory, so Tess no longer asks for that reason.
+#   U7  the same for a read-only recursive glob that crosses a link: a link
+#       that stays inside the project no longer asks for the key-directory
+#       reason. A WRITE through a link still asks (Reid Z1), unchanged.
+# Also: a listing inside the project that only ran past the listing limits
+# is listed again with a larger budget (_BIG_*), and `find` inside the
+# project walks with the larger budget, so big dependency trees are checked
+# name by name instead of asking. Folders Tess cannot read, links it does
+# not follow, and anything outside the project keep the old limits and asks.
+
+def _inside(path: str, base: str) -> bool:
+    """`path` is `base` or below it, by spelling (both realpath'd). The 1.0.0
+    fast paths use this; anything that fails it takes the identity checks."""
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _glob_head(pat: str) -> tuple:
+    """(the folder in front of the first glob step, [the steps from there])
+    of an absolute pattern."""
+    segs = pat.split(os.sep)
+    k = next((i for i, x in enumerate(segs) if _GLOB_CHARS.search(x)), len(segs))
+    return os.sep.join(segs[:k]) or os.sep, [x for x in segs[k:] if x]
+
+
+def _project_head(root: Path, cwd: str, pattern: str) -> "str | None":
+    """The fixed folder of `pattern` when it lies inside the project with no
+    link on it, and no glob step can climb out (`..`, or a step that can
+    match `..`); else None."""
+    pat = _shell_glob(_expand(pattern))
+    pat = pat if os.path.isabs(pat) else os.path.join(cwd or os.getcwd(), pat)
+    head, rest = _glob_head(pat)  # never normalised first: `*/..` is per match in the shell
+    head = os.path.normpath(head)
+    if not rest or os.path.realpath(head) != head or not _inside(head, os.path.realpath(str(root))):
+        return None
+    if any(x == ".." or _glob_may_be_dotdot(x) for x in rest):
+        return None
+    return head
+
+
+def _target_listing(root: Path, cwd: str, pattern: str) -> "_Matches":
+    """The names a write target's glob matches. A listing inside the project
+    that only ran past the limits is listed again with the larger budget."""
+    found = _glob(cwd, pattern)
+    if found.truncated and found.cause == "limit" and _project_head(root, cwd, pattern):
+        found = _glob(cwd, pattern, _BIG_GLOB_LIMIT, _BIG_WALK_LIMIT)
+    return found
+
+
+def _keys_outside_project(root: Path) -> bool:
+    base = os.path.realpath(str(root))
+    return not any(_within(d, base) is not None or _within(base, d) is not None for d in _key_dirs())
+
+
+def _links_stay_inside(root: Path, head: str) -> bool:
+    """Every link at or below `head` resolves inside the project (a link to a
+    folder inside the project is walked too), within _BIG_WALK_LIMIT
+    entries, and every folder could be read. Cached per gate run."""
+    base = os.path.realpath(str(root))
+    cache = _STATE.setdefault("linkscan", {})
+    if (base, head) in cache:
+        return cache[(base, head)]
+    budget, queue, seen, ok = _BIG_WALK_LIMIT, [head], set(), True
+    try:
+        while queue and ok:
+            _tick()  # E8: budget check per iteration
+            top = queue.pop()
+            st = os.stat(top)
+            if (st.st_dev, st.st_ino) in seen:
+                continue
+            seen.add((st.st_dev, st.st_ino))
+            dirs = [top]
+            while dirs and ok:
+                _tick()  # E8: budget check per iteration
+                with os.scandir(dirs.pop()) as it:
+                    for e in it:
+                        _tick()  # E8: budget check per iteration
+                        budget -= 1
+                        if budget < 0:
+                            ok = False
+                            break
+                        if e.is_symlink():
+                            t = os.path.realpath(e.path)
+                            if not _inside(t, base):
+                                ok = False
+                                break
+                            if os.path.isdir(t):
+                                queue.append(t)
+                        elif e.is_dir(follow_symlinks=False):
+                            dirs.append(e.path)
+    except _GateTimeout:
+        raise
+    except OSError:
+        ok = False  # a folder Tess cannot read may hold a link out
+    cache[(base, head)] = ok
+    return ok
+
+
+def _key_listing_safe(root: "Path | None", cwd: str, pattern: str, found: "_Matches") -> bool:
+    """1.0.0 (U2, U7): a listing cut short cannot reach the key directory.
+    True only when the key directory is not inside the project, the
+    pattern's fixed folder is inside the project with no link on it, no step
+    can climb out, every folder can be read, and every link under that
+    folder stays inside the project."""
+    if root is None or found.cause == "unreadable" or not _keys_outside_project(root):
+        return False
+    head = _project_head(root, cwd, pattern)
+    return head is not None and _links_stay_inside(root, head)
+
+
+def _fast_cache(root: Path) -> dict:
+    """State for _fast_clear, once per gate run and project."""
+    base = os.path.realpath(str(root))
+    cache = _STATE.setdefault("fastclear", {})
+    if base not in cache:
+        ctl = any(_within(fr, base) is not None or _within(base, fr) is not None
+                  for _f, fr, _l in _control_files(root))
+        cache[base] = {"base": base, "ctl": ctl, "keys": _keys_outside_project(root),
+                       "globs": tuple(sorted(_security_tier_paths(root))) + PROTECTED_GLOBS, "dirs": {}}
+    return cache[base]
+
+
+def _dir_may_hold(fast: dict, d: str) -> bool:
+    """A child of project folder `d` (relative, "" for the root) may be a
+    protected path, a folder holding one, or a file inside one (an
+    over-approximation of protected_hit for the names in one folder)."""
+    low = d.lower()
+    memo = fast["dirs"]
+    if low in memo:
+        return memo[low]
+    res = low in ("", ".") or low == "scripts" or (low.startswith("scripts/") and "/" not in low[8:])
+    for g in () if res else fast["globs"]:
+        _tick()  # E8: budget check per iteration
+        gl = g.lower()
+        b = gl[:-3] if gl.endswith("/**") else gl
+        segs = b.split("/")
+        k = next((i for i, x in enumerate(segs) if _GLOB_CHARS.search(x)), len(segs))
+        fixed = "/".join(segs[:k])
+        if (k < len(segs) and not fixed) or fixed == low or fixed.startswith(low + "/") or \
+                low.startswith(fixed + "/"):
+            res = True
+            break
+    memo[low] = res
+    return res
+
+
+def _fast_clear(fast: dict, path: str) -> bool:
+    """True only when `path` (normalised, absolute, from a listing that
+    follows no link) is surely neither protected nor in the key directory:
+    it lies inside the project by spelling, is not a link, no control file
+    lies inside the project, and its folder holds nothing protected. Every
+    other path takes the full checks."""
+    base = fast["base"]
+    if fast["ctl"] or not fast["keys"] or path == base or not _inside(path, base):
+        return False
+    if os.path.islink(path) or re.search(r"(?i)(^|/)etc/gitconfig$", path):
+        return False
+    rel = path[len(base.rstrip(os.sep)) + 1:]
+    return not _dir_may_hold(fast, rel.rsplit("/", 1)[0] if "/" in rel else "")
+
+
+def _recursive_step(pat: str) -> bool:
+    """The pattern has a `**` or `***` step (zsh recursion, bash globstar)."""
+    return any(x in ("**", "***") for x in pat.split("/"))
+
+
+_LOOP_OR_FUNC = re.compile(r"(?<![\w.-])(while|until|for|select|function|trap|coproc)(?![\w.-])|\w\s*\(\s*\)")
+
+
+def _u1_quiet(ctx: "_Ctx") -> bool:
+    """Nothing earlier in the command can have made a name the glob now
+    matches: no file changed, no link made, not a function body, no loop or
+    function anywhere in the command (a later pass of a loop runs after the
+    commands below it)."""
+    return not (ctx.mutated or ctx.links or ctx.rt_links or ctx.deferred or ctx.opaque
+                or _LOOP_OR_FUNC.search(ctx.raw or ""))
+
+
+def _u1_real_hit(root: Path, cwd: str, pat: str) -> "str | None":
+    """1.0.0 (U1): the protected path that a name ON DISK matching the
+    recursive pattern `pat` is, holds, or lies inside, or one Tess cannot
+    rule out (a step that can climb out, a protected folder it cannot read
+    or walk within budget). None only when every protected path the pattern
+    can spell was looked at and no such name exists. Run whether or not the
+    listing was complete, so a real match is refused even when the listing
+    stopped early (at a link, or at a limit)."""
+    full = pat if os.path.isabs(pat) else os.path.join(cwd, pat)
+    parts = full.split(os.sep)
+    k = next((i for i, p in enumerate(parts) if _GLOB_CHARS.search(p)), len(parts))
+    head = os.path.realpath(os.sep.join(parts[:k]) or os.sep)
+    base = os.path.realpath(str(root))
+    rel = _within(head, base)
+    if rel is None:
+        return None
+    rest = [p for p in parts[k:] if p]
+    pparts = ([] if rel == "." else rel.split("/")) + rest
+    if any(p == ".." or _glob_may_be_dotdot(p) for p in rest):
+        return "a step of the pattern can climb out of its folder"
+    budget = [_BIG_WALK_LIMIT]
+
+    def named(names):
+        return _parts_match(names, pparts) == "full"
+
+    # scripts/<module>: imported by scripts/tess at every session start
+    sdir = os.path.join(base, "scripts")
+    try:
+        with os.scandir(sdir) as it:
+            for e in it:
+                _tick()  # E8: budget check per iteration
+                cands = [[e.name]]
+                if e.is_dir(follow_symlinks=False):
+                    cands += [[e.name, n] for n in ("__init__.py", "__init__.pyc")
+                              if os.path.lexists(os.path.join(e.path, n))]
+                for c in cands:
+                    _tick()  # E8: budget check per iteration
+                    if _SCRIPTS_IMPORTABLE.match("scripts/" + "/".join(c)) and named(["scripts"] + c):
+                        return "scripts/<module> (imported by scripts/tess at every session start)"
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return "scripts/<module> (a folder Tess cannot read)"
+    for g in _protected_globs(root):
+        _tick()  # E8: budget check per iteration
+        entry = g[:-3] if g.endswith("/**") else g
+        if _GLOB_CHARS.search(entry):
+            continue
+        eparts = entry.split("/")
+        how = _parts_match(eparts, pparts)
+        if how is None:
+            continue
+        # the entry itself and the folders above it, as far as they exist
+        for i in range(1, len(eparts) + 1):
+            _tick()  # E8: budget check per iteration
+            if not os.path.lexists(os.path.join(base, *eparts[:i])):
+                break
+            if named(eparts[:i]):
+                return g
+        top = os.path.join(base, *eparts)
+        if not (g.endswith("/**") and how == "beyond" and os.path.isdir(top)):
+            continue
+        if os.path.islink(top):
+            return g  # a protected folder that is a link: not walked, so unsure
+        try:
+            for dirpath, dirnames, filenames in os.walk(top, followlinks=False,
+                                                        onerror=lambda e: (_ for _ in ()).throw(e)):
+                _tick()  # E8: budget check per iteration
+                for n in dirnames + filenames:
+                    _tick()  # E8: budget check per iteration
+                    budget[0] -= 1
+                    if budget[0] < 0:
+                        return g
+                    q = os.path.relpath(os.path.join(dirpath, n), base).split(os.sep)
+                    if named(q):
+                        return g
+        except _GateTimeout:
+            raise
+        except OSError:
+            return g
+    return None
+
+
+_U1_FIND = ("; to clean up inside the project, use `find . -name <name> -prune -exec rm -rf {} +`, "
+            "which Tess checks name by name")
+_U1_ASK = ("it writes to {word}, a recursive pattern that can name a protected Tess path ({hit}), "
+           "after something earlier in the command changes files, so the files on disk now may not "
+           "be the ones it will match" + _U1_FIND.replace("{}", "{{}}"))
+_U1_CUT = ("it writes to {word}, a recursive pattern that can name a protected Tess path ({hit}), "
+           "and Tess could not list every name it matches (the shell's walk crosses a link, or "
+           "there are too many)" + _U1_FIND.replace("{}", "{{}}"))
 
 
 # --------------------------------------------------------------------------- shell parsing
@@ -4711,7 +5015,16 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
         return
     for text, pat in cands:
         _tick()  # E8: budget check per iteration
-        paths = _glob_or_text(cwd, text, pat, v, f"it writes to {word}, which")
+        # 1.0.0 (U1): inside the project, a listing that only ran past the
+        # limits is listed again with the larger budget.
+        found = _target_listing(root, cwd, pat) if pat else _Matches()
+        if found.truncated:
+            v.add(ASK, f"it writes to {word}, which matches more names than Tess lists one by one (or "
+                       "a folder it cannot read), so Tess cannot check every one")
+        paths = list(found) or [text]
+        # a big listing (only ever from inside the project): names in folders
+        # that hold nothing protected skip the per-name identity checks.
+        fast = _fast_cache(root) if len(found) > _GLOB_LIMIT and not ctx.links and not ctx.rt_links else None
         if pat:
             paths += _dotdot_spellings(cwd, pat, v=v)  # Quinn R4: `.*` may be `..`
         for p in paths:
@@ -4725,6 +5038,8 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
                 # Quinn R5 parity: `ln -s "$PWD" "/w/b-$?" && rm /w/b-0/x`
                 v.add(ASK, f"it writes to {word}, in a folder where this command makes a link "
                            "whose name is only known when the command runs")
+            if fast is not None and ".." not in str(p).split("/") and _fast_clear(fast, full):
+                continue
             # `full` follows `..` by name; the shell follows it on disk, after
             # any link in front of it (`/w/lnk/../x`), as realpath does.
             hit = protected_hit(root, cwd, full) or (".." in str(p).split("/") and protected_hit(
@@ -4733,6 +5048,26 @@ def _check_target(root: Path, cwd: str, word, v: "Verdict", ctx: "_Ctx") -> None
                 v.add(DENY, f"it writes to {word}, a protected Tess path ({hit})", "protected")
                 return
         hit = pat and _pattern_hit(root, cwd, pat)
+        if hit and _recursive_step(pat):
+            # 1.0.0 (U1): a `**` step that could only SPELL a protected path
+            # is no reason to refuse; a name on disk that matches one is.
+            # Every name a complete listing holds was checked above, and the
+            # protected paths themselves are looked at here, so a real match
+            # is refused even when the listing stopped early. A listing cut
+            # short (a link the shell's walk crosses, or past even the larger
+            # budget) is still refused, as before. A complete listing after a
+            # change earlier in the command asks.
+            real = _u1_real_hit(root, cwd, pat)
+            if real:
+                v.add(DENY, f"it writes to {word}, which matches a protected Tess path ({real})",
+                      "protected")
+                return
+            if found.truncated:
+                v.add(DENY, _U1_CUT.format(word=word, hit=hit), "protected")
+                return
+            if not _u1_quiet(ctx):
+                v.add(ASK, _U1_ASK.format(word=word, hit=hit))
+            continue
         if hit:
             v.add(DENY, f"it writes to {word}, which matches a protected Tess path ({hit})", "protected")
             return
@@ -6216,7 +6551,7 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                 for top in dict.fromkeys([top] + ([through] if through else [])):
                     base = os.path.realpath(str(root))
                     real = os.path.realpath(top)
-                    entries = None
+                    entries, fast = None, None
                     if _within(real, base) is None and _within(base, real) is None:
                         # Outside the project: only the control files there matter.
                         entries = _find_control_entries(root, start, top, maxdepth)
@@ -6230,6 +6565,12 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                         # 1.0.0 (Reid N1): with -maxdepth 0 find lists only the
                         # start itself, so nothing under it is walked or counted.
                         unlisted = []
+                        # 1.0.0 (U1): inside the project, with no link on the
+                        # start, find walks with the larger budget, and names in
+                        # folders that hold nothing protected skip the identity checks.
+                        big = os.path.normpath(top) == real and _inside(real, base)
+                        limit = _BIG_WALK_LIMIT if big else _FIND_LIMIT
+                        fast = _fast_cache(root) if big else None
 
                         def _walk_error(e, _u=unlisted):
                             if not isinstance(e, (FileNotFoundError, NotADirectoryError)):
@@ -6247,7 +6588,7 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                             dirnames[:] = [n for n in dirnames if not pruned(
                                 os.path.join(dirpath, n), os.path.join(shown_dir, n), d + 1)]
                             seen += len(dirnames) + len(filenames)
-                            if seen > _FIND_LIMIT:
+                            if seen > limit:
                                 v.add(ASK, "`find` would change more files than Tess can list, so it cannot "
                                            "check them against its protected files")
                                 return
@@ -6260,6 +6601,8 @@ def _find_protected(root: Path, cwd: str, starts: list, expr: list, v: "Verdict"
                     for path, shown, d in entries:
                         _tick()  # E8: budget check per iteration
                         if d < mindepth or (maxdepth is not None and d > maxdepth) or not changed(path, shown, d):
+                            continue
+                        if fast is not None and d > 0 and _fast_clear(fast, path):
                             continue
                         hit = protected_hit(root, cwd, path)
                         if hit:
@@ -8567,7 +8910,7 @@ def _check_program(root: Path, cwd: str, env: dict, argv: list, orig: list, v: V
             for a in argv[1:]):
         v.add(ASK, "it sets git configuration through the environment that changes where a push "
                    "goes or what it sends")
-    _check_key_text(cwd, argv, " ".join(argv), v, ctx)
+    _check_key_text(cwd, argv, " ".join(argv), v, ctx, root)
     # v1.0 audit (A2 inside A1's resolver): every segment the resolver yields
     # that runs tessctl -- through `{ }`, `if/then`, wrappers, runners, `sh -c`,
     # substitutions or the unparseable fallback -- gets the vault rule and the
@@ -9726,14 +10069,16 @@ def _tool_cwd(tin, cwd: str) -> str:
 def evaluate(data: dict, root: Path, codex: bool | None = None) -> Verdict:
     v = Verdict()
     codex = ("turn_id" in data) if codex is None else codex
-    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex, nested=None)
+    # 1.0.0 (U1/U2): the link-scan and fast-check caches live for one gate run only.
+    _STATE.update(deadline=time.monotonic() + GATE_BUDGET, interp={}, cmd="", codex=codex, nested=None,
+                  linkscan={}, fastclear={})
     try:
         _evaluate(data, root, v)
     except _GateTimeout:
         v.add(ASK, f"Tess could not finish checking this call within {int(GATE_BUDGET)} seconds "
                    "(a very long command, or git answering slowly), so it cannot say it is safe")
     finally:
-        _STATE.update(deadline=None, interp={}, cmd="", codex=False)
+        _STATE.update(deadline=None, interp={}, cmd="", codex=False, linkscan={}, fastclear={})
     return v
 
 

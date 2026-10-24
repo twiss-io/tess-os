@@ -378,6 +378,29 @@ security reviews; they are stated so nobody relies on a check that is not there.
   down), the listing counts as cut short and the command asks (Codex:
   refuses) (round 4b). Below a run-time path part, any link under a `***/`
   step (to a folder, to a file, or dangling) counts as unsure and asks (1.0.x).
+  A write whose target is a recursive glob (`rm -rf **/__pycache__`, `chmod +x
+  **/*.sh`) is decided from the files on disk (1.0.0, U1): it is allowed only
+  when the listing is complete, crosses no link, and nothing earlier in the
+  command changes files, makes a link, loops or defines a function. Any name on
+  disk that is, holds or lies inside a protected path is refused, and the
+  protected paths the pattern can spell are looked at directly, so a real
+  match is refused even when the listing stops early. A listing cut short (a
+  link the shell's walk crosses, or more names than even the larger budget
+  below) is refused as before; a complete listing after an earlier change in
+  the command asks, and the reason names the `find ... -prune -exec rm -rf {}
+  +` form. Inside the project, a glob listing that only ran past the limits
+  (1,000 names, 20,000 entries) is listed again with a larger budget (100,000
+  names, 200,000 entries) when its fixed folder has no link on it and no step
+  can climb out (`..`, or a step such as `.*` that can match `..`); names in
+  folders that hold nothing protected skip the per-name identity checks. A
+  read-only command over a listing cut short (a big `node_modules`, or a
+  `***/` walk through a link) no longer asks whether it reaches the key folder
+  when that folder is not inside the project, the pattern's fixed folder is
+  inside the project with no link on it, no step can climb out, every folder
+  can be read, and every link below that folder (followed when it stays
+  inside the project) resolves inside the project (1.0.0, U2, U7). Writes
+  through a link, folders Tess cannot read, and anything outside the project
+  keep the old limits and asks.
   Real-shell conformance (round 4): `tests/test_v1_shell_conformance.py`
   runs every command the gate allows from its attack corpus and from the
   commands the test suite hands it in real bash and zsh, inside a disposable
@@ -422,7 +445,8 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `find -exec` are checked against the files find would match (its `-name`,
   `-path`, `-type`, `!`, `-o` and `( )` are evaluated; a test such as `-mtime` counts
   as possibly true; `-prune` stops the descent unless `-depth` or `-delete` turns
-  it off), up to 20,000 entries; beyond that they ask, and so do a
+  it off), up to 20,000 entries (200,000 when the start is inside the project
+  with no link on it, 1.0.0); beyond that they ask, and so do a
   changing `find -L` / `-follow`, which follows links Tess does not walk, and a
   changing `find -files0-from`. sed and awk programs are read for the files they
   write (`w FILE`, `print > "FILE"`, `-i inplace`), and Codex patch headers are
