@@ -18,6 +18,10 @@ import tokenize
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from ._strict_json import StrictJsonError as _StrictJsonError
+from ._strict_json import reject_duplicates as _reject_duplicates
+from ._strict_json import reject_nonfinite as _reject_nonfinite
+
 
 MANIFEST_DIRECTORY = Path("adapters/manifests")
 SCHEMA_PATH = Path("adapters/contracts/adapter-manifest.schema.json")
@@ -113,23 +117,6 @@ _FORBIDDEN_TERMS = (
     "trust",
     "protected",
 )
-
-
-class _StrictJsonError(ValueError):
-    """Raised when local JSON is malformed or contains duplicate keys."""
-
-
-def _reject_duplicates(pairs: Sequence[Tuple[str, Any]]) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _StrictJsonError("duplicate object key {!r}".format(key))
-        result[key] = value
-    return result
-
-
-def _reject_nonfinite(value: str) -> None:
-    raise _StrictJsonError("non-finite JSON constant {!r}".format(value))
 
 
 def _open_root(root: Path, findings: List[str]) -> Optional[int]:
