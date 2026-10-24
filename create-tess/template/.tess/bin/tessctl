@@ -19914,12 +19914,27 @@ ANCHOR_FILES = (
     # v1.0.x (Quinn GAP-1): Claude Code's local override can switch every hook
     # off (`disableAllHooks`). Anchored by content; see ANCHOR_LOCAL_SETTINGS.
     ".claude/settings.local.json",
+    # 1.0.0 (section 2): the project MCP server definitions. See ANCHOR_MCP.
+    ".mcp.json",
 )
 # v1.0 final review round 3 (C1): files added to ANCHOR_FILES after anchors
 # already existed. An anchor written by an earlier release has no record of
 # them; the next verified update records them as they are then (a first
 # record, never a re-blessing of a change against an earlier record).
-ANCHOR_FIRST_RECORD = (MANIFEST_FILE, ".claude/settings.local.json")
+ANCHOR_FIRST_RECORD = (MANIFEST_FILE, ".claude/settings.local.json", ".mcp.json")
+# 1.0.0 (section 2, operator decision 22 Oct): .mcp.json defines what each
+# project MCP server runs (command, arguments, URL, environment). Claude Code
+# records the operator's approval of a server by NAME in settings.local.json,
+# so before this a changed definition behind an approved name went unseen. It
+# is anchored by its bytes, its absence is a recorded state (it is normally
+# absent), and a symlink or folder in its place is a change. It often holds API
+# keys, so Tess keeps NO copy of it outside the project: `anchor accept` shows
+# server names, transports and programs, never values, and `restore` cannot
+# put it back (it says so). Kept identical in .claude/hooks/run-pinned.py.
+ANCHOR_MCP = ".mcp.json"
+ANCHOR_MCP_ABSENT = "absent:no-file"
+# Files whose absence is a recorded state, not a missing file.
+ANCHOR_MAY_BE_ABSENT = (".claude/settings.local.json", ANCHOR_MCP)
 # v1.0.x (Quinn GAP-1): .claude/settings.local.json is the operator's own file
 # (personal permission rules; Claude Code writes "don't ask again" answers to
 # it) and is normally absent, yet one key in it, disableAllHooks, turns Tess's
@@ -20340,9 +20355,12 @@ _anchor_lock_projection = lock_projection   # the name tests and callers use
 
 def _anchor_digest(rel: str, data: bytes | None) -> str | None:
     """The anchored digest of `data`; None for a file that is not there
-    (except .claude/settings.local.json, whose absence counts as `{}`)."""
+    (except .claude/settings.local.json, whose absence counts as `{}`, and
+    .mcp.json, whose absence is ANCHOR_MCP_ABSENT)."""
     if rel == ANCHOR_LOCAL_SETTINGS:
         return anchor_local_settings_digest(data)
+    if rel == ANCHOR_MCP and data is None:
+        return ANCHOR_MCP_ABSENT
     if data is None:
         return None
     if rel == LOCK_FILE:
@@ -20350,10 +20368,11 @@ def _anchor_digest(rel: str, data: bytes | None) -> str | None:
     return hashlib.sha256(data).hexdigest()
 
 
-def _anchor_local_absent(root: Path) -> bool:
-    """True when .claude/settings.local.json is truly absent (not a symlink,
-    a folder or an unreadable file in its place)."""
-    return not os.path.lexists(str(root / ANCHOR_LOCAL_SETTINGS))
+def _anchor_local_absent(root: Path, rel: str = ANCHOR_LOCAL_SETTINGS) -> bool:
+    """True when .claude/settings.local.json (or another ANCHOR_MAY_BE_ABSENT
+    file) is truly absent (not a symlink, a folder or an unreadable file in
+    its place)."""
+    return not os.path.lexists(str(root / rel))
 
 
 def _anchor_read(path: Path | None) -> bytes | None:
@@ -20373,8 +20392,8 @@ def _anchor_current(root: Path) -> dict:
         data = _anchor_read(root / rel)
         if data is not None:
             out[rel] = data
-        elif rel == ANCHOR_LOCAL_SETTINGS and _anchor_local_absent(root):
-            out[rel] = None  # recorded as "no file" (counts as `{}`)
+        elif rel in ANCHOR_MAY_BE_ABSENT and _anchor_local_absent(root, rel):
+            out[rel] = None  # recorded as "no file" (settings.local.json: counts as `{}`)
     for name in ANCHOR_GIT_HOOKS:
         rel = ANCHOR_GIT_PREFIX + name
         data = _anchor_read(_anchor_file_path(root, rel))
@@ -20456,13 +20475,13 @@ def _anchor_state(root: Path) -> AnchorState:
     problems = []
     for rel, rec in sorted(doc["files"].items()):
         want = rec.get("sha256") if isinstance(rec, dict) else None
-        if rel == ANCHOR_LOCAL_SETTINGS and _anchor_local_absent(root):
-            if want != anchor_local_settings_digest(None):
-                problems.append(f"{rel} has changed")  # removed while it held more than permission rules
+        if rel in ANCHOR_MAY_BE_ABSENT and _anchor_local_absent(root, rel):
+            if want != _anchor_digest(rel, None):
+                problems.append(f"{rel} has changed")  # removed (settings: while it held more than permission rules)
             continue
         data = _anchor_read(_anchor_file_path(root, rel))
         if data is None:
-            problems.append(f"{rel} is missing" if rel != ANCHOR_LOCAL_SETTINGS else
+            problems.append(f"{rel} is missing" if rel not in ANCHOR_MAY_BE_ABSENT else
                             f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or _anchor_digest(rel, data) != want:
             problems.append(f"{rel} has changed")
@@ -20505,10 +20524,11 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
     After a verified release run (`update` / `self-update`, v1.0.0 GPT-6 final
     F2): `carry` = the previously approved records kept as they are, `accept`
     = {rel: bytes} of the files that run wrote; nothing else is recorded."""
-    if accept is None and ANCHOR_LOCAL_SETTINGS in ANCHOR_FILES and not _anchor_local_absent(root) \
-            and _anchor_read(root / ANCHOR_LOCAL_SETTINGS) is None:
-        raise ValueError(f"{ANCHOR_LOCAL_SETTINGS} is a symlink, a folder or unreadable; Claude "
-                         f"Code would follow it, so replace it with a regular file first")
+    for may in ANCHOR_MAY_BE_ABSENT:
+        if accept is None and may in ANCHOR_FILES and not _anchor_local_absent(root, may) \
+                and _anchor_read(root / may) is None:
+            raise ValueError(f"{may} is a symlink, a folder or unreadable; Claude "
+                             f"Code would follow it, so replace it with a regular file first")
     pid = _anchor_project_id(root) or ("path-" + _anchor_path_key(root))
     tess_dir = _anchor_tess_dir()
     projects, blobs = tess_dir / "projects", tess_dir / "anchor-blobs"
@@ -20528,8 +20548,12 @@ def _anchor_write(root: Path, source: str, carry: dict | None = None,
              if isinstance(rec, dict) and rec.get("sha256")}
     for rel, data in sorted(items.items()):
         if data is None:
-            if rel == ANCHOR_LOCAL_SETTINGS:
-                files[rel] = {"sha256": anchor_local_settings_digest(None), "absent": True}
+            if rel in ANCHOR_MAY_BE_ABSENT:
+                files[rel] = {"sha256": _anchor_digest(rel, None), "absent": True}
+            continue
+        if rel == ANCHOR_MCP:
+            # never copied outside the project: it often holds API keys
+            files[rel] = {"sha256": _anchor_digest(rel, data), "no_copy": True}
             continue
         raw = hashlib.sha256(data).hexdigest()
         blob = blobs / raw
@@ -20609,6 +20633,9 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
                   "pass. Fix what it reports, then run `tessctl anchor init`.")
             return
         carry, accept, first_local = None, None, True
+        mcp_now = _anchor_read(root / ANCHOR_MCP)
+        if mcp_now is not None:
+            _anchor_mcp_first_record_warning(mcp_now)
     else:
         old = st.doc["files"]
         current = _anchor_current(root)
@@ -20630,6 +20657,8 @@ def _anchor_after_release(root: Path, verb: str, engine: Path | None = None) -> 
                       f"your own terminal.")
                 if rel == ANCHOR_LOCAL_SETTINGS:
                     first_local = True
+                if rel == ANCHOR_MCP and data is not None:
+                    _anchor_mcp_first_record_warning(data)
         if changed:
             sys.exit(f"tessctl {verb}: STOPPED — the release was applied, but these safety files "
                      f"changed in a way the release did not, so Tess did NOT record them as "
@@ -20664,6 +20693,16 @@ def _anchor_restore(root: Path, dry_run: bool = False) -> list:
             why = _anchor_restore_local_settings(root, rec, data, blobs, dry_run)
             if why:
                 failed.append(f"{rel}: {why}")
+            continue
+        if rel == ANCHOR_MCP:
+            absent = _anchor_local_absent(root, rel)
+            if (absent or data is not None) and _anchor_digest(rel, None if absent else data) == \
+                    rec.get("sha256"):
+                continue
+            failed.append(f"{rel}: Tess keeps no copy of it (it can hold API keys), so restore does "
+                          "not rewrite or delete it. Open it, remove any server you did not add (or "
+                          "put back the version you approved), then run `tessctl anchor accept` in "
+                          "your own terminal")
             continue
         if data is not None and _anchor_digest(rel, data) == rec.get("sha256"):
             continue
@@ -20811,6 +20850,62 @@ def _anchor_local_key_summary(rec, now: "bytes | None") -> None:
                   + "; anything else above was not written by that prompt.")
 
 
+def anchor_mcp_servers(data: "bytes | None") -> "list | None":
+    """[(name, transport, what it runs)] for each server in .mcp.json, with
+    no values (environment, headers, arguments) shown: names and programs
+    only. None when the text is not a JSON object."""
+    if data is None:
+        return []
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    out = []
+    for name, spec in sorted(servers.items(), key=lambda kv: str(kv[0])):
+        spec = spec if isinstance(spec, dict) else {}
+        kind = str(spec.get("type") or ("http" if spec.get("url") else "stdio"))
+        if spec.get("url") is not None:
+            import urllib.parse
+            try:
+                host = urllib.parse.urlsplit(str(spec.get("url"))).hostname
+            except ValueError:
+                host = None
+            what = "url host " + (host or "(none)")
+        else:
+            prog = str(spec.get("command") or "(no command)")
+            nargs = len(spec.get("args")) if isinstance(spec.get("args"), list) else 0
+            what = f"runs {os.path.basename(prog) or prog} with {nargs} argument(s)"
+        secrets = [k for k in ("env", "headers") if isinstance(spec.get(k), dict) and spec.get(k)]
+        if secrets:
+            what += "; sets " + " and ".join(f"{len(spec[k])} {k} value(s)" for k in secrets) + \
+                " (not shown)"
+        out.append((str(name), kind, what))
+    return out
+
+
+def _anchor_mcp_summary(data: bytes) -> None:
+    servers = anchor_mcp_servers(data)
+    if servers is None:
+        print("    The file is not a JSON object; Claude Code may ignore or misread all of it.")
+        return
+    print(f"    Servers now ({len(servers)}):" + ("" if servers else " (none)"))
+    _anchor_print_lines([f"{json.dumps(n)}  [{k}]  {w}" for n, k, w in servers], "      ")
+
+
+def _anchor_mcp_first_record_warning(data: bytes) -> None:
+    servers = anchor_mcp_servers(data)
+    names = "(text that is not a JSON object)" if servers is None else \
+        ", ".join(json.dumps(n) for n, _k, _w in servers) or "(no servers)"
+    print(f"  WARNING  {ANCHOR_MCP} already defines {anchor_safe_text(names)}, and Tess has recorded "
+          f"it as approved as it is now. If you did not add these servers yourself, remove them, "
+          f"then run `tessctl anchor accept` in your own terminal.")
+
+
 def _anchor_show_changes(root: Path, st: AnchorState) -> None:
     import difflib
     anchored = (st.doc or {}).get("files") or {}
@@ -20823,9 +20918,16 @@ def _anchor_show_changes(root: Path, st: AnchorState) -> None:
         if rec is None:
             print(f"\n  NEW   {shown} (will be recorded)")
             continue
-        if rel == ANCHOR_LOCAL_SETTINGS and rel not in current:
+        if rel in ANCHOR_MAY_BE_ABSENT and rel not in current:
             print(f"\n  CHANGED  {shown} (a symlink, a folder or unreadable; replace it with a "
                   f"regular file)")
+            continue
+        if rel == ANCHOR_MCP:
+            print(f"\n  CHANGED  {shown}" + (" (now: no file)" if now is None else ""))
+            if now is not None:
+                _anchor_mcp_summary(now)
+                print("    Tess keeps no copy of the approved file (it can hold API keys), so it "
+                      "cannot show line by line what changed: open it and check every server.")
             continue
         if rel == ANCHOR_LOCAL_SETTINGS and (now is None or rec.get("absent")):
             print(f"\n  CHANGED  {shown}" + (" (now: no file)" if now is None else ""))
@@ -20881,6 +20983,9 @@ def cmd_anchor(args, root: Path) -> None:
             sys.exit(f"tessctl anchor init: could not record the safety files ({e})")
         print(f"anchor: recorded Tess's safety files → {where}")
         _anchor_local_first_record_warning(root)
+        mcp_now = _anchor_read(root / ANCHOR_MCP)
+        if mcp_now is not None:
+            _anchor_mcp_first_record_warning(mcp_now)
         return
     if sub != "accept":
         sys.exit("tessctl anchor: choose status | accept | init")

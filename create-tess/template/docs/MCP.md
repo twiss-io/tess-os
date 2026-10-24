@@ -68,6 +68,12 @@ in the docs linked above. No `"type"` field is needed: an entry with a
 approval the first time a project-scoped server from `.mcp.json` is used
 (`claude mcp list` / `claude mcp reset-project-choices` to manage that).
 
+Tess anchors `.mcp.json` (1.0.0): after you add, change or remove a server
+there (and after you approve one in Claude Code's dialog), Tess stops until
+you run `./tessctl anchor accept` in your own terminal. Your agent cannot
+write `.mcp.json`; edit it yourself. Tess never copies the file or shows its
+values (it can hold API keys).
+
 If you'd rather register it without hand-editing JSON:
 
 ```bash

@@ -705,9 +705,20 @@ security reviews; they are stated so nobody relies on a check that is not there.
   `disableAllHooks` switches Tess off) and points to `tessctl doctor`. Approving
   a project MCP server in Claude Code's dialog writes `enabledMcpjsonServers`
   (or `disabledMcpjsonServers`, or `enableAllProjectMcpServers`) to this file,
-  so Tess stops after such an approval until you run `tessctl anchor accept`:
-  `.mcp.json` is not protected or anchored, so an approved server name is not
-  enough to know what that server runs. The stop says the change may be your
+  so Tess stops after such an approval until you run `tessctl anchor accept`.
+  `.mcp.json` itself, which says what each approved server name runs, is
+  anchored too (1.0.0): creating, changing or removing it, or a symlink or
+  folder in its place, stops Tess the same way, and the gate refuses an
+  agent's write to it. It often holds API keys, so Tess keeps no copy of it
+  outside the project: `anchor accept` lists each server's name, transport and
+  program (or URL host) and how many arguments, environment values and headers
+  it sets, never their values, and `tessctl restore` does not rewrite or
+  delete it (it tells you to fix it yourself, then run `anchor accept`). An
+  install anchored before this gets its first record at the next verified
+  update, with a WARNING naming any servers already defined. Limit: Claude
+  Code starts approved servers when a session begins, before any hook runs, so
+  a definition changed by a program outside the gate can start once before the
+  first stop. The stop says the change may be your
   MCP approval only when those three keys are all that changed; `anchor
   accept` lists every key other than permission rules by name above the diff,
   says which of them changed, never cuts what it shows without saying so, and

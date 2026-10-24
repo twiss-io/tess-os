@@ -402,7 +402,15 @@ ANCHOR_FILES = (
     # v1.0.x (Quinn GAP-1): Claude Code's local override can switch every hook
     # off (`disableAllHooks`). Anchored by content; see ANCHOR_LOCAL_SETTINGS.
     ".claude/settings.local.json",
+    # 1.0.0 (section 2): the project MCP server definitions. See ANCHOR_MCP.
+    ".mcp.json",
 )
+# 1.0.0 (section 2): .mcp.json is anchored by its bytes; its absence is a
+# recorded state and a symlink or folder in its place is a change. Tess keeps
+# no copy of it (it can hold API keys). Kept identical in .tess/bin/tessctl.
+ANCHOR_MCP = ".mcp.json"
+ANCHOR_MCP_ABSENT = "absent:no-file"
+ANCHOR_MAY_BE_ABSENT = (".claude/settings.local.json", ANCHOR_MCP)
 # v1.0.x (Quinn GAP-1): .claude/settings.local.json is the operator's own file
 # (personal permission rules; Claude Code writes "don't ask again" answers to
 # it) and is normally absent, yet one key in it, disableAllHooks, turns Tess's
@@ -857,13 +865,14 @@ def anchor_problems(root: Path, doc: dict) -> list:
     for rel, rec in sorted(doc["files"].items()):
         want = rec.get("sha256") if isinstance(rec, dict) else None
         path = anchor_file_path(root, rel)
-        if rel == ANCHOR_LOCAL_SETTINGS and path is not None and not os.path.lexists(str(path)):
-            if want != anchor_local_settings_digest(None):
-                out.append(f"{rel} has changed")  # removed while it held more than permission rules
+        if rel in ANCHOR_MAY_BE_ABSENT and path is not None and not os.path.lexists(str(path)):
+            absent = anchor_local_settings_digest(None) if rel == ANCHOR_LOCAL_SETTINGS else ANCHOR_MCP_ABSENT
+            if want != absent:
+                out.append(f"{rel} has changed")  # removed (settings: while it held more than permission rules)
             continue
         data = anchor_read_file(path) if path else None
         if data is None:
-            out.append(f"{rel} is missing" if rel != ANCHOR_LOCAL_SETTINGS else
+            out.append(f"{rel} is missing" if rel not in ANCHOR_MAY_BE_ABSENT else
                        f"{rel} is not a regular file (a symlink or a folder)")
         elif not want or anchor_digest(rel, data) != want:
             out.append(f"{rel} has changed")

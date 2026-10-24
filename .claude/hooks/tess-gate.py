@@ -211,6 +211,10 @@ PROTECTED_GLOBS = (
     # branch, a crafted index) changes what the "restore from HEAD" undo puts back.
     ".git/info/**", ".git/refs/**", ".git/HEAD", ".git/packed-refs", ".git/index",
     ".git/objects/**", ".git/worktrees/**",
+    # 1.0.0 (section 2): the project MCP server definitions (what each server
+    # runs), anchored like the other control files. The operator edits it in
+    # their own terminal and records the change with `tessctl anchor accept`.
+    ".mcp.json",
 )
 
 DISPATCH_TOOLS = {"Agent", "Task", "spawn_agent"}
