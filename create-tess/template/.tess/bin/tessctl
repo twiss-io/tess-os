@@ -21094,7 +21094,7 @@ HARDEN_UNLOCK_CONFIRM = "unlock these files"
 # Commands that rewrite files `harden on` locks (refused while any is locked).
 HARDEN_WRITERS = ("init", "restore", "update", "self-update", "publish", "override", "capture",
                   "rollback", "render", "approve", "resolve", "reset")
-_SF_IMMUTABLE = getattr(stat, "SF_IMMUTABLE", 0x00020000)
+_SF_IMMUTABLE = stat.SF_IMMUTABLE if hasattr(stat, "SF_IMMUTABLE") else 0x00020000
 _FS_IOC_GETFLAGS = 0x80086601
 _FS_IMMUTABLE_FL = 0x00000010
 
@@ -21140,7 +21140,8 @@ def _harden_flag(path: Path) -> "bool | None":
         import struct
         try:
             import fcntl
-            fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            flags = os.O_RDONLY | (os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0)
+            fd = os.open(str(path), flags | (os.O_NONBLOCK if hasattr(os, "O_NONBLOCK") else 0))
             try:
                 got = fcntl.ioctl(fd, _FS_IOC_GETFLAGS, struct.pack("l", 0))
             finally:
