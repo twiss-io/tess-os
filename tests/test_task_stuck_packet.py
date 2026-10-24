@@ -531,7 +531,7 @@ def test_task_schema_missing_blocked_key_entirely_rejected(engine):
     inst = _valid_task_instance()
     del inst["blocked"]
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith("$: missing required property 'blocked'") for v in violations), violations
 
 
 def test_task_schema_blocked_packet_rejects_unknown_reason(engine):
@@ -539,7 +539,7 @@ def test_task_schema_blocked_packet_rejects_unknown_reason(engine):
     base_dir = REPO_ROOT / "core" / "contracts"
     inst = _valid_task_instance(blocked=_valid_packet(reason="not-a-real-reason"))
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith('$.blocked: must match oneOf') for v in violations), violations
 
 
 def test_task_schema_blocked_packet_rejects_missing_subfield(engine):
@@ -549,7 +549,7 @@ def test_task_schema_blocked_packet_rejects_missing_subfield(engine):
     del packet["needed"]
     inst = _valid_task_instance(blocked=packet)
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith('$.blocked: must match oneOf') for v in violations), violations
 
 
 def test_task_schema_blocked_packet_rejects_additional_property(engine):
@@ -557,7 +557,7 @@ def test_task_schema_blocked_packet_rejects_additional_property(engine):
     base_dir = REPO_ROOT / "core" / "contracts"
     inst = _valid_task_instance(blocked=_valid_packet(extra="nope"))
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations
+    assert any(v.startswith('$.blocked: must match oneOf') for v in violations), violations
 
 
 def test_ledger_event_schema_accepts_blocked(engine):

@@ -79,7 +79,7 @@ def test_render_settings_json_rejects_invalid_json(engine, project):
     src.parent.mkdir(parents=True, exist_ok=True)
     # {{TESS_ROOT}} unquoted → invalid JSON after substitution
     src.write_text('{"root": {{TESS_ROOT}}}')
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="settings-core.json renders to invalid JSON"):
         engine.render_settings_json(project.root)
 
 

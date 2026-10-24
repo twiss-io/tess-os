@@ -127,7 +127,7 @@ def test_publish_refuses_agents_md(project, engine):
     _assert_reverted_or_reported(engine, root, "AGENTS.md", expected, "no floor")
 
 
-def test_doctor_never_excuses_enforcement_drift_via_render_outputs_status(project, engine):
+def test_doctor_never_excuses_enforcement_drift_via_render_outputs_status(project, engine, capsys):
     """A render_outputs status other than 'rendered' (e.g. a lock edited to say
     user-published) must not turn drift in enforcement config into an
     'expected divergence' row: doctor still fails."""
@@ -141,6 +141,11 @@ def test_doctor_never_excuses_enforcement_drift_via_render_outputs_status(projec
         "rendered_sha": engine.sha256_file(cfg)}
     engine.save_lock(root, lock)
 
+    capsys.readouterr()
     doctor_rc, verify_rc = _doctor_and_verify_rc(engine, root)
+    out = capsys.readouterr()
     assert doctor_rc != 0, "doctor excused a sandbox escalation in .codex/config.toml"
     assert verify_rc != 0
+    # Both must name the drifted file, not fail for some unrelated reason.
+    assert "DRIFT       .codex/config.toml" in out.out, out.out
+    assert "LIVE DRIFT  .codex/config.toml" in out.out, out.out

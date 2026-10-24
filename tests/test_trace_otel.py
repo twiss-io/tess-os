@@ -568,6 +568,7 @@ def test_trace_export_cli_produces_valid_otlp_json_with_gen_ai_attributes(trace_
 def test_trace_export_unsupported_format_is_rejected(trace_repo, run_cli):
     r = run_cli(trace_repo, "trace", "export", "--format", "console")
     assert r.returncode != 0
+    assert "argument --format: invalid choice: 'console'" in r.stderr, r.stderr
 
 
 def test_trace_export_mission_id_scoping(trace_repo, run_cli, engine):

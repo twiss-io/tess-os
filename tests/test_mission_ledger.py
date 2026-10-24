@@ -573,8 +573,10 @@ def test_retry_check_requires_cause_and_brief_together(mroot):
     brief = _brief(mroot, "b.md", "text")
     r1 = _run(mroot, "retry", "check", "taskA", "--mission", mission_id, "--cause", "transient")
     assert r1.returncode != 0
+    assert "--cause and --brief must be given together" in r1.stderr, r1.stdout + r1.stderr
     r2 = _run(mroot, "retry", "check", "taskA", "--mission", mission_id, "--brief", brief)
     assert r2.returncode != 0
+    assert "--cause and --brief must be given together" in r2.stderr, r2.stdout + r2.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -648,13 +650,29 @@ def test_lint_mission_cleared_gate_with_real_evidence_file_passes(engine, tmp_pa
     assert engine._lint_mission(inst) == []
 
 
+def test_mission_and_retry_schemas_accept_the_valid_instances(engine):
+    """Positive control for the single-mutation schema tests below: the
+    unmutated instances validate clean, so each refusal is the mutation's."""
+    base_dir = REPO_ROOT / "core" / "contracts"
+    mission = engine.load_contract_schema(REPO_ROOT, "mission")
+    assert engine.schema_validate(_valid_mission_instance(), mission, mission, base_dir) == []
+    retry = engine.load_contract_schema(REPO_ROOT, "retry")
+    inst = {
+        "mission_id": "2026-07-07-x", "task": "t", "attempt": 3,
+        "failure_state": "error", "cause_class": "transient",
+        "brief_digest_sha256": "0" * 64, "brief_length": 1,
+        "brief_change_code": "initial", "logged_at": "2026-07-07T00:00:00Z",
+    }
+    assert engine.schema_validate(inst, retry, retry, base_dir) == []
+
+
 def test_mission_schema_rejects_cleared_gate_without_evidence(engine):
     schema = engine.load_contract_schema(REPO_ROOT, "mission")
     inst = _valid_mission_instance()
     inst["gates"][0]["cleared"] = True  # cleared_by/cleared_at/evidence left null
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations, "cleared:true with null cleared_by/cleared_at/evidence should fail schema"
+    assert any(v.startswith('$.gates[0].evidence: expected type string') for v in violations), "cleared:true with null cleared_by/cleared_at/evidence should fail schema"
 
 
 def test_retry_schema_rejects_attempt_above_cap(engine):
@@ -667,7 +685,7 @@ def test_retry_schema_rejects_attempt_above_cap(engine):
     }
     base_dir = REPO_ROOT / "core" / "contracts"
     violations = engine.schema_validate(inst, schema, schema, base_dir)
-    assert violations, "attempt: 4 should fail schema's maximum: 3"
+    assert any(v.startswith('$.attempt: 4 > maximum 3') for v in violations), "attempt: 4 should fail schema's maximum: 3"
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +924,7 @@ def test_validate_mission_rejects_dev_null_evidence(mroot):
 
     r = _run(mroot, "validate", "mission", str(path))
     assert r.returncode != 0, r.stdout + r.stderr
+    assert "evidence path '/dev/null' resolves to /dev/null, which is outside the Tess root" in r.stdout, r.stdout
 
 
 def test_validate_mission_rejects_outside_root_evidence(mroot, tmp_path_factory):

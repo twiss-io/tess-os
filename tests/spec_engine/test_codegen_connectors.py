@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import _spec_engine_paths  # noqa: F401 -- sys.path bootstrap
 
 from spec_engine.connector_resolver import resolve_connectors
@@ -145,11 +147,8 @@ def test_resolved_connectors_length_mismatch_with_integrations_fails_loud(tmp_pa
 
     spec = _spec_with_integrations(["Anthropic"])
     tampered = dataclasses.replace(spec, resolved_connectors=[])
-    try:
+    with pytest.raises(SpecEngineError, match="resolved_connectors"):
         generate_app(tampered, tmp_path)
-        assert False, "expected SpecEngineError"
-    except SpecEngineError as e:
-        assert "resolved_connectors" in str(e)
     assert not (tmp_path / "src").exists()
 
 
@@ -174,8 +173,5 @@ def test_resolved_connector_id_with_no_codegen_template_fails_loud(tmp_path):
         operations=[ResolvedConnectorOperation(name="generate", side_effect="spend", http_method="POST", http_path="/x")],
     )
     tampered = dataclasses.replace(spec, resolved_connectors=[phantom])
-    try:
+    with pytest.raises(SpecEngineError, match="no generated-client template"):
         generate_app(tampered, tmp_path)
-        assert False, "expected SpecEngineError"
-    except SpecEngineError as e:
-        assert "no generated-client template" in str(e)

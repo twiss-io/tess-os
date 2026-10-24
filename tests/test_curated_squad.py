@@ -245,7 +245,7 @@ def test_recruit_orchestrator_shorthand(project):
 def test_recruit_unknown_name_exits(project):
     p = _build_squad_project(project)
     p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="tessctl recruit: no agents matched"):
         p.mod.cmd_recruit(ns(names=["nonexistent-agent"]), p.root)
 
 
@@ -352,19 +352,19 @@ def test_staged_not_materialised_by_update_resolution(project, capsys):
 
 def test_roster_apply_unknown_path_exits(project):
     p = _build_squad_project(project)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="tessctl roster: unknown path 'bogus'"):
         p.mod.cmd_roster(ns(roster_sub="apply", path_name="bogus"), p.root)
 
 
 def test_roster_no_subcommand_exits(project):
     p = _build_squad_project(project)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="tessctl roster: specify a subcommand"):
         p.mod.cmd_roster(ns(roster_sub=None), p.root)
 
 
 def test_roster_apply_missing_config_exits(project):
     p = _build_squad_project(project, with_config=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match=r"\.tess/core/roster-paths\.json not found"):
         p.mod.cmd_roster(ns(roster_sub="apply", path_name="builders"), p.root)
 
 

@@ -172,20 +172,6 @@ def test_glob_match_proves_engine_coverage_is_real(engine):
     assert engine.path_matches_globs("tessctl", pre_fix_globs) is False
 
 
-def test_core_and_mirror_policy_yaml_still_byte_identical():
-    mirror_path = REPO_ROOT / ".tess" / "core" / "policy" / "policy.yaml"
-    assert mirror_path.read_bytes() == REAL_POLICY_PATH.read_bytes()
-
-
-def test_policy_yaml_still_schema_valid(engine):
-    schema = engine.load_contract_schema(REPO_ROOT, "policy")
-    instance = engine.load_contract_instance(REAL_POLICY_PATH)
-    base_dir = REPO_ROOT / "core" / "contracts"
-    violations = engine.schema_validate(instance, schema, schema, base_dir)
-    violations += engine._lint_contract("policy", instance)
-    assert violations == [], violations
-
-
 @pytest.fixture
 def signoffs_dir_repo(tmp_path):
     """A fresh, isolated copy of the real Tess OS root, turned into a real

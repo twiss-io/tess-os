@@ -1170,7 +1170,18 @@ def test_crew_plan_schema_rejects_task_id_path_traversal(rroot):
     ])
     plan_path = _write_plan(rroot, "plan.json", plan)
     r = _run_cli(rroot, "validate", "crew-plan", str(plan_path))
-    assert r.returncode != 0, r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    # The refusal must come from the Task.id pattern, not from another defect.
+    assert re.search(r"tasks\[0\]\.id: '\.\./[^']*PWNED' does not match pattern", out), out
+
+    # Positive control: the same plan with a clean task id validates.
+    clean = _crew_plan("2026-07-07-traversal-test", [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("pwned-clean")]},
+    ])
+    ok = _run_cli(rroot, "validate", "crew-plan", str(_write_plan(rroot, "clean.json", clean)))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
 def test_crew_plan_schema_rejects_mission_id_path_traversal(rroot):
@@ -1183,7 +1194,17 @@ def test_crew_plan_schema_rejects_mission_id_path_traversal(rroot):
     ])
     plan_path = _write_plan(rroot, "plan.json", plan)
     r = _run_cli(rroot, "validate", "crew-plan", str(plan_path))
-    assert r.returncode != 0, r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "$.crew_plan.mission_id: '../../../../tmp/PWNED-mission' does not match pattern" in out, out
+
+    # Positive control: the same plan with a clean mission id validates.
+    clean = _crew_plan("2026-07-07-pwned-mission", [
+        {"stage": 1, "gate_in": "intake-before-anything", "parallel": False,
+         "tasks": [_task("t1")]},
+    ])
+    ok = _run_cli(rroot, "validate", "crew-plan", str(_write_plan(rroot, "clean.json", clean)))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
 
 
 def test_run_refuses_task_id_path_traversal_at_load(engine, rroot):

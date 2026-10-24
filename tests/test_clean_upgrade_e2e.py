@@ -125,5 +125,5 @@ def test_ref_precedence_falls_back_to_lock(engine):
 
 def test_ref_precedence_no_ref_anywhere_exits(engine):
     lock = {"framework": {"upstream_ref": ""}}
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit, match="no --ref specified and framework.upstream_ref is not set"):
         engine._resolve_update_ref(ns(ref=None, to=None), lock)
