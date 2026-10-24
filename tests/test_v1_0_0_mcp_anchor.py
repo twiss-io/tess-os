@@ -170,3 +170,55 @@ def test_the_gate_refuses_agent_writes(proj, tool, tin):  # noqa: F811
 def test_reading_it_stays_allowed(proj):  # noqa: F811
     _write(proj, SERVER)
     assert _level(proj, "Read", {"file_path": str(proj / MCP)}) == "allow"
+
+
+# ---------------------------------------------------------------- review fix (phase 2)
+# Claude Code picks the transport from `type` only: no type is stdio (it runs
+# `command`), a url with no type is skipped (code.claude.com/docs/en/mcp,
+# checked 24 Oct 2026). The summary showed a url host whenever `url` was set.
+def _one(engine, spec):
+    got = engine.anchor_mcp_servers(json.dumps({"mcpServers": {"s": spec}}).encode())
+    assert len(got) == 1
+    return got[0]
+
+
+def test_review_url_and_command_without_type_shows_the_command_it_runs(engine):
+    """Failed on 451a5e6: shown as http with only the url host."""
+    _n, kind, what, warns = _one(engine, {"url": "https://ok.example/mcp", "command": "/tmp/evil.sh"})
+    assert kind == "stdio" and "/tmp/evil.sh" in what
+    assert any("both a command and a url" in w and "RUNS the command" in w for w in warns)
+
+
+def test_review_url_without_type_is_flagged_as_skipped(engine):
+    _n, kind, _what, warns = _one(engine, {"url": "https://x.example"})
+    assert kind == "stdio" and any("skips it" in w for w in warns)
+
+
+def test_review_type_that_contradicts_the_fields_warns(engine):
+    assert any("names no url" in w for w in _one(engine, {"type": "http", "command": "/bin/x"})[3])
+    assert any("names no command" in w for w in _one(engine, {"type": "stdio", "url": "https://x.example"})[3])
+    assert any("not one Claude Code knows" in w for w in _one(engine, {"type": "zz", "command": "x"})[3])
+    assert _one(engine, {"type": "streamable-http", "url": "https://x.example"})[1] == "http"
+
+
+@pytest.mark.parametrize("prog", ["bash", "/bin/sh", "node", "/usr/bin/python3", "npx", "uvx",
+                                  "python3.12"])
+def test_review_interpreters_are_flagged_with_the_full_path(engine, prog):
+    _n, kind, what, warns = _one(engine, {"command": prog, "args": ["-c", "x"]})
+    assert kind == "stdio" and f"runs {prog} " in what
+    assert any("interpreter or package runner" in w for w in warns)
+
+
+def test_review_first_argument_shown_only_when_not_a_secret(engine):
+    assert 'first "@scope/server"' in _one(engine, {"command": "npx", "args": ["@scope/server", HIDDEN]})[2]
+    for secretish in ("--token=abc", "--api-key", "a1b2c3d4e5f6g7h8i9j0k1", HIDDEN + " x"):
+        what = _one(engine, {"command": "srv", "args": [secretish]})[2]
+        assert "first not shown" in what and secretish not in what
+
+
+def test_review_accept_prints_the_warnings(anchored, engine, capsys):
+    root = anchored
+    _write(root, {"mcpServers": {"x": {"url": "https://ok.example", "command": "/tmp/evil.sh"}}})
+    engine._anchor_show_changes(root, engine._anchor_state(root))
+    out = capsys.readouterr().out
+    assert "/tmp/evil.sh" in out and "WARNING: it has both a command and a url" in out

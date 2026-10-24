@@ -20905,10 +20905,34 @@ def _anchor_local_key_summary(rec, now: "bytes | None") -> None:
                   + "; anything else above was not written by that prompt.")
 
 
+# How Claude Code picks a project MCP server's transport (code.claude.com/docs/en/mcp,
+# checked 24 Oct 2026): from `type` only. An entry with no `type` is a stdio
+# server (it runs `command`); `streamable-http` is an alias of `http`; a `url`
+# with no `type` is a configuration error and the server is skipped; `sdk` is
+# skipped in .mcp.json.
+_MCP_REMOTE = ("http", "sse", "ws")
+_MCP_INTERPRETERS = re.compile(r"(?i)^(sh|bash|zsh|dash|ksh|fish|node|nodejs|deno|bun|bunx|npx|pnpm|"
+                               r"pnpx|yarn|uv|uvx|pipx|python[0-9.]*|pypy[0-9.]*|ruby|perl|php|"
+                               r"osascript|pwsh|powershell|cmd|env)(\.exe)?$")
+_MCP_SECRETISH = re.compile(r"(?i)(token|secret|passw|apikey|api[_-]key|auth|bearer|credential|"
+                            r"private)")
+
+
+def _mcp_arg_shown(arg) -> "str | None":
+    """The first argument when it does not look like a credential, else None."""
+    a = str(arg)
+    if not re.fullmatch(r"[A-Za-z0-9_./@:+-]{1,80}", a) or _MCP_SECRETISH.search(a):
+        return None
+    if len(a) >= 20 and "/" not in a and "." not in a and re.search(r"\d", a) and re.search(r"[A-Za-z]", a):
+        return None  # a long letters-and-digits run: likely a key
+    return a
+
+
 def anchor_mcp_servers(data: "bytes | None") -> "list | None":
-    """[(name, transport, what it runs)] for each server in .mcp.json, with
-    no values (environment, headers, arguments) shown: names and programs
-    only. None when the text is not a JSON object."""
+    """[(name, transport, what it runs, [warnings])] for each server in
+    .mcp.json, decided as Claude Code decides it, with no values shown
+    (environment, headers, arguments after the first, URL paths). None when
+    the text is not a JSON object."""
     if data is None:
         return []
     try:
@@ -20923,8 +20947,25 @@ def anchor_mcp_servers(data: "bytes | None") -> "list | None":
     out = []
     for name, spec in sorted(servers.items(), key=lambda kv: str(kv[0])):
         spec = spec if isinstance(spec, dict) else {}
-        kind = str(spec.get("type") or ("http" if spec.get("url") else "stdio"))
-        if spec.get("url") is not None:
+        warn = []
+        raw_type = spec.get("type")
+        kind = "stdio" if raw_type is None else str(raw_type).lower()
+        kind = "http" if kind == "streamable-http" else kind
+        has_cmd, has_url = spec.get("command") is not None, spec.get("url") is not None
+        if has_cmd and has_url:
+            warn.append("it has both a command and a url; Claude Code uses the " + kind +
+                        " transport" + (" and RUNS the command" if kind == "stdio" else ""))
+        if raw_type is None and has_url and not has_cmd:
+            warn.append("it has a url but no type, so Claude Code skips it")
+        if kind == "stdio" and not has_cmd and not (raw_type is None and has_url):
+            warn.append("its type is stdio but it names no command")
+        if kind in _MCP_REMOTE and not has_url:
+            warn.append(f"its type is {kind} but it names no url")
+        if kind == "sdk":
+            warn.append("type sdk is skipped in .mcp.json")
+        elif kind not in _MCP_REMOTE + ("stdio",):
+            warn.append(f"its type {json.dumps(str(raw_type))} is not one Claude Code knows")
+        if kind in _MCP_REMOTE:
             import urllib.parse
             try:
                 host = urllib.parse.urlsplit(str(spec.get("url"))).hostname
@@ -20932,14 +20973,20 @@ def anchor_mcp_servers(data: "bytes | None") -> "list | None":
                 host = None
             what = "url host " + (host or "(none)")
         else:
-            prog = str(spec.get("command") or "(no command)")
-            nargs = len(spec.get("args")) if isinstance(spec.get("args"), list) else 0
-            what = f"runs {os.path.basename(prog) or prog} with {nargs} argument(s)"
-        secrets = [k for k in ("env", "headers") if isinstance(spec.get(k), dict) and spec.get(k)]
-        if secrets:
-            what += "; sets " + " and ".join(f"{len(spec[k])} {k} value(s)" for k in secrets) + \
+            prog = str(spec.get("command")) if has_cmd else "(no command)"
+            args = spec.get("args") if isinstance(spec.get("args"), list) else []
+            what = f"runs {prog} with {len(args)} argument(s)"
+            if args:
+                first = _mcp_arg_shown(args[0])
+                what += f", first {json.dumps(first)}" if first is not None else ", first not shown"
+            if has_cmd and _MCP_INTERPRETERS.match(os.path.basename(prog.replace("\\", "/"))):
+                warn.append(f"{os.path.basename(prog)} is an interpreter or package runner: what it "
+                            "runs depends on its arguments; check them in the file")
+        secrets_ = [k for k in ("env", "headers") if isinstance(spec.get(k), dict) and spec.get(k)]
+        if secrets_:
+            what += "; sets " + " and ".join(f"{len(spec[k])} {k} value(s)" for k in secrets_) + \
                 " (not shown)"
-        out.append((str(name), kind, what))
+        out.append((str(name), kind, what, warn))
     return out
 
 
@@ -20949,13 +20996,17 @@ def _anchor_mcp_summary(data: bytes) -> None:
         print("    The file is not a JSON object; Claude Code may ignore or misread all of it.")
         return
     print(f"    Servers now ({len(servers)}):" + ("" if servers else " (none)"))
-    _anchor_print_lines([f"{json.dumps(n)}  [{k}]  {w}" for n, k, w in servers], "      ")
+    lines = []
+    for n, k, w, warns in servers:
+        lines.append(f"{json.dumps(n)}  [{k}]  {w}")
+        lines += [f"  WARNING: {x}" for x in warns]
+    _anchor_print_lines(lines, "      ")
 
 
 def _anchor_mcp_first_record_warning(data: bytes) -> None:
     servers = anchor_mcp_servers(data)
     names = "(text that is not a JSON object)" if servers is None else \
-        ", ".join(json.dumps(n) for n, _k, _w in servers) or "(no servers)"
+        ", ".join(json.dumps(n) for n, _k, _w, _x in servers) or "(no servers)"
     print(f"  WARNING  {ANCHOR_MCP} already defines {anchor_safe_text(names)}, and Tess has recorded "
           f"it as approved as it is now. If you did not add these servers yourself, remove them, "
           f"then run `tessctl anchor accept` in your own terminal.")

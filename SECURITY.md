@@ -726,9 +726,13 @@ security reviews; they are stated so nobody relies on a check that is not there.
   anchored too (1.0.0): creating, changing or removing it, or a symlink or
   folder in its place, stops Tess the same way, and the gate refuses an
   agent's write to it. It often holds API keys, so Tess keeps no copy of it
-  outside the project: `anchor accept` lists each server's name, transport and
-  program (or URL host) and how many arguments, environment values and headers
-  it sets, never their values, and `tessctl restore` does not rewrite or
+  outside the project: `anchor accept` lists each server's name, the transport
+  Claude Code will use (from `type`; no `type` means stdio), the full program
+  path (or URL host), the first argument when it does not look like a
+  credential, and how many arguments, environment values and headers it sets,
+  never their values; it warns when an entry has both a `command` and a `url`,
+  has a `url` but no `type` (Claude Code skips it), has a `type` that does not
+  match its fields, or runs an interpreter or package runner; and `tessctl restore` does not rewrite or
   delete it (it tells you to fix it yourself, then run `anchor accept`). An
   install anchored before this gets its first record at the next verified
   update, with a WARNING naming any servers already defined. Limit: Claude
